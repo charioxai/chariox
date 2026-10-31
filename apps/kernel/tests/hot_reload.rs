@@ -1423,6 +1423,7 @@ fn codex_turn_across_a_hot_reload(finish_in_gap: bool, beside_claude: bool) {
         // user's computer tools.
         let focus = json!({"FocusAgent": {"session_id": session_id, "agent_id": agent_id}});
         request(&mut socket, focus.clone()).await;
+        let mut claude_focus = None;
         if beside_claude {
             let spawned = request(
                 &mut socket,
@@ -1436,11 +1437,10 @@ fn codex_turn_across_a_hot_reload(finish_in_gap: bool, beside_claude: bool) {
                 .unwrap_or_else(|| panic!("{spawned}"))
                 .to_string();
             // The user looks at Claude now; Codex keeps its grant meanwhile.
-            request(
-                &mut socket,
-                json!({"FocusAgent": {"session_id": session_id, "agent_id": claude_id}}),
-            )
-            .await;
+            let focus_claude =
+                json!({"FocusAgent": {"session_id": session_id, "agent_id": claude_id}});
+            request(&mut socket, focus_claude.clone()).await;
+            claude_focus = Some(focus_claude);
             request(
                 &mut socket,
                 json!({"SubmitPrompt": {"session_id": session_id, "attachment_id": attachment_id,
@@ -1479,6 +1479,34 @@ fn codex_turn_across_a_hot_reload(finish_in_gap: bool, beside_claude: bool) {
             );
             note_shown_parts(&mut socket, &session_id, &agent_id, started, &mut shown).await;
             tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        // While focused, the agent loads the user's Computer tools (Linux
+        // only) and lists them, as Codex does. Beside Claude the user then
+        // looks at Claude again, so Codex cannot load them again: only the
+        // handover keeps them.
+        let computer = cfg!(target_os = "linux");
+        if computer {
+            request(&mut socket, focus.clone()).await;
+            let loaded = codex_tools(
+                &record,
+                "load",
+                json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                    "params": {"name": "chariox.load_kernel_computer", "arguments": {}}}),
+            )
+            .await;
+            assert!(
+                loaded["result"]["isError"] != true && loaded["error"].is_null(),
+                "{loaded}"
+            );
+            codex_tools(
+                &record,
+                "listed",
+                json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}),
+            )
+            .await;
+            if let Some(focus_claude) = &claude_focus {
+                request(&mut socket, focus_claude.clone()).await;
+            }
         }
         let pid = kernel.child.id() as i32;
         assert!(pid > 1);
@@ -1525,6 +1553,22 @@ fn codex_turn_across_a_hot_reload(finish_in_gap: bool, beside_claude: bool) {
         tokio::io::AsyncReadExt::read_to_end(&mut tools, &mut answer)
             .await
             .unwrap();
+        if computer {
+            let listed = codex_tools(
+                &record,
+                "list",
+                json!({"jsonrpc": "2.0", "id": 3, "method": "tools/list", "params": {}}),
+            )
+            .await;
+            assert!(
+                listed["result"]["tools"]
+                    .as_array()
+                    .is_some_and(|tools| tools
+                        .iter()
+                        .any(|tool| tool["name"] == "chariox.kernel_computer")),
+                "the adopted run lost the Computer tools it loaded: {listed}"
+            );
+        }
         request(&mut socket, focus).await;
         let mut live_parts = 0;
         let mut live_before_result = 0;
@@ -1678,6 +1722,21 @@ fn logged_after(scratch: &Path, message: &str, after_ms: u64) -> u64 {
 }
 
 /// Notes when the session shows more parts of the streaming item.
+/// Calls the kernel's tools as the fake Codex agent (see fake_codex.py).
+async fn codex_tools(record: &Path, name: &str, body: Value) -> Value {
+    std::fs::write(record.join(format!("mcp-{name}")), body.to_string()).unwrap();
+    let out = record.join(format!("mcp-{name}.out"));
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !out.exists() {
+        assert!(
+            Instant::now() < deadline,
+            "the agent's tool call {name} got no answer"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    serde_json::from_str(&std::fs::read_to_string(out).unwrap()).unwrap()
+}
+
 async fn note_shown_parts(
     socket: &mut Socket,
     session_id: &str,

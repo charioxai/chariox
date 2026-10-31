@@ -6,7 +6,9 @@
 # when it starts the reload and `go` once it is connected again: part 300 waits
 # for `go`, so the item still streams after the swap. With
 # CHARIOX_FAKE_CODEX_FINISH_IN_GAP the turn ends as soon as `swap` exists.
-import base64, hashlib, json, os, socket, struct, sys, threading, time
+# A JSON-RPC body the test writes as `mcp-<name>` is sent to the kernel's tools
+# as this agent, as the real Codex calls them; the answer goes to `mcp-<name>.out`.
+import base64, hashlib, json, os, socket, struct, sys, threading, time, urllib.request
 
 record = os.environ.get("CHARIOX_FAKE_CODEX_RECORD", "/dev/null/none")
 finish_in_gap = os.environ.get("CHARIOX_FAKE_CODEX_FINISH_IN_GAP") == "1"
@@ -14,6 +16,7 @@ THREAD, TURN, ITEM = "thread-1", "turn-1", "msg-1"
 lock = threading.Condition()
 subscriber = None
 turn = {"status": None, "text": ""}
+tools = {}
 
 
 def note(name, line):
@@ -129,6 +132,12 @@ def answer(conn, request):
                             "defaultReasoningEffort": "low"}], "nextCursor": None}
     elif method in ("thread/start", "thread/resume"):
         note("threads", f"{method} {os.getpid()}")
+        config = params.get("config") or {}
+        if "mcp_servers.chariox.url" in config:
+            with lock:
+                tools["url"] = config["mcp_servers.chariox.url"]
+                tools["authorization"] = config["mcp_servers.chariox.http_headers.Authorization"]
+                lock.notify_all()
         with lock:
             subscriber = conn
             lock.notify_all()
@@ -175,6 +184,34 @@ def serve(conn):
     conn.close()
 
 
+def call_tools():
+    done = set()
+    while True:
+        time.sleep(0.02)
+        for name in sorted(os.listdir(record)):
+            if not name.startswith("mcp-") or name.endswith((".out", ".tmp")) or name in done:
+                continue
+            with lock:
+                lock.wait_for(lambda: "url" in tools)
+                url, authorization = tools["url"], tools["authorization"]
+            done.add(name)
+            with open(os.path.join(record, name), "rb") as f:
+                body = f.read()
+            request = urllib.request.Request(url, data=body, method="POST", headers={
+                "authorization": authorization, "content-type": "application/json",
+                "accept": "application/json, text/event-stream"})
+            try:
+                with urllib.request.urlopen(request, timeout=30) as response:
+                    answer = response.read().decode()
+            except Exception as error:
+                answer = json.dumps({"fake_codex_error": str(error)})
+            # A streamed answer carries the JSON-RPC message on its data line.
+            lines = [line[5:].strip() for line in answer.splitlines() if line.startswith("data:")]
+            with open(os.path.join(record, name + ".tmp"), "w") as f:
+                f.write(lines[-1] if lines else answer)
+            os.rename(os.path.join(record, name + ".tmp"), os.path.join(record, name + ".out"))
+
+
 def main():
     args = sys.argv[1:]
     if "--version" in args:
@@ -189,6 +226,7 @@ def main():
     server.bind((host, int(port)))
     server.listen(16)
     note("starts", f"app-server {os.getpid()}")
+    threading.Thread(target=call_tools, daemon=True).start()
     while True:
         conn, _ = server.accept()
         threading.Thread(target=serve, args=(conn,), daemon=True).start()
