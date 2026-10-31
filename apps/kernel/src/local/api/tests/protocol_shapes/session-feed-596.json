@@ -84,7 +84,7 @@
     "MP-10",
     "MP-11"
   ],
-  "local_protocol": 923,
+  "local_protocol": 926,
   "subscribe_with_heartbeat_interval": {
     "attachment_id": "__waiting_room_inventory__",
     "heartbeat_interval_ms": 1000,

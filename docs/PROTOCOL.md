@@ -5979,14 +5979,20 @@ the STUN Binding responder every relay runs on UDP 3478 of its host
 sockets, the browser passes `stun:<relay host>:3478` as its ICE server. STUN only
 reflects addresses; no TURN, and a pair that cannot connect stays on the relay.
 
-Liveness (TR-16, no wire change): the kernel puts a ping ahead of its queued fragments
-every second and the browser answers each with a pong. A browser that hears nothing
-for 2.5 s leaves the path and moves its lanes to the relay as a carrier switch
-(commands replay, subscriptions resume from their cursors, the open view keeps its
-state); the kernel ends a peer that answered nothing for 3 s, so its displays stop
-feeding a dead carrier. The way back is proven first: the browser opens and admits
-direct sockets for every lane the relay carries while the relay keeps carrying them,
-and switches only once all are admitted.
+### Direct data channel liveness — local 926 / relay peer 377
+
+No frame changes; the data channel's ping/pong become a contract (TR-16). The kernel
+puts a ping ahead of its queued fragments every second and the browser answers each
+with a pong. A browser that hears nothing for 2.5 s leaves the path and moves its
+lanes to the relay as a carrier switch (commands replay, subscriptions resume from
+their cursors, the open view keeps its state); the kernel ends a peer that answered
+nothing for 3 s. A viewer's display registered on another carrier stops the pump it
+left at once, so that pump's late end cannot retire the generation the new one serves.
+The way back is proven first: the browser opens and admits direct sockets for every
+lane the relay carries while the relay keeps carrying them, and switches only once all
+are admitted. Browsers open data channels only to kernels >=926
+(`dataChannelMinimumProtocolVersion` in the web). The managed-upgrade list is
+[629, 636, 911, 926].
 
 ### MP-08 / MP-09 / MP-10 / MP-11: user-side browser frame stream removed — local 919 / peer 370
 
