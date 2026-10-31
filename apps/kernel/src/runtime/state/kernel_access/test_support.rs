@@ -2,6 +2,7 @@ use super::*;
 
 mod approval;
 mod capability_room_authority;
+mod choice_events;
 mod control_authority;
 mod cover;
 mod credential_authority;

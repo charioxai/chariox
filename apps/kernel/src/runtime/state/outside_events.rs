@@ -4,6 +4,7 @@ use crate::durable_state::agent_lifecycle::outside::Mutation;
 use crate::local::*;
 mod activity;
 mod open_decisions;
+mod question;
 
 pub(crate) fn is_outside_event_request(request: &LocalDaemonRequest) -> bool {
     matches!(
@@ -250,10 +251,9 @@ impl KernelRuntimeOwnedState {
         &self,
         session_id: &str,
         interaction: &crate::session::RuntimeInteraction,
-        state: EventInteractionState,
-        passkey: Option<&PasskeyPrompt>,
+        phase: InteractionPhase<'_>,
     ) -> Result<(), DaemonError> {
-        let (value, summary) = self.outside_interaction_value(interaction, state, passkey);
+        let (value, summary) = self.outside_interaction_value(interaction, phase);
         self.durable_state_store.outside_publish(
             session_id,
             interaction.agent_id(),
@@ -266,33 +266,95 @@ impl KernelRuntimeOwnedState {
         )
     }
 
-    /// The event body and summary an outside caller gets for a decision.
+    /// The event body and summary an outside caller gets for a decision: its
+    /// question when a holder may answer it, otherwise a pointer to the owner.
     pub(super) fn outside_interaction_value(
         &self,
         interaction: &crate::session::RuntimeInteraction,
-        state: EventInteractionState,
-        passkey: Option<&PasskeyPrompt>,
+        phase: InteractionPhase<'_>,
     ) -> (OutsideEventValue, String) {
-        let human = interaction.provider_login_is_human_only()
-            || interaction
-                .choices()
-                .iter()
-                .any(crate::session::RuntimeInteractionChoice::requires_passkey);
-        let pointer=(human && state == EventInteractionState::Pending).then(|| {
-            let kernel=self.config_projection.snapshot().daemon_id;
-            EventApprovalPointer { approval_id:interaction.id().into(),kind:passkey.map_or_else(||if interaction.provider_login_is_human_only() { "provider_login" } else { "critical_approval" },|prompt|match prompt.kind { PasskeyPromptKind::CriticalApproval=>"critical_approval",PasskeyPromptKind::AccessGrant=>"access_grant",PasskeyPromptKind::AccessExtension=>"access_extension",PasskeyPromptKind::Sudo=>"sudo" }).into(),
-                one_line:format!("Approval pending on kernel {kernel}. Open Chariox there and answer its approval popup."),kernel,link:None,
-                expires_at:passkey.map_or_else(||crate::session::unix_epoch_ms().saturating_add(interaction.timeout_sec().unwrap_or(600).saturating_mul(1000)),|prompt|prompt.expires_at_ms) }
-        });
-        let summary = if human {
-            "owner approval"
-        } else {
-            interaction.title().unwrap_or("interaction")
+        let (state, pending) = match phase {
+            InteractionPhase::Resolved(resolution) => {
+                return (
+                    OutsideEventValue::Interaction {
+                        state: EventInteractionState::Resolved,
+                        pointer: None,
+                        question: None,
+                        resolution: Some(resolution),
+                    },
+                    "decision closed".into(),
+                )
+            }
+            InteractionPhase::Pending(pending) => (EventInteractionState::Pending, pending),
+        };
+        if !pending.requires_terminal(interaction) {
+            return (
+                OutsideEventValue::Interaction {
+                    state,
+                    pointer: None,
+                    question: Some(question::event_question(interaction)),
+                    resolution: None,
+                },
+                interaction.title().unwrap_or("interaction").into(),
+            );
+        }
+        let passkey = pending.passkey_prompt.as_deref();
+        let kernel = self.config_projection.snapshot().daemon_id;
+        let kind = match passkey.map(|prompt| prompt.kind) {
+            Some(PasskeyPromptKind::AccessGrant) => "access_grant",
+            Some(PasskeyPromptKind::AccessExtension) => "access_extension",
+            Some(PasskeyPromptKind::Sudo) => "sudo",
+            Some(PasskeyPromptKind::CriticalApproval) => "critical_approval",
+            None if interaction.provider_login_is_human_only() => "provider_login",
+            None => "critical_approval",
+        };
+        let expires_at = passkey.map_or_else(
+            || {
+                crate::session::unix_epoch_ms().saturating_add(
+                    interaction
+                        .timeout_sec()
+                        .unwrap_or(600)
+                        .saturating_mul(1000),
+                )
+            },
+            |prompt| prompt.expires_at_ms,
+        );
+        let pointer = EventApprovalPointer {
+            approval_id: interaction.id().into(),
+            kind: kind.into(),
+            one_line: format!(
+                "Approval pending on kernel {kernel}. Open Chariox there and answer its approval popup."
+            ),
+            kernel,
+            link: None,
+            expires_at,
         };
         (
-            OutsideEventValue::Interaction { state, pointer },
-            summary.into(),
+            OutsideEventValue::Interaction {
+                state,
+                pointer: Some(pointer),
+                question: None,
+                resolution: None,
+            },
+            "owner approval".into(),
         )
+    }
+}
+
+/// What an interaction event reports: the open decision, whose class decides
+/// between a question and a pointer, or how it ended.
+pub(in crate::runtime::state) enum InteractionPhase<'a> {
+    Pending(&'a super::PendingInteraction),
+    Resolved(EventResolution),
+}
+
+impl InteractionPhase<'_> {
+    /// Closed without an answer: the asker went away or a newer decision replaced it.
+    pub(in crate::runtime::state) fn cancelled() -> Self {
+        Self::Resolved(EventResolution {
+            via: EventResolutionVia::Cancelled,
+            choice_id: None,
+        })
     }
 }
 

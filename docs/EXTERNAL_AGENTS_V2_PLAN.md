@@ -471,7 +471,7 @@ Sessions and agents the external agent creates through its grant are added to it
 | Type | About | Values |
 |---|---|---|
 | `agent` | one agent | new run state (`idle`, `working`, `error`) and, with the event core, task state (`working`, `waiting`, `blocked`, `done`, `cancelled`) with its reason |
-| `interaction` | an approval or question raised by an agent | `pending` or `resolved`; a passkey approval only as the section 8 pointer |
+| `interaction` | an approval or question raised by an agent | `pending` or `resolved`; a decision a holder may answer carries its `question` (protocol 928), every other kind only the section 8 pointer; `resolved` carries `resolution` |
 | `terminal` | a Room terminal job in the session | `exited` with exit code |
 | `session` | the session itself | `agent_added`, `agent_removed`, `ended` |
 

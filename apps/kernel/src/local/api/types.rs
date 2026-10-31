@@ -418,4 +418,7 @@ pub use workspace::*;
 /// Landing union 923 carries 913 (`SessionState` `processes`), 917 (direct browser sessions over WebRTC),
 /// 919 (user-side browser frame stream removed, `display_ack` `paused`), 920 (mirror `document_mode`,
 /// `pointer_cursor`) and 923 (session-less Vault unlock).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 923;
+/// Allocated 928 adds `question` (the decision as the person sees it) to a pending outside `Interaction`
+/// event and `resolution` (`via`, `choice_id`) to a resolved one; an answer to a closed decision fails with
+/// the stable `interaction_closed`.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 928;

@@ -90,8 +90,15 @@ pub enum OutsideEventValue {
     },
     Interaction {
         state: EventInteractionState,
+        /// A decision only the owner's terminal may answer: where to answer it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pointer: Option<EventApprovalPointer>,
+        /// A pending decision the holder may answer, in the form to show the person.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        question: Option<EventQuestion>,
+        /// How a resolved decision ended.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        resolution: Option<EventResolution>,
     },
     Terminal {
         exit_code: Option<u32>,
@@ -174,6 +181,60 @@ pub struct EventsBatch {
     pub next_cursor: u64,
     pub oldest_cursor: u64,
     pub timed_out: bool,
+}
+
+/// The decision as the person sees it. It carries only what a holder may answer:
+/// no choice reply texts, passkey flags or secret inputs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EventQuestion {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    pub message: String,
+    pub choices: Vec<EventQuestionChoice>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_reply: Option<EventQuestionTextReply>,
+    /// When the kernel applies `default_on_timeout`, if the decision expires.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_on_timeout: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EventQuestionChoice {
+    pub id: String,
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub style: Option<crate::session::RuntimeInteractionChoiceStyle>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EventQuestionTextReply {
+    pub id: String,
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placeholder: Option<String>,
+    pub min_length: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_length: Option<usize>,
+}
+
+/// Which surface closed a decision. `choice_id` is the answer applied, never a text reply.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EventResolution {
+    pub via: EventResolutionVia,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub choice_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EventResolutionVia {
+    Terminal,
+    ExternalAgent,
+    Timeout,
+    /// Withdrawn without an answer: the asker went away or a newer decision replaced it.
+    Cancelled,
 }
 
 /// The section 8 pointer has no prompt body or passkey material.

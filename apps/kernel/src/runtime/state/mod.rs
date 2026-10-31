@@ -98,6 +98,7 @@ mod critical_approval_passkey;
 mod kernel_access;
 mod outside_events;
 pub(crate) use outside_events::is_outside_event_request;
+use outside_events::InteractionPhase;
 mod sudo;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod user_app_view_browser;
@@ -114,6 +115,7 @@ pub(crate) use sudo::SudoWindowProjection;
 pub(crate) use sudo::SUDO_WINDOW_LENGTH_FOR_TEST;
 pub(crate) use sudo::{is_sudo_control, is_sudo_prompt, sudo_window_minutes};
 mod passkey_prompts;
+pub(crate) use passkey_prompts::INTERACTION_CLOSED;
 #[cfg(test)]
 pub(crate) use passkey_prompts::PASSKEY_ALREADY_ANSWERED;
 mod native_catalog_refresh;

@@ -18,6 +18,8 @@ use crate::local::{
 use crate::session::{RuntimeInteraction, RuntimeInteractionChoice, RuntimeSession};
 
 pub(crate) const PASSKEY_ALREADY_ANSWERED: &str = "PASSKEY_ALREADY_ANSWERED";
+/// The kernel error code of an answer to a decision that is no longer pending.
+pub(crate) const INTERACTION_CLOSED: &str = "interaction_closed";
 /// Recent definitive outcomes, including answers needed by late replies.
 const CLOSURE_MEMORY: usize = 64;
 
@@ -212,7 +214,8 @@ impl KernelRuntimeOwnedState {
     }
 
     /// The refusal for an answer to a decision that is no longer pending:
-    /// "already answered" when a terminal answered it.
+    /// "already answered" when a terminal answered a passkey prompt, otherwise
+    /// the stable `interaction_closed`.
     pub(super) fn closed_interaction_error(
         &self,
         session_id: &str,
@@ -224,17 +227,22 @@ impl KernelRuntimeOwnedState {
             .write()
             .get(interaction_id)
             .is_some_and(|pending| pending.session_id == session_id);
-        if !pending
-            && self
-                .passkey_prompts
-                .was_answered(session_id, interaction_id)
+        if pending {
+            return error;
+        }
+        if self
+            .passkey_prompts
+            .was_answered(session_id, interaction_id)
         {
             return super::critical_approval_passkey::passkey_error(
                 PASSKEY_ALREADY_ANSWERED,
                 "already answered",
             );
         }
-        error
+        DaemonError::LocalTransport {
+            operation: INTERACTION_CLOSED,
+            message: "someone else answered or it expired".into(),
+        }
     }
 }
 
