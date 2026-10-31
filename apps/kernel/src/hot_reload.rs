@@ -682,6 +682,13 @@ async fn prepare(terminals: &RoomTerminalService) -> Result<Handover, String> {
 /// with the installed one, handing over the terminals. Returns `None` when no
 /// hot reload was prepared, or why the new program could not start.
 pub fn finish() -> Option<String> {
+    let error = replace_program()?;
+    // Nothing took over the jobs workloads left running: it was a restart.
+    crate::runtime::process_resources::end_owner(None, None);
+    Some(error)
+}
+
+fn replace_program() -> Option<String> {
     let mut prepared = PREPARED.lock().unwrap_or_else(|e| e.into_inner()).take()?;
     let start = START.get()?;
     // Read last: everything has stopped, so no workload ends after this.
