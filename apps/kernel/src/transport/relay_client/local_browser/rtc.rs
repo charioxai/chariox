@@ -50,6 +50,16 @@ const MAX_DATAGRAM: usize = 2048;
 /// socket that gets no answer offers only its interface address.
 const STUN_WAITS: [Duration; 2] = [Duration::from_millis(300), Duration::from_millis(400)];
 
+/// An open channel carries a keepalive this often, ahead of queued frames, so
+/// the browser tells a dead direct path from a quiet one in a few seconds and
+/// answers it even while it only receives (TR-16).
+const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(1);
+/// A browser that neither answered nor acknowledged anything for this long left
+/// the path (UDP dropped, moved to the relay): its session ends and stops
+/// feeding a dead carrier. On a slow link the keepalive can wait behind a
+/// megabyte already in SCTP; the browser acknowledging that data is alive.
+const SILENCE_LIMIT: Duration = Duration::from_secs(3);
+
 const FRAME_LAST: u8 = 0;
 const FRAME_MORE: u8 = 1;
 const FRAME_PING: u8 = 2;
@@ -433,6 +443,11 @@ struct OpenChannel {
     pending: VecDeque<Vec<u8>>,
     reassembly: Vec<u8>,
     session_done: bool,
+    last_ping: std::time::Instant,
+    /// When the browser last sent a frame or acknowledged queued data.
+    last_heard: std::time::Instant,
+    /// SCTP bytes queued when last looked at; less now means acknowledged.
+    buffered: usize,
 }
 
 /// Reads one socket until the driver retires it; STUN answers go to their
@@ -588,6 +603,7 @@ async fn poll_peer(
     sockets: &[Arc<UdpSocket>],
     wake: &Arc<Notify>,
 ) -> Option<std::time::Instant> {
+    let keepalive = keep_alive(peer);
     flush_outgoing(peer);
     loop {
         let output = match peer.rtc.poll_output() {
@@ -598,7 +614,9 @@ async fn poll_peer(
             }
         };
         match output {
-            Output::Timeout(deadline) => return Some(deadline),
+            Output::Timeout(deadline) => {
+                return Some(keepalive.map_or(deadline, |keepalive| keepalive.min(deadline)))
+            }
             Output::Transmit(transmit) => {
                 if let Some(socket) = sockets
                     .iter()
@@ -654,6 +672,9 @@ fn open_channel(peer: &mut Peer, id: ChannelId, wake: &Arc<Notify>) {
         pending: VecDeque::new(),
         reassembly: Vec::new(),
         session_done: false,
+        last_ping: std::time::Instant::now(),
+        last_heard: std::time::Instant::now(),
+        buffered: 0,
     });
     let socket = ChannelSocket {
         incoming,
@@ -716,6 +737,7 @@ fn receive(peer: &mut Peer, id: ChannelId, binary: bool, data: &[u8]) -> bool {
     let Some(channel) = peer.channel.as_mut().filter(|channel| channel.id == id) else {
         return true;
     };
+    channel.last_heard = std::time::Instant::now();
     let Some((&kind, payload)) = data.split_first().filter(|_| binary) else {
         return false;
     };
@@ -744,8 +766,43 @@ fn receive(peer: &mut Peer, id: ChannelId, binary: bool, data: &[u8]) -> bool {
     channel.incoming.try_send(message).is_ok()
 }
 
+/// Puts a keepalive ahead of the queued fragments every second and ends a peer
+/// that went silent; returns when the next check is due.
+fn keep_alive(peer: &mut Peer) -> Option<std::time::Instant> {
+    note_acknowledged(peer);
+    let channel = peer.channel.as_mut()?;
+    if channel.last_heard.elapsed() >= SILENCE_LIMIT {
+        peer.rtc.disconnect();
+        return None;
+    }
+    if channel.last_ping.elapsed() >= KEEPALIVE_INTERVAL {
+        channel.pending.push_front(vec![FRAME_PING]);
+        channel.last_ping = std::time::Instant::now();
+    }
+    Some((channel.last_ping + KEEPALIVE_INTERVAL).min(channel.last_heard + SILENCE_LIMIT))
+}
+
+/// Counts SCTP data the browser acknowledged since the last look as hearing
+/// from it while more data is still queued, since a keepalive may wait behind
+/// that data. Only acknowledgements shrink the buffered amount; once all is
+/// acknowledged the browser has the keepalive and must answer it.
+fn note_acknowledged(peer: &mut Peer) {
+    let Some(channel) = peer.channel.as_mut() else {
+        return;
+    };
+    let Some(mut writer) = peer.rtc.channel(channel.id) else {
+        return;
+    };
+    let buffered = writer.buffered_amount();
+    if buffered < channel.buffered && buffered > 0 {
+        channel.last_heard = std::time::Instant::now();
+    }
+    channel.buffered = buffered;
+}
+
 /// Encodes queued session frames while SCTP has room.
 fn flush_outgoing(peer: &mut Peer) {
+    note_acknowledged(peer);
     let Some(channel) = peer.channel.as_mut() else {
         return;
     };
@@ -780,6 +837,8 @@ fn flush_outgoing(peer: &mut Peer) {
             }
         }
     }
+    // Writes only grow the buffered amount: start the next comparison here.
+    note_acknowledged(peer);
 }
 
 fn encode(message: Message, pending: &mut VecDeque<Vec<u8>>) {

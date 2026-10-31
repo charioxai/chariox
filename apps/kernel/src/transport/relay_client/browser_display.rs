@@ -201,28 +201,6 @@ pub(super) async fn handle_subscribe(
     } else {
         (display_id, generation.parse::<u64>().unwrap_or_default())
     };
-    let mut guard = tasks.lock().await;
-    guard.retain(|_, task| task.display_id.is_none() || !task.handle.is_finished());
-    let key = format!("display:{display_id}:{public_key}");
-    if let Some(old) = guard.remove(&key) {
-        old.handle.abort();
-        if let Some(pump) = &old.display_pump {
-            pump.stop();
-        }
-    }
-    // MP-08/MP-10: protocol 491 push pump, dormant until the first ack (or granted at registration).
-    let pump = super::display_pump::DisplayPump::new(generation, &display_id);
-    guard.insert(
-        key.clone(),
-        RelaySubscriptionTask {
-            display_id: Some(display_id.clone()),
-            display_pump: Some(pump.clone()),
-            relay_subscription_id: relay_id.clone(),
-            client_public_key: public_key.clone(),
-            handle: tokio::spawn(sleep(Duration::from_secs(60))),
-        },
-    );
-    drop(guard);
     let request =
         crate::local::LocalDaemonRequest::KernelBrowser(crate::local::KernelBrowserRequest {
             command: crate::local::KernelBrowserCommand::DisplayNext {
@@ -239,48 +217,151 @@ pub(super) async fn handle_subscribe(
         None,
         &request,
     );
+    let key = format!("display:{display_id}:{public_key}");
+    // MP-08/MP-10: protocol 491 push pump, dormant until the first ack (or granted at registration).
+    // MP-08 TR-16: a viewer registering again (its lanes moved carrier) keeps the pump serving it.
+    let delivery = register_delivery(
+        super::display_pump::PumpRoute {
+            router: router.clone(),
+            outgoing_tx: outgoing_tx.clone(),
+            tasks: tasks.clone(),
+            key: key.clone(),
+            caller: pump_caller,
+            display_id,
+            relay_id: relay_id.clone(),
+            public_key: public_key.clone(),
+        },
+        generation,
+        !recover,
+    )
+    .await;
+    let pump = delivery.pump().clone();
     // Queue the authenticated binding response before granting initial credit.
     // The relay commits its event route on that response; first frames cannot race it.
     let mut response = serde_json::json!({"ok":true,"display_attached":true});
     if recover {
         response["binding"] = binding;
     }
-    let encrypted = encrypt_json_response(router, &public_key, response).await?;
-    send_outgoing_envelope(
-        outgoing_tx,
-        RelayEnvelope::DaemonResponse {
-            relay_request_id: request_id,
-            encrypted_response: Some(encrypted),
-            error: None,
-        },
-    )?;
-    if initial_credit {
-        pump.acknowledge(generation, 0, true, None, false);
-    }
-    let delivery_key = key.clone();
-    let delivery_relay = relay_id.clone();
-    let delivery_viewer = public_key.clone();
-    super::display_delivery::start(
-        tasks,
-        &delivery_key,
-        &delivery_relay,
-        &delivery_viewer,
-        super::display_pump::run(
-            super::display_pump::PumpRoute {
-                router: router.clone(),
-                outgoing_tx: outgoing_tx.clone(),
-                tasks: tasks.clone(),
-                key,
-                caller: pump_caller,
-                display_id,
-                relay_id,
-                public_key,
+    let sent = match encrypt_json_response(router, &public_key, response).await {
+        Ok(encrypted) => send_outgoing_envelope(
+            outgoing_tx,
+            RelayEnvelope::DaemonResponse {
+                relay_request_id: request_id,
+                encrypted_response: Some(encrypted),
+                error: None,
             },
-            pump,
         ),
-    )
-    .await;
+        Err(error) => Err(error),
+    };
+    if let Err(error) = sent {
+        pump.stop();
+        return Err(error);
+    }
+    pump.release();
+    match delivery {
+        Delivery::Moved { pump, left } => {
+            if let Some(left) = left.filter(|left| !Arc::ptr_eq(&left.tasks, tasks)) {
+                forget_moved_delivery(&left.tasks, &pump).await;
+            }
+        }
+        Delivery::Fresh(pump) => {
+            if initial_credit {
+                pump.acknowledge(generation, 0, true, None, false);
+            }
+            super::display_delivery::start(
+                tasks,
+                &key,
+                &relay_id,
+                &public_key,
+                super::display_pump::run(pump),
+            )
+            .await;
+        }
+    }
     Ok(())
+}
+
+/// What a display registration delivers on.
+enum Delivery {
+    /// The viewer's running pump, moved from the carrier it left (`left`).
+    Moved {
+        pump: Arc<super::display_pump::DisplayPump>,
+        left: Option<Arc<super::display_pump::PumpRoute>>,
+    },
+    /// A new pump, which starts on an independent frame.
+    Fresh(Arc<super::display_pump::DisplayPump>),
+}
+
+impl Delivery {
+    fn pump(&self) -> &Arc<super::display_pump::DisplayPump> {
+        match self {
+            Self::Moved { pump, .. } | Self::Fresh(pump) => pump,
+        }
+    }
+}
+
+/// Registers the viewer display `route.key` on `route`'s carrier, its frames held until the
+/// registration response is queued. With `takeover`, the same viewer key at the same generation
+/// moves its running pump here; otherwise (another viewer, another generation, a 535 resume, or
+/// a pump that already ended) a fresh pump replaces whatever fed that key.
+async fn register_delivery(
+    route: super::display_pump::PumpRoute,
+    generation: u64,
+    takeover: bool,
+) -> Delivery {
+    let route = Arc::new(route);
+    let moved = takeover
+        .then(|| super::display_pump::live(&route.key, generation))
+        .flatten()
+        .and_then(|pump| {
+            let left = pump.claim(route.clone())?;
+            Some(Delivery::Moved { pump, left })
+        });
+    let delivery = moved.unwrap_or_else(|| {
+        let pump = super::display_pump::DisplayPump::new(generation, &route.display_id);
+        super::display_pump::supersede(&route.key, &pump);
+        pump.claim(route.clone());
+        Delivery::Fresh(pump)
+    });
+    let mut guard = route.tasks.lock().await;
+    guard.retain(|_, task| task.display_id.is_none() || !task.handle.is_finished());
+    if let Some(old) = guard.remove(&route.key) {
+        old.handle.abort();
+        if let Some(pump) = old
+            .display_pump
+            .filter(|pump| !Arc::ptr_eq(pump, delivery.pump()))
+        {
+            pump.stop();
+        }
+    }
+    guard.insert(
+        route.key.clone(),
+        RelaySubscriptionTask {
+            display_id: Some(route.display_id.clone()),
+            display_pump: Some(delivery.pump().clone()),
+            relay_subscription_id: route.relay_id.clone(),
+            client_public_key: route.public_key.clone(),
+            handle: tokio::spawn(sleep(Duration::from_secs(60))),
+        },
+    );
+    delivery
+}
+
+/// The carrier a pump moved away from no longer holds its delivery lease.
+async fn forget_moved_delivery(
+    tasks: &RelaySubscriptionTasks,
+    pump: &Arc<super::display_pump::DisplayPump>,
+) {
+    tasks.lock().await.retain(|_, task| {
+        let moved = task
+            .display_pump
+            .as_ref()
+            .is_some_and(|held| Arc::ptr_eq(held, pump));
+        if moved {
+            task.handle.abort();
+        }
+        !moved
+    });
 }
 
 pub(super) async fn browser_display_delivery_id(
@@ -582,6 +663,221 @@ mod resumed_delivery_tests {
             resumed_delivery(&json!({"subscription_id": "s2", "resumed": true}), "s1"),
             None
         );
+    }
+}
+
+#[cfg(test)]
+mod pump_move_tests {
+    use super::super::display_pump::PumpRoute;
+    use super::*;
+    use crate::runtime::command::{KernelCaller, KernelCommand, KernelCommandSource};
+    use std::time::Instant;
+
+    struct Carrier {
+        tasks: RelaySubscriptionTasks,
+        outgoing: RelayOutgoingSender,
+        frames: Option<tokio::sync::mpsc::Receiver<RelayEnvelope>>,
+        _events: tokio::sync::mpsc::Receiver<RelayEnvelope>,
+    }
+
+    fn carrier() -> Carrier {
+        let (outgoing, frames, events) = RelayOutgoingSender::channel(64);
+        Carrier {
+            tasks: Arc::new(Mutex::new(BTreeMap::new())),
+            outgoing,
+            frames: Some(frames),
+            _events: events,
+        }
+    }
+
+    fn test_router(name: &str) -> (Arc<CommandRouter>, crate::test_support::TestWorktree) {
+        let work = crate::test_support::TestWorktree::new(name);
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.user_config_path = work.path().join("config.toml");
+        config.user_config.state.path = Some(work.path().join("state.db").display().to_string());
+        let app = crate::app::DaemonApp::bootstrap(config).unwrap();
+        let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+        (Arc::new(router), work)
+    }
+
+    fn route(
+        router: &Arc<CommandRouter>,
+        carrier: &Carrier,
+        display: &str,
+        lane: &str,
+        viewer: &str,
+    ) -> PumpRoute {
+        let request =
+            crate::local::LocalDaemonRequest::KernelBrowser(crate::local::KernelBrowserRequest {
+                command: crate::local::KernelBrowserCommand::State,
+            });
+        PumpRoute {
+            router: router.clone(),
+            outgoing_tx: carrier.outgoing.clone(),
+            tasks: carrier.tasks.clone(),
+            key: format!("display:{display}:{viewer}"),
+            caller: KernelCommand::from_local_request_with_caller(
+                "push",
+                KernelCommandSource::RelayClient,
+                KernelCaller::for_relay_request(None),
+                None,
+                None,
+                &request,
+            ),
+            display_id: display.into(),
+            relay_id: lane.into(),
+            public_key: viewer.into(),
+        }
+    }
+
+    fn frame() -> chariox_relay::protocol::EncryptedRelayPayload {
+        chariox_relay::protocol::EncryptedRelayPayload {
+            sender_public_key: "kernel".into(),
+            nonce: "nonce".into(),
+            ciphertext: "frame".into(),
+        }
+    }
+
+    /// Every frame a carrier delivers: (sequence, lane, arrival).
+    fn collect(carrier: &mut Carrier) -> tokio::task::JoinHandle<Vec<(u64, String, Instant)>> {
+        let mut frames = carrier.frames.take().unwrap();
+        tokio::spawn(async move {
+            let mut seen = Vec::new();
+            while let Some(RelayEnvelope::DaemonEvent {
+                subscription_id,
+                event_id,
+                ..
+            }) = frames.recv().await
+            {
+                seen.push((event_id, subscription_id, Instant::now()));
+            }
+            seen
+        })
+    }
+
+    // MP-08 TR-16: the viewer's lanes move from the relay to a direct carrier and its display
+    // registers again there (same viewer key, same generation). The pump that serves it moves
+    // with it: no fresh pump, no independent frame, no frame skipped, and no pause longer than
+    // one frame interval; tearing the relay carrier down afterwards leaves it running.
+    #[tokio::test]
+    async fn mp08_tr16_a_viewer_registered_again_on_another_carrier_keeps_its_running_pump() {
+        let (router, _work) = test_router("display-pump-move");
+        let (mut relay, mut direct) = (carrier(), carrier());
+        let (on_relay, on_direct) = (collect(&mut relay), collect(&mut direct));
+        let display = "display-tr16-move";
+        let Delivery::Fresh(pump) = register_delivery(
+            route(&router, &relay, display, "relay-lane", "viewer"),
+            7,
+            true,
+        )
+        .await
+        else {
+            panic!("the first registration starts a pump");
+        };
+        pump.release();
+        pump.acknowledge(7, 0, false, None, false);
+        let interval = Duration::from_millis(33);
+        let producer = tokio::spawn({
+            let pump = pump.clone();
+            async move {
+                let mut resets = Vec::new();
+                for sequence in 1..=30 {
+                    let Some(credit) = pump.push_test_frame(sequence, frame()).await else {
+                        break;
+                    };
+                    resets.push(credit.reset);
+                    pump.acknowledge(7, sequence, false, None, false);
+                    sleep(interval).await;
+                }
+                resets
+            }
+        });
+        sleep(interval * 10).await;
+        let moved = register_delivery(
+            route(&router, &direct, display, "direct-lane", "viewer"),
+            7,
+            true,
+        )
+        .await;
+        let Delivery::Moved { pump: moved, left } = moved else {
+            panic!("the viewer's running pump must move to the carrier it registered on");
+        };
+        assert!(Arc::ptr_eq(&moved, &pump));
+        moved.release();
+        let left = left.expect("the relay route it left");
+        assert!(Arc::ptr_eq(&left.tasks, &relay.tasks));
+        forget_moved_delivery(&left.tasks, &moved).await;
+        assert!(relay.tasks.lock().await.is_empty());
+        super::super::subscriptions::abort_subscription_tasks(&router, &relay.tasks).await;
+        assert!(!pump.is_stopped(), "the carrier it left cannot stop it");
+        let resets = producer.await.unwrap();
+        assert_eq!(
+            resets.len(),
+            30,
+            "the pump kept producing on the new carrier"
+        );
+        assert_eq!(
+            resets.iter().filter(|reset| **reset).count(),
+            1,
+            "only the first frame is independent: {resets:?}"
+        );
+        drop((relay.outgoing, direct.outgoing, left));
+        super::super::subscriptions::abort_subscription_tasks(&router, &direct.tasks).await;
+        drop((moved, pump));
+        let (relay_frames, direct_frames) = (on_relay.await.unwrap(), on_direct.await.unwrap());
+        assert!(!relay_frames.is_empty() && !direct_frames.is_empty());
+        assert!(relay_frames.iter().all(|(_, lane, _)| lane == "relay-lane"));
+        assert!(direct_frames
+            .iter()
+            .all(|(_, lane, _)| lane == "direct-lane"));
+        let sequences: Vec<u64> = relay_frames
+            .iter()
+            .chain(&direct_frames)
+            .map(|(sequence, ..)| *sequence)
+            .collect();
+        assert_eq!(sequences, (1..=30).collect::<Vec<_>>(), "no frame skipped");
+        let gap = direct_frames[0].2 - relay_frames.last().unwrap().2;
+        assert!(
+            gap <= interval + Duration::from_millis(25),
+            "the switch paused the view for {gap:?}"
+        );
+        router.runtime_state().shutdown_cleanup().await.unwrap();
+    }
+
+    // Only the same viewer key at the same generation takes a pump over: another viewer, a new
+    // generation and a 535 resume (a rotated delivery) each get a fresh pump.
+    #[tokio::test]
+    async fn mp08_tr16_another_viewer_or_generation_gets_a_fresh_pump() {
+        let (router, _work) = test_router("display-pump-fresh");
+        let (relay, direct) = (carrier(), carrier());
+        let display = "display-tr16-fresh";
+        let register = |carrier: &Carrier, viewer: &str, generation, takeover| {
+            register_delivery(
+                route(&router, carrier, display, "lane", viewer),
+                generation,
+                takeover,
+            )
+        };
+        let Delivery::Fresh(first) = register(&relay, "viewer", 7, true).await else {
+            panic!("first registration");
+        };
+        first.release();
+        let Delivery::Fresh(other) = register(&direct, "other-viewer", 7, true).await else {
+            panic!("another viewer key gets its own pump");
+        };
+        assert!(!Arc::ptr_eq(&other, &first) && !first.is_stopped());
+        let Delivery::Fresh(next) = register(&direct, "viewer", 8, true).await else {
+            panic!("a new generation gets a fresh pump");
+        };
+        assert!(!Arc::ptr_eq(&next, &first) && first.is_stopped());
+        let Delivery::Fresh(resumed) = register(&relay, "other-viewer", 7, false).await else {
+            panic!("a 535 resume never takes a pump over");
+        };
+        assert!(!Arc::ptr_eq(&resumed, &other) && other.is_stopped());
+        for pump in [&next, &resumed] {
+            pump.stop();
+        }
+        router.runtime_state().shutdown_cleanup().await.unwrap();
     }
 }
 

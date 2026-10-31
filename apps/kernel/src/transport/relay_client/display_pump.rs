@@ -49,6 +49,10 @@ struct PumpState {
     /// Paused acknowledgements seen, and how many of them the host display has been told about.
     pauses: u64,
     host: HostView,
+    /// The carrier this pump delivers on; a re-registration on another carrier moves it.
+    route: Option<Arc<PumpRoute>>,
+    /// A route just claimed waits for its registration response before frames flow on it.
+    held: bool,
 }
 
 /// What the host display was last told: its source reads nothing while parked, and each hold renews its 60 s expiry.
@@ -260,6 +264,44 @@ impl PumpState {
     }
 }
 
+/// MP-08 TR-16: the pump each viewer's display feeds now, whichever carrier (a
+/// relay socket or a direct session) registered it. Viewer keys are unique per
+/// display binding, so one map serves every kernel in the process.
+static CURRENT_PUMPS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<String, std::sync::Weak<DisplayPump>>>,
+> = std::sync::LazyLock::new(Default::default);
+
+/// Makes `pump` the one feeding the viewer display `key` and stops the one it
+/// replaces at once, as a re-registration on the same carrier does. Left running
+/// on the carrier the viewer moved away from, the old pump would end only when that
+/// carrier is cleaned up and then retire the generation the new pump serves.
+pub(super) fn supersede(key: &str, pump: &Arc<DisplayPump>) {
+    let previous = {
+        let mut current = CURRENT_PUMPS
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        current.retain(|_, pump| pump.strong_count() > 0);
+        current.insert(key.to_owned(), Arc::downgrade(pump))
+    };
+    if let Some(previous) = previous.and_then(|previous| previous.upgrade()) {
+        if !Arc::ptr_eq(&previous, pump) {
+            previous.stop();
+        }
+    }
+}
+
+/// MP-08 TR-16: the running pump that feeds the viewer display `key` at `generation`, which a
+/// re-registration of the same viewer on another carrier takes over instead of starting a fresh one.
+pub(super) fn live(key: &str, generation: u64) -> Option<Arc<DisplayPump>> {
+    let pump = CURRENT_PUMPS
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .get(key)?
+        .upgrade()?;
+    pump.with(|state| state.generation == generation && !state.stopped && !state.failed)
+        .then_some(pump)
+}
+
 pub(super) struct DisplayPump {
     state: std::sync::Mutex<PumpState>,
     wake: tokio::sync::Notify,
@@ -324,6 +366,130 @@ impl DisplayPump {
         self.with(|state| state.stopped = true);
         self.wake.notify_one();
         self.delivery.stop();
+    }
+    /// A carrier stops only a pump it routes: one that moved to another carrier outlives the
+    /// carrier it left.
+    pub(super) fn stop_on(&self, tasks: &super::subscriptions::RelaySubscriptionTasks) {
+        // One lock: a move claimed in between must not be stopped by the carrier it left.
+        let routed_here = self.with(|state| {
+            let here = state
+                .route
+                .as_ref()
+                .is_none_or(|route| Arc::ptr_eq(&route.tasks, tasks));
+            state.stopped |= here;
+            here
+        });
+        if routed_here {
+            self.wake.notify_one();
+            self.delivery.stop();
+        }
+    }
+    /// Routes this pump's frames to `route`, held until `release` so the registration response
+    /// goes first. A running pump keeps its encoder, gate and worker lease, so a viewer whose lanes
+    /// moved gets no independent frame and no new pump; its frames in flight on the carrier it left
+    /// are not acknowledged on this one. Returns the route it left, or `None` if the pump has ended.
+    pub(super) fn claim(&self, route: Arc<PumpRoute>) -> Option<Option<Arc<PumpRoute>>> {
+        let claimed = self.with(|state| {
+            if state.stopped || state.failed {
+                return None;
+            }
+            state.held = true;
+            state.sent.clear();
+            state.gated_at = None;
+            Some(state.route.replace(route))
+        });
+        self.wake.notify_one();
+        claimed
+    }
+    /// The run loop's delivery step without a browser source: one credit, one pushed frame;
+    /// `None` once the pump has ended.
+    #[cfg(test)]
+    pub(super) async fn push_test_frame(
+        &self,
+        sequence: u64,
+        frame: chariox_relay::protocol::EncryptedRelayPayload,
+    ) -> Option<KernelBrowserPushCredit> {
+        self.leased_route().await?;
+        let Gate::Open(credit) = self.with(|state| state.admit(Instant::now())) else {
+            panic!("an acknowledged viewer's gate stays open");
+        };
+        self.with(|state| state.sent_frame(sequence, Instant::now()));
+        self.push(sequence, frame).await.then_some(credit)
+    }
+    #[cfg(test)]
+    pub(super) fn is_stopped(&self) -> bool {
+        self.with(|state| state.stopped)
+    }
+    pub(super) fn release(&self) {
+        self.with(|state| state.held = false);
+        self.wake.notify_one();
+    }
+    /// Ends the pump if `route` is still its carrier; `false` if it moved meanwhile.
+    fn end_on(&self, route: &Arc<PumpRoute>) -> bool {
+        self.with(|state| {
+            let current = state
+                .route
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(current, route));
+            if current {
+                state.stopped = true;
+            }
+            current
+        })
+    }
+    /// The carrier to deliver on once no move holds it; `None` once the pump has stopped.
+    async fn deliverable_route(&self) -> Option<Arc<PumpRoute>> {
+        loop {
+            let (stopped, held, route) =
+                self.with(|state| (state.stopped, state.held, state.route.clone()));
+            if stopped {
+                return None;
+            }
+            if !held {
+                return route;
+            }
+            let _ = timeout(Duration::from_millis(20), self.wake.notified()).await;
+        }
+    }
+    /// The carrier whose delivery lease is alive; a lease that ends on the carrier the pump just
+    /// left does not end the pump.
+    async fn leased_route(&self) -> Option<Arc<PumpRoute>> {
+        loop {
+            let route = self.deliverable_route().await?;
+            if lease_alive(&route).await {
+                return Some(route);
+            }
+            if self.end_on(&route) {
+                return None;
+            }
+        }
+    }
+    /// Pushes one sealed frame on the carrier the pump routes now, so a frame captured before a
+    /// move goes out on the new carrier. `false` ends the pump.
+    async fn push(
+        &self,
+        sequence: u64,
+        encrypted_event: chariox_relay::protocol::EncryptedRelayPayload,
+    ) -> bool {
+        loop {
+            let Some(route) = self.deliverable_route().await else {
+                return false;
+            };
+            let sent = route
+                .outgoing_tx
+                .send_display_event(RelayEnvelope::DaemonEvent {
+                    subscription_id: route.relay_id.clone(),
+                    event_id: sequence,
+                    encrypted_event: encrypted_event.clone(),
+                })
+                .await;
+            if sent.is_ok() {
+                return true;
+            }
+            if self.end_on(&route) {
+                return false;
+            }
+        }
     }
     pub(super) fn start_delivery(
         &self,
@@ -406,26 +572,26 @@ async fn lease_alive(route: &PumpRoute) -> bool {
 }
 
 /// Dormant until the client's first acknowledgement; credit-mode clients never ack.
-pub(super) async fn run(route: PumpRoute, pump: Arc<DisplayPump>) {
+pub(super) async fn run(pump: Arc<DisplayPump>) {
     let generation = pump.with(|state| state.generation);
-    loop {
-        if pump.with(|state| state.stopped) || !lease_alive(&route).await {
+    let route = loop {
+        let Some(route) = pump.leased_route().await else {
             return;
-        }
+        };
         if pump.with(|state| state.started) {
-            break;
+            break route;
         }
         let _ = timeout(Duration::from_secs(1), pump.wake.notified()).await;
-    }
+    };
     crate::transport::kernel_browser_display::timing("push_gate_started", Instant::now());
     let daemon_private_key = route.router.relay_private_key();
     let mut last_sent = pump.with(|state| state.acked);
     let (mut idle, mut faults) = (Duration::ZERO, Faults::default());
     let mut direct = DirectLease(None);
     loop {
-        if pump.with(|state| state.stopped) || !lease_alive(&route).await {
+        let Some(route) = pump.leased_route().await else {
             return;
-        }
+        };
         if let Some(park) = pump.with(|state| state.next_host_park()) {
             if park.parked {
                 direct.end();
@@ -477,16 +643,7 @@ pub(super) async fn run(route: PumpRoute, pump: Arc<DisplayPump>) {
                         frames.delivered(token, revision);
                         pump.with(|state| state.sent_frame(sequence, Instant::now()));
                         last_sent = sequence;
-                        if route
-                            .outgoing_tx
-                            .send_display_event(RelayEnvelope::DaemonEvent {
-                                subscription_id: route.relay_id.clone(),
-                                event_id: sequence,
-                                encrypted_event,
-                            })
-                            .await
-                            .is_err()
-                        {
+                        if !pump.push(sequence, encrypted_event).await {
                             return;
                         }
                         continue;
@@ -528,16 +685,7 @@ pub(super) async fn run(route: PumpRoute, pump: Arc<DisplayPump>) {
         let at = std::time::Instant::now();
         pump.with(|state| state.sent_frame(sequence, Instant::now()));
         last_sent = sequence;
-        if route
-            .outgoing_tx
-            .send_display_event(RelayEnvelope::DaemonEvent {
-                subscription_id: route.relay_id.clone(),
-                event_id: sequence,
-                encrypted_event,
-            })
-            .await
-            .is_err()
-        {
+        if !pump.push(sequence, encrypted_event).await {
             return;
         }
         crate::transport::kernel_browser_display::timing("event_queue_credit", at);
@@ -671,6 +819,23 @@ async fn capture_frame(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // MP-08 TR-16: a viewer whose lanes moved to another carrier registers its
+    // display there; the pump it left must stop now, not when the old carrier is
+    // cleaned up, where its late end would retire the generation the new pump serves.
+    #[test]
+    fn mp08_a_display_registered_again_on_another_carrier_stops_the_pump_it_left() {
+        let relay = DisplayPump::new(1, "display-tr16");
+        supersede("display:display-tr16:viewer", &relay);
+        let direct = DisplayPump::new(1, "display-tr16");
+        supersede("display:display-tr16:viewer", &direct);
+        assert!(relay.with(|state| state.stopped));
+        assert!(!direct.with(|state| state.stopped));
+        let other_viewer = DisplayPump::new(1, "display-tr16");
+        supersede("display:display-tr16:other-viewer", &other_viewer);
+        assert!(!direct.with(|state| state.stopped));
+        assert!(!other_viewer.with(|state| state.stopped));
+    }
 
     // MP-08/MP-10/MP-11: real gate state and opt-in trace. The evidence parser
     // distinguishes closure transitions from repeated closed polling.
