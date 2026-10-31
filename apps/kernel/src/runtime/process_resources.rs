@@ -625,6 +625,17 @@ pub(crate) fn set_holdable_for_key(key: &str, holdable: bool) {
     }
 }
 
+/// What the commands the workload bound to `key` starts next would get.
+#[cfg(test)]
+pub(crate) fn holdable_for_key(key: &str) -> Option<bool> {
+    registry()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(key)
+        .and_then(std::sync::Weak::upgrade)
+        .map(|state| state.lock().unwrap_or_else(|e| e.into_inner()).holdable)
+}
+
 pub(crate) fn has_key(key: &str) -> bool {
     registry()
         .lock()

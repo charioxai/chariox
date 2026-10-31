@@ -367,6 +367,51 @@ async fn one_driver_rule_protects_a_foreground_program() {
 }
 
 #[tokio::test]
+async fn the_actor_that_submits_a_line_decides_whether_its_command_waits() {
+    let root = TempDir::new();
+    let service = service(root.path());
+    let id = open(&service, root.path()).terminal_id;
+    let run_id = service
+        .terminal_for_test(&id)
+        .lock_open()
+        .unwrap()
+        .terminal
+        .run_id
+        .clone()
+        .unwrap();
+    let next_waits = || crate::runtime::process_resources::holdable_for_key(&run_id);
+    assert_eq!(next_waits(), Some(false), "a person's own commands wait");
+    // Text that submits nothing starts no command.
+    type_as(&service, &id, &agent("a"), "cat").await;
+    assert_eq!(
+        next_waits(),
+        Some(false),
+        "typing without a line changed it"
+    );
+    type_as(&service, &id, &agent("a"), "\r").await;
+    assert_eq!(next_waits(), Some(true), "the agent's command cannot wait");
+    until("cat to run", || async {
+        service.pump_once();
+        service.list("room-1")[0].driver
+            == RoomTerminalDriver::Busy {
+                driven_by: agent("a"),
+            }
+    })
+    .await;
+    // A line into the running program starts no command either.
+    type_as(&service, &id, &agent("a"), "hello\r\u{4}").await;
+    until("cat to end", || async {
+        service.pump_once();
+        service.list("room-1")[0].driver == RoomTerminalDriver::Free
+    })
+    .await;
+    assert_eq!(next_waits(), Some(true));
+    type_as(&service, &id, &TerminalActor::User, "true\r").await;
+    assert_eq!(next_waits(), Some(false), "the person's command can wait");
+    service.end_session("room-1");
+}
+
+#[tokio::test]
 async fn a_program_the_user_started_refuses_agents() {
     let root = TempDir::new();
     let service = service(root.path());
