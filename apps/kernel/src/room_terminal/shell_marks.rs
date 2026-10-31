@@ -221,6 +221,24 @@ mod tests {
     }
 
     #[test]
+    fn a_finished_line_reports_the_background_job_it_left() {
+        let mut scanner = MarkScanner::default();
+        assert_eq!(
+            scanner.feed(b"\x1b]133;D;0;4242\x07\x1b]133;D;1;\x07"),
+            vec![
+                ShellMark::CommandFinished {
+                    exit_code: Some(0),
+                    background: Some(4242)
+                },
+                ShellMark::CommandFinished {
+                    exit_code: Some(1),
+                    background: None
+                },
+            ]
+        );
+    }
+
+    #[test]
     fn other_sequences_and_oversized_bodies_are_not_marks() {
         let mut scanner = MarkScanner::default();
         let mut input = b"\x1b]0;title\x07\x1b[31mred\x1b[0m\x1b]133;".to_vec();
