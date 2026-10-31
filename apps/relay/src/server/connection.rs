@@ -20,11 +20,15 @@ use crate::registry::{
 
 mod client_connect;
 mod support;
+mod token_refusal;
 #[cfg(test)]
 mod tests;
 mod writer;
 
 use support::*;
+
+static REFUSAL_LOG_LIMITER: OnceLock<std::sync::Mutex<token_refusal::RefusalLogLimiter>> =
+    OnceLock::new();
 
 const DEFAULT_RELAY_OUTGOING_QUEUE_CAPACITY: usize = 1024;
 const RELAY_WEBSOCKET_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -115,6 +119,7 @@ pub(crate) async fn handle_connection(
     let mut unsupported_transport = false;
     let mut binary_events = false;
     let mut initial_resume_negotiated = false;
+    let mut hello = token_refusal::ConnectionHello::default();
     let handshake = accept_hdr_async(
         stream,
         |request: &tokio_tungstenite::tungstenite::handshake::server::Request,
@@ -130,6 +135,11 @@ pub(crate) async fn handle_connection(
                         && part != crate::frame_transport::TRANSPORT_QUERY
                 })
             });
+            hello.user_agent = request
+                .headers()
+                .get("user-agent")
+                .and_then(|value| value.to_str().ok())
+                .map(|agent| token_refusal::printable(agent, 120));
             let protocols = request
                 .headers()
                 .get("sec-websocket-protocol")
@@ -174,6 +184,9 @@ pub(crate) async fn handle_connection(
         Ok(Err(error)) => return Err(std::io::Error::other(error.to_string())),
         Err(_) => return Ok(()),
     };
+    hello.transport = format!(
+        "chunks={chunks} binary_events={binary_events} display_resume={initial_resume_negotiated}"
+    );
     if unsupported_transport {
         // MP-08 / MP-10 / MP-11: old TUIs discard HTTP 426 bodies, but surface
         // close reasons. Refuse before registration or any multiplexed reply.
@@ -1091,7 +1104,24 @@ pub(crate) async fn handle_connection(
         &relay_request_counter,
     )
     .await;
-    if connection_result.is_err()
+    let refusal = connection_result
+        .as_ref()
+        .err()
+        .and_then(|error| error.get_ref())
+        .and_then(|inner| inner.downcast_ref::<token_refusal::TokenRefusal>());
+    // A client that keeps presenting a refused token is named once per window
+    // with a count, not once per attempt.
+    let refusal_report = refusal.map(|refusal| {
+        let counted = REFUSAL_LOG_LIMITER
+            .get_or_init(Default::default)
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .admit(refusal, Instant::now());
+        counted.map(|counted| refusal.log_fields(&hello, counted))
+    });
+    if refusal_report == Some(None) {
+        // Counted only; the line for this client kind was logged within the window.
+    } else if connection_result.is_err()
         || !matches!(
             end_reason,
             "peer_closed" | "peer_stream_ended" | "message_handling"
@@ -1120,6 +1150,7 @@ pub(crate) async fn handle_connection(
                 "error": connection_result.as_ref().err().map(|error| error.to_string()),
                 "end_reason": end_reason,
                 "peer_close_code": peer_close_code,
+                "token_refusal": refusal_report.flatten(),
             }),
         );
     }
