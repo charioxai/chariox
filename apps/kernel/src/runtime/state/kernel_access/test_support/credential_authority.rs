@@ -91,6 +91,28 @@ async fn kernel_access_refuses_raw_registry_credentials_and_provider_imports() {
     }
 }
 
+#[tokio::test]
+async fn kernel_access_cannot_unlock_the_vault() {
+    let worktree = crate::test_support::TestWorktree::new("access-vault-unlock");
+    let mut app =
+        crate::test_support::bootstrap_authenticated_app(crate::config::DaemonConfig::for_tests())
+            .unwrap();
+    let (session, _) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let state = crate::runtime::router::CommandRouter::with_interactive_capacity_from_app(
+        Arc::new(Mutex::new(app)),
+        32,
+    )
+    .runtime_state();
+    let grant = state.insert_access_grant_for_test(session.id());
+    let request =
+        LocalDaemonRequest::UnlockCredentialVault(crate::local::UnlockCredentialVaultRequest {
+            passphrase: crate::local::VaultPassphrase::new("passphrase"),
+        });
+    assert!(state.authorize_external_request(&grant, &request).is_err());
+}
+
 impl KernelRuntimeState {
     pub(super) async fn control_credential_access_for_test(
         &self,

@@ -5819,7 +5819,9 @@ state. The relay remains an opaque encrypted carrier.
 
 MP-08 / MP-09 / MP-10 / MP-11: local v710 exposes metadata-only
 `ListProviderAccountCopyOffers` and recipient-initiated
-`CopyProviderAccountFromKernel`. Recipient consent is an existing detached
+`CopyProviderAccountFromKernel`. When the owner's own client sends it, choosing the
+offer is the consent and the recipient raises no decision. When anything else sends it
+(an agent, a leased or remote run, a Metaagent), recipient consent is an existing detached
 kernel operation interaction, answered through `AnswerUserDomainInteraction`.
 Peer v274 adds `RequestProviderAccountCopy`, bound to the authenticated
 same-owner recipient's kernel identity and key. It reuses the independent
@@ -6021,3 +6023,27 @@ page or the navigation preview) asks while the pointer moves, one read in flight
 Relay peer 371 only pairs the embedded local response union with local 920. The
 managed-upgrade list is [629, 636, 920]. Focused checks: `cargo test -p
 chariox-kernel --lib protocol_shapes` (`browser_pointer_cursor_and_document_mode_920_shape_is_pinned`).
+
+### Session-less Vault unlock — local 923 / relay peer 374
+
+`UnlockCredentialVault { passphrase }` answers `CredentialVaultUnlocked { status, action }`
+with `action` one of `unlocked`, `already_unlocked` or `not_required` (a plain backend). It
+needs no session or agent: it is about the kernel's Vault, like `GetCredentialVaultStatus` and
+`LockCredentialVault`, and only the owner's own clients send it: a terminal caller with the
+owner's user id. A session member, an agent and a Metaagent get `vault_unlock_owner_only`;
+kernel-access grant holders and sudo agents are refused too, and no agent tool carries it. The passphrase
+is a redacted, zeroed value: command records show `[redacted]`, and it is never logged. The
+request unlocks an existing Vault only; a missing Vault file is refused and never created.
+The Vault stays open per its policy (`ttl` the default TTL, `kernel_init` until shutdown); under
+`always` the unlock is single use: it lasts 60 seconds and ends after the next account copy.
+
+Refusals carry a code and a plain sentence: `vault_passphrase_wrong`,
+`vault_unlock_rate_limited` (the sentence names the wait in seconds), `vault_missing`,
+`vault_unlock_owner_only` and `vault_locked`. A session-less operation that needs the Vault
+while it is locked answers `vault_locked`, so a client unlocks and repeats the same operation;
+`ManageCredentialVault` on a locked Vault answers it too and raises no prompt. Wrong passphrases are
+counted per owner in kernel memory (5 free, then 30 s doubling to 15 min, one check at a
+time), shared by this request, the passkey check and the unlock prompt an agent's run raises.
+Clients need kernel protocol >=923 (`credentialVaultUnlockMinimumProtocolVersion` in the
+web). The managed-upgrade list is [629, 636, 923]. Focused checks:
+`cargo test -p chariox-kernel --lib vault_unlock` and `node --test scripts/protocol-versions.test.mjs`.

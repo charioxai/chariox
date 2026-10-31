@@ -413,4 +413,9 @@ pub use workspace::*;
 /// MP-08/MP-10/MP-11: allocated 920 carries the page's document mode on mirror resets (`document_mode`, the viewer
 /// frame lays out in the page's mode) and adds `KernelBrowser` `pointer_cursor`, the CSS cursor at a point for a
 /// viewer that shows the page as video.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 920;
+/// Version 923 adds `UnlockCredentialVault`: the owner's own client unlocks the kernel's
+/// existing Vault with no session or agent (`CredentialVaultUnlocked`).
+/// Landing union 923 carries 913 (`SessionState` `processes`), 917 (direct browser sessions over WebRTC),
+/// 919 (user-side browser frame stream removed, `display_ack` `paused`), 920 (mirror `document_mode`,
+/// `pointer_cursor`) and 923 (session-less Vault unlock).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 923;

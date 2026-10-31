@@ -1,4 +1,6 @@
 use super::*;
+use std::fmt;
+use zeroize::Zeroize;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetUserConfigRequest;
@@ -63,6 +65,41 @@ pub struct GetCredentialVaultStatusRequest;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LockCredentialVaultRequest;
+
+/// The Vault passphrase the owner typed. Redacted in `Debug` and zeroed on drop.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct VaultPassphrase(String);
+
+impl VaultPassphrase {
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    pub fn expose_secret(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Debug for VaultPassphrase {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("VaultPassphrase([REDACTED])")
+    }
+}
+
+impl Drop for VaultPassphrase {
+    fn drop(&mut self) {
+        self.0.zeroize();
+    }
+}
+
+/// Unlocks the kernel's existing Vault from the owner's own client, with no
+/// session or agent. It never creates a Vault.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UnlockCredentialVaultRequest {
+    pub passphrase: VaultPassphrase,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ManageCredentialVaultRequest {

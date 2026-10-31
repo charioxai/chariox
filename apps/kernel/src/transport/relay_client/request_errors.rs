@@ -118,6 +118,9 @@ pub(super) fn map_relay_error(error: &DaemonError) -> RelayError {
             crate::provider_account_copy::failure_message(code),
             *retryable,
         ),
+        DaemonError::VaultUnlock {
+            code, retryable, ..
+        } => relay_error(code, &error.to_string(), *retryable),
         DaemonError::ManagedContext {
             code, retryable, ..
         } => relay_error(code, &error.to_string(), *retryable),

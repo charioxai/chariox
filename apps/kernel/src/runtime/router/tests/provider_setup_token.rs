@@ -139,12 +139,13 @@ exit 0
                 agent_id: None,
             },
         );
-        let command = KernelCommand::from_local_request(
+        let mut command = KernelCommand::from_local_request(
             format!("setup-{mode}-{replace}"),
             None,
             None,
             &request,
         );
+        command.caller.connection_class = Some(crate::local::KernelConnectionClass::Terminal);
         let response = router.dispatch(command, request).await;
         if stored && !replace {
             assert!(
@@ -477,10 +478,10 @@ exit 90
                 agent_id: None,
             },
         );
-        (
-            KernelCommand::from_local_request("paste".to_string(), None, None, &request),
-            request,
-        )
+        let mut command =
+            KernelCommand::from_local_request("paste".to_string(), None, None, &request);
+        command.caller.connection_class = Some(crate::local::KernelConnectionClass::Terminal);
+        (command, request)
     };
     let auth_state = |router: &CommandRouter| {
         router
@@ -642,7 +643,8 @@ exit 90
                 agent_id: None,
             },
         );
-        let command = KernelCommand::from_local_request("duplicate", None, None, &request);
+        let mut command = KernelCommand::from_local_request("duplicate", None, None, &request);
+        command.caller.connection_class = Some(crate::local::KernelConnectionClass::Terminal);
         let error = router
             .dispatch(command, request)
             .await
@@ -1281,6 +1283,7 @@ exit 1
                 })
             };
             let mut command = KernelCommand::from_local_request("reattach", None, None, &request);
+            command.caller.connection_class = Some(crate::local::KernelConnectionClass::Terminal);
             command.session_id = Some(session.id().into());
             command.agent_id = Some(agent.id().into());
             (command, request)

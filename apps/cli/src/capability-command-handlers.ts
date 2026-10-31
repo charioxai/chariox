@@ -62,6 +62,7 @@ export type CapabilityCommandHandlerDeps = {
   setCredentialSecret?: (key: string, value: string) => Promise<string>
   getCredentialVaultStatus?: () => Promise<Record<string, unknown>>
   lockCredentialVault?: () => Promise<Record<string, unknown>>
+  unlockCredentialVault?: (passphrase: string) => Promise<{ action: string; status: Record<string, unknown> }>
   manageCredentialVault?: () => Promise<{ action: string; status: Record<string, unknown> }>
   readSecret?: (prompt: string) => Promise<string>
   registerCredential?: (sourcePath: string) => Promise<CharioxCredentialConfig>
@@ -510,6 +511,21 @@ export async function handleCredentialSlashCommand(
       deps.flashFooter("vault locked", "info")
       return
     }
+    if (vaultAction === "unlock") {
+      if (!deps.unlockCredentialVault) return deps.flashFooter("credential vault unlock is not available in this daemon", "error")
+      if (!deps.readSecret) return deps.flashFooter("credential vault unlock requires hidden input support", "error")
+      const passphrase = await deps.readSecret("Vault passphrase: ")
+      if (!passphrase) return deps.flashFooter("the Vault passphrase must not be empty", "error")
+      let result: Awaited<ReturnType<typeof deps.unlockCredentialVault>>
+      try {
+        result = await deps.unlockCredentialVault(passphrase)
+      } catch (error) {
+        if (isVaultPassphraseRejection(error)) deps.appendNotice(VAULT_FOLDED_PASSPHRASE_HINT)
+        throw error
+      }
+      deps.flashFooter(`vault ${result.action}`, "info")
+      return
+    }
     if (vaultAction === "manage") {
       if (!deps.manageCredentialVault) return deps.flashFooter("credential vault manage is not available in this daemon", "error")
       let result: Awaited<ReturnType<typeof deps.manageCredentialVault>>
@@ -523,7 +539,7 @@ export async function handleCredentialSlashCommand(
       deps.flashFooter(result.action === "passphrase_changed" ? "vault passphrase changed" : `vault ${result.action}`, "info")
       return
     }
-    deps.flashFooter("usage: /credential vault status|lock|manage", "error")
+    deps.flashFooter("usage: /credential vault status|lock|unlock|manage", "error")
     return
   }
   if (action === "remove" || action === "unregister") {
@@ -533,7 +549,7 @@ export async function handleCredentialSlashCommand(
     deps.flashFooter(`removed credential ${credential.id}`, "info")
     return
   }
-  deps.flashFooter("usage: /credential list | /credential show <id> | /credential set <vault-key> | /credential register <file.yaml> | /credential remove <id> | /credential vault status|lock|manage", "error")
+  deps.flashFooter("usage: /credential list | /credential show <id> | /credential set <vault-key> | /credential register <file.yaml> | /credential remove <id> | /credential vault status|lock|unlock|manage", "error")
 }
 
 /** Shown once when the kernel rejects a vault passphrase. Before the
@@ -546,6 +562,7 @@ export const VAULT_FOLDED_PASSPHRASE_HINT =
 function isVaultPassphraseRejection(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error)
   return message.includes("failed to unlock Chariox vault")
+    || message.includes("That is not the Vault passphrase")
     || message.includes("current Chariox vault passphrase is incorrect")
 }
 

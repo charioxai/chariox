@@ -567,6 +567,8 @@ mod session_process_control;
 mod slice_development_runtime_state;
 mod slice_project_source;
 mod slice_runtime_state;
+mod vault_owner_gate;
+mod vault_unlock_request;
 mod vault_unlock_requests;
 pub(crate) use slice_runtime_state::SliceAgentRelaunchManifest;
 mod kernel_browser_command_error;

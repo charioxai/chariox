@@ -348,6 +348,7 @@ response_policies! {
         CredentialSecretDeleted,
         CredentialVaultStatus,
         CredentialVaultLocked,
+        CredentialVaultUnlocked,
         CredentialVaultManaged,
         ManagedEnvironmentCatalog,
         DisposableWorker,

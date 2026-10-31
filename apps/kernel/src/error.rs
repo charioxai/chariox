@@ -143,6 +143,13 @@ pub enum DaemonError {
         message: &'static str,
         retryable: bool,
     },
+    /// The sentence is the one the owner reads in the unlock popup.
+    #[error("{message}")]
+    VaultUnlock {
+        code: &'static str,
+        message: String,
+        retryable: bool,
+    },
     #[error("managed context `{operation}` failed: {message}")]
     ManagedContext {
         code: &'static str,

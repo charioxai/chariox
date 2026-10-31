@@ -232,6 +232,7 @@ pub(super) fn sudo_request_forbidden(request: &LocalDaemonRequest) -> bool {
             | LocalDaemonRequest::AckEvents(_)
             | LocalDaemonRequest::ListGatewayKernels(_)
             | LocalDaemonRequest::ManageCredentialVault(_)
+            | LocalDaemonRequest::UnlockCredentialVault(_)
             | LocalDaemonRequest::GetCredential(_)
             | LocalDaemonRequest::SetCredentialSecret(_)
             | LocalDaemonRequest::GetUserConfig(_)
@@ -370,6 +371,18 @@ mod registry_tests {
         ] {
             assert!(sudo_request_forbidden(&request));
         }
+    }
+
+    // The passphrase is the owner's to type; an agent never sends it.
+    #[test]
+    fn sudo_cannot_unlock_the_vault() {
+        assert!(sudo_request_forbidden(
+            &LocalDaemonRequest::UnlockCredentialVault(
+                crate::local::UnlockCredentialVaultRequest {
+                    passphrase: crate::local::VaultPassphrase::new("passphrase"),
+                }
+            )
+        ));
     }
 
     // A sudo window belongs to one turn on one kernel: it cannot name a background process.
