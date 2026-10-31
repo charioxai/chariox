@@ -26,6 +26,19 @@ test("reimage refuses an unconverged preflight before observing or mutating", as
   assert.equal(harness.requests.length, 0)
 })
 
+test("reimage accepts any provider id Cloud names; Cloud refuses unsupported providers", async () => {
+  const harness = reimageHarness()
+  harness.preflight = preflight({ desiredRelease: { providerId: "acme-cloud" } })
+
+  const prepared = await harness.controller.prepare(
+    "environment-1",
+    emptyContextInput(),
+    harness.attempt,
+  )
+
+  assert.equal(prepared.status, "confirmation_required")
+})
+
 test("reimage refuses a mismatched old-kernel observation before confirmation", async () => {
   const harness = reimageHarness()
   harness.observationGeneration = 8

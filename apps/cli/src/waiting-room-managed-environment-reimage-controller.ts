@@ -230,7 +230,6 @@ function validatePreflight(
     || !Number.isSafeInteger(retained.generation)
     || retained.generation < 0
     || retained.desiredRevision !== retained.observedRevision
-    || desired.providerId !== "hetzner"
     || [
       retained.providerServerId,
       retained.runtimeMachineId,
