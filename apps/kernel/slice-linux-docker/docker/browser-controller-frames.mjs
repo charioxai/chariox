@@ -233,7 +233,8 @@ export async function withBrowserFrames(connection, sessionId, targetId, documen
       return true;
     };
     const remember = (entry, tree) => {
-      if (full()) {
+      // A frame the parent tree already counts only changes owner; a new one must fit under the bound.
+      if (!owners.has(tree.frame.id) && full()) {
         omitted.add(tree.frame.id);
         return;
       }
@@ -248,12 +249,12 @@ export async function withBrowserFrames(connection, sessionId, targetId, documen
       for (const target of [...pending]) {
         if (info.truncated) break;
         if (!owners.has(target.parentFrameId)) continue;
-        // A renderer whose root does not fit is neither attached nor returned.
-        if (full()) break;
         pending.splice(pending.indexOf(target), 1);
         const { sessionId: childSession } = await connection.send("Target.attachToTarget", { targetId: target.targetId, flatten: true });
         attached.push(childSession);
         const { frameTree } = await connection.send("Page.getFrameTree", {}, childSession);
+        // A renderer whose root is a new frame that does not fit is not returned (and ends the walk); one for a counted frame resolves its owner.
+        if (!owners.has(frameTree.frame.id) && full()) break;
         const entry = { sessionId: childSession, tree: frameTree, frame: frameTree.frame, prefix: prefix(frameTree.frame), parent: owners.get(target.parentFrameId) };
         owned.push(entry);
         remember(entry, entry.tree);

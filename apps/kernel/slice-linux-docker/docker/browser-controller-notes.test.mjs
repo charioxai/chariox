@@ -208,3 +208,27 @@ test('MP-08/MP-10/MP-11 an isolated renderer reached with a full frame budget is
  assert.ok(owned.size<=63,`frame owners read for ${owned.size} frames`);
  assert.ok(evaluations<=128,`${evaluations} evaluations`);
 });
+
+test('MP-08/MP-10/MP-11 an isolated renderer for a frame already counted at the bound keeps its own session',async()=>{
+ const worldSessions=new Map();const worlds=new Set();let contexts=100;
+ const top={frame:{id:'top',loaderId:'doc',url:'https://example.test/'},childFrames:Array.from({length:63},(_,i)=>({frame:{id:'f'+i,parentId:'top',loaderId:'doc-f'+i,url:'https://example.test/f'+i}}))};
+ const isolated={frame:{id:'f0',parentId:'top',loaderId:'doc-iso',url:'https://other.test/'}};
+ const connection={async send(method,params,sessionId){
+  if(method==='Page.getFrameTree')return{frameTree:sessionId==='iso-session'?isolated:top};
+  if(method==='Target.getTargets')return{targetInfos:[{targetId:'iso-target',type:'iframe',parentFrameId:'top'}]};
+  if(method==='Target.attachToTarget')return{sessionId:'iso-session'};
+  if(method==='Target.detachFromTarget')return{};
+  if(method==='DOM.getFrameOwner')return{backendNodeId:1};
+  if(method==='Page.createIsolatedWorld'){worlds.add(params.frameId);worldSessions.set(params.frameId,sessionId);return{executionContextId:++contexts};}
+  if(method==='DOM.resolveNode')return{object:{objectId:'owner'}};
+  if(method==='Runtime.callFunctionOn')return{result:{value:false}};
+  if(method==='Runtime.releaseObject')return{};
+  if(method==='Runtime.evaluate')return{result:{value:params.expression===NOTE_OBSERVER_EXPRESSION?true:null}};
+  throw Error('unexpected '+method);
+ }};
+ const browser={ensureConnection:async()=>connection,ensureTargetSession:async()=>'root',ensureFocusWorld:async()=>({contextId:42})};
+ const result=await observeBrowserNote(browser,{target_id:'tab',document_id:'doc'});
+ assert.ok(result.selection===null);
+ assert.ok(worldSessions.get('f0')==='iso-session',`the frame f0 was read through ${worldSessions.get('f0')}`);
+ assert.ok(worlds.size===64,`${worlds.size} frames observed`);
+});
