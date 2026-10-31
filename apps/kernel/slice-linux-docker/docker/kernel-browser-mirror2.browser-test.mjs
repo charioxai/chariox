@@ -147,6 +147,18 @@ test("MP-08/MP-10: the cursor inside a cross-origin frame (and a frame it hosts)
     "/outer": { type: "text/html", body: '<!doctype html><body style="margin:0;font:16px/20px sans-serif"><div style="height:40px;cursor:zoom-in"></div><p style="margin:0;height:20px">inner text</p><iframe src="http://127.0.0.1:PORT/deep" style="border:0;width:200px;height:60px;display:block"></iframe>' },
     "/deep": { type: "text/html", body: '<!doctype html><html style="cursor:help"><body style="margin:0;height:60px">' },
   }));
+// A frame scaled by CSS shows its document at that scale: a point of the visible frame is the scaled point of its document.
+test("MP-08/MP-10: the cursor inside a CSS-scaled frame (same-origin and cross-origin) is read at the scaled point", () => mirrored(
+  `<body style="margin:0"><iframe srcdoc="<body style='margin:0;display:flex'><div style='width:100px;height:40px;cursor:zoom-in'></div><div style='width:100px;height:40px;cursor:help'></div>" style="position:absolute;left:0;top:300px;border:0;width:200px;height:40px;transform:scale(2);transform-origin:top left"></iframe>
+   <iframe src="http://localhost:PORT/halves" style="position:absolute;left:0;top:500px;border:0;width:200px;height:40px;padding:10px;transform:scale(2);transform-origin:top left"></iframe></body>`,
+  async ({ host, tab_id, generation }) => {
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    const at = async (x, y) => (await host.request({ op: "pointer_cursor", tab_id, generation, x, y })).cursor;
+    // Visible x 100 is document x 50 and visible x 300 is document x 150; the second frame's 10px padding is scaled too.
+    assert.deepEqual([await at(100, 320), await at(300, 320), await at(100, 540), await at(300, 540)], ["zoom-in", "help", "zoom-in", "help"]);
+  }, {
+    "/halves": { type: "text/html", body: '<!doctype html><body style="margin:0;display:flex"><div style="width:100px;height:40px;cursor:zoom-in"></div><div style="width:100px;height:40px;cursor:help"></div>' },
+  }));
 test("MP-10: a node added and removed before the drain sends no children op", () => mirrored("<p>page</p>", async ({ next, evaluate }) => {
   assert.equal((await next()).reset, true);
   await evaluate("const t=document.createElement('div');document.body.append(t);t.remove();true");
