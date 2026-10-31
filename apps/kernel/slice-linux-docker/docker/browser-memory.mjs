@@ -14,8 +14,9 @@ export class BrowserMemoryPressureError extends Error {
 }
 
 // On macOS libuv reports only strictly free pages, so a Mac with 39 % memory free
-// and normal pressure shows ~70 MiB. Reclaimable pages are available memory.
-const VM_STAT_RECLAIMABLE = ['Pages free', 'Pages inactive', 'Pages speculative', 'Pages purgeable'];
+// and normal pressure shows ~70 MiB. Free, inactive and speculative pages are
+// disjoint queues; "Pages purgeable" overlaps them, so it is never added.
+const VM_STAT_RECLAIMABLE = ['Pages free', 'Pages inactive', 'Pages speculative'];
 
 export function parseVmStat(text) {
   const pageSize = Number(/page size of (\d+) bytes/.exec(text)?.[1]);
