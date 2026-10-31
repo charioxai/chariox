@@ -104,8 +104,76 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
         } else {
             None
         };
-    server.run().await?;
+    // Optional: report the byte counters per realm and stream scope to the
+    // hosted control plane. Stopping the relay sends one last report.
+    let usage_report = if let Some(config) = usage_report_from_env()? {
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        eprintln!(
+            "{}",
+            json!({
+                "component": "chariox-relay",
+                "level": "info",
+                "event": "usage_report_enabled",
+                "fields": { "relay_id": config.relay_id },
+            })
+        );
+        let task = tokio::spawn(chariox_relay::usage_report::run_usage_report(
+            config.cloud_url,
+            config.relay_id,
+            config.secret,
+            config.spool,
+            server.usage_meter(),
+            config.interval,
+            shutdown_rx,
+        ));
+        Some((shutdown_tx, task))
+    } else {
+        None
+    };
+    let served = server.run().await;
+    if let Some((shutdown_tx, task)) = usage_report {
+        let _ = shutdown_tx.send(true);
+        let _ = task.await;
+    }
+    served?;
     Ok(())
+}
+
+struct UsageReportEnv {
+    cloud_url: String,
+    relay_id: String,
+    secret: String,
+    spool: std::path::PathBuf,
+    interval: std::time::Duration,
+}
+
+fn usage_report_from_env() -> Result<Option<UsageReportEnv>, String> {
+    let read = |name| {
+        std::env::var(name)
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    };
+    let Some(cloud_url) = read("CHARIOX_RELAY_USAGE_URL") else {
+        return Ok(None);
+    };
+    let relay_id = read("CHARIOX_RELAY_ID").ok_or("usage reporting requires CHARIOX_RELAY_ID")?;
+    let spool = read("CHARIOX_RELAY_USAGE_SPOOL")
+        .ok_or("usage reporting requires CHARIOX_RELAY_USAGE_SPOOL (a directory on disk)")?;
+    let secret = read("CHARIOX_RELAY_SCOPED_HMAC_SECRET")
+        .ok_or("authenticated usage reporting requires CHARIOX_RELAY_SCOPED_HMAC_SECRET")?;
+    let interval = read("CHARIOX_RELAY_USAGE_INTERVAL_SECS")
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|secs| *secs > 0)
+        .map(std::time::Duration::from_secs)
+        .unwrap_or(chariox_relay::usage_report::DEFAULT_USAGE_REPORT_INTERVAL);
+    Ok(Some(UsageReportEnv {
+        cloud_url,
+        relay_id,
+        secret,
+        spool: spool.into(),
+        interval,
+    }))
 }
 
 fn revocation_sync_from_env() -> Result<Option<(String, String, String)>, String> {
