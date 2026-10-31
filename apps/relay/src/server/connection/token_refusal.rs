@@ -131,27 +131,74 @@ pub(crate) fn printable(text: &str, limit: usize) -> String {
         .collect()
 }
 
+/// Refusals counted since the last logged line.
+#[derive(Clone, Copy)]
+struct RefusalWindow {
+    since: Instant,
+    count: u64,
+}
+
+impl RefusalWindow {
+    fn admit(window: &mut Option<Self>, now: Instant) -> Option<u64> {
+        if let Some(open) = window.as_mut() {
+            if now.duration_since(open.since) < REFUSAL_LOG_WINDOW {
+                open.count += 1;
+                return None;
+            }
+        }
+        let counted = window.map_or(0, |open| open.count);
+        *window = Some(Self {
+            since: now,
+            count: 1,
+        });
+        Some(counted)
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct RefusalLogLimiter {
-    seen: HashMap<(&'static str, String), (Instant, u64)>,
+    seen: HashMap<(&'static str, String), RefusalWindow>,
+    /// Subjects the full table has no room for share this one line per window.
+    overflow: Option<RefusalWindow>,
+    /// Expired entries are swept at most once per window, so a burst of
+    /// distinct subjects costs a bounded amount of work per refusal.
+    next_sweep: Option<Instant>,
+    #[cfg(test)]
+    sweeps: u32,
 }
 
 impl RefusalLogLimiter {
     /// `Some(n)` when a line should be logged, with `n` refusals counted since
     /// the previous line of this kind and subject; `None` when it is only counted.
+    /// A subject that does not fit in the table is counted in the shared overflow
+    /// window, whose line carries the details of whichever refusal opened it.
     pub(crate) fn admit(&mut self, refusal: &TokenRefusal, now: Instant) -> Option<u64> {
-        if self.seen.len() >= REFUSAL_LOG_CAPACITY {
-            self.seen
-                .retain(|_, (since, _)| now.duration_since(*since) < REFUSAL_LOG_WINDOW);
+        let key = refusal.key();
+        if !self.seen.contains_key(&key) && self.seen.len() >= REFUSAL_LOG_CAPACITY {
+            self.sweep(now);
+            if self.seen.len() >= REFUSAL_LOG_CAPACITY {
+                return RefusalWindow::admit(&mut self.overflow, now);
+            }
         }
-        let entry = self.seen.entry(refusal.key()).or_insert((now, 0));
-        if entry.1 > 0 && now.duration_since(entry.0) < REFUSAL_LOG_WINDOW {
-            entry.1 += 1;
-            return None;
+        let mut window = self.seen.get(&key).copied();
+        let verdict = RefusalWindow::admit(&mut window, now);
+        if let Some(window) = window {
+            self.seen.insert(key, window);
         }
-        let counted = entry.1;
-        *entry = (now, 1);
-        Some(counted)
+        verdict
+    }
+
+    fn sweep(&mut self, now: Instant) {
+        if self.next_sweep.is_some_and(|due| now < due) {
+            return;
+        }
+        self.next_sweep = Some(now + REFUSAL_LOG_WINDOW);
+        #[cfg(test)]
+        {
+            self.sweeps += 1;
+        }
+        self.seen
+            .retain(|_, window| now.duration_since(window.since) < REFUSAL_LOG_WINDOW);
     }
 }
 
@@ -222,5 +269,44 @@ mod tests {
             limiter.admit(&sub("a"), start + REFUSAL_LOG_WINDOW),
             Some(50)
         );
+    }
+
+    #[test]
+    fn a_burst_of_distinct_subjects_keeps_the_table_and_the_work_bounded() {
+        let sub = |name: &str| {
+            TokenRefusal::expired(
+                RelayAction::ClientConnect,
+                &token(&json!({"sub": name, "exp": 1})),
+                10_000,
+            )
+        };
+        let mut limiter = RefusalLogLimiter::default();
+        let start = Instant::now();
+        let mut logged = 0;
+        for index in 0..REFUSAL_LOG_CAPACITY * 3 {
+            let at = start + Duration::from_millis(index as u64);
+            logged += usize::from(limiter.admit(&sub(&format!("s{index}")), at).is_some());
+        }
+        assert!(limiter.seen.len() <= REFUSAL_LOG_CAPACITY);
+        assert_eq!(
+            logged,
+            REFUSAL_LOG_CAPACITY + 1,
+            "table subjects plus one overflow line"
+        );
+        assert!(limiter.sweeps <= 1, "swept {} times", limiter.sweeps);
+        // A known subject stays rate limited; an unknown one shares the overflow line.
+        assert_eq!(
+            limiter.admit(&sub("s0"), start + Duration::from_secs(5)),
+            None
+        );
+        assert_eq!(
+            limiter.admit(&sub("late"), start + Duration::from_secs(5)),
+            None
+        );
+        // After the window the table is swept and new subjects fit again.
+        let later = start + REFUSAL_LOG_WINDOW * 2;
+        assert_eq!(limiter.admit(&sub("late"), later), Some(0));
+        assert!(limiter.seen.len() < REFUSAL_LOG_CAPACITY);
+        assert_eq!(limiter.admit(&sub("s0"), later), Some(0));
     }
 }
