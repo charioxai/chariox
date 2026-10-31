@@ -13,6 +13,14 @@ use super::{
     SessionHistoryEntrySource,
 };
 
+/// A prompt the kernel sent, with the local files it attached: the provider may echo it behind an
+/// `@path` mention of each of them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CharioxOwnedPrompt {
+    pub text: String,
+    pub attachment_paths: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExternalImportHistoryIndex {
     pub chariox_owned_prompts: Vec<String>,
@@ -490,11 +498,11 @@ impl OperationalHistoryStore {
         })
     }
 
-    pub fn load_chariox_owned_prompt_texts(
+    pub fn load_chariox_owned_prompts(
         &self,
         session_id: &str,
         agent_id: &str,
-    ) -> Result<Vec<String>, DaemonError> {
+    ) -> Result<Vec<CharioxOwnedPrompt>, DaemonError> {
         self.delay_read_if_configured();
         let connection = self.lock_read_connection(Some(session_id))?;
         let mut statement = connection
@@ -556,8 +564,16 @@ impl OperationalHistoryStore {
             {
                 continue;
             }
-            if let Some(content) = content {
-                prompts.push(content);
+            if let Some(text) = content {
+                let attachment_paths = history_entry
+                    .iter()
+                    .flat_map(|entry| &entry.attachments)
+                    .filter_map(|attachment| attachment.local_path())
+                    .collect();
+                prompts.push(CharioxOwnedPrompt {
+                    text,
+                    attachment_paths,
+                });
             }
         }
         Ok(prompts)

@@ -28,7 +28,9 @@ mod remote_lease_context;
 mod session_log;
 
 pub use operational_archive::HistoryArchiveOutboxItem;
-pub use operational_session::{ExternalImportHistoryEntry, ExternalImportHistoryIndex};
+pub use operational_session::{
+    CharioxOwnedPrompt, ExternalImportHistoryEntry, ExternalImportHistoryIndex,
+};
 pub use session_log::{
     external_provider_observed_merge_key, external_provider_observed_merge_key_prefix,
     external_provider_observed_state_merge_key, parse_external_provider_observed_id,

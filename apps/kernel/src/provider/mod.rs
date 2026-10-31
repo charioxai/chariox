@@ -108,8 +108,8 @@ pub use command_catalog::{
 pub(crate) use credential_environment::ProviderCredentialEnvironment;
 pub(crate) use external_observation::{
     claude_native_pasted_prompt_body, clean_observed_turn_text, clean_provider_prompt,
-    normalized_observed_prompt_text, observed_role, text_from_content,
-    ExternalProviderObservationPolicy, ObservedExternalProviderTurn,
+    normalized_observed_prompt_text, normalized_observed_prompt_text_after_mentions, observed_role,
+    text_from_content, ExternalProviderObservationPolicy, ObservedExternalProviderTurn,
     ObservedExternalProviderTurnRole,
 };
 pub(crate) use launch_contract::TurnSubstitute;

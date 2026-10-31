@@ -1451,11 +1451,16 @@ fn agent_outline_suppresses_chariox_owned_external_prompt_echoes() {
     store
         .append(&HistoryEvent::transcript(
             10,
-            &SessionHistoryEntry::user_prompt(
+            &SessionHistoryEntry::user_prompt_with_attachments(
                 "session-1",
                 "attachment-1",
                 "agent-1",
                 "  same   prompt\nfrom Chariox ",
+                &[crate::session::PromptAttachment::new(
+                    "file:///tmp/chariox-terminal-prompt-attachments/s/a/1-0-shot.png",
+                    "image/png",
+                    Some("shot.png".to_string()),
+                )],
             ),
             context.clone(),
         ))
@@ -1580,6 +1585,108 @@ fn agent_outline_suppresses_chariox_owned_external_prompt_echoes() {
     );
     assert!(outline.turns[0].external_provider.is_none());
     assert!(outline.turns[0].entries.is_empty());
+
+    drop(store);
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(path.with_extension("db-shm"));
+}
+
+#[test]
+fn agent_outline_keeps_a_user_authored_leading_file_mention_as_its_own_turn() {
+    let path = std::env::temp_dir().join(format!(
+        "chariox-owned-mention-echo-outline-{}-{}.db",
+        std::process::id(),
+        crate::session::unix_epoch_ms()
+    ));
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    let store =
+        OperationalHistoryStore::open(path.clone()).expect("operational history store should open");
+    let attached = "/tmp/chariox-terminal-prompt-attachments/s/a/1-0-shot.png";
+    store
+        .append(&HistoryEvent::transcript(
+            10,
+            &SessionHistoryEntry::user_prompt_with_attachments(
+                "session-1",
+                "attachment-1",
+                "agent-1",
+                "Review this",
+                &[crate::session::PromptAttachment::new(
+                    format!("file://{attached}"),
+                    "image/png",
+                    Some("shot.png".to_string()),
+                )],
+            ),
+            HistoryEventTurnContext {
+                session_id: Some("session-1".to_string()),
+                agent_id: Some("agent-1".to_string()),
+                turn_id: Some("chariox-turn".to_string()),
+                prompt_id: Some("prompt-1".to_string()),
+                provider_run_id: Some("run-1".to_string()),
+                ..HistoryEventTurnContext::default()
+            },
+        ))
+        .expect("Chariox prompt should append");
+    // Claude's echo of that prompt, and a prompt the person typed in the provider's own terminal.
+    for (sequence, turn, text, merge_key, at) in [
+        (
+            11,
+            "echo",
+            format!("@{attached}\n\nReview this"),
+            "user-echo",
+            2_000,
+        ),
+        (
+            12,
+            "typed",
+            "@/repo/lib.rs Review this".to_string(),
+            "user-typed",
+            3_000,
+        ),
+    ] {
+        store
+            .append(&HistoryEvent::transcript(
+                sequence,
+                &SessionHistoryEntry::external_provider_observed(
+                    "session-1",
+                    Some("run-1"),
+                    "agent-1",
+                    SessionHistoryEntryKind::UserPrompt,
+                    &text,
+                    "claude",
+                    "thread-1",
+                    Some(merge_key.to_string()),
+                    Some(at),
+                ),
+                HistoryEventTurnContext {
+                    session_id: Some("session-1".to_string()),
+                    agent_id: Some("agent-1".to_string()),
+                    turn_id: Some(turn.to_string()),
+                    prompt_id: Some(format!("prompt-{turn}")),
+                    provider_run_id: Some("run-1".to_string()),
+                    ..HistoryEventTurnContext::default()
+                },
+            ))
+            .expect("external prompt should append");
+    }
+
+    let import =
+        ExternalProviderImportMetadata::observed_history("claude:thread-1", "claude", "thread-1");
+    let outline = load_scoped_agent_outline(&store, "session-1", "agent-1", 4, None, Some(&import))
+        .expect("outline should load");
+
+    let prompts = outline
+        .turns
+        .iter()
+        .map(|turn| turn.user_prompt.entry.text.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        prompts,
+        vec!["Review this", "@/repo/lib.rs Review this"],
+        "the echo of the attached screenshot is the Chariox turn; the typed file mention is its own turn"
+    );
 
     drop(store);
     let _ = std::fs::remove_file(&path);

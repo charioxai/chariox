@@ -10,8 +10,10 @@ use crate::local::{
     SessionHistoryOutlineAgent, SessionHistoryOutlineCursor, SessionHistoryOutlineTurn,
     SessionHistoryOutlineTurnLifecycle,
 };
-use crate::provider::normalized_observed_prompt_text;
 use crate::provider::ExternalProviderImportMetadata;
+use crate::provider::{
+    normalized_observed_prompt_text, normalized_observed_prompt_text_after_mentions,
+};
 use crate::session::PromptOrigin;
 
 mod prefetch;
@@ -389,12 +391,26 @@ fn suppress_chariox_owned_external_prompt_echoes(
     session_id: &str,
     agent_id: &str,
 ) -> Result<(), DaemonError> {
-    let chariox_owned_prompts =
-        operational_history.load_chariox_owned_prompt_texts(session_id, agent_id)?;
+    let chariox_owned = operational_history.load_chariox_owned_prompts(session_id, agent_id)?;
+    let chariox_owned_prompts = chariox_owned
+        .iter()
+        .map(|prompt| prompt.text.clone())
+        .collect::<Vec<_>>();
     let chariox_owned_prompt_texts = chariox_owned_prompts
         .iter()
         .filter_map(|text| normalized_observed_prompt_text(text))
         .collect::<BTreeSet<_>>();
+    // Claude echoes a prompt behind the `@path` mention of each file the kernel attached to it.
+    let chariox_owned_attachment_prompts = chariox_owned
+        .iter()
+        .filter(|prompt| !prompt.attachment_paths.is_empty())
+        .filter_map(|prompt| {
+            Some((
+                normalized_observed_prompt_text(&prompt.text)?,
+                prompt.attachment_paths.clone(),
+            ))
+        })
+        .collect::<Vec<_>>();
     let chariox_owned_workflow_delivery_tokens = chariox_owned_prompts
         .iter()
         .filter_map(|text| workflow_delivery_token(text))
@@ -414,6 +430,7 @@ fn suppress_chariox_owned_external_prompt_echoes(
         !external_prompt_matches_chariox_owned_text(
             prompt,
             &chariox_owned_prompt_texts,
+            &chariox_owned_attachment_prompts,
             &chariox_owned_workflow_delivery_tokens,
             &chariox_owned_workflow_handoff_payloads,
             &chariox_owned_workflow_endpoint_prompts,
@@ -425,6 +442,7 @@ fn suppress_chariox_owned_external_prompt_echoes(
 fn external_prompt_matches_chariox_owned_text(
     prompt: &HistoryEvent,
     chariox_owned_prompt_texts: &BTreeSet<String>,
+    chariox_owned_attachment_prompts: &[(String, Vec<String>)],
     chariox_owned_workflow_delivery_tokens: &BTreeSet<String>,
     chariox_owned_workflow_handoff_payloads: &[serde_json::Value],
     chariox_owned_workflow_endpoint_prompts: &BTreeSet<String>,
@@ -442,6 +460,12 @@ fn external_prompt_matches_chariox_owned_text(
         return false;
     };
     chariox_owned_prompt_texts.contains(&text)
+        || chariox_owned_attachment_prompts
+            .iter()
+            .any(|(owned, paths)| {
+                normalized_observed_prompt_text_after_mentions(&entry.text, paths).as_ref()
+                    == Some(owned)
+            })
         || workflow_delivery_token(&entry.text)
             .is_some_and(|token| chariox_owned_workflow_delivery_tokens.contains(&token))
         || workflow_handoff_payload(&entry.text)
