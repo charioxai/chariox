@@ -140,14 +140,38 @@ struct ExternalProviderSessionDiscoverySignatureRead {
     full_scan: bool,
 }
 
+/// Runs one tick of the poller's work, giving it up when the kernel shuts down: a tick scans provider files and waits for the
+/// app lock, and shutdown (a hot reload too) must not wait for it to end. Nothing the tick leaves half done is kept.
+async fn unless_shutdown<T>(
+    shutdown_rx: &mut watch::Receiver<bool>,
+    tick: impl std::future::Future<Output = T>,
+) -> Option<T> {
+    tokio::select! {
+        output = tick => Some(output),
+        _ = shutdown_rx.wait_for(|stopped| *stopped) => None,
+    }
+}
+
 pub(crate) async fn run_external_provider_session_discovery_poller(
     app: Arc<Mutex<DaemonApp>>,
     runtime_state: KernelRuntimeState,
     mut shutdown_rx: watch::Receiver<bool>,
 ) {
     let mut cache = ExternalProviderSessionDiscoveryCache::default();
-    refresh_external_provider_session_index(&app, Some(&runtime_state), Some(&mut cache), false)
-        .await;
+    if unless_shutdown(
+        &mut shutdown_rx,
+        refresh_external_provider_session_index(
+            &app,
+            Some(&runtime_state),
+            Some(&mut cache),
+            false,
+        ),
+    )
+    .await
+    .is_none()
+    {
+        return;
+    }
     let mut discovery_interval =
         tokio::time::interval(EXTERNAL_PROVIDER_SESSION_DISCOVERY_INTERVAL);
     discovery_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -157,16 +181,14 @@ pub(crate) async fn run_external_provider_session_discovery_poller(
     history_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     history_interval.tick().await;
     loop {
-        tokio::select! {
-            _ = shutdown_rx.changed() => {
-                if *shutdown_rx.borrow() {
-                    break;
-                }
-            }
-            _ = discovery_interval.tick() => {
-                refresh_external_provider_session_index(&app, Some(&runtime_state), Some(&mut cache), false).await;
-            }
-            _ = history_interval.tick() => {
+        let history_tick = tokio::select! {
+            _ = shutdown_rx.wait_for(|stopped| *stopped) => return,
+            _ = discovery_interval.tick() => false,
+            _ = history_interval.tick() => true,
+        };
+        let finished = if history_tick {
+            unless_shutdown(
+                &mut shutdown_rx,
                 refresh_attached_external_provider_histories_matching(
                     &app,
                     Some(&runtime_state),
@@ -174,9 +196,25 @@ pub(crate) async fn run_external_provider_session_discovery_poller(
                     None,
                     true,
                     true,
-                )
-                .await;
-            }
+                ),
+            )
+            .await
+            .is_some()
+        } else {
+            unless_shutdown(
+                &mut shutdown_rx,
+                refresh_external_provider_session_index(
+                    &app,
+                    Some(&runtime_state),
+                    Some(&mut cache),
+                    false,
+                ),
+            )
+            .await
+            .is_some()
+        };
+        if !finished {
+            return;
         }
     }
 }
