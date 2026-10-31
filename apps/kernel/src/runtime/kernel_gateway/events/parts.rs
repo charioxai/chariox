@@ -216,16 +216,7 @@ impl KernelGateway {
         part: &Part,
     ) -> Result<(), GatewayError> {
         if subscribed != targets {
-            self.forward(
-                kernel,
-                origin,
-                &event_command_id(),
-                &LocalDaemonRequest::SubscribeEvents(SubscribeEventsRequest {
-                    targets: targets.to_vec(),
-                }),
-                Duration::from_secs(1),
-            )
-            .await?;
+            self.install_event_targets(origin, kernel, targets).await?;
             *subscribed = targets.to_vec();
         }
         let since = part.remote_cursors.get(kernel).copied().unwrap_or(0);

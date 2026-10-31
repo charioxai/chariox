@@ -10,6 +10,7 @@ pub(super) struct EventParts {
     running: StdMutex<HashSet<(String, String)>>,
     health: StdMutex<HashMap<(String, String), Result<(), GatewayError>>>,
 }
+mod installing;
 mod parts;
 #[cfg(test)]
 mod tests;
