@@ -1084,7 +1084,7 @@ for (const kind of ['click', 'scroll']) test(`MP-08/MP-10 resized iframe region 
   mirror.regionBoxes = async()=>[{id:region,box:[1400,820,100,60]}];
   mirror.evaluate = async (owner,expression) => {
     if(expression.includes('.point(')){assert.equal(owner,child);return {x:4,y:8};}
-    if(expression.includes('.frameOrigin(')){assert.equal(owner,world);return [1400,820,1,1];}
+    if(expression.includes('.frameOrigin(')){assert.equal(owner,world);const local=/frameOrigin\([^,]*,(\[[^\]]*\])/.exec(expression);const [x,y]=local?JSON.parse(local[1]):[];return local?[1400,820,1,1,1400+x,820+y]:[1400,820,1,1];}
     return true;
   };
   mirror.regions.record(stream,{reset:true,nodes:[{id:region,parent:null,kind:'tile'}]});
