@@ -476,6 +476,18 @@ test("MP-10: a wheel step aimed at a node the native page has scrolled past scro
     assert(Date.now() - started < 1000, "MP-10: the step is not held behind the offscreen retries");
   }));
 
+// The step stays inside the scrolling pane that holds the node: when the pane has moved the node out of its own view, the
+// step goes to the pane's nearest visible point, not to the page behind it.
+test("MP-10: a wheel step aimed at a node scrolled out of its pane keeps scrolling the pane, not the page", () => mirrored(
+  '<div style="height:300px"></div><div id="pane" style="height:200px;overflow:auto"><div id="a" style="height:100px"></div><div style="height:5000px"></div></div><div style="height:3000px"></div>', async ({ next, evaluate, input }) => {
+    const snapshot = await next(), [node] = elements(snapshot).find(([, , attrs]) => attrs.id === "a");
+    await evaluate("pane.scrollTop = 400, true");
+    await input(snapshot.sequence, { kind: "scroll", node_id: node, x: 40, y: 50, delta_x: 0, delta_y: 300 });
+    for (let i = 0; i < 40 && await evaluate("pane.scrollTop") === 400; i++) await settle(25);
+    assert.equal(await evaluate("pane.scrollTop"), 700, "MP-10: the pane scrolled on from where it was");
+    assert.equal(await evaluate("scrollY"), 0, "MP-10: the page behind the pane stayed where it was");
+  }));
+
 test("MP-10: review #941-4 property-only changes of unfocused controls reach the viewer (value, checked, radio group, select, form reset)", () => mirrored(
   '<form id="f"><input id="q" value="a"><input id="c" type="checkbox"><input type="radio" name="t" id="r1" checked><input type="radio" name="t" id="r2"><select id="s"><option>x</option><option>y</option></select></form><button id="b">b</button>', async ({ next, evaluate }) => {
     const snapshot = await next();
