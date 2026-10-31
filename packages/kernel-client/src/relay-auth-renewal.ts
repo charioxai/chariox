@@ -1,6 +1,23 @@
 export type RenewedRelayGrant = { token: string; expiresAtMs: number }
 export type RelayGrantProvider = () => Promise<RenewedRelayGrant>
 
+const retryBaseMs = 1_000
+const retryMaxMs = 60_000
+const retryJitterMs = 1_000
+
+/** The issuer says when to come back ("retry in 20 seconds"); never earlier. */
+export function relayRetryHintMs(error: unknown): number {
+  const message = error instanceof Error ? error.message : String(error)
+  const seconds = /retry in (\d{1,5}) seconds?/i.exec(message)?.[1]
+  return seconds ? Number(seconds) * 1_000 : 0
+}
+
+/** Jittered exponential backoff, capped, never shorter than the issuer's hint. */
+export function relayRenewalRetryDelayMs(failures: number, error: unknown, random: () => number = Math.random): number {
+  const backoff = Math.min(retryMaxMs, retryBaseMs * 2 ** Math.min(failures, 6))
+  return Math.max(backoff, Math.min(relayRetryHintMs(error), 3_600_000)) + Math.floor(random() * retryJitterMs)
+}
+
 /** One renewal at a time, before expiry. Transport faults retry silently;
  * revocation ends the connection rather than asking for periodic login. */
 export class RelayAuthRenewal {
@@ -9,6 +26,9 @@ export class RelayAuthRenewal {
   private stopped = false
   private terminalError: unknown
   private retries = 0
+  private retryAt = 0
+  private lastFailure: unknown
+  private tokenRefused = false
   private renewAt: number
   constructor(private expiry: number, private readonly issue: RelayGrantProvider,
     private readonly apply: (grant: RenewedRelayGrant) => void | Promise<void>,
@@ -22,7 +42,18 @@ export class RelayAuthRenewal {
   }
   async ensureFresh(): Promise<void> {
     this.checkAuthorization()
-    if (!this.stopped && Date.now() >= this.renewAt) await this.refresh()
+    if (this.stopped) return
+    // While the issuer is backing us off, a connect attempt must not ask again
+    // and must not fall back to the token that was refused.
+    if (this.lastFailure !== undefined && Date.now() < this.retryAt) throw this.lastFailure
+    if (this.tokenRefused || Date.now() >= this.renewAt) await this.refresh()
+  }
+  /** The relay refused the current token as expired: it is not presented again before a renewed one replaces it. */
+  refused(): void {
+    if (this.stopped) return
+    this.tokenRefused = true
+    if (Date.now() < this.retryAt) return
+    void this.refresh().catch(() => {})
   }
   checkAuthorization(): void {
     if (this.terminalError) throw this.terminalError
@@ -46,12 +77,20 @@ export class RelayAuthRenewal {
         this.expiry = grant.expiresAtMs
         this.renewAt = this.nextRenewal()
         this.retries = 0
+        this.retryAt = 0
+        this.lastFailure = undefined
+        this.tokenRefused = false
         this.schedule()
       } catch (error) {
         const code = (error as {code?: string})?.code
         if (["client_revoked", "refresh_reuse_detected", "identity_revoked", "authorization_denied"].includes(code ?? "")) {
           this.invalidate(error)
-        } else this.schedule(Math.min(5_000, 250 * 2 ** Math.min(this.retries++, 5)))
+        } else {
+          const delay = relayRenewalRetryDelayMs(this.retries++, error)
+          this.lastFailure = error
+          this.retryAt = Date.now() + delay
+          this.schedule(delay)
+        }
         throw error
       }
     }).finally(() => { this.pending = undefined })
