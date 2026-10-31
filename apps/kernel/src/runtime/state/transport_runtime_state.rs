@@ -424,12 +424,17 @@ impl KernelRuntimeState {
         crate::hot_reload::hand_over_user_domain(self.owned.kernel_browser_host.hand_over_access());
         self.owned.room_execs.shutdown();
         self.owned.room_terminals.shutdown();
-        tokio::task::spawn_blocking(|| crate::runtime::process_resources::end_owner(None, None))
+        // A hot reload keeps what workloads left running: the next program owns it.
+        if !crate::hot_reload::handing_over() {
+            tokio::task::spawn_blocking(|| {
+                crate::runtime::process_resources::end_owner(None, None)
+            })
             .await
             .map_err(|error| DaemonError::LocalTransport {
                 operation: "stop released processes",
                 message: error.to_string(),
             })?;
+        }
         self.stop_app_grant_wakes();
         for id in self.app_control().user_views().shutdown() {
             self.app_control().views().forget_session(&id);
