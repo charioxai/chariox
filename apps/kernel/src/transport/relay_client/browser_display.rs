@@ -212,6 +212,7 @@ pub(super) async fn handle_subscribe(
     }
     // MP-08/MP-10: protocol 491 push pump, dormant until the first ack (or granted at registration).
     let pump = super::display_pump::DisplayPump::new(generation, &display_id);
+    super::display_pump::supersede(&key, &pump);
     guard.insert(
         key.clone(),
         RelaySubscriptionTask {

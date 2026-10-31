@@ -260,6 +260,32 @@ impl PumpState {
     }
 }
 
+/// MP-08 TR-16: the pump each viewer's display feeds now, whichever carrier (a
+/// relay socket or a direct session) registered it. Viewer keys are unique per
+/// display binding, so one map serves every kernel in the process.
+static CURRENT_PUMPS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<String, std::sync::Weak<DisplayPump>>>,
+> = std::sync::LazyLock::new(Default::default);
+
+/// Makes `pump` the one feeding the viewer display `key` and stops the one it
+/// replaces at once, as a re-registration on the same carrier does. Left running
+/// on the carrier the viewer moved away from, the old pump would end only when that
+/// carrier is cleaned up and then retire the generation the new pump serves.
+pub(super) fn supersede(key: &str, pump: &Arc<DisplayPump>) {
+    let previous = {
+        let mut current = CURRENT_PUMPS
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        current.retain(|_, pump| pump.strong_count() > 0);
+        current.insert(key.to_owned(), Arc::downgrade(pump))
+    };
+    if let Some(previous) = previous.and_then(|previous| previous.upgrade()) {
+        if !Arc::ptr_eq(&previous, pump) {
+            previous.stop();
+        }
+    }
+}
+
 pub(super) struct DisplayPump {
     state: std::sync::Mutex<PumpState>,
     wake: tokio::sync::Notify,
@@ -671,6 +697,23 @@ async fn capture_frame(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // MP-08 TR-16: a viewer whose lanes moved to another carrier registers its
+    // display there; the pump it left must stop now, not when the old carrier is
+    // cleaned up, where its late end would retire the generation the new pump serves.
+    #[test]
+    fn mp08_a_display_registered_again_on_another_carrier_stops_the_pump_it_left() {
+        let relay = DisplayPump::new(1, "display-tr16");
+        supersede("display:display-tr16:viewer", &relay);
+        let direct = DisplayPump::new(1, "display-tr16");
+        supersede("display:display-tr16:viewer", &direct);
+        assert!(relay.with(|state| state.stopped));
+        assert!(!direct.with(|state| state.stopped));
+        let other_viewer = DisplayPump::new(1, "display-tr16");
+        supersede("display:display-tr16:other-viewer", &other_viewer);
+        assert!(!direct.with(|state| state.stopped));
+        assert!(!other_viewer.with(|state| state.stopped));
+    }
 
     // MP-08/MP-10/MP-11: real gate state and opt-in trace. The evidence parser
     // distinguishes closure transitions from repeated closed polling.
