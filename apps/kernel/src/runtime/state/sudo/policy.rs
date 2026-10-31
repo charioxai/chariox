@@ -162,13 +162,8 @@ impl KernelRuntimeState {
         self.sudo_for_run(run_id)
     }
 
-    /// Privileged admission and the pre-effect recheck: the same live window
-    /// must still be bound to a running turn of its owner-authorized work.
-    pub(crate) fn authorize_sudo_request(
-        &self,
-        id: &str,
-        request: &LocalDaemonRequest,
-    ) -> Result<String, DaemonError> {
+    /// The live window `id`, still bound to the running turn of its owner-authorized work.
+    pub(crate) fn sudo_window_bound(&self, id: &str) -> Result<KernelSudoTurn, DaemonError> {
         let turn = self
             .owned
             .sudo_turns
@@ -188,6 +183,17 @@ impl KernelRuntimeState {
         {
             return Err(error("sudo window ended or was revoked"));
         }
+        Ok(turn)
+    }
+
+    /// Privileged admission and the pre-effect recheck: the same live window
+    /// must still be bound to a running turn of its owner-authorized work.
+    pub(crate) fn authorize_sudo_request(
+        &self,
+        id: &str,
+        request: &LocalDaemonRequest,
+    ) -> Result<String, DaemonError> {
+        let turn = self.sudo_window_bound(id)?;
         if sudo_request_forbidden(request) {
             return Err(error("sudo cannot answer approvals, grant authority, read secrets, change the passkey or access configuration"));
         }

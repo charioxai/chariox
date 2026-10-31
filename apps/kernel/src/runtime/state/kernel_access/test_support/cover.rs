@@ -336,7 +336,7 @@ async fn a_covered_process_survives_a_restart_and_ends_with_its_exit() {
         state.owned.kernel_access.lock().unwrap().grants["cover"].covered,
         vec![target.clone()]
     );
-    assert_eq!(state.access_grants_for(&target).len(), 1);
+    assert_eq!(state.access_grants_for(&target).unwrap().len(), 1);
 
     // The kernel's own descendants are never covered, even when the grant reaches them.
     let mut kernel_started = std::process::Command::new("sleep")
@@ -390,7 +390,7 @@ fn a_cover_never_matches_a_process_that_reuses_the_pid() {
     // `other` is no descendant of the holder: only the cover reaches it.
     access.grants.get_mut("cover").unwrap().covered = vec![other.clone()];
     drop(access);
-    assert_eq!(state.access_grants_for(&other).len(), 1);
+    assert_eq!(state.access_grants_for(&other).unwrap().len(), 1);
     assert!(state.access_grant_live("cover", &other));
 
     let mut reused = other.clone();
@@ -404,7 +404,7 @@ fn a_cover_never_matches_a_process_that_reuses_the_pid() {
         .get_mut("cover")
         .unwrap()
         .covered = vec![reused];
-    assert!(state.access_grants_for(&other).is_empty());
+    assert!(state.access_grants_for(&other).unwrap().is_empty());
     assert!(!state.access_grant_live("cover", &other));
     kill_pid(holder_pid);
     kill_pid(other_pid);

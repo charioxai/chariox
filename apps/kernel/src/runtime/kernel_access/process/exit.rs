@@ -3,12 +3,13 @@ use std::time::Duration;
 
 impl ProcessIdentity {
     /// Pin the Linux process before checking its identity, so PID reuse cannot
-    /// leave a grant waiting for the replacement process to exit.
+    /// leave a grant waiting for the replacement process to exit. A check that could
+    /// not answer is not an exit: the wait goes on.
     pub(crate) async fn wait_for_exit(&self) {
         #[cfg(target_os = "linux")]
         {
             let watched = exit_descriptor(self.pid).and_then(tokio::io::unix::AsyncFd::new);
-            if !self.alive() {
+            if self.gone() {
                 return;
             }
             match watched {
@@ -21,7 +22,7 @@ impl ProcessIdentity {
         }
         // Older Linux kernels and other platforms still bound cleanup without
         // shortening the unrelated transport maintenance interval.
-        while self.alive() {
+        while !self.gone() {
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
     }
