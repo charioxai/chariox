@@ -493,6 +493,29 @@ pub(crate) fn handing_over() -> bool {
     lock(&PREPARED).is_some()
 }
 
+/// A prepared hot reload (with nothing to hand over) until dropped.
+#[cfg(test)]
+pub(crate) struct PreparedForTests;
+
+#[cfg(test)]
+impl PreparedForTests {
+    pub(crate) fn new() -> Self {
+        *lock(&PREPARED) = Some(Prepared {
+            handover: Handover::default(),
+            path: PathBuf::new(),
+            offered_ptys: BTreeMap::new(),
+        });
+        Self
+    }
+}
+
+#[cfg(test)]
+impl Drop for PreparedForTests {
+    fn drop(&mut self) {
+        *lock(&PREPARED) = None;
+    }
+}
+
 /// Keeps a running Claude turn for the next program.
 pub(crate) fn hand_over_claude(
     run: &crate::provider::RuntimeProviderRun,

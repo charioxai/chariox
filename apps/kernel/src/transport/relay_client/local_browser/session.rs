@@ -118,7 +118,12 @@ pub(super) async fn run(
     // of this socket. A relay retry must observe the original result.
     requests.detach_all();
     abort_subscription_tasks(&direct.router, &subscription_tasks).await;
-    let close = serde_json::json!({"kind": "close", "reason": close_reason}).to_string();
+    let mut close = serde_json::json!({"kind": "close", "reason": close_reason});
+    // A hot reload is back within about a second: the browser retries soon.
+    if *shutdown.borrow() && crate::hot_reload::handing_over() {
+        close["kernel_reload"] = true.into();
+    }
+    let close = close.to_string();
     let _ = timeout(
         Duration::from_secs(1),
         writer.send(Message::Text(close.into())),

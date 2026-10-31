@@ -1504,3 +1504,26 @@ fn mp08_mp11_terminal_short_lease_uses_shared_bound_admission() {
         .is_err());
     });
 }
+
+#[test]
+fn a_hot_reload_tells_a_direct_browser_it_is_a_reload() {
+    large_stack(async {
+        for reload in [false, true] {
+            let kernel = Kernel::new();
+            let browser = Browser::new();
+            let grant = kernel.mint(&browser, browser.identity()).await.unwrap();
+            let (mut socket, verdict) = connect(&kernel, &browser, &grant).await;
+            assert_eq!(verdict["kind"], "local_connected");
+            let prepared = reload.then(crate::hot_reload::PreparedForTests::new);
+            kernel._shutdown.send(true).unwrap();
+            let close = next_json(&mut socket).await;
+            drop(prepared);
+            let expected = if reload {
+                serde_json::json!({"kind": "close", "reason": "daemon shutting down", "kernel_reload": true})
+            } else {
+                serde_json::json!({"kind": "close", "reason": "daemon shutting down"})
+            };
+            assert_eq!(close, expected, "reload: {reload}");
+        }
+    });
+}
