@@ -28,11 +28,61 @@ export const ALLOWED_FILES = new Map([
   ['apps/cli/scripts/fixtures/misbehaving-app/bundle/runtime/main.mjs', 'fixture app that prints a fake leaked secret to exercise redaction'],
 ])
 
-// Rust unit tests live in the same file as the code; sample data there is fine.
+// Offset just past the Rust item that starts at `from`: its first `;` or closing `}` outside
+// brackets, strings, chars and comments.
+function itemEnd(text, from) {
+  let depth = 0
+  for (let i = from; i < text.length; i++) {
+    const c = text[i]
+    if (c === '/' && text[i + 1] === '/') { i = text.indexOf('\n', i); if (i === -1) return text.length; continue }
+    if (c === '/' && text[i + 1] === '*') {
+      let nesting = 1
+      for (i += 2; i < text.length && nesting > 0; i++) {
+        if (text[i] === '/' && text[i + 1] === '*') { nesting++; i++ } else if (text[i] === '*' && text[i + 1] === '/') { nesting--; i++ }
+      }
+      i--
+      continue
+    }
+    const raw = /^b?r(#*)"/.exec(text.slice(i, i + 40))
+    if (raw && !/[\w]/.test(text[i - 1] ?? '')) {
+      const close = text.indexOf(`"${raw[1]}`, i + raw[0].length)
+      if (close === -1) return text.length
+      i = close + raw[1].length
+      continue
+    }
+    if (c === '"') {
+      for (i++; i < text.length && text[i] !== '"'; i++) if (text[i] === '\\') i++
+      continue
+    }
+    if (c === "'") {
+      if (text[i + 1] === '\\') i = text.indexOf("'", i + 3)
+      else if (text[i + 2] === "'") i += 2
+      if (i === -1) return text.length
+      continue
+    }
+    if (c === '{' || c === '(' || c === '[') depth++
+    else if (c === '}' || c === ')' || c === ']') {
+      depth--
+      if (depth === 0 && c === '}') return i + 1
+    } else if (c === ';' && depth === 0) return i + 1
+  }
+  return text.length
+}
+
+// Rust unit tests live in the same file as the code and `#[cfg(test)]` covers only the item
+// after it; blank each such item (keeping line numbers) and scan the production code around it.
 function productText(path, text) {
   if (!path.endsWith('.rs')) return text
-  const tests = text.search(/^#\[cfg\(test\)\]/m)
-  return tests === -1 ? text : text.slice(0, tests)
+  let out = ''
+  let cursor = 0
+  const attribute = /^#\[cfg\(test\)\]/gm
+  for (let hit = attribute.exec(text); hit; hit = attribute.exec(text)) {
+    if (hit.index < cursor) continue
+    const end = itemEnd(text, hit.index + hit[0].length)
+    out += text.slice(cursor, hit.index) + text.slice(hit.index, end).replace(/[^\n]/g, '')
+    cursor = end
+  }
+  return out + text.slice(cursor)
 }
 
 export function providerNameFindings(path, text) {

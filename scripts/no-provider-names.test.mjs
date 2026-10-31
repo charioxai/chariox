@@ -33,6 +33,13 @@ test('Rust unit tests, test files and docs may use provider names as sample data
   assert.ok(isCheckedPath('deploy/managed-kernel/prepare-image.sh'))
 })
 
+test('Rust production code after a test-only item is still scanned', () => {
+  assert.deepEqual(kinds('a.rs', '#[cfg(test)]\nuse crate::hetzner_fixture;\nconst LIMIT: &str = "hetzner";'), ['provider name'])
+  assert.deepEqual(kinds('a.rs', '#[cfg(test)]\nmod tests { const A: &str = "}hetzner{"; fn f() { /* } */ } }\nfn run() { let s = "ovh"; }'), ['provider name'])
+  assert.deepEqual(kinds('a.rs', '#[cfg(test)]\n#[allow(dead_code)]\nfn helper() { let c = \'{\'; let r = r#"{ hetzner"#; }\nfn tail() {}'), [])
+  assert.deepEqual(providerNameFindings('a.rs', 'mod tests {}\n#[cfg(test)]\nmod t { fn x() { "ovh" } }\nfn run() {}\n#[cfg(test)]\nmod u {}\nfn late() { "vultr" }').map(f => f.line), [7])
+})
+
 test('the repository has no provider names in product code, deploy or drill scripts', () => {
   const root = resolve(fileURLToPath(import.meta.url), '../..')
   const findings = repositoryProviderNames(root).map(f => `${f.file}:${f.line}: ${f.text}`)
