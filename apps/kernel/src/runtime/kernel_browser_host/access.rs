@@ -257,6 +257,15 @@ impl KernelBrowserHost {
             .focused(user)
             .map(str::to_owned)
     }
+    /// Each user's focused agent.
+    pub(crate) fn focused_agents(&self) -> BTreeMap<String, String> {
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .access
+            .focused_agents()
+            .clone()
+    }
     pub(crate) fn grant_holders(&self) -> Vec<(String, String)> {
         self.inner
             .lock()

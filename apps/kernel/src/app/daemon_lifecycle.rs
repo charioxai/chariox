@@ -73,9 +73,9 @@ impl DaemonApp {
     }
 
     /// Clients attached before a hot reload resume their subscriptions on the
-    /// same attachments.
+    /// same attachments, and their users keep the agents they focused.
     #[cfg(unix)]
-    fn adopt_handed_over_attachments(&self) {
+    fn adopt_handed_over_clients(&self) {
         for attachment in crate::hot_reload::take_attachments() {
             let attachment_id = attachment.id().to_string();
             if let Err(error) = self
@@ -88,6 +88,9 @@ impl DaemonApp {
                     serde_json::json!({ "attachment_id": attachment_id, "error": error.to_string() }),
                 );
             }
+        }
+        for (user, agent) in crate::hot_reload::take_focus() {
+            self.kernel_browser_host.set_focus(&user, Some(&agent));
         }
     }
 
@@ -193,7 +196,7 @@ impl DaemonApp {
         let reap_remote_execution_leases =
             self.config.kernel_runtime_role == crate::config::KernelRuntimeRole::RemoteLeaseWorker;
         #[cfg(unix)]
-        self.adopt_handed_over_attachments();
+        self.adopt_handed_over_clients();
         #[cfg(unix)]
         let hot_reload = crate::hot_reload::requested(
             self.room_terminals(),
