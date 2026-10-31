@@ -327,7 +327,7 @@ impl OperationalHistoryStore {
         }
     }
 
-    fn reclaim_disk_space(&self) -> Result<(), DaemonError> {
+    pub(crate) fn reclaim_disk_space(&self) -> Result<(), DaemonError> {
         let connection =
             self.connection
                 .lock()
@@ -336,11 +336,15 @@ impl OperationalHistoryStore {
                     operation: "lock operational history store",
                     message: error.to_string(),
                 })?;
-        connection
+        let reclaimed = connection
             .execute_batch(
                 "PRAGMA wal_checkpoint(TRUNCATE); VACUUM; PRAGMA wal_checkpoint(TRUNCATE);",
             )
-            .map_err(|error| history_retention_error("reclaim operational history disk", error))
+            .map_err(|error| history_retention_error("reclaim operational history disk", error));
+        // VACUUM may renumber the implicit row ids the cached ranges continue from, whether or
+        // not it failed halfway, and an outline can have warmed a range since the last prune.
+        self.range_cache.invalidate();
+        reclaimed
     }
 
     fn disk_size_bytes(&self) -> u64 {
