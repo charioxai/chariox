@@ -33,8 +33,7 @@ export function queuedJobsForAgent(processes: readonly SessionProcess[] | undefi
 
 export function queuedJobWaitLabel(state: Waiting): string {
   if (state.kind === "paused") return state.reason === "memory" ? "paused at the memory limit" : "waiting for disk space"
-  if (state.reason === "disk") return `waiting for disk space, needs ${gigabytes(state.need_bytes)}`
-  return state.position <= 1 ? `waiting for memory, needs ${gigabytes(state.need_bytes)}` : `waiting for memory, ${ordinal(state.position)} in line`
+  return `waiting for ${state.reason === "disk" ? "disk space" : "memory"}, ${ordinal(Math.max(1, state.position))} in line`
 }
 
 function gigabytes(bytes: number): string {

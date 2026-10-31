@@ -22,11 +22,11 @@ test("an agent's waiting commands read as queued-job rows in line order", () => 
   assert.deepEqual(queuedJobsForAgent(processes, "a").map(job => [job.command, job.wait]), [
     ["sh", "waiting for memory, 2nd in line"],
     ["cargo build --release", "waiting for memory, 3rd in line"],
-    ["docker build .", "waiting for disk space, needs 15 GB"],
+    ["docker build .", "waiting for disk space, 1st in line"],
     ["pnpm test", "paused at the memory limit"],
   ])
   assert.deepEqual(queuedJobsForAgent(processes, "b").map(job => [job.wait, job.detail]), [
-    ["waiting for memory, needs 9 GB", "Needs about 9 GB; 2 GB free"],
+    ["waiting for memory, 1st in line", "Needs about 9 GB; 2 GB free"],
   ])
   assert.deepEqual(queuedJobsForAgent(processes, null), [])
 })

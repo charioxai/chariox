@@ -30,7 +30,14 @@ test("OF-04 a command waiting for room shows as a queued-job row in its agent's 
   render()
   await harness.renderOnce()
   const rows = harness.captureCharFrame().split("\n").map(row => row.trimEnd())
-  assert.ok(rows.some(row => /Queued cargo build --release · waiting for memory, 2nd in line/.test(row)), rows.join("\n"))
+  assert.ok(rows.some(row => /Queued waiting for memory, 2nd in line · cargo build --release/.test(row)), rows.join("\n"))
+  // A long command clips its own end, never the place in line.
+  const long = "cargo build --release --workspace --all-targets --features native-display --target-dir /var/tmp/very/long/target/directory"
+  processes = [held(42, 1, long)]
+  render()
+  await harness.renderOnce()
+  const first = harness.captureCharFrame().split("\n").find(row => row.includes("Queued"))
+  assert.ok(first?.includes("waiting for memory, 1st in line"), first)
   // The command starts: its row leaves the stack.
   processes = [{ ...processes[0]!, state: { kind: "running" } }]
   render()

@@ -141,7 +141,8 @@ function renderInteractionStrip(
 }
 
 /** One row per command waiting for room, first in the stack: the kernel's
- * state, so every client shows the same rows. */
+ * state, so every client shows the same rows. The wait leads so a long
+ * command never clips the place in line. */
 function renderQueuedJobStrip(
   options: InteractionStripRenderOptions,
   container: BoxRenderable,
@@ -163,7 +164,7 @@ function renderQueuedJobStrip(
     kind.flexShrink = 0
     row.add(kind)
     const copy = new TextRenderable(options.renderer, {
-      content: `${job.command} · ${job.wait}`,
+      content: `${job.wait} · ${job.command}`,
       fg: theme.text,
       wrapMode: "word",
     })
