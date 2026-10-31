@@ -250,6 +250,7 @@ pub(crate) fn restricted_request(request: &LocalDaemonRequest) -> bool {
             LocalDaemonRequest::RequestKernelAccess(_)
             | LocalDaemonRequest::CoverKernelAccessProcess(_)
                 | LocalDaemonRequest::ManageCredentialVault(_)
+                | LocalDaemonRequest::UnlockCredentialVault(_)
                 // Raw credential configs can contain literal injection headers.
                 | LocalDaemonRequest::GetCredential(_)
                 | LocalDaemonRequest::ListCredentials(_)

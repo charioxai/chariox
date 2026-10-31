@@ -247,6 +247,9 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
         LocalDaemonRequest::LockCredentialVault(_) => {
             LocalRequestMetadata::new("credential_vault.lock", Normal)
         }
+        LocalDaemonRequest::UnlockCredentialVault(_) => {
+            LocalRequestMetadata::new("credential_vault.unlock", Interactive)
+        }
         LocalDaemonRequest::ManageCredentialVault(request) => {
             LocalRequestMetadata::new("credential_vault.manage", Interactive)
                 .session(&request.session_id)
@@ -903,6 +906,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::CopyProviderAccountFromKernel(_) => "provider_account.copy_from",
         LocalDaemonRequest::GetCredentialVaultStatus(_) => "credential_vault.status",
         LocalDaemonRequest::LockCredentialVault(_) => "credential_vault.lock",
+        LocalDaemonRequest::UnlockCredentialVault(_) => "credential_vault.unlock",
         LocalDaemonRequest::ManageCredentialVault(_) => "credential_vault.manage",
         LocalDaemonRequest::RegisterCredential(_) => "credential.register",
         LocalDaemonRequest::UpsertCredential(_) => "credential.upsert",

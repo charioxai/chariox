@@ -76,6 +76,15 @@ impl KernelRuntimeState {
             .retain(|known| known.grant.grant_id != id);
         let mut result = Ok(());
         if !owed.recorded {
+            crate::logging::info_with_fields(
+                "kernel.access",
+                "kernel access grant ended",
+                serde_json::json!({
+                    "grant_id": id,
+                    "outcome": owed.outcome,
+                    "reason": owed.reason,
+                }),
+            );
             result = self
                 .owned
                 .durable_state_store
@@ -219,7 +228,7 @@ impl KernelRuntimeState {
                 })?;
                 continue;
             }
-            match holder.filter(ProcessIdentity::alive) {
+            match holder.filter(|holder| !holder.gone()) {
                 Some(holder) => {
                     self.owned
                         .kernel_access
@@ -233,7 +242,7 @@ impl KernelRuntimeState {
                                 holder,
                                 covered: covered
                                     .into_iter()
-                                    .filter(ProcessIdentity::alive)
+                                    .filter(|process| !process.gone())
                                     .collect(),
                                 clock: None,
                             },
@@ -288,7 +297,7 @@ impl KernelRuntimeState {
             .filter_map(|id| state.grants.remove(&id))
             .collect::<Vec<_>>();
         for grant in &revoked {
-            state.remember_ended(grant);
+            state.remember_ended(grant, reason);
         }
         let pending_keys = state
             .pending
@@ -385,8 +394,8 @@ impl KernelRuntimeState {
             .into_iter()
             .filter_map(|(id, reason)| state.grants.remove(&id).map(|grant| (grant, reason)))
             .collect::<Vec<_>>();
-        for (grant, _) in &removed {
-            state.remember_ended(grant);
+        for (grant, reason) in &removed {
+            state.remember_ended(grant, reason);
         }
         let exited = state
             .grants
@@ -394,7 +403,7 @@ impl KernelRuntimeState {
             .flat_map(|grant| {
                 let (live, gone): (Vec<_>, Vec<_>) = std::mem::take(&mut grant.covered)
                     .into_iter()
-                    .partition(ProcessIdentity::alive);
+                    .partition(|process| !process.gone());
                 grant.covered = live;
                 gone.into_iter()
                     .map(|process| (grant.summary.clone(), process))
@@ -424,18 +433,21 @@ impl KernelRuntimeState {
         }
     }
 
-    pub(crate) fn access_grants_for(&self, peer: &ProcessIdentity) -> Vec<Grant> {
+    /// The grants that cover `peer`, nearest holder first. A process the OS can't
+    /// identify just now is `Unconfirmed`: that refuses this one request, retryably,
+    /// and ends nothing.
+    pub(crate) fn access_grants_for(&self, peer: &ProcessIdentity) -> Result<Vec<Grant>, Refusal> {
         self.sweep_kernel_access();
+        let chain = match process::ancestry(peer) {
+            Ok(chain) => chain,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(_) => return Err(Refusal::Unconfirmed),
+        };
         // Kernel-launched agents never inherit external authority.
-        let Ok((kernel, _)) = process::inspect(std::process::id()) else {
-            return Vec::new();
-        };
-        if kernel.contains(peer) {
-            return Vec::new();
+        let (kernel, _) = process::inspect(std::process::id()).map_err(|_| Refusal::Unconfirmed)?;
+        if chain.contains(&kernel) {
+            return Ok(Vec::new());
         }
-        let Ok(chain) = process::ancestry(peer) else {
-            return Vec::new();
-        };
         let mut grants: Vec<_> = self
             .owned
             .kernel_access
@@ -445,29 +457,34 @@ impl KernelRuntimeState {
             .values()
             .filter_map(|grant| {
                 let distance = grant.covering(&chain)?;
-                grant.holder.alive().then(|| (distance, grant.clone()))
+                (!grant.holder.gone()).then(|| (distance, grant.clone()))
             })
             .collect();
         // The nearest holder's grant comes first, the requester's own before
         // any inherited one, so separate invocations of one command series
         // keep the same grant and event inbox. Authority is local-kernel-wide.
         grants.sort_by_key(|(distance, _)| *distance);
-        grants.into_iter().map(|(_, grant)| grant).collect()
+        Ok(grants.into_iter().map(|(_, grant)| grant).collect())
     }
 
-    /// True when this peer sits under a holder whose grant has ended.
-    pub(crate) fn access_ended_for(&self, peer: &ProcessIdentity) -> bool {
-        let Ok(chain) = process::ancestry(peer) else {
-            return false;
-        };
+    /// Why access ended for a peer that sits under a holder whose grant has ended.
+    pub(crate) fn access_end_for(&self, peer: &ProcessIdentity) -> Option<Refusal> {
+        let chain = process::ancestry(peer).ok()?;
         let state = self
             .owned
             .kernel_access
             .lock()
             .expect("access state poisoned");
-        chain.iter().any(|ancestor| state.ended.contains(ancestor))
+        chain.iter().find_map(|ancestor| {
+            state
+                .ended
+                .iter()
+                .find_map(|(known, refusal)| (known == ancestor).then_some(*refusal))
+        })
     }
 
+    /// Whether the grant still serves a delivery to `peer`. A peer the OS can't read
+    /// just now still does: the next confirmed answer decides.
     pub(crate) fn access_grant_live(&self, id: &str, peer: &ProcessIdentity) -> bool {
         self.sweep_kernel_access();
         self.owned
@@ -477,8 +494,11 @@ impl KernelRuntimeState {
             .grants
             .get(id)
             .is_some_and(|grant| {
-                grant.holder.contains(peer)
-                    || grant.covered.iter().any(|process| process.contains(peer))
+                grant.holder.may_contain(peer)
+                    || grant
+                        .covered
+                        .iter()
+                        .any(|process| process.may_contain(peer))
             })
     }
 
@@ -672,7 +692,7 @@ impl KernelRuntimeState {
                 tokio::select! {
                     answer = &mut rx => break answer,
                     _ = tick.tick() => {
-                        if !holder.alive() {
+                        if holder.gone() {
                             self.cancel_access_prompt(grant, action);
                         }
                     }
@@ -850,15 +870,15 @@ fn recorded_access_grants(
         .collect())
 }
 
-/// Ids of the grants whose holder is still running: their event inboxes must
-/// outlive this start.
+/// Ids of the grants whose holder has not been confirmed gone (the same rule as
+/// `restore_kernel_access_grants`): their event inboxes must outlive this start.
 pub(crate) fn grant_inboxes_to_keep(
     store: &crate::durable_state::DurableKernelStateStore,
 ) -> Result<Vec<String>, DaemonError> {
     Ok(recorded_access_grants(store)?
         .into_iter()
         .filter(|grant| {
-            grant.end.is_none() && grant.holder.as_ref().is_some_and(ProcessIdentity::alive)
+            grant.end.is_none() && grant.holder.as_ref().is_some_and(|holder| !holder.gone())
         })
         .map(|grant| grant.id)
         .collect())

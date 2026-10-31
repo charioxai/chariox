@@ -39,6 +39,8 @@ struct OwnedChild {
     leader_status: Option<std::process::ExitStatus>,
     settle_failures: u8,
     lost: bool,
+    /// Counted under the agent's share of the memory ceiling and listed in Health.
+    resources: Option<crate::runtime::process_resources::ProcessDomain>,
 }
 
 impl OwnedChild {
@@ -52,6 +54,7 @@ impl OwnedChild {
                 leader_status: None,
                 settle_failures: 0,
                 lost: false,
+                resources: None,
             }),
             Err(error) => {
                 // The freshly spawned positive child handle is owned even
@@ -200,13 +203,15 @@ fn signal_owned_session(child: &Owned, signal: libc::c_int) -> bool {
 }
 
 /// Builds the launch through the same managed isolation every other
-/// agent-launched command uses, then adds kernel session ownership.
+/// agent-launched command uses, then adds kernel session ownership and the
+/// agent's resource domain.
 fn command(
     wake: &str,
     argv: &[String],
     cwd: &Path,
     env: &BTreeMap<String, String>,
     removed: &[String],
+    resources: &crate::runtime::process_resources::PreparedDomain,
 ) -> std::io::Result<Command> {
     let mut environment = BTreeMap::new();
     for key in ENV_ALLOW {
@@ -232,9 +237,10 @@ fn command(
     let program = launch
         .pty_program
         .ok_or_else(|| std::io::Error::other("watched process launch has no executable"))?;
+    let (program, args) = resources.command(program, launch.pty_args);
     let mut command = crate::process_spawn::command(program);
     command
-        .args(launch.pty_args)
+        .args(args)
         .env_clear()
         // Isolation already scrubbed pty_env; its remove list names only
         // inherited variables, which env_clear drops.
@@ -254,8 +260,9 @@ fn spawn(
     cwd: &Path,
     env: &BTreeMap<String, String>,
     removed: &[String],
+    resources: &crate::runtime::process_resources::PreparedDomain,
 ) -> std::io::Result<Child> {
-    let mut command = command(wake, argv, cwd, env, removed)?;
+    let mut command = command(wake, argv, cwd, env, removed, resources)?;
     use std::os::unix::process::CommandExt;
     #[cfg(target_os = "linux")]
     // SAFETY: prctl is async-signal-safe; the child dies with the kernel.
@@ -305,7 +312,26 @@ impl KernelRuntimeState {
             );
             return Err(error);
         }
-        let mut child = match spawn(&wake.id, &argv, &cwd, run.pty_env(), run.pty_env_remove()) {
+        let resources = match crate::runtime::process_resources::PreparedDomain::new(
+            run.agent_instance_id().unwrap_or(run.id()),
+        ) {
+            Ok(resources) => resources,
+            Err(e) => {
+                self.settle_failed_process_launch(&wake, format!("launch failed: {e}"));
+                return Err(crate::durable_state::agent_lifecycle::error(format!(
+                    "process launch failed: {e}"
+                )));
+            }
+        };
+        let spawned = spawn(
+            &wake.id,
+            &argv,
+            &cwd,
+            run.pty_env(),
+            run.pty_env_remove(),
+            &resources,
+        );
+        let mut child = match spawned {
             Ok(child) => child,
             Err(e) => {
                 self.settle_failed_process_launch(&wake, format!("launch failed: {e}"));
@@ -374,7 +400,31 @@ impl KernelRuntimeState {
         let pid = child.id();
         let owned: Owned = Arc::new(std::sync::Mutex::new(
             match OwnedChild::new(child, &wake.id) {
-                Ok(child) => child,
+                Ok(mut child) => {
+                    child.resources = match resources.start(pid) {
+                        Ok(domain) => {
+                            domain.bind_key(&wake.id);
+                            if let Some(agent) = run.agent_instance_id() {
+                                domain.list_as(
+                                    run.session_id(),
+                                    crate::runtime::process_resources::SessionProcessOwner::Agent(
+                                        agent.to_string(),
+                                    ),
+                                );
+                            }
+                            Some(domain)
+                        }
+                        Err(error) => {
+                            crate::logging::error_with_fields(
+                                "agent_process_watch.resources",
+                                "watched process resource monitoring could not start",
+                                serde_json::json!({"error": error.to_string()}),
+                            );
+                            None
+                        }
+                    };
+                    child
+                }
                 Err(_) => {
                     self.settle_failed_process_launch(
                         &wake,
@@ -443,6 +493,15 @@ impl KernelRuntimeState {
             output.stop();
             for reader in readers {
                 let _ = reader.join();
+            }
+            // The stopped command may have been the root itself, which the
+            // controller cannot tell through its own stream.
+            if let Some(notice) = owned
+                .lock()
+                .ok()
+                .and_then(|child| child.resources.as_ref()?.memory_stop_notice())
+            {
+                output.push(notice.trim_end().to_owned());
             }
             let _ = sender.send(match code {
                 Some(code) => Signal::Exited(code, output.text()),
@@ -585,6 +644,10 @@ impl KernelRuntimeState {
 
 #[cfg(test)]
 mod tests {
+    pub(super) fn test_resources() -> crate::runtime::process_resources::PreparedDomain {
+        crate::runtime::process_resources::PreparedDomain::for_tests()
+    }
+
     use super::*;
 
     /// Wake markers are host-wide; concurrent tests must not share one.
@@ -644,7 +707,16 @@ mod tests {
         let (scratch, _home, workspace) = managed_isolation_fixture();
         let argv: Vec<String> = vec!["/bin/sh".into(), "-c".into(), "true".into()];
         let removed: Vec<String> = ENV_ALLOW.iter().map(|k| k.to_string()).collect();
-        let watched = command(&w(), &argv, &workspace, &BTreeMap::new(), &removed).unwrap();
+        let resources = test_resources();
+        let watched = command(
+            &w(),
+            &argv,
+            &workspace,
+            &BTreeMap::new(),
+            &removed,
+            &resources,
+        )
+        .unwrap();
         let managed = crate::provider::managed_isolated_utility_command(
             "/bin/sh",
             argv[1..].to_vec(),
@@ -658,10 +730,19 @@ mod tests {
         .unwrap();
         std::env::remove_var("CHARIOX_MANAGED_PROVIDER_ISOLATION");
         let _ = std::fs::remove_dir_all(&scratch);
-        assert_eq!(watched.get_program(), "/usr/bin/bwrap");
+        let args = watched.get_args().collect::<Vec<_>>();
+        let managed_args = managed.get_args().collect::<Vec<_>>();
         assert_eq!(
-            watched.get_args().collect::<Vec<_>>(),
-            managed.get_args().collect::<Vec<_>>(),
+            watched.get_program(),
+            "/bin/sh",
+            "it joins its resource domain first"
+        );
+        assert_eq!(
+            args[args.len() - managed_args.len() - 1..],
+            [std::ffi::OsStr::new("/usr/bin/bwrap")]
+                .into_iter()
+                .chain(managed_args.iter().copied())
+                .collect::<Vec<_>>(),
             "a watched process gets exactly the managed command isolation boundary"
         );
         assert_eq!(watched.get_current_dir(), managed.get_current_dir());
@@ -677,7 +758,8 @@ mod tests {
             ("GH_CONFIG_DIR".to_string(), "/srv/gh".to_string()),
         ]);
         let argv: Vec<String> = vec!["/bin/sh".into(), "-c".into(), "true".into()];
-        let watched = command(&w(), &argv, &std::env::temp_dir(), &env, &[]).unwrap();
+        let resources = test_resources();
+        let watched = command(&w(), &argv, &std::env::temp_dir(), &env, &[], &resources).unwrap();
         let envs: BTreeMap<_, _> = watched
             .get_envs()
             .filter_map(|(k, v)| Some((k.to_str()?.to_string(), v?.to_str()?.to_string())))
@@ -705,6 +787,7 @@ mod tests {
             &workspace,
             &BTreeMap::new(),
             &[],
+            &super::tests::test_resources(),
         )
         .unwrap();
         let mut line = String::new();
@@ -746,6 +829,7 @@ mod tests {
             &std::env::temp_dir(),
             &BTreeMap::new(),
             &[],
+            &super::tests::test_resources(),
         )
         .unwrap();
         let mut line = String::new();
@@ -898,7 +982,7 @@ mod tests {
                 node: "node".into(),
             })
             .unwrap();
-        let mut process = spawn(&wake.id, &["python3".into(), "-c".into(), "import signal; signal.signal(signal.SIGTERM,signal.SIG_IGN); print('ready',flush=True); signal.pause()".into()], worktree.path(), &BTreeMap::new(), &[]).unwrap();
+        let mut process = spawn(&wake.id, &["python3".into(), "-c".into(), "import signal; signal.signal(signal.SIGTERM,signal.SIG_IGN); print('ready',flush=True); signal.pause()".into()], worktree.path(), &BTreeMap::new(), &[], &test_resources()).unwrap();
         let mut line = String::new();
         std::io::BufRead::read_line(
             &mut std::io::BufReader::new(process.stdout.take().unwrap()),
@@ -1065,6 +1149,120 @@ mod tests {
         );
     }
 
+    /// A watched command the memory controller stops reaches the agent with
+    /// the reason, not as a bare exit 137.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_watched_command_stopped_for_memory_delivers_the_reason() {
+        crate::test_support::isolated_env_test!();
+        std::env::set_var("CHARIOX_PROCESS_MEMORY_LIMIT_MIB", "64");
+        let worktree = crate::test_support::TestWorktree::new("memory-reason");
+        let mut app =
+            crate::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+        let (room, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(worktree.session_request())
+            .unwrap();
+        let now = crate::session::unix_epoch_ms();
+        let store = app.durable_state_store();
+        store
+            .agent_lifecycle(Operation::Begin {
+                owner: room.owner_user_id().into(),
+                room: room.id().into(),
+                agent: agent.id().into(),
+                prompt: "memory-turn".into(),
+                run: Some("run".into()),
+                now,
+            })
+            .unwrap();
+        let grow =
+            "import time\nb=[]\nwhile True:\n b.append(bytearray(8*1048576)); time.sleep(0.1)";
+        let argv = vec!["python3".to_string(), "-c".into(), grow.into()];
+        let wake: AgentWake = serde_json::from_value(serde_json::json!({
+            "id":w(), "task_id":"memory-turn", "room_id":room.id(), "agent_id":agent.id(), "registration_id":format!("completion-{}", w()), "kind":"process", "label":"allocator", "state":"starting", "created_at_ms":now, "verified_at_ms":null, "next_due_ms":null, "interval_ms":null, "command":argv, "match_text":null, "matched_at_ms":null, "pid":null, "exit_code":null, "fire_count":0, "missed_fires":0, "last_fired_at_ms":null, "last_sequence":null, "last_delivery":null, "last_delivered_at_ms":null, "last_acknowledged_at_ms":null, "alerted_sequence":null
+        })).unwrap();
+        let router = crate::runtime::router::CommandRouter::with_interactive_capacity_from_app(
+            Arc::new(tokio::sync::Mutex::new(app)),
+            1,
+        );
+        let state = router.runtime_state();
+        let run = crate::provider::RuntimeProviderRun::from_control_capability_inference(
+            "run",
+            room.id().into(),
+            Some(agent.id().to_string()),
+            "codex".into(),
+        );
+        state
+            .start_agent_process(
+                wake.clone(),
+                wake.command.clone(),
+                worktree.path().to_path_buf(),
+                "memory-turn",
+                "memory-turn",
+                &run,
+            )
+            .await
+            .unwrap();
+        let store = &state.owned.durable_state_store;
+        store
+            .agent_lifecycle(Operation::Yield {
+                task: "memory-turn".into(),
+                prompt: "memory-turn".into(),
+                registrations: vec![wake.registration_id.clone()],
+                cursor: 0,
+                deadline: now + 60_000,
+                reason: "watch".into(),
+                now,
+            })
+            .unwrap();
+        store
+            .agent_lifecycle(Operation::Settle {
+                room: room.id().into(),
+                agent: agent.id().into(),
+                prompt: "memory-turn".into(),
+                run: "run".into(),
+                has_answer: true,
+                cancelled: false,
+                now,
+            })
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let tail = loop {
+            let exited = store
+                .agent_inbox(room.id(), agent.id(), 0)
+                .unwrap()
+                .into_iter()
+                .find(|event| event.payload["public_answer"].get("output_tail").is_some());
+            if let Some(event) = exited {
+                break event.payload["public_answer"]["output_tail"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned();
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the allocator was never stopped: {:?} {:?}",
+                store
+                    .agent_wakes(Some(room.id()), Some(agent.id()))
+                    .unwrap()
+                    .into_iter()
+                    .map(|w| (w.state, w.exit_code))
+                    .collect::<Vec<_>>(),
+                store
+                    .agent_inbox(room.id(), agent.id(), 0)
+                    .unwrap()
+                    .into_iter()
+                    .map(|e| e.kind)
+                    .collect::<Vec<_>>()
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        };
+        std::env::remove_var("CHARIOX_PROCESS_MEMORY_LIMIT_MIB");
+        assert!(
+            tail.contains("stopped this command at its owner-set memory cap of 64 MiB"),
+            "the agent was not told why: {tail:?}"
+        );
+    }
+
     #[test]
     fn a03_signal_guard_rejects_reserved_and_invalid_targets() {
         for pid in [0, 1, u32::MAX, (i32::MAX as u32) + 1] {
@@ -1082,6 +1280,7 @@ mod tests {
             &std::env::temp_dir(),
             &BTreeMap::new(),
             &[],
+            &super::tests::test_resources(),
         )
         .unwrap();
         let owned: Owned = Arc::new(std::sync::Mutex::new(OwnedChild::new(child, &w()).unwrap()));
@@ -1112,6 +1311,7 @@ mod tests {
             &std::env::temp_dir(),
             &BTreeMap::new(),
             &[],
+            &super::tests::test_resources(),
         )
         .unwrap();
         let owned: Owned = Arc::new(std::sync::Mutex::new(OwnedChild::new(child, &w()).unwrap()));
@@ -1156,6 +1356,7 @@ mod tests {
             &std::env::temp_dir(),
             &BTreeMap::new(),
             &[],
+            &super::tests::test_resources(),
         )
         .unwrap();
         let mut line = String::new();
@@ -1231,6 +1432,7 @@ mod security_tests {
             &std::env::temp_dir(),
             &BTreeMap::new(),
             &[],
+            &super::tests::test_resources(),
         )
         .unwrap();
         let stopped = reap_orphans(&BTreeMap::from([(wake, 0)])).unwrap();
@@ -1256,6 +1458,7 @@ mod security_tests {
             &std::env::temp_dir(),
             &BTreeMap::new(),
             &[],
+            &super::tests::test_resources(),
         )
         .unwrap();
         let mut owned = OwnedChild::new(child, &wake).unwrap();
@@ -1290,6 +1493,7 @@ mod security_tests {
             &std::env::temp_dir(),
             &BTreeMap::new(),
             &[],
+            &super::tests::test_resources(),
         )
         .unwrap();
         let mut owned = OwnedChild::new(child, &wake).unwrap();

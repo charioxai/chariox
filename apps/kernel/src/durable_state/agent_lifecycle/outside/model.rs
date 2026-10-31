@@ -38,6 +38,11 @@ pub(crate) struct Part {
     #[serde(default)]
     pub ended_at_ms: Option<u64>,
     pub remote_cursors: BTreeMap<String, u64>,
+    /// The cursor each followed kernel confirmed as acknowledged. It trails
+    /// `remote_cursors` while an acknowledgement is lost, and the difference is
+    /// what is still owed to that kernel.
+    #[serde(default)]
+    pub remote_acks: BTreeMap<String, u64>,
     #[serde(default)]
     pub cleanup_targets: Vec<EventTarget>,
     #[serde(default)]
@@ -71,6 +76,7 @@ impl Part {
             ended: None,
             ended_at_ms: None,
             remote_cursors: BTreeMap::new(),
+            remote_acks: BTreeMap::new(),
             cleanup_targets: Vec::new(),
             run_states: BTreeMap::new(),
             settled_prompts: BTreeMap::new(),
@@ -134,6 +140,12 @@ pub(crate) enum Mutation {
         id: String,
         cursor: u64,
     },
+    /// The followed `kernel` confirmed the acknowledgement of events up to `cursor`.
+    RemoteAcked {
+        id: String,
+        kernel: String,
+        cursor: u64,
+    },
     Restart {
         keep: Vec<String>,
     },
@@ -157,6 +169,7 @@ impl Mutation {
             Self::KernelHealth { .. }
             | Self::RunStates { .. }
             | Self::Ack { .. }
+            | Self::RemoteAcked { .. }
             | Self::CleanupAck { .. }
             | Self::Identity { .. } => false,
             #[cfg(test)]

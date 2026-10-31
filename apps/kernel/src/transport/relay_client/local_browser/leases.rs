@@ -4,7 +4,7 @@ use super::*;
 pub(super) struct LocalBrowserLease {
     grant: LocalBrowserGrant,
     sequence: u64,
-    expiry: watch::Sender<LocalBrowserLeaseState>,
+    pub(super) expiry: watch::Sender<LocalBrowserLeaseState>,
 }
 
 #[derive(Clone)]
@@ -74,9 +74,10 @@ impl LocalBrowserDirect {
         let mut leases = self.leases.lock().expect("local browser leases poisoned");
         let lease = leases.get_mut(id).ok_or_else(denied)?;
         let original = &lease.grant.identity;
-        // Cloud bootstrap can issue a new scoped subject. The same browser key,
-        // user and realm must still prove admission over the relay. The original
-        // latest short identity bounds this connection, never the browser timer.
+        // Cloud issues every short lease token with a new subject. The same
+        // browser key, user and realm must still prove admission over the
+        // relay. The latest short identity bounds this connection, never the
+        // browser timer.
         if lease.grant.client != client
             || identity.subject_kind != RelaySubjectKind::Client
             || identity.user_id.is_none()
@@ -100,9 +101,15 @@ impl LocalBrowserDirect {
             )
         })?;
         lease.sequence = sequence.checked_add(1).ok_or_else(denied)?;
+        // The session keeps the subject it was admitted with, as a relay
+        // socket does: kernel-browser displays and mirrors belong to the
+        // caller that opened them, so a new subject would orphan them.
         lease.expiry.send_replace(LocalBrowserLeaseState {
             expires_at_ms,
-            identity: identity.clone(),
+            identity: RelayCallerIdentity {
+                subject: original.subject.clone(),
+                ..identity.clone()
+            },
         });
         let name = match client {
             LocalDirectClient::Browser => "LocalBrowserLeaseRenewed",

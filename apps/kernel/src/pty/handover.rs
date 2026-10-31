@@ -16,6 +16,8 @@ pub struct PtyHandover {
     pub process_group: Option<i32>,
     /// The memory domain the child joined, which it keeps.
     pub cgroup: Option<std::path::PathBuf>,
+    /// The agent whose tools may leave jobs behind, so the new program hands them on the same way.
+    pub agent: Option<super::PtyAgent>,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]

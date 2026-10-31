@@ -354,6 +354,7 @@ struct KernelRuntimeOwnedState {
     runtime_tool_call_activity: RuntimeToolCallActivity,
     next_provider_process_gc_at_ms: Arc<AtomicU64>,
     next_agent_lifecycle_sweep_ms: Arc<AtomicU64>,
+    task_settlement_revisions: Arc<std::sync::Mutex<BTreeMap<String, u64>>>,
     agent_wakes: Arc<agent_wake_scheduler::AgentWakeMonitor>,
     relay_state: Arc<tokio::sync::RwLock<crate::transport::relay_client::RelayClientState>>,
     notification_inventory_projection: crate::runtime::projection::RemoteRelayInventoryProjectionStore,
@@ -566,6 +567,8 @@ mod session_process_control;
 mod slice_development_runtime_state;
 mod slice_project_source;
 mod slice_runtime_state;
+mod vault_owner_gate;
+mod vault_unlock_request;
 mod vault_unlock_requests;
 pub(crate) use slice_runtime_state::SliceAgentRelaunchManifest;
 mod kernel_browser_command_error;
@@ -1123,6 +1126,7 @@ impl KernelRuntimeState {
                 runtime_tool_call_activity,
                 next_provider_process_gc_at_ms: Arc::new(AtomicU64::new(0)),
                 next_agent_lifecycle_sweep_ms: Arc::new(AtomicU64::new(0)),
+                task_settlement_revisions: Arc::default(),
                 agent_wakes: Arc::new(agent_wake_scheduler::AgentWakeMonitor::new()),
                 relay_state,
                 notification_inventory_projection,

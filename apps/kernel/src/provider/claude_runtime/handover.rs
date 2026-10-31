@@ -282,13 +282,15 @@ pub(super) fn hand_over(
     Ok(handover)
 }
 
-/// The handed-over process keeps its memory domain.
+/// The handed-over process joins its owner's memory unit in this program.
 pub(super) fn adopted_resources(
     provider_run_id: &str,
+    resource_unit: &str,
     handover: &ClaudeHandover,
 ) -> Result<crate::runtime::process_resources::ProcessDomain, crate::error::DaemonError> {
     let resources = crate::runtime::process_resources::PreparedDomain::adopted(
-        handover.cgroup.clone(),
+        resource_unit,
+        handover.cgroup.as_deref(),
         handover.pid,
     )
     .and_then(|domain| domain.start(handover.pid))

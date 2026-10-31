@@ -181,14 +181,7 @@ impl KernelRuntimeState {
             .computer_input_executions
             .capture_guard()
             .map_err(|_| error())?;
-        let op = match &command {
-            RoomDisplayCommand::Attach {} => "display_attach",
-            RoomDisplayCommand::Capture { .. } => "screenshot",
-            RoomDisplayCommand::Suspend {} => "display_suspend",
-            RoomDisplayCommand::Resume {} => "display_resume",
-            RoomDisplayCommand::ResumeAttach {} => "display_resume_attach",
-            RoomDisplayCommand::Close {} => "unsubscribe",
-        };
+        let op = producer_op(&command);
         let mut params = serde_json::json!({"op":op,"subscription_id":lease_id,"observed_by":lease_id,"generation":lease.binding.generation,"viewport":lease.viewport});
         if let RoomDisplayCommand::Capture {
             after_sequence,
@@ -261,10 +254,35 @@ impl KernelRuntimeState {
     }
 }
 
+fn producer_op(command: &RoomDisplayCommand) -> &'static str {
+    match command {
+        RoomDisplayCommand::Attach {} => "display_attach",
+        RoomDisplayCommand::Park {} => "display_park",
+        RoomDisplayCommand::Capture { .. } => "screenshot",
+        RoomDisplayCommand::Suspend {} => "display_suspend",
+        RoomDisplayCommand::Resume {} => "display_resume",
+        RoomDisplayCommand::ResumeAttach {} => "display_resume_attach",
+        RoomDisplayCommand::Close {} => "unsubscribe",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::transport::room_shared_display::RoomDisplayAudience;
+    /// A paused Room display must reach the worker's desktop source as a pause, not as a plain attach.
+    #[test]
+    fn mp08_a_parked_room_display_asks_the_producer_to_pause() {
+        assert_eq!(producer_op(&RoomDisplayCommand::Park {}), "display_park");
+        assert_eq!(
+            serde_json::to_value(RoomDisplayCommand::Park {}).unwrap(),
+            serde_json::json!({"op":"park"})
+        );
+        assert!(serde_json::from_value::<RoomDisplayCommand>(
+            serde_json::json!({"op":"park","observed_by":"forged"})
+        )
+        .is_err());
+    }
     #[test]
     fn mp11_room_display_preserves_owner_and_invited_viewer_audiences() {
         for audience in [RoomDisplayAudience::Owner, RoomDisplayAudience::Viewer] {

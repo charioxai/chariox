@@ -249,15 +249,19 @@ async fn check(native: bool) {
     )
     .await
     .unwrap();
-    let stream = tool(
-        &router,
-        token,
-        "chariox.kernel_browser",
-        json!({"command":{"op":"subscribe","tab_id":tab,"generation":generation}}),
-    )
-    .await
-    .unwrap();
-    let poll = json!({"command":{"op":"poll","subscription_id":stream.payload["subscription_id"],"generation":generation}});
+    // An agent reads with snapshots and screenshots; it never opens a live stream.
+    for command in
+        [json!({"op":"unsubscribe","subscription_id":"host-stream-any","generation":generation})]
+    {
+        assert!(tool(
+            &router,
+            token,
+            "chariox.kernel_browser",
+            json!({ "command": command })
+        )
+        .await
+        .is_err());
+    }
     if native {
         state = human(&router, KernelBrowserCommand::State).await;
     }
@@ -297,9 +301,6 @@ async fn check(native: bool) {
     )
     .await
     .unwrap();
-    tool(&router, token, "chariox.kernel_browser", poll.clone())
-        .await
-        .unwrap();
     tool(&router, token, "chariox.kernel_browser", json!({"document_id":state["tabs"][0]["document_id"],"command":{"op":"input","tab_id":tab,"generation":generation,"input":{"kind":"scroll","x":500,"y":500,"delta_x":0,"delta_y":100}}})).await.unwrap();
     if !native {
         std::fs::remove_file(root.join("input")).unwrap();
@@ -412,20 +413,6 @@ async fn check(native: bool) {
             .await
             .is_err()
     );
-    assert!(tool(&router, token, "chariox.kernel_browser", poll)
-        .await
-        .is_err());
-    if !native {
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
-        while !root.join("subscriptions-revoked").exists() && tokio::time::Instant::now() < deadline
-        {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        assert!(
-            root.join("subscriptions-revoked").exists(),
-            "MP-11: idle subscriber cleanup must execute"
-        );
-    }
     let all = human(
         &router,
         KernelBrowserCommand::RevokeGrants { agent_id: None },

@@ -8,9 +8,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 #[cfg(unix)]
 mod claude_executable;
+#[cfg(unix)]
+mod detached_job;
 mod environment;
 #[cfg(unix)]
 pub(crate) use claude_executable::TestClaudeExecutable;
+#[cfg(unix)]
+pub(crate) use detached_job::{detached_job, process_alive, session_job};
 #[cfg(unix)]
 mod pre_exec_child;
 mod room_turn;

@@ -16,6 +16,7 @@ impl Drop for InertPtyCleanup {
 pub(super) fn spawn_inert_pty_for_run(app: &mut DaemonApp, provider_run_id: &str) {
     app.pty_mut()
         .spawn(crate::pty::PtySpawnRequest {
+            agent: None,
             process_key: provider_run_id.to_string(),
             provider_run_id: provider_run_id.to_string(),
             program: "/bin/sh".to_string(),

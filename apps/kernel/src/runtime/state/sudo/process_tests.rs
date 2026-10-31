@@ -616,6 +616,88 @@ async fn sudo_shell_interrupt_and_rotation_drop_process_authority() {
     }
 }
 
+// A host out of memory or descriptors cannot read /proc for a moment. That must not
+// close an admitted sudo connection; only a confirmed exit or a lost turn does.
+#[tokio::test]
+async fn a_sudo_connection_survives_a_failure_to_read_its_peer() {
+    use crate::runtime::kernel_access::process::fault;
+    let f = fixture_with_provider(Some("while :; do sleep 1; done"));
+    let turn = running(&f);
+    let peer = root(&f);
+    assert!(f.state.sudo_peer_live(&turn.entry_id, &peer));
+    for errno in [libc::ENOMEM, libc::ENFILE, libc::EMFILE, libc::EIO] {
+        let _fault = fault::inject(peer.pid, errno);
+        assert!(
+            f.state.sudo_peer_live(&turn.entry_id, &peer),
+            "sudo connection closed by errno {errno}"
+        );
+        assert!(
+            f.state.sudo_for_peer(&peer).is_err(),
+            "a peer the host cannot read must not be admitted"
+        );
+    }
+    assert!(f.state.sudo_peer_live(&turn.entry_id, &peer));
+    assert!(!f.state.sudo_peer_live("sudo:another-turn", &peer));
+    let reused = ProcessIdentity {
+        start: peer.start + 1,
+        ..peer.clone()
+    };
+    assert!(
+        !f.state.sudo_peer_live(&turn.entry_id, &reused),
+        "a pid that names another process is a confirmed exit"
+    );
+}
+
+// An unreadable peer defers only the process check: the window and its bound turn are
+// still judged on every call, so a window that ends under pressure stops delivery.
+#[tokio::test]
+async fn a_window_that_ends_while_its_peer_is_unreadable_closes_the_connection() {
+    use crate::runtime::kernel_access::process::fault;
+    type End = fn(&super::tests::Fixture, &KernelSudoTurn);
+    let endings: [(&str, End); 3] = [
+        ("expired", |f, turn| {
+            let mut windows = f.state.owned.sudo_turns.lock().unwrap();
+            windows.get_mut(&turn.entry_id).unwrap().deadline = Some(std::time::Instant::now());
+        }),
+        ("removed", |f, turn| {
+            f.state
+                .owned
+                .sudo_turns
+                .lock()
+                .unwrap()
+                .remove(&turn.entry_id);
+        }),
+        ("turn interrupted", |f, turn| {
+            let session = f
+                .state
+                .owned
+                .session_store
+                .get_session(&turn.session_id)
+                .unwrap();
+            f.state
+                .owned
+                .prompt_state_owner
+                .begin_cancelling_active_prompt(&session, &turn.agent_id)
+                .unwrap();
+        }),
+    ];
+    for (name, end) in endings {
+        let f = fixture_with_provider(Some("while :; do sleep 1; done"));
+        let turn = running(&f);
+        let peer = root(&f);
+        let _fault = fault::inject(peer.pid, libc::ENOMEM);
+        assert!(
+            f.state.sudo_peer_live(&turn.entry_id, &peer),
+            "{name}: live before"
+        );
+        end(&f, &turn);
+        assert!(
+            !f.state.sudo_peer_live(&turn.entry_id, &peer),
+            "{name}: a window that ended must close the connection of an unreadable peer"
+        );
+    }
+}
+
 // MP-08/MP-10/MP-11 F1: Unix subscriptions share the window's owner/session fence.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sudo_review_shell_subscriptions_are_owner_session_bound() {

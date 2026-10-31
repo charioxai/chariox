@@ -90,12 +90,14 @@ impl GatewayLedger {
                     std::process::abort();
                 }
                 guard.armed = false;
-                let stored = match &result {
-                    Ok(value) => json!({"ok": value}),
-                    Err(failure) => json!({"err": {
-                        "code": failure.code, "message": failure.message, "retryable": failure.retryable,
-                    }}),
-                };
+                let mut result = result;
+                let mut stored = stored_of(&result);
+                // The receipt is one record; an answer that cannot be kept is told apart
+                // from "outcome unknown": the request ran and finished.
+                if let Err(limit) = CommandResultCache::receipt_room(key, &fingerprint, &stored) {
+                    result = Err(response_too_large(limit));
+                    stored = stored_of(&result);
+                }
                 match cache
                     .complete_at_most_once(key.to_string(), fingerprint, stored, interrupted())
                     .await
@@ -117,6 +119,23 @@ impl GatewayLedger {
                 Settled::Unavailable(format!("the gateway ledger refused the request: {error}"))
             }
         }
+    }
+}
+
+fn stored_of(result: &Result<Value, Failure>) -> Value {
+    match result {
+        Ok(value) => json!({"ok": value}),
+        Err(failure) => json!({"err": {
+            "code": failure.code, "message": failure.message, "retryable": failure.retryable,
+        }}),
+    }
+}
+
+fn response_too_large(limit: u64) -> Failure {
+    Failure {
+        code: "kernel_response_too_large".into(),
+        message: format!("The request ran and finished, but its answer is more than {limit} bytes, the most a state-changing request through the gateway can return. It is not run again. Write the output to a file on that kernel and read it with `chariox files get`, or print less."),
+        retryable: false,
     }
 }
 
@@ -230,6 +249,9 @@ pub(crate) fn is_audited(request: &crate::local::LocalDaemonRequest) -> bool {
     }
 }
 
+/// The longest a forwarded shell command is waited for: its `timeout_ms`, up to one hour.
+const MAX_SHELL_WAIT_MS: u64 = 60 * 60 * 1_000;
+
 /// The target's default for waiting on an access answer (`kernel_access.request_timeout_minutes`).
 const SUDO_ANSWER_WAIT: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
@@ -248,6 +270,13 @@ pub(crate) fn deadline_for(request: &crate::local::LocalDaemonRequest) -> std::t
     };
     // The terminal service caps a wait at four minutes.
     let wait = std::time::Duration::from_millis(wait_ms.min(240_000));
+    // A shell command answers when it ends, and it ends by its own `timeout_ms`.
+    let wait = match request {
+        LocalDaemonRequest::RunShellCommand(shell) => {
+            std::time::Duration::from_millis(shell.timeout_ms.unwrap_or(0).min(MAX_SHELL_WAIT_MS))
+        }
+        _ => wait,
+    };
     match request {
         // The answer comes when the person has answered the popup there.
         LocalDaemonRequest::RequestKernelSudo(_) => super::REQUEST_DEADLINE + SUDO_ANSWER_WAIT,
@@ -375,6 +404,39 @@ mod tests {
             "an evicted id is refused, never run again"
         );
         assert_eq!(runs.load(Ordering::SeqCst), runs_before);
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    // A 300 KB answer does not fit its receipt record. The request ran and finished, so the
+    // origin gets a typed refusal naming the limit, and a retry is answered the same way
+    // without running it again. It used to be `outcome unknown`.
+    #[tokio::test]
+    async fn an_answer_too_large_for_its_receipt_is_a_typed_refusal_not_unknown() {
+        let path = journal();
+        let runs = AtomicU32::new(0);
+        let ledger = GatewayLedger::open(path.clone());
+        let answer = |size: usize| json!({"ShellCommandCompleted": {"stdout": "x".repeat(size)}});
+        let run = |id: &'static str, size: usize| {
+            let (ledger, runs) = (&ledger, &runs);
+            async move {
+                ledger
+                    .run(id, fingerprint(&create()), async {
+                        runs.fetch_add(1, Ordering::SeqCst);
+                        Ok(answer(size))
+                    })
+                    .await
+            }
+        };
+        assert!(matches!(run("small", 120_000).await, Settled::Done(Ok(_))));
+        for attempt in 0..2 {
+            let Settled::Done(Err(failure)) = run("big", 300_000).await else {
+                panic!("attempt {attempt}: a large answer must be a typed refusal");
+            };
+            assert_eq!(failure.code, "kernel_response_too_large");
+            assert!(!failure.retryable);
+            assert!(failure.message.contains(" bytes"), "{}", failure.message);
+        }
+        assert_eq!(runs.load(Ordering::SeqCst), 2, "each id ran exactly once");
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
@@ -599,6 +661,31 @@ mod tests {
                 name: "b3".into(),
             });
         assert!(!is_repeatable(&forget));
+    }
+
+    // A forwarded shell command is waited for as long as it may run, not the usual 30 s.
+    #[test]
+    fn a_forwarded_shell_command_waits_for_its_own_timeout() {
+        let shell = |timeout_ms| {
+            LocalDaemonRequest::RunShellCommand(crate::local::RunShellCapabilityRequest {
+                session_id: "s".into(),
+                attachment_id: "a".into(),
+                command: "sleep".into(),
+                args: vec!["400".into()],
+                working_directory: None,
+                timeout_ms,
+            })
+        };
+        assert_eq!(
+            deadline_for(&shell(Some(400_000))),
+            super::super::REQUEST_DEADLINE + Duration::from_secs(400)
+        );
+        assert_eq!(deadline_for(&shell(None)), super::super::REQUEST_DEADLINE);
+        assert_eq!(
+            deadline_for(&shell(Some(u64::MAX))),
+            super::super::REQUEST_DEADLINE + Duration::from_secs(3_600)
+        );
+        assert!(is_long_wait(&shell(Some(400_000))));
     }
 
     // EA2-11: the answer to a forwarded sudo request is the person's, so the origin waits

@@ -87,7 +87,7 @@ pub struct RoomTerminalSummary {
     pub status: RoomTerminalStatus,
     pub driver: RoomTerminalDriver,
     pub opened_by: TerminalActor,
-    /// The user typed in or resized this tab: only the user can close it now.
+    /// The user typed in this tab: only the user can close it now.
     pub user_interacted: bool,
     pub created_at_ms: u64,
     /// Bytes of output produced so far: the cursor for `ReadRoomTerminalOutput`.

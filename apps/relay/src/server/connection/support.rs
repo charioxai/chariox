@@ -11,6 +11,7 @@ use crate::auth::{
     RelayAction, RelayAuthError, RelayAuthRequest, RelayAuthVerifier, RelaySubjectKind,
     VerifiedRelayIdentity,
 };
+use crate::meter::{ConnectionMeter, Direction, CONTROL_SCOPE};
 use crate::protocol::{
     canonical_peer_daemon_id, ClientTarget, DaemonRegistration, EncryptedRelayPayload,
     RelayCallerIdentity, RelayConnectionRole, RelayEnvelope, RelayError,
@@ -407,9 +408,10 @@ pub(super) async fn handle_client_packet_route_envelope_with_target_pin(
                             client_request_id: request_id.clone(),
                             daemon_key: daemon_key.clone(),
                             kind: PendingRequestKind::Subscribe {
-                                display: crate::frame_transport::is_display_scope(
-                                    subscription_scope.as_deref(),
-                                ),
+                                scope: subscription_scope
+                                    .as_deref()
+                                    .unwrap_or(crate::meter::SESSION_SCOPE)
+                                    .into(),
                                 subscription_id: subscription_id.clone(),
                                 client_public_key: client_public_key.clone(),
                             },
@@ -756,6 +758,7 @@ pub(super) async fn route_daemon_binary_event(
     routes: &Arc<RelayRouteIndex>,
     daemon: &DaemonKey,
     counter: &AtomicU64,
+    meter: &ConnectionMeter,
     bytes: &[u8],
 ) -> Result<bool, std::io::Error> {
     let (mut header, ciphertext) = crate::binary_event::decode(bytes)?;
@@ -765,10 +768,13 @@ pub(super) async fn route_daemon_binary_event(
             "invalid binary event direction",
         ));
     }
-    let Some(route) = routes
-        .subscription(&header.subscription_id)
-        .filter(|route| &route.daemon_key == daemon)
-    else {
+    let route = routes.subscription(&header.subscription_id);
+    meter.record(
+        Direction::In,
+        route.as_ref().map_or(CONTROL_SCOPE, |route| &*route.scope),
+        bytes.len(),
+    );
+    let Some(route) = route.filter(|route| &route.daemon_key == daemon) else {
         return Ok(false);
     };
     header.kind = "client_event".into();

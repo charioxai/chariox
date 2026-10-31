@@ -23,9 +23,7 @@ pub(crate) enum GrantCause {
 pub(crate) struct Grant {
     pub(crate) epoch: Arc<BrowserCancellation>,
     pub(crate) resources: BTreeSet<UserDomainResource>,
-    pub(crate) subscriptions: BTreeMap<String, String>,
     pub(crate) subscription_owner: String,
-    subscription_deadlines: BTreeMap<String, Instant>,
     pub(crate) cause: GrantCause,
     /// None for focus: the owner's live act retires through idle or revoke.
     pub(crate) expires_at: Option<Instant>,
@@ -43,8 +41,6 @@ impl Grant {
         Self {
             epoch: Arc::new(BrowserCancellation::default()),
             resources: BTreeSet::new(),
-            subscriptions: BTreeMap::new(),
-            subscription_deadlines: BTreeMap::new(),
             subscription_owner: format!("grant-{:032x}", rand::random::<u128>()),
             cause,
             expires_at: lifetime.map(|lifetime| Instant::now() + lifetime),
@@ -90,7 +86,6 @@ pub(crate) struct GrantRetirement {
     pub(crate) agent: String,
     pub(crate) epoch: Arc<BrowserCancellation>,
     pub(crate) scope: String,
-    pub(crate) subscriptions: Vec<String>,
 }
 
 #[derive(Default)]
@@ -141,7 +136,7 @@ impl UserDomainAccess {
                 .entry(key)
                 .or_insert_with(|| Grant::new(GrantCause::Focus, None));
             // MP-08/MP-11: explicit owner focus supersedes prompt/delegation
-            // expiry while preserving resources, subscriptions and the epoch.
+            // expiry while preserving resources and the epoch.
             grant.cause = GrantCause::Focus;
             grant.expires_at = None;
             grant.expires_at_ms = None;
@@ -300,7 +295,6 @@ impl UserDomainAccess {
                     .expires_at
                     .into_iter()
                     .chain(grant.idle_since.map(|since| since + idle_window))
-                    .chain(grant.subscription_deadlines.values().copied())
             })
             .min()
     }
@@ -320,25 +314,6 @@ impl UserDomainAccess {
             .map(|(key, _)| key.clone())
             .collect()
     }
-    pub(crate) fn expired_subscriptions(&mut self, now: Instant) -> Vec<(String, Vec<String>)> {
-        let mut expired = Vec::new();
-        for ((user, _), grant) in &mut self.grants {
-            let ids = grant
-                .subscription_deadlines
-                .iter()
-                .filter(|(_, deadline)| now >= **deadline)
-                .map(|(id, _)| id.clone())
-                .collect::<Vec<_>>();
-            for id in &ids {
-                grant.subscription_deadlines.remove(id);
-                grant.subscriptions.remove(id);
-            }
-            if !ids.is_empty() {
-                expired.push((user.clone(), ids));
-            }
-        }
-        expired
-    }
     /// MP-11: keep exact old scopes until a replacing mutation has retired them.
     pub(crate) fn retirement_snapshot(&self, user: &str, agent: &str) -> Vec<GrantRetirement> {
         self.revocation_set(user, Some(agent))
@@ -348,7 +323,6 @@ impl UserDomainAccess {
                     agent: key.1,
                     epoch: grant.epoch.clone(),
                     scope: grant.subscription_owner.clone(),
-                    subscriptions: grant.subscriptions.keys().cloned().collect(),
                 })
             })
             .collect()
@@ -358,7 +332,7 @@ impl UserDomainAccess {
             .get(&(user.into(), agent.into()))
             .map(|grant| grant.epoch.clone())
     }
-    /// Also returns expired grants: their subscriptions still need closing.
+    /// Also returns expired grants: their scope still needs retiring.
     pub(crate) fn subscription_owner(&self, user: &str, agent: &str) -> Option<String> {
         self.grants
             .get(&(user.into(), agent.into()))
@@ -461,17 +435,15 @@ impl UserDomainAccess {
         }
         holders
     }
-    pub(crate) fn revoke(&mut self, user: &str, agent: Option<&str>) -> Vec<String> {
+    pub(crate) fn revoke(&mut self, user: &str, agent: Option<&str>) {
         let holders = self.revocation_set(user, agent);
         let target = (user.to_string(), agent.unwrap_or_default().to_string());
         for key in holders.iter().chain([&target]) {
             *self.fences.entry(key.clone()).or_default() += 1;
         }
-        let mut subscriptions = Vec::new();
         for key in &holders {
             if let Some(grant) = self.grants.remove(key) {
                 grant.epoch.request_cancel();
-                subscriptions.extend(grant.subscriptions.into_keys());
             }
             if self.focused(user) == Some(key.1.as_str()) {
                 self.focus.remove(user);
@@ -479,50 +451,6 @@ impl UserDomainAccess {
         }
         // MP-11: even an empty explicit revoke invalidates pending acquisition.
         self.changed(user);
-        subscriptions
-    }
-    pub(crate) fn subscribe(
-        &mut self,
-        user: &str,
-        agent: &str,
-        id: &str,
-        tab: &str,
-    ) -> Result<(), String> {
-        let grant = self
-            .grants
-            .get_mut(&(user.into(), agent.into()))
-            .ok_or("MP-08: not_granted: revoked subscription")?;
-        if grant.subscriptions.len() >= 16 {
-            return Err("MP-08: user-domain subscription limit reached".into());
-        }
-        grant.subscriptions.insert(id.into(), tab.into());
-        grant
-            .subscription_deadlines
-            .insert(id.into(), Instant::now() + Duration::from_secs(60));
-        Ok(())
-    }
-    pub(crate) fn unsubscribe(&mut self, user: &str, agent: &str, id: &str) {
-        if let Some(grant) = self.grants.get_mut(&(user.into(), agent.into())) {
-            grant.subscriptions.remove(id);
-            grant.subscription_deadlines.remove(id);
-        }
-    }
-    pub(crate) fn prune_subscriptions(&mut self, user: &str, agent: &str, now: Instant) {
-        if let Some(grant) = self.grants.get_mut(&(user.into(), agent.into())) {
-            grant
-                .subscription_deadlines
-                .retain(|_, deadline| now < *deadline);
-            grant
-                .subscriptions
-                .retain(|id, _| grant.subscription_deadlines.contains_key(id));
-        }
-    }
-    pub(crate) fn subscription_polled(&mut self, user: &str, agent: &str, id: &str) {
-        if let Some(grant) = self.grants.get_mut(&(user.into(), agent.into())) {
-            if let Some(deadline) = grant.subscription_deadlines.get_mut(id) {
-                *deadline = Instant::now() + Duration::from_secs(60);
-            }
-        }
     }
     pub(crate) fn acted(&mut self, user: &str, agent: &str, resource: UserDomainResource) {
         if self.focused(user) != Some(agent) {
@@ -588,7 +516,7 @@ mod tests {
         UserDomainResource::BrowserTab { tab_id: id.into() }
     }
     /// MP-08/MP-11 (#922 round 3): owner focus supersedes a timed cause
-    /// without retiring the grant's resources, subscriptions or epoch.
+    /// without retiring the grant's resources or epoch.
     #[test]
     fn capability_review_round3_focus_preserves_requested_and_delegated_grants() {
         for agent in ["parent", "child"] {
@@ -598,7 +526,6 @@ mod tests {
             access
                 .transfer("owner", "parent", "child", &[tab("tab")])
                 .unwrap();
-            access.subscribe("owner", agent, "stream", "tab").unwrap();
             let grant = access.grant("owner", agent).unwrap();
             let deadline = grant.expires_at.unwrap();
             let epoch = grant.epoch.clone();
@@ -614,7 +541,6 @@ mod tests {
             assert!(!epoch.requested());
             assert_eq!(grant.subscription_owner, scope);
             assert_eq!(grant.resources, BTreeSet::from([tab("tab")]));
-            assert_eq!(grant.subscriptions.get("stream"), Some(&"tab".into()));
             assert!(!access
                 .due(deadline + Duration::from_secs(1))
                 .contains(&("owner".into(), agent.into())));
@@ -724,9 +650,6 @@ mod tests {
             .transfer("owner", "parent", "child", &[tab("tab")])
             .unwrap();
         access
-            .subscribe("owner", "child", "old-stream", "tab")
-            .unwrap();
-        access
             .transfer("owner", "child", "grandchild", &[tab("tab")])
             .unwrap();
         let retired = access.retirement_snapshot("owner", "child");
@@ -740,9 +663,6 @@ mod tests {
             .transfer("owner", "parent", "child", &[tab("tab")])
             .unwrap();
         assert!(retired.iter().all(|old| old.epoch.requested()));
-        assert!(retired
-            .iter()
-            .any(|old| old.subscriptions == ["old-stream"]));
         assert!(access.grant("owner", "grandchild").is_err());
         assert!(retired
             .iter()
@@ -788,45 +708,12 @@ mod tests {
             .contains("not_granted"));
     }
     #[test]
-    fn mdaccess_subscription_expiry_reclaims_slots_and_poll_renews() {
-        let mut access = UserDomainAccess::default();
-        access.focus("owner", Some("agent"));
-        for i in 0..16 {
-            access
-                .subscribe("owner", "agent", &i.to_string(), "tab")
-                .unwrap();
-        }
-        assert!(access.subscribe("owner", "agent", "new", "tab").is_err());
-        let initial = access
-            .grant("owner", "agent")
-            .unwrap()
-            .subscription_deadlines["0"];
-        access.subscription_polled("owner", "agent", "0");
-        assert!(
-            access
-                .grant("owner", "agent")
-                .unwrap()
-                .subscription_deadlines["0"]
-                >= initial
-        );
-        access.unsubscribe("owner", "agent", "0");
-        access.subscribe("owner", "agent", "new", "tab").unwrap();
-        access.prune_subscriptions("owner", "agent", Instant::now() + Duration::from_secs(61));
-        assert!(access
-            .grant("owner", "agent")
-            .unwrap()
-            .subscriptions
-            .is_empty());
-        access.subscribe("owner", "agent", "fresh", "tab").unwrap();
-    }
-    #[test]
-    fn mdaccess_yield_and_wake_retain_grant_idle_expires_and_revoke_cancels_subscribers() {
+    fn mdaccess_yield_and_wake_retain_grant_idle_expires_and_revoke_cancels_the_epoch() {
         let mut access = UserDomainAccess::default();
         let now = Instant::now();
         let window = Duration::from_secs(1800);
         access.focus("owner", Some("first"));
         let epoch = access.grant("owner", "first").unwrap().epoch.clone();
-        access.subscribe("owner", "first", "stream", "a").unwrap();
         access.bind("owner", "first", "session", true, (now, 1), window);
         access.focus("owner", Some("second"));
         // The kernel reports pending wake as busy, even with no executing turn.
@@ -860,10 +747,7 @@ mod tests {
         assert!(epoch.requested());
         assert!(access.grant("owner", "first").is_err());
         let second = access.grant("owner", "second").unwrap().epoch.clone();
-        access
-            .subscribe("owner", "second", "idle-stream", "b")
-            .unwrap();
-        assert_eq!(access.revoke("owner", Some("second")), ["idle-stream"]);
+        access.revoke("owner", Some("second"));
         assert!(second.requested());
         access.focus("owner", Some("second"));
         assert!(!Arc::ptr_eq(

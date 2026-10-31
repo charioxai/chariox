@@ -84,8 +84,6 @@ while IFS= read -r request; do
   *'"op":"state"'*|*'"op":"start"'*) printf '{"id":%s,"ok":true,"result":{"generation":1,"tabs":[{"tab_id":"host-tab-fixture","document_id":"document"}]}}\n' "$id" ;;
   *'"op":"open"'*) printf '{"id":%s,"ok":true,"result":{"generation":1,"tab_id":"host-tab-new","tabs":[{"tab_id":"host-tab-fixture","document_id":"document"},{"tab_id":"host-tab-new","document_id":"new-document"}]}}\n' "$id" ;;
   *'"op":"snapshot"'*) printf '{"id":%s,"ok":true,"result":{"snapshot":{"text":"MD5-sensitive-fixture"}}}\n' "$id" ;;
-  *'"op":"subscribe"'*) printf '{"id":%s,"ok":true,"result":{"subscription_id":"fixture-stream"}}\n' "$id" ;;
-  *'"op":"poll"'*) printf '{"id":%s,"ok":true,"result":{"frame":null}}\n' "$id" ;;
   *'"op":"screenshot"'*) printf '{"id":%s,"ok":true,"result":{"data_base64":"cGl4ZWxzLWZpeHR1cmU="}}\n' "$id" ;;
   *'"op":"input"'*) printf 'input\n' > "$1/input"; printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
   *'"method":"shutdown"'*) printf '{"id":%s,"ok":true,"result":{"state":"stopped","process_id":null,"diagnostic_code":null}}\n' "$id"; exit 0 ;;

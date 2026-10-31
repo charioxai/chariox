@@ -165,6 +165,9 @@ fn local_request_payload(request: &LocalDaemonRequest) -> Value {
                 "value": "[redacted]"
             }
         }),
+        LocalDaemonRequest::UnlockCredentialVault(_) => serde_json::json!({
+            "UnlockCredentialVault": { "passphrase": "[redacted]" }
+        }),
         LocalDaemonRequest::SetProviderAccountCredential(request) => serde_json::json!({
             "SetProviderAccountCredential": {
                 "session_id": request.session_id,

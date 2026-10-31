@@ -11,6 +11,9 @@ pub(crate) enum RoomDisplayAudience {
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum RoomDisplayCommand {
     Attach {},
+    // An unwatched display: renews the worker binding like Attach and pauses the shared desktop source. The next
+    // Capture starts it again.
+    Park {},
     Capture {
         after_sequence: u64,
         reset: bool,

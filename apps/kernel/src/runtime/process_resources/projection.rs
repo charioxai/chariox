@@ -15,6 +15,17 @@ pub struct SessionProcess {
     pub process: ProcessSample,
 }
 
+/// Whom a workload's processes are listed under when no run or terminal does:
+/// what an ended workload left running, or what an agent started through a
+/// runtime tool.
+pub(super) struct Listing {
+    pub(super) session_id: String,
+    pub(super) owner: SessionProcessOwner,
+    /// The agent that opened a terminal owner, which stays after the terminal
+    /// is closed: archiving that agent ends its terminals' jobs too.
+    pub(super) opened_by: Option<String>,
+}
+
 pub(crate) fn for_session(
     session_id: &str,
     providers: &crate::provider::ProviderProcessServiceStore,
@@ -55,5 +66,41 @@ pub(crate) fn keys_for_session(
         })
         .collect::<Vec<_>>();
     keys.extend(terminals.process_keys(session_id));
+    keys.extend(listed_keys(
+        |listing| listing.session_id == session_id,
+        false,
+    ));
     keys
+}
+
+#[cfg(test)]
+pub(crate) fn released_keys_for_session(session_id: &str) -> Vec<(SessionProcessOwner, String)> {
+    released_keys(|listing| listing.session_id == session_id)
+}
+
+/// Processes an ended workload left running (`setsid nohup job &`).
+pub(super) fn released_keys(
+    select: impl Fn(&Listing) -> bool,
+) -> Vec<(SessionProcessOwner, String)> {
+    listed_keys(select, true)
+}
+
+/// Workloads listed under an explicit owner: what an ended workload left
+/// running, and processes an agent started through a runtime tool.
+fn listed_keys(
+    select: impl Fn(&Listing) -> bool,
+    released_only: bool,
+) -> Vec<(SessionProcessOwner, String)> {
+    let mut registry = super::registry().lock().unwrap_or_else(|e| e.into_inner());
+    registry.retain(|_, state| state.strong_count() > 0);
+    registry
+        .iter()
+        .filter_map(|(key, state)| {
+            let state = state.upgrade()?;
+            let observation = state.lock().unwrap_or_else(|e| e.into_inner());
+            let listing = observation.listed.as_ref()?;
+            (select(listing) && (observation.released || !released_only))
+                .then(|| (listing.owner.clone(), key.clone()))
+        })
+        .collect()
 }

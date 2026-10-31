@@ -1064,7 +1064,9 @@ fn terminal_output_event_json_bytes_for_records(record_bytes: usize, record_coun
 
 pub(crate) fn map_kernel_error(error: &DaemonError) -> KernelTransportError {
     if crate::runtime::kernel_access::Refusal::grant_ended(error) {
-        return crate::runtime::kernel_access::Refusal::Ended.transport_error();
+        return crate::runtime::kernel_access::Refusal::exact(error)
+            .unwrap_or(crate::runtime::kernel_access::Refusal::Ended)
+            .transport_error();
     }
     match error {
         DaemonError::ProviderAccountNameTaken { .. } => {
@@ -1077,6 +1079,9 @@ pub(crate) fn map_kernel_error(error: &DaemonError) -> KernelTransportError {
             kernel_error("provider_login_code_invalid", error, false)
         }
         DaemonError::ProviderAccountCopy {
+            code, retryable, ..
+        } => kernel_error(code, error, *retryable),
+        DaemonError::VaultUnlock {
             code, retryable, ..
         } => kernel_error(code, error, *retryable),
         DaemonError::ExternalRequestFailed { code, retryable } => {
