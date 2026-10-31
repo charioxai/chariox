@@ -18,7 +18,7 @@ use crate::room_terminal::{RoomTerminalService, TerminalHandover};
 
 /// The handover this program writes and reads. A new program must print the
 /// same number for `--handover-format` before this one hands over to it.
-pub const HANDOVER_FORMAT: u32 = 6;
+pub const HANDOVER_FORMAT: u32 = 7;
 const HANDOVER_ENV: &str = "CHARIOX_HANDOVER";
 const VERIFY_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -28,9 +28,9 @@ struct Handover {
     terminals: Vec<TerminalHandover>,
     providers: Vec<ProviderHandover>,
     attachments: Vec<AttachmentHandover>,
-    // Each user's focused agent: focus lists the agent's computer tools, and a
-    // provider that listed them must not see its tools change.
-    focus: BTreeMap<String, String>,
+    // Focus and grants list agents' user-domain tools: a provider that listed
+    // them must not see its tools change.
+    user_domain: crate::runtime::user_domain_access::AccessHandover,
     // A pipe holding the providers' launch credentials: they stay in memory.
     credentials_fd: Option<i32>,
     listeners: BTreeMap<String, i32>,
@@ -119,7 +119,8 @@ static START: OnceLock<Start> = OnceLock::new();
 static RECEIVED_TERMINALS: Mutex<Vec<TerminalHandover>> = Mutex::new(Vec::new());
 static RECEIVED_PROVIDERS: Mutex<Vec<ProviderHandover>> = Mutex::new(Vec::new());
 static RECEIVED_ATTACHMENTS: Mutex<Vec<AttachmentHandover>> = Mutex::new(Vec::new());
-static RECEIVED_FOCUS: Mutex<BTreeMap<String, String>> = Mutex::new(BTreeMap::new());
+static RECEIVED_USER_DOMAIN: Mutex<Option<crate::runtime::user_domain_access::AccessHandover>> =
+    Mutex::new(None);
 // Claimed by a new run of the same agent, until its runtime adopts the process.
 static ADOPTING: Mutex<BTreeMap<String, HandedOverProcess>> = Mutex::new(BTreeMap::new());
 
@@ -198,13 +199,12 @@ pub fn receive() {
             "terminals": handover.terminals.len(),
             "provider_runs": handover.providers.iter().map(|p| &p.run_id).collect::<Vec<_>>(),
             "attachments": handover.attachments.len(),
-            "focused_users": handover.focus.len(),
         }),
     );
     *lock(&RECEIVED_TERMINALS) = handover.terminals;
     *lock(&RECEIVED_PROVIDERS) = handover.providers;
     *lock(&RECEIVED_ATTACHMENTS) = handover.attachments;
-    *lock(&RECEIVED_FOCUS) = handover.focus;
+    *lock(&RECEIVED_USER_DOMAIN) = Some(handover.user_domain);
 }
 
 pub(crate) fn take_terminals() -> Vec<TerminalHandover> {
@@ -226,8 +226,8 @@ pub(crate) fn take_attachments() -> Vec<crate::attachment::RuntimeAttachment> {
         .collect()
 }
 
-pub(crate) fn take_focus() -> BTreeMap<String, String> {
-    std::mem::take(&mut *lock(&RECEIVED_FOCUS))
+pub(crate) fn take_user_domain() -> Option<crate::runtime::user_domain_access::AccessHandover> {
+    lock(&RECEIVED_USER_DOMAIN).take()
 }
 
 // Listening sockets stay open across the swap: a connection that arrives
@@ -506,10 +506,10 @@ pub(crate) fn hand_over_claude(
     }
 }
 
-/// Keeps each user's focused agent for the next program.
-pub(crate) fn hand_over_focus(focus: BTreeMap<String, String>) {
+/// Keeps the users' focus and grants for the next program.
+pub(crate) fn hand_over_user_domain(access: crate::runtime::user_domain_access::AccessHandover) {
     if let Some(prepared) = lock(&PREPARED).as_mut() {
-        prepared.handover.focus = focus;
+        prepared.handover.user_domain = access;
     }
 }
 
@@ -630,7 +630,7 @@ async fn prepare(terminals: &RoomTerminalService) -> Result<Handover, String> {
             terminals,
             providers: Vec::new(),
             attachments: Vec::new(),
-            focus: BTreeMap::new(),
+            user_domain: Default::default(),
             credentials_fd: None,
             listeners: lock(&LISTENERS).clone(),
         }),

@@ -257,14 +257,25 @@ impl KernelBrowserHost {
             .focused(user)
             .map(str::to_owned)
     }
-    /// Each user's focused agent.
-    pub(crate) fn focused_agents(&self) -> BTreeMap<String, String> {
+    pub(crate) fn hand_over_access(&self) -> crate::runtime::user_domain_access::AccessHandover {
         self.inner
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .access
-            .focused_agents()
-            .clone()
+            .hand_over()
+    }
+    /// Takes over the focus and grants a hot reload handed over.
+    pub(crate) fn adopt_access(
+        &self,
+        handover: crate::runtime::user_domain_access::AccessHandover,
+    ) {
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .access
+            .adopt(handover);
+        self.arm_expiry();
+        crate::transport::mcp_server::catalog_changed();
     }
     pub(crate) fn grant_holders(&self) -> Vec<(String, String)> {
         self.inner

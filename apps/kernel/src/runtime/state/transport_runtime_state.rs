@@ -421,7 +421,7 @@ impl KernelRuntimeState {
     pub(crate) async fn shutdown_cleanup(&self) -> Result<(), DaemonError> {
         // Before the browser host stops, which clears it.
         #[cfg(unix)]
-        crate::hot_reload::hand_over_focus(self.owned.kernel_browser_host.focused_agents());
+        crate::hot_reload::hand_over_user_domain(self.owned.kernel_browser_host.hand_over_access());
         self.owned.room_execs.shutdown();
         self.owned.room_terminals.shutdown();
         self.stop_app_grant_wakes();

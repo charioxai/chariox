@@ -1314,6 +1314,12 @@ fn codex_turn_across_a_hot_reload(finish_in_gap: bool, beside_claude: bool) {
                 .as_str()
                 .unwrap_or_else(|| panic!("{spawned}"))
                 .to_string();
+            // The user looks at Claude now; Codex keeps its grant meanwhile.
+            request(
+                &mut socket,
+                json!({"FocusAgent": {"session_id": session_id, "agent_id": claude_id}}),
+            )
+            .await;
             request(
                 &mut socket,
                 json!({"SubmitPrompt": {"session_id": session_id, "attachment_id": attachment_id,
