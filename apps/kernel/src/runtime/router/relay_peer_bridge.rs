@@ -211,6 +211,12 @@ impl CommandRouter {
         self.config_projection.snapshot().relay_private_key
     }
 
+    pub(crate) fn provider_account_generation(&self) -> u64 {
+        self.runtime_state
+            .provider_account_profile_registry()
+            .generation()
+    }
+
     pub(crate) async fn relay_registration(&self) -> chariox_relay::protocol::DaemonRegistration {
         self.runtime_state.relay_registration().await
     }

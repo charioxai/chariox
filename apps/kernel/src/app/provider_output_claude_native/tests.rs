@@ -1758,6 +1758,12 @@ fn workspace_trust_approval_frame(choices: &str, expected_input: &str, frame_mod
     assert!(interaction
         .message()
         .contains("queued task will not be sent"));
+    // The title asks the question; the message must not say it a second time.
+    assert!(
+        !interaction.message().contains("asks to trust"),
+        "{}",
+        interaction.message()
+    );
     assert_eq!(interaction.choices().len(), 2);
     let marker = claude_native_marker(&context_file).expect("trust marker should be present");
     assert!(marker.starts_with("startup-workspace-trust:"), "{marker}");
@@ -2508,6 +2514,41 @@ fn claude_transcript_drain_maps_assistant_text_reasoning_and_tools() {
         drain_claude_transcript_file(&transcript.display().to_string(), &mut cursor);
     assert!(after_terminal.terminal_assistant_message_ids.is_empty());
 
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn claude_transcript_result_keeps_the_tool_name_and_input_of_its_call() {
+    let dir = std::env::temp_dir().join(format!(
+        "chariox-claude-transcript-result-test-{}",
+        std::process::id()
+    ));
+    let _ = fs::create_dir_all(&dir);
+    let transcript = dir.join("session.jsonl").display().to_string();
+    let call = serde_json::json!({
+        "type": "assistant", "uuid": "assistant-1",
+        "message": { "id": "msg_1", "role": "assistant", "stop_reason": "tool_use", "content": [
+            { "type": "tool_use", "id": "toolu_1", "name": "Bash", "input": { "command": "pwd" } }
+        ] }
+    });
+    let result = serde_json::json!({
+        "type": "user", "uuid": "user-1",
+        "message": { "role": "user", "content": [
+            { "type": "tool_result", "tool_use_id": "toolu_1", "content": [{ "type": "text", "text": "/work" }] }
+        ] }
+    });
+    let mut cursor = ClaudeTranscriptCursor::default();
+    // The call and its result reach the kernel in separate drains.
+    fs::write(&transcript, format!("{call}\n")).expect("call should write");
+    drain_claude_transcript_file(&transcript, &mut cursor);
+    fs::write(&transcript, format!("{call}\n{result}\n")).expect("result should write");
+    let drain = drain_claude_transcript_file(&transcript, &mut cursor);
+
+    assert_eq!(drain.chunks.len(), 1);
+    let payload: Value = serde_json::from_str(&drain.chunks[0].text).expect("result is JSON");
+    assert_eq!(payload["tool"], "Bash");
+    assert_eq!(payload["input"]["command"], "pwd");
+    assert_eq!(payload["status"], "completed");
     let _ = fs::remove_dir_all(dir);
 }
 

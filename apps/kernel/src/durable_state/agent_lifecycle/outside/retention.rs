@@ -1,6 +1,11 @@
 //! MP-08 / MP-09 / MP-10 / MP-11: bounded inboxes retain a gap per source kernel.
 use super::*;
 use std::collections::BTreeMap;
+
+/// How long an ended part keeps its rows and its ending receipt. Its holder has read the
+/// ending by then, or never will.
+const ENDED_RETENTION_MS: u64 = 24 * 60 * 60 * 1000;
+
 struct Dropped {
     sequence: u64,
     event: OutsideEvent,
@@ -146,5 +151,32 @@ pub(in crate::durable_state::agent_lifecycle) fn bound(
         at: part.latest,
         rows: retained as u64,
     });
+    Ok(())
+}
+
+/// Deletes the parts that ended more than a day ago, with their unread rows. A home part
+/// whose remote cleanup is still owed stays until its pump has finished it.
+pub(in crate::durable_state::agent_lifecycle) fn prune_ended(
+    tx: &Transaction<'_>,
+    now_ms: u64,
+) -> Result<(), DaemonError> {
+    for part in parts(tx)? {
+        let expired = part
+            .ended_at_ms
+            .is_some_and(|at| now_ms.saturating_sub(at) >= ENDED_RETENTION_MS);
+        if part.ended.is_none() || !expired || !part.cleanup_targets.is_empty() {
+            continue;
+        }
+        tx.execute(
+            "DELETE FROM agent_inbox WHERE room_id='' AND agent_id=?1",
+            [&part.id],
+        )
+        .map_err(sql)?;
+        tx.execute(
+            "DELETE FROM agent_outside_subscriptions WHERE id=?1",
+            [&part.id],
+        )
+        .map_err(sql)?;
+    }
     Ok(())
 }

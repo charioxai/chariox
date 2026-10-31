@@ -1,30 +1,54 @@
-//! Background jobs of a terminal's shell live in their own process groups, so
-//! stopping the shell and its foreground group leaves them behind. Everything
-//! still in the shell's session ends with the terminal, by exact PID.
+//! Background jobs of a terminal's shell or a provider's tools live in their own
+//! process groups, so stopping the session leader and its foreground group
+//! leaves them behind. Everything still in the leader's session ends with it,
+//! by exact PID.
+
+const DETACH_GRACE: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// Who belongs to a terminal's shell, captured while the shell still runs.
 #[derive(Clone, Copy)]
-pub(super) struct SessionSweep {
+pub(crate) struct SessionSweep {
     leader: i32,
 }
 
 impl SessionSweep {
-    pub(super) fn capture(session_leader: i32) -> Self {
+    pub(crate) fn capture(session_leader: i32) -> Self {
         Self {
             leader: session_leader,
         }
     }
 
-    pub(super) fn stop(&self) {
+    pub(crate) fn stop(&self) {
         for pid in self.live_members() {
             // SAFETY: a positive PID selected moments ago; never a group.
             let _ = unsafe { libc::kill(pid, libc::SIGKILL) };
         }
     }
 
+    /// Ends the session and the leader's live process tree, which may hold
+    /// commands in sessions of their own (a provider's tool commands). A job
+    /// whose parent already exited has left both and keeps running.
+    pub(crate) fn stop_with_descendants(&self) {
+        let mut members = descendants(self.leader);
+        members.extend(self.live_members());
+        for pid in members {
+            // SAFETY: a positive PID selected moments ago; never a group.
+            let _ = unsafe { libc::kill(pid, libc::SIGKILL) };
+        }
+    }
+
+    /// Ends the session a moment from now, so a job that is detaching
+    /// (`setsid job &`) as its shell or command returns can leave it first.
+    pub(crate) fn stop_soon(self) {
+        std::thread::spawn(move || {
+            std::thread::sleep(DETACH_GRACE);
+            self.stop();
+        });
+    }
+
     /// Whether anything but the shell itself still runs in the session: a
     /// background job keeps running after the prompt returns.
-    pub(super) fn has_jobs(&self) -> bool {
+    pub(crate) fn has_jobs(&self) -> bool {
         self.live_members().iter().any(|pid| *pid != self.leader)
     }
 
@@ -34,6 +58,63 @@ impl SessionSweep {
         #[cfg(not(target_os = "linux"))]
         return ps_session_members(self.leader);
     }
+}
+
+/// The leader's running descendants, from one reading of parent links so
+/// nothing reparents mid-walk.
+fn descendants(leader: i32) -> Vec<i32> {
+    if leader <= 1 {
+        return Vec::new();
+    }
+    let parents = parent_links();
+    let mut found = std::collections::BTreeSet::from([leader]);
+    loop {
+        let before = found.len();
+        for (pid, parent) in &parents {
+            if found.contains(parent) {
+                found.insert(*pid);
+            }
+        }
+        if found.len() == before {
+            break;
+        }
+    }
+    found.remove(&leader);
+    found.into_iter().filter(|pid| *pid > 1).collect()
+}
+
+#[cfg(target_os = "linux")]
+fn parent_links() -> Vec<(i32, i32)> {
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| entry.file_name().to_str()?.parse::<i32>().ok())
+        .filter_map(|pid| {
+            let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+            let mut fields = stat[stat.rfind(')')? + 1..].split_whitespace();
+            (!fields.next()?.starts_with('Z')).then_some(())?;
+            Some((pid, fields.next()?.parse().ok()?))
+        })
+        .collect()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn parent_links() -> Vec<(i32, i32)> {
+    let Ok(output) = crate::process_spawn::command("ps")
+        .args(["-A", "-o", "pid=,ppid="])
+        .output()
+    else {
+        return Vec::new();
+    };
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| {
+            let mut columns = line.split_whitespace();
+            Some((columns.next()?.parse().ok()?, columns.next()?.parse().ok()?))
+        })
+        .collect()
 }
 
 /// The running processes of the session led by `session_leader`.

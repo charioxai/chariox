@@ -19,13 +19,66 @@ fn invalid() -> io::Error {
     io::Error::other("process identity unavailable or changed")
 }
 
+/// The one definitive answer to "is this process still there": it exited, or its
+/// pid now names another process. Every other failure leaves the question open.
+fn gone() -> io::Error {
+    io::Error::new(io::ErrorKind::NotFound, "process exited")
+}
+
+/// Sorts an OS error into the three answers a caller acts on: `NotFound` (the process
+/// is gone), `PermissionDenied` (another user's process) and the rest (transient:
+/// out of memory or descriptors, a busy host), which prove nothing about the process.
+fn classify(error: io::Error) -> io::Error {
+    match error.raw_os_error() {
+        Some(libc::ESRCH | libc::ENOENT) => gone(),
+        Some(libc::EPERM | libc::EACCES) => io::Error::from(io::ErrorKind::PermissionDenied),
+        _ => error,
+    }
+}
+
+/// What the OS says about a process identity right now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Presence {
+    Present,
+    Gone,
+    /// The OS could not answer. A decision that ends authority must not act on it.
+    Unconfirmed,
+}
+
 impl ProcessIdentity {
+    pub(crate) fn presence(&self) -> Presence {
+        match inspect(self.pid) {
+            Ok((current, _)) if current == *self => Presence::Present,
+            Ok(_) => Presence::Gone,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Presence::Gone,
+            Err(_) => Presence::Unconfirmed,
+        }
+    }
+
+    /// Confirmed running. Use it to allow something; use `gone` to end something.
     pub(crate) fn alive(&self) -> bool {
-        inspect(self.pid).is_ok_and(|(current, _)| current == *self)
+        self.presence() == Presence::Present
+    }
+
+    /// Confirmed exited, or the pid names another process now.
+    pub(crate) fn gone(&self) -> bool {
+        self.presence() == Presence::Gone
     }
 
     pub(crate) fn contains(&self, peer: &Self) -> bool {
         self.alive() && peer.alive() && ancestry(peer).is_ok_and(|chain| chain.contains(self))
+    }
+
+    /// `contains`, except that a check the OS could not answer keeps the answer "yes".
+    /// For ending something already admitted (a delivery), never for allowing something.
+    pub(crate) fn may_contain(&self, peer: &Self) -> bool {
+        if self.gone() || peer.gone() {
+            return false;
+        }
+        match ancestry(peer) {
+            Ok(chain) => chain.contains(self),
+            Err(error) => error.kind() != io::ErrorKind::NotFound,
+        }
     }
 }
 
@@ -70,19 +123,20 @@ pub(crate) fn holder(peer: &ProcessIdentity, pid: u32) -> io::Result<ProcessIden
 #[cfg(target_os = "linux")]
 pub(crate) fn inspect(pid: u32) -> io::Result<(ProcessIdentity, u32)> {
     use std::os::unix::fs::MetadataExt;
+    #[cfg(test)]
+    fault::check(pid)?;
     let path = format!("/proc/{pid}");
-    let stat = std::fs::read_to_string(format!("{path}/stat"))?;
+    let stat = std::fs::read_to_string(format!("{path}/stat")).map_err(classify)?;
     let fields: Vec<_> = stat
         .rsplit_once(')')
         .ok_or_else(invalid)?
         .1
         .split_whitespace()
         .collect();
-    if fields
-        .first()
-        .is_none_or(|state| *state == "Z" || *state == "X")
-    {
-        return Err(invalid());
+    match fields.first() {
+        Some(&"Z" | &"X") => return Err(gone()),
+        Some(_) => {}
+        None => return Err(invalid()),
     }
     let parent = fields
         .get(1)
@@ -94,20 +148,22 @@ pub(crate) fn inspect(pid: u32) -> io::Result<(ProcessIdentity, u32)> {
         .ok_or_else(invalid)?
         .parse()
         .map_err(|_| invalid())?;
-    let uid = std::fs::metadata(&path)?.uid();
-    // Only another user's process may answer PermissionDenied; the kernel user's own
-    // unreadable process is an identity the kernel can't confirm.
+    let uid = std::fs::metadata(&path).map_err(classify)?.uid();
+    // A process without an executable is exiting. Only another user's process may answer
+    // PermissionDenied; the kernel user's own unreadable process is an identity the
+    // kernel can't confirm.
     let executable = std::fs::read_link(format!("{path}/exe"))
         .map_err(|error| {
-            if uid == unsafe { libc::geteuid() } {
-                invalid()
-            } else {
+            let error = classify(error);
+            if error.kind() == io::ErrorKind::NotFound || uid != unsafe { libc::geteuid() } {
                 error
+            } else {
+                invalid()
             }
         })?
         .to_string_lossy()
         .into_owned();
-    let after = std::fs::read_to_string(format!("{path}/stat"))?;
+    let after = std::fs::read_to_string(format!("{path}/stat")).map_err(classify)?;
     if after
         .rsplit_once(')')
         .ok_or_else(invalid)?
@@ -116,7 +172,7 @@ pub(crate) fn inspect(pid: u32) -> io::Result<(ProcessIdentity, u32)> {
         .nth(19)
         != fields.get(19).copied()
     {
-        return Err(invalid());
+        return Err(gone());
     }
     Ok((
         ProcessIdentity {
@@ -169,18 +225,51 @@ struct UniqueInfo {
 
 #[cfg(target_os = "macos")]
 pub(crate) fn inspect(pid: u32) -> io::Result<(ProcessIdentity, u32)> {
+    #[cfg(test)]
+    fault::check(pid)?;
     let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
     let mut unique = UniqueInfo::default();
     let mut path = [0u8; 4096];
+    // The libproc calls report failure with errno: ESRCH means the process is gone,
+    // EPERM another user's process, anything else says nothing about the process.
+    let failed = || classify(io::Error::last_os_error());
     unsafe {
-        if libc::proc_pidinfo(pid as i32, libc::PROC_PIDTBSDINFO, 0, &mut info as *mut _ as *mut _,
-            std::mem::size_of_val(&info) as i32) != std::mem::size_of_val(&info) as i32
-            || info.pbi_status == 5 // SZOMB
-            || libc::proc_pidinfo(pid as i32, 17, 0, &mut unique as *mut _ as *mut _,
-                std::mem::size_of_val(&unique) as i32) != std::mem::size_of_val(&unique) as i32
-            || libc::proc_pidpath(pid as i32, path.as_mut_ptr() as *mut _, path.len() as u32) <= 0
+        if libc::proc_pidinfo(
+            pid as i32,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            &mut info as *mut _ as *mut _,
+            std::mem::size_of_val(&info) as i32,
+        ) != std::mem::size_of_val(&info) as i32
         {
-            return Err(invalid());
+            return Err(failed());
+        }
+        if info.pbi_status == 5 {
+            // SZOMB
+            return Err(gone());
+        }
+        if libc::proc_pidinfo(
+            pid as i32,
+            17,
+            0,
+            &mut unique as *mut _ as *mut _,
+            std::mem::size_of_val(&unique) as i32,
+        ) != std::mem::size_of_val(&unique) as i32
+        {
+            return Err(failed());
+        }
+        if libc::proc_pidpath(pid as i32, path.as_mut_ptr() as *mut _, path.len() as u32) <= 0 {
+            // As on Linux: an exiting process is gone, and only another user's process
+            // answers PermissionDenied (libproc reports its path as unavailable with
+            // whatever errno the OS version picks).
+            let error = failed();
+            return Err(if error.kind() == io::ErrorKind::NotFound {
+                error
+            } else if info.pbi_uid == libc::geteuid() {
+                invalid()
+            } else {
+                io::Error::from(io::ErrorKind::PermissionDenied)
+            });
         }
     }
     let executable =
@@ -283,6 +372,39 @@ pub(crate) fn born_after(_: &ProcessIdentity, _: u64) -> bool {
     false
 }
 
+/// Makes `inspect` fail for one pid with an OS error, as a host out of memory or
+/// descriptors does. Keyed by pid so tests running side by side do not disturb each other.
+#[cfg(test)]
+pub(crate) mod fault {
+    use super::*;
+    static FAULTS: std::sync::Mutex<Vec<(u32, i32)>> = std::sync::Mutex::new(Vec::new());
+
+    pub(crate) struct Fault(u32);
+
+    pub(crate) fn inject(pid: u32, errno: i32) -> Fault {
+        FAULTS.lock().unwrap().push((pid, errno));
+        Fault(pid)
+    }
+
+    impl Drop for Fault {
+        fn drop(&mut self) {
+            FAULTS.lock().unwrap().retain(|(pid, _)| *pid != self.0);
+        }
+    }
+
+    pub(super) fn check(pid: u32) -> io::Result<()> {
+        match FAULTS
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(faulted, _)| *faulted == pid)
+        {
+            Some((_, errno)) => Err(classify(io::Error::from_raw_os_error(*errno))),
+            None => Ok(()),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -302,6 +424,59 @@ mod tests {
         different_exec.version = different_exec.version.wrapping_add(1);
         assert!(!different_exec.alive());
         assert!(holder(&identity, u32::MAX).is_err());
+    }
+
+    #[test]
+    fn only_a_confirmed_exit_is_gone() {
+        for errno in [libc::ESRCH, libc::ENOENT] {
+            let error = classify(io::Error::from_raw_os_error(errno));
+            assert_eq!(error.kind(), io::ErrorKind::NotFound, "errno {errno}");
+        }
+        for errno in [libc::EPERM, libc::EACCES] {
+            let error = classify(io::Error::from_raw_os_error(errno));
+            assert_eq!(
+                error.kind(),
+                io::ErrorKind::PermissionDenied,
+                "errno {errno}"
+            );
+        }
+        for errno in [
+            libc::ENOMEM,
+            libc::ENFILE,
+            libc::EMFILE,
+            libc::EIO,
+            libc::EINTR,
+        ] {
+            let error = classify(io::Error::from_raw_os_error(errno));
+            assert_eq!(error.raw_os_error(), Some(errno));
+        }
+
+        let mut child = std::process::Command::new("sleep")
+            .arg("600")
+            .spawn()
+            .unwrap();
+        let identity = inspect(child.id()).unwrap().0;
+        assert_eq!(identity.presence(), Presence::Present);
+        for errno in [libc::ENOMEM, libc::ENFILE, libc::EMFILE, libc::EIO] {
+            let _fault = fault::inject(identity.pid, errno);
+            assert_eq!(identity.presence(), Presence::Unconfirmed, "errno {errno}");
+            assert!(!identity.alive() && !identity.gone(), "errno {errno}");
+        }
+        {
+            let _fault = fault::inject(identity.pid, libc::ESRCH);
+            assert_eq!(identity.presence(), Presence::Gone);
+        }
+        assert_eq!(identity.presence(), Presence::Present);
+        // A zombie has exited, whether or not its parent has collected it.
+        assert!(child.id() > 1);
+        child.kill().unwrap();
+        let started = std::time::Instant::now();
+        while !identity.gone() {
+            assert!(started.elapsed() < std::time::Duration::from_secs(5));
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        child.wait().unwrap();
+        assert_eq!(identity.presence(), Presence::Gone);
     }
 
     #[test]

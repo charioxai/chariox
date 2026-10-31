@@ -138,6 +138,31 @@ test("a rejected vault passphrase adds the one-line recovery hint and still fail
   assert.match(VAULT_FOLDED_PASSPHRASE_HINT, /lower case and without spaces.*Change passphrase/)
 })
 
+test("credential vault unlock reads the passphrase hidden and sends it with no session", async () => {
+  const command = parseSlashCommand("/credential vault unlock") as Extract<ReturnType<typeof parseSlashCommand>, { kind: "credential" }>
+  const harness = capabilityHarness(agent())
+  const prompts: string[] = []
+  const sent: string[] = []
+  harness.deps.readSecret = async (prompt) => { prompts.push(prompt); return "correct horse" }
+  harness.deps.unlockCredentialVault = async (passphrase) => { sent.push(passphrase); return { action: "unlocked", status: { unlocked: true } } }
+  await handleCredentialSlashCommand(harness.deps, command)
+  assert.deepEqual(prompts, ["Vault passphrase: "])
+  assert.deepEqual(sent, ["correct horse"])
+  assert.deepEqual(harness.footers, ["info:vault unlocked"])
+  assert.deepEqual(harness.notices, [])
+
+  const empty = capabilityHarness(agent())
+  empty.deps.readSecret = async () => ""
+  empty.deps.unlockCredentialVault = async () => { throw new Error("must not be sent") }
+  await handleCredentialSlashCommand(empty.deps, command)
+  assert.deepEqual(empty.footers, ["error:the Vault passphrase must not be empty"])
+
+  const wrong = capabilityHarness(agent())
+  wrong.deps.readSecret = async () => "nope"
+  wrong.deps.unlockCredentialVault = async () => { throw new Error("That is not the Vault passphrase. Try again.") }
+  await assert.rejects(handleCredentialSlashCommand(wrong.deps, command), { message: "That is not the Vault passphrase. Try again." })
+})
+
 test("a vault passphrase change reports its own outcome", async () => {
   const harness = capabilityHarness(agent())
   harness.deps.manageCredentialVault = async () => ({ action: "passphrase_changed", status: { unlocked: true } })

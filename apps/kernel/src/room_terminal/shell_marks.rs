@@ -250,6 +250,7 @@ mod tests {
             env.insert("TERM".into(), "dumb".into());
             let mut pty = PtyManager::default();
             pty.spawn_interactive(PtySpawnRequest {
+                agent: None,
                 process_key: "hooks".into(),
                 provider_run_id: "hooks".into(),
                 program: bash.clone(),

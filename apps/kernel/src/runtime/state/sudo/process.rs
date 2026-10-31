@@ -8,6 +8,10 @@ impl KernelRuntimeState {
         peer: &ProcessIdentity,
     ) -> Result<KernelSudoTurn, DaemonError> {
         let chain = ancestry(peer).map_err(|_| error("provider process identity changed"))?;
+        self.sudo_for_chain(&chain)
+    }
+
+    fn sudo_for_chain(&self, chain: &[ProcessIdentity]) -> Result<KernelSudoTurn, DaemonError> {
         let mut roots = self
             .owned
             .provider_process_tracking
@@ -23,7 +27,8 @@ impl KernelRuntimeState {
                     process
                         .endpoint_identity
                         .clone()
-                        .filter(ProcessIdentity::alive),
+                        // A root only counts when it is also in the verified chain.
+                        .filter(|identity| !identity.gone()),
                 ]
                 .into_iter()
                 .flatten()
@@ -80,8 +85,20 @@ impl KernelRuntimeState {
             .ok_or_else(|| error("this provider turn has no sudo authority"))
     }
 
+    /// Whether the sudo window `id` still serves a connection from `peer`. A peer the
+    /// OS can't read just now defers only the process check: the window and its turn
+    /// are still judged, and only a confirmed answer closes it.
     pub(crate) fn sudo_peer_live(&self, id: &str, peer: &ProcessIdentity) -> bool {
-        self.sudo_for_peer(peer)
-            .is_ok_and(|turn| turn.entry_id == id)
+        if peer.gone() {
+            return false;
+        }
+        match ancestry(peer) {
+            Ok(chain) => self
+                .sudo_for_chain(&chain)
+                .is_ok_and(|turn| turn.entry_id == id),
+            Err(error) => {
+                error.kind() != std::io::ErrorKind::NotFound && self.sudo_window_bound(id).is_ok()
+            }
+        }
     }
 }

@@ -226,7 +226,7 @@ pub fn terminal_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: TERMINAL_CLOSE_TOOL.to_string(),
-            description: "Close a terminal and stop everything running in it. Refused once the user has typed in or resized the tab: then only the user can close it.".to_string(),
+            description: "Close a terminal and stop everything running in it. Refused once the user has typed in the tab: then only the user can close it.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["terminal_id"],

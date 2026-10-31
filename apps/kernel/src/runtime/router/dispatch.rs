@@ -207,6 +207,14 @@ impl CommandRouter {
                 "agents cannot answer approvals; the user answers in a Chariox terminal",
             ));
         }
+        if let Err(error) = self
+            .runtime_state
+            .ensure_vault_change_allowed(&command, &request)
+        {
+            let result = Err(error);
+            log_command_completed(&command_trace, &result);
+            return result;
+        }
         if matches!(&request, LocalDaemonRequest::RenewKernelSudoRequester(_)) {
             return Err(crate::runtime::kernel_access::error(
                 "only another kernel's gateway renews a sudo requester, and it names its origin",

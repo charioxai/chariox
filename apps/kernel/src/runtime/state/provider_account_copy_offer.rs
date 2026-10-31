@@ -5,6 +5,7 @@ use crate::provider_account_copy::{
     failure, ProviderAccountCopyBinding, ProviderAccountCopyOffer, ProviderAccountCopyReceipt,
     PROVIDER_ACCOUNT_COPY_PULL_CAPABILITY,
 };
+use crate::runtime::command::{command_caller_user_id, KernelCommand};
 use crate::session::{RuntimeInteraction, RuntimeInteractionChoice, RuntimeInteractionChoiceStyle};
 use sha2::{Digest, Sha256};
 
@@ -165,11 +166,16 @@ impl KernelRuntimeState {
         Ok(offers)
     }
 
+    /// The owner's own client (`command.is_terminal_caller()`) asked for this
+    /// copy by choosing the offer, so that choice is the consent. Any other
+    /// caller (an agent, a leased or remote run, a Metaagent) still needs the
+    /// kernel decision. The source kernel's release rules do not depend on it.
     pub(crate) async fn copy_provider_account_from_kernel(
         &self,
-        caller: &str,
+        command: &KernelCommand,
         request: CopyProviderAccountFromKernelRequest,
     ) -> Result<ProviderAccountCopyReceipt, DaemonError> {
+        let caller = &command_caller_user_id(command);
         let config = self.config_snapshot().await;
         let owner = enrolled_owner(&config, caller)?;
         let binding = ProviderAccountCopyBinding {
@@ -196,50 +202,8 @@ impl KernelRuntimeState {
                     && offer.account_profile == binding.source_profile_id
             })
             .ok_or_else(|| failure("provider_account_copy_profile"))?;
-        let id = format!(
-            "provider-account-copy:{:x}",
-            Sha256::digest(serde_json::to_vec(&binding).map_err(|_| failure("invalid_request"))?)
-        );
-        let interaction = RuntimeInteraction::for_kernel_operation(
-            &id,
-            &id,
-            "Copy login to this machine",
-            format!(
-                "Copy {} from {} to this machine? Each machine keeps an independent login.{}",
-                offer.label,
-                offer.source_label,
-                if binding.replace {
-                    " This replaces the previously copied login."
-                } else {
-                    ""
-                }
-            ),
-            vec![
-                RuntimeInteractionChoice::new(
-                    "copy",
-                    "Copy login to this machine",
-                    "copy",
-                    Some(RuntimeInteractionChoiceStyle::Primary),
-                ),
-                RuntimeInteractionChoice::new(
-                    "cancel",
-                    "Cancel",
-                    "cancel",
-                    Some(RuntimeInteractionChoiceStyle::Secondary),
-                ),
-            ],
-        );
-        let receiver = self
-            .create_kernel_operation_interaction("", &owner, interaction)
-            .await?;
-        let _consent = CopyConsent {
-            state: self.clone(),
-            id,
-        };
-        if !matches!(tokio::time::timeout(Duration::from_secs(300), receiver).await,
-            Ok(Ok(answer)) if answer.status == "answered" && answer.choice_id.as_deref() == Some("copy"))
-        {
-            return Err(failure("provider_account_copy_cancelled"));
+        if !command.is_terminal_caller() {
+            self.await_copy_consent(&owner, &binding, &offer).await?;
         }
         let current = self.config_snapshot().await;
         if enrolled_owner(&current, caller)? != owner
@@ -282,6 +246,60 @@ impl KernelRuntimeState {
             RelayPeerResponse::ProviderAccountCopyFailed { code } => Err(copy_peer_failure(&code)),
             _ => Err(failure("provider_account_copy_unsupported")),
         }
+    }
+
+    async fn await_copy_consent(
+        &self,
+        owner: &str,
+        binding: &ProviderAccountCopyBinding,
+        offer: &ProviderAccountCopyOffer,
+    ) -> Result<(), DaemonError> {
+        let id = format!(
+            "provider-account-copy:{:x}",
+            Sha256::digest(serde_json::to_vec(&binding).map_err(|_| failure("invalid_request"))?)
+        );
+        let interaction = RuntimeInteraction::for_kernel_operation(
+            &id,
+            &id,
+            "Copy login to this machine",
+            format!(
+                "Copy {} from {} to this machine? Each machine keeps an independent login.{}",
+                offer.label,
+                offer.source_label,
+                if binding.replace {
+                    " This replaces the previously copied login."
+                } else {
+                    ""
+                }
+            ),
+            vec![
+                RuntimeInteractionChoice::new(
+                    "copy",
+                    "Copy login to this machine",
+                    "copy",
+                    Some(RuntimeInteractionChoiceStyle::Primary),
+                ),
+                RuntimeInteractionChoice::new(
+                    "cancel",
+                    "Cancel",
+                    "cancel",
+                    Some(RuntimeInteractionChoiceStyle::Secondary),
+                ),
+            ],
+        );
+        let receiver = self
+            .create_kernel_operation_interaction("", owner, interaction)
+            .await?;
+        let _consent = CopyConsent {
+            state: self.clone(),
+            id,
+        };
+        if !matches!(tokio::time::timeout(Duration::from_secs(300), receiver).await,
+            Ok(Ok(answer)) if answer.status == "answered" && answer.choice_id.as_deref() == Some("copy"))
+        {
+            return Err(failure("provider_account_copy_cancelled"));
+        }
+        Ok(())
     }
 
     pub(crate) async fn send_requested_provider_account_copy(

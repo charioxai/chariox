@@ -1,3 +1,4 @@
+import type { SessionProcess } from "./kernel-events.js"
 import type { ExtensionGrant } from "./kernel-types-extensions.js"
 import type {
   AgentInstance,
@@ -36,6 +37,7 @@ export type SessionViewAttachedResponse = {
       agent_activity: Record<string, AgentRuntimeActivity>
       agent_activity_revision: number
       room_workflows: RoomWorkflowInventory
+      processes: SessionProcess[]
     } }
     history: { SessionHistoryOutline: SessionHistoryOutline }
   }

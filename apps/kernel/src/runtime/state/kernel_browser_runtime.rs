@@ -2,6 +2,7 @@
 use super::*;
 use crate::local::KernelBrowserCommand;
 use crate::runtime::kernel_browser_features as features;
+use crate::transport::room_shared_display::RoomDisplayCommand;
 use crate::transport::runtime_tools::{RuntimeToolResult, RuntimeToolSpec};
 
 /// MD-3: no serde impl. Display owns the serialized protocol adapter/version.
@@ -15,12 +16,6 @@ pub(crate) enum KernelBrowserDisplayRequest {
         generation: u64,
         frame_width: u32,
         frame_height: u32,
-    },
-    // Keep the protected legacy native stream seam for display adapters.
-    #[allow(dead_code)]
-    Subscribe {
-        tab_id: String,
-        generation: u64,
     },
     Input {
         binding: crate::runtime::kernel_browser_host::KernelBrowserDocumentBinding,
@@ -67,10 +62,12 @@ pub(crate) enum KernelBrowserDisplayRequest {
         subscription_id: String,
         generation: u64,
     },
+    /// `watch` is the kernel pump's pause of an unwatched display; a client's own park is cleared by the Tab's commit.
     Park {
         subscription_id: String,
         generation: u64,
         parked: bool,
+        watch: bool,
     },
     Resume {
         subscription_id: String,
@@ -138,6 +135,11 @@ fn browser_tool_params(arguments: serde_json::Value) -> Result<serde_json::Value
             "MD-DISPLAY: terminal display adapter required".into(),
         ));
     }
+    if matches!(&request.command, KernelBrowserCommand::Unsubscribe { .. }) {
+        return Err(host_error(
+            "MD-3: agents read the browser with state, snapshot and screenshot; a live stream is for a person watching".into(),
+        ));
+    }
     let input = matches!(&request.command, KernelBrowserCommand::Input { .. });
     if input
         && request
@@ -156,6 +158,35 @@ fn browser_tool_params(arguments: serde_json::Value) -> Result<serde_json::Value
     }
     params["focused_agent"] = serde_json::json!(true);
     Ok(params)
+}
+
+impl KernelBrowserDisplayRequest {
+    /// The Room display command this request becomes when its subscription is a Room display.
+    fn room_control(&self) -> Option<(&String, u64, RoomDisplayCommand)> {
+        match self {
+            KernelBrowserDisplayRequest::Attach {
+                subscription_id,
+                generation,
+            } => Some((subscription_id, *generation, RoomDisplayCommand::Attach {})),
+            KernelBrowserDisplayRequest::Suspend {
+                subscription_id,
+                generation,
+            } => Some((subscription_id, *generation, RoomDisplayCommand::Suspend {})),
+            KernelBrowserDisplayRequest::Resume {
+                subscription_id,
+                generation,
+            } => Some((subscription_id, *generation, RoomDisplayCommand::Resume {})),
+            // A parked Room display captures nothing: the worker pauses its desktop source and renews the leases and
+            // producer binding that would otherwise expire after 60 s.
+            KernelBrowserDisplayRequest::Park {
+                subscription_id,
+                generation,
+                parked: true,
+                ..
+            } => Some((subscription_id, *generation, RoomDisplayCommand::Park {})),
+            _ => None,
+        }
+    }
 }
 
 impl KernelRuntimeState {
@@ -257,6 +288,7 @@ impl KernelRuntimeState {
                 subscription_id,
                 generation,
                 parked,
+                watch: false,
             },
             // MP-08/MP-10: acknowledgements belong to a relay display
             // subscription's push pump; no other transport owns one.
@@ -526,38 +558,24 @@ impl KernelRuntimeState {
         caller: &crate::runtime::command::KernelCommand,
         request: KernelBrowserDisplayRequest,
     ) -> Result<serde_json::Value, DaemonError> {
-        let room_control = match &request {
-            KernelBrowserDisplayRequest::Attach {
-                subscription_id,
-                generation,
-            } => Some((
-                subscription_id,
-                *generation,
-                crate::transport::room_shared_display::RoomDisplayCommand::Attach {},
-            )),
-            KernelBrowserDisplayRequest::Suspend {
-                subscription_id,
-                generation,
-            } => Some((
-                subscription_id,
-                *generation,
-                crate::transport::room_shared_display::RoomDisplayCommand::Suspend {},
-            )),
-            KernelBrowserDisplayRequest::Resume {
-                subscription_id,
-                generation,
-            } => Some((
-                subscription_id,
-                *generation,
-                crate::transport::room_shared_display::RoomDisplayCommand::Resume {},
-            )),
-            _ => None,
-        };
+        let room_control = request.room_control();
         if let Some((id, generation, command)) = room_control {
             if self.is_room_display(id) {
                 return self
                     .room_display_control(&caller.caller, id, generation, command)
                     .await;
+            }
+        }
+        // Unparking a Room display needs nothing: the next capture goes straight to the producer.
+        if let KernelBrowserDisplayRequest::Park {
+            subscription_id,
+            generation,
+            parked: false,
+            ..
+        } = &request
+        {
+            if self.is_room_display(subscription_id) {
+                return Ok(serde_json::json!({"generation":generation,"parked":false}));
             }
         }
         use crate::session::{EnvironmentActor, EnvironmentActorKind};
@@ -631,8 +649,9 @@ impl KernelRuntimeState {
                 subscription_id,
                 generation,
                 parked,
+                watch,
             } => {
-                serde_json::json!({"op":"display_park","subscription_id":subscription_id,"generation":generation,"parked":parked})
+                serde_json::json!({"op":"display_park","subscription_id":subscription_id,"generation":generation,"parked":parked,"watch":watch})
             }
             KernelBrowserDisplayRequest::Capture { tab_id, generation } => {
                 serde_json::json!({"op":"screenshot","tab_id":tab_id,"generation":generation,"bound_frames":true})
@@ -644,9 +663,6 @@ impl KernelRuntimeState {
                 frame_height,
             } => {
                 serde_json::json!({"op":"screenshot","tab_id":tab_id,"generation":generation,"bound_frames":true,"_capture_protection":true,"_capture_viewport":{"width":frame_width,"height":frame_height}})
-            }
-            KernelBrowserDisplayRequest::Subscribe { tab_id, generation } => {
-                serde_json::json!({"op":"subscribe","tab_id":tab_id,"generation":generation,"bound_frames":true})
             }
             KernelBrowserDisplayRequest::Input { binding, input } => {
                 if binding.document_id.is_empty() || binding.document_id.len() > 256 {
@@ -793,7 +809,7 @@ impl KernelRuntimeState {
             }
             tools.push(RuntimeToolSpec { name: BROWSER.into(),
                 description: "MD-3: control the user's kernel browser outside sessions/slices. Read state/snapshot/screenshot to obtain tab IDs, generation and document_id; input requires the observed document_id beside command and accepts click/text/key/scroll; click/scroll x,y are CSS pixels inside the state viewport (screenshot pixels / device_scale_factor). Pending dialogs appear in state.dialogs; answer with dialog using its dialog_id, tab_id, document_id, generation and action accept/dismiss (optional prompt_text, empty allowed). Vault input is separate.".into(),
-                input_schema: serde_json::json!({"type":"object","properties":{"document_id":{"type":"string","minLength":1,"maxLength":256},"command":{"type":"object","properties":{"op":{"type":"string","enum":["start","state","stop","open","close","navigate","snapshot","input","dialog","screenshot","subscribe","poll","unsubscribe"]},"tab_id":{"type":"string"},"generation":{"type":"integer","minimum":1},"url":{"type":"string"},"subscription_id":{"type":"string"},"document_id":{"type":"string","minLength":1,"maxLength":256},"dialog_id":{"type":"string","minLength":1,"maxLength":256},"action":{"type":"string","enum":["accept","dismiss"]},"prompt_text":{"type":"string","maxLength":2048},"input":{"type":"object","properties":{"kind":{"type":"string","enum":["click","text","key","scroll"]},"x":{"type":"integer","minimum":0,"maximum":1279},"y":{"type":"integer","minimum":0,"maximum":799},"text":{"type":"string","maxLength":16384},"key":{"type":"string","minLength":1,"maxLength":16,"description":"Named navigation/editing key or a single printable character; validated by the shared browser input path."},"modifiers":{"type":"integer","minimum":0,"maximum":15,"description":"Optional bounded CDP keyboard bitset: Alt=1, Ctrl=2, Meta=4, Shift=8; omitted means zero."},"delta_x":{"type":"integer","minimum":-10000,"maximum":10000},"delta_y":{"type":"integer","minimum":-10000,"maximum":10000}},"required":["kind"],"additionalProperties":false}},"required":["op"],"additionalProperties":false}},"required":["command"],"additionalProperties":false}), });
+                input_schema: serde_json::json!({"type":"object","properties":{"document_id":{"type":"string","minLength":1,"maxLength":256},"command":{"type":"object","properties":{"op":{"type":"string","enum":["start","state","stop","open","close","navigate","snapshot","input","dialog","screenshot"]},"tab_id":{"type":"string"},"generation":{"type":"integer","minimum":1},"url":{"type":"string"},"subscription_id":{"type":"string"},"document_id":{"type":"string","minLength":1,"maxLength":256},"dialog_id":{"type":"string","minLength":1,"maxLength":256},"action":{"type":"string","enum":["accept","dismiss"]},"prompt_text":{"type":"string","maxLength":2048},"input":{"type":"object","properties":{"kind":{"type":"string","enum":["click","text","key","scroll"]},"x":{"type":"integer","minimum":0,"maximum":1279},"y":{"type":"integer","minimum":0,"maximum":799},"text":{"type":"string","maxLength":16384},"key":{"type":"string","minLength":1,"maxLength":16,"description":"Named navigation/editing key or a single printable character; validated by the shared browser input path."},"modifiers":{"type":"integer","minimum":0,"maximum":15,"description":"Optional bounded CDP keyboard bitset: Alt=1, Ctrl=2, Meta=4, Shift=8; omitted means zero."},"delta_x":{"type":"integer","minimum":-10000,"maximum":10000},"delta_y":{"type":"integer","minimum":-10000,"maximum":10000}},"required":["kind"],"additionalProperties":false}},"required":["op"],"additionalProperties":false}},"required":["command"],"additionalProperties":false}), });
         }
         tools
     }
@@ -1033,6 +1049,21 @@ pub(super) fn host_error(message: String) -> DaemonError {
 #[cfg(test)]
 mod document_tests {
     use super::*;
+    /// Pausing a Room display must reach the worker as a pause; resuming needs no worker call (the next capture does).
+    #[test]
+    fn mp08_a_parked_room_display_becomes_a_worker_park() {
+        let park = |parked| KernelBrowserDisplayRequest::Park {
+            subscription_id: "room-display".into(),
+            generation: 3,
+            parked,
+            watch: true,
+        };
+        assert_eq!(
+            park(true).room_control(),
+            Some((&"room-display".to_owned(), 3, RoomDisplayCommand::Park {}))
+        );
+        assert!(park(false).room_control().is_none());
+    }
     #[test]
     fn md3_local_terminals_have_distinct_stable_browser_actors() {
         use crate::runtime::command::{KernelCommand, KernelCommandSource};
@@ -1211,6 +1242,20 @@ mod document_tests {
         assert_eq!(params["focused_agent"], true);
         assert!(browser_tool_params(serde_json::json!({"command":{"op":"state"}})).is_ok());
         assert!(serde_json::from_value::<crate::local::KernelBrowserRequest>(serde_json::json!({"command":{"op":"input","tab_id":"host-tab-a","generation":1,"document_id":"caller-cannot-inject-private-fields","input":{"kind":"click","x":1,"y":2}}})).is_err());
+    }
+    #[test]
+    fn provider_tools_cannot_open_a_live_stream() {
+        // Agents read with state, snapshot and screenshot; a stream is only for a person watching.
+        for command in [
+            serde_json::json!({"op":"subscribe","tab_id":"host-tab-a","generation":1}),
+            serde_json::json!({"op":"poll","subscription_id":"stream","generation":1}),
+            serde_json::json!({"op":"unsubscribe","subscription_id":"stream","generation":1}),
+        ] {
+            assert!(
+                browser_tool_params(serde_json::json!({ "command": command })).is_err(),
+                "an agent opened a live stream: {command}"
+            );
+        }
     }
     #[test]
     fn mp11_provider_tools_cannot_suspend_or_resume_human_display_leases() {

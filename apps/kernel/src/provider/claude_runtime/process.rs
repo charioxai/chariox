@@ -21,6 +21,7 @@ pub(super) enum ClaudeRuntimeMessage {
 )]
 pub(super) fn spawn_claude_child(
     provider_run_id: &str,
+    resource_unit: &str,
     program: &str,
     args: &[String],
     env: &BTreeMap<String, String>,
@@ -38,12 +39,13 @@ pub(super) fn spawn_claude_child(
     ),
     DaemonError,
 > {
-    let prepared = crate::runtime::process_resources::PreparedDomain::new().map_err(|error| {
-        DaemonError::LocalTransport {
-            operation,
-            message: error.to_string(),
-        }
-    })?;
+    let prepared =
+        crate::runtime::process_resources::PreparedDomain::new(resource_unit).map_err(|error| {
+            DaemonError::LocalTransport {
+                operation,
+                message: error.to_string(),
+            }
+        })?;
     #[cfg(unix)]
     let inner_program = program;
     let (program, args) = prepared.command(program.to_string(), args.to_vec());

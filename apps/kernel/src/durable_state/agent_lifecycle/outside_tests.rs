@@ -1042,3 +1042,103 @@ fn an_acknowledged_part_does_not_grow_with_forwarded_agents() {
         "the part is {few} bytes after 2 forwarded agents and {many} after 60"
     );
 }
+
+fn end_part(f: &Fixture, id: &str) {
+    f.store
+        .outside_mutate(Mutation::Unsubscribe {
+            id: id.into(),
+            targets: vec![],
+            all: true,
+            reason: "cancelled".into(),
+        })
+        .unwrap();
+}
+fn age_ended_part(f: &Fixture, id: &str, hours: u64) {
+    let mut part = f.store.outside_part(id).unwrap().unwrap();
+    part.ended_at_ms = part.ended_at_ms.map(|at| at - hours * 3_600_000);
+    Connection::open(f.root.join("state.sqlite"))
+        .unwrap()
+        .execute(
+            "UPDATE agent_outside_subscriptions SET payload=?1 WHERE id=?2",
+            params![serde_json::to_string(&part).unwrap(), id],
+        )
+        .unwrap();
+}
+fn inbox_rows(f: &Fixture, id: &str) -> i64 {
+    Connection::open(f.root.join("state.sqlite"))
+        .unwrap()
+        .query_row(
+            "SELECT count(*) FROM agent_inbox WHERE room_id='' AND agent_id=?1",
+            [id],
+            |r| r.get(0),
+        )
+        .unwrap()
+}
+
+#[test]
+fn ended_parts_are_pruned_after_a_day_and_live_or_cleaning_parts_stay() {
+    let f = Fixture::new();
+    f.store
+        .outside_mutate(Mutation::Identity {
+            kernel: "kernel-a".into(),
+            machine: "machine-a".into(),
+        })
+        .unwrap();
+    let mut remote = target("y", None);
+    remote.kernel = "kernel-b".into();
+    for id in ["unacked", "acked", "recent", "live", "cleaning"] {
+        subscribe(
+            &f,
+            id,
+            id == "cleaning",
+            vec![target("x", None), remote.clone()],
+        );
+    }
+    publish(&f, "one", event("x", "agent-1"));
+    for id in ["unacked", "acked", "recent", "cleaning"] {
+        end_part(&f, id);
+    }
+    let batch = list(&f, "acked");
+    f.store
+        .outside_mutate(Mutation::Ack {
+            id: "acked".into(),
+            cursor: batch.next_cursor,
+        })
+        .unwrap();
+    for id in ["unacked", "acked", "cleaning"] {
+        age_ended_part(&f, id, 25);
+    }
+    assert!(
+        !f.store
+            .outside_part("cleaning")
+            .unwrap()
+            .unwrap()
+            .cleanup_targets
+            .is_empty(),
+        "the remote cleanup of the home part is still owed"
+    );
+    // Ending another part is the moment a bound is enforced.
+    subscribe(&f, "last", false, vec![target("x", None)]);
+    end_part(&f, "last");
+    for id in ["unacked", "acked"] {
+        assert!(
+            f.store.outside_part(id).unwrap().is_none(),
+            "{id} part was not pruned"
+        );
+        assert_eq!(inbox_rows(&f, id), 0, "{id} rows were not pruned");
+    }
+    for id in ["recent", "live", "cleaning", "last"] {
+        assert!(
+            f.store.outside_part(id).unwrap().is_some(),
+            "{id} was pruned too early"
+        );
+    }
+    assert!(
+        inbox_rows(&f, "live") > 0,
+        "a live follower keeps its unacked events"
+    );
+    assert!(
+        inbox_rows(&f, "recent") > 0,
+        "a recently ended part keeps its rows"
+    );
+}

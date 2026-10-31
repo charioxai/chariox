@@ -1,0 +1,52 @@
+{
+  "items": [
+    "MP-08",
+    "MP-10",
+    "MP-11"
+  ],
+  "local_protocol": 924,
+  "peer_protocol": 375,
+  "allocation": "coordinator-allocated local 920 / relay peer 371: a mirror reset carries the page's document mode; pointer_cursor reads the CSS cursor at a point",
+  "pointer_cursor": {
+    "KernelBrowser": {
+      "command": {
+        "op": "pointer_cursor",
+        "tab_id": "t",
+        "generation": 1,
+        "x": 10,
+        "y": 20
+      }
+    }
+  },
+  "pointer_cursor_result": {
+    "generation": 1,
+    "cursor": "pointer"
+  },
+  "quirks_reset": {
+    "wire": 2,
+    "sequence": 1,
+    "reset": true,
+    "document_mode": "quirks",
+    "snapshot_complete": true,
+    "nodes": [
+      {
+        "id": "n1",
+        "parent": null,
+        "kind": "document"
+      },
+      {
+        "id": "n2",
+        "parent": "n1",
+        "kind": "element",
+        "tag": "html"
+      },
+      {
+        "id": "n3",
+        "parent": "n2",
+        "kind": "element",
+        "tag": "body"
+      }
+    ],
+    "ops": []
+  }
+}

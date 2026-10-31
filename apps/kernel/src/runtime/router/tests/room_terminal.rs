@@ -534,3 +534,240 @@ fn room_exec_uses_exactly_the_room_terminal_owner_gate() {
         .unwrap();
     });
 }
+
+// A one-shot `GetSessionState` carries the process rows the live feed shows.
+#[test]
+fn a_one_shot_session_state_lists_the_rooms_processes() {
+    run("room-state-processes", || async {
+        let worktree = crate::test_support::TestWorktree::new("room_state_processes");
+        let app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon boots");
+        let session_id = app
+            .sessions_mut()
+            .create_session(worktree.session_request())
+            .expect("session")
+            .id()
+            .to_string();
+        let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+        let opened = terminal_request(
+            &router,
+            DEFAULT_LOCAL_USER_ID,
+            &session_id,
+            None,
+            RoomTerminalOperation::Open {
+                cols: 80,
+                rows: 24,
+                title: None,
+                command: Some(vec!["/bin/sleep".into(), "8897".into()]),
+            },
+        )
+        .await
+        .expect("the owner opens a terminal");
+        let RoomTerminalResult::Opened { terminal } = opened else {
+            panic!("unexpected result");
+        };
+        let rows = || async {
+            let request =
+                LocalDaemonRequest::GetSessionState(crate::local::GetSessionStateRequest {
+                    session_id: session_id.clone(),
+                });
+            let response = router
+                .dispatch(
+                    remote_command_for_request(&request, Some(DEFAULT_LOCAL_USER_ID)),
+                    request,
+                )
+                .await
+                .expect("one-shot session state");
+            serde_json::to_value(response).unwrap()["SessionState"]["processes"].clone()
+        };
+        let mut found = serde_json::Value::Null;
+        for _ in 0..100 {
+            found = rows().await;
+            if found.as_array().is_some_and(|rows| {
+                rows.iter()
+                    .any(|row| row["command"].as_str().is_some_and(|c| c.contains("sleep")))
+            }) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        terminal_request(
+            &router,
+            DEFAULT_LOCAL_USER_ID,
+            &session_id,
+            None,
+            RoomTerminalOperation::Close {
+                terminal_id: terminal.terminal_id.clone(),
+            },
+        )
+        .await
+        .expect("the owner closes it");
+        let row = found
+            .as_array()
+            .and_then(|rows| rows.first())
+            .unwrap_or_else(|| panic!("the one-shot state lists no process: {found}"));
+        assert_eq!(row["owner"]["kind"], "terminal");
+        assert_eq!(row["owner"]["id"], terminal.terminal_id.as_str());
+    });
+}
+
+/// How the agent whose Room terminal detached a job goes away.
+#[derive(Clone, Copy, Debug)]
+enum AgentEnd {
+    Archive,
+    Delete,
+}
+
+/// MP-08 / MP-09 / MP-10 / MP-11: a job an agent's Room terminal detached
+/// before its command returned ends with the agent's archive or deletion,
+/// whether the ended terminal is still listed or the agent already closed it.
+async fn agent_end_ends_a_detached_terminal_job(end: AgentEnd, close_first: bool, name: &str) {
+    let worktree = crate::test_support::TestWorktree::new(name);
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon boots");
+    let session = app
+        .sessions_mut()
+        .create_session(worktree.session_request())
+        .expect("session");
+    let session_id = session.id().to_string();
+    let agent = spawn_test_agent(&mut app, &session_id, "terminal-agent", "dev-stub");
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+    let pid_file = worktree.path().join("detached.pid");
+    let script = format!(
+        "{} </dev/null >/dev/null 2>&1 &",
+        crate::test_support::detached_job(&format!("'{}'", pid_file.display()), 8897)
+    );
+    let RoomTerminalResult::Opened { terminal } = terminal_request(
+        &router,
+        DEFAULT_LOCAL_USER_ID,
+        &session_id,
+        Some(agent.id()),
+        RoomTerminalOperation::Open {
+            cols: 100,
+            rows: 30,
+            title: None,
+            command: Some(vec!["/bin/sh".into(), "-c".into(), script]),
+        },
+    )
+    .await
+    .expect("the agent opens a terminal") else {
+        panic!("unexpected result");
+    };
+    let read_job = || {
+        std::fs::read_to_string(&pid_file)
+            .ok()
+            .and_then(|text| text.trim().parse::<i32>().ok())
+            .filter(|pid| *pid > 1)
+    };
+    let mut ended = false;
+    for _ in 0..200 {
+        ended = list(&router, &session_id).await.iter().any(|row| {
+            matches!(
+                row.status,
+                crate::room_terminal::RoomTerminalStatus::Ended { .. }
+            )
+        });
+        if ended && read_job().is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let job = read_job();
+    let cleanup = || {
+        if let Some(pid) = job {
+            // SAFETY: the positive PID of the job this test started; never a group.
+            unsafe { libc::kill(pid, libc::SIGKILL) };
+        }
+    };
+    if !ended || job.is_none() {
+        cleanup();
+        panic!("the terminal did not end with a detached job (ended: {ended})");
+    }
+    // Past the grace in which a job still detaching may leave the session.
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let job = job.unwrap();
+    if !crate::test_support::process_alive(job) {
+        panic!("the detached job did not outlive its command");
+    }
+    if close_first {
+        terminal_request(
+            &router,
+            DEFAULT_LOCAL_USER_ID,
+            &session_id,
+            Some(agent.id()),
+            RoomTerminalOperation::Close {
+                terminal_id: terminal.terminal_id.clone(),
+            },
+        )
+        .await
+        .expect("the agent closes its ended terminal");
+    }
+    let (label, request) = match end {
+        AgentEnd::Archive => (
+            "agent-archive",
+            LocalDaemonRequest::ArchiveAgent(crate::local::ArchiveAgentRequest {
+                session_id: session_id.clone(),
+                agent_id: agent.id().to_string(),
+                archived: true,
+            }),
+        ),
+        AgentEnd::Delete => (
+            "agent-destroy",
+            LocalDaemonRequest::DestroyAgent(crate::local::DestroyAgentRequest {
+                session_id: session_id.clone(),
+                agent_id: agent.id().to_string(),
+            }),
+        ),
+    };
+    let command = KernelCommand::from_local_request(label, None, None, &request);
+    let ended_agent = router.dispatch(command, request).await;
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    while crate::test_support::process_alive(job) && std::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let survived = crate::test_support::process_alive(job);
+    cleanup();
+    ended_agent.expect("the agent goes away");
+    assert!(
+        !survived,
+        "the agent's detached terminal job kept running after {end:?} (terminal closed: {close_first})"
+    );
+}
+
+#[test]
+fn archiving_an_agent_ends_the_detached_job_of_its_ended_terminal() {
+    run("archive-terminal-job-listed", || {
+        agent_end_ends_a_detached_terminal_job(
+            AgentEnd::Archive,
+            false,
+            "archive_terminal_job_listed",
+        )
+    });
+}
+
+#[test]
+fn archiving_an_agent_ends_the_detached_job_of_its_closed_terminal() {
+    run("archive-terminal-job-closed", || {
+        agent_end_ends_a_detached_terminal_job(
+            AgentEnd::Archive,
+            true,
+            "archive_terminal_job_closed",
+        )
+    });
+}
+
+#[test]
+fn deleting_an_agent_ends_the_detached_job_of_its_ended_terminal() {
+    run("delete-terminal-job-listed", || {
+        agent_end_ends_a_detached_terminal_job(
+            AgentEnd::Delete,
+            false,
+            "delete_terminal_job_listed",
+        )
+    });
+}
+
+#[test]
+fn deleting_an_agent_ends_the_detached_job_of_its_closed_terminal() {
+    run("delete-terminal-job-closed", || {
+        agent_end_ends_a_detached_terminal_job(AgentEnd::Delete, true, "delete_terminal_job_closed")
+    });
+}

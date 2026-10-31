@@ -162,13 +162,8 @@ impl KernelRuntimeState {
         self.sudo_for_run(run_id)
     }
 
-    /// Privileged admission and the pre-effect recheck: the same live window
-    /// must still be bound to a running turn of its owner-authorized work.
-    pub(crate) fn authorize_sudo_request(
-        &self,
-        id: &str,
-        request: &LocalDaemonRequest,
-    ) -> Result<String, DaemonError> {
+    /// The live window `id`, still bound to the running turn of its owner-authorized work.
+    pub(crate) fn sudo_window_bound(&self, id: &str) -> Result<KernelSudoTurn, DaemonError> {
         let turn = self
             .owned
             .sudo_turns
@@ -188,6 +183,17 @@ impl KernelRuntimeState {
         {
             return Err(error("sudo window ended or was revoked"));
         }
+        Ok(turn)
+    }
+
+    /// Privileged admission and the pre-effect recheck: the same live window
+    /// must still be bound to a running turn of its owner-authorized work.
+    pub(crate) fn authorize_sudo_request(
+        &self,
+        id: &str,
+        request: &LocalDaemonRequest,
+    ) -> Result<String, DaemonError> {
+        let turn = self.sudo_window_bound(id)?;
         if sudo_request_forbidden(request) {
             return Err(error("sudo cannot answer approvals, grant authority, read secrets, change the passkey or access configuration"));
         }
@@ -226,6 +232,7 @@ pub(super) fn sudo_request_forbidden(request: &LocalDaemonRequest) -> bool {
             | LocalDaemonRequest::AckEvents(_)
             | LocalDaemonRequest::ListGatewayKernels(_)
             | LocalDaemonRequest::ManageCredentialVault(_)
+            | LocalDaemonRequest::UnlockCredentialVault(_)
             | LocalDaemonRequest::GetCredential(_)
             | LocalDaemonRequest::SetCredentialSecret(_)
             | LocalDaemonRequest::GetUserConfig(_)
@@ -364,6 +371,18 @@ mod registry_tests {
         ] {
             assert!(sudo_request_forbidden(&request));
         }
+    }
+
+    // The passphrase is the owner's to type; an agent never sends it.
+    #[test]
+    fn sudo_cannot_unlock_the_vault() {
+        assert!(sudo_request_forbidden(
+            &LocalDaemonRequest::UnlockCredentialVault(
+                crate::local::UnlockCredentialVaultRequest {
+                    passphrase: crate::local::VaultPassphrase::new("passphrase"),
+                }
+            )
+        ));
     }
 
     // A sudo window belongs to one turn on one kernel: it cannot name a background process.

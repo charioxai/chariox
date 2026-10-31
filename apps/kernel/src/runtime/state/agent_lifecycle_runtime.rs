@@ -6,6 +6,16 @@ use crate::durable_state::agent_lifecycle::{
 };
 
 impl KernelRuntimeOwnedState {
+    /// True when the task is at a revision this kernel has not yet announced.
+    /// Retried settlements of an unchanged task are not news.
+    pub(super) fn task_settlement_changed(&self, task: &AgentTaskExecution) -> bool {
+        let mut announced = self
+            .task_settlement_revisions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        announced.insert(task.task_id.clone(), task.revision) != Some(task.revision)
+    }
+
     /// Returns true when this admission created the task.
     pub(super) fn admit_agent_task(
         &self,
@@ -224,14 +234,18 @@ impl KernelRuntimeOwnedState {
             "",
             crate::session::PromptStatus::Completed,
         );
-        self.settle_agent_task_answered_by(
-            &task.room_id,
-            &task.agent_id,
-            &prompt,
-            run,
-            answer_run,
-            false,
-        )
+        // A task that still holds a pending continuation settles to itself;
+        // that is no settlement, and the sweep must end it instead.
+        Ok(self
+            .settle_agent_task_answered_by(
+                &task.room_id,
+                &task.agent_id,
+                &prompt,
+                run,
+                answer_run,
+                false,
+            )?
+            .filter(|(settled, _)| settled.revision != task.revision))
     }
 
     pub(super) fn settle_agent_task(
@@ -679,17 +693,20 @@ impl KernelRuntimeState {
         };
         self.retract_stale_task_owner_interactions(&task.room_id, std::slice::from_ref(&task))
             .await;
-        let name = self.agent_notice_name(&task.agent_id);
-        let message = super::agent_task_projection::task_status_notice(&task, &name);
-        self.owned.record_notice_for_agent(
-            &task.room_id,
-            None,
-            Some(&task.agent_id),
-            self.owned
-                .attachment_store
-                .list_session_attachment_ids(&task.room_id),
-            message,
-        );
+        let changed = self.owned.task_settlement_changed(&task);
+        if changed {
+            let name = self.agent_notice_name(&task.agent_id);
+            let message = super::agent_task_projection::task_status_notice(&task, &name);
+            self.owned.record_notice_for_agent(
+                &task.room_id,
+                None,
+                Some(&task.agent_id),
+                self.owned
+                    .attachment_store
+                    .list_session_attachment_ids(&task.room_id),
+                message,
+            );
+        }
         let public_answer = self.owned.public_agent_task_answer(&task)?;
         if task.state == ExecutionState::Cancelled {
             Box::pin(self.cancel_agent_task_resources(&task)).await?;
@@ -762,7 +779,11 @@ impl KernelRuntimeState {
                     success: task.state == ExecutionState::Done,
                 })?;
         }
-        self.schedule_agent_lifecycle_sweep();
+        // A retried settlement changed nothing: the sweep that found it would
+        // find it again, so waking it here would spin.
+        if changed {
+            self.schedule_agent_lifecycle_sweep();
+        }
         Ok(())
     }
     pub(super) fn schedule_agent_lifecycle_sweep(&self) {

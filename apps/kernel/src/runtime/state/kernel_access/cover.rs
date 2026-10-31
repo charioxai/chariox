@@ -21,33 +21,43 @@ impl KernelRuntimeState {
     ) -> Result<(String, CoveredProcess), DaemonError> {
         let grant = self
             .access_grants_for(peer)
+            .map_err(Refusal::error)?
             .into_iter()
             .find(|grant| bound.is_none_or(|id| id == grant.summary.grant_id))
             .map(|grant| grant.summary.grant_id)
             .ok_or_else(|| {
-                if bound.is_some() || self.access_ended_for(peer) {
-                    Refusal::Ended.error()
-                } else {
-                    Refusal::NotCovered.error()
+                match self.access_end_for(peer) {
+                    Some(ended) => ended,
+                    None if bound.is_some() => Refusal::Ended,
+                    None => Refusal::NotCovered,
                 }
+                .error()
             })?;
         let (target, _) = process::inspect(request.pid).map_err(|error| {
             // Another user's process exists but is outside what any grant reaches.
-            if error.kind() == std::io::ErrorKind::PermissionDenied {
-                Refusal::CoverOutside.error()
-            } else {
-                Refusal::CoverGone.error()
+            match error.kind() {
+                std::io::ErrorKind::PermissionDenied => Refusal::CoverOutside,
+                std::io::ErrorKind::NotFound => Refusal::CoverGone,
+                _ => Refusal::Unconfirmed,
             }
+            .error()
         })?;
         if request.start.is_some_and(|start| start != target.start) {
             return Err(Refusal::CoverIdentityChanged.error());
         }
         let (kernel, _) = process::inspect(std::process::id())
             .map_err(|_| error("the kernel's own identity is unavailable"))?;
-        if kernel.contains(&target) {
+        let chain = process::ancestry(&target).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                Refusal::CoverGone
+            } else {
+                Refusal::Unconfirmed
+            }
+            .error()
+        })?;
+        if chain.contains(&kernel) {
             return Err(Refusal::CoverKernelProcess.error());
         }
-        let chain = process::ancestry(&target).map_err(|_| Refusal::CoverGone.error())?;
         let mut state = self
             .owned
             .kernel_access
@@ -61,7 +71,7 @@ impl KernelRuntimeState {
             return Err(Refusal::CoverOutside.error());
         }
         if !live.covered.contains(&target) {
-            live.covered.retain(ProcessIdentity::alive);
+            live.covered.retain(|process| !process.gone());
             if live.covered.len() >= MAX_COVERED {
                 return Err(Refusal::CoverLimit.error());
             }

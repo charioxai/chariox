@@ -398,3 +398,31 @@ fn browser_mirror2_layout_560_shape_is_pinned() {
         fixture["subscribe"]
     );
 }
+
+#[test]
+fn browser_pointer_cursor_and_document_mode_920_shape_is_pinned() {
+    // MP-08/MP-10/MP-11: protocol 920 / relay peer 371: a mirror reset carries the page's document mode when it is not
+    // no-quirks, and `pointer_cursor` reads the CSS cursor the page shows at a point (the viewer shows it over video).
+    let bytes = include_bytes!("browser-pointer-cursor-document-mode-920.json");
+    assert_eq!(
+        format!("{:x}", sha2::Sha256::digest(bytes)),
+        "4314582c8ea689e4ebc562abc1acf2440ea544ba9005a00531c51cdceee5dff5"
+    );
+    let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    assert_eq!(fixture["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
+    assert_eq!(
+        fixture["peer_protocol"],
+        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION
+    );
+    let request: LocalDaemonRequest =
+        serde_json::from_value(fixture["pointer_cursor"].clone()).unwrap();
+    assert_eq!(
+        serde_json::to_value(request).unwrap(),
+        fixture["pointer_cursor"]
+    );
+    for name in ["pointer_cursor_result", "quirks_reset"] {
+        let wire = serde_json::json!({"KernelBrowser": {"result": fixture[name]}});
+        let typed: LocalDaemonResponse = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(serde_json::to_value(typed).unwrap(), wire);
+    }
+}
