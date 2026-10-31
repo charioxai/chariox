@@ -319,6 +319,7 @@ impl Ledger {
                 if let Some(disk) = disk {
                     state.reserve(disk, ahead);
                 }
+                state.running(entry, room);
             }
         }
     }
@@ -408,6 +409,7 @@ impl Ledger {
         }
         entry.wait = None;
         entry.admitted = true;
+        state.running(entry, room);
         drop(observation);
         self.resumed_at.insert(reason as u8, Instant::now());
         Some(member)
@@ -439,6 +441,20 @@ impl State {
         }
     }
 
+    /// Notes a command that runs now: the rest of the pass must see it as the
+    /// heavy work it is, however it came to run.
+    fn running(&mut self, entry: &Entry, room: &Room) {
+        let heavy = entry.resident >= room.light
+            || entry.admitted && entry.expected.is_some_and(|peak| peak.memory >= room.light);
+        if heavy {
+            self.heavy_running = true;
+            self.oldest = Some(
+                self.oldest
+                    .map_or(entry.arrived, |oldest| oldest.min(entry.arrived)),
+            );
+        }
+    }
+
     fn read(members: &[Arc<Mutex<Observation>>], room: &Room) -> Self {
         let mut state = State {
             reserved: 0,
@@ -461,17 +477,7 @@ impl State {
                         state.reserve(disk, ahead);
                     }
                 }
-                let heavy = entry.resident >= room.light
-                    || entry.admitted
-                        && entry.expected.is_some_and(|peak| peak.memory >= room.light);
-                if heavy {
-                    state.heavy_running = true;
-                    state.oldest = Some(
-                        state
-                            .oldest
-                            .map_or(entry.arrived, |oldest| oldest.min(entry.arrived)),
-                    );
-                }
+                state.running(entry, room);
             }
         }
         state

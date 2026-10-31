@@ -292,6 +292,71 @@ fn a_rejected_start_now_leaves_the_running_command_pausable() {
     assert!(!may_stop);
 }
 
+#[test]
+fn two_builds_waiting_for_different_resources_do_not_resume_onto_the_same_memory() {
+    // Nothing heavy runs; 8 GiB are free and each build needs 6 GiB. One
+    // waits for memory, the other for disk, and both become runnable in one pass.
+    let free = Arc::new(AtomicU64::new(50 * GIB));
+    let volume = volume(&free);
+    let build = |arrived, reason| Entry {
+        wait: Some(Wait::Held(reason)),
+        ..entry(
+            arrived,
+            Peak {
+                memory: 6 * GIB,
+                writes: GIB,
+            },
+        )
+    };
+    let current = owner(
+        "agent",
+        true,
+        vec![command(1, 0, 0), command(2, 0, 0)],
+        vec![
+            (1, build(1, WaitReason::Memory)),
+            (2, build(2, WaitReason::Disk)),
+        ],
+    );
+    Ledger::new(None).pass(
+        std::slice::from_ref(&current),
+        &current,
+        &room(8 * GIB, false, &volume),
+    );
+    assert_eq!(wait(&current, 1), None, "the first build did not resume");
+    assert_eq!(
+        wait(&current, 2),
+        Some(Wait::Held(WaitReason::Disk)),
+        "the second build resumed onto the memory the first one took"
+    );
+}
+
+#[test]
+fn two_new_known_builds_do_not_both_start_onto_one_free_machine() {
+    let free = Arc::new(AtomicU64::new(50 * GIB));
+    let volume = volume(&free);
+    let peak = Peak {
+        memory: 6 * GIB,
+        writes: 0,
+    };
+    let current = owner(
+        "agent",
+        true,
+        vec![command(1, 0, 0), command(2, 0, 0)],
+        vec![(1, entry(1, peak)), (2, entry(2, peak))],
+    );
+    Ledger::new(None).pass(
+        std::slice::from_ref(&current),
+        &current,
+        &room(8 * GIB, false, &volume),
+    );
+    assert_eq!(wait(&current, 1), None, "the first build was held");
+    assert_eq!(
+        wait(&current, 2),
+        Some(Wait::Held(WaitReason::Memory)),
+        "the second build started onto the memory the first one took"
+    );
+}
+
 /// Starts `pid` under the owner's current policy, as a sample would.
 fn start(ledger: &mut Ledger, member: &Arc<Mutex<Observation>>, pid: u32, resident: u64) {
     member
