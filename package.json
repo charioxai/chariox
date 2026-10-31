@@ -9,7 +9,7 @@
     "package:managed-kernel-release": "node scripts/package-managed-kernel-release.mjs",
     "build:kernel-client": "node scripts/generate-protocol-versions.mjs --check && pnpm --filter @chariox/tool-display run build && pnpm --filter @chariox/kernel-client run build",
     "build:cli": "pnpm --filter @chariox/cli run build",
-    "lint": "pnpm -r --workspace-concurrency=1 run lint",
+    "lint": "node scripts/no-provider-names.mjs && pnpm -r --workspace-concurrency=1 run lint",
     "start:cli": "node scripts/start-cli.mjs",
     "test": "node --test scripts/*.test.mjs && pnpm run test:review-regressions && pnpm run test:slice-provisioner && pnpm -r --workspace-concurrency=1 run test",
     "lint:process-signals": "node scripts/lint-process-signals.mjs",

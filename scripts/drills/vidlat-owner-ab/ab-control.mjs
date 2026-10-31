@@ -31,7 +31,7 @@ async function run(){try{
   console.log('MP-08/MP-10/MP-11: matching real kernel healthy');
  }else if(op==='login'||op==='rehearse-login'){
   const status=(await c.send({RelayStatus:null})).RelayStatus.status;
-  const login=(await c.send({StartCloudRelayLogin:{api_url:apiOrigin,client_id:'vidlat-owner-ab',client_alias:'MP-08/MP-10 owner A/B',machine_id:status.machine_id,machine_alias:'vidlat-owner-ab CCX43'}})).CloudRelayLoginStarted.login;
+  const login=(await c.send({StartCloudRelayLogin:{api_url:apiOrigin,client_id:'vidlat-owner-ab',client_alias:'MP-08/MP-10 owner A/B',machine_id:status.machine_id,machine_alias:'vidlat-owner-ab drill host'}})).CloudRelayLoginStarted.login;
   if(new URL(login.verification_url).origin!==state.origin)throw Error('MP-11: enrollment origin mismatch');
   // Device activation URL is retained locally for the product browser driver.
   // Never output a device code, token, credential or URL carrying one.

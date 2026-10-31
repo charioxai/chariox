@@ -22,6 +22,8 @@ const SELF = 'scripts/no-provider-names.mjs'
 export const ALLOWED_FILES = new Map([
   ['apps/kernel/src/secret_redaction.rs', 'detects leaked cloud-account secret formats (AWS access keys); not compute-provider logic'],
   ['apps/kernel/src/runtime/state/claude_permission_rules.rs', 'denies reads of the well-known ~/.aws/credentials file; not compute-provider logic'],
+  ['apps/cli/scripts/lib/managed-parity-semantic-reviews.mjs', 'historical MP-11 review record, pinned byte-for-byte to commit 9334141d4 by its own test; it names a blob that existed then'],
+  ['apps/cli/scripts/lib/managed-parity-source-rules.mjs', 'historical MP-11 source rules paired with the pinned review record above; the ledger test requires matching paths'],
   ['apps/cli/scripts/benchmarks/qualification/guest-preflight.py', 'copies the OSWorld benchmark release table, whose "aws" key is upstream benchmark data'],
   ['apps/cli/scripts/fixtures/misbehaving-app/bundle/runtime/main.mjs', 'fixture app that prints a fake leaked secret to exercise redaction'],
 ])

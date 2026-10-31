@@ -17,7 +17,7 @@ const files = [
   "apps/cli/scripts/lib/native-tui-remote-execution.mjs",
   "apps/cli/scripts/lib/native-tui-remote-execution.test.mjs",
   "apps/cli/scripts/lib/private-drill-runtime.mjs",
-  "apps/cli/scripts/lib/remote-home-extension-hetzner-helpers.mjs",
+  "apps/cli/scripts/lib/remote-home-extension-remote-kernel-helpers.mjs",
   "apps/cli/scripts/live-cloud-publication-deployment-drill.mjs",
   "apps/cli/scripts/live-connector-extension-agent-drill.mjs",
   "apps/cli/scripts/live-external-provider-session-import-drill.mjs",

@@ -262,7 +262,7 @@ test("kernel runtime images install the mandatory process sampler", async () => 
 })
 
 test("the native managed image explicitly installs and checks the sampler", async () => {
-  const source = await readFile(new URL("../deploy/managed-kernel/prepare-hetzner-image.sh", import.meta.url), "utf8")
+  const source = await readFile(new URL("../deploy/managed-kernel/prepare-worker-image.sh", import.meta.url), "utf8")
   assert.match(source, /\n  procps \\\n/)
   assert.ok(source.includes("ps -axo pid=,ppid=,rss=,pcpu=,etime=,comm="))
 })

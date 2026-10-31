@@ -144,7 +144,7 @@ Run the production/shared-host preparation path with:
 
 ```sh
 sudo env CHARIOX_MANAGED_PROVIDER_TOPOLOGY=shared_host \
-  deploy/managed-kernel/prepare-hetzner-image.sh \
+  deploy/managed-kernel/prepare-worker-image.sh \
   <release-rootfs> \
   <release-digest> \
   <trusted-public-key>
