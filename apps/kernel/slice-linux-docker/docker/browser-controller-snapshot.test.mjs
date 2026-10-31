@@ -57,10 +57,11 @@ test("snapshot rejects a child document navigation even when the top document st
   await assert.rejects(capture(fixture({ after })), { code: "stale_document_reference" });
 });
 
-test("snapshot rejects excessive frame count before reading accessibility trees", async () => {
+test("a page with more frames than the bound is read up to it and reported truncated", async () => {
   const connection = fixture();
-  await assert.rejects(capture(connection, { maxFrames: 1 }), { code: "snapshot_frame_limit" });
-  assert.deepEqual(connection.requestedFrames, []);
+  const snapshot = await capture(connection, { maxFrames: 1 });
+  assert.deepEqual(connection.requestedFrames, ["root"]);
+  assert.equal(snapshot.accessibility_truncated, true);
 });
 
 test("snapshot carries the control states a screen reader announces", async () => {

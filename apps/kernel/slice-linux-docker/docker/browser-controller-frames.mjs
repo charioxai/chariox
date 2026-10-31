@@ -210,7 +210,11 @@ export async function registerBrowserFrameTargets(connection, sessionId, targetI
 // frame and document in references returned for isolated renderers.
 const prefix = (frame) => `frame:${frame.id}:${frame.loaderId}:`;
 
-export async function withBrowserFrames(connection, sessionId, targetId, documentId, run) {
+// Reads the frames this page owns: its own tree and, going down from it, every isolated renderer whose parent
+// frame is already owned. The browser's other iframe targets (other tabs, advertising frames) never count against
+// this page. A page that owns more than MAX_FRAMES frames is cut there and `info.truncated` says so; `strict`
+// callers (they must see every frame to protect it) get snapshot_frame_limit instead.
+export async function withBrowserFrames(connection, sessionId, targetId, documentId, run, { strict = false } = {}) {
   const attached = [];
   try {
     const top = await connection.send("Page.getFrameTree", {}, sessionId);
@@ -218,39 +222,37 @@ export async function withBrowserFrames(connection, sessionId, targetId, documen
       throw new BrowserSnapshotError("stale_document_reference", "browser top document changed");
     }
     const root = { sessionId, tree: top.frameTree, frame: top.frameTree.frame, prefix: "" };
-    const { targetInfos = [] } = await connection.send("Target.getTargets");
-    const candidates = targetInfos.filter((target) => target.type === "iframe");
-    if (candidates.length >= MAX_FRAMES) {
-      throw new BrowserSnapshotError("snapshot_frame_limit", "browser exceeded isolated frame bound");
-    }
-    const frames = [root];
-    for (const target of candidates) {
-      const { sessionId: childSession } = await connection.send("Target.attachToTarget", { targetId: target.targetId, flatten: true });
-      attached.push(childSession);
-      const { frameTree } = await connection.send("Page.getFrameTree", {}, childSession);
-      frames.push({ sessionId: childSession, tree: frameTree, frame: frameTree.frame, prefix: prefix(frameTree.frame) });
-    }
     const owned = [root];
     const owners = new Map();
+    const info = { truncated: false };
     const remember = (entry, tree) => {
+      if (owners.size >= MAX_FRAMES) {
+        if (strict) throw new BrowserSnapshotError("snapshot_frame_limit", "browser exceeded frame bound");
+        info.truncated = true;
+        return;
+      }
       owners.set(tree.frame.id, entry);
-      if (owners.size > MAX_FRAMES) throw new BrowserSnapshotError("snapshot_frame_limit", "browser exceeded frame bound");
       for (const child of tree.childFrames ?? []) remember(entry, child);
     };
     remember(root, root.tree);
-    for (let changed = true; changed;) {
+    const { targetInfos = [] } = await connection.send("Target.getTargets");
+    const pending = targetInfos.filter((target) => target.type === "iframe");
+    for (let changed = true; changed && !info.truncated;) {
       changed = false;
-      for (const entry of frames.slice(1)) {
-        if (!owned.includes(entry) && owners.has(entry.frame.parentId)) {
-          entry.parent = owners.get(entry.frame.parentId);
-          owned.push(entry);
-          remember(entry, entry.tree);
-          changed = true;
-        }
+      for (const target of [...pending]) {
+        if (info.truncated) break;
+        if (!owners.has(target.parentFrameId)) continue;
+        pending.splice(pending.indexOf(target), 1);
+        const { sessionId: childSession } = await connection.send("Target.attachToTarget", { targetId: target.targetId, flatten: true });
+        attached.push(childSession);
+        const { frameTree } = await connection.send("Page.getFrameTree", {}, childSession);
+        const entry = { sessionId: childSession, tree: frameTree, frame: frameTree.frame, prefix: prefix(frameTree.frame), parent: owners.get(target.parentFrameId) };
+        owned.push(entry);
+        remember(entry, entry.tree);
+        changed = true;
       }
     }
-    const result = await run(owned);
-    return result;
+    return await run(owned, info);
   } finally {
     await Promise.all(attached.map((childSession) => connection.send("Target.detachFromTarget", { sessionId: childSession }).catch(() => {})));
   }
@@ -258,7 +260,7 @@ export async function withBrowserFrames(connection, sessionId, targetId, documen
 
 export async function captureBrowserFrames(options) {
   const { connection, sessionId, targetId, documentId } = options;
-  return withBrowserFrames(connection, sessionId, targetId, documentId, async (frames) => {
+  return withBrowserFrames(connection, sessionId, targetId, documentId, async (frames, info) => {
     let result;
     for (const entry of frames) {
       const remaining = MAX_NODES - Math.max(result?.accessibility_nodes.length ?? 0, result?.dom_nodes.length ?? 0);
@@ -274,6 +276,7 @@ export async function captureBrowserFrames(options) {
       result.shadow_roots.push(...snapshot.shadow_roots.map((node) => ({ ...node, node_ref: ref(node.node_ref) })));
     }
     await assertBrowserFramesUnchanged(connection, frames);
+    if (info.truncated) result.accessibility_truncated = true;
     return result;
   });
 }
