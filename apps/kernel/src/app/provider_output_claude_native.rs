@@ -80,6 +80,11 @@ const CLAUDE_WORKSPACE_TRUST_SELECTION_FAILED: &str =
 const CLAUDE_WORKSPACE_TRUST_SELECTION_FAILED_PREFIX: &str =
     "startup-workspace-trust-selection-failed:";
 
+/// The failure of a trust question that was denied or never answered: the person chose nothing wrong, so it ends the turn like a Stop.
+pub(crate) fn claude_workspace_trust_declined(failure: &str) -> bool {
+    failure == CLAUDE_WORKSPACE_TRUST_DENIED
+}
+
 fn claude_workspace_trust_failure(context_file: &str) -> Option<&'static str> {
     if claude_headless_workspace_trust_denied(context_file) {
         Some(CLAUDE_WORKSPACE_TRUST_DENIED)

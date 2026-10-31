@@ -1590,6 +1590,40 @@ impl KernelRuntimeState {
         }
     }
 
+    /// A native Stop is settled once its interrupt is queued: the turn ends as stopped.
+    pub(super) async fn settle_stopped_native_prompt(
+        &self,
+        dispatch: &crate::app::KernelPromptAbortDispatch,
+    ) {
+        let Some((agent_id, prompt)) = self.owned.cancelling_prompt_for_abort(
+            &dispatch.session_id,
+            &dispatch.provider_run_id,
+            &dispatch.prompt_id,
+        ) else {
+            return;
+        };
+        let settlement = self.owned.settle_stopped_agent_task(
+            &dispatch.session_id,
+            &agent_id,
+            &prompt,
+            &dispatch.provider_run_id,
+        );
+        let _ = self
+            .owned
+            .workflow_cancel_prompt(&dispatch.session_id, &prompt);
+        let _ = self
+            .owned
+            .finalize_local_prompt_cancellation_with_queued_advance(
+                &dispatch.session_id,
+                &agent_id,
+                &dispatch.prompt_id,
+                Some(&dispatch.provider_run_id),
+            );
+        if let Some(settlement) = settlement {
+            self.finish_stopped_agent_task(settlement, &prompt).await;
+        }
+    }
+
     pub(crate) fn spawn_prompt_abort(
         &self,
         dispatch: crate::app::KernelPromptAbortDispatch,
@@ -1619,32 +1653,7 @@ impl KernelRuntimeState {
                     .unwrap_or_default();
                 let outcome = match state.enqueue_prompt_abort(&dispatch).await {
                     Ok(()) if !structured => {
-                        if let Some((agent_id, prompt)) = state.owned.cancelling_prompt_for_abort(
-                            &dispatch.session_id,
-                            &dispatch.provider_run_id,
-                            &dispatch.prompt_id,
-                        ) {
-                            let settlement = state.owned.settle_stopped_agent_task(
-                                &dispatch.session_id,
-                                &agent_id,
-                                &prompt,
-                                &dispatch.provider_run_id,
-                            );
-                            let _ = state
-                                .owned
-                                .workflow_cancel_prompt(&dispatch.session_id, &prompt);
-                            let _ = state
-                                .owned
-                                .finalize_local_prompt_cancellation_with_queued_advance(
-                                    &dispatch.session_id,
-                                    &agent_id,
-                                    &dispatch.prompt_id,
-                                    Some(&dispatch.provider_run_id),
-                                );
-                            if let Some(settlement) = settlement {
-                                state.finish_stopped_agent_task(settlement, &prompt).await;
-                            }
-                        }
+                        state.settle_stopped_native_prompt(&dispatch).await;
                         PromptAbortDispatchOutcome::Done
                     }
                     Ok(()) => {

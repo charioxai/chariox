@@ -81,7 +81,7 @@ fn claude_workspace_trust_rejection_settles_only_own_prompt_with_reason() {
     app.sessions_mut()
         .set_active_provider_run(session.id(), Some(run.id().to_string()))
         .expect("active provider run should be set");
-    let _prompt = match app
+    let prompt = match app
         .record_native_prompt_started_with_attachments(
             session.id(),
             attachment.id(),
@@ -164,6 +164,28 @@ fn claude_workspace_trust_rejection_settles_only_own_prompt_with_reason() {
         "{diagnostic}"
     );
     assert!(!diagnostic.contains(root.to_string_lossy().as_ref()));
+    // The person sees the calm stopped state: no error row, the turn cancelled.
+    let error_rows = runtime
+        .owned
+        .terminal_stream
+        .output_records()
+        .into_iter()
+        .filter(|record| record.kind == crate::terminal::TerminalOutputKind::ProviderError)
+        .map(|record| String::from_utf8_lossy(&record.bytes).into_owned())
+        .collect::<Vec<_>>();
+    assert!(error_rows.is_empty(), "{error_rows:?}");
+    let settlement = runtime
+        .owned
+        .operational_history_store
+        .load_prompt_settlement_event(session.id(), agent.id(), prompt.id())
+        .unwrap()
+        .expect("the declined turn settles");
+    assert_eq!(
+        settlement
+            .metadata
+            .get(crate::history::TURN_OUTCOME_METADATA_KEY),
+        Some(&serde_json::to_value(crate::provider::TurnOutcome::cancelled()).unwrap())
+    );
     assert!(!fs::read_to_string(&capture_file)
         .unwrap_or_default()
         .contains("rejected-startup-trust-task"));
