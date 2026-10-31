@@ -5987,8 +5987,14 @@ with a pong. A browser that hears nothing for 2.5 s leaves the path and moves it
 lanes to the relay as a carrier switch (commands replay, subscriptions resume from
 their cursors, the open view keeps its state); the kernel ends a peer that neither
 answered nor acknowledged queued data for 3 s (on a slow link the ping can wait behind
-a megabyte already in SCTP; a browser still acknowledging it is alive). A viewer's display registered on another carrier stops the pump it
-left at once, so that pump's late end cannot retire the generation the new one serves.
+a megabyte already in SCTP; a browser still acknowledging it is alive). A viewer's display
+registered again on another carrier (same viewer key, same generation) keeps the pump that
+serves it: the pump moves to the new carrier with its encoder state, gate and worker lease,
+and sends there once the registration response is queued, so the switch starts no pump and
+asks for no independent frame (a frame the viewer missed in the switch still asks for one,
+as on any lane); the carrier it left can no longer stop it. Another viewer key, another
+generation or a 535 resume gets a fresh pump, which stops the one it replaces at once so a
+late end cannot retire the generation the new one serves.
 The way back is proven first: the browser opens and admits direct sockets for every
 lane the relay carries while the relay keeps carrying them, and switches only once all
 are admitted. Browsers open data channels only to kernels >=926
