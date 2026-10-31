@@ -76,6 +76,11 @@ enum Gate {
 }
 
 impl PumpState {
+    fn routes_to(&self, route: &Arc<PumpRoute>) -> bool {
+        self.route
+            .as_ref()
+            .is_some_and(|current| Arc::ptr_eq(current, route))
+    }
     fn mark(&self, stage: &'static str, started: Instant) {
         crate::transport::kernel_browser_display::timing_for(stage, Some(&self.display), started);
     }
@@ -427,10 +432,7 @@ impl DisplayPump {
     /// Ends the pump if `route` is still its carrier; `false` if it moved meanwhile.
     fn end_on(&self, route: &Arc<PumpRoute>) -> bool {
         self.with(|state| {
-            let current = state
-                .route
-                .as_ref()
-                .is_some_and(|current| Arc::ptr_eq(current, route));
+            let current = state.routes_to(route);
             if current {
                 state.stopped = true;
             }
@@ -465,7 +467,8 @@ impl DisplayPump {
         }
     }
     /// Pushes one sealed frame on the carrier the pump routes now, so a frame captured before a
-    /// move goes out on the new carrier. `false` ends the pump.
+    /// move goes out on the new carrier, also when it waits on the full queue of the carrier the
+    /// pump left. `false` ends the pump.
     async fn push(
         &self,
         sequence: u64,
@@ -475,19 +478,30 @@ impl DisplayPump {
             let Some(route) = self.deliverable_route().await else {
                 return false;
             };
-            let sent = route
+            let send = route
                 .outgoing_tx
                 .send_display_event(RelayEnvelope::DaemonEvent {
                     subscription_id: route.relay_id.clone(),
                     event_id: sequence,
                     encrypted_event: encrypted_event.clone(),
-                })
-                .await;
-            if sent.is_ok() {
-                return true;
-            }
-            if self.end_on(&route) {
-                return false;
+                });
+            tokio::pin!(send);
+            let sent = loop {
+                tokio::select! {
+                    sent = &mut send => break Some(sent),
+                    () = self.wake.notified() => {
+                        if self.with(|state| state.stopped || !state.routes_to(&route)) {
+                            break None;
+                        }
+                    }
+                }
+            };
+            match sent {
+                Some(Ok(())) => return true,
+                Some(Err(_)) if self.end_on(&route) => return false,
+                // The send was cancelled, or the carrier closed after a move: retry the frame on
+                // the route the pump has now.
+                Some(Err(_)) | None => {}
             }
         }
     }

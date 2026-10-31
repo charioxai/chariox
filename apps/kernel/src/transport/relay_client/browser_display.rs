@@ -681,7 +681,11 @@ mod pump_move_tests {
     }
 
     fn carrier() -> Carrier {
-        let (outgoing, frames, events) = RelayOutgoingSender::channel(64);
+        carrier_with_capacity(64)
+    }
+
+    fn carrier_with_capacity(capacity: usize) -> Carrier {
+        let (outgoing, frames, events) = RelayOutgoingSender::channel(capacity);
         Carrier {
             tasks: Arc::new(Mutex::new(BTreeMap::new())),
             outgoing,
@@ -841,6 +845,72 @@ mod pump_move_tests {
             gap <= interval + Duration::from_millis(25),
             "the switch paused the view for {gap:?}"
         );
+        router.runtime_state().shutdown_cleanup().await.unwrap();
+    }
+
+    // The carrier a pump leaves can be backpressured with its queue held open and never drained:
+    // the frame already waiting on it goes out on the carrier the viewer registered on.
+    #[tokio::test]
+    async fn mp08_tr16_a_send_blocked_on_the_carrier_it_left_retries_on_the_new_one() {
+        let (router, _work) = test_router("display-pump-blocked");
+        let (relay, mut direct) = (carrier_with_capacity(1), carrier());
+        let display = "display-tr16-blocked";
+        relay
+            .outgoing
+            .send_display_event(RelayEnvelope::DaemonEvent {
+                subscription_id: "filler".into(),
+                event_id: 0,
+                encrypted_event: frame(),
+            })
+            .await
+            .unwrap();
+        let Delivery::Fresh(pump) = register_delivery(
+            route(&router, &relay, display, "relay-lane", "viewer"),
+            7,
+            true,
+        )
+        .await
+        else {
+            panic!("the first registration starts a pump");
+        };
+        pump.release();
+        pump.acknowledge(7, 0, false, None, false);
+        let producer = tokio::spawn({
+            let pump = pump.clone();
+            async move { pump.push_test_frame(1, frame()).await.is_some() }
+        });
+        sleep(Duration::from_millis(100)).await;
+        assert!(
+            !producer.is_finished(),
+            "the full relay queue holds the send"
+        );
+        let Delivery::Moved { pump: moved, left } = register_delivery(
+            route(&router, &direct, display, "direct-lane", "viewer"),
+            7,
+            true,
+        )
+        .await
+        else {
+            panic!("the viewer's running pump must move to the carrier it registered on");
+        };
+        moved.release();
+        let mut frames = direct.frames.take().unwrap();
+        let Ok(Some(RelayEnvelope::DaemonEvent {
+            subscription_id,
+            event_id,
+            ..
+        })) = timeout(Duration::from_secs(2), frames.recv()).await
+        else {
+            panic!("the blocked frame must arrive on the new carrier");
+        };
+        assert_eq!((subscription_id.as_str(), event_id), ("direct-lane", 1));
+        assert!(producer.await.unwrap());
+        let left = left.expect("the relay route it left");
+        forget_moved_delivery(&left.tasks, &moved).await;
+        super::super::subscriptions::abort_subscription_tasks(&router, &relay.tasks).await;
+        pump.stop();
+        drop((relay.outgoing, direct.outgoing, left));
+        super::super::subscriptions::abort_subscription_tasks(&router, &direct.tasks).await;
         router.runtime_state().shutdown_cleanup().await.unwrap();
     }
 
