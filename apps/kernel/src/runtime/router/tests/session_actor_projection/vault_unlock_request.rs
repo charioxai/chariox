@@ -774,7 +774,7 @@ fn sign_in(run: bool) -> LocalDaemonRequest {
 }
 
 #[tokio::test]
-async fn an_agent_may_save_a_token_it_was_given_but_not_start_the_login() {
+async fn an_owners_agent_may_save_a_token_and_start_the_login() {
     let f = Fixture::locked();
     f.unlock(PASSPHRASE).await.unwrap();
     let mut metaagent = caller_of(Some(KernelConnectionClass::Terminal), None);
@@ -786,8 +786,16 @@ async fn an_agent_may_save_a_token_it_was_given_but_not_start_the_login() {
         assert!(!refused_as_owner_only(
             f.send_as(agent.clone(), sign_in(false)).await
         ));
-        assert!(refused_as_owner_only(f.send_as(agent, sign_in(true)).await));
+        assert!(!refused_as_owner_only(
+            f.send_as(agent, sign_in(true)).await
+        ));
     }
+    // Other callers stay refused: a relay peer is nobody's person or agent.
+    let peer = caller_of(
+        Some(KernelConnectionClass::RelayPeer),
+        Some("remote-kernel"),
+    );
+    assert!(refused_as_owner_only(f.send_as(peer, sign_in(true)).await));
 }
 
 fn set_secret(value: &str) -> LocalDaemonRequest {

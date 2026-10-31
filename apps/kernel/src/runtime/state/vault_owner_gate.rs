@@ -8,7 +8,7 @@ use crate::runtime::command::KernelCommand;
 mod wording {
     pub(super) const LOCK: &str = "Only the owner of this kernel can lock its Vault.";
     pub(super) const ENROLL: &str =
-        "Only a person at a Chariox client can sign in a provider account. Ask the owner to do it.";
+        "Only a person at a Chariox client or an agent of the owner can sign in a provider account.";
     pub(super) const CHANGE: &str =
         "Only the owner of this kernel or its agents can change what the Vault stores.";
     pub(super) const MENU: &str =
@@ -19,10 +19,8 @@ mod wording {
 enum Who {
     /// The owner's own client.
     Owner,
-    /// A person at a client: starting the sign-in of a provider account.
-    Person,
-    /// A person at a client, or an agent of the owner who was handed the
-    /// token: saving the setup token of a provider account.
+    /// A person at a client, or an agent of the owner: signing in a provider
+    /// account, by starting its official login or saving a token handed over.
     PersonOrOwnerAgent,
     /// The owner's client or an agent working for the owner: an agent's own
     /// secret requests still wait for the owner's unlock when the Vault is
@@ -35,13 +33,9 @@ fn who_may(request: &LocalDaemonRequest) -> Option<(Who, &'static str, &'static 
         LocalDaemonRequest::LockCredentialVault(_) => {
             (Who::Owner, "vault_lock_owner_only", wording::LOCK)
         }
-        LocalDaemonRequest::SetProviderAccountCredential(request) => (
-            if request.run {
-                Who::Person
-            } else {
-                Who::PersonOrOwnerAgent
-            },
-            "provider_account_sign_in_person_only",
+        LocalDaemonRequest::SetProviderAccountCredential(_) => (
+            Who::PersonOrOwnerAgent,
+            "provider_account_sign_in_owner_only",
             wording::ENROLL,
         ),
         LocalDaemonRequest::SetCredentialSecret(_)
@@ -83,7 +77,6 @@ impl KernelRuntimeState {
         let allowed = host
             || match who {
                 Who::Owner => self.owner_client_user_id(command).is_ok(),
-                Who::Person => command.is_terminal_caller(),
                 Who::PersonOrOwnerAgent => command.is_terminal_caller() || is_agent(command, class),
                 Who::OwnerOrAgent => {
                     self.owner_client_user_id(command).is_ok() || is_agent(command, class)
