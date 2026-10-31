@@ -255,7 +255,7 @@ pub(super) async fn handle_subscribe(
         },
     )?;
     if initial_credit {
-        pump.acknowledge(generation, 0, true, None);
+        pump.acknowledge(generation, 0, true, None, false);
     }
     let delivery_key = key.clone();
     let delivery_relay = relay_id.clone();
@@ -299,16 +299,23 @@ pub(super) async fn browser_display_delivery_id(
     Some(task.relay_subscription_id.clone())
 }
 
+/// What a `display_ack` reports.
+#[derive(Clone, Copy)]
+pub(super) struct AckReport {
+    pub(super) generation: u64,
+    pub(super) sequence: u64,
+    pub(super) lost: bool,
+    pub(super) held_ms: Option<u32>,
+    pub(super) paused: bool,
+}
+
 /// MP-08/MP-10: protocol 491 acknowledgement from the subscription's own
 /// sender key; renews its delivery lease and reports the pump state.
 pub(super) async fn acknowledge(
     tasks: &RelaySubscriptionTasks,
     display_id: &str,
     public_key: &str,
-    generation: u64,
-    sequence: u64,
-    lost: bool,
-    held_ms: Option<u32>,
+    report: AckReport,
 ) -> Option<&'static str> {
     let pump = {
         let guard = tasks.lock().await;
@@ -322,7 +329,13 @@ pub(super) async fn acknowledge(
             .display_pump
             .clone()?
     };
-    let status = pump.acknowledge(generation, sequence, lost, held_ms)?;
+    let status = pump.acknowledge(
+        report.generation,
+        report.sequence,
+        report.lost,
+        report.held_ms,
+        report.paused,
+    )?;
     browser_display_delivery_id(tasks, display_id, public_key).await?;
     Some(status)
 }
@@ -373,6 +386,78 @@ mod tests {
         assert!(browser_display_delivery_id(&tasks, "d", "key")
             .await
             .is_none());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn mp08_a_paused_display_keeps_its_delivery_for_minutes_and_resumes_on_the_same_pump() {
+        let pump = super::super::display_pump::DisplayPump::new(7, "d");
+        let tasks = Arc::new(Mutex::new(std::collections::BTreeMap::from([(
+            "display".into(),
+            RelaySubscriptionTask {
+                display_id: Some("d".into()),
+                display_pump: Some(pump.clone()),
+                relay_subscription_id: "relay".into(),
+                client_public_key: "key".into(),
+                handle: tokio::spawn(sleep(Duration::from_secs(60))),
+            },
+        )])));
+        tokio::task::yield_now().await;
+        // Hidden for five minutes: a paused acknowledgement every 20 s is the only traffic.
+        for _ in 0..15 {
+            tokio::time::advance(Duration::from_secs(20)).await;
+            assert_eq!(
+                acknowledge(
+                    &tasks,
+                    "d",
+                    "key",
+                    AckReport {
+                        generation: 7,
+                        sequence: 3,
+                        lost: false,
+                        held_ms: None,
+                        paused: true
+                    }
+                )
+                .await,
+                Some("running")
+            );
+            tokio::task::yield_now().await;
+        }
+        // Watched again: the independent-frame request reaches the same registration.
+        assert_eq!(
+            acknowledge(
+                &tasks,
+                "d",
+                "key",
+                AckReport {
+                    generation: 7,
+                    sequence: 3,
+                    lost: true,
+                    held_ms: None,
+                    paused: false
+                }
+            )
+            .await,
+            Some("running")
+        );
+        // Silence alone still ends the delivery after sixty seconds.
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_secs(61)).await;
+        tokio::task::yield_now().await;
+        assert!(acknowledge(
+            &tasks,
+            "d",
+            "key",
+            AckReport {
+                generation: 7,
+                sequence: 4,
+                lost: false,
+                held_ms: None,
+                paused: false
+            }
+        )
+        .await
+        .is_none());
     }
 }
 

@@ -398,6 +398,10 @@ impl KernelRuntimeState {
         agent_id: Option<&str>,
         operation: &'static str,
     ) -> Result<VaultUnlockGuard, DaemonError> {
+        if let Some(path) = self.client_single_use_unlock_path()? {
+            // "Ask every time": the owner's client unlocked for this one operation.
+            return Ok(VaultUnlockGuard::unlocked_for_operation(path));
+        }
         let Some((session_id, agent_id)) = self
             .preflight_vault_unlock_for_command_context(command, session_id, agent_id, operation)
             .await?
@@ -406,6 +410,22 @@ impl KernelRuntimeState {
         };
         self.ensure_vault_unlocked_for_agent(&session_id, &agent_id, operation)
             .await
+    }
+
+    /// The Vault's path while the owner's client holds it open on a single-use
+    /// unlock ("ask every time"), which the next operation uses up.
+    fn client_single_use_unlock_path(&self) -> Result<Option<std::path::PathBuf>, DaemonError> {
+        let vault = self
+            .owned
+            .config_projection
+            .snapshot()
+            .user_config
+            .credential_vault;
+        if vault.backend != crate::config::CredentialVaultBackend::CharioxEncrypted {
+            return Ok(None);
+        }
+        let path = expand_vault_path(&vault.path);
+        Ok(crate::secret::chariox_vault_single_use_unlocked(&path)?.then_some(path))
     }
 
     /// Validate where an unlock interaction can be shown without acquiring a
@@ -431,14 +451,12 @@ impl KernelRuntimeState {
         {
             return Ok(None);
         }
+        if self.client_single_use_unlock_path()?.is_some() {
+            return Ok(None);
+        }
         let session_id = session_id
             .or(command.session_id.as_deref())
-            .ok_or_else(|| DaemonError::LocalTransport {
-                operation,
-                message:
-                    "encrypted Chariox vault access requires a session_id so the unlock popup can be shown"
-                        .to_string(),
-            })?;
+            .ok_or_else(super::vault_unlock_request::vault_locked_error)?;
         let agent_id = self
             .vault_prompt_agent(
                 session_id,
@@ -547,13 +565,15 @@ impl KernelRuntimeState {
         if !force_prompt && crate::secret::chariox_encrypted_vault_status(&vault_path)?.unlocked {
             return Ok(VaultUnlockGuard::unlocked_until_expiry(vault_path.clone()));
         }
-        let status =
-            crate::secret::unlock_chariox_encrypted_vault(&vault_path, passphrase.as_str(), lease)?;
-        if let Err(error) = self.pin_critical_approval_verifier_after_unlock(&vault_path) {
-            crate::secret::lock_chariox_encrypted_vault(&vault_path)?;
-            crate::secret::clear_vault_secret_process_cache()?;
-            return Err(error);
-        }
+        let owner = self
+            .owned
+            .session_store
+            .get_session(session_id)?
+            .owner_user_id()
+            .to_owned();
+        let status = self
+            .unlock_vault_counted(&owner, &vault_path, passphrase.as_str(), lease, true)
+            .await?;
         crate::logging::info_with_fields(
             "credential_vault",
             "Chariox vault unlocked",
@@ -1463,7 +1483,7 @@ mod mp11_always_tests {
             let refused = refusals.iter().all(|(_, result)| {
                 result
                     .as_ref()
-                    .is_err_and(|error| error.contains("requires a session_id"))
+                    .is_err_and(|error| error == "The Vault is locked. Unlock it, then try again.")
             });
             crate::secret::lock_chariox_encrypted_vault(&vault).unwrap();
             drop(state);

@@ -410,6 +410,7 @@ async fn room_overview_historical_workflow_visibility_survives_foreign_agent_del
                 session: retained_session,
                 agent_activity: Default::default(),
                 agent_activity_revision: 0,
+                processes: Vec::new(),
             },
             actor.owner_user_id(),
             &crate::runtime::projection::ProviderRunProjectionStore::default(),

@@ -2,7 +2,8 @@
 
 use tokio::task::JoinSet;
 
-use super::admission::LocalBrowserSocket;
+use futures_util::{Sink, Stream};
+
 use super::leases::LocalBrowserLeaseState;
 use super::*;
 use crate::runtime_transport::CONNECTION_INBOUND_REQUEST_LIMIT;
@@ -11,11 +12,10 @@ const SESSION_QUEUE_LIMIT: usize = 1024;
 const PING_INTERVAL: Duration = Duration::from_secs(10);
 const IDLE_TIMEOUT: Duration = Duration::from_secs(35);
 
-pub(super) async fn run(
-    direct: Arc<LocalBrowserDirect>,
-    socket: LocalBrowserSocket,
-    grant: LocalBrowserGrant,
-) {
+pub(super) async fn run<S, E>(direct: Arc<LocalBrowserDirect>, socket: S, grant: LocalBrowserGrant)
+where
+    S: Stream<Item = Result<Message, E>> + Sink<Message> + Unpin,
+{
     let mut identity = grant.identity.clone();
     let lease_id = grant.lease_id.clone();
     let mut lease = direct.activate_lease(&lease_id, &grant);

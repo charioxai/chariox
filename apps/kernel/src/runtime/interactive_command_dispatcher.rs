@@ -63,7 +63,7 @@ pub(crate) fn dispatch_interactive_command<'a>(
         LocalDaemonRequest::CopyProviderAccountFromKernel(request) => {
             boxed_interactive_handler(move || async move {
                 runtime_state
-                    .copy_provider_account_from_kernel(&command_caller_user_id(&command), request)
+                    .copy_provider_account_from_kernel(&command, request)
                     .await
                     .map(|receipt| LocalDaemonResponse::ProviderAccountCopied { receipt })
             })

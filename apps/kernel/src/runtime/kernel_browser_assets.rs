@@ -431,6 +431,10 @@ const ASSETS: &[(&str, &[u8])] = &[
         include_bytes!("../../slice-linux-docker/docker/browser-focus-world.mjs"),
     ),
     (
+        "browser-controller-cursor.mjs",
+        include_bytes!("../../slice-linux-docker/docker/browser-controller-cursor.mjs"),
+    ),
+    (
         "browser-controller-cdp.mjs",
         include_bytes!("../../slice-linux-docker/docker/browser-controller-cdp.mjs"),
     ),

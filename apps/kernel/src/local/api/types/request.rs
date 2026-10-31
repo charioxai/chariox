@@ -252,6 +252,7 @@ pub enum LocalDaemonRequest {
     DeleteCredentialSecret(DeleteCredentialSecretRequest),
     GetCredentialVaultStatus(GetCredentialVaultStatusRequest),
     LockCredentialVault(LockCredentialVaultRequest),
+    UnlockCredentialVault(UnlockCredentialVaultRequest),
     ManageCredentialVault(ManageCredentialVaultRequest),
     PreflightProviderAccountPortability(PreflightProviderAccountPortabilityRequest),
     ListManagedEnvironmentCatalog(ListManagedEnvironmentCatalogRequest),

@@ -308,6 +308,66 @@ async fn sudo_operations_required_watched_command_runs() {
     f.state.owned.agent_wakes.processes.shutdown();
 }
 
+// PC-07: a process the agent started through its runtime tool is the agent's,
+// listed in Health and counted under its share of the memory ceiling.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_watched_process_is_listed_and_counted_under_its_agent() {
+    use crate::durable_state::agent_lifecycle::{Operation, Outcome};
+    let f = fixture_with_options(None, true);
+    let turn = running(&f);
+    f.state
+        .owned
+        .provider_store
+        .update_run_execution_config(
+            f.run.id(),
+            crate::provider::AgentExecutionMode::Build,
+            crate::provider::AgentPermissionLevel::Required,
+        )
+        .unwrap();
+    let Outcome::Task(task) = f
+        .state
+        .owned
+        .durable_state_store
+        .agent_lifecycle(Operation::Begin {
+            owner: turn.owner_user_id.clone(),
+            room: turn.session_id.clone(),
+            agent: turn.agent_id.clone(),
+            prompt: turn.prompt_id.clone().unwrap(),
+            run: Some(f.run.id().into()),
+            now: crate::session::unix_epoch_ms(),
+        })
+        .unwrap()
+    else {
+        panic!("task missing")
+    };
+    let result = tokio::time::timeout(Duration::from_secs(5), f.router.dispatch_authenticated_runtime_tool_call(
+        "sudo-fixture-bearer", "chariox.events.process", serde_json::json!({"task_id":task.task_id, "origin_prompt_id":turn.prompt_id, "label":"long watched command", "argv":["/bin/sleep","30"]})
+    )).await.expect("watched command asked again").expect("watched command refused");
+    assert!(result.ok, "{result:?}");
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let rows = loop {
+        let rows = f.state.session_processes(&turn.session_id);
+        if rows.iter().any(|row| row.process.command.contains("sleep"))
+            || std::time::Instant::now() > deadline
+        {
+            break rows;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    f.state.owned.agent_wakes.processes.shutdown();
+    let watched = rows
+        .iter()
+        .find(|row| row.process.command.contains("sleep"))
+        .expect("the watched process is missing from the agent's Health rows");
+    assert_eq!(
+        watched.owner,
+        crate::runtime::process_resources::SessionProcessOwner::Agent(
+            f.run.agent_instance_id().unwrap().into()
+        )
+    );
+}
+
 #[tokio::test]
 async fn sudo_operations_startup_trust_requires_approved_workspace_launch() {
     let f = fixture();

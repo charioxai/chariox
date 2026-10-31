@@ -167,6 +167,11 @@ pub enum KernelBrowserCommand {
         /// the pump's wire RTT. Absent keeps legacy gate semantics.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         held_ms: Option<u32>,
+        /// Allocated 919: nobody watches this display. The pump stops capturing and sends nothing, not even a
+        /// reprobe, while the acknowledgement renews the delivery lease; only an acknowledgement that asks for
+        /// an independent frame (`lost`) resumes it.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        paused: bool,
     },
     DisplayInput {
         tab_id: String,
@@ -204,6 +209,14 @@ pub enum KernelBrowserCommand {
         tab_id: String,
         generation: u64,
     },
+    /// MP-08/MP-10: protocol 920: the CSS cursor the page shows at this CSS point, for a viewer that shows the page as
+    /// video; answers `{ generation, cursor }` with a cursor keyword.
+    PointerCursor {
+        tab_id: String,
+        generation: u64,
+        x: u32,
+        y: u32,
+    },
     Input {
         tab_id: String,
         generation: u64,
@@ -221,14 +234,6 @@ pub enum KernelBrowserCommand {
     },
     Screenshot {
         tab_id: String,
-        generation: u64,
-    },
-    Subscribe {
-        tab_id: String,
-        generation: u64,
-    },
-    Poll {
-        subscription_id: String,
         generation: u64,
     },
     Unsubscribe {

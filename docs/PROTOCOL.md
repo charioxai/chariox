@@ -1141,7 +1141,9 @@ can instead use a dedicated loopback carrier that has no authority of its own:
    never exceeds the identity's expiry; a kernel clock ahead of Cloud shortens
    each lease by the same amount, and direct mode tolerates up to about 15
    seconds of it (about 10 seconds when one renewal is also lost). The session
-   uses that freshly verified identity for subsequent dispatch, allowing
+   takes that freshly verified identity's expiry and keeps the subject it was
+   admitted with (Cloud mints every lease token with a new subject; kernel
+   browser displays and mirrors belong to the caller that opened them), allowing
    continuous renewal across identity expiry.
    Thus even a cached authorization issued before Cloud revocation cannot
    extend the session beyond its expiry. The browser
@@ -3661,9 +3663,12 @@ Workflow trigger and deployment direction:
   approval, passkey, secret, authority or remote-kernel action: owner-only),
   `kernel_access_not_covered` (the peer is not the approved holder or one of its
   sub-processes, including a sibling that names the holder's PID),
-  `kernel_access_ended` (the grant expired or was revoked; the holder, or its
-  sub-process, asks again) and `kernel_access_already_granted` (a second access
-  request while covered).
+  `kernel_access_ended` (the grant expired, was revoked, lost its holder or ended
+  with the passkey; the message says which, and the holder, or its sub-process,
+  asks again), `kernel_access_unconfirmed` (retryable: the kernel could not read
+  the caller's process just now; nothing ended, and only a confirmed exit of the
+  holder ends an until-exit grant) and `kernel_access_already_granted` (a second
+  access request while covered).
 
   Protocol 641 (peer protocol unchanged) adds `CoverKernelAccessProcess { pid, start? }`,
   over the Unix socket only. A caller the grant covers names a background process it
@@ -5398,7 +5403,17 @@ a home restart ends the wake as lost, and the terminal itself is not affected.
   summary.
 - A tab the user typed in, resized or opened can be closed only by the user.
 - Closing a terminal, or its shell exiting, ends every process left in the shell's
-  session (background jobs included). The shell keeps the kernel user's SSH agent and
+  session (background jobs included). A process that left that session
+  (`setsid nohup job >log 2>&1 </dev/null &`) keeps running after its shell or command
+  exits, in the same resource domain (memory limit and the kernel's memory accounting),
+  until it ends. It stays the terminal's: the session's process list (Health) shows it
+  with that terminal as owner, `StopSessionProcesses` stops it, and it ends with its
+  Room, at kernel stop and when a terminal whose program still runs is closed. An
+  agent's own tools behave the same way: a job they detached from the provider's
+  session survives a provider restart (cancel, model change, stall recovery) under that
+  agent, and ends when the agent is stopped or deleted. A terminal command starts with SIGHUP ignored (like `nohup`),
+  and what stays in the session ends half a second after the program exits, so a job
+  may still be detaching when its command returns. The shell keeps the kernel user's SSH agent and
   Git settings and does not inherit the kernel's own relay and local-auth tokens.
 - An operation for an agent that is leased to a worker (leased worker or slice) runs
   on that worker as `RelayPeerRequest::RoomTerminal`, keyed by the lease; `host_agent`
@@ -5599,6 +5614,9 @@ persistent non-retryable refusals. The first successful connection
 establishes a baseline; an initial failure and each later online/offline change
 append a durable event. Repeated failures, including a different failure reason,
 do not append duplicates; `GetEventSubscription` retains the current full error.
+A busy kernel is not an outage: a pull request that times out (`kernel_request_timeout`, 5 seconds per request)
+changes nothing until the requests have timed out for 15 seconds with no answer in between; only then is the
+kernel offline. Every other failure is reported at once.
 The health observation and inbox append commit together. Events have home
 cursors, retain normal ordering and acknowledgement rules, wake an outstanding
 `WaitEvents`, and never enter another grant's inbox. Removed targets and ended
@@ -5610,6 +5628,17 @@ health records so an unacknowledged listed cursor cannot silently skip a lost
 transition. Health-only loss advances the home cursor floor, even when other
 kernels retain source gaps, without fabricating source loss; subscription status
 retains the current health.
+A followed target that its kernel refuses (`events_refused`: its session ended before the
+install reached the kernel) no longer stops the
+kernel's other targets from being pulled: the home kernel drops it and records
+`{ "type": "session", "value": { "state": "ended" } }` (`agent_removed` for an
+agent target) for it, with an empty `machine`. Any other permanent error of the install
+is a health failure of the kernel and ends no target. A kernel that holds no part of the
+subscription settles the cleanup the home kernel owes it.
+An ended subscription keeps its unread events and ending receipt for 24 hours;
+after that it is deleted with its events, unless a remote cleanup it owes is still
+pending, and a request for it is answered like one for a subscription that never
+existed.
 The relay remains an opaque carrier and clients need no health polling.
 
 File writes and file transfers alone are not inbox events. Lane coordination
@@ -5792,7 +5821,9 @@ state. The relay remains an opaque encrypted carrier.
 
 MP-08 / MP-09 / MP-10 / MP-11: local v710 exposes metadata-only
 `ListProviderAccountCopyOffers` and recipient-initiated
-`CopyProviderAccountFromKernel`. Recipient consent is an existing detached
+`CopyProviderAccountFromKernel`. When the owner's own client sends it, choosing the
+offer is the consent and the recipient raises no decision. When anything else sends it
+(an agent, a leased or remote run, a Metaagent), recipient consent is an existing detached
 kernel operation interaction, answered through `AnswerUserDomainInteraction`.
 Peer v274 adds `RequestProviderAccountCopy`, bound to the authenticated
 same-owner recipient's kernel identity and key. It reuses the independent
@@ -5905,6 +5936,17 @@ Metrics contain no request payloads, identifiers, paths or credentials. The heal
 response samples timing entries when necessary, with the full kind count in
 `sample_counts.request_timings`. Relay peer shapes are unchanged.
 
+### MP-08 / MP-09 / MP-10 / MP-11: process rows in `SessionState` — local 913 / relay peer 364
+
+The `SessionState` response (`GetSessionState`, and the `state` of
+`AttachSessionView`) carries `processes`: the same rows the live
+`session_processes_changed` event carries (`owner`, `process_id`, `pid`,
+`command`, `resident_set_bytes`, `cpu_millis`, `sampled_at_ms`, `age_ms`), read
+when the request is answered. A one-shot `chariox request` therefore reads what
+Health shows, with no subscription. Clients need no minimum raise unless they
+read the field; the CLI/TUI puts it on the session it returns, so Health shows
+the rows from attach. The managed-upgrade list is [629, 636, 913].
+
 ### MP-08 / MP-09 / MP-10 / MP-11: landing union 911 / peer 362
 
 The integration lands one pair, local 911 / relay peer 362, over 910 / 361. It
@@ -5918,3 +5960,92 @@ and the termination name the same cause. The managed-upgrade list is
 (including `local_daemon_protocol_session_process_memory_outcomes_are_versioned` and
 `local_daemon_protocol_received_event_shape_is_versioned`) and
 `node --test scripts/protocol-versions.test.mjs`.
+
+### Direct browser sessions over WebRTC — local 917 / relay peer 362
+
+`local_browser_connect` may carry an SDP `offer`; the kernel answers
+`LocalBrowserConnectIssued` with an SDP `answer` (no `endpoint`) and the browser
+runs the same grant/key handshake and encrypted relay client frames over a WebRTC
+data channel (binary messages: one kind byte — 0 last fragment, 1 more, 2 ping,
+3 pong — then up to 16 KiB of UTF-8 text). Relay peer protocol unchanged. The
+managed-upgrade list is [629, 636, 917].
+
+The answer carries a host candidate per interface address and a server-reflexive
+candidate per socket a NAT translates. The interface list is read for every offer:
+after a network change the kernel binds the new addresses, stops offering the
+vanished ones and keeps the sockets of addresses that remain. Both sides learn their public address from
+the STUN Binding responder every relay runs on UDP 3478 of its host
+(`CHARIOX_RELAY_STUN_ADDRESS`, `off` disables): the kernel asks from each of its
+sockets, the browser passes `stun:<relay host>:3478` as its ICE server. STUN only
+reflects addresses; no TURN, and a pair that cannot connect stays on the relay.
+
+### MP-08 / MP-09 / MP-10 / MP-11: user-side browser frame stream removed — local 919 / peer 370
+
+The `KernelBrowser` ops `subscribe` and `poll` (the old PNG frame stream for a
+user-domain browser) and the display request `subscribe` no longer exist. A client
+that sends one now gets the "unsupported operation" refusal that any unknown op gets;
+`unsubscribe` stays for display streams. Viewers watch a kernel browser through the
+mirror and the display transport only. Relay peer 370 only pairs the embedded local
+request/response union with local 919. The managed-upgrade list is [629, 636, 919].
+
+The same pair adds the optional `paused: true` on `display_ack`: the viewer's display is
+not watched. The push pump captures and sends nothing (not even the stall reprobe) and
+forgets what is in flight; the acknowledgement still renews the 60 s delivery lease, so a
+viewer repeats it every 20 s while hidden. Only an acknowledgement with `lost: true`
+(watched again, independent frame wanted) resumes the pump; late plain acknowledgements
+of frames sent before the pause do nothing.
+
+While paused the kernel also stops the capture source: it parks a Tab or region display
+(`display_park`), and for a Room display it sends the worker the peer command
+`RoomSharedDisplay.command={op:"park"}`. Both renew the host binding and the home and
+worker leases, so the 60 s expiry never runs for a paused view. The worker stops the
+shared desktop source once every viewer lease on it is parked; the next `capture` starts
+it again and returns the independent frame. `park` is a new peer command inside 919/370
+(not yet on `main`).
+
+Focused check: `cargo test -p chariox-kernel --lib protocol_shapes` (including
+`the_legacy_user_side_frame_stream_is_not_a_command`).
+
+### MP-08 / MP-10 / MP-11: document mode and pointer cursor — local 920 / peer 371
+
+A mirror v2 reset of a page that is not in no-quirks mode carries `document_mode`
+(`quirks` or `limited-quirks`, the HTML document mode the parser chose; absent
+means no-quirks). Deltas never carry it. The viewer creates its frame document in
+the same mode: an `iframe srcdoc` document is always no-quirks, so a frame for
+another mode is an about:blank document written with a doctype that selects it.
+
+`KernelBrowser` `{op: "pointer_cursor", tab_id, generation, x, y}` (CSS px inside
+the Tab's page) answers `{generation, cursor}`: the CSS cursor keyword the page
+shows there, read in the kernel's isolated world of the live document (open
+shadow roots and same-origin frames included; `auto` resolves as Chrome does: an
+I-beam over selectable text and editable fields, else `default`; a `url()` cursor
+answers its fallback keyword). It is an observation: it neither starts the
+browser nor moves the native pointer. A viewer showing the page as video (whole
+page or the navigation preview) asks while the pointer moves, one read in flight.
+Relay peer 371 only pairs the embedded local response union with local 920. The
+managed-upgrade list is [629, 636, 920]. Focused checks: `cargo test -p
+chariox-kernel --lib protocol_shapes` (`browser_pointer_cursor_and_document_mode_920_shape_is_pinned`).
+
+### Session-less Vault unlock — local 923 / relay peer 374
+
+`UnlockCredentialVault { passphrase }` answers `CredentialVaultUnlocked { status, action }`
+with `action` one of `unlocked`, `already_unlocked` or `not_required` (a plain backend). It
+needs no session or agent: it is about the kernel's Vault, like `GetCredentialVaultStatus` and
+`LockCredentialVault`, and only the owner's own clients send it: a terminal caller with the
+owner's user id. A session member, an agent and a Metaagent get `vault_unlock_owner_only`;
+kernel-access grant holders and sudo agents are refused too, and no agent tool carries it. The passphrase
+is a redacted, zeroed value: command records show `[redacted]`, and it is never logged. The
+request unlocks an existing Vault only; a missing Vault file is refused and never created.
+The Vault stays open per its policy (`ttl` the default TTL, `kernel_init` until shutdown); under
+`always` the unlock is single use: it lasts 60 seconds and ends after the next account copy.
+
+Refusals carry a code and a plain sentence: `vault_passphrase_wrong`,
+`vault_unlock_rate_limited` (the sentence names the wait in seconds), `vault_missing`,
+`vault_unlock_owner_only` and `vault_locked`. A session-less operation that needs the Vault
+while it is locked answers `vault_locked`, so a client unlocks and repeats the same operation;
+`ManageCredentialVault` on a locked Vault answers it too and raises no prompt. Wrong passphrases are
+counted per owner in kernel memory (5 free, then 30 s doubling to 15 min, one check at a
+time), shared by this request, the passkey check and the unlock prompt an agent's run raises.
+Clients need kernel protocol >=923 (`credentialVaultUnlockMinimumProtocolVersion` in the
+web). The managed-upgrade list is [629, 636, 923]. Focused checks:
+`cargo test -p chariox-kernel --lib vault_unlock` and `node --test scripts/protocol-versions.test.mjs`.

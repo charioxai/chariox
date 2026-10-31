@@ -185,7 +185,11 @@ impl RoomTerminalService {
                         .iter()
                         .all(|arg| arg.len() <= 4096 && !arg.contains('\0'));
                 if !valid {
-                    return Err(refused("command must be 1-64 arguments".to_string()));
+                    return Err(refused(
+                        "command must contain 1-64 arguments, each at most 4096 bytes and \
+                         without NUL; pass a longer script on stdin or in a file"
+                            .to_string(),
+                    ));
                 }
                 (argv[0].clone(), argv[1..].to_vec())
             }
@@ -237,10 +241,29 @@ impl RoomTerminalService {
             reports_first_prompt = !marks.is_empty();
             env.extend(marks);
         }
+        // A command runs like `nohup`: when it exits, Linux hangs up the
+        // terminal's foreground group, which would kill a job that is still
+        // detaching (`setsid job &`). What stays in the session ends with the sweep.
+        let (spawn_program, args) = match &spec.command {
+            Some(argv) => (
+                "/bin/sh".to_string(),
+                [
+                    vec![
+                        "-c".to_string(),
+                        "trap '' HUP; exec \"$@\"".to_string(),
+                        "chariox-command".to_string(),
+                    ],
+                    argv.clone(),
+                ]
+                .concat(),
+            ),
+            None => (program.clone(), args),
+        };
         pty.spawn_interactive(PtySpawnRequest {
+            agent: None,
             process_key: run_id.clone(),
             provider_run_id: run_id.clone(),
-            program: program.clone(),
+            program: spawn_program,
             args,
             env,
             env_remove: KERNEL_SECRET_ENVIRONMENT
@@ -256,6 +279,11 @@ impl RoomTerminalService {
             .ok()
             .flatten()
             .and_then(|pid| i32::try_from(pid).ok());
+        if shell_pid.is_some() {
+            // The session sweep ends what stays in the session, after a job that is
+            // detaching had time to leave; an immediate group kill would not wait.
+            pty.hand_group_cleanup_to_owner(&run_id);
+        }
         let record = TerminalRecord {
             terminal_id: terminal_id.clone(),
             session_id: spec.session_id,
@@ -420,7 +448,6 @@ impl RoomTerminalService {
         &self,
         session_id: &str,
         terminal_id: &str,
-        actor: &TerminalActor,
         cols: u16,
         rows: u16,
     ) -> Result<RoomTerminalSummary, DaemonError> {
@@ -433,9 +460,6 @@ impl RoomTerminalService {
         };
         pty.resize(&run_id, cols, rows)?;
         terminal.resize(cols, rows);
-        if *actor == TerminalActor::User {
-            terminal.mark_user_interacted();
-        }
         let driver = terminal.current_driver(pty);
         let summary = terminal.summary(driver);
         drop(state);

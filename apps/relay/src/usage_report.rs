@@ -1,0 +1,590 @@
+//! Periodic, retried, idempotent report of the byte counters to the hosted
+//! control plane. Every interval's counters are drained into their own batch
+//! (random id, own window) and written to the spool directory before anything
+//! is sent; a batch file is removed only after Cloud acknowledged it. Batches
+//! go out oldest first, so an outage keeps one file per interval, a failed
+//! send is retried with the same batch id, and a restart resumes every
+//! unacknowledged batch. Cloud counts each batch id once. Only what was still
+//! in memory when the process died (at most one interval) is lost.
+use std::fs;
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+use serde::{Deserialize, Serialize};
+use tokio::sync::watch;
+
+use crate::meter::{UsageCounters, UsageMeter};
+
+pub const DEFAULT_USAGE_REPORT_INTERVAL: Duration = Duration::from_secs(60);
+/// The most entries Cloud accepts in one batch
+/// (`relayUsageReportSchema.entries.maxItems`).
+pub const MAX_BATCH_ENTRIES: usize = 10_000;
+const USAGE_SIGNATURE_DOMAIN: &str = "chariox-relay-usage-v1";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageBatch {
+    pub relay_id: String,
+    pub batch_id: String,
+    pub window_start_ms: u64,
+    pub window_end_ms: u64,
+    pub entries: Vec<UsageEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageEntry {
+    pub realm_id: String,
+    pub scope: String,
+    #[serde(flatten)]
+    pub counters: UsageCounters,
+}
+
+/// Why Cloud did not take a batch: a rejection that will not change by
+/// retrying (the batch is dropped and logged) or one that may (it is kept).
+#[derive(Debug, PartialEq, Eq)]
+pub enum SendError {
+    Rejected(String),
+    Retry(String),
+}
+
+pub struct UsageReporter<S> {
+    meter: UsageMeter,
+    relay_id: String,
+    spool: PathBuf,
+    send: S,
+    window_start_ms: u64,
+}
+
+impl<S: FnMut(&UsageBatch) -> Result<(), SendError>> UsageReporter<S> {
+    /// Opens the spool directory the unacknowledged batches of a previous
+    /// process are waiting in.
+    pub fn open(
+        meter: UsageMeter,
+        relay_id: String,
+        spool: PathBuf,
+        send: S,
+        now_ms: u64,
+    ) -> Result<Self, String> {
+        fs::create_dir_all(&spool)
+            .map_err(|error| format!("usage spool {}: {error}", spool.display()))?;
+        let reporter = Self {
+            meter,
+            relay_id,
+            spool,
+            send,
+            window_start_ms: now_ms,
+        };
+        // A write that died before its rename left nothing Cloud could know.
+        for path in reporter.spooled_files("partial")? {
+            remove_spool(&path)?;
+        }
+        for path in reporter.spooled_files("json")? {
+            read_spool(&path)?;
+        }
+        Ok(reporter)
+    }
+
+    /// One report round: spool what was counted since the last one as its own
+    /// batch, then send every spooled batch, oldest first. Returns how many
+    /// Cloud acknowledged; the first send that must be retried ends the round.
+    pub fn report(&mut self, now_ms: u64) -> Result<usize, String> {
+        let mut drained = self.meter.drain().into_iter().collect::<Vec<_>>();
+        if !drained.is_empty() {
+            // Cloud takes at most `MAX_BATCH_ENTRIES` entries per batch, so a
+            // large interval is spooled as several batches of the same window.
+            while !drained.is_empty() {
+                let rest = drained.split_off(drained.len().min(MAX_BATCH_ENTRIES));
+                let batch_id = match new_batch_id() {
+                    Ok(batch_id) => batch_id,
+                    Err(error) => {
+                        self.meter
+                            .restore(drained.into_iter().chain(rest).collect());
+                        return Err(error);
+                    }
+                };
+                let batch = UsageBatch {
+                    relay_id: self.relay_id.clone(),
+                    batch_id,
+                    window_start_ms: self.window_start_ms,
+                    window_end_ms: now_ms,
+                    entries: drained
+                        .iter()
+                        .map(|((realm_id, scope), counters)| UsageEntry {
+                            realm_id: realm_id.clone(),
+                            scope: scope.clone(),
+                            counters: *counters,
+                        })
+                        .collect(),
+                };
+                if let Err(error) = write_spool(&self.spool, &batch) {
+                    // Only what is not in a spooled batch goes back to the meter.
+                    self.meter
+                        .restore(drained.into_iter().chain(rest).collect());
+                    return Err(error);
+                }
+                drained = rest;
+            }
+            self.window_start_ms = now_ms;
+        }
+        let mut acknowledged = 0;
+        for path in self.spooled_files("json")? {
+            let batch = read_spool(&path)?;
+            match (self.send)(&batch) {
+                Ok(()) => {
+                    acknowledged += 1;
+                    log_report_sent(&batch);
+                }
+                Err(SendError::Retry(error)) => return Err(error),
+                Err(SendError::Rejected(error)) => {
+                    eprintln!("relay usage batch {} dropped: {error}", batch.batch_id);
+                }
+            }
+            remove_spool(&path)?;
+        }
+        Ok(acknowledged)
+    }
+
+    /// The spooled files with this extension, oldest window first.
+    fn spooled_files(&self, extension: &str) -> Result<Vec<PathBuf>, String> {
+        let spool_error =
+            |error: std::io::Error| format!("usage spool {}: {error}", self.spool.display());
+        let mut files = Vec::new();
+        for entry in fs::read_dir(&self.spool).map_err(spool_error)? {
+            let path = entry.map_err(spool_error)?.path();
+            if path.extension().is_some_and(|found| found == extension) {
+                files.push(path);
+            }
+        }
+        files.sort();
+        Ok(files)
+    }
+}
+
+fn read_spool(path: &Path) -> Result<UsageBatch, String> {
+    let bytes =
+        fs::read(path).map_err(|error| format!("usage spool {}: {error}", path.display()))?;
+    serde_json::from_slice(&bytes).map_err(|error| {
+        format!(
+            "usage spool {} is not a usage batch ({error}); remove it to start over",
+            path.display()
+        )
+    })
+}
+
+fn write_spool(dir: &Path, batch: &UsageBatch) -> Result<(), String> {
+    // Zero-padded, so the names sort in the order the windows ended.
+    let path = dir.join(format!(
+        "{:020}-{}.json",
+        batch.window_end_ms, batch.batch_id
+    ));
+    let partial = path.with_extension("partial");
+    let write = || -> std::io::Result<()> {
+        let mut file = fs::File::create(&partial)?;
+        file.write_all(&serde_json::to_vec(batch).map_err(std::io::Error::other)?)?;
+        file.sync_all()?;
+        fs::rename(&partial, &path)
+    };
+    write().map_err(|error| format!("usage spool {}: {error}", path.display()))
+}
+
+fn remove_spool(path: &Path) -> Result<(), String> {
+    match fs::remove_file(path) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+            Err(format!("usage spool {}: {error}", path.display()))
+        }
+        _ => Ok(()),
+    }
+}
+
+fn new_batch_id() -> Result<String, String> {
+    let mut bytes = [0u8; 16];
+    fs::File::open("/dev/urandom")
+        .and_then(|mut random| random.read_exact(&mut bytes))
+        .map_err(|error| format!("usage batch id: {error}"))?;
+    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+fn usage_url(base_url: &str) -> String {
+    format!("{}/relay/usage", base_url.trim_end_matches('/'))
+}
+
+/// The proof binds the relay, the batch id (Cloud's idempotency key) and the
+/// time; the body travels over TLS like every other relay-to-Cloud call.
+fn usage_authorization(relay_id: &str, batch_id: &str, secret: &str, now_ms: u64) -> String {
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+    let timestamp = now_ms.to_string();
+    let payload = serde_json::to_string(&[USAGE_SIGNATURE_DOMAIN, relay_id, batch_id, &timestamp])
+        .expect("string array serializes");
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).expect("HMAC key is valid");
+    mac.update(payload.as_bytes());
+    let signature: String = mac
+        .finalize()
+        .into_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    format!("CharioxRelay {timestamp}:{signature}")
+}
+
+fn post_batch(url: &str, secret: &str, batch: &UsageBatch) -> Result<(), SendError> {
+    let agent = ureq::AgentBuilder::new()
+        .timeout(Duration::from_secs(10))
+        .build();
+    let now_ms = crate::revocation_sync::current_unix_ms();
+    match agent
+        .post(url)
+        .set(
+            "authorization",
+            &usage_authorization(&batch.relay_id, &batch.batch_id, secret, now_ms),
+        )
+        .set("content-type", "application/json")
+        .send_string(&serde_json::to_string(batch).expect("a usage batch serializes"))
+    {
+        Ok(_) => Ok(()),
+        Err(ureq::Error::Status(code, response)) => {
+            let message = format!("usage report answered {code}: {}", response.status_text());
+            if (400..500).contains(&code) && !matches!(code, 401 | 403 | 408 | 429) {
+                Err(SendError::Rejected(message))
+            } else {
+                Err(SendError::Retry(message))
+            }
+        }
+        Err(error) => Err(SendError::Retry(error.to_string())),
+    }
+}
+
+/// Report every `interval` until shutdown, then once more so a stopped relay
+/// leaves nothing unreported.
+pub async fn run_usage_report(
+    base_url: String,
+    relay_id: String,
+    secret: String,
+    spool: PathBuf,
+    meter: UsageMeter,
+    interval: Duration,
+    mut shutdown_rx: watch::Receiver<bool>,
+) {
+    let url = usage_url(&base_url);
+    let send = move |batch: &UsageBatch| post_batch(&url, &secret, batch);
+    let reporter = UsageReporter::open(
+        meter,
+        relay_id,
+        spool,
+        send,
+        crate::revocation_sync::current_unix_ms(),
+    );
+    let mut reporter = match reporter {
+        Ok(reporter) => reporter,
+        Err(error) => {
+            log_report_error(&error);
+            return;
+        }
+    };
+    let mut ticker = tokio::time::interval(interval);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    ticker.tick().await;
+    let mut stopping = false;
+    while !stopping {
+        tokio::select! {
+            changed = shutdown_rx.changed() => {
+                stopping = changed.is_err() || *shutdown_rx.borrow();
+                if !stopping {
+                    continue;
+                }
+            }
+            _ = ticker.tick() => {}
+        }
+        // A stopping relay spools what was counted since the last round and
+        // sends everything it holds.
+        let (returned, outcome) = tokio::task::spawn_blocking(move || {
+            let outcome = reporter.report(crate::revocation_sync::current_unix_ms());
+            (reporter, outcome)
+        })
+        .await
+        .expect("usage report task does not panic");
+        reporter = returned;
+        if let Err(error) = outcome {
+            log_report_error(&error);
+        }
+    }
+}
+
+fn log_report_sent(batch: &UsageBatch) {
+    let sum = |select: fn(&UsageCounters) -> u64| {
+        batch
+            .entries
+            .iter()
+            .map(|entry| select(&entry.counters))
+            .sum::<u64>()
+    };
+    eprintln!(
+        "{}",
+        serde_json::json!({
+            "component": "chariox-relay",
+            "level": "info",
+            "event": "usage_report_acknowledged",
+            "fields": {
+                "batch_id": batch.batch_id,
+                "entries": batch.entries.len(),
+                "bytes_in": sum(|c| c.bytes_in),
+                "bytes_out": sum(|c| c.bytes_out),
+            },
+        })
+    );
+}
+
+fn log_report_error(message: &str) {
+    eprintln!(
+        "{}",
+        serde_json::json!({
+            "component": "chariox-relay",
+            "level": "error",
+            "event": "usage_report_failed",
+            "fields": { "message": message },
+        })
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::meter::Direction;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    fn spool(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("relay-usage-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir.join("spool")
+    }
+
+    fn spooled(path: &Path) -> usize {
+        fs::read_dir(path)
+            .map(|entries| {
+                entries
+                    .filter_map(Result::ok)
+                    .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
+                    .count()
+            })
+            .unwrap_or(0)
+    }
+
+    type Log = Rc<RefCell<Vec<UsageBatch>>>;
+
+    fn sender(
+        log: &Log,
+        fail: &Rc<RefCell<bool>>,
+    ) -> impl FnMut(&UsageBatch) -> Result<(), SendError> {
+        let (log, fail) = (log.clone(), fail.clone());
+        move |batch| {
+            log.borrow_mut().push(batch.clone());
+            if *fail.borrow() {
+                Err(SendError::Retry("cloud unreachable".into()))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    #[test]
+    fn a_failed_send_is_retried_as_the_same_batch_and_a_restart_resumes_it() {
+        let meter = UsageMeter::default();
+        let path = spool("retry");
+        let (log, fail) = (Log::default(), Rc::new(RefCell::new(true)));
+        let mut first = UsageReporter::open(
+            meter.clone(),
+            "relay-eu".into(),
+            path.clone(),
+            sender(&log, &fail),
+            1_000,
+        )
+        .unwrap();
+        meter.record("realm-a", "control", Direction::In, 100);
+        assert!(first.report(2_000).is_err());
+        assert!(first.report(3_000).is_err());
+        // The second round resent the same batch.
+        let sent = log.borrow().clone();
+        assert_eq!(sent.len(), 2);
+        assert_eq!(sent[0], sent[1]);
+        assert_eq!(sent[0].entries[0].counters.bytes_in, 100);
+
+        // The relay restarts; a new process with a fresh meter resumes the spool.
+        drop(first);
+        *fail.borrow_mut() = false;
+        let mut second = UsageReporter::open(
+            UsageMeter::default(),
+            "relay-eu".into(),
+            path.clone(),
+            sender(&log, &fail),
+            4_000,
+        )
+        .unwrap();
+        assert_eq!(second.report(5_000).unwrap(), 1);
+        assert_eq!(log.borrow().last(), Some(&sent[0]));
+        assert_eq!(spooled(&path), 0);
+        // Nothing is counted twice: the next round has nothing to send.
+        assert_eq!(second.report(6_000).unwrap(), 0);
+    }
+
+    #[test]
+    fn intervals_counted_while_a_batch_is_retrying_are_kept_and_survive_a_restart() {
+        let path = spool("outage");
+        let acknowledged = Log::default();
+        let down = Rc::new(RefCell::new(true));
+        let send = |acknowledged: &Log, down: &Rc<RefCell<bool>>| {
+            let (acknowledged, down) = (acknowledged.clone(), down.clone());
+            move |batch: &UsageBatch| {
+                if *down.borrow() {
+                    return Err(SendError::Retry("cloud unreachable".into()));
+                }
+                acknowledged.borrow_mut().push(batch.clone());
+                Ok(())
+            }
+        };
+        let meter = UsageMeter::default();
+        let mut first = UsageReporter::open(
+            meter.clone(),
+            "relay-eu".into(),
+            path.clone(),
+            send(&acknowledged, &down),
+            1_000,
+        )
+        .unwrap();
+        meter.record("realm-a", "control", Direction::In, 100);
+        assert!(first.report(2_000).is_err());
+        meter.record("realm-a", "control", Direction::In, 7);
+        assert!(first.report(3_000).is_err());
+        // The relay stops while Cloud is still down; the second interval was not only in memory.
+        drop(first);
+        *down.borrow_mut() = false;
+        let mut second = UsageReporter::open(
+            UsageMeter::default(),
+            "relay-eu".into(),
+            path,
+            send(&acknowledged, &down),
+            4_000,
+        )
+        .unwrap();
+        assert_eq!(second.report(5_000).unwrap(), 2);
+        assert_eq!(second.report(6_000).unwrap(), 0);
+        let windows: Vec<_> = acknowledged
+            .borrow()
+            .iter()
+            .map(|batch| {
+                (
+                    batch.window_start_ms,
+                    batch.window_end_ms,
+                    batch.entries[0].counters.bytes_in,
+                )
+            })
+            .collect();
+        assert_eq!(windows, [(1_000, 2_000, 100), (2_000, 3_000, 7)]);
+    }
+
+    #[test]
+    fn a_report_larger_than_clouds_limit_is_split_without_losing_a_realm() {
+        let meter = UsageMeter::default();
+        let path = spool("split");
+        let acknowledged = Log::default();
+        let fail = Rc::new(RefCell::new(false));
+        let mut reporter = UsageReporter::open(
+            meter.clone(),
+            "relay-eu".into(),
+            path.clone(),
+            sender(&acknowledged, &fail),
+            1_000,
+        )
+        .unwrap();
+        let realms = MAX_BATCH_ENTRIES + 1;
+        for realm in 0..realms {
+            meter.record(&format!("realm-{realm:05}"), "control", Direction::In, 3);
+        }
+        assert_eq!(reporter.report(2_000).unwrap(), 2);
+        let batches = acknowledged.borrow();
+        assert!(batches
+            .iter()
+            .all(|batch| batch.entries.len() <= MAX_BATCH_ENTRIES));
+        let mut ids: Vec<_> = batches.iter().map(|batch| &batch.batch_id).collect();
+        ids.dedup();
+        assert_eq!(ids.len(), batches.len(), "each part is its own batch");
+        assert!(batches
+            .iter()
+            .all(|batch| (batch.window_start_ms, batch.window_end_ms) == (1_000, 2_000)));
+        let mut counted: Vec<_> = batches
+            .iter()
+            .flat_map(|batch| &batch.entries)
+            .map(|entry| (entry.realm_id.clone(), entry.counters.bytes_in))
+            .collect();
+        counted.sort();
+        counted.dedup();
+        assert_eq!(counted.len(), realms, "every realm is reported once");
+        assert!(counted.iter().all(|(_, bytes)| *bytes == 3));
+        assert_eq!(spooled(&path), 0);
+    }
+
+    #[test]
+    fn a_batch_that_cannot_be_spooled_is_not_lost() {
+        let meter = UsageMeter::default();
+        let path = spool("nospool");
+        let (log, fail) = (Log::default(), Rc::new(RefCell::new(false)));
+        let mut reporter = UsageReporter::open(
+            meter.clone(),
+            "relay-eu".into(),
+            path.clone(),
+            sender(&log, &fail),
+            1_000,
+        )
+        .unwrap();
+        // The disk stops taking the spool after the relay started.
+        fs::remove_dir_all(&path).unwrap();
+        fs::write(&path, b"").unwrap();
+        meter.record("realm-a", "session", Direction::Out, 40);
+        assert!(reporter.report(2_000).is_err());
+        assert!(log.borrow().is_empty(), "an unspooled batch is never sent");
+        assert_eq!(
+            meter.snapshot().values().map(|c| c.bytes_out).sum::<u64>(),
+            40
+        );
+    }
+
+    #[test]
+    fn a_rejected_batch_is_dropped_so_it_cannot_block_later_ones() {
+        let meter = UsageMeter::default();
+        let path = spool("reject");
+        let mut calls = 0;
+        let send = |_: &UsageBatch| {
+            calls += 1;
+            if calls == 1 {
+                Err(SendError::Rejected("malformed".into()))
+            } else {
+                Ok(())
+            }
+        };
+        let mut reporter =
+            UsageReporter::open(meter.clone(), "relay-eu".into(), path.clone(), send, 1_000)
+                .unwrap();
+        meter.record("realm-a", "control", Direction::In, 1);
+        assert_eq!(reporter.report(2_000).unwrap(), 0);
+        assert_eq!(spooled(&path), 0);
+        meter.record("realm-a", "control", Direction::In, 2);
+        assert_eq!(
+            reporter.report(3_000).unwrap(),
+            1,
+            "later batches still go out"
+        );
+    }
+
+    #[test]
+    fn the_proof_matches_the_cloud_fixture_and_binds_the_batch() {
+        let proof = usage_authorization("relay-eu", "batch-1", "secret", 1_700_000_000_000);
+        assert!(proof.starts_with("CharioxRelay 1700000000000:"));
+        assert_ne!(
+            proof,
+            usage_authorization("relay-eu", "batch-2", "secret", 1_700_000_000_000)
+        );
+    }
+}

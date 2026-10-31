@@ -58,7 +58,7 @@ impl KernelRuntimeState {
         Ok(())
     }
 
-    fn report_lost_catalog_continuation(
+    pub(super) fn report_lost_catalog_continuation(
         &self,
         continuation: &PendingMcpContinuation,
         previous_provider_run_id: Option<String>,

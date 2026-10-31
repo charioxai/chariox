@@ -89,6 +89,7 @@ async fn a_peer_under_two_grant_holders_uses_the_nearest_holders_grant() {
     }
     let order: Vec<_> = state
         .access_grants_for(&identity(peer))
+        .unwrap()
         .into_iter()
         .map(|grant| grant.summary.grant_id)
         .collect();

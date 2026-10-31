@@ -7,7 +7,7 @@ fn mp10_provider_tool_images_910_snapshot_and_hash() {
     let bytes = include_bytes!("provider-tool-images-910.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "b004b28bdbfb3fef447cd055b4c1bd9318cd347b37c873f6cf4681f1352f6ce6"
+        "ba55f8eb1cadc0bb0cc081bb979f3c123a1d8489fa1fe7ffcfb65e4d2e7c3b18"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(fixture["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);

@@ -37,7 +37,25 @@ test('MP-08/MP-11 only the observing viewer parks its own Tab display',async()=>
   assert.deepEqual(await park({parked:false}),{generation:1,parked:false});
   await assert.rejects(park({observed_by:'other'}),{code:'user_domain_not_granted'});
   await assert.rejects(park({focused_agent:true}),{code:'user_domain_not_granted'});
-  stream.tabDisplay=false;await assert.rejects(park({}),error=>error.race==='display_retired');
-  assert.deepEqual(parks,[true,false,true,false]);
+  stream.tabDisplay=false;assert.deepEqual(await park({}),{generation:1,parked:true},'a region display parks too: an unwatched view must not keep any source reading');
+  await assert.rejects(park({parked:'yes'}),error=>error.race==='display_retired');
+  assert.deepEqual(parks,[true,false,true,false,true]);
+ }finally{if(previous===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY=previous;}
+});
+test('MP-08/MP-11 an unwatched display parks every 20 s for minutes and keeps its host binding; silence ends it at 60 s',async t=>{
+ const {KernelBrowserHost}=await import('./kernel-browser-host.mjs');const {DisplaySessions}=await import('./kernel-display-resumption.mjs');
+ const previous=process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;process.env.CHARIOX_KERNEL_BROWSER_DISPLAY='1';
+ t.mock.timers.enable({apis:['setTimeout','Date']});
+ try{
+  const host=Object.create(KernelBrowserHost.prototype),{stream,parks}=parkedStream();stream.park(false);
+  const closed=[];stream.close=async()=>{closed.push(stream.subscription_id)};
+  Object.assign(stream,{subscription_id:'d',observed_by:'viewer',tabDisplay:true,expires:Date.now()+60_000});
+  Object.assign(host,{generation:1,protection:{values:[]},streams:new Map(),displays:new Map([['d',stream]]),start:async()=>{}});
+  host.displaySessions=new DisplaySessions(host);host.armDisplayExpiry(stream);
+  const park=()=>host.requestNow({op:'display_park',subscription_id:'d',generation:1,observed_by:'viewer',parked:true,watch:true});
+  for(let i=0;i<15;i++){t.mock.timers.tick(20_000);await park();await Promise.resolve();}
+  assert.equal(host.displays.has('d'),true,'five minutes of parks keep the host display');assert.deepEqual(closed,[]);
+  t.mock.timers.tick(61_000);await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(host.displays.has('d'),false,'silence alone still ends it');assert.deepEqual(closed,['d']);assert.deepEqual(parks.slice(-1),[true]);
  }finally{if(previous===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY=previous;}
 });

@@ -2194,7 +2194,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             RuntimeInteractionLevel::Warning,
             Some("Trust this Claude Code workspace?".to_string()),
             format!(
-                "Claude Code asks to trust this workspace:\n{}\nThe queued task will not be sent until you approve it.",
+                "{}\nThe queued task will not be sent until you approve it.",
                 workspace_trust::displayed_workspace(rendered).unwrap_or(rendered),
             ),
             vec![

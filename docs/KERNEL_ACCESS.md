@@ -22,7 +22,7 @@ An external agent (Claude Code, Codex, OpenCode) talks only to its local kernel 
 
 - `chariox access request --until-exit` asks the user for access once. With `--no-wait` it exits 6 and a detached waiter keeps the request; `chariox access status` then prints `granted`, `pending`, `ended` or `not_requested`.
 - `chariox access cover --pid PID` keeps your access for a background process you started (`nohup tool &`, then `chariox access cover --pid $!`) after its parent exits, until that process exits or the grant ends. Run it right after starting the process, or from the process itself; `chariox access status --holder-pid $$` then prints `granted` for it. A grant covers at most 16 processes this way. A process that forks twice gets a new pid and can't be covered.
-- `chariox kernels` lists the kernels this kernel can reach, grouped by machine. A kernel's name is its machine's name when you have one kernel there and `<machine>/<label>` when the machine runs several (a name that fits two kernels is `kernel_ambiguous` and lists both). `chariox request [--kernel M] [--command-id ID] [--timeout SECONDS]` sends one `LocalDaemonRequest` read from stdin to this kernel, or through it to kernel `M`, and prints the response JSON.
+- `chariox kernels` lists the kernels this kernel can reach, grouped by machine. A kernel's name is its machine's name when you have one kernel there and `<machine>/<label>` when the machine runs several (a name that fits two kernels is `kernel_ambiguous` and lists both). `chariox request [--kernel M] [--command-id ID] [--timeout SECONDS]` sends one `LocalDaemonRequest` read from stdin to this kernel, or through it to kernel `M`, and prints the response JSON. `--timeout` is how long the CLI waits for the answer (default 30 seconds); a forwarded request is also waited for by this kernel for 30 seconds, plus the request's own wait: a `RunShellCommand`'s `timeout_ms` (up to one hour) or a terminal wait. So `RunShellCommand` with `"timeout_ms": 400000` needs `--timeout 430` or more.
 - `chariox watch --kernel M --session ID --attachment ID [--from EVENT_ID]` prints one JSON line per event of that kernel until the connection is lost; it then ends with `kernel_connection_lost` naming the event to resume from. An attachment made through the gateway is kept alive by this kernel while the grant lasts, and ends with `DetachFromSession`.
 - `chariox files stat|ls|get|put --kernel M ...` moves files in chunks of 256 KiB, resumable and verified by sha256 (2 GiB per file); run the same command again after an interruption.
 - A person pairs this kernel with a self-hosted kernel with `/kernel add <link>` in a Chariox terminal (`/kernel linked`, `/kernel unlink NAME`); agents cannot.
@@ -33,13 +33,17 @@ Exit codes and the error codes behind them:
 | Exit | Meaning | Codes |
 | --- | --- | --- |
 | 0 | ok | |
-| 2 | usage | `usage` |
-| 3 | refused | `kernel_sudo_refused`, `kernel_sudo_room_owner_local`, `kernel_access_human_only`, `kernel_access_ended`, `kernel_access_not_covered`, `kernel_access_already_granted`, `kernel_access_cover_gone`, `kernel_access_cover_identity_changed`, `kernel_access_cover_kernel_process`, `kernel_access_cover_outside`, `kernel_access_cover_limit`, `command_id_required`, `duplicate_command_conflict` |
+| 1 | request failed: the kernel answered with an error code of its own; read `code` and `message` | any code not listed below, for example `session_not_found`, `file_not_found`, `ledger_unavailable`, `kernel_response_too_large` |
+| 2 | usage | `usage`, `file_path_invalid` |
+| 3 | refused | `events_refused`, `kernel_sudo_refused`, `kernel_sudo_room_owner_local`, `kernel_access_human_only`, `kernel_access_ended`, `kernel_access_not_covered`, `kernel_access_already_granted`, `kernel_access_cover_gone`, `kernel_access_cover_identity_changed`, `kernel_access_cover_kernel_process`, `kernel_access_cover_outside`, `kernel_access_cover_limit`, `command_id_required`, `duplicate_command_conflict`, `file_permission_denied`, `subscription_ended` |
 | 4 | kernel unavailable | `kernel_unknown`, `kernel_ambiguous`, `kernel_offline`, `kernel_unreachable`, `kernel_unpaired`, `kernel_incompatible`, `kernel_not_available` |
-| 5 | timeout or unknown outcome | `kernel_sudo_expired`, `kernel_request_timeout`, `kernel_connection_lost`, `kernel_outcome_unknown` |
+| 5 | timeout or unknown outcome | `kernel_sudo_expired`, `kernel_request_timeout`, `kernel_connection_lost`, `kernel_outcome_unknown`, `kernel_access_unconfirmed` |
 | 6 | approval pending | |
+| 7 | event cursor expired: resync followed targets | `cursor_expired` |
 
-On `kernel_request_timeout` or `kernel_connection_lost`, retry once with the same `--command-id`. On `kernel_outcome_unknown`, read the state first. When the local connection drops with a request in flight, the CLI probes the kernel once: `kernel_access_ended` means the grant ended during the request; anything else is `kernel_connection_lost`.
+`kernel_response_too_large` means a state-changing request through the gateway (a `RunShellCommand` that prints a lot, for example) ran and finished, but its answer is more than the gateway can keep as a receipt (about 256 KiB; the message names the exact limit). It is not run again. Write the output to a file on that kernel and read it with `chariox files get`, or print less. Answers of reads are not limited this way.
+
+On `kernel_request_timeout`, `kernel_connection_lost` or `kernel_access_unconfirmed` (the kernel could not read the caller's process just now; the grant has not changed), retry once with the same `--command-id`. On `kernel_outcome_unknown`, read the state first. When the local connection drops with a request in flight, the CLI probes the kernel once: `kernel_access_ended` means the grant ended during the request; anything else is `kernel_connection_lost`.
 
 
 MP-08 / MP-10 / MP-11: `kernel_sudo_refused` means the person refused the request;

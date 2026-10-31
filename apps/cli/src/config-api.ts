@@ -13,6 +13,7 @@ import {
   getUserConfigSchemaRequest,
   lockCredentialVaultRequest,
   manageCredentialVaultRequest,
+  unlockCredentialVaultRequest,
   setWorkspaceLiveSyncModeRequest,
   setUserConfigValueRequest,
   setCredentialSecretRequest,
@@ -78,6 +79,14 @@ export async function lockCredentialVault(
 ): Promise<Record<string, unknown>> {
   const response = await client.send<Record<string, unknown>>(lockCredentialVaultRequest())
   return expectVariant<{ status: Record<string, unknown> }>(response, "CredentialVaultLocked").status
+}
+
+export async function unlockCredentialVault(
+  client: LocalIpcClient,
+  passphrase: string,
+): Promise<{ action: string; status: Record<string, unknown> }> {
+  const response = await client.send<Record<string, unknown>>(unlockCredentialVaultRequest(passphrase))
+  return expectVariant<{ action: string; status: Record<string, unknown> }>(response, "CredentialVaultUnlocked")
 }
 
 export async function manageCredentialVault(

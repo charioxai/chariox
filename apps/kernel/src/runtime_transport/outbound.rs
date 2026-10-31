@@ -213,6 +213,7 @@ fn project_error(value: &Value) -> KernelTransportError {
             | "kernel_access_human_only"
             | "kernel_access_not_covered"
             | "kernel_access_ended"
+            | "kernel_access_unconfirmed"
             | "kernel_access_already_granted"
             | "kernel_access_cover_gone"
             | "kernel_access_cover_identity_changed"

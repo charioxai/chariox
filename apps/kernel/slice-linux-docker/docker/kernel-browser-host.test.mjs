@@ -237,19 +237,13 @@ test("MP-11: retained input succeeds and leaves Chromium live", () => using(asyn
   assert.equal((await host.request({op:'state'})).generation, opened.generation);
 }));
 
-test("MP-11: revocation closes idle and in-flight grant streams without another holder's stream", () => using(async ({ host }) => {
+test("MD-3: the legacy user-side frame stream (subscribe, poll) no longer exists", () => using(async ({ host, sent }) => {
   const opened = await host.request({ op: "open", url: "https://example.com" });
-  const command = { op: "subscribe", tab_id: opened.tab_id, generation: opened.generation };
-  const idle = await host.request({ ...command, _subscription_owner: "old-grant" });
-  const retained = await host.request({ ...command, _subscription_owner: "another-grant" });
-  // The kernel settles an in-flight subscribe before sending owner retirement;
-  // its ID need not have reached the grant registry to be cancelled.
-  await host.request({ ...command, _subscription_owner: "old-grant" });
-  const result = await host.handle({ id: 99, method: "host.revoke_subscriptions", params: { subscription_ids: [], subscription_owners: ["old-grant"] } });
-  assert.equal(result.ok, true);
-  assert.equal(host.streams.size, 1);
-  assert(host.streams.has(retained.subscription_id));
-  assert(!host.streams.has(idle.subscription_id));
+  const command = { tab_id: opened.tab_id, generation: opened.generation };
+  await assert.rejects(host.request({ op: "subscribe", ...command }));
+  await assert.rejects(host.request({ op: "poll", subscription_id: "host-stream-any", generation: opened.generation }));
+  assert.equal(sent.filter(call => call.method === "Page.startScreencast").length, 0, "a legacy subscribe must not start a CDP screencast");
+  assert.equal(host.streams, undefined);
 }));
 
 test("MD-2: native launch keeps sandbox and a private inherited CDP pipe", () => {
@@ -289,30 +283,6 @@ test("MD-4: stable tabs survive browser crash and kernel/controller recreation",
     assert.equal((await restarted.host.request({ op: "state" })).tabs.length, 0);
   } finally { await restarted.host.stop(); }
 }));
-test("MD-2: latest-frame subscription is bounded and invalidated by recovery", () => using(async ({ host, chromium, handlers, sent }) => {
-  const opened = await host.request({ op: "open", url: "about:blank" });
-  const binding = { tab_id: opened.tab_id, generation: opened.generation };
-  const screenshot = await host.request({ op: "screenshot", ...binding });
-  assert.equal(screenshot.mime_type, "image/png");
-  const subscription = await host.request({ op: "subscribe", ...binding });
-  const session = sent.find(call => call.method === "Page.startScreencast").session;
-  for (let count = 0; count < 100; count++) for (const handler of handlers) handler({ method: "Page.screencastFrame", sessionId: session, params: { data: `frame-${count}`, sessionId: count } });
-  let polled;for(let attempt=0;attempt<50;attempt++){
-    polled=await host.request({op:'poll',...subscription});
-    if(polled.frame&&decodePng(polled.frame.data_base64).pixels[0]===255)break;
-    await new Promise(resolve=>setTimeout(resolve,5));
-  }
-  assert(polled.frame.sequence>0&&polled.frame.sequence<=100);
-  assert.equal(polled.frame.mime_type,'image/png');assert.equal(decodePng(polled.frame.data_base64).pixels[0],255);
-  assert.equal(sent.filter(call => call.method === "Page.screencastFrameAck").length, 100);
-  await host.request({ op: "unsubscribe", ...subscription });
-  assert.equal(handlers.size, 2, "lockdown and browser recovery observers remain");
-  assert(sent.some(call => call.method === "Page.stopScreencast"));
-  chromium.child.exitCode = 1;
-  await assert.rejects(host.request({ op: "poll", ...subscription }), {code:"user_domain_stale_reference"});
-  await host.request({ op: "start" });
-  await assert.rejects(host.request({ op: "poll", ...subscription }), {code:'user_domain_stale_reference'});
-}));
 test("MD-4: reconciliation retries a navigation race without recreating a tab", () => using(async ({ host, sent }) => {
   await host.request({ op: "open", url: "about:blank" });
   const reconcile = host.browser.reconcile;
@@ -327,28 +297,6 @@ test("MD-4: reconciliation retries a navigation race without recreating a tab", 
   assert.equal(sent.filter(call => call.method === "Target.createTarget").length, creations);
   host.browser.reconcile = async () => { throw Object.assign(new Error("unavailable"), { code: "different_error" }); };
   await assert.rejects(host.request({ op: "state" }), /unavailable/);
-}));
-test("MD-5: multiple subscribers share one CDP source and acknowledgment", () => using(async ({ host, handlers, sent }) => {
-  const opened = await host.request({ op: "open", url: "about:blank" });
-  const binding = { tab_id: opened.tab_id, generation: opened.generation };
-  const first = await host.request({ op: "subscribe", ...binding });
-  const second = await host.request({ op: "subscribe", ...binding });
-  const starts = sent.filter(call => call.method === "Page.startScreencast");
-  assert.equal(starts.length, 1);
-  for (const handler of handlers) handler({ method: "Page.screencastFrame", sessionId: starts[0].session, params: { data: "frame", sessionId: 1 } });
-  assert.equal(sent.filter(call => call.method === "Page.screencastFrameAck").length, 1);
-  for (const subscription of [first, second]) {
-    let frame;for(let attempt=0;attempt<50;attempt++){
-      frame=(await host.request({op:'poll',...subscription})).frame;
-      if(frame&&decodePng(frame.data_base64).pixels[0]===255)break;
-      await new Promise(resolve=>setTimeout(resolve,5));
-    }
-    assert.equal(frame.mime_type,'image/png');assert.equal(decodePng(frame.data_base64).pixels[0],255);
-  }
-  await host.request({ op: "unsubscribe", ...first });
-  assert(!sent.some(call => call.method === "Page.stopScreencast"));
-  await host.request({ op: "unsubscribe", ...second });
-  assert.equal(sent.filter(call => call.method === "Page.stopScreencast").length, 1);
 }));
 test("MD-2: text input reaches any focused field, secret or not (A-L23)", () => using(async ({ host, sent }) => {
   const opened = await host.request({ op: "open", url: "about:blank" });
@@ -446,42 +394,6 @@ test("MD-2: failed child spawn has no PID to kill or await", async () => {
   assert.equal(chromium.child, null);
 });
 
-test("MP-08/MP-11 policy updates retire cached observations without a broad mask",()=>using(async({host,handlers,sent})=>{
- const opened=await host.request({op:'open',url:'about:blank'}),subscription=await host.request({op:'subscribe',tab_id:opened.tab_id,generation:opened.generation});
- const session=sent.find(call=>call.method==='Page.startScreencast').session;
- const waitFrame=async()=>{for(let n=0;n<100;n++){const frame=(await host.request({op:'poll',...subscription})).frame;if(frame)return frame;await new Promise(r=>setTimeout(r,5));}assert.fail('fresh capture required');};
- assert.equal(decodePng((await waitFrame()).data_base64).pixels[0],255);
- await host.protect({unknown:false,values:['synthetic-only'],targets:[]});
- assert.equal((await host.request({op:'poll',...subscription})).frame,null,'old observation retires instead of a whole-page blackout');
- for(const stream of host.streams.values())stream.nextCapture=0;
- for(const handler of handlers)handler({method:'Page.screencastFrame',sessionId:session,params:{data:'untrusted-raw',sessionId:1}});
- assert.equal(decodePng((await waitFrame()).data_base64).pixels[0],255,'registration without a fill leaves ordinary pixels visible');
-}));
-
-test("MP-08/MP-11: policy flushes old frames without masks for registration alone across recovery", () => using(async ({ host, handlers, chromium, sent }) => {
-  const opened = await host.request({ op: "open", url: "about:blank" });
-  const subscription = await host.request({ op: "subscribe", tab_id: opened.tab_id, generation: opened.generation });
-  const session = sent.find(call => call.method === "Page.startScreencast").session;
-  const emit = () => { for (const handler of handlers) handler({ method: "Page.screencastFrame", sessionId: session, params: { data: "unsafe-raw-pixels", sessionId: 1 } }); };
-  emit();
-  assert.notEqual((await host.request({ op: "poll", ...subscription })).frame?.data_base64, "unsafe-raw-pixels");
-  const policy = { unknown: false, values: ["synthetic-only"], targets: [] };
-  await host.protect(policy);
-  assert.equal((await host.request({ op: "poll", ...subscription })).frame, null);
-  emit();
-  await host.protect(policy); // An unchanged policy must not erase every poll.
-  const protectedFrame = (await host.request({ op: "poll", ...subscription })).frame;
-  assert.notEqual(protectedFrame?.data_base64, "unsafe-raw-pixels");
-  const capture = await host.request({ op: "screenshot", tab_id: opened.tab_id, generation: opened.generation });
-  assert.equal(decodePng(capture.data_base64).pixels[0],255); // MP-11 registration alone leaves source pixels intact
-  const second = await host.request({ op: "subscribe", tab_id: opened.tab_id, generation: opened.generation });
-  assert.equal((await host.request({ op: "poll", ...second })).frame, null); // capture is asynchronous
-  chromium.child.exitCode = 1;
-  await host.request({ op: "start" });
-  assert(host.browser.protectedValues.has("synthetic-only"));
-  await assert.rejects(host.request({ op: "poll", ...subscription }), error => ["user_domain_stale_epoch","user_domain_stale_reference"].includes(error.code));
-}));
-
 test("MD-5: unavailable observation policy fences captures and leaves shutdown available", () => using(async ({ host }) => {
   const opened = await host.request({ op: "open", url: "about:blank" });
   await host.protect({ unknown: true, values: [], targets: [] });
@@ -489,36 +401,6 @@ test("MD-5: unavailable observation policy fences captures and leaves shutdown a
   assert.equal((await host.request({ op: "stop" })).state, "stopped");
 }));
 
-test('MP-11 legacy observation retires an in-flight frame after document changes',()=>using(async({host,connection,handlers,sent})=>{
- const opened=await host.request({op:'open',url:'about:blank'});let entered,release;
- const waiting=new Promise(resolve=>entered=resolve),held=new Promise(resolve=>release=resolve);
- connection.beforeSend=async method=>{if(method==='Page.captureScreenshot'){entered();await held;}};
- const subscription=await host.request({op:'subscribe',tab_id:opened.tab_id,generation:opened.generation});await waiting;
- const session=sent.find(call=>call.method==='Page.startScreencast').session;
- for(const handler of handlers)handler({sessionId:session,method:'DOM.documentUpdated',params:{}});
- release();for(let n=0;n<50&&host.streams.get(subscription.subscription_id).capturing;n++)await new Promise(resolve=>setTimeout(resolve,5));
- assert.equal((await host.request({op:'poll',...subscription})).frame,null,'retired capture cannot overwrite the observation');
-}));
-test('MP-11 legacy observation retires an in-flight frame after attribute-only protection changes',()=>using(async({host,connection,handlers,sent})=>{
- const opened=await host.request({op:'open',url:'about:blank'});let entered,release;
- const waiting=new Promise(resolve=>entered=resolve),held=new Promise(resolve=>release=resolve);
- connection.beforeSend=async method=>{if(method==='Page.captureScreenshot'){entered();await held;}};
- const subscription=await host.request({op:'subscribe',tab_id:opened.tab_id,generation:opened.generation});await waiting;
- const session=sent.find(call=>call.method==='Page.startScreencast').session;
- for(const handler of handlers)handler({sessionId:session,method:'DOM.attributeModified',params:{name:'type'}});
- release();for(let n=0;n<50&&host.streams.get(subscription.subscription_id).capturing;n++)await new Promise(resolve=>setTimeout(resolve,5));
- assert.equal((await host.request({op:'poll',...subscription})).frame,null,'retired capture cannot be returned after a field type change');
-}));
-test('MP-11 legacy observation keeps its bound frame through DOM tree churn',()=>using(async({host,handlers,sent})=>{
- const opened=await host.request({op:'open',url:'about:blank'});
- const subscription=await host.request({op:'subscribe',tab_id:opened.tab_id,generation:opened.generation});
- const stream=host.streams.get(subscription.subscription_id);
- for(let n=0;n<50&&(stream.capturing||!stream.latest||decodePng(stream.latest.data_base64).pixels[0]!==255);n++)await new Promise(resolve=>setTimeout(resolve,5));
- const session=sent.find(call=>call.method==='Page.startScreencast').session;
- for(const method of ['DOM.childNodeInserted','DOM.childNodeCountUpdated'])for(const handler of handlers)handler({sessionId:session,method,params:{}});
- for(const handler of handlers)handler({sessionId:session,method:'DOM.attributeModified',params:{name:'class'}});
- assert.equal((await host.request({op:'poll',...subscription})).frame,null,'geometry changes retire the observation without a blanket frame');
-}));
 test('MP-11 a refused compositor attestation is cached per document with backoff',()=>using(async({host,connection,handlers,pages})=>{
  const opened=await host.request({op:'open',url:'about:blank'}),tab=host.tabs.get(opened.tab_id);
  let attempts=0,shots=0;host.browser.inputCapture.hold=async()=>{attempts++;return async()=>{}};
@@ -720,23 +602,6 @@ test("MD-3: bound capture carries the captured document and rejects a capture na
   await assert.rejects(host.request({ op: "screenshot", ...binding }), /moved away/);
 }));
 
-test("MD-3: bound stream captures a document-bound source rather than annotating old CDP pixels", () => using(async ({ host, handlers, sent }) => {
-  const opened = await host.request({ op: "open", url: "about:blank" });
-  const subscription = await host.request({ op: "subscribe", tab_id: opened.tab_id, generation: opened.generation, bound_frames: true });
-  const session = sent.find(call => call.method === "Page.startScreencast").session;
-  for (const handler of handlers) handler({ method: "Page.screencastFrame", sessionId: session, params: { data: "unbound-old-pixels", sessionId: 42 } });
-  for (let attempt = 0; attempt < 50; attempt++) {
-    const { frame } = await host.request({ op: "poll", ...subscription });
-    if (frame?.document_id) {
-      assert.equal(frame.document_id, opened.tabs[0].document_id);
-      assert.notEqual(frame.data_base64, "unbound-old-pixels");
-      return;
-    }
-    await new Promise(resolve => setTimeout(resolve, 2));
-  }
-  assert.fail("bound stream frame never arrived");
-}));
-
 test("MP-08/MP-11: agents drive App tabs only with the kernel's App view claim; App tabs are not restored", () => using(async ({ host, sent }, root) => {
   const opened = await host.request({op:"open",url:"https://app.a.invalid/"});
   const target = host.tabs.get(opened.tab_id).target_id;
@@ -790,17 +655,6 @@ test("MD integration: generation-bound App calls never restart a stopped browser
   }
 }));
 
-
-test("MD integration: target close revokes its frame subscription", () => using(async ({host,handlers,sent}) => {
-  const tab=await host.request({op:"open",url:"about:blank"});
-  const stream=await host.request({op:"subscribe",tab_id:tab.tab_id,generation:tab.generation});
-  await host.browser.manageTab({target_id:host.tabs.get(tab.tab_id).target_id});
-  await host.reconcile();
-  assert.equal(host.streams.size,0);
-  assert.equal(handlers.size,2,'lockdown and browser recovery observers remain');
-  assert(sent.some(call=>call.method==="Page.stopScreencast"));
-  await assert.rejects(host.request({op:"poll",...stream}),error => error.code === "user_domain_stale_reference");
-}));
 
 
 test("human Enter carries Chromium's native text event; key-up never retypes it", () => using(async ({ host, sent }) => {
@@ -2036,7 +1890,7 @@ test('MP-08/MP-10 the Chrome window follow-up is a concurrent observation',()=>u
  assert.equal(scheduleHostRequest({method:'host.browser',params:{op:'chrome_window_follow',tab_id:'t',switches:false}}).kind,'bridge');
  assert.equal(scheduleHostRequest({method:'host.browser',params:{op:'input'}}).kind,'barrier');
  // r54 RED 2: a selection note waits for the page renderer (8 s on a parsing page); it must not hold every key behind it.
- for(const op of ['note_selection'])assert.equal(scheduleHostRequest({method:'host.browser',params:{op,tab_id:'t'}}).kind,'bridge');
+ for(const op of ['note_selection','pointer_cursor'])assert.equal(scheduleHostRequest({method:'host.browser',params:{op,tab_id:'t'}}).kind,'bridge');
  await assert.rejects(host.request({op:'chrome_window_follow',tab_id:'t',switches:false}),/MP-11: user browser is stopped/);
 }));
 
