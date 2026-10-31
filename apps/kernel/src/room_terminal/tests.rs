@@ -867,10 +867,10 @@ async fn once_the_user_used_a_tab_only_the_user_can_close_it() {
     assert!(service.list("room-1").is_empty());
 
     let resized = service.open(spec(agent("a"))).unwrap().terminal_id;
-    service
-        .resize("room-1", &resized, &TerminalActor::User, 90, 30)
-        .unwrap();
-    assert!(service.close("room-1", &resized, &agent("b")).is_err());
+    // A viewing client sizes the terminal to its window; that is not use of the terminal.
+    service.resize("room-1", &resized, 90, 30).unwrap();
+    assert!(!service.list("room-1")[0].user_interacted);
+    service.close("room-1", &resized, &agent("b")).unwrap();
     let untouched = service.open(spec(agent("a"))).unwrap().terminal_id;
     service.close("room-1", &untouched, &agent("b")).unwrap();
     service.end_session("room-1");
@@ -2204,9 +2204,7 @@ async fn unrelated_echo_while_screen_paused(rendering: bool) {
     let (done, completion) = std::sync::mpsc::channel();
     let thread = std::thread::spawn(move || {
         let result = runtime.block_on(async {
-            writer
-                .resize("room-1", &other, &TerminalActor::User, 90, 30)
-                .unwrap();
+            writer.resize("room-1", &other, 90, 30).unwrap();
             writer.snapshot("room-1", &other).unwrap();
             writer
                 .input("room-1", &other, &TerminalActor::User, b"INDEPENDENT\n")

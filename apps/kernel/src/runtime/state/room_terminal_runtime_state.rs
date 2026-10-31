@@ -179,7 +179,7 @@ impl KernelRuntimeState {
                 cols,
                 rows,
             } => RoomTerminalResult::Resized {
-                terminal: service.resize(session_id, &terminal_id, &actor, cols, rows)?,
+                terminal: service.resize(session_id, &terminal_id, cols, rows)?,
             },
             RoomTerminalOperation::ReadOutput {
                 terminal_id,

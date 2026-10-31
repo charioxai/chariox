@@ -420,7 +420,6 @@ impl RoomTerminalService {
         &self,
         session_id: &str,
         terminal_id: &str,
-        actor: &TerminalActor,
         cols: u16,
         rows: u16,
     ) -> Result<RoomTerminalSummary, DaemonError> {
@@ -433,9 +432,6 @@ impl RoomTerminalService {
         };
         pty.resize(&run_id, cols, rows)?;
         terminal.resize(cols, rows);
-        if *actor == TerminalActor::User {
-            terminal.mark_user_interacted();
-        }
         let driver = terminal.current_driver(pty);
         let summary = terminal.summary(driver);
         drop(state);
