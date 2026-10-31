@@ -620,6 +620,127 @@ fn a_reloaded_kernel_publishes_that_it_is_back_on_the_relay() {
     );
 }
 
+/// The relay tells a kernel's browsers why it left. The old program's last
+/// relay message marks a hot reload as a reload (they retry within the swap);
+/// an ordinary stop stays unmarked (they back off as for an outage).
+#[test]
+fn a_hot_reload_tells_the_relay_it_is_a_reload() {
+    let scratch = std::env::temp_dir().join(format!("hr-relay-close-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).unwrap();
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    // A relay that records the text messages of each kernel connection.
+    let relay = runtime
+        .block_on(tokio::net::TcpListener::bind("127.0.0.1:0"))
+        .unwrap();
+    let relay_url = format!("ws://{}", relay.local_addr().unwrap());
+    let connections = std::sync::Arc::new(std::sync::Mutex::new(Vec::<Vec<Value>>::new()));
+    let recorded = connections.clone();
+    runtime.spawn(async move {
+        while let Ok((stream, _)) = relay.accept().await {
+            let recorded = recorded.clone();
+            tokio::spawn(async move {
+                let Ok(mut socket) = tokio_tungstenite::accept_async(stream).await else {
+                    return;
+                };
+                let index = {
+                    let mut connections = recorded.lock().unwrap();
+                    connections.push(Vec::new());
+                    connections.len() - 1
+                };
+                while let Some(Ok(message)) = socket.next().await {
+                    if let Message::Text(text) = message {
+                        if let Ok(value) = serde_json::from_str::<Value>(&text) {
+                            recorded.lock().unwrap()[index].push(value);
+                        }
+                    }
+                }
+            });
+        }
+    });
+    let mut kernel = start_kernel_with(
+        &scratch,
+        &[
+            ("CHARIOX_RELAY_URL", PathBuf::from(&relay_url)),
+            ("CHARIOX_RELAY_TOKEN", PathBuf::from("hot-reload-close")),
+            ("CHARIOX_DAEMON_ID", PathBuf::from("hr-relay-close")),
+        ],
+    );
+    // The kernel also opens other relay connections; its registrations are the
+    // ones that send `daemon_register`, in order.
+    let registration = |nth: usize, within: Duration| {
+        let deadline = Instant::now() + within;
+        loop {
+            let found = connections
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|messages| {
+                    messages
+                        .iter()
+                        .any(|message| message["kind"] == "daemon_register")
+                })
+                .nth(nth)
+                .cloned();
+            if let Some(messages) = found {
+                return messages;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "registration {nth} never came: {} connections",
+                connections.lock().unwrap().len()
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    };
+    let last_message = |nth: usize| {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let last = registration(nth, Duration::ZERO)
+                .last()
+                .cloned()
+                .unwrap_or(Value::Null);
+            if last["kind"] == "close" || Instant::now() >= deadline {
+                return last;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    };
+    registration(0, Duration::from_secs(60));
+    let installed = scratch.join("bin/chariox-kernel");
+    install(
+        |staged| {
+            std::fs::copy(&installed, staged).unwrap();
+        },
+        &installed,
+    );
+    let pid = kernel.child.id() as i32;
+    assert!(pid > 1);
+    unsafe { libc::kill(pid, libc::SIGUSR2) };
+    registration(1, Duration::from_secs(30));
+    let close = last_message(0);
+    assert!(
+        close["kind"] == "close" && close["kernel_reload"] == true,
+        "the old program's last relay message did not mark the reload: {close}"
+    );
+
+    unsafe { libc::kill(pid, libc::SIGTERM) };
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while kernel.child.try_wait().unwrap().is_none() {
+        assert!(Instant::now() < deadline, "the kernel did not stop");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let close = last_message(1);
+    assert!(
+        close["kind"] == "close" && close.get("kernel_reload").is_none(),
+        "an ordinary stop must not be marked as a reload: {close}"
+    );
+}
+
 /// A managed kernel reaches its slice Docker broker over a connection its
 /// supervisor handed it (`CHARIOX_SLICE_DOCKER_BROKER_FD`, with no socket path
 /// to reconnect to): the new program keeps that connection.

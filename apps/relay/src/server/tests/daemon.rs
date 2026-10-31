@@ -352,7 +352,7 @@ async fn daemon_socket_cannot_switch_registered_identity() {
         match serde_json::from_str::<RelayEnvelope>(&close_payload)
             .expect("relay close should decode")
         {
-            RelayEnvelope::Close { reason } => {
+            RelayEnvelope::Close { reason, .. } => {
                 assert_eq!(reason, "daemon connection already registered");
             }
             other => panic!("unexpected identity switch envelope: {other:?}"),
