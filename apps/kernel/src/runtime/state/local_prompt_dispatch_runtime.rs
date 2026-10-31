@@ -672,7 +672,14 @@ impl KernelRuntimeState {
                         {
                             return Err(DaemonError::ProviderRefusal { message });
                         }
-                        if tokio::time::Instant::now() >= deadline {
+                        // Claude answers the turn it is on before the prompt it queued, so
+                        // its silence is not a failure to respond while that turn runs.
+                        if tokio::time::Instant::now() >= deadline
+                            && !crate::app::claude_headless_prompt_queued_behind_running_turn(
+                                &provider_run,
+                                &dispatch.prompt_id,
+                            )
+                        {
                             return Err(prompt_ack_timeout_error(dispatch));
                         }
                         tokio::time::sleep(std::time::Duration::from_millis(100)).await;

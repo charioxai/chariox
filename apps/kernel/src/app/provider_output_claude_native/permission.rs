@@ -106,6 +106,9 @@ pub(super) struct ClaudeHeadlessSubmitRetry {
     pub(super) last_attempt_ms: u64,
     #[serde(default)]
     pub(super) visible_prompt: String,
+    /// Claude's transcript holds the prompt in its queue behind a turn that is still running.
+    #[serde(default)]
+    pub(super) queued_in_claude: bool,
 }
 
 pub(super) fn read_claude_headless_submit_retry(context_file: &str) -> ClaudeHeadlessSubmitRetry {
@@ -133,8 +136,21 @@ pub(super) fn write_claude_headless_submit_retry(
         count,
         last_attempt_ms,
         visible_prompt: visible_prompt.to_string(),
+        queued_in_claude: false,
     };
     if let Ok(raw) = serde_json::to_string(&payload) {
+        let _ = fs::write(path, raw);
+    }
+}
+
+/// Typing a prompt again that Claude already queued would make it answer twice.
+pub(super) fn mark_claude_headless_prompt_queued(context_file: &str) {
+    let Some(path) = claude_headless_submit_retry_path(context_file) else {
+        return;
+    };
+    let mut retry = read_claude_headless_submit_retry(context_file);
+    retry.queued_in_claude = true;
+    if let Ok(raw) = serde_json::to_string(&retry) {
         let _ = fs::write(path, raw);
     }
 }
