@@ -150,3 +150,48 @@ fn an_incremental_outline_equals_the_full_one_after_every_change() {
     check("a prune");
     let _ = std::fs::remove_file(path);
 }
+
+#[test]
+fn an_outline_read_after_the_database_was_reclaimed_loads_the_range_again() {
+    let path = store_path();
+    let store = OperationalHistoryStore::open(path.clone()).expect("open history");
+    // Rows of another agent come first and go: the reply's row ids start after a gap.
+    let filler = (0..300)
+        .map(|index| {
+            let mut event = fragment(1_000 + index, 100 + index, "filler ");
+            event.agent_id = Some("agent-2".to_string());
+            event
+        })
+        .collect::<Vec<_>>();
+    store.append_many(&filler).expect("append the filler");
+    let reply = std::iter::once(prompt(10, 5_000))
+        .chain((0..40).map(|index| fragment(11 + index, 5_001 + index, "streamed words ")))
+        .collect::<Vec<_>>();
+    store.append_many(&reply).expect("append the reply so far");
+    store
+        .prune_events_before(1_000, true)
+        .expect("prune the filler");
+    // Warmed after the prune, as an outline can be between the prune and the vacuum.
+    outline(&store, 1);
+    assert_eq!(store.rows_decoded(), 41, "the first read loads the reply");
+
+    // VACUUM may renumber the row ids the cache's frontier counts on.
+    store.reclaim_disk_space().expect("reclaim the database");
+    let more = (40..45)
+        .map(|index| fragment(11 + index, 5_001 + index, "more words "))
+        .collect::<Vec<_>>();
+    store.append_many(&more).expect("append five fragments");
+    let before = store.rows_decoded();
+    let grown = outline(&store, 1);
+
+    assert_eq!(
+        store.rows_decoded() - before,
+        46,
+        "the read after a reclaim must load the whole range, not continue from a remembered row id"
+    );
+    assert!(
+        grown == full_outline(&path, 1),
+        "the cached outline differs from the full one after the database was reclaimed"
+    );
+    let _ = std::fs::remove_file(path);
+}
