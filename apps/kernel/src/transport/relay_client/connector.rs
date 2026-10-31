@@ -94,7 +94,9 @@ const RELAY_RECONNECT_BASE_DELAY_MS: u64 = 500;
 const RELAY_RECONNECT_MAX_DELAY_MS: u64 = 1_000;
 const RELAY_RECONNECT_JITTER_SPREAD_MS: u64 = 500;
 const CLOUD_TOKEN_REFRESH_RETRY_BASE_DELAY_MS: u64 = 1_000;
-const CLOUD_TOKEN_REFRESH_RETRY_MAX_DELAY_MS: u64 = 15_000;
+const CLOUD_TOKEN_REFRESH_RETRY_MAX_DELAY_MS: u64 = 60_000;
+/// A relay link that stayed up this long was healthy; a shorter one keeps the reconnect backoff growing.
+const STABLE_RELAY_CONNECTION: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MissingRelayConfigDisposition {
@@ -200,11 +202,61 @@ fn relay_reconnect_delay(daemon_id: &str, attempt: u32) -> Duration {
 /// spends its own timeout, so this grows past the socket reconnect delay.
 fn cloud_token_refresh_retry_delay(daemon_id: &str, failures: u32) -> Duration {
     let backoff_ms = CLOUD_TOKEN_REFRESH_RETRY_BASE_DELAY_MS
-        .saturating_mul(1_u64 << failures.min(4))
+        .saturating_mul(1_u64 << failures.min(6))
         .min(CLOUD_TOKEN_REFRESH_RETRY_MAX_DELAY_MS);
     Duration::from_millis(
         backoff_ms + stable_jitter_ms(daemon_id, RELAY_RECONNECT_JITTER_SPREAD_MS),
     )
+}
+
+/// The wait before asking again for a token: the backoff, and never less than
+/// what Cloud said ("retry in 20 seconds").
+fn token_renewal_retry_delay(daemon_id: &str, failures: u32, refresh_error: Option<&str>) -> Duration {
+    let hint = refresh_error
+        .and_then(cloud_retry_hint)
+        .unwrap_or(Duration::ZERO);
+    cloud_token_refresh_retry_delay(daemon_id, failures).max(hint)
+}
+
+fn cloud_retry_hint(message: &str) -> Option<Duration> {
+    let after = message.split_once("retry in ")?.1;
+    let digits: String = after.chars().take_while(char::is_ascii_digit).collect();
+    let seconds: u64 = digits.parse().ok()?;
+    after[digits.len()..]
+        .trim_start()
+        .starts_with("second")
+        .then(|| Duration::from_secs(seconds.min(3_600)))
+}
+
+/// The relay says this token is no good; the kernel does not present it again.
+fn relay_refused_token(message: &str) -> bool {
+    let message = message.to_ascii_lowercase();
+    message.contains("relay token")
+        && (message.contains("expired") || message.contains("revoked"))
+}
+
+/// Drops of links that had just come up. Only a link that stayed up for
+/// `STABLE_RELAY_CONNECTION` starts the backoff over.
+#[derive(Default)]
+struct DropBackoff {
+    drops: u32,
+}
+
+impl DropBackoff {
+    fn after_connection(&mut self, connected_for: Duration) {
+        self.drops = if connected_for >= STABLE_RELAY_CONNECTION {
+            0
+        } else {
+            self.drops.saturating_add(1)
+        };
+    }
+
+    fn delay(&self, daemon_id: &str) -> Duration {
+        if self.drops == 0 {
+            return Duration::ZERO;
+        }
+        cloud_token_refresh_retry_delay(daemon_id, self.drops - 1)
+    }
 }
 
 async fn wait_for_reconnect_delay(shutdown: &mut watch::Receiver<bool>, delay: Duration) -> bool {
@@ -543,6 +595,10 @@ async fn run_daemon_relay_connector_inner(
     let mut missing_relay_config_reported = false;
     let mut reconnect_attempt = 0_u32;
     let mut token_refresh_failures = 0_u32;
+    let mut refused_token: Option<String> = None;
+    let mut refused_failures = 0_u32;
+    let mut refresh_error: Option<String> = None;
+    let mut drop_backoff = DropBackoff::default();
 
     loop {
         if *shutdown.borrow() {
@@ -555,12 +611,13 @@ async fn run_daemon_relay_connector_inner(
             if should_refresh_cloud_relay(&config) {
                 let cloud_refresh_started = Instant::now();
                 match bounded_cloud_relay_refresh(
-                    router.ensure_cloud_relay_connection(),
+                    router.ensure_cloud_relay_connection_replacing(refused_token.as_deref()),
                     CLOUD_RELAY_TOKEN_REFRESH_TIMEOUT,
                 )
                 .await
                 {
                     CloudRelayRefreshResult::Refreshed => {
+                        refresh_error = None;
                         crate::logging::info_with_fields(
                             "daemon.startup",
                             "cloud relay profile hydrated",
@@ -570,6 +627,7 @@ async fn run_daemon_relay_connector_inner(
                         );
                     }
                     CloudRelayRefreshResult::Failed(error) => {
+                        refresh_error = Some(error.clone());
                         crate::logging::warn_with_fields(
                             "daemon.relay_client",
                             "failed to refresh cloud relay token",
@@ -594,7 +652,11 @@ async fn run_daemon_relay_connector_inner(
             let config = router.relay_config_snapshot();
             if cloud_relay_token_is_expired(&config, crate::session::unix_epoch_ms()) {
                 let daemon_id = router.relay_daemon_id();
-                let delay = cloud_token_refresh_retry_delay(&daemon_id, token_refresh_failures);
+                let delay = token_renewal_retry_delay(
+                    &daemon_id,
+                    token_refresh_failures,
+                    refresh_error.as_deref(),
+                );
                 let relay_url = config
                     .cloud_relay
                     .as_ref()
@@ -701,6 +763,29 @@ async fn run_daemon_relay_connector_inner(
             }
         };
         missing_relay_config_reported = false;
+
+        if refused_token.as_deref() == Some(active_relay_token.as_str()) {
+            let daemon_id = router.relay_daemon_id();
+            let delay =
+                token_renewal_retry_delay(&daemon_id, refused_failures, refresh_error.as_deref());
+            crate::logging::warn_with_fields(
+                "daemon.relay_client",
+                "relay refused this token; waiting for a renewed one",
+                serde_json::json!({
+                    "relay_url": relay_url,
+                    "retry_ms": delay.as_millis(),
+                    "failures": refused_failures,
+                }),
+            );
+            record_relay_reconnect(&router, &relay_url, "relay refused the token", delay);
+            refused_failures = refused_failures.saturating_add(1);
+            if wait_for_reconnect_delay(shutdown, delay).await {
+                return;
+            }
+            continue;
+        }
+        refused_token = None;
+        refused_failures = 0;
 
         crate::logging::info_with_fields(
             "daemon.relay_client",
@@ -861,6 +946,7 @@ async fn run_daemon_relay_connector_inner(
                     );
                 }
                 reconnect_attempt = 0;
+                let connected_at = Instant::now();
                 if let Some(presence) = presence.as_ref() {
                     presence.publish(true, "relay registration sent");
                 }
@@ -940,6 +1026,9 @@ async fn run_daemon_relay_connector_inner(
                                     {
                                         let disconnect_reason =
                                             format!("relay payload handling failed: {error}");
+                                        if relay_refused_token(&disconnect_reason) {
+                                            refused_token = Some(active_relay_token.clone());
+                                        }
                                         abort_leased_projection_pump_task(
                                             &mut leased_projection_pump_task,
                                         );
@@ -1175,7 +1264,9 @@ async fn run_daemon_relay_connector_inner(
                         }
                     }
                 };
-                let delay = relay_reconnect_delay(&daemon_id, reconnect_attempt);
+                drop_backoff.after_connection(connected_at.elapsed());
+                let delay =
+                    relay_reconnect_delay(&daemon_id, reconnect_attempt).max(drop_backoff.delay(&daemon_id));
                 record_relay_reconnect(&router, &relay_url, reconnect_reason, delay);
                 reconnect_attempt = reconnect_attempt.saturating_add(1);
                 if wait_for_reconnect_delay(shutdown, delay).await {
@@ -1208,3 +1299,5 @@ async fn run_daemon_relay_connector_inner(
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod refused_token_tests;

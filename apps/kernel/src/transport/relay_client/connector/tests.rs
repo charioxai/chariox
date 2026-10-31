@@ -850,3 +850,52 @@ fn retained_cloud_private_relay_does_not_hydrate_cloud_transport() {
         "MP-08 / MP-10 / MP-11 restart must retain the active private override"
     );
 }
+
+#[test]
+fn cloud_retry_hint_reads_the_seconds_cloud_asks_for() {
+    assert_eq!(
+        cloud_retry_hint("cloud relay request failed with 429: cloud_api_code=rate_limited: Too many requests, retry in 20 seconds"),
+        Some(Duration::from_secs(20))
+    );
+    assert_eq!(cloud_retry_hint("retry in 1 second"), Some(Duration::from_secs(1)));
+    assert_eq!(cloud_retry_hint("retry in a while"), None);
+    assert_eq!(cloud_retry_hint("cloud unavailable"), None);
+    assert_eq!(cloud_retry_hint("retry in 99999 seconds"), Some(Duration::from_secs(3_600)));
+}
+
+#[test]
+fn token_renewal_waits_at_least_the_hinted_time_and_at_most_a_minute_of_backoff() {
+    let hinted = token_renewal_retry_delay("daemon-a", 0, Some("429 rate_limited, retry in 45 seconds"));
+    assert!(hinted >= Duration::from_secs(45));
+    for failures in [6, 20, 99] {
+        let delay = token_renewal_retry_delay("daemon-a", failures, None);
+        assert!(delay >= Duration::from_secs(60));
+        assert!(delay <= Duration::from_secs(61));
+    }
+    assert!(token_renewal_retry_delay("daemon-a", 0, None) < Duration::from_secs(2));
+}
+
+#[test]
+fn relay_wording_for_a_refused_token_is_recognised() {
+    for message in [
+        "relay payload handling failed: relay token is expired",
+        "relay token expired",
+        "relay token has been revoked",
+    ] {
+        assert!(relay_refused_token(message), "{message}");
+    }
+    assert!(!relay_refused_token("relay connection idle timeout"));
+    assert!(!relay_refused_token("cloud token refresh timed out"));
+}
+
+#[test]
+fn only_a_link_that_stayed_up_resets_the_drop_backoff() {
+    let mut backoff = DropBackoff::default();
+    assert_eq!(backoff.delay("daemon-a"), Duration::ZERO);
+    for expected_secs in [1, 2, 4, 8] {
+        backoff.after_connection(Duration::from_secs(2));
+        assert!(backoff.delay("daemon-a") >= Duration::from_secs(expected_secs));
+    }
+    backoff.after_connection(STABLE_RELAY_CONNECTION);
+    assert_eq!(backoff.delay("daemon-a"), Duration::ZERO);
+}
