@@ -549,7 +549,7 @@ async fn a_connection_that_authenticated_one_realm_refuses_another() {
         send(&mut client, &mut tally, &second).await;
         let (refusal, _) = receive(&mut client, &mut tally).await;
         match refusal {
-            RelayEnvelope::Close { reason } => assert!(
+            RelayEnvelope::Close { reason, .. } => assert!(
                 reason.contains("another realm"),
                 "{second_name}: refused for its realm, not for something else: {reason}"
             ),
@@ -685,7 +685,7 @@ async fn a_connection_bound_to_one_realm_cannot_register_a_daemon_of_another() {
         send(&mut socket, &mut tally, &register("realm-b")).await;
         let (refusal, _) = receive(&mut socket, &mut tally).await;
         match refusal {
-            RelayEnvelope::Close { reason } => assert!(
+            RelayEnvelope::Close { reason, .. } => assert!(
                 reason.contains("another realm"),
                 "{first_name}: refused for its realm: {reason}"
             ),
