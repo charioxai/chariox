@@ -12,6 +12,7 @@ use crate::provider::codex_client::continue_codex_socket;
 use crate::provider::CodexNotification;
 
 use super::transcript::CodexTextTranscriptState;
+use super::turn::CodexTurnTracker;
 use super::CodexRuntimeState;
 
 /// What the next kernel program needs to continue a Codex turn; the
@@ -29,6 +30,9 @@ pub(crate) struct CodexHandover {
     // Notifications already read from the connection, not yet applied.
     buffered_notifications: Vec<CodexNotification>,
     text_items: BTreeMap<String, CodexTextTranscriptState>,
+    // The completion evidence already applied: a turn whose last item came
+    // before the swap is settled from it when no `turn/completed` follows.
+    turn_tracker: CodexTurnTracker,
 }
 
 impl CodexHandover {
@@ -74,6 +78,7 @@ pub(crate) fn hand_over_codex_turn(
     let next_request_id = state.next_request_id;
     let buffered_notifications = std::mem::take(&mut state.buffered_notifications);
     let text_items = std::mem::take(&mut state.text_items);
+    let turn_tracker = std::mem::take(&mut state.turn_tracker);
     // This program's descriptor closes; the connection stays open in `tcp`.
     drop(state);
     Ok(CodexHandover {
@@ -85,6 +90,7 @@ pub(crate) fn hand_over_codex_turn(
         next_request_id,
         buffered_notifications,
         text_items,
+        turn_tracker,
     })
 }
 
@@ -94,6 +100,7 @@ pub(super) struct AdoptedTurn {
     turn_id: String,
     buffered_notifications: Vec<CodexNotification>,
     text_items: BTreeMap<String, CodexTextTranscriptState>,
+    turn_tracker: CodexTurnTracker,
 }
 
 /// The runtime of a handed-over turn, reading on where the previous program
@@ -109,20 +116,21 @@ pub(super) fn adopt(turn: CodexHandover) -> CodexRuntimeState {
         turn_id: turn.turn_id,
         buffered_notifications: turn.buffered_notifications,
         text_items: turn.text_items,
+        turn_tracker: turn.turn_tracker,
     });
     state
 }
 
 /// Continues the handed-over turn on this program.
 pub(super) fn continue_turn(state: &mut CodexRuntimeState, turn: AdoptedTurn) {
-    state.turn_tracker.reset_for_submitted();
-    state.turn_tracker.provider_active_turn_id = Some(turn.turn_id.clone());
-    state.turn_tracker.reset_for_started();
+    state.turn_tracker = turn.turn_tracker;
+    state.turn_tracker.note_activity();
     state.active_turn_id = Some(turn.turn_id);
     state.buffered_notifications = turn.buffered_notifications;
     state.text_items = turn.text_items;
     // Everything the turn streamed meanwhile waits in the connection: a turn
-    // that ended during the swap must not settle before it is read.
+    // that ended during the swap must not settle before it is read. Only
+    // completion evidence, handed over or new, asks the server again.
     state.authoritative_backfill_gate =
         super::backfill::CodexAuthoritativeBackfillGate::started_reconciled(
             std::time::Instant::now(),
@@ -178,6 +186,57 @@ mod tests {
         assert_eq!(
             adopted.socket.read().unwrap(),
             Message::text("after the swap")
+        );
+        server.join().unwrap();
+    }
+
+    /// The answer was applied before the swap and no `turn/completed`
+    /// follows: the next program still asks the server for the turn's record.
+    #[test]
+    fn a_turn_answered_before_the_swap_still_settles() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("ws://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let _socket = accept(stream).unwrap();
+            std::thread::sleep(Duration::from_millis(500));
+        });
+        let (socket, ()) = test_codex_connect(&endpoint).unwrap();
+        let ProviderRuntimeBinding::Codex(binding) =
+            CodexRuntimeState::active_turn_binding_fixture(endpoint, socket)
+        else {
+            unreachable!("a Codex fixture")
+        };
+        let mut state = binding.state;
+        state.turn_tracker.note_assistant_content();
+        state.turn_tracker.note_assistant_item_completed();
+
+        let handover =
+            hand_over_codex_turn(state).unwrap_or_else(|_| panic!("a running turn is handed over"));
+        let handover: CodexHandover =
+            serde_json::from_slice(&serde_json::to_vec(&handover).unwrap()).unwrap();
+        let mut adopted = adopt(handover);
+        let turn = adopted.adopted_turn.take().unwrap();
+        continue_turn(&mut adopted, turn);
+
+        // The connection stays quiet past the grace.
+        adopted
+            .turn_tracker
+            .force_assistant_evidence_quiet_for_tests(Duration::from_secs(1));
+        let evidence = super::super::drain::codex_turn_recovery_evidence(
+            crate::provider::AgentEndpointMode::Managed,
+            true,
+            &adopted.turn_tracker,
+            true,
+        );
+        assert!(
+            adopted.authoritative_backfill_gate.is_due(
+                true,
+                evidence,
+                std::time::Instant::now() + Duration::from_secs(1)
+            ),
+            "the adopted turn never asks for its record: {:?}",
+            adopted.turn_tracker
         );
         server.join().unwrap();
     }

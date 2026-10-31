@@ -3,6 +3,7 @@
 use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::session::unix_epoch_ms;
@@ -13,7 +14,7 @@ use super::transcript::{
 };
 use super::CodexAssistantCompletion;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub(super) struct CodexTurnTracker {
     // Provider lifecycle identity can lag the newly admitted turn/start ID.
     // Keep it separate from prompt output attribution during rapid resume.
@@ -25,20 +26,22 @@ pub(super) struct CodexTurnTracker {
     assistant_content_observed: bool,
     assistant_item_completed: bool,
     assistant_content_after_tool_activity: bool,
+    // A hot reload restarts quiet timing in the next program.
+    #[serde(skip)]
     last_activity_at: Option<Instant>,
     // Unlike quiet timing, this changes only when completion evidence becomes
     // newly eligible, so ordinary activity cannot replenish retry attempts.
     completion_recovery_version: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct CodexTerminalSignal {
     pub(super) turn_id: String,
     pub(super) status: String,
     pub(super) error_message: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct CodexPendingTerminal {
     signal: CodexTerminalSignal,
 }
