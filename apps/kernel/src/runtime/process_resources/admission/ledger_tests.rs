@@ -179,3 +179,82 @@ fn writers_on_different_volumes_reserve_room_separately() {
         "another volume's room was reserved"
     );
 }
+#[test]
+fn a_disk_wait_does_not_resume_onto_memory_another_build_took() {
+    let free = Arc::new(AtomicU64::new(50 * GIB));
+    let volume = volume(&free);
+    // A runs with 800 MiB still to grow; 1000 MiB are left, so 200 are free.
+    let mut build = entry(
+        1,
+        Peak {
+            memory: 900 * MIB,
+            writes: 0,
+        },
+    );
+    build.admitted = true;
+    build.resident = 100 * MIB;
+    let waiting = Entry {
+        wait: Some(Wait::Held(WaitReason::Disk)),
+        ..entry(
+            2,
+            Peak {
+                memory: 600 * MIB,
+                writes: GIB,
+            },
+        )
+    };
+    let current = owner(
+        "agent",
+        true,
+        vec![command(1, 100 * MIB, 0), command(2, 0, 0)],
+        vec![(1, build), (2, waiting)],
+    );
+    let mut ledger = Ledger::new(None);
+    ledger.pass(
+        std::slice::from_ref(&current),
+        &current,
+        &room(1000 * MIB, false, &volume),
+    );
+    assert_eq!(
+        wait(&current, 2),
+        Some(Wait::Held(WaitReason::Disk)),
+        "a command held for disk resumed with no memory budget left"
+    );
+}
+
+#[test]
+fn a_memory_wait_does_not_resume_onto_a_disk_that_filled() {
+    // 2 GiB above the floor, while the command writes 6 GiB.
+    let free = Arc::new(AtomicU64::new(12 * GIB));
+    let volume = volume(&free);
+    let waiting = Entry {
+        wait: Some(Wait::Held(WaitReason::Memory)),
+        ..entry(
+            1,
+            Peak {
+                memory: 600 * MIB,
+                writes: 6 * GIB,
+            },
+        )
+    };
+    let current = owner("agent", true, vec![command(1, 0, 0)], vec![(1, waiting)]);
+    let mut ledger = Ledger::new(None);
+    ledger.pass(
+        std::slice::from_ref(&current),
+        &current,
+        &room(4 * GIB, false, &volume),
+    );
+    assert_eq!(
+        wait(&current, 1),
+        Some(Wait::Held(WaitReason::Memory)),
+        "a command held for memory resumed onto a full disk"
+    );
+    free.store(30 * GIB, Ordering::SeqCst);
+    unsettle(&mut ledger);
+    ledger.pass(
+        std::slice::from_ref(&current),
+        &current,
+        &room(4 * GIB, false, &volume),
+    );
+    assert_eq!(wait(&current, 1), None, "it did not resume with both free");
+}

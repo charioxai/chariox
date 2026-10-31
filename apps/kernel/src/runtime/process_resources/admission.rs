@@ -101,6 +101,14 @@ impl Entry {
             .map_or(0, |peak| peak.writes.saturating_sub(self.writes))
     }
 
+    /// Memory it still has ahead toward its expected peak; only a heavy
+    /// command counts.
+    fn memory_ahead(&self, room: &Room) -> u64 {
+        self.expected
+            .filter(|peak| peak.memory >= room.light)
+            .map_or(0, |peak| peak.memory.saturating_sub(self.resident))
+    }
+
     /// Start now: the user admits it whatever the room.
     pub(super) fn force(&mut self) -> bool {
         let waiting = self.wait.take().is_some();
@@ -375,9 +383,11 @@ impl Ledger {
         let (member, pid) = line(members, reason).into_iter().next()?;
         let mut observation = member.lock().unwrap_or_else(|e| e.into_inner());
         let entry = observation.admission.get_mut(&pid)?;
+        // Both resources must have room now: what it waited for, and the
+        // other one for the peak it is known to reach.
         let (memory, disk) = match reason {
-            WaitReason::Memory => (need(entry, reason, room), 0),
-            WaitReason::Disk => (0, need(entry, reason, room)),
+            WaitReason::Memory => (need(entry, reason, room), entry.writes_ahead(room)),
+            WaitReason::Disk => (entry.memory_ahead(room), need(entry, reason, room)),
         };
         let volume = entry.disk(room);
         let fits = (memory <= *available || !state.heavy_running)
