@@ -4286,6 +4286,98 @@ pub(in crate::runtime::state) mod tests {
         assert!(!tasks[0].reason.contains("late duplicate"));
     }
 
+    #[tokio::test]
+    async fn a_later_owner_prompt_retires_the_blocked_task_of_a_failed_dispatch() {
+        use crate::durable_state::agent_lifecycle::{ExecutionState, Operation};
+        let (_worktree, runtime, session_id, agent_id, _, provider_run_id, dispatch) =
+            runtime_with_admitted_prompt().await;
+        let mut config = runtime.owned.config_projection.snapshot();
+        config.room_agent_tools = true;
+        runtime.owned.config_projection.update(config);
+        runtime
+            .owned
+            .durable_state_store
+            .agent_lifecycle(Operation::Begin {
+                owner: runtime
+                    .owned
+                    .session_store
+                    .get_session(&session_id)
+                    .unwrap()
+                    .owner_user_id()
+                    .into(),
+                room: session_id.clone(),
+                agent: agent_id.clone(),
+                prompt: dispatch.prompt_id.clone(),
+                run: Some(provider_run_id.clone()),
+                now: crate::session::unix_epoch_ms(),
+            })
+            .unwrap();
+        let failed_prompt_id = dispatch.prompt_id.clone();
+        let source_attachment_id = dispatch.source_attachment_id.clone();
+        let unacknowledged = prompt_ack_timeout_error(&dispatch);
+        runtime
+            .fail_prompt_dispatch(dispatch, unacknowledged)
+            .await
+            .expect_err("failed dispatch must retain its error");
+        let blocked_card = |runtime: &KernelRuntimeState| {
+            runtime
+                .owned
+                .session_store
+                .get_session(&session_id)
+                .unwrap()
+                .active_interactions()
+                .iter()
+                .any(|i| i.id().starts_with("task-blocked-"))
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !blocked_card(&runtime) {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the failed dispatch offers the owner its decision");
+
+        let attachment = runtime
+            .owned
+            .attachment_store
+            .get_attachment(&source_attachment_id)
+            .unwrap();
+        runtime
+            .submit_prepared_prompt(crate::app::KernelPreparedPromptSubmission {
+                session_id: session_id.clone(),
+                prompt: PromptQueueItem::new(
+                    "next-owner-prompt",
+                    &source_attachment_id,
+                    &agent_id,
+                    "try again",
+                    PromptStatus::Queued,
+                )
+                .with_source_attachment(&attachment),
+                force_queue: false,
+                refresh_projection: true,
+            })
+            .await
+            .expect("the next prompt is accepted");
+
+        let task = runtime
+            .owned
+            .durable_state_store
+            .agent_tasks(Some(&session_id), Some(&agent_id))
+            .unwrap()
+            .into_iter()
+            .find(|task| task.prompt_id == failed_prompt_id)
+            .unwrap();
+        assert_eq!(
+            task.state,
+            ExecutionState::Cancelled,
+            "the failed attempt is superseded by the owner's next turn"
+        );
+        assert!(
+            !blocked_card(&runtime),
+            "the stale decision must leave the Room"
+        );
+    }
+
     /// What a room agent's owner sees after the dispatch fails with `error`:
     /// the provider-error transcript and the failure recorded on the settlement.
     async fn owner_view_of_failed_dispatch(
