@@ -86,6 +86,21 @@ pub(super) struct Entry {
     pub free: u64,
 }
 impl Entry {
+    /// The volume its writes go to, from the directory it runs in.
+    fn disk(&self, room: &Room) -> Option<Disk> {
+        self.seen
+            .as_ref()
+            .and_then(|seen| disk_room(room.volume, seen.cwd.as_deref()?))
+    }
+
+    /// Writes it still has ahead toward its expected peak; only a heavy
+    /// writer counts.
+    fn writes_ahead(&self, room: &Room) -> u64 {
+        self.expected
+            .filter(|peak| peak.writes >= room.light)
+            .map_or(0, |peak| peak.writes.saturating_sub(self.writes))
+    }
+
     /// Start now: the user admits it whatever the room.
     pub(super) fn force(&mut self) -> bool {
         let waiting = self.wait.take().is_some();
@@ -102,8 +117,14 @@ pub(super) struct Ledger {
     peaks: Peaks,
 }
 
-/// Free bytes and size of the volume holding a path.
-pub(super) type Volume = dyn Fn(&Path) -> Option<(u64, u64)> + Send + Sync;
+/// The volume holding a path: which one it is, its free bytes and its size.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Space {
+    pub id: u64,
+    pub free: u64,
+    pub total: u64,
+}
+pub(super) type Volume = dyn Fn(&Path) -> Option<Space> + Send + Sync;
 
 /// What one pass needs from the pool.
 pub(super) struct Room<'a> {
@@ -189,10 +210,10 @@ impl Ledger {
         current: &Arc<Mutex<Observation>>,
         room: &Room,
     ) -> bool {
-        let state = State::read(members, room);
+        let mut state = State::read(members, room);
         let mut available = room.memory.saturating_sub(state.reserved);
         let mut changed = Vec::new();
-        self.hold(current, room, &state, &mut available);
+        self.hold(current, room, &mut state, &mut available);
         let mut may_stop = false;
         if room.tight {
             match self.pause(members, WaitReason::Memory, |entry, command| {
@@ -204,30 +225,33 @@ impl Ledger {
                 Some(owner) => changed.push(owner),
                 None => may_stop = true,
             }
-        } else if let Some(owner) =
-            self.resume(members, WaitReason::Memory, &state, room, available)
-        {
+        } else if let Some(owner) = self.resume(
+            members,
+            WaitReason::Memory,
+            &mut state,
+            room,
+            &mut available,
+        ) {
             changed.push(owner);
         }
-        let full = |entry: &Entry| {
-            entry
-                .seen
-                .as_ref()
-                .and_then(|seen| disk_room(room.volume, seen.cwd.as_deref()?))
-                .is_some_and(|(free, floor)| free < floor)
-        };
+        let full = |entry: &Entry| entry.disk(room).is_some_and(|disk| disk.free < disk.floor);
         if let Some(owner) = self.pause(members, WaitReason::Disk, |entry, command| {
             (command.write_growth >= GROWING && full(entry)).then_some(command.write_growth)
         }) {
             changed.push(owner);
         }
-        if let Some(owner) = self.resume(members, WaitReason::Disk, &state, room, available) {
+        if let Some(owner) =
+            self.resume(members, WaitReason::Disk, &mut state, room, &mut available)
+        {
             changed.push(owner);
         }
-        available = room
-            .memory
-            .saturating_sub(State::read(members, room).reserved);
-        number(members, room, available);
+        let state = State::read(members, room);
+        number(
+            members,
+            room,
+            &state,
+            room.memory.saturating_sub(state.reserved),
+        );
         for owner in changed {
             if !Arc::ptr_eq(&owner, current) {
                 let control = owner
@@ -249,7 +273,7 @@ impl Ledger {
         &mut self,
         current: &Arc<Mutex<Observation>>,
         room: &Room,
-        state: &State,
+        state: &mut State,
         available: &mut u64,
     ) {
         let mut observation = current.lock().unwrap_or_else(|e| e.into_inner());
@@ -264,18 +288,13 @@ impl Ledger {
                 continue;
             };
             let need = expected.memory.saturating_sub(entry.resident);
-            let disk = entry
-                .seen
-                .as_ref()
-                .and_then(|seen| disk_room(room.volume, seen.cwd.as_deref()?))
-                .map(|(free, floor)| free.saturating_sub(floor));
+            let disk = entry.disk(room);
+            let ahead = entry.writes_ahead(room);
             entry.wait = if !holdable {
                 None
             } else if expected.memory >= room.light && need > *available && state.heavy_running {
                 Some(Wait::Held(WaitReason::Memory))
-            } else if expected.writes >= room.light
-                && disk.is_some_and(|room| expected.writes.saturating_sub(entry.writes) > room)
-            {
+            } else if disk.is_some_and(|disk| ahead > state.spare(disk)) {
                 Some(Wait::Held(WaitReason::Disk))
             } else {
                 None
@@ -283,6 +302,9 @@ impl Ledger {
             if entry.wait.is_none() {
                 entry.admitted = true;
                 *available = available.saturating_sub(need);
+                if let Some(disk) = disk {
+                    state.reserve(disk, ahead);
+                }
             }
         }
     }
@@ -339,9 +361,9 @@ impl Ledger {
         &mut self,
         members: &[Arc<Mutex<Observation>>],
         reason: WaitReason,
-        state: &State,
+        state: &mut State,
         room: &Room,
-        available: u64,
+        available: &mut u64,
     ) -> Option<Arc<Mutex<Observation>>> {
         if self
             .resumed_at
@@ -353,18 +375,23 @@ impl Ledger {
         let (member, pid) = line(members, reason).into_iter().next()?;
         let mut observation = member.lock().unwrap_or_else(|e| e.into_inner());
         let entry = observation.admission.get_mut(&pid)?;
-        let fits = match reason {
-            WaitReason::Memory => need(entry, reason, room) <= available || !state.heavy_running,
-            WaitReason::Disk => entry
-                .seen
-                .as_ref()
-                .and_then(|seen| disk_room(room.volume, seen.cwd.as_deref()?))
-                .is_none_or(|(free, floor)| {
-                    need(entry, reason, room) <= free.saturating_sub(floor)
-                }),
+        let (memory, disk) = match reason {
+            WaitReason::Memory => (need(entry, reason, room), 0),
+            WaitReason::Disk => (0, need(entry, reason, room)),
         };
+        let volume = entry.disk(room);
+        let fits = (memory <= *available || !state.heavy_running)
+            && volume.is_none_or(|volume| disk <= state.spare(volume));
         if !fits {
             return None;
+        }
+        *available = available.saturating_sub(
+            entry
+                .expected
+                .map_or(0, |peak| peak.memory.saturating_sub(entry.resident)),
+        );
+        if let Some(volume) = volume {
+            state.reserve(volume, entry.writes_ahead(room));
         }
         entry.wait = None;
         entry.admitted = true;
@@ -382,13 +409,29 @@ struct State {
     oldest: Option<u64>,
     /// Something heavy runs, so waiting can make room.
     heavy_running: bool,
+    /// Writes admitted commands still have ahead, by volume.
+    disk: BTreeMap<u64, u64>,
 }
 impl State {
+    /// What a volume has above its floor, less what admitted commands will
+    /// still write there.
+    fn spare(&self, disk: Disk) -> u64 {
+        disk.above_floor()
+            .saturating_sub(self.disk.get(&disk.id).copied().unwrap_or(0))
+    }
+
+    fn reserve(&mut self, disk: Disk, bytes: u64) {
+        if bytes > 0 {
+            *self.disk.entry(disk.id).or_default() += bytes;
+        }
+    }
+
     fn read(members: &[Arc<Mutex<Observation>>], room: &Room) -> Self {
         let mut state = State {
             reserved: 0,
             oldest: None,
             heavy_running: false,
+            disk: BTreeMap::new(),
         };
         for member in members {
             let observation = member.lock().unwrap_or_else(|e| e.into_inner());
@@ -400,6 +443,10 @@ impl State {
                     state.reserved += entry
                         .expected
                         .map_or(0, |peak| peak.memory.saturating_sub(entry.resident));
+                    let ahead = entry.writes_ahead(room);
+                    if let Some(disk) = entry.disk(room).filter(|_| ahead > 0) {
+                        state.reserve(disk, ahead);
+                    }
                 }
                 let heavy = entry.resident >= room.light
                     || entry.admitted
@@ -472,7 +519,7 @@ fn line(
 
 /// Writes each waiting command's place in line, need and free room, for
 /// clients.
-fn number(members: &[Arc<Mutex<Observation>>], room: &Room, available: u64) {
+fn number(members: &[Arc<Mutex<Observation>>], room: &Room, state: &State, available: u64) {
     for reason in [WaitReason::Memory, WaitReason::Disk] {
         for (position, (member, pid)) in line(members, reason).into_iter().enumerate() {
             let mut observation = member.lock().unwrap_or_else(|e| e.into_inner());
@@ -487,11 +534,7 @@ fn number(members: &[Arc<Mutex<Observation>>], room: &Room, available: u64) {
             };
             entry.free = match reason {
                 WaitReason::Memory => available,
-                WaitReason::Disk => entry
-                    .seen
-                    .as_ref()
-                    .and_then(|seen| disk_room(room.volume, seen.cwd.as_deref()?))
-                    .map_or(0, |(free, floor)| free.saturating_sub(floor)),
+                WaitReason::Disk => entry.disk(room).map_or(0, |disk| state.spare(disk)),
             };
         }
     }
@@ -505,15 +548,34 @@ pub(super) fn growth_room(ceiling: u64) -> u64 {
     MAX_GROWTH_ROOM.min(ceiling / 8)
 }
 
-/// Free bytes and the floor of the volume holding `path`.
-fn disk_room(volume: &Volume, path: &Path) -> Option<(u64, u64)> {
-    let (free, total) = volume(path)?;
-    Some((free, (total / 20).max(DISK_FLOOR)))
+/// A volume's free bytes against its floor.
+#[derive(Clone, Copy)]
+struct Disk {
+    id: u64,
+    free: u64,
+    floor: u64,
+}
+impl Disk {
+    fn above_floor(self) -> u64 {
+        self.free.saturating_sub(self.floor)
+    }
+}
+
+/// The volume holding `path`, with its floor.
+fn disk_room(volume: &Volume, path: &Path) -> Option<Disk> {
+    let space = volume(path)?;
+    Some(Disk {
+        id: space.id,
+        free: space.free,
+        floor: (space.total / 20).max(DISK_FLOOR),
+    })
 }
 
 #[cfg(unix)]
-pub(super) fn statvfs(path: &Path) -> Option<(u64, u64)> {
+pub(super) fn statvfs(path: &Path) -> Option<Space> {
     use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::MetadataExt;
+    let id = std::fs::metadata(path).ok()?.dev();
     let path = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
     let mut stat = std::mem::MaybeUninit::<libc::statvfs>::zeroed();
     // SAFETY: the path is NUL-terminated and the buffer is one statvfs.
@@ -529,14 +591,15 @@ pub(super) fn statvfs(path: &Path) -> Option<(u64, u64)> {
         stat.f_bavail as u64,
         stat.f_blocks as u64,
     );
-    Some((
-        available.saturating_mul(block),
-        blocks.saturating_mul(block),
-    ))
+    Some(Space {
+        id,
+        free: available.saturating_mul(block),
+        total: blocks.saturating_mul(block),
+    })
 }
 
 #[cfg(not(unix))]
-pub(super) fn statvfs(_path: &Path) -> Option<(u64, u64)> {
+pub(super) fn statvfs(_path: &Path) -> Option<Space> {
     None
 }
 
@@ -757,6 +820,9 @@ impl Peaks {
         }
     }
 }
+
+#[cfg(test)]
+mod ledger_tests;
 
 #[cfg(test)]
 mod display_tests {

@@ -110,7 +110,13 @@ fn a_command_writing_past_the_disk_floor_is_paused_until_space_frees() {
     let reported = free.clone();
     let pool = Arc::new(pool::Pool::with_volume(
         1 << 40,
-        Box::new(move |_| Some((reported.load(Ordering::SeqCst), 100 * GIB))),
+        Box::new(move |_| {
+            Some(admission::Space {
+                id: 1,
+                free: reported.load(Ordering::SeqCst),
+                total: 100 * GIB,
+            })
+        }),
     ));
     let mut writer = Workload::run(
         domain(&pool, "writer", false),
