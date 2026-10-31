@@ -418,4 +418,6 @@ pub use workspace::*;
 /// Landing union 923 carries 913 (`SessionState` `processes`), 917 (direct browser sessions over WebRTC),
 /// 919 (user-side browser frame stream removed, `display_ack` `paused`), 920 (mirror `document_mode`,
 /// `pointer_cursor`) and 923 (session-less Vault unlock).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 923;
+/// MP-08/MP-09/MP-10/MP-11: 925 marks a hot reload's relay close (`kernel_reload`), which the relay
+/// forwards to the kernel's subscribed clients so they retry within the swap.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 925;
