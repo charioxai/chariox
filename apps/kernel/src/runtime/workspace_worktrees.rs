@@ -395,7 +395,7 @@ mod tests {
             .status()
             .unwrap();
         assert!(init.success());
-        chown(&root.join(".git"), Some(1000), Some(1000)).unwrap();
+        chown(root.join(".git"), Some(1000), Some(1000)).unwrap();
         chown(&root, Some(1000), Some(1000)).unwrap();
         let listed = super::list_workspace_worktrees(root.to_str().unwrap(), None);
         let _ = std::fs::remove_dir_all(&root);
