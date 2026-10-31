@@ -1633,7 +1633,7 @@ impl KernelRuntimeState {
         let _ = self
             .owned
             .workflow_cancel_prompt(&dispatch.session_id, &prompt);
-        let _ = self
+        let cancellation = self
             .owned
             .finalize_local_prompt_cancellation_with_queued_advance(
                 &dispatch.session_id,
@@ -1643,6 +1643,14 @@ impl KernelRuntimeState {
             );
         if let Some(settlement) = settlement {
             self.finish_stopped_agent_task(settlement, &prompt).await;
+        }
+        // A prompt the person sent while the Stop settled is promoted here; without its dispatch
+        // it would stay active and never reach the provider.
+        if let Some(next) = cancellation
+            .ok()
+            .and_then(|cancellation| cancellation.dispatch)
+        {
+            self.spawn_prompt_dispatch(next, self.provider_runtime_lanes.clone());
         }
     }
 

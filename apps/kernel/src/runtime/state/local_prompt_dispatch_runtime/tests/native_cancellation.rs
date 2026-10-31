@@ -307,3 +307,105 @@ async fn runtime_native_cancel_releases_the_acknowledgement_wait() {
         .is_some_and(|text| text.contains("Provider prompt dispatch failed")
             || text.contains("Request not carried out"))));
 }
+
+/// The person's next prompt arrives while the Stop is still settling: the settlement promotes it,
+/// and it must then be delivered to Claude rather than stay active and undelivered.
+#[tokio::test]
+async fn a_prompt_queued_behind_a_native_stop_is_delivered_when_the_stop_settles() {
+    crate::test_support::isolated_env_test!();
+    let (_worktree, runtime, session_id, agent_id, source_id, run, dispatch) =
+        runtime_with_claude_headless_active_prompt().await;
+    // Like Claude, the fixture survives the Stop's Ctrl-C.
+    std::fs::write(
+        std::env::var_os("CHARIOX_CLAUDE_BIN").unwrap(),
+        "#!/bin/sh\ntrap '' INT\nprintf '❯ '\nwhile IFS= read -r line; do printf '❯ '; done\n",
+    )
+    .unwrap();
+    runtime
+        .with_app_side_effect(|app| {
+            crate::app::ProviderLaunchProcessRuntime::new(app).spawn_for_launch(&run)
+        })
+        .await
+        .unwrap();
+    let stopped_prompt_id = dispatch.prompt_id.clone();
+    let cancellation = runtime
+        .owned
+        .cancel_local_prompt(&session_id, &agent_id, &source_id)
+        .unwrap()
+        .unwrap();
+    runtime
+        .with_app_side_effect(|app| {
+            let next = PromptQueueItem::new(
+                app.sessions_mut().reserve_prompt_id(),
+                &source_id,
+                &agent_id,
+                "the next prompt",
+                PromptStatus::Queued,
+            );
+            app.prompt_owner_submit_prepared_prompt(&session_id, next, false)
+                .map(|_| ())
+        })
+        .await
+        .unwrap();
+    runtime.spawn_prompt_abort(
+        cancellation.dispatch.unwrap(),
+        runtime.provider_runtime_lanes.clone(),
+    );
+    let origin = std::path::PathBuf::from(format!(
+        "{}.approval-origin",
+        run.pty_env()["CHARIOX_CLAUDE_NATIVE_CONTEXT"]
+    ));
+    let delivered = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let session = runtime
+                .owned
+                .session_store
+                .get_session(&session_id)
+                .unwrap();
+            let active = runtime
+                .owned
+                .prompt_state_owner
+                .active_prompt_for_agent(&session, &agent_id);
+            if let Some(active) = active.filter(|active| active.id() != stopped_prompt_id) {
+                if std::fs::read_to_string(&origin).ok().as_deref() == Some(active.id()) {
+                    break;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    let session = runtime
+        .owned
+        .session_store
+        .get_session(&session_id)
+        .unwrap();
+    let state = format!(
+        "failed={:?} active={:?} queued={:?} run={:?} origin={:?}",
+        failed_requests(&runtime, &agent_id),
+        runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &agent_id)
+            .map(|p| (p.id().to_string(), p.status())),
+        runtime
+            .owned
+            .prompt_state_owner
+            .peek_next_queued_prompt(&session, &agent_id)
+            .map(|p| p.id().to_string()),
+        runtime
+            .owned
+            .provider_store
+            .get_run(run.id())
+            .map(|r| r.state()),
+        std::fs::read_to_string(&origin).ok(),
+    );
+    runtime
+        .retire_owned_provider_run_after_terminal_failure(&session_id, run.id())
+        .await;
+    delivered.unwrap_or_else(|_| {
+        panic!(
+            "the prompt queued behind the Stop must reach the native acknowledgement wait: {state}"
+        )
+    });
+}
