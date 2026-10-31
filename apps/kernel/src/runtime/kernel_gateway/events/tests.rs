@@ -522,3 +522,67 @@ fn a_target_the_kernel_refuses_alone_is_dropped_and_reported_ended() {
         }
     });
 }
+
+#[test]
+fn cleanup_of_targets_the_kernel_never_installed_completes() {
+    run_with_gateway(|gateway, state| async move {
+        let (first, second) = (remote_session("first"), remote_session("second"));
+        follow(&state, &["a"], &[&first, &second]);
+        // Every session ended before the retry: no remote part was ever created.
+        gateway
+            .install_each("remote", &[first.clone(), second.clone()], |_| async {
+                Err(remote_error("events_refused"))
+            })
+            .await
+            .unwrap();
+        let origin = Origin {
+            grant_id: "a".into(),
+            harness: "test".into(),
+        };
+        let owed = || {
+            state
+                .outside_store()
+                .outside_part("a")
+                .unwrap()
+                .unwrap()
+                .cleanup_targets
+        };
+        assert_eq!(owed(), vec![first.clone(), second.clone()]);
+        // The target has nothing to remove and refuses the unsubscribe for lack of a part.
+        gateway
+            .clean_remote_part(&origin, &owed(), false, |_| async {
+                Err(remote_error("events_refused"))
+            })
+            .await
+            .unwrap();
+        assert!(owed().is_empty(), "the cleanup debt must be settled");
+    });
+}
+
+#[test]
+fn cleanup_stays_owed_while_the_target_cannot_be_reached() {
+    run_with_gateway(|gateway, state| async move {
+        let target = remote_session("room");
+        follow(&state, &["a"], &[&target]);
+        gateway
+            .install_each("remote", std::slice::from_ref(&target), |_| async {
+                Err(remote_error("events_refused"))
+            })
+            .await
+            .unwrap();
+        let origin = Origin {
+            grant_id: "a".into(),
+            harness: "test".into(),
+        };
+        let cleaned = gateway
+            .clean_remote_part(&origin, std::slice::from_ref(&target), false, |_| async {
+                Err(GatewayError::Offline {
+                    name: "remote".into(),
+                })
+            })
+            .await;
+        assert!(matches!(cleaned, Err(GatewayError::Offline { .. })));
+        let part = state.outside_store().outside_part("a").unwrap().unwrap();
+        assert_eq!(part.cleanup_targets, vec![target]);
+    });
+}

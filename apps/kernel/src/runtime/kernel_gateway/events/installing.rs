@@ -74,7 +74,7 @@ impl KernelGateway {
 
 /// Only the target's own refusal says that a followed target is gone. Any other permanent
 /// error (its storage failed, say) says nothing about the targets and stays a health failure.
-fn is_refused_target(error: &GatewayError) -> bool {
+pub(super) fn is_refused_target(error: &GatewayError) -> bool {
     matches!(
         error,
         GatewayError::Remote { code, retryable: false, .. }
