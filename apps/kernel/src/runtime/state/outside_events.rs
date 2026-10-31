@@ -292,7 +292,7 @@ impl KernelRuntimeOwnedState {
                 OutsideEventValue::Interaction {
                     state,
                     pointer: None,
-                    question: Some(question::event_question(interaction)),
+                    question: Some(Box::new(question::event_question(interaction))),
                     resolution: None,
                 },
                 interaction.title().unwrap_or("interaction").into(),

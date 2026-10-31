@@ -95,7 +95,7 @@ pub enum OutsideEventValue {
         pointer: Option<EventApprovalPointer>,
         /// A pending decision the holder may answer, in the form to show the person.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        question: Option<EventQuestion>,
+        question: Option<Box<EventQuestion>>,
         /// How a resolved decision ended.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         resolution: Option<EventResolution>,
