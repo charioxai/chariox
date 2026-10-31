@@ -35,7 +35,7 @@ pnpm --filter @chariox/cli run workspace-live-sync:remote-tracked-restart-drill
 pnpm --filter @chariox/cli run workspace-live-sync:remote-permission-drill
 ```
 
-`live-workspace-live-sync-matrix-drill.mjs` wraps the existing local, remote, Hetzner, Codex, and OpenCode Zen Workspace Live Sync drills into explicit scenario ids. By default it selects local Codex scenarios only; pass `--include-remote`, `--include-hetzner`, and `--include-opencode` to expand the matrix. Use `--dry-run` before long provider-backed runs. Matrix runs keep child-drill artifacts on failure so provider and kernel state can be inspected.
+`live-workspace-live-sync-matrix-drill.mjs` wraps the existing local, remote, remote kernel, Codex, and OpenCode Zen Workspace Live Sync drills into explicit scenario ids. By default it selects local Codex scenarios only; pass `--include-remote`, `--include-remote-kernel`, and `--include-opencode` to expand the matrix. Use `--dry-run` before long provider-backed runs. Matrix runs keep child-drill artifacts on failure so provider and kernel state can be inspected.
 
 OpenCode parity aliases use the same scenarios with explicit OpenCode Zen model selection:
 
@@ -47,7 +47,7 @@ pnpm --filter @chariox/cli run workspace-live-sync:opencode-permission-drill
 pnpm --filter @chariox/cli run workspace-live-sync:opencode-remote-managed-drill
 pnpm --filter @chariox/cli run workspace-live-sync:opencode-remote-tracked-drill
 pnpm --filter @chariox/cli run workspace-live-sync:opencode-remote-permission-drill
-node apps/cli/scripts/live-workspace-live-sync-matrix-drill.mjs --include-opencode --include-hetzner --only hetzner-managed-opencode,hetzner-tracked-opencode,hetzner-permission-opencode --continue-on-failure
+node apps/cli/scripts/live-workspace-live-sync-matrix-drill.mjs --include-opencode --include-remote-kernel --only remote-kernel-managed-opencode,remote-kernel-tracked-opencode,remote-kernel-permission-opencode --continue-on-failure
 ```
 
 ## Wrapper Scripts
@@ -145,8 +145,8 @@ single-source, and source-directory portability in a clean local kernel:
 node apps/cli/scripts/workflow-code-artifact-drill.mjs --example-suite --second-kernel --discard-artifacts-on-success
 ```
 
-Use `--hetzner-second-kernel` to copy the generated package, inline source, and
-source-directory bundle to the configured Hetzner checkout, launch a clean
+Use `--remote-kernel-second-kernel` to copy the generated package, inline source, and
+source-directory bundle to the configured remote kernel checkout, launch a clean
 kernel there, import/apply/run each export form, and assert fresh workflow ids.
 The remote host must have the Chariox checkout, built kernel binary, and a built
 `@chariox/kernel-client` package or working pnpm install. The checkout must be
@@ -156,15 +156,15 @@ than that commit; the drill fails fast on version skew before running exports.
 ```bash
 node apps/cli/scripts/workflow-code-artifact-drill.mjs \
   --second-kernel \
-  --hetzner-second-kernel \
+  --remote-kernel-second-kernel \
   --timeout-ms 180000 \
   --discard-artifacts-on-success
 ```
 
-Override the remote target with `CHARIOX_WORKFLOW_CODE_HETZNER_HOST`,
-`CHARIOX_WORKFLOW_CODE_HETZNER_KEY`, `CHARIOX_WORKFLOW_CODE_HETZNER_REPO`, and
-`CHARIOX_WORKFLOW_CODE_HETZNER_ROOT`, or the matching `--hetzner-*` flags. Use
-`--dry-run --hetzner-second-kernel` to inspect the remote target selection
+Override the remote target with `CHARIOX_WORKFLOW_CODE_REMOTE_KERNEL_HOST`,
+`CHARIOX_WORKFLOW_CODE_REMOTE_KERNEL_KEY`, `CHARIOX_WORKFLOW_CODE_REMOTE_KERNEL_REPO`, and
+`CHARIOX_WORKFLOW_CODE_REMOTE_KERNEL_ROOT`, or the matching `--remote-kernel-*` flags. Use
+`--dry-run --remote-kernel-second-kernel` to inspect the remote target selection
 without opening SSH or starting kernels.
 
 ## Workspace live sync Identity
@@ -344,13 +344,13 @@ Use this after touching Chariox Cloud device login, cloud relay pairing, hosted 
 node apps/cli/scripts/live-hosted-cloud-relay-drill.mjs
 ```
 
-By default the drill targets the OpenShip-managed control plane at `https://staging.chariox.com`, whose hosted relay URL is the Caddy-fronted `wss://195.201.123.115.sslip.io` endpoint. Set `CHARIOX_CLOUD_HOSTED_API_URL` to use another cloud API. The single-user path validates local CLI to local kernel login, cloud client pairing, machine pairing, machine relay connect, client relay-token issuance, and remote client session create/list through the hosted relay. Local/self-hosted relay drills intentionally keep using `ws://127.0.0.1:<port>`.
+By default the drill targets the OpenShip-managed control plane at `https://staging.chariox.com`, whose hosted relay URL Cloud issues. Set `CHARIOX_CLOUD_HOSTED_API_URL` to use another cloud API. The single-user path validates local CLI to local kernel login, cloud client pairing, machine pairing, machine relay connect, client relay-token issuance, and remote client session create/list through the hosted relay. Local/self-hosted relay drills intentionally keep using `ws://127.0.0.1:<port>`.
 
 For non-interactive staging drills, set `CHARIOX_CLOUD_DEV_AUTH_SECRET` to the matching staging secret. The cloud API must have its guarded dev device approval endpoint enabled. This still starts device login and polls through the kernel; only the browser/Auth0 approval step is replaced by a synthetic verified user.
 
 Set `CHARIOX_CLOUD_HOSTED_MULTI_USER=1` to add the hosted multi-user path. With the dev secret, the drill creates distinct synthetic owner, peer, and third users, accepts a cloud session invite, joins the kernel session through the hosted relay, and verifies multi-user workflow ownership and redaction over the remote relay transport.
 
-Set `CHARIOX_CLOUD_HOSTED_REMOTE_CLI=1` to launch a real CLI over SSH on the configured remote host and verify it creates a session through the hosted relay. The default remote target is `root@195.201.123.115` with key `~/.ssh/chariox_hetzner_staging` and repo `/opt/chariox-cli-drill`; override them with `CHARIOX_CLOUD_HOSTED_REMOTE_CLI_HOST`, `CHARIOX_CLOUD_HOSTED_REMOTE_CLI_KEY`, and `CHARIOX_CLOUD_HOSTED_REMOTE_CLI_REPO`. The remote host must have Node, Bun, and a built Chariox CLI.
+Set `CHARIOX_CLOUD_HOSTED_REMOTE_CLI=1` to launch a real CLI over SSH on the configured remote host and verify it creates a session through the hosted relay. There is no default remote target: set `CHARIOX_CLOUD_HOSTED_REMOTE_CLI_HOST` and `CHARIOX_CLOUD_HOSTED_REMOTE_CLI_KEY`. The remote host must have Node, Bun, and a built Chariox CLI.
 
 For the terminal-pairing QR/link path, run:
 
@@ -358,7 +358,7 @@ For the terminal-pairing QR/link path, run:
 pnpm --filter @chariox/cli run hosted-terminal-pairing-tui:drill
 ```
 
-This drill targets the same staging cloud API and Hetzner host, but it launches the remote CLI with `--terminal-pairing-link` generated by the local kernel instead of passing `--relay-url` and `--relay-token` explicitly. It starts a local TUI and an orphan remote TUI, creates one session from each CLI, submits one prompt from each CLI through a real provider, and verifies both completed prompt markers through both the local kernel path and the hosted relay path. Set `CHARIOX_CLOUD_DEV_AUTH_SECRET` for non-interactive staging validation. The default provider is `codex` with `gpt-5.2-codex`; override with `CHARIOX_CLOUD_HOSTED_REMOTE_CLI_PROVIDER`, `CHARIOX_CLOUD_HOSTED_REMOTE_CLI_MODEL`, and `CHARIOX_CLOUD_HOSTED_REMOTE_CLI_EFFORT`.
+This drill targets the same staging cloud API and remote kernel host, but it launches the remote CLI with `--terminal-pairing-link` generated by the local kernel instead of passing `--relay-url` and `--relay-token` explicitly. It starts a local TUI and an orphan remote TUI, creates one session from each CLI, submits one prompt from each CLI through a real provider, and verifies both completed prompt markers through both the local kernel path and the hosted relay path. Set `CHARIOX_CLOUD_DEV_AUTH_SECRET` for non-interactive staging validation. The default provider is `codex` with `gpt-5.2-codex`; override with `CHARIOX_CLOUD_HOSTED_REMOTE_CLI_PROVIDER`, `CHARIOX_CLOUD_HOSTED_REMOTE_CLI_MODEL`, and `CHARIOX_CLOUD_HOSTED_REMOTE_CLI_EFFORT`.
 
 Set `CHARIOX_CLOUD_HOSTED_SECOND_KERNEL=1` to launch a second local kernel as a cloud-paired remote machine through the hosted relay. That path uses a `dev-stub` remote agent so it validates remote-machine leasing, prompt dispatch, completion, and home-owned script/MCP/connector projection, invocation, and revoke without requiring provider-account login or local extension credentials on the worker machine.
 
@@ -395,7 +395,7 @@ Use `--dry-run` to inspect the generated provider prompt and command without lau
 
 `live-remote-mcp-drill.mjs` is the remote MCP v1 drill. It launches isolated relay/home/worker daemons with different `HOME` roots so home and worker Chariox user-global MCP registries can diverge on one machine. It verifies worker-missing MCPs, worker global definition mismatches, project-local worker override, missing stdio commands, and missing worker env vars. V1 remote MCPs must already be installed on the worker; the drill does not remotely install MCPs. Pass `--live-mcp-use` to also require a provider-native remote Playwright/browser MCP tool call on the worker and a marker write through Chariox workspace live sync. Because the drill isolates `HOME` for Chariox registries, it preserves provider auth/config/cache via `CODEX_HOME`, `OPENCODE_CONFIG_DIR`, and `XDG_*` provider environment variables.
 
-`live-remote-home-extension-matrix-drill.mjs` runs the home-owned remote extension drill across local self-host single-user, local self-host collab, Hetzner single-user, and Hetzner collab scenarios. It defaults to local scenarios only; pass `--include-hetzner` to include remote infrastructure, or use `--dry-run` to print the selected commands. The `remote-home-extension` validation preset requires all four scenario ids plus `local`, `self-hosted-relay`, and `hetzner` deployment metadata. Run local parity with `pnpm --filter @chariox/cli run remote-home-extension:local-matrix-drill`.
+`live-remote-home-extension-matrix-drill.mjs` runs the home-owned remote extension drill across local self-host single-user, local self-host collab, remote kernel single-user, and remote kernel collab scenarios. It defaults to local scenarios only; pass `--include-remote-kernel` to include remote infrastructure, or use `--dry-run` to print the selected commands. The `remote-home-extension` validation preset requires all four scenario ids plus `local`, `self-hosted-relay`, and `remote-kernel` deployment metadata. Run local parity with `pnpm --filter @chariox/cli run remote-home-extension:local-matrix-drill`.
 
 `live-workflow-runtime-drill.mjs --scenario mcp-echo-workflow` validates workflow-node MCP grants. It installs a deterministic stdio MCP named `workflow_echo`, grants it to the workflow agent before provider launch, requires a provider-native MCP tool call, writes an exact marker through Chariox workspace live sync, and submits final workflow output through `validate_and_submit_workflow_run_output`. The scenario is single-provider by design; run it separately for Codex and OpenCode. The remote wrapper installs the same deterministic MCP in the worker registry before launching the remote workflow drill, matching the v1 remote MCP rule that worker kernels must already have the required MCP definition. For Codex, pass `--provider-model codex=gpt-5.2`; the workflow drill's bare `--model gpt-5.2` fallback maps to `gpt-5.2-codex`, which can be rejected by ChatGPT-backed Codex accounts.
 

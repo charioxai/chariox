@@ -5,7 +5,7 @@ import { constants } from "node:fs"
 import { lstat, open, opendir, realpath, unlink } from "node:fs/promises"
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
 import { pathToFileURL } from "node:url"
-import { validateCaptureOutput } from "./path1-provider-rebuild-capture.mjs"
+import { validateCaptureOutput } from "./path1-capture-output.mjs"
 
 const RELEASE_KEY_PREFIX = Buffer.from("302a300506032b6570032100", "hex")
 const MAX_MANIFEST_BYTES = 64 * 1024

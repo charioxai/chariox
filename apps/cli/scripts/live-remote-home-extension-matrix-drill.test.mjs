@@ -12,7 +12,7 @@ import { verifyDrillArtifactIndex } from "./lib/drill-artifacts.mjs"
 const execFile = promisify(execFileWithCallback)
 const scriptPath = fileURLToPath(new URL("./live-remote-home-extension-matrix-drill.mjs", import.meta.url))
 
-test("remote home extension matrix dry-run covers local and Hetzner authority scenarios", async () => {
+test("remote home extension matrix dry-run covers local and remote kernel authority scenarios", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-remote-home-extension-matrix-"))
   const reportPath = path.join(rootDir, "matrix.json")
   const artifactIndexPath = path.join(rootDir, "chariox-drill-artifacts.json")
@@ -20,7 +20,7 @@ test("remote home extension matrix dry-run covers local and Hetzner authority sc
     const { stdout } = await execFile(process.execPath, [
       scriptPath,
       "--dry-run",
-      "--include-hetzner",
+      "--include-remote-kernel",
       "--report",
       reportPath,
       "--artifact-index",
@@ -35,17 +35,17 @@ test("remote home extension matrix dry-run covers local and Hetzner authority sc
     assert.deepEqual(report.scenarios.map((scenario) => scenario.id), [
       "local-single",
       "local-collab",
-      "hetzner-single",
-      "hetzner-collab",
+      "remote-kernel-single",
+      "remote-kernel-collab",
     ])
-    assert.deepEqual(report.scenarios.find((scenario) => scenario.id === "hetzner-single").requires, ["hetzner"])
-    assert.equal(report.metadata.deploymentPresets, "hetzner,local,self-hosted-relay")
-    assert.equal(report.metadata.includesHetzner, true)
+    assert.deepEqual(report.scenarios.find((scenario) => scenario.id === "remote-kernel-single").requires, ["remote-kernel"])
+    assert.equal(report.metadata.deploymentPresets, "local,remote-kernel,self-hosted-relay")
+    assert.equal(report.metadata.includesRemoteKernel, true)
     assert.equal(report.metadata.includesSelfHostedRelay, true)
     assert.equal(report.metadata.generatedMatrixNames, "remote-home-extension-matrix")
     assert.equal(report.metadata.generatedMatrixRepos, "oss")
     assert.match(stdout, /dry-run local-single classification=remote-extension-sync/)
-    assert.match(stdout, /dry-run hetzner-collab classification=kernel-authority/)
+    assert.match(stdout, /dry-run remote-kernel-collab classification=kernel-authority/)
     assert.equal(artifactIndex.metadata.matrix, "remote-home-extension-matrix")
     assert.equal(artifactIndex.metadata.dryRun, true)
     assert.equal(artifactIndex.metadata.generatedMatrixNames, "remote-home-extension-matrix")
@@ -55,12 +55,12 @@ test("remote home extension matrix dry-run covers local and Hetzner authority sc
   }
 })
 
-test("remote home extension matrix rejects Hetzner scenarios without opt-in", async () => {
+test("remote home extension matrix rejects remote kernel scenarios without opt-in", async () => {
   await assert.rejects(
-    execFile(process.execPath, [scriptPath, "--dry-run", "--only", "hetzner-single"]),
+    execFile(process.execPath, [scriptPath, "--dry-run", "--only", "remote-kernel-single"]),
     (error) => {
       assert.equal(error.code, 1)
-      assert.match(error.stderr, /hetzner-single requires --include-hetzner/)
+      assert.match(error.stderr, /remote-kernel-single requires --include-remote-kernel/)
       return true
     },
   )

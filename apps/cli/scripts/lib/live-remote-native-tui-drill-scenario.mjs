@@ -23,7 +23,7 @@ import {
   waitForProviderRunMcpAdmission,
 } from "./native-tui-capabilities.mjs"
 import {
-  copyLocalPathToHetzner,
+  copyLocalPathToRemoteKernel,
   ensureExecutionDirectory,
   removeExecutionFile,
   shellQuote,
@@ -701,7 +701,7 @@ export async function runProviderScenario({
     await mkdir(logs.bDir, { recursive: true })
     await mkdir(logs.cliDir, { recursive: true })
     client = relayClient(relayUrl, relayToken, targetDaemonAlias)
-    const capabilityWorkerClient = options.hetznerWorker && workerDaemonAlias
+    const capabilityWorkerClient = options.remoteKernelWorker && workerDaemonAlias
       ? relayClient(relayUrl, relayToken, workerDaemonAlias)
       : null
     try {
@@ -709,10 +709,10 @@ export async function runProviderScenario({
         homeClient: client,
         workerKernelUrl,
         workerClient: capabilityWorkerClient,
-        syncWorkerCapabilityFiles: options.hetznerWorker
+        syncWorkerCapabilityFiles: options.remoteKernelWorker
           ? async ({ mcpServerPath, skillSource }) => {
-            await copyLocalPathToHetzner(options, mcpServerPath, mcpServerPath)
-            await copyLocalPathToHetzner(options, skillSource, skillSource, { recursive: true })
+            await copyLocalPathToRemoteKernel(options, mcpServerPath, mcpServerPath)
+            await copyLocalPathToRemoteKernel(options, skillSource, skillSource, { recursive: true })
           }
           : null,
         provider,
@@ -1149,7 +1149,7 @@ export async function runProviderScenario({
     }
 
     if (options.includePermissions) {
-      const remoteExecution = Boolean(options.hetznerWorker && machineRef)
+      const remoteExecution = Boolean(options.remoteKernelWorker && machineRef)
       await ensureExecutionDirectory(options, remoteExecution, path.join(worktree, "outputs"))
       // MP-08/MP-10: this owned fixture is writable by the slice provider user.
       if (sliceRef) await chmod(path.join(worktree,"outputs"),0o777)
@@ -1257,11 +1257,11 @@ export async function runProviderScenario({
       logs,
       note: provider === "claude"
         ? "remote-rendered Claude TUI validated through kernel-owned PTY"
-        : options.hetznerWorker
-          ? "server-in-kernel native TUI validated against a Hetzner worker through the SSH provider endpoint bridge"
+        : options.remoteKernelWorker
+          ? "server-in-kernel native TUI validated against a remote kernel worker through the SSH provider endpoint bridge"
           : sliceRef
             ? "server-in-kernel native TUI validated through a home-managed slice_ref placement"
-          : "server-in-kernel native TUI validated on one host; use --hetzner-worker to validate cross-host provider endpoints",
+          : "server-in-kernel native TUI validated on one host; use --remote-kernel-worker to validate cross-host provider endpoints",
     }
   } finally {
     await cleanupNativeDrillCapabilities(workspace, nativeCapabilities)

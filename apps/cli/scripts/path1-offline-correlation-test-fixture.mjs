@@ -12,7 +12,7 @@ export async function offlineCorrelationScript(directory, name) {
   for (const file of [
     "path1-host-cloud-correlation.mjs",
     "path1-provider-cloud-correlation.mjs",
-    "path1-provider-rebuild-capture.mjs",
+    "path1-capture-output.mjs",
   ]) {
     await copyFile(fileURLToPath(new URL(`./${file}`, import.meta.url)), join(scripts, file))
   }

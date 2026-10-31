@@ -290,7 +290,7 @@ test("applies validation gate requirement presets", async () => {
     await writeMatrixReport(reportPath, matrixReport({
       matrix: "workspace-live-sync-matrix",
       metadata: {
-        deploymentPresets: "hetzner,local,same-host-remote,self-hosted-relay",
+        deploymentPresets: "local,remote-kernel,same-host-remote,self-hosted-relay",
         providers: "codex,opencode",
       },
       scenarios: workspaceLiveSyncRequiredScenarios(),
@@ -323,7 +323,7 @@ test("applies validation gate requirement presets", async () => {
       "session-authority",
       "workspace-live-sync-state",
     ])
-    assert.deepEqual(report.checks.matrices.requiredDeploymentPresets, ["hetzner", "local", "same-host-remote", "self-hosted-relay"])
+    assert.deepEqual(report.checks.matrices.requiredDeploymentPresets, ["local", "remote-kernel", "same-host-remote", "self-hosted-relay"])
     assert.deepEqual(report.checks.matrices.requiredProviders, ["codex", "opencode"])
     assert.deepEqual(report.checks.matrices.requiredScenarios, workspaceLiveSyncRequiredScenarioIds())
     assert.match(formatDrillValidationGateSummary(report), /presets=workspace-live-sync/)

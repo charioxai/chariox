@@ -420,7 +420,7 @@ export async function runManagedBrowserComputerParityLive({
         try {
           const retirement = inspector?.getMachineRetirementEvidence?.()
           if (retirement?.kind !== "run_owned_machine_deleted"
-            || retirement.providerAbsence?.authority !== "hetzner-api"
+            || retirement.providerAbsence?.authority !== "provider-api"
             || retirement.providerAbsence?.httpStatus !== 404) await capture("after")
         } finally {
           activeCheckpoint = null
@@ -444,7 +444,7 @@ export async function runManagedBrowserComputerParityLive({
   const resourceEvaluation = evaluateBrowserComputerResourceCaps(samples, normalizedCaps, {
     additionalSamples: watchdogSamples,
     terminalPhase: machineRetirement?.kind === "run_owned_machine_deleted"
-      && machineRetirement.providerAbsence?.authority === "hetzner-api"
+      && machineRetirement.providerAbsence?.authority === "provider-api"
       && machineRetirement.providerAbsence?.httpStatus === 404 ? "before-delete" : "after",
   })
   const placementFailure = report?.status === "passed" && placementEvaluation?.ok !== true

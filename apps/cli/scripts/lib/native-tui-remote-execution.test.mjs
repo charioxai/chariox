@@ -6,36 +6,36 @@ import test from "node:test"
 
 import {
   applyClaudeWorkspaceTrust,
-  assertHetznerBinaryFreshness,
-  assertMatchingHetznerCheckoutCommit,
+  assertRemoteKernelBinaryFreshness,
+  assertMatchingRemoteKernelCheckoutCommit,
   ensureExecutionDirectory,
-  hetznerNativeRuntimeCleanupCommand,
-  hetznerNativeRuntimeTempDir,
-  hetznerOpenCodeRuntimeProfileSeedCommand,
-  hetznerWorktreeCleanupCommand,
+  remoteKernelNativeRuntimeCleanupCommand,
+  remoteKernelNativeRuntimeTempDir,
+  remoteKernelOpenCodeRuntimeProfileSeedCommand,
+  remoteKernelWorktreeCleanupCommand,
   prepareClaudeWorkspaceTrustConfigText,
   removeExecutionFile,
   restoreClaudeConfigText,
   restoreClaudeWorkspaceTrust,
   seedLocalOpenCodeRuntimeProfile,
-  stopHetznerRuntimeBeforeClaudeTrustRestore,
+  stopRemoteKernelRuntimeBeforeClaudeTrustRestore,
   waitForExecutionFileContent,
 } from "./native-tui-remote-execution.mjs"
 
 const LOCAL_COMMIT = "1111111111111111111111111111111111111111"
 const REMOTE_COMMIT = "2222222222222222222222222222222222222222"
 
-test("accepts a Hetzner checkout at the home commit", () => {
-  assert.doesNotThrow(() => assertMatchingHetznerCheckoutCommit({
+test("accepts a remote kernel checkout at the home commit", () => {
+  assert.doesNotThrow(() => assertMatchingRemoteKernelCheckoutCommit({
     localCommit: `${LOCAL_COMMIT}\n`,
     remoteCommit: LOCAL_COMMIT,
     remoteRepo: "/tmp/chariox-run",
   }))
 })
 
-test("rejects a stale Hetzner checkout before running a drill", () => {
+test("rejects a stale remote kernel checkout before running a drill", () => {
   assert.throws(
-    () => assertMatchingHetznerCheckoutCommit({
+    () => assertMatchingRemoteKernelCheckoutCommit({
       localCommit: LOCAL_COMMIT,
       remoteCommit: REMOTE_COMMIT,
       remoteRepo: "/tmp/chariox-run",
@@ -46,7 +46,7 @@ test("rejects a stale Hetzner checkout before running a drill", () => {
 
 test("rejects unverifiable checkout revisions", () => {
   assert.throws(
-    () => assertMatchingHetznerCheckoutCommit({
+    () => assertMatchingRemoteKernelCheckoutCommit({
       localCommit: "not-a-commit",
       remoteCommit: REMOTE_COMMIT,
       remoteRepo: "/tmp/chariox-run",
@@ -55,17 +55,17 @@ test("rejects unverifiable checkout revisions", () => {
   )
 })
 
-test("accepts Hetzner binaries newer than their tracked inputs", () => {
-  assert.doesNotThrow(() => assertHetznerBinaryFreshness({
+test("accepts remote kernel binaries newer than their tracked inputs", () => {
+  assert.doesNotThrow(() => assertRemoteKernelBinaryFreshness({
     remoteRepo: "/tmp/chariox-run",
     kernelNewerPath: "",
     relayNewerPath: "",
   }))
 })
 
-test("rejects stale Hetzner component binaries with the newer input", () => {
+test("rejects stale remote kernel component binaries with the newer input", () => {
   assert.throws(
-    () => assertHetznerBinaryFreshness({
+    () => assertRemoteKernelBinaryFreshness({
       remoteRepo: "/tmp/chariox-run",
       kernelNewerPath: "apps/kernel/src/app.rs",
       relayNewerPath: "apps/relay/src/server.rs",
@@ -74,16 +74,16 @@ test("rejects stale Hetzner component binaries with the newer input", () => {
   )
 })
 
-test("builds scoped Hetzner worktree cleanup", () => {
+test("builds scoped remote kernel worktree cleanup", () => {
   assert.equal(
-    hetznerWorktreeCleanupCommand("/tmp/chariox-run", "/remote/worktree/chariox"),
+    remoteKernelWorktreeCleanupCommand("/tmp/chariox-run", "/remote/worktree/chariox"),
     "git -C '/tmp/chariox-run' worktree remove --force '/remote/worktree/chariox' 2>/dev/null || rm -rf -- '/remote/worktree/chariox'; git -C '/tmp/chariox-run' worktree prune",
   )
 })
 
 test("builds deduplicated cleanup for native TUI runtime roots", () => {
   assert.equal(
-    hetznerNativeRuntimeCleanupCommand([
+    remoteKernelNativeRuntimeCleanupCommand([
       "/tmp/arb-remote-native-tui-42",
       "/tmp/arb-remote-native-tui-42-123456789",
       "/tmp/arb-remote-native-tui-42",
@@ -94,19 +94,19 @@ test("builds deduplicated cleanup for native TUI runtime roots", () => {
 
 test("rejects cleanup paths outside a native TUI runtime root", () => {
   assert.throws(
-    () => hetznerNativeRuntimeCleanupCommand(["/tmp"]),
-    /refusing to remove unexpected Hetzner native TUI runtime path/,
+    () => remoteKernelNativeRuntimeCleanupCommand(["/tmp"]),
+    /refusing to remove unexpected remote kernel native TUI runtime path/,
   )
 })
 
-test("scopes the Hetzner worker temp directory to its removable runtime root", () => {
+test("scopes the remote kernel worker temp directory to its removable runtime root", () => {
   assert.equal(
-    hetznerNativeRuntimeTempDir("/tmp/arb-remote-native-tui-42-123456789"),
+    remoteKernelNativeRuntimeTempDir("/tmp/arb-remote-native-tui-42-123456789"),
     "/tmp/arb-remote-native-tui-42-123456789/tmp",
   )
   assert.throws(
-    () => hetznerNativeRuntimeTempDir("/tmp"),
-    /refusing unexpected Hetzner native TUI runtime root/,
+    () => remoteKernelNativeRuntimeTempDir("/tmp"),
+    /refusing unexpected remote kernel native TUI runtime root/,
   )
 })
 
@@ -194,17 +194,17 @@ test("does not seed a partial OpenCode model catalog", async (t) => {
 
 test("MP-11 F25 standard OpenCode workers require an explicit provisioned profile", () => {
   const root="/tmp/arb-remote-native-tui-42-123456789"
-  assert.throws(()=>hetznerOpenCodeRuntimeProfileSeedCommand(root), /explicit linked provider scope/)
-  const command=hetznerOpenCodeRuntimeProfileSeedCommand(root,"/synthetic/linked/data/opencode")
+  assert.throws(()=>remoteKernelOpenCodeRuntimeProfileSeedCommand(root), /explicit linked provider scope/)
+  const command=remoteKernelOpenCodeRuntimeProfileSeedCommand(root,"/synthetic/linked/data/opencode")
   assert.match(command, /test -f.*synthetic\/linked\/data\/opencode\/auth\.json/)
   assert.doesNotMatch(command, /install|cp |opencode\.db|\/root\//)
-  assert.throws(()=>hetznerOpenCodeRuntimeProfileSeedCommand("/tmp","/synthetic/profile"),/refusing unexpected/)
+  assert.throws(()=>remoteKernelOpenCodeRuntimeProfileSeedCommand("/tmp","/synthetic/profile"),/refusing unexpected/)
 })
 
-test("stops the Hetzner runtime before restoring Claude trust", async () => {
+test("stops the remote kernel runtime before restoring Claude trust", async () => {
   const calls = []
 
-  await stopHetznerRuntimeBeforeClaudeTrustRestore({
+  await stopRemoteKernelRuntimeBeforeClaudeTrustRestore({
     stopWorker: async () => calls.push("worker-stopped"),
     stopRelay: async () => calls.push("relay-stopped"),
     restoreTrust: async () => calls.push("trust-restored"),
@@ -295,4 +295,11 @@ test("same-host execution artifacts stay on the local machine", async (t) => {
   )
   await removeExecutionFile({}, false, outputFile)
   assert.equal(await readFile(outputFile, "utf8").catch(() => null), null)
+})
+
+test("remote kernel ssh arguments refuse an unset host or key instead of using a pinned machine", async () => {
+  const { sshArgs } = await import("./native-tui-remote-execution.mjs")
+  assert.throws(() => sshArgs({ remoteKernelHost: "", remoteKernelKey: "/key" }, "true"), /--remote-kernel-host/)
+  assert.throws(() => sshArgs({ remoteKernelHost: "root@host", remoteKernelKey: "" }, "true"), /--remote-kernel-key/)
+  assert.deepEqual(sshArgs({ remoteKernelHost: "root@host", remoteKernelKey: "/key" }, "true").slice(-2), ["root@host", "true"])
 })

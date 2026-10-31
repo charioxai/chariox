@@ -3,7 +3,7 @@
 import { lstat, realpath } from "node:fs/promises"
 import { isAbsolute, join, parse, resolve, sep } from "node:path"
 import { pathToFileURL } from "node:url"
-import { validateCaptureOutput, writeCaptureOutput } from "./path1-provider-rebuild-capture.mjs"
+import { validateCaptureOutput, writeCaptureOutput } from "./path1-capture-output.mjs"
 
 export const PROVIDER_CLOUD_CORRELATION_SCHEMA = "chariox.path1-provider-cloud-correlation/v1"
 
@@ -55,7 +55,7 @@ function providerTimestamp(value, label) {
 
 function providerCapture(value, kind) {
   record(value, `${kind} provider capture`)
-  requireValue(value.schema === PROVIDER_SCHEMA && value.provider === "hetzner-cloud"
+  requireValue(value.schema === PROVIDER_SCHEMA && /^[a-z][a-z0-9-]*$/.test(value.provider ?? "")
     && value.kind === kind, `${kind} provider capture has the wrong schema or kind`)
   return timestamp(value.capturedAt, `${kind} provider capture time`)
 }
@@ -209,7 +209,7 @@ export function correlatePath1ProviderCloud({ before, after, cloud }) {
     },
     providerProjectProvenance: {
       status: "unexecuted",
-      reason: "hetzner_captures_do_not_expose_project_identity",
+      reason: "provider_captures_do_not_expose_project_identity",
     },
   }
 }

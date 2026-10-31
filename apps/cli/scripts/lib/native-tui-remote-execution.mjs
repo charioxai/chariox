@@ -8,14 +8,17 @@ import { setTimeout as sleep } from "node:timers/promises"
 const execFileAsync = promisify(execFile)
 
 export function sshArgs(options, remoteCommand) {
+  if (!options.remoteKernelHost || !options.remoteKernelKey) {
+    throw new Error("remote kernel host and SSH key are not set: pass --remote-kernel-host and --remote-kernel-key, or set the drill's *_REMOTE_KERNEL_HOST and *_REMOTE_KERNEL_KEY variables")
+  }
   return [
     "-i",
-    options.hetznerKey,
+    options.remoteKernelKey,
     "-o",
     "BatchMode=yes",
     "-o",
     "StrictHostKeyChecking=accept-new",
-    options.hetznerHost,
+    options.remoteKernelHost,
     remoteCommand,
   ]
 }
@@ -60,23 +63,23 @@ export function spawnRemoteEnv(options, environment, command, spawnOptions = {},
   return child
 }
 
-export async function assertHetznerCharioxBinaries(options) {
-  const kernelBinary = path.posix.join(options.hetznerRepo, "apps/kernel/target/debug/chariox-kernel")
-  const relayBinary = path.posix.join(options.hetznerRepo, "apps/relay/target/debug/chariox-relay")
+export async function assertRemoteKernelCharioxBinaries(options) {
+  const kernelBinary = path.posix.join(options.remoteKernelRepo, "apps/kernel/target/debug/chariox-kernel")
+  const relayBinary = path.posix.join(options.remoteKernelRepo, "apps/relay/target/debug/chariox-relay")
   const message = [
-    `Hetzner Chariox checkout is not ready at ${options.hetznerRepo}.`,
+    `remote kernel Chariox checkout is not ready at ${options.remoteKernelRepo}.`,
     `Expected executable binaries: ${kernelBinary} and ${relayBinary}.`,
     "Prepare the worker with:",
-    `  git clone https://github.com/charioxai/chariox.git ${options.hetznerRepo}`,
-    `  cd ${options.hetznerRepo}`,
+    `  git clone https://github.com/charioxai/chariox.git ${options.remoteKernelRepo}`,
+    `  cd ${options.remoteKernelRepo}`,
     "  git checkout main && git reset --hard origin/main",
     "  export PATH=/root/.cargo/bin:$PATH",
     "  rustup toolchain install stable --profile minimal",
     "  CARGO_TARGET_DIR=apps/kernel/target cargo build --manifest-path apps/kernel/Cargo.toml --bin chariox-kernel",
     "  CARGO_TARGET_DIR=apps/relay/target cargo build --manifest-path apps/relay/Cargo.toml --bin chariox-relay",
   ].join("\n")
-  await runHetznerCommand(options, [
-    `repo=${shellQuote(options.hetznerRepo)}`,
+  await runRemoteKernelCommand(options, [
+    `repo=${shellQuote(options.remoteKernelRepo)}`,
     "missing=",
     'test -e "$repo/.git" || missing="$missing repo"',
     `test -x ${shellQuote(kernelBinary)} || missing="$missing kernel"`,
@@ -85,30 +88,30 @@ export async function assertHetznerCharioxBinaries(options) {
   ].join("; "))
 }
 
-export async function prepareHetznerWorktree(options, localWorktree) {
+export async function prepareRemoteKernelWorktree(options, localWorktree) {
   const parent = path.posix.dirname(localWorktree)
-  await assertHetznerCharioxBinaries(options)
+  await assertRemoteKernelCharioxBinaries(options)
   const [{ stdout: localCommit }, remoteCommit] = await Promise.all([
     execFileAsync("git", ["-C", localWorktree, "rev-parse", "HEAD"]),
-    runHetznerCommand(options, `git -C ${shellQuote(options.hetznerRepo)} rev-parse HEAD`),
+    runRemoteKernelCommand(options, `git -C ${shellQuote(options.remoteKernelRepo)} rev-parse HEAD`),
   ])
-  assertMatchingHetznerCheckoutCommit({
+  assertMatchingRemoteKernelCheckoutCommit({
     localCommit,
     remoteCommit,
-    remoteRepo: options.hetznerRepo,
+    remoteRepo: options.remoteKernelRepo,
   })
-  await assertHetznerCharioxBinaryFreshness(options)
+  await assertRemoteKernelCharioxBinaryFreshness(options)
   await execFileAsync("ssh", sshArgs(options, [
     "set -e",
     `mkdir -p ${shellQuote(parent)}`,
-    `git -C ${shellQuote(options.hetznerRepo)} worktree remove --force ${shellQuote(localWorktree)} 2>/dev/null || rm -rf ${shellQuote(localWorktree)}`,
-    `git -C ${shellQuote(options.hetznerRepo)} worktree prune`,
-    `git -C ${shellQuote(options.hetznerRepo)} worktree add --force --detach ${shellQuote(localWorktree)} HEAD`,
+    `git -C ${shellQuote(options.remoteKernelRepo)} worktree remove --force ${shellQuote(localWorktree)} 2>/dev/null || rm -rf ${shellQuote(localWorktree)}`,
+    `git -C ${shellQuote(options.remoteKernelRepo)} worktree prune`,
+    `git -C ${shellQuote(options.remoteKernelRepo)} worktree add --force --detach ${shellQuote(localWorktree)} HEAD`,
   ].join("; ")))
 }
 
-export async function assertHetznerCharioxBinaryFreshness(options) {
-  const repo = options.hetznerRepo
+export async function assertRemoteKernelCharioxBinaryFreshness(options) {
+  const repo = options.remoteKernelRepo
   const kernelBinary = path.posix.join(repo, "apps/kernel/target/debug/chariox-kernel")
   const relayBinary = path.posix.join(repo, "apps/relay/target/debug/chariox-relay")
   const command = [
@@ -125,7 +128,7 @@ export async function assertHetznerCharioxBinaryFreshness(options) {
     "printf 'kernel_newer=%s\\n' \"$(newer_source \"$kernel\" Cargo.toml Cargo.lock apps/kernel apps/relay)\"",
     "printf 'relay_newer=%s\\n' \"$(newer_source \"$relay\" Cargo.toml Cargo.lock apps/relay)\"",
   ].join("\n")
-  const output = await runHetznerCommand(options, `bash -lc ${shellQuote(command)}`)
+  const output = await runRemoteKernelCommand(options, `bash -lc ${shellQuote(command)}`)
   const info = Object.fromEntries(output
     .trim()
     .split("\n")
@@ -134,26 +137,26 @@ export async function assertHetznerCharioxBinaryFreshness(options) {
       const separator = line.indexOf("=")
       return [line.slice(0, separator), line.slice(separator + 1)]
     }))
-  assertHetznerBinaryFreshness({
+  assertRemoteKernelBinaryFreshness({
     remoteRepo: repo,
     kernelNewerPath: info.kernel_newer ?? "",
     relayNewerPath: info.relay_newer ?? "",
   })
 }
 
-export function assertHetznerBinaryFreshness({ remoteRepo, kernelNewerPath, relayNewerPath }) {
+export function assertRemoteKernelBinaryFreshness({ remoteRepo, kernelNewerPath, relayNewerPath }) {
   const stale = [
     kernelNewerPath ? `kernel binary is older than ${kernelNewerPath}` : null,
     relayNewerPath ? `relay binary is older than ${relayNewerPath}` : null,
   ].filter(Boolean)
   if (stale.length === 0) return
   throw new Error([
-    `Hetzner Chariox binaries are stale at ${remoteRepo}: ${stale.join("; ")}.`,
+    `remote kernel Chariox binaries are stale at ${remoteRepo}: ${stale.join("; ")}.`,
     "Rebuild into apps/kernel/target and apps/relay/target before running the drill.",
   ].join("\n"))
 }
 
-export function assertMatchingHetznerCheckoutCommit({ localCommit, remoteCommit, remoteRepo }) {
+export function assertMatchingRemoteKernelCheckoutCommit({ localCommit, remoteCommit, remoteRepo }) {
   const local = String(localCommit ?? "").trim()
   const remote = String(remoteCommit ?? "").trim()
   if (!/^[0-9a-f]{40}$/i.test(local) || !/^[0-9a-f]{40}$/i.test(remote)) {
@@ -166,7 +169,7 @@ export function assertMatchingHetznerCheckoutCommit({ localCommit, remoteCommit,
   }
 }
 
-export async function runHetznerCommand(options, command) {
+export async function runRemoteKernelCommand(options, command) {
   const { stdout } = await execFileAsync("ssh", sshArgs(options, command), { maxBuffer: 4 * 1024 * 1024 })
   return stdout
 }
@@ -224,22 +227,22 @@ export async function seedLocalOpenCodeRuntimeProfile({
   }
 }
 
-export function hetznerOpenCodeRuntimeProfileSeedCommand(runtimeRoot, sourceDataHome) {
+export function remoteKernelOpenCodeRuntimeProfileSeedCommand(runtimeRoot, sourceDataHome) {
   if (!/^\/tmp\/arb-remote-native-tui-\d+-\d+$/.test(runtimeRoot)) {
-    throw new Error("refusing unexpected Hetzner native TUI runtime root")
+    throw new Error("refusing unexpected remote kernel native TUI runtime root")
   }
   const scope=requireScopedProviderPath({WORKER_OPENCODE_DATA_HOME:sourceDataHome},"WORKER_OPENCODE_DATA_HOME")
   // Standard workers use their operator-provisioned account. No ambient auth copy.
   return `test -f ${shellQuote(path.posix.join(scope,"auth.json"))}`
 }
 
-export async function seedHetznerOpenCodeRuntimeProfile(options, runtimeRoot) {
+export async function seedRemoteKernelOpenCodeRuntimeProfile(options, runtimeRoot) {
   const profile=requireScopedProviderPath(process.env,"CHARIOX_DRILL_WORKER_OPENCODE_DATA_HOME")
-  await runHetznerCommand(options, hetznerOpenCodeRuntimeProfileSeedCommand(runtimeRoot,profile))
+  await runRemoteKernelCommand(options, remoteKernelOpenCodeRuntimeProfileSeedCommand(runtimeRoot,profile))
 }
 
-export async function assertHetznerTcpPortAvailable(options, port, label = "Hetzner TCP port") {
-  const pids = (await runHetznerCommand(
+export async function assertRemoteKernelTcpPortAvailable(options, port, label = "remote kernel TCP port") {
+  const pids = (await runRemoteKernelCommand(
     options,
     `if command -v lsof >/dev/null 2>&1; then lsof -tiTCP:${Number(port)} -sTCP:LISTEN 2>/dev/null || true; fi`,
   )).trim()
@@ -248,14 +251,14 @@ export async function assertHetznerTcpPortAvailable(options, port, label = "Hetz
   }
 }
 
-export async function stopHetznerProcessByEnv(options, expectedEnv) {
+export async function stopRemoteKernelProcessByEnv(options, expectedEnv) {
   if (!expectedEnv || !Object.keys(expectedEnv).length || Object.values(expectedEnv).some(value => typeof value !== "string" || !value)) {
     throw new Error("owned remote process markers are required")
   }
   const checks = Object.entries(expectedEnv).map(([key, value]) => (
     `  printf '%s\\n' "$env_text" | grep -qx ${shellQuote(`${key}=${value}`)} || continue;`
   ))
-  await runHetznerCommand(options, [
+  await runRemoteKernelCommand(options, [
     'for env_file in /proc/[0-9]*/environ; do',
     '  test -r "$env_file" || continue;',
     '  pid=${env_file#/proc/}; pid=${pid%/environ};',
@@ -273,7 +276,7 @@ export async function stopHetznerProcessByEnv(options, expectedEnv) {
   ].join(' ')).catch(() => {})
 }
 
-export async function stopHetznerRuntimeBeforeClaudeTrustRestore({
+export async function stopRemoteKernelRuntimeBeforeClaudeTrustRestore({
   stopWorker,
   stopRelay,
   restoreTrust,
@@ -283,52 +286,52 @@ export async function stopHetznerRuntimeBeforeClaudeTrustRestore({
   if (restoreTrust) await restoreTrust()
 }
 
-export async function copyHetznerDirectoryToLocal(options, remoteDir, localDir) {
+export async function copyRemoteKernelDirectoryToLocal(options, remoteDir, localDir) {
   await mkdir(localDir, { recursive: true })
   await execFileAsync("scp", [
     "-i",
-    options.hetznerKey,
+    options.remoteKernelKey,
     "-o",
     "BatchMode=yes",
     "-o",
     "StrictHostKeyChecking=accept-new",
     "-r",
-    `${options.hetznerHost}:${remoteDir}/.`,
+    `${options.remoteKernelHost}:${remoteDir}/.`,
     `${localDir}/`,
   ], { maxBuffer: 4 * 1024 * 1024 })
 }
 
-export async function copyLocalPathToHetzner(
+export async function copyLocalPathToRemoteKernel(
   options,
   localPath,
   remotePath,
   { recursive = false } = {},
 ) {
-  await runHetznerCommand(options, `mkdir -p ${shellQuote(path.posix.dirname(remotePath))}`)
+  await runRemoteKernelCommand(options, `mkdir -p ${shellQuote(path.posix.dirname(remotePath))}`)
   await execFileAsync("scp", [
     "-i",
-    options.hetznerKey,
+    options.remoteKernelKey,
     "-o",
     "BatchMode=yes",
     "-o",
     "StrictHostKeyChecking=accept-new",
     ...(recursive ? ["-r"] : []),
     localPath,
-    `${options.hetznerHost}:${remotePath}`,
+    `${options.remoteKernelHost}:${remotePath}`,
   ], { maxBuffer: 4 * 1024 * 1024 })
 }
 
-export function hetznerWorktreeCleanupCommand(remoteRepo, remoteWorktree) {
+export function remoteKernelWorktreeCleanupCommand(remoteRepo, remoteWorktree) {
   return [
     `git -C ${shellQuote(remoteRepo)} worktree remove --force ${shellQuote(remoteWorktree)} 2>/dev/null || rm -rf -- ${shellQuote(remoteWorktree)}`,
     `git -C ${shellQuote(remoteRepo)} worktree prune`,
   ].join("; ")
 }
 
-export async function removeHetznerWorktree(options, remoteWorktree) {
-  await runHetznerCommand(
+export async function removeRemoteKernelWorktree(options, remoteWorktree) {
+  await runRemoteKernelCommand(
     options,
-    hetznerWorktreeCleanupCommand(options.hetznerRepo, remoteWorktree),
+    remoteKernelWorktreeCleanupCommand(options.remoteKernelRepo, remoteWorktree),
   ).catch(() => {})
 }
 
@@ -395,7 +398,7 @@ export function restoreClaudeConfigText(state) {
   return Buffer.from(state.originalConfigBase64, "base64").toString("utf8")
 }
 
-export async function prepareHetznerClaudeWorkspaceTrust(options, workspace, statePath) {
+export async function prepareRemoteKernelClaudeWorkspaceTrust(options, workspace, statePath) {
   validateClaudeWorkspaceTrustPaths(workspace, statePath)
   const script = `
 const fs = require("fs")
@@ -415,10 +418,10 @@ fs.writeFileSync(tempPath, JSON.stringify(prepared.config, null, 2), { mode: 0o6
 fs.renameSync(tempPath, configPath)
 fs.chmodSync(configPath, 0o600)
 `
-  await runHetznerCommand(options, `node -e ${shellQuote(script)}`)
+  await runRemoteKernelCommand(options, `node -e ${shellQuote(script)}`)
 }
 
-export async function restoreHetznerClaudeWorkspaceTrust(options, workspace, statePath) {
+export async function restoreRemoteKernelClaudeWorkspaceTrust(options, workspace, statePath) {
   validateClaudeWorkspaceTrustPaths(workspace, statePath)
   const script = `
 const fs = require("fs")
@@ -456,7 +459,7 @@ if (fs.existsSync(statePath)) {
   fs.unlinkSync(statePath)
 }
 `
-  await runHetznerCommand(options, `node -e ${shellQuote(script)}`)
+  await runRemoteKernelCommand(options, `node -e ${shellQuote(script)}`)
 }
 
 function validateClaudeWorkspaceTrustPaths(workspace, statePath) {
@@ -468,11 +471,11 @@ function validateClaudeWorkspaceTrustPaths(workspace, statePath) {
   }
 }
 
-export function hetznerNativeRuntimeCleanupCommand(paths) {
+export function remoteKernelNativeRuntimeCleanupCommand(paths) {
   const uniquePaths = [...new Set(paths.filter(Boolean))]
   for (const runtimePath of uniquePaths) {
     if (!/^\/tmp\/arb-remote-native-tui-\d+(?:-\d+)?$/.test(runtimePath)) {
-      throw new Error(`refusing to remove unexpected Hetzner native TUI runtime path: ${runtimePath}`)
+      throw new Error(`refusing to remove unexpected remote kernel native TUI runtime path: ${runtimePath}`)
     }
   }
   return uniquePaths.length > 0
@@ -480,21 +483,21 @@ export function hetznerNativeRuntimeCleanupCommand(paths) {
     : null
 }
 
-export function hetznerNativeRuntimeTempDir(runtimeRoot) {
+export function remoteKernelNativeRuntimeTempDir(runtimeRoot) {
   if (!/^\/tmp\/arb-remote-native-tui-\d+-\d+$/.test(runtimeRoot)) {
-    throw new Error(`refusing unexpected Hetzner native TUI runtime root: ${runtimeRoot}`)
+    throw new Error(`refusing unexpected remote kernel native TUI runtime root: ${runtimeRoot}`)
   }
   return path.posix.join(runtimeRoot, "tmp")
 }
 
-export async function removeHetznerNativeRuntimePaths(options, paths) {
-  const command = hetznerNativeRuntimeCleanupCommand(paths)
-  if (command) await runHetznerCommand(options, command).catch(() => {})
+export async function removeRemoteKernelNativeRuntimePaths(options, paths) {
+  const command = remoteKernelNativeRuntimeCleanupCommand(paths)
+  if (command) await runRemoteKernelCommand(options, command).catch(() => {})
 }
 
 export async function ensureExecutionDirectory(options, remoteExecution, dirPath) {
   if (remoteExecution) {
-    await runHetznerCommand(options, `mkdir -p ${shellQuote(dirPath)}`)
+    await runRemoteKernelCommand(options, `mkdir -p ${shellQuote(dirPath)}`)
   } else {
     await mkdir(dirPath, { recursive: true })
   }
@@ -502,7 +505,7 @@ export async function ensureExecutionDirectory(options, remoteExecution, dirPath
 
 export async function removeExecutionFile(options, remoteExecution, filePath) {
   if (remoteExecution) {
-    await runHetznerCommand(options, `rm -f ${shellQuote(filePath)}`).catch(() => {})
+    await runRemoteKernelCommand(options, `rm -f ${shellQuote(filePath)}`).catch(() => {})
   } else {
     await rm(filePath, { force: true })
   }
@@ -513,7 +516,7 @@ export async function waitForExecutionFileContent(options, remoteExecution, file
   let last = ""
   while (Date.now() < deadline) {
     const content = remoteExecution
-      ? await runHetznerCommand(options, `cat ${shellQuote(filePath)}`).catch(() => "")
+      ? await runRemoteKernelCommand(options, `cat ${shellQuote(filePath)}`).catch(() => "")
       : await readFile(filePath, "utf8").catch(() => "")
     last = content
     if (content.includes(expected)) return content

@@ -7,7 +7,7 @@ export function runtimeAuthorityMatrixReportFixtures() {
       fileName: "native-provider-tui.json",
       report: focusedRuntimeMatrixReport({
         matrix: "native-provider-tui-matrix",
-        deploymentPresets: ["hetzner", "local", "same-host-remote", "self-hosted-relay"],
+        deploymentPresets: ["local", "remote-kernel", "same-host-remote", "self-hosted-relay"],
         providers: ["claude", "codex", "opencode"],
         scenarios: [
           focusedRuntimeScenario("local-native-tui", "kernel-authority", ["provider-run-lifecycle", "session-authority"]),
@@ -22,12 +22,12 @@ export function runtimeAuthorityMatrixReportFixtures() {
       fileName: "remote-agent-runtime.json",
       report: focusedRuntimeMatrixReport({
         matrix: "remote-agent-runtime-matrix",
-        deploymentPresets: ["hetzner", "hosted-cloud", "same-host-remote", "self-hosted-relay"],
+        deploymentPresets: ["hosted-cloud", "remote-kernel", "same-host-remote", "self-hosted-relay"],
         providers: ["claude", "codex", "opencode"],
         scenarios: [
           focusedRuntimeScenario("collab-remote-agent", "kernel-authority", ["lease-health", "session-authority"]),
-          focusedRuntimeScenario("hetzner-collab-remote-agent", "kernel-authority", ["lease-health", "session-authority"]),
-          focusedRuntimeScenario("hetzner-single-user-remote-agent", "worker-execution", ["agent-lifecycle", "lease-health", "provider-run-lifecycle"]),
+          focusedRuntimeScenario("remote-kernel-collab-remote-agent", "kernel-authority", ["lease-health", "session-authority"]),
+          focusedRuntimeScenario("remote-kernel-single-user-remote-agent", "worker-execution", ["agent-lifecycle", "lease-health", "provider-run-lifecycle"]),
           focusedRuntimeScenario("hosted-collab-remote-agent", "kernel-authority", ["lease-health", "session-authority"]),
           focusedRuntimeScenario("hosted-single-user-remote-agent", "relay-runtime", ["lease-health", "runtime-projection-health"]),
           focusedRuntimeScenario("lease-reconnect", "kernel-authority", ["lease-health", "session-authority"]),
@@ -79,11 +79,11 @@ export function runtimeAuthorityMatrixReportFixtures() {
       fileName: "remote-home-extension.json",
       report: focusedRuntimeMatrixReport({
         matrix: "remote-home-extension-matrix",
-        deploymentPresets: ["hetzner", "local", "self-hosted-relay"],
+        deploymentPresets: ["local", "remote-kernel", "self-hosted-relay"],
         providers: ["codex"],
         scenarios: [
-          focusedRuntimeScenario("hetzner-collab", "kernel-authority", ["home-extension-manifest-sync", "lease-health"]),
-          focusedRuntimeScenario("hetzner-single", "worker-execution", ["home-extension-manifest-sync", "provider-run-lifecycle"]),
+          focusedRuntimeScenario("remote-kernel-collab", "kernel-authority", ["home-extension-manifest-sync", "lease-health"]),
+          focusedRuntimeScenario("remote-kernel-single", "worker-execution", ["home-extension-manifest-sync", "provider-run-lifecycle"]),
           focusedRuntimeScenario("local-collab", "remote-extension-sync", ["home-extension-manifest-sync", "lease-health"]),
           focusedRuntimeScenario("local-single", "kernel-authority", ["home-extension-manifest-sync", "provider-run-lifecycle"]),
         ],
@@ -93,7 +93,7 @@ export function runtimeAuthorityMatrixReportFixtures() {
       fileName: "runtime-resilience-chaos.json",
       report: focusedRuntimeMatrixReport({
         matrix: "runtime-resilience-chaos-matrix",
-        deploymentPresets: ["hetzner", "hosted-cloud", "local", "same-host-remote", "self-hosted-relay"],
+        deploymentPresets: ["hosted-cloud", "local", "remote-kernel", "same-host-remote", "self-hosted-relay"],
         providers: ["codex", "opencode"],
         scenarios: [
           focusedRuntimeScenario("local-kernel-restart-durable-state", "kernel-authority", ["runtime-projection-health", "session-authority"]),
@@ -104,7 +104,7 @@ export function runtimeAuthorityMatrixReportFixtures() {
       fileName: "workspace-live-sync.json",
       report: focusedRuntimeMatrixReport({
         matrix: "workspace-live-sync-matrix",
-        deploymentPresets: ["hetzner", "local", "same-host-remote", "self-hosted-relay"],
+        deploymentPresets: ["local", "remote-kernel", "same-host-remote", "self-hosted-relay"],
         providers: ["codex", "opencode"],
         scenarios: [
           focusedRuntimeScenario("local-managed-codex", "workspace-live-sync-conflict", ["workspace-live-sync-state"]),

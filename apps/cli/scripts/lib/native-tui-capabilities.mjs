@@ -31,9 +31,9 @@ export async function installNativeDrillCapabilities({
     markers.nativeSkill,
     markers.charioxSkill,
   )
-  if (options.hetznerWorker) {
+  if (options.remoteKernelWorker) {
     if (!workerClient || !syncWorkerCapabilityFiles) {
-      throw new Error("Hetzner MCP/skill validation requires a relay worker client and remote file sync")
+      throw new Error("remote kernel MCP/skill validation requires a relay worker client and remote file sync")
     }
     await syncWorkerCapabilityFiles({ mcpServerPath, skillSource })
   }

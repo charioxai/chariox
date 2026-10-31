@@ -25,14 +25,14 @@ test("selects default scenarios by enabled requirements", () => {
   const scenarios = [
     { id: "local" },
     { id: "remote", requires: ["remote"] },
-    { id: "hetzner", requires: ["remote", "hetzner"] },
+    { id: "remote-kernel", requires: ["remote", "remote-kernel"] },
   ]
 
   assert.deepEqual(
     selectDrillMatrixScenarios({
       scenarios,
       enabledRequirements: new Set(["remote"]),
-      requirementLabels: { remote: "--include-remote", hetzner: "--include-hetzner" },
+      requirementLabels: { remote: "--include-remote", "remote-kernel": "--include-remote-kernel" },
     }).map((scenario) => scenario.id),
     ["local", "remote"],
   )
@@ -40,11 +40,11 @@ test("selects default scenarios by enabled requirements", () => {
   assert.throws(
     () => selectDrillMatrixScenarios({
       scenarios,
-      requestedIds: ["hetzner"],
+      requestedIds: ["remote-kernel"],
       enabledRequirements: new Set(["remote"]),
-      requirementLabels: { hetzner: "--include-hetzner" },
+      requirementLabels: { "remote-kernel": "--include-remote-kernel" },
     }),
-    /hetzner requires --include-hetzner/,
+    /remote-kernel requires --include-remote-kernel/,
   )
 })
 

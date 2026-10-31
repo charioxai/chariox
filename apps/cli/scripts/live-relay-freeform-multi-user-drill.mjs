@@ -14,7 +14,7 @@ import {
   resolveBuiltBinary,
 } from './lib/drill-runtime-helpers.mjs'
 import {
-  assertHetznerTcpPortAvailable,
+  assertRemoteKernelTcpPortAvailable,
   spawnRemoteEnv,
   seedLocalOpenCodeRuntimeProfile,
   shellQuote,
@@ -45,10 +45,10 @@ function nowStamp() {
 
 function parseArgs(argv = process.argv.slice(2)) {
   const options = {
-    hetznerRelay: false,
-    hetznerHost: process.env.CHARIOX_COLLAB_HETZNER_HOST ?? process.env.CHARIOX_NATIVE_TUI_HETZNER_HOST ?? 'root@195.201.123.115',
-    hetznerKey: process.env.CHARIOX_COLLAB_HETZNER_KEY ?? process.env.CHARIOX_NATIVE_TUI_HETZNER_KEY ?? path.join(os.homedir(), '.ssh/chariox_hetzner_staging'),
-    hetznerRepo: process.env.CHARIOX_COLLAB_HETZNER_REPO ?? process.env.CHARIOX_NATIVE_TUI_HETZNER_REPO ?? '/tmp/chariox-native-remote-validate',
+    remoteKernelRelay: false,
+    remoteKernelHost: process.env.CHARIOX_COLLAB_REMOTE_KERNEL_HOST ?? process.env.CHARIOX_NATIVE_TUI_REMOTE_KERNEL_HOST ?? '',
+    remoteKernelKey: process.env.CHARIOX_COLLAB_REMOTE_KERNEL_KEY ?? process.env.CHARIOX_NATIVE_TUI_REMOTE_KERNEL_KEY ?? '',
+    remoteKernelRepo: process.env.CHARIOX_COLLAB_REMOTE_KERNEL_REPO ?? process.env.CHARIOX_NATIVE_TUI_REMOTE_KERNEL_REPO ?? '/tmp/chariox-native-remote-validate',
     provider: process.env.CHARIOX_COLLAB_PROVIDER ?? DEFAULT_PROVIDER,
     model: process.env.CHARIOX_COLLAB_MODEL ?? DEFAULT_MODEL,
     variant: process.env.CHARIOX_COLLAB_VARIANT ?? 'low',
@@ -57,14 +57,14 @@ function parseArgs(argv = process.argv.slice(2)) {
   }
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]
-    if (arg === '--hetzner-relay') {
-      options.hetznerRelay = true
-    } else if (arg === '--hetzner-host') {
-      options.hetznerHost = argv[++index]
-    } else if (arg === '--hetzner-key') {
-      options.hetznerKey = argv[++index]
-    } else if (arg === '--hetzner-repo') {
-      options.hetznerRepo = argv[++index]
+    if (arg === '--remote-kernel-relay') {
+      options.remoteKernelRelay = true
+    } else if (arg === '--remote-kernel-host') {
+      options.remoteKernelHost = argv[++index]
+    } else if (arg === '--remote-kernel-key') {
+      options.remoteKernelKey = argv[++index]
+    } else if (arg === '--remote-kernel-repo') {
+      options.remoteKernelRepo = argv[++index]
     } else if (arg === '--provider') {
       options.provider = argv[++index]
     } else if (arg === '--model') {
@@ -80,10 +80,10 @@ function parseArgs(argv = process.argv.slice(2)) {
         'Usage: node apps/cli/scripts/live-relay-freeform-multi-user-drill.mjs [options]',
         '',
         'Options:',
-        '  --hetzner-relay       Run the scoped relay on the configured Hetzner host through an SSH tunnel',
-        '  --hetzner-host HOST   SSH host for --hetzner-relay',
-        '  --hetzner-key PATH    SSH key for --hetzner-relay',
-        '  --hetzner-repo PATH   Remote Chariox checkout containing built relay binary',
+        '  --remote-kernel-relay       Run the scoped relay on the configured remote kernel host through an SSH tunnel',
+        '  --remote-kernel-host HOST   SSH host for --remote-kernel-relay',
+        '  --remote-kernel-key PATH    SSH key for --remote-kernel-relay',
+        '  --remote-kernel-repo PATH   Remote Chariox checkout containing built relay binary',
         `  --provider PROVIDER   Provider for live model prompts (default ${DEFAULT_PROVIDER})`,
         `  --model MODEL         Model for live model prompts (default ${DEFAULT_MODEL})`,
         '  --variant VARIANT     Provider effort/variant for all drill agents (default low)',
@@ -186,9 +186,9 @@ function makeEnv(ports, rootDir, daemonRuntimeEnv) {
   }
 }
 
-async function hetznerRelayPortIsAvailable(options, ports) {
+async function remoteKernelRelayPortIsAvailable(options, ports) {
   try {
-    await assertHetznerTcpPortAvailable(options, ports.relayPort, 'Hetzner collaboration relay port')
+    await assertRemoteKernelTcpPortAvailable(options, ports.relayPort, 'remote kernel collaboration relay port')
     return true
   } catch (error) {
     if (error instanceof Error && /is already in use by pid\(s\)/.test(error.message)) return false
@@ -235,7 +235,7 @@ async function terminateChild(child, signal = 'SIGTERM') {
   }
 }
 
-async function stopHetznerRelay(options, remoteRoot) {
+async function stopRemoteKernelRelay(options, remoteRoot) {
   if (!remoteRoot) return
   const pidFile = path.posix.join(remoteRoot, 'relay.pid')
   const marker = `CHARIOX_RELAY_FREEFORM_MULTI_USER_ROOT=${remoteRoot}`
@@ -249,7 +249,7 @@ async function stopHetznerRelay(options, remoteRoot) {
     `rm -rf ${shellQuote(remoteRoot)}`,
   ].join('\n')))
   if (result.code !== 0) {
-    log('hetzner-relay-cleanup-failed', { code: result.code, stderr: result.stderr.trim() })
+    log('remote-kernel-relay-cleanup-failed', { code: result.code, stderr: result.stderr.trim() })
   }
 }
 
@@ -370,9 +370,9 @@ async function runDrill(privateRoot) {
   await mkdir(workspace, { recursive: true })
 
   const ports = await makeAvailablePorts({
-    candidateFactory: options.hetznerRelay ? makeNonEphemeralDrillPorts : undefined,
-    additionalAvailability: options.hetznerRelay
-      ? (candidate) => hetznerRelayPortIsAvailable(options, candidate)
+    candidateFactory: options.remoteKernelRelay ? makeNonEphemeralDrillPorts : undefined,
+    additionalAvailability: options.remoteKernelRelay
+      ? (candidate) => remoteKernelRelayPortIsAvailable(options, candidate)
       : undefined,
   })
   const realHomeDir = os.homedir()
@@ -396,7 +396,7 @@ async function runDrill(privateRoot) {
   let requests = null
   let relay = null
   let relayTunnel = null
-  const remoteRelayRoot = options.hetznerRelay
+  const remoteRelayRoot = options.remoteKernelRelay
     ? path.posix.join('/tmp', `chariox-relay-freeform-multi-user-${process.pid}-${Date.now()}`)
     : null
   let daemon = null
@@ -450,15 +450,15 @@ async function runDrill(privateRoot) {
     ])
     requests = ipcRequests
     const kernelPath = await buildKernelIfNeeded()
-    if (options.hetznerRelay) {
+    if (options.remoteKernelRelay) {
       const remoteRelayCheck = await run('ssh', sshArgs(options, [
-        `test -x ${shellQuote(path.posix.join(options.hetznerRepo, 'apps/relay/target/debug/chariox-relay'))}`,
+        `test -x ${shellQuote(path.posix.join(options.remoteKernelRepo, 'apps/relay/target/debug/chariox-relay'))}`,
       ].join('; ')))
       if (remoteRelayCheck.code !== 0) {
-        throw new Error(`Hetzner relay binary is not available in ${options.hetznerRepo}\n${remoteRelayCheck.stdout}\n${remoteRelayCheck.stderr}`)
+        throw new Error(`remote kernel relay binary is not available in ${options.remoteKernelRepo}\n${remoteRelayCheck.stdout}\n${remoteRelayCheck.stderr}`)
       }
       relay = spawnRemoteEnv(options, {
-        CHARIOX_REMOTE_REPO: options.hetznerRepo,
+        CHARIOX_REMOTE_REPO: options.remoteKernelRepo,
         CHARIOX_RELAY_FREEFORM_MULTI_USER_ROOT: remoteRelayRoot,
         CHARIOX_RELAY_HOST: '127.0.0.1',
         CHARIOX_RELAY_PORT: String(ports.relayPort),
@@ -469,7 +469,7 @@ async function runDrill(privateRoot) {
       })
       relayTunnel = spawn('ssh', [
         '-i',
-        options.hetznerKey,
+        options.remoteKernelKey,
         '-o',
         'BatchMode=yes',
         '-o',
@@ -477,7 +477,7 @@ async function runDrill(privateRoot) {
         '-N',
         '-L',
         `127.0.0.1:${ports.relayPort}:127.0.0.1:${ports.relayPort}`,
-        options.hetznerHost,
+        options.remoteKernelHost,
       ], {
         stdio: ['ignore', 'ignore', 'inherit'],
       })
@@ -681,7 +681,7 @@ async function runDrill(privateRoot) {
 
     console.log(JSON.stringify({
       status: 'ok',
-      mode: options.hetznerRelay ? 'hetzner-relay-freeform-multi-user' : 'relay-freeform-multi-user',
+      mode: options.remoteKernelRelay ? 'remote-kernel-relay-freeform-multi-user' : 'relay-freeform-multi-user',
       relayUrl: envs.relayUrl,
       daemonAlias: envs.daemonAlias,
       sessionId: session.id,
@@ -720,7 +720,7 @@ async function runDrill(privateRoot) {
     if (sessionId && clients[0] && requests) await clients[0].send(requests.endSessionRequest(sessionId)).catch(() => {})
     await Promise.all(clients.map((client) => client.close().catch(() => {})))
     await terminateChild(daemon)
-    await stopHetznerRelay(options, remoteRelayRoot)
+    await stopRemoteKernelRelay(options, remoteRelayRoot)
     await terminateChild(relay)
     await terminateChild(relayTunnel)
     if (openCodeCredentialPath) await rm(openCodeCredentialPath, { force: true })
@@ -731,7 +731,7 @@ async function runDrill(privateRoot) {
       failure,
       metadata: {
         drill: 'live-relay-freeform-multi-user',
-        mode: options.hetznerRelay ? 'hetzner-relay-freeform-multi-user' : 'relay-freeform-multi-user',
+        mode: options.remoteKernelRelay ? 'remote-kernel-relay-freeform-multi-user' : 'relay-freeform-multi-user',
         relayUrl: envs.relayUrl,
         daemonAlias: envs.daemonAlias,
         sessionId,
