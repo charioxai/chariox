@@ -1,6 +1,6 @@
 import {
   attachToSessionRequest, cancelActivePromptRequest, createSessionRequest, endSessionRequest, getSessionStateRequest,
-  listProjectsRequest, listSessionsRequest, searchWorkspaceDirectoriesRequest, spawnAgentRequest, submitPromptRequest,
+  listProjectsRequest, listSessionsRequest, respondToInteractionRequest, searchWorkspaceDirectoriesRequest, spawnAgentRequest, submitPromptRequest,
 } from "./ipc-requests.js"
 
 type Flag = { name: string; value?: string; required?: true }
@@ -98,6 +98,7 @@ export const REQUEST_EXAMPLES: readonly { body: object; note: string }[] = [
     body: { RequestKernelSudo: { agent_id: "AGENT_ID", prompt: "TASK" } },
     note: "elevates that agent's task on the kernel; waits while the user answers its popup there, so pass --timeout 660; KernelSudoRequested",
   },
+  { body: respondToInteractionRequest("SESSION_ID", "INTERACTION_ID", "CHOICE_ID"), note: "InteractionResponded; set custom_reply to the person's text when question.text_reply is present" },
 ]
 
 const REFUSED = ["events_refused", "kernel_sudo_refused", "kernel_sudo_room_owner_local", "kernel_access_human_only", "kernel_access_ended", "kernel_access_not_covered", "kernel_access_already_granted", "kernel_access_cover_gone", "kernel_access_cover_identity_changed", "kernel_access_cover_kernel_process", "kernel_access_cover_outside", "kernel_access_cover_limit", "command_id_required", "duplicate_command_conflict"]
@@ -187,7 +188,11 @@ export function guideText(): string {
     "Follow sessions or single agents with chariox events subscribe. Use chariox events wait --timeout 540",
     "in the foreground or your harness background option, or poll chariox events list. Keep next_cursor.",
     "On exit 7, reread the followed targets and resume from oldest_cursor - 1; ack after handling records.",
-    "Show approval pointers to the user verbatim. A subscription lasts until its grant ends or you cancel it.",
+    "A record with value.question is a decision the person may answer through you: ask the person with your own question tool",
+    "(options are question.choices, a free reply is question.text_reply when present), then send RespondToInteraction with the chosen id and refs.interaction_id.",
+    "interaction_closed means someone else answered or it expired: drop the question. Do not choose for the person.",
+    "A record with no question but a pointer is the person's alone: show pointer.one_line verbatim and do not answer it.",
+    "A subscription lasts until its grant ends or you cancel it.",
     "Commands:",
     ...commands,
     "",
