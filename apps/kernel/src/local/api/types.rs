@@ -410,4 +410,7 @@ pub use workspace::*;
 /// Version 919 removes the user-side browser frame stream: `KernelBrowserCommand::Subscribe` and `Poll`
 /// (and `KernelBrowserDisplayRequest::Subscribe`) no longer parse, so a client that sends them is refused; `DisplayAck`
 /// gains `paused` (nobody watches: the push pump goes dormant, the acknowledgement still renews the lease).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 919;
+/// MP-08/MP-10/MP-11: allocated 920 carries the page's document mode on mirror resets (`document_mode`, the viewer
+/// frame lays out in the page's mode) and adds `KernelBrowser` `pointer_cursor`, the CSS cursor at a point for a
+/// viewer that shows the page as video.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 920;

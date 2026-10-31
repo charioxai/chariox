@@ -497,6 +497,7 @@ impl KernelBrowserHost {
                             | "display_subscribe"
                             | "display_attach"
                             | "note_selection"
+                            | "pointer_cursor"
                             | "mirror_subscribe"
                             | "mirror_next"
                             | "mirror_close"
@@ -706,9 +707,13 @@ impl KernelBrowserHost {
         // its live target through this controller. Lease/policy checks remain
         // before dispatch and after readiness, as for other observations.
         let display_subscribe = method == "host.browser" && params["op"] == "display_subscribe";
-        // r55: a selection note on a busy page waits for its renderer; it must not hold the controller lock meanwhile.
-        let note =
-            method == "host.browser" && matches!(params["op"].as_str(), Some("note_selection"));
+        // r55: a selection note or the cursor under the pointer on a busy page waits for its renderer;
+        // neither may hold the controller lock meanwhile.
+        let note = method == "host.browser"
+            && matches!(
+                params["op"].as_str(),
+                Some("note_selection" | "pointer_cursor")
+            );
         let mut result = if display
             || mirror_credit
             || display_subscribe
