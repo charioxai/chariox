@@ -418,4 +418,7 @@ pub use workspace::*;
 /// Landing union 923 carries 913 (`SessionState` `processes`), 917 (direct browser sessions over WebRTC),
 /// 919 (user-side browser frame stream removed, `display_ack` `paused`), 920 (mirror `document_mode`,
 /// `pointer_cursor`) and 923 (session-less Vault unlock).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 923;
+/// Version 926 makes the direct data channel's liveness a contract: the kernel pings
+/// every second ahead of queued frames and ends a peer silent for 3 s; browsers leave
+/// a direct path silent for 2.5 s (TR-16).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 926;
