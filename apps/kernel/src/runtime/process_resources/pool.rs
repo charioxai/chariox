@@ -135,7 +135,7 @@ impl Pool {
             .as_ref()
             .map_or((0, false), |budget| (budget.used(), budget.stalled()));
         #[cfg(not(target_os = "linux"))]
-        let (charged, stalled) = (0, false);
+        let (charged, stalled): (u64, bool) = (0, false);
         stalled
             || charged.saturating_add(outside_cgroup) > self.ceiling.saturating_sub(self.margin)
             || (self.host && host_short(self.margin))
