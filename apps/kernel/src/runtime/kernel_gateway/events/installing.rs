@@ -62,7 +62,7 @@ impl KernelGateway {
             &LocalDaemonRequest::SubscribeEvents(SubscribeEventsRequest {
                 targets: targets.to_vec(),
             }),
-            Duration::from_secs(1),
+            PULL_DEADLINE,
         )
         .await
         .map(drop)

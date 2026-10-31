@@ -63,13 +63,7 @@ impl KernelGateway {
                     let keep = gateway
                         .pump_event_part(&origin, &kernel, &mut subscribed)
                         .await;
-                    if !keep {
-                        gateway
-                            .event_parts
-                            .running
-                            .lock()
-                            .expect("event pumps poisoned")
-                            .remove(&key);
+                    if !keep && gateway.finish_event_part(&origin, &kernel, &key) {
                         return;
                     }
                     drop(gateway);
@@ -77,6 +71,35 @@ impl KernelGateway {
                 }
             });
         }
+    }
+    /// Whether the pump of `key` ended. A target followed while the pump was busy found it
+    /// running and started nothing, so the pump looks again, under the lock that starting takes,
+    /// before it leaves; the target is either seen here or starts the next pump.
+    pub(super) fn finish_event_part(
+        &self,
+        origin: &Origin,
+        kernel: &str,
+        key: &(String, String),
+    ) -> bool {
+        let mut running = self
+            .event_parts
+            .running
+            .lock()
+            .expect("event pumps poisoned");
+        // A store that cannot be read says nothing about the targets: keep following.
+        let wanted = self
+            .runtime_state
+            .outside_store()
+            .outside_part(&origin.grant_id)
+            .map_or(true, |part| {
+                part.is_some_and(|part| {
+                    part.ended.is_none() && part.targets.iter().any(|t| t.kernel == kernel)
+                })
+            });
+        if !wanted {
+            running.remove(key);
+        }
+        !wanted
     }
     async fn pump_event_part(
         &self,
@@ -160,12 +183,36 @@ impl KernelGateway {
         kernel: &str,
         status: Result<(), GatewayError>,
     ) -> Result<(), crate::error::DaemonError> {
+        self.event_health_at(origin, kernel, status, Instant::now())
+    }
+    pub(super) fn event_health_at(
+        &self,
+        origin: &Origin,
+        kernel: &str,
+        status: Result<(), GatewayError>,
+        now: Instant,
+    ) -> Result<(), crate::error::DaemonError> {
+        let key = (origin.grant_id.clone(), kernel.to_string());
+        {
+            let mut timing_out = self
+                .event_parts
+                .timing_out_since
+                .lock()
+                .expect("event timeouts poisoned");
+            if matches!(status, Err(GatewayError::RequestTimeout { .. })) {
+                let since = *timing_out.entry(key.clone()).or_insert(now);
+                if now.saturating_duration_since(since) < BUSY_GRACE {
+                    return Ok(());
+                }
+            } else {
+                timing_out.remove(&key);
+            }
+        }
         let mut health = self
             .event_parts
             .health
             .lock()
             .expect("event health poisoned");
-        let key = (origin.grant_id.clone(), kernel.into());
         // Following a kernel again clears its durable baseline. The status cache
         // alone cannot tell whether this subscription still observed it.
         let previous = self
@@ -240,7 +287,8 @@ impl KernelGateway {
                     events,
                 })
                 .map_err(|_| part_error(kernel, "could not commit the merged event inbox"))?;
-            if next_cursor > 0 {
+            // Only a cursor that moved needs saying: an ack is a write on the target.
+            if next_cursor > since {
                 self.forward(
                     kernel,
                     origin,
@@ -248,7 +296,7 @@ impl KernelGateway {
                     &LocalDaemonRequest::AckEvents(AckEventsRequest {
                         cursor: next_cursor,
                     }),
-                    Duration::from_secs(1),
+                    PULL_DEADLINE,
                 )
                 .await?;
             }
@@ -274,7 +322,7 @@ impl KernelGateway {
                     since: Some(since),
                     limit: 1000,
                 }),
-                Duration::from_secs(1),
+                PULL_DEADLINE,
             )
             .await?;
         serde_json::from_value(response)
