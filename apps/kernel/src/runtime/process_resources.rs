@@ -123,27 +123,23 @@ impl PreparedDomain {
     /// For a child the previous kernel program started (hot reload): it joins
     /// its owner's unit in this program's budget, and the domain it had goes.
     /// A child that cannot move is watched by resident memory instead.
-    pub(crate) fn adopted(
-        unit: &str,
-        previous: Option<&std::path::Path>,
-        pid: u32,
-    ) -> std::io::Result<Self> {
+    pub(crate) fn adopted(unit: &str, previous: Option<&std::path::Path>) -> std::io::Result<Self> {
         #[cfg_attr(not(target_os = "linux"), allow(unused_mut))]
         let mut prepared = Self::new(unit)?;
         #[cfg(target_os = "linux")]
         if let Some(group) = prepared.cgroup.take() {
-            let moved = previous.is_some_and(|previous| group.take_over(previous, pid));
+            let moved = previous.is_some_and(|previous| group.take_over(previous));
             if previous.is_some() && !moved {
                 crate::logging::warn_with_fields(
                     "process_resources.handover",
                     "a handed-over process could not join its owner's memory domain; watching its resident memory instead",
-                    serde_json::json!({"pid": pid, "unit": unit}),
+                    serde_json::json!({"unit": unit}),
                 );
             }
             prepared.cgroup = moved.then_some(group);
         }
         #[cfg(not(target_os = "linux"))]
-        let _ = (previous, pid);
+        let _ = previous;
         Ok(prepared)
     }
 

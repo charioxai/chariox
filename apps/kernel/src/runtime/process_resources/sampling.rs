@@ -27,7 +27,26 @@ struct OwnedProcess {
     identity: ProcessIdentity,
 }
 
+fn fresh_process_id() -> String {
+    format!("process-{:032x}", rand::random::<u128>())
+}
+
 impl Owned {
+    /// Adds processes the last sample did not list, such as a child its
+    /// parent forked just before the sample and ended right after.
+    pub fn including(&mut self, pids: impl IntoIterator<Item = u32>) {
+        for pid in pids {
+            if pid > 1 && !self.processes.iter().any(|owned| owned.identity.pid == pid) {
+                if let Ok((identity, _)) = inspect(pid) {
+                    self.processes.push(OwnedProcess {
+                        process_id: fresh_process_id(),
+                        identity,
+                    });
+                }
+            }
+        }
+    }
+
     /// The owned processes that still run.
     pub fn alive(&self) -> impl Iterator<Item = u32> + '_ {
         self.processes
@@ -52,10 +71,7 @@ impl ProcessTree {
         if let Ok((identity, _)) = inspect(root) {
             owned.insert(root, identity);
         }
-        let ids = owned
-            .keys()
-            .map(|pid| (*pid, format!("process-{:032x}", rand::random::<u128>())))
-            .collect();
+        let ids = owned.keys().map(|pid| (*pid, fresh_process_id())).collect();
         Self {
             root,
             owned,
@@ -157,8 +173,7 @@ impl ProcessTree {
                     if let Ok((identity, _)) = inspect(pid) {
                         if group.owns(pid) && same_process(pid, &identity) {
                             self.owned.insert(pid, identity);
-                            self.ids
-                                .insert(pid, format!("process-{:032x}", rand::random::<u128>()));
+                            self.ids.insert(pid, fresh_process_id());
                         }
                     }
                 }
@@ -172,10 +187,7 @@ impl ProcessTree {
                     if let Ok((identity, parent)) = inspect(row.pid) {
                         if parent == row.parent {
                             self.owned.insert(row.pid, identity);
-                            self.ids.insert(
-                                row.pid,
-                                format!("process-{:032x}", rand::random::<u128>()),
-                            );
+                            self.ids.insert(row.pid, fresh_process_id());
                             changed = true;
                         }
                     }

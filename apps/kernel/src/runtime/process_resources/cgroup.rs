@@ -146,7 +146,7 @@ impl Domain {
     /// program was started in (hot reload), into this one and removes the
     /// directories that program left. The program keeps its PID across a hot
     /// reload, so only a domain of this PID's own budget is taken.
-    pub fn take_over(&self, previous: &Path, pid: u32) -> bool {
+    pub fn take_over(&self, previous: &Path) -> bool {
         let Some(unit) = previous.parent() else {
             return false;
         };
@@ -164,13 +164,21 @@ impl Domain {
         {
             return false;
         }
-        let Ok(members) = std::fs::read_to_string(previous.join("cgroup.procs")) else {
-            return false;
-        };
-        for member in members.lines() {
-            let _ = std::fs::write(self.path.join("cgroup.procs"), member);
+        // A member can fork while it moves: its child starts in `previous`.
+        let mut moved = false;
+        for _ in 0..8 {
+            let Ok(procs) = std::fs::read_to_string(previous.join("cgroup.procs")) else {
+                return false;
+            };
+            let remaining = parse_members(&procs);
+            moved = remaining.is_empty();
+            if moved {
+                break;
+            }
+            for member in remaining {
+                let _ = std::fs::write(self.path.join("cgroup.procs"), member.to_string());
+            }
         }
-        let moved = self.owns(pid);
         if moved {
             for directory in [previous, unit, budget] {
                 let _ = std::fs::remove_dir(directory);
@@ -179,10 +187,9 @@ impl Domain {
         moved
     }
     pub fn pids(&self) -> std::io::Result<Vec<u32>> {
-        Ok(std::fs::read_to_string(self.path.join("cgroup.procs"))?
-            .lines()
-            .filter_map(|line| line.parse().ok())
-            .collect())
+        Ok(parse_members(&std::fs::read_to_string(
+            self.path.join("cgroup.procs"),
+        )?))
     }
     pub fn owns(&self, pid: u32) -> bool {
         let expected = self
@@ -227,6 +234,17 @@ impl Drop for Domain {
             );
         }
     }
+}
+
+fn parse_members(procs: &str) -> Vec<u32> {
+    procs.lines().filter_map(|line| line.parse().ok()).collect()
+}
+
+/// What runs in a process domain right now; none when it is gone.
+pub(super) fn members(path: &Path) -> Vec<u32> {
+    std::fs::read_to_string(path.join("cgroup.procs"))
+        .map(|procs| parse_members(&procs))
+        .unwrap_or_default()
 }
 
 fn own() -> Option<PathBuf> {

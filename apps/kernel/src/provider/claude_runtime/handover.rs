@@ -291,7 +291,6 @@ pub(super) fn adopted_resources(
     let resources = crate::runtime::process_resources::PreparedDomain::adopted(
         resource_unit,
         handover.cgroup.as_deref(),
-        handover.pid,
     )
     .and_then(|domain| domain.start(handover.pid))
     .map_err(|error| crate::error::DaemonError::LocalTransport {

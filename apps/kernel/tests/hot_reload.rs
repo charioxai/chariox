@@ -859,11 +859,28 @@ fn work_that_is_not_handed_over_stops_as_for_a_restart() {
 /// A Room terminal whose command ended and left a detached job running
 /// (`setsid nohup job &`): the pid of the job, once the session lists it.
 async fn terminal_that_left_a_job(socket: &mut Socket, session_id: &str, scratch: &Path) -> i32 {
+    let job = format!(
+        "echo $$ > {}; exec sleep 600",
+        scratch.join("job.pid").display()
+    );
+    terminal_that_left_a_job_running(socket, session_id, scratch, &job).await
+}
+
+/// The same, for a job that runs the shell `job` (its pid in `job.pid`).
+#[cfg(target_os = "linux")]
+async fn terminal_that_left_a_job_running(
+    socket: &mut Socket,
+    session_id: &str,
+    scratch: &Path,
+    job: &str,
+) -> i32 {
     let pid_file = scratch.join("job.pid");
+    let job_file = scratch.join("job.sh");
+    std::fs::write(&job_file, job).unwrap();
     // The command stays a moment, so its watch sees the job before it ends.
     let script = format!(
-        "setsid nohup sh -c 'echo $$ > {}; exec sleep 600' >/dev/null 2>&1 & sleep 1",
-        pid_file.display()
+        "setsid nohup sh {} >/dev/null 2>&1 & sleep 1",
+        job_file.display()
     );
     let opened = terminal(
         socket,
@@ -1021,6 +1038,99 @@ fn a_hot_reload_keeps_a_job_an_exited_terminal_left_running_and_it_stays_control
         assert!(
             Instant::now() < deadline,
             "the stop after the reload did not end the job"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// A released job that forks a long-lived child and ends right after a watch
+/// sample: the child alone survives, in the memory domain, and the last sample
+/// never listed it.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_hot_reload_keeps_the_child_a_released_job_forked_just_before_it_ended() {
+    let scratch = std::env::temp_dir().join(format!("hr-forked-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    let kernel = start_kernel(&scratch);
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let (child, tick) = runtime.block_on(async {
+        let mut socket = connect(&kernel, Duration::from_secs(60)).await;
+        let session_id = session_in(&mut socket, &scratch).await;
+        // The job waits for the go signal, then forks the child and ends.
+        let go = scratch.join("go");
+        let child_file = scratch.join("child.pid");
+        let job = format!(
+            "echo $$ > {job}; read signal < {go}; \
+             setsid sh -c 'echo $$ > {child}; exec sleep 600' >/dev/null 2>&1 & exit",
+            job = scratch.join("job.pid").display(),
+            go = go.display(),
+            child = child_file.display(),
+        );
+        assert!(std::process::Command::new("mkfifo")
+            .arg(&go)
+            .status()
+            .unwrap()
+            .success());
+        let pid = terminal_that_left_a_job_running(&mut socket, &session_id, &scratch, &job).await;
+        let listed = listed_job(&mut socket, &session_id, pid).await.unwrap();
+        let sampled = listed["sampled_at_ms"].as_u64().unwrap();
+        // Release the job right after a watch sample, so the next one is
+        // 250 ms away and the reload comes first.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let row = listed_job(&mut socket, &session_id, pid).await.unwrap();
+            if row["sampled_at_ms"].as_u64().unwrap() != sampled {
+                break;
+            }
+            assert!(Instant::now() < deadline, "the watch never sampled again");
+        }
+        std::fs::write(&go, "go\n").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let child = loop {
+            if let Some(child) = std::fs::read_to_string(&child_file)
+                .ok()
+                .and_then(|text| text.trim().parse::<i32>().ok())
+            {
+                break child;
+            }
+            assert!(Instant::now() < deadline, "the job never forked its child");
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        };
+        let kernel_pid = kernel.child.id() as i32;
+        assert!(kernel_pid > 1);
+        unsafe { libc::kill(kernel_pid, libc::SIGUSR2) };
+        let tick = start_tick(child).expect("the child runs");
+        closed_by_the_old_program(socket).await;
+        let mut socket = connect(&kernel, Duration::from_secs(60)).await;
+
+        assert_eq!(
+            start_tick(child).as_deref(),
+            Some(tick.as_str()),
+            "the reload ended the job's child or replaced its process"
+        );
+        let after = listed_job(&mut socket, &session_id, child).await;
+        let after = after.expect("the reloaded kernel lists the child again");
+        assert_eq!(after["owner"]["kind"], "terminal", "{after}");
+        let stopped = request(
+            &mut socket,
+            json!({"StopSessionProcesses": {"session_id": session_id,
+                "target": {"kind": "process", "process_id": after["process_id"]}}}),
+        )
+        .await;
+        assert_eq!(
+            stopped["SessionProcessesStopped"]["result"]["outcome"], "outside_end",
+            "{stopped}"
+        );
+        (child, tick)
+    });
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while start_tick(child).as_deref() == Some(tick.as_str()) {
+        assert!(
+            Instant::now() < deadline,
+            "the stop after the reload did not end the child"
         );
         std::thread::sleep(Duration::from_millis(100));
     }

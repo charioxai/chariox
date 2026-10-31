@@ -1017,7 +1017,6 @@ impl PtyManager {
         let resources = crate::runtime::process_resources::PreparedDomain::adopted(
             unit,
             handover.cgroup.as_deref(),
-            handover.pid,
         )
         .and_then(|domain| domain.start(handover.pid))
         .map_err(|e| failed(e.to_string()))?;
