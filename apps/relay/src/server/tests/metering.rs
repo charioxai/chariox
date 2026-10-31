@@ -468,3 +468,102 @@ async fn a_metadata_only_connection_is_counted_for_its_realm() {
     let _ = shutdown_tx.send(());
     let _ = server_task.await;
 }
+
+/// A connection belongs to the first realm it authenticates in. A later request
+/// that proves another realm is refused, so no traffic of realm B is ever
+/// counted for realm A.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_connection_that_authenticated_one_realm_refuses_another() {
+    let mut claims = BTreeMap::new();
+    for realm in ["realm-a", "realm-b"] {
+        claims.insert(
+            format!("client-{realm}-token"),
+            scoped_claim(
+                &format!("client-{realm}-token"),
+                &format!("client-{realm}"),
+                RelaySubjectKind::Client,
+                realm,
+                vec![RelayAction::ClientConnect, RelayAction::ClientMetadataRead],
+                None,
+            ),
+        );
+    }
+    let auth_verifier =
+        RelayAuthVerifier::ScopedToken(ScopedTokenVerifier::new(claims, BTreeMap::new(), Some(10)));
+    let probe = RelayServer::with_auth_verifier(
+        RelayConfig {
+            host: "127.0.0.1".to_string(),
+            port: 0,
+            shared_token: None,
+        },
+        auth_verifier.clone(),
+    );
+    let listener = probe.bind_listener().await.expect("relay listener");
+    let addr = listener.local_addr().expect("relay address");
+    let server = RelayServer::with_auth_verifier(
+        RelayConfig {
+            host: addr.ip().to_string(),
+            port: addr.port(),
+            shared_token: None,
+        },
+        auth_verifier,
+    );
+    let meter = server.usage_meter();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    let server_task = tokio::spawn(async move {
+        server
+            .run_listener_until(listener, async {
+                let _ = shutdown_rx.await;
+            })
+            .await
+            .expect("relay server should run");
+    });
+    let url = format!("ws://{}:{}", addr.ip(), addr.port());
+    let metadata = |realm: &str| RelayEnvelope::ClientMetadataRequest {
+        request_id: format!("machines-{realm}"),
+        auth_token: format!("client-{realm}-token"),
+        query: RelayMetadataQuery::ListLiveMachines,
+    };
+    let connect = |realm: &str| RelayEnvelope::ClientConnect {
+        auth_token: format!("client-{realm}-token"),
+        target: target(),
+    };
+
+    for (second_name, second) in [
+        ("metadata", metadata("realm-b")),
+        ("connect", connect("realm-b")),
+    ] {
+        let mut tally = Tally {
+            sent: 0,
+            received: 0,
+        };
+        let (mut client, _) = connect_async_with_retry(&url)
+            .await
+            .expect("client should connect");
+        send(&mut client, &mut tally, &metadata("realm-a")).await;
+        let (answer, _) = receive(&mut client, &mut tally).await;
+        assert!(
+            matches!(answer, RelayEnvelope::ClientMetadataResponse { .. }),
+            "{second_name}: realm A's own request is answered"
+        );
+        send(&mut client, &mut tally, &second).await;
+        let (refusal, _) = receive(&mut client, &mut tally).await;
+        match refusal {
+            RelayEnvelope::Close { reason } => assert!(
+                reason.contains("another realm"),
+                "{second_name}: refused for its realm, not for something else: {reason}"
+            ),
+            other => panic!("{second_name}: realm B must be refused, got {other:?}"),
+        }
+    }
+    sleep(Duration::from_millis(200)).await;
+    let counted = meter.snapshot();
+    assert!(
+        counted.keys().all(|(realm, _)| realm == "realm-a"),
+        "nothing is counted for a realm whose request was refused: {:?}",
+        counted.keys().collect::<Vec<_>>()
+    );
+    assert!(!counted.is_empty(), "realm A's own bytes are counted");
+    let _ = shutdown_tx.send(());
+    let _ = server_task.await;
+}

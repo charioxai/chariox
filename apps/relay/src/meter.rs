@@ -174,17 +174,23 @@ impl ConnectionMeter {
         Self::default()
     }
 
-    pub fn bind_realm(&self, realm: &str) {
-        let Some(meter) = &self.meter else { return };
+    /// Makes `realm` the connection's realm the first time it authenticates.
+    /// False when the connection already belongs to another realm: it must be
+    /// closed, since its traffic is counted for the first one.
+    pub fn bind_realm(&self, realm: &str) -> bool {
+        let Some(meter) = &self.meter else {
+            return true;
+        };
         let mut binding = self.binding.lock().unwrap_or_else(|e| e.into_inner());
-        if binding.realm.is_some() {
-            return;
+        if let Some(bound) = &binding.realm {
+            return &**bound == realm;
         }
         let pending = std::mem::take(&mut binding.before_auth);
         binding.realm = Some(Arc::from(realm));
         if pending != UsageCounters::default() {
             meter.add(realm, CONTROL_SCOPE, &pending);
         }
+        true
     }
 
     pub fn record(&self, direction: Direction, scope: &str, bytes: usize) {

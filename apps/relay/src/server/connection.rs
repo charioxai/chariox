@@ -32,6 +32,7 @@ const RELAY_FIRST_MESSAGE_TIMEOUT: Duration = Duration::from_secs(10);
 const RELAY_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 const RELAY_CONNECTION_CHECK_INTERVAL: Duration = Duration::from_secs(5);
 const RELAY_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
+const REALM_CHANGED: &str = "this relay connection belongs to another realm";
 const RELAY_PONG_TIMEOUT: Duration = Duration::from_secs(15);
 const RELAY_WEBSOCKET_CLOSE_TIMEOUT: Duration = Duration::from_millis(250);
 
@@ -223,7 +224,11 @@ pub(crate) async fn handle_connection(
         loop {
             if !meter_bound {
                 if let Some(identity) = &verified_identity {
-                    connection_meter.bind_realm(&identity.realm_id);
+                    if !connection_meter.bind_realm(&identity.realm_id) {
+                        send_close(&outgoing_tx, REALM_CHANGED.to_string());
+                        end_reason = "realm_changed";
+                        break;
+                    }
                     meter_bound = true;
                 }
             }
@@ -515,7 +520,7 @@ pub(crate) async fn handle_connection(
                             if !client_connect::admit(envelope,client_connect::ClientConnectContext {
                                 registry:&registry,routes:&routes,auth_verifier:&auth_verifier,peer_addr,
                                 outgoing_tx:&outgoing_tx,relay_request_counter:&relay_request_counter,
-                                verified_identity:&mut verified_identity,auth_expiry_deadline:&mut auth_expiry_deadline,initial_resume_negotiated,
+                                connection_meter:&connection_meter,verified_identity:&mut verified_identity,auth_expiry_deadline:&mut auth_expiry_deadline,initial_resume_negotiated,
                             }).await? { break; }
                         }
                         RelayEnvelope::ClientMetadataRequest {
@@ -531,7 +536,11 @@ pub(crate) async fn handle_connection(
                             )?;
                             // The request's own token proves the realm, so the
                             // request and its answer count for it too.
-                            connection_meter.bind_realm(&identity.realm_id);
+                            if !connection_meter.bind_realm(&identity.realm_id) {
+                                send_close(&outgoing_tx, REALM_CHANGED.to_string());
+                                end_reason = "realm_changed";
+                                break;
+                            }
                             let guard = registry.read().await;
                             let (machines, kernels, kernel) = match query {
                                 RelayMetadataQuery::ListLiveMachines => (

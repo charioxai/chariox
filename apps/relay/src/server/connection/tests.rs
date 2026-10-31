@@ -1741,6 +1741,7 @@ async fn mp11_initial535_pin_is_checked_at_the_subscription_sender_transaction()
     // immediately after it. Tokio's fair lock makes the post-ack routing read
     // observe that replacement, without timing sleeps or production hooks.
     let held = registry.read().await;
+    let meter = ConnectionMeter::detached();
     let admitting = super::client_connect::admit(
         RelayEnvelope::ClientConnectDisplayResume {
             auth_token: "client-token".into(),
@@ -1764,6 +1765,7 @@ async fn mp11_initial535_pin_is_checked_at_the_subscription_sender_transaction()
             peer_addr: client_addr,
             outgoing_tx: &client_tx,
             relay_request_counter: &counter,
+            connection_meter: &meter,
             verified_identity: &mut identity,
             auth_expiry_deadline: &mut expiry,
             initial_resume_negotiated: true,
