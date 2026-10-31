@@ -254,6 +254,32 @@ fn normalized_observed_prompt_text_ignores_provider_native_attachment_suffixes()
 }
 
 #[test]
+fn normalized_observed_prompt_text_ignores_leading_native_attachment_mentions() {
+    let prompt = "Say hello";
+
+    for mentions in [
+        "@/tmp/chariox-terminal-prompt-attachments/s/a/1-0-shot.png",
+        "@/tmp/chariox-terminal-prompt-attachments/s/a/1-0-shot.png @/tmp/chariox-terminal-prompt-attachments/s/a/2-1-shot.png",
+        "@\"/tmp/with space/shot.png\" @/tmp/b.png",
+    ] {
+        assert_eq!(
+            normalized_observed_prompt_text(&format!("{mentions}\n\n{prompt}")),
+            Some(prompt.to_string()),
+            "{mentions}"
+        );
+    }
+    // The person's own words stay: only the mentions the kernel put in front of the prompt are native.
+    assert_eq!(
+        normalized_observed_prompt_text("Say hello to @/tmp/x.png"),
+        Some("Say hello to @/tmp/x.png".to_string())
+    );
+    assert_eq!(
+        normalized_observed_prompt_text("@agent-2 Say hello"),
+        Some("@agent-2 Say hello".to_string())
+    );
+}
+
+#[test]
 fn observed_account_handoff_matches_only_the_current_request() {
     let envelope = "<chariox_context_handoff>Prior prompt and output</chariox_context_handoff> Provider/account switch: codex [a] -> codex [b]. <user_request>Reply SWITCHED</user_request>";
     assert_eq!(

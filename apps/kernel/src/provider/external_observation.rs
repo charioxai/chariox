@@ -436,11 +436,43 @@ pub(crate) fn normalized_observed_prompt_text(text: &str) -> Option<String> {
     let without_provider_attachment_suffix =
         strip_observed_provider_attachment_suffix(without_account_handoff);
     let without_attachments = strip_observed_attachment_markup(without_provider_attachment_suffix);
-    let normalized = strip_observed_generated_prompt_context(&without_attachments)
+    let without_mentions = strip_leading_native_attachment_mentions(&without_attachments);
+    let normalized = strip_observed_generated_prompt_context(without_mentions)
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ");
     (!normalized.is_empty()).then_some(normalized)
+}
+
+/// Claude's native prompt starts with the `@path` mention of each file the kernel attached
+/// (`claude_attachment_mention`); the person never typed them, so the Chariox prompt has none.
+fn strip_leading_native_attachment_mentions(text: &str) -> &str {
+    let mut rest = text.trim_start();
+    loop {
+        let Some(mention) = rest.strip_prefix('@') else {
+            return rest;
+        };
+        let end = if let Some(quoted) = mention.strip_prefix("\"/") {
+            let mut escaped = false;
+            let Some(close) = quoted.char_indices().find_map(|(index, ch)| {
+                let closing = ch == '"' && !escaped;
+                escaped = ch == '\\' && !escaped;
+                closing.then_some(index)
+            }) else {
+                return rest;
+            };
+            3 + close + 1
+        } else if mention.starts_with('/') {
+            1 + mention.find(char::is_whitespace).unwrap_or(mention.len())
+        } else {
+            return rest;
+        };
+        let after = &rest[end..];
+        if !after.is_empty() && !after.starts_with(char::is_whitespace) {
+            return rest;
+        }
+        rest = after.trim_start();
+    }
 }
 
 fn strip_observed_account_handoff(text: &str) -> &str {

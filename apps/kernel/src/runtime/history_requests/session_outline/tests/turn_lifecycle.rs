@@ -1494,6 +1494,18 @@ fn agent_outline_suppresses_chariox_owned_external_prompt_echoes() {
             Some("user-echo-3".to_string()),
             Some(2_002),
         );
+    let external_prompt_with_native_attachment_mentions =
+        SessionHistoryEntry::external_provider_observed(
+            "session-1",
+            Some("run-1"),
+            "agent-1",
+            SessionHistoryEntryKind::UserPrompt,
+            "@/tmp/chariox-terminal-prompt-attachments/s/a/1-0-shot.png\n\nsame prompt from Chariox",
+            "codex",
+            "thread-1",
+            Some("user-echo-4".to_string()),
+            Some(2_002),
+        );
     let external_tool_call_echo = SessionHistoryEntry::external_provider_observed(
         "session-1",
         Some("run-1"),
@@ -1537,6 +1549,13 @@ fn agent_outline_suppresses_chariox_owned_external_prompt_echoes() {
             context.clone(),
         ))
         .expect("external provider attachment prompt should append");
+    store
+        .append(&HistoryEvent::transcript(
+            16,
+            &external_prompt_with_native_attachment_mentions,
+            context.clone(),
+        ))
+        .expect("external native attachment prompt should append");
     store
         .append(&HistoryEvent::transcript(
             14,
