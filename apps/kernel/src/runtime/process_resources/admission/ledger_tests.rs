@@ -371,15 +371,20 @@ fn start(ledger: &mut Ledger, member: &Arc<Mutex<Observation>>, pid: u32, reside
 
 /// A line accepted at the terminal.
 fn submit(member: &Arc<Mutex<Observation>>, holdable: bool) {
-    member.lock().unwrap().submissions.submit(holdable);
+    member
+        .lock()
+        .unwrap()
+        .submissions
+        .submit(holdable, std::time::Instant::now());
 }
 
 /// The shell reads the next accepted line, runs it and returns to the prompt;
 /// `background` is the job it left running.
 fn run_line(member: &Arc<Mutex<Observation>>, background: Option<u32>) {
     let mut member = member.lock().unwrap();
-    member.submissions.line_started();
-    member.submissions.line_finished(background);
+    let now = std::time::Instant::now();
+    member.submissions.line_started(now);
+    member.submissions.line_finished(background, now);
 }
 
 /// An older heavy command of another owner: never the one paused.
@@ -493,4 +498,29 @@ fn a_command_no_line_explains_follows_the_terminals_default() {
     start(&mut ledger, &terminal, 4_100_002, 700 * MIB);
     pressed(&mut ledger, other, &terminal);
     assert_eq!(wait(&terminal, 4_100_002), None);
+}
+
+#[test]
+fn a_command_waits_to_be_decided_while_the_shell_has_not_reported_its_line() {
+    let mut ledger = Ledger::new(None);
+    let other = oldest(&mut ledger);
+    let terminal = owner("terminal", true, Vec::new(), Vec::new());
+    // The sampler finds the agent's build before the shell's start mark is read.
+    submit(&terminal, true);
+    start(&mut ledger, &terminal, 4_100_002, 700 * MIB);
+    assert!(
+        !terminal.lock().unwrap().admission.contains_key(&4_100_002),
+        "a command was decided before its line was known"
+    );
+    terminal
+        .lock()
+        .unwrap()
+        .submissions
+        .line_started(std::time::Instant::now());
+    ledger.register(&terminal, 512 * MIB);
+    pressed(&mut ledger, other, &terminal);
+    assert_eq!(
+        wait(&terminal, 4_100_002),
+        Some(Wait::Paused(WaitReason::Memory))
+    );
 }

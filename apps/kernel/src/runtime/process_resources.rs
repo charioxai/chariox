@@ -632,18 +632,22 @@ pub(crate) fn set_default_holdable_for_key(key: &str, holdable: bool) {
 /// A line was accepted in the terminal bound to `key`: the commands it starts
 /// may wait for room unless a person submitted it.
 pub(crate) fn submit_line_for_key(key: &str, holdable: bool) {
-    with_submissions_for_key(key, |lines| lines.submit(holdable));
+    with_submissions_for_key(key, |lines| {
+        lines.submit(holdable, std::time::Instant::now())
+    });
 }
 
 /// The shell of the terminal bound to `key` started the next accepted line.
 pub(crate) fn line_started_for_key(key: &str) {
-    with_submissions_for_key(key, submissions::Submissions::line_started);
+    with_submissions_for_key(key, |lines| lines.line_started(std::time::Instant::now()));
 }
 
 /// The shell finished its line; `background` is the job it last put in the
 /// background.
 pub(crate) fn line_finished_for_key(key: &str, background: Option<u32>) {
-    with_submissions_for_key(key, |lines| lines.line_finished(background));
+    with_submissions_for_key(key, |lines| {
+        lines.line_finished(background, std::time::Instant::now())
+    });
 }
 
 /// Whether the command whose top process is `pid` may wait, once the sampler

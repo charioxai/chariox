@@ -170,6 +170,7 @@ impl Ledger {
         let mut observation = current.lock().unwrap_or_else(|e| e.into_inner());
         let observation = &mut *observation;
         let submissions = &mut observation.submissions;
+        let now = std::time::Instant::now();
         let live = observation
             .commands
             .iter()
@@ -193,14 +194,21 @@ impl Ledger {
             }
         }
         for command in observation.commands.iter().filter(|command| !command.root) {
-            let entry = observation.admission.entry(command.pid).or_insert_with(|| {
-                self.arrivals += 1;
-                Entry {
-                    arrived: self.arrivals,
-                    holdable: submissions.claim(command.pid),
-                    ..Entry::default()
+            let entry = match observation.admission.entry(command.pid) {
+                std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
+                std::collections::btree_map::Entry::Vacant(vacant) => {
+                    // Who started it is not known yet: asked again next sample.
+                    let Some(holdable) = submissions.claim(command.pid, now) else {
+                        continue;
+                    };
+                    self.arrivals += 1;
+                    vacant.insert(Entry {
+                        arrived: self.arrivals,
+                        holdable,
+                        ..Entry::default()
+                    })
                 }
-            });
+            };
             entry.resident = command.resident;
             entry.writes = command.writes;
             entry.peak.memory = entry.peak.memory.max(command.resident);
