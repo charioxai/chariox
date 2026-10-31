@@ -772,6 +772,17 @@ impl KernelRuntimeState {
         let dispatch_owns_active_prompt = self
             .owned
             .prompt_dispatch_matches_active_prompt(&dispatch)?;
+        if dispatch_owns_active_prompt
+            && matches!(&error, DaemonError::ProviderProtocol { message, .. }
+                if crate::app::claude_workspace_trust_declined(message))
+        {
+            return self
+                .stop_turn_after_declined_workspace_trust(
+                    &dispatch.session_id,
+                    &dispatch.provider_run_id,
+                )
+                .await;
+        }
         if dispatch_owns_active_prompt {
             let run = self
                 .owned
