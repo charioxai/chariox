@@ -72,7 +72,7 @@ function protectedFrameFixture({oopif=false,protectedOwner=null,ownerFails=null,
   const contexts={top:42,child:43,grandchild:44};
   const connection={async send(method,params,session){
     calls.push({method,params,session});
-    if (method==='Target.getTargets') return {targetInfos:oopif?[{type:'iframe',targetId:'child'}]:[]};
+    if (method==='Target.getTargets') return {targetInfos:oopif?[{type:'iframe',targetId:'child',parentFrameId:'top'}]:[]};
     if (method==='Target.attachToTarget') return {sessionId:params.targetId};
     if (method==='Target.detachFromTarget') return {};
     if (method==='Page.getFrameTree') {const current=structuredClone(sessionTree(session));if(retireOnRead&&captured){const visit=t=>{if(t.frame.id==='grandchild')t.frame.loaderId='replacement';for(const child of t.childFrames??[])visit(child)};visit(current)}return {frameTree:current}};
