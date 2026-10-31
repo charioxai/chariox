@@ -330,6 +330,12 @@ pub(super) fn apply(tx: &Transaction<'_>, mutation: Mutation) -> Result<Outcome,
             bound(tx, &mut part, inbox_limit()?)?;
             put(tx, &part)?;
         }
+        Mutation::RemoteAcked { id, kernel, cursor } => {
+            let mut part = require(tx, &id)?;
+            let acked = part.remote_acks.entry(kernel).or_insert(0);
+            *acked = (*acked).max(cursor);
+            put(tx, &part)?;
+        }
         Mutation::Ack { id, cursor } => {
             let mut part = require(tx, &id)?;
             if cursor > part.latest {

@@ -297,12 +297,29 @@ impl KernelGateway {
             self.install_event_targets(origin, kernel, targets).await?;
             *subscribed = targets.to_vec();
         }
+        self.sync_event_cursor(origin, kernel, part, |request| async move {
+            self.forward(kernel, origin, &event_command_id(), &request, PULL_DEADLINE)
+                .await
+        })
+        .await
+    }
+    /// Imports what the target has past the imported cursor, then confirms it to the target.
+    /// The confirmation is owed until the target has answered it, so a lost one is sent again
+    /// by the next pull even when no new event arrived.
+    pub(super) async fn sync_event_cursor<Fut>(
+        &self,
+        origin: &Origin,
+        kernel: &str,
+        part: &Part,
+        remote: impl Fn(LocalDaemonRequest) -> Fut,
+    ) -> Result<(), GatewayError>
+    where
+        Fut: Future<Output = Result<Value, GatewayError>>,
+    {
         let since = part.remote_cursors.get(kernel).copied().unwrap_or(0);
-        let mut response = self.read_event_part(origin, kernel, since).await?;
+        let mut response = read_event_part(kernel, since, &remote).await?;
         if let LocalDaemonResponse::EventsCursorExpired { oldest_cursor } = response {
-            response = self
-                .read_event_part(origin, kernel, oldest_cursor.saturating_sub(1))
-                .await?;
+            response = read_event_part(kernel, oldest_cursor.saturating_sub(1), &remote).await?;
         }
         if let LocalDaemonResponse::EventsListed {
             events,
@@ -310,26 +327,29 @@ impl KernelGateway {
             ..
         } = response
         {
-            self.runtime_state
-                .outside_store()
+            let store = self.runtime_state.outside_store();
+            store
                 .outside_mutate(Mutation::Import {
                     id: origin.grant_id.clone(),
                     kernel: kernel.into(),
                     events,
                 })
                 .map_err(|_| part_error(kernel, "could not commit the merged event inbox"))?;
-            // Only a cursor that moved needs saying: an ack is a write on the target.
-            if next_cursor > since {
-                self.forward(
-                    kernel,
-                    origin,
-                    &event_command_id(),
-                    &LocalDaemonRequest::AckEvents(AckEventsRequest {
-                        cursor: next_cursor,
-                    }),
-                    PULL_DEADLINE,
-                )
+            // Only an unconfirmed cursor needs saying: an ack is a write on the target.
+            if next_cursor > part.remote_acks.get(kernel).copied().unwrap_or(0) {
+                remote(LocalDaemonRequest::AckEvents(AckEventsRequest {
+                    cursor: next_cursor,
+                }))
                 .await?;
+                store
+                    .outside_mutate(Mutation::RemoteAcked {
+                        id: origin.grant_id.clone(),
+                        kernel: kernel.into(),
+                        cursor: next_cursor,
+                    })
+                    .map_err(|_| {
+                        part_error(kernel, "could not commit the target acknowledgement")
+                    })?;
             }
             return Ok(());
         }
@@ -338,25 +358,21 @@ impl KernelGateway {
             "target event cursor could not be resumed",
         ))
     }
-    async fn read_event_part(
-        &self,
-        origin: &Origin,
-        kernel: &str,
-        since: u64,
-    ) -> Result<LocalDaemonResponse, GatewayError> {
-        let response = self
-            .forward(
-                kernel,
-                origin,
-                &event_command_id(),
-                &LocalDaemonRequest::ListEvents(ListEventsRequest {
-                    since: Some(since),
-                    limit: 1000,
-                }),
-                PULL_DEADLINE,
-            )
-            .await?;
-        serde_json::from_value(response)
-            .map_err(|_| part_error(kernel, "kernel event response is invalid"))
-    }
+}
+
+async fn read_event_part<Fut>(
+    kernel: &str,
+    since: u64,
+    remote: &impl Fn(LocalDaemonRequest) -> Fut,
+) -> Result<LocalDaemonResponse, GatewayError>
+where
+    Fut: Future<Output = Result<Value, GatewayError>>,
+{
+    let response = remote(LocalDaemonRequest::ListEvents(ListEventsRequest {
+        since: Some(since),
+        limit: 1000,
+    }))
+    .await?;
+    serde_json::from_value(response)
+        .map_err(|_| part_error(kernel, "kernel event response is invalid"))
 }

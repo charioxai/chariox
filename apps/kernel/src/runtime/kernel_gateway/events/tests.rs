@@ -761,3 +761,90 @@ fn cleanup_stays_owed_while_the_target_cannot_be_reached() {
         assert_eq!(part.cleanup_targets, vec![target]);
     });
 }
+
+#[test]
+fn a_lost_acknowledgement_is_sent_again_until_the_target_confirms_it() {
+    run_with_gateway(|gateway, state| async move {
+        let target = remote_session("room");
+        follow(&state, &["owed"], &[&target]);
+        let origin = Origin {
+            grant_id: "owed".into(),
+            harness: "test".into(),
+        };
+        let acks = std::sync::Mutex::new(Vec::new());
+        let acks_lost = std::sync::atomic::AtomicBool::new(true);
+        let remote = |request: LocalDaemonRequest| {
+            let (acks, acks_lost) = (&acks, &acks_lost);
+            async move {
+                match request {
+                    LocalDaemonRequest::ListEvents(list) => {
+                        let since = list.since.unwrap_or(0);
+                        let events: Vec<_> = (since < 5)
+                            .then(|| OutsideEvent {
+                                cursor: 5,
+                                kernel: "remote".into(),
+                                machine: "machine".into(),
+                                session_id: "room".into(),
+                                agent_id: Some("agent".into()),
+                                value: OutsideEventValue::Agent {
+                                    run_state: Some(EventRunState::Idle),
+                                    task_state: None,
+                                    reason: None,
+                                    prompt_id: None,
+                                    turn_id: None,
+                                    outcome: None,
+                                },
+                                summary: "idle".into(),
+                                at_ms: 1,
+                                refs: Default::default(),
+                            })
+                            .into_iter()
+                            .collect();
+                        Ok(serde_json::to_value(LocalDaemonResponse::EventsListed {
+                            events,
+                            next_cursor: 5,
+                            oldest_cursor: 1,
+                            timed_out: false,
+                        })
+                        .unwrap())
+                    }
+                    LocalDaemonRequest::AckEvents(ack) => {
+                        acks.lock().unwrap().push(ack.cursor);
+                        if acks_lost.swap(false, Ordering::SeqCst) {
+                            return Err(GatewayError::RequestTimeout {
+                                name: "remote".into(),
+                            });
+                        }
+                        Ok(
+                            serde_json::to_value(LocalDaemonResponse::EventsAcknowledged {
+                                cursor: ack.cursor,
+                            })
+                            .unwrap(),
+                        )
+                    }
+                    other => panic!("unexpected request {other:?}"),
+                }
+            }
+        };
+        let pull = || async {
+            let part = state.outside_store().outside_part("owed").unwrap().unwrap();
+            gateway
+                .sync_event_cursor(&origin, "remote", &part, &remote)
+                .await
+        };
+        assert!(
+            pull().await.is_err(),
+            "the lost acknowledgement is an error"
+        );
+        assert!(pull().await.is_ok());
+        assert_eq!(*acks.lock().unwrap(), [5, 5], "the lost one is retried");
+        assert!(pull().await.is_ok());
+        assert_eq!(
+            *acks.lock().unwrap(),
+            [5, 5],
+            "a confirmed one is not repeated"
+        );
+        let part = state.outside_store().outside_part("owed").unwrap().unwrap();
+        assert_eq!(part.remote_acks["remote"], 5);
+    });
+}
