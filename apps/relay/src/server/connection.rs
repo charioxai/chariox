@@ -193,7 +193,6 @@ pub(crate) async fn handle_connection(
     let usage_routes = routes.clone();
     let usage_sender = outgoing_tx.downgrade();
     let connection_meter = ConnectionMeter::new(meter);
-    let mut meter_bound = false;
     let mut writer_task = Some(tokio::spawn(writer::run_writer(
         writer,
         outgoing_rx,
@@ -222,16 +221,6 @@ pub(crate) async fn handle_connection(
 
     let connection_result: Result<(), std::io::Error> = async {
         loop {
-            if !meter_bound {
-                if let Some(identity) = &verified_identity {
-                    if !connection_meter.bind_realm(&identity.realm_id) {
-                        send_close(&outgoing_tx, REALM_CHANGED.to_string());
-                        end_reason = "realm_changed";
-                        break;
-                    }
-                    meter_bound = true;
-                }
-            }
             let message = tokio::select! {
                 message = reader.next() => message,
                 _ = async {
@@ -393,6 +382,13 @@ pub(crate) async fn handle_connection(
                                 &registration,
                             ) {
                                 send_close(&outgoing_tx, reason.to_string());
+                                break;
+                            }
+                            // Before any authority or registry state changes: this
+                            // socket's traffic is already counted for its first realm.
+                            if !connection_meter.bind_realm(&identity.realm_id) {
+                                send_close(&outgoing_tx, REALM_CHANGED.to_string());
+                                end_reason = "realm_changed";
                                 break;
                             }
                             auth_expiry_deadline = relay_auth_expiry_deadline(

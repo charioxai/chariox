@@ -567,3 +567,149 @@ async fn a_connection_that_authenticated_one_realm_refuses_another() {
     let _ = shutdown_tx.send(());
     let _ = server_task.await;
 }
+
+/// A kernel registration is checked against the connection's realm before it
+/// changes anything: a socket bound to realm A cannot replace realm B's
+/// daemon, and realm B's traffic is never counted for A.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_connection_bound_to_one_realm_cannot_register_a_daemon_of_another() {
+    let mut claims = BTreeMap::new();
+    for realm in ["realm-a", "realm-b"] {
+        claims.insert(
+            format!("client-{realm}-token"),
+            scoped_claim(
+                &format!("client-{realm}-token"),
+                &format!("client-{realm}"),
+                RelaySubjectKind::Client,
+                realm,
+                vec![RelayAction::ClientConnect, RelayAction::ClientMetadataRead],
+                None,
+            ),
+        );
+        claims.insert(
+            format!("kernel-{realm}-token"),
+            scoped_claim(
+                &format!("kernel-{realm}-token"),
+                &format!("kernel-{realm}"),
+                RelaySubjectKind::Kernel,
+                realm,
+                vec![RelayAction::DaemonRegister],
+                None,
+            ),
+        );
+    }
+    let auth_verifier =
+        RelayAuthVerifier::ScopedToken(ScopedTokenVerifier::new(claims, BTreeMap::new(), Some(10)));
+    let probe = RelayServer::with_auth_verifier(
+        RelayConfig {
+            host: "127.0.0.1".to_string(),
+            port: 0,
+            shared_token: None,
+        },
+        auth_verifier.clone(),
+    );
+    let listener = probe.bind_listener().await.expect("relay listener");
+    let addr = listener.local_addr().expect("relay address");
+    let server = RelayServer::with_auth_verifier(
+        RelayConfig {
+            host: addr.ip().to_string(),
+            port: addr.port(),
+            shared_token: None,
+        },
+        auth_verifier,
+    );
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    let server_task = tokio::spawn(async move {
+        server
+            .run_listener_until(listener, async {
+                let _ = shutdown_rx.await;
+            })
+            .await
+            .expect("relay server should run");
+    });
+    let url = format!("ws://{}:{}", addr.ip(), addr.port());
+    let mut tally = Tally {
+        sent: 0,
+        received: 0,
+    };
+    let register = |realm: &str| RelayEnvelope::DaemonRegister {
+        registration: test_registration_with_token(
+            &format!("kernel-{realm}"),
+            "machine",
+            "Linux",
+            10,
+            &format!("kernel-{realm}-token"),
+        ),
+    };
+    let metadata = |realm: &str| RelayEnvelope::ClientMetadataRequest {
+        request_id: format!("machines-{realm}"),
+        auth_token: format!("client-{realm}-token"),
+        query: RelayMetadataQuery::ListLiveMachines,
+    };
+
+    // Realm B's kernel is live on its own connection, and realm A has one for a ClientConnect.
+    let (mut kernel_b, _) = connect_async_with_retry(&url).await.expect("kernel B");
+    send(&mut kernel_b, &mut tally, &register("realm-b")).await;
+    let (mut kernel_a, _) = connect_async_with_retry(&url).await.expect("kernel A");
+    send(&mut kernel_a, &mut tally, &register("realm-a")).await;
+    sleep(Duration::from_millis(200)).await;
+
+    for first_name in ["metadata", "connect"] {
+        let (mut socket, _) = connect_async_with_retry(&url).await.expect("socket");
+        if first_name == "metadata" {
+            send(&mut socket, &mut tally, &metadata("realm-a")).await;
+            let (answer, _) = receive(&mut socket, &mut tally).await;
+            assert!(matches!(
+                answer,
+                RelayEnvelope::ClientMetadataResponse { .. }
+            ));
+        } else {
+            send(
+                &mut socket,
+                &mut tally,
+                &RelayEnvelope::ClientConnect {
+                    auth_token: "client-realm-a-token".to_string(),
+                    target: ClientTarget {
+                        daemon_id: Some("kernel-realm-a".to_string()),
+                        daemon_alias: None,
+                    },
+                },
+            )
+            .await;
+            let (answer, _) = receive(&mut socket, &mut tally).await;
+            assert!(
+                matches!(answer, RelayEnvelope::ClientConnected { .. }),
+                "realm A's connect is admitted: {answer:?}"
+            );
+        }
+        send(&mut socket, &mut tally, &register("realm-b")).await;
+        let (refusal, _) = receive(&mut socket, &mut tally).await;
+        match refusal {
+            RelayEnvelope::Close { reason } => assert!(
+                reason.contains("another realm"),
+                "{first_name}: refused for its realm: {reason}"
+            ),
+            other => panic!("{first_name}: realm B's registration must be refused, got {other:?}"),
+        }
+        // The refusal left realm B's own registration alone.
+        assert!(
+            timeout(Duration::from_millis(300), kernel_b.next())
+                .await
+                .is_err(),
+            "{first_name}: realm B's kernel was not replaced"
+        );
+    }
+
+    let (mut probe_b, _) = connect_async_with_retry(&url).await.expect("probe B");
+    send(&mut probe_b, &mut tally, &metadata("realm-b")).await;
+    match receive(&mut probe_b, &mut tally).await.0 {
+        RelayEnvelope::ClientMetadataResponse { machines, .. } => assert_eq!(
+            machines.map(|machines| machines.len()),
+            Some(1),
+            "realm B's kernel is still live"
+        ),
+        other => panic!("unexpected answer: {other:?}"),
+    }
+    let _ = shutdown_tx.send(());
+    let _ = server_task.await;
+}
