@@ -570,7 +570,7 @@ fn vault_changes() -> Vec<(&'static str, LocalDaemonRequest)> {
 fn refused_as_owner_only(result: Result<LocalDaemonResponse, DaemonError>) -> bool {
     matches!(
         result,
-        Err(DaemonError::VaultUnlock { code, .. }) if code.ends_with("owner_only") || code.ends_with("person_only")
+        Err(DaemonError::VaultUnlock { code, .. }) if code.ends_with("owner_only")
     )
 }
 
