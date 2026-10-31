@@ -134,6 +134,7 @@ impl OperationalHistoryStore {
                     message: error.to_string(),
                 })?
         };
+        self.range_cache.invalidate();
         let now = unix_epoch_ms();
         for session_id in session_ids {
             let remaining = connection
@@ -225,6 +226,7 @@ impl OperationalHistoryStore {
         transaction
             .commit()
             .map_err(|error| history_retention_error("commit operational history prune", error))?;
+        self.range_cache.invalidate();
         Ok(rows.len())
     }
 

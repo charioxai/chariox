@@ -272,7 +272,105 @@ impl OperationalHistoryStore {
                 operation: "load operational history range events",
                 message: error.to_string(),
             })?;
-        read_history_events_from_rows(session_id, &mut rows)
+        let events = read_history_events_from_rows(session_id, &mut rows)?;
+        #[cfg(test)]
+        self.range_cache.count_decoded(events.len());
+        Ok(events)
+    }
+
+    /// The events of `load_session_events_for_agent_sequence_range`, loading only the rows written
+    /// since the previous read of the same range.
+    pub(crate) fn load_session_events_for_agent_sequence_range_incrementally(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        sequence_start: u64,
+        sequence_end: u64,
+    ) -> Result<Vec<HistoryEvent>, DaemonError> {
+        self.delay_read_if_configured();
+        let key = super::range_cache::RangeKey {
+            session_id: session_id.to_string(),
+            agent_id: agent_id.to_string(),
+            sequence_start,
+            sequence_end,
+        };
+        let cached = self.range_cache.take(&key);
+        let failed =
+            |operation: &'static str, error: rusqlite::Error| DaemonError::SessionHistoryFailed {
+                session_id: Some(session_id.to_string()),
+                operation,
+                message: error.to_string(),
+            };
+        let connection = self.lock_read_connection(Some(session_id))?;
+        // Past the frontier the rows are the table's tail, which the unary plus makes the planner
+        // walk; a range read the first time uses the sequence index.
+        let (sql, from) = match cached.frontier {
+            Some(frontier) => (
+                "SELECT rowid, event_json
+                 FROM history_events
+                 WHERE rowid > ?1
+                   AND +session_id = ?2
+                   AND +agent_id = ?3
+                   AND +sequence >= ?4
+                   AND +sequence <= ?5
+                 ORDER BY rowid ASC",
+                frontier,
+            ),
+            None => (
+                "SELECT rowid, event_json
+                 FROM history_events
+                 WHERE rowid > ?1
+                   AND session_id = ?2
+                   AND agent_id = ?3
+                   AND sequence >= ?4
+                   AND sequence <= ?5
+                 ORDER BY sequence ASC, rowid ASC",
+                0,
+            ),
+        };
+        let mut statement = connection
+            .prepare(sql)
+            .map_err(|error| failed("prepare operational history incremental range load", error))?;
+        let mut rows = statement
+            .query(params![
+                from,
+                session_id,
+                agent_id,
+                sequence_start as i64,
+                sequence_end as i64
+            ])
+            .map_err(|error| failed("load operational history incremental range", error))?;
+        let mut found = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .map_err(|error| failed("read operational history event", error))?
+        {
+            let rowid = row
+                .get::<_, i64>(0)
+                .map_err(|error| failed("read operational history event", error))?;
+            let event_json = row
+                .get::<_, String>(1)
+                .map_err(|error| failed("read operational history event", error))?;
+            let event = serde_json::from_str::<HistoryEvent>(&event_json).map_err(|error| {
+                DaemonError::SessionHistoryFailed {
+                    session_id: Some(session_id.to_string()),
+                    operation: "decode operational history event",
+                    message: error.to_string(),
+                }
+            })?;
+            found.push((rowid, event_json.len(), event));
+        }
+        #[cfg(test)]
+        self.range_cache.count_decoded(found.len());
+        drop(rows);
+        drop(statement);
+        drop(connection);
+        Ok(self.range_cache.put(key, cached, found))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn rows_decoded(&self) -> u64 {
+        self.range_cache.rows_decoded()
     }
 
     pub(crate) fn load_prompt_settlement_event(
