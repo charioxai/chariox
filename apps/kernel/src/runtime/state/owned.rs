@@ -54,4 +54,7 @@ pub(in crate::runtime::state) struct OwnedPromptCancellation {
     pub(in crate::runtime::state) cancellation: crate::session::PromptCancellation,
     pub(in crate::runtime::state) released_claim: bool,
     pub(in crate::runtime::state) dispatch: Option<crate::app::KernelPromptDispatch>,
+    /// The queue head needs a prepared provider run, so the ending left it queued for the
+    /// shared promotion that prepares that run.
+    pub(in crate::runtime::state) queue_head_deferred: bool,
 }

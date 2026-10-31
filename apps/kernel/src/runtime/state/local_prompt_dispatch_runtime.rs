@@ -3,6 +3,7 @@
 //! This module owns writing admitted prompts or cancellation signals to local provider runtimes,
 //! including structured prompt I/O and provider-runtime lane spawning.
 
+use super::owned::OwnedPromptCancellation;
 use super::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1024,6 +1025,13 @@ impl KernelRuntimeState {
                         &dispatch.agent_id,
                     )
                     .is_some();
+            } else if should_advance
+                && self
+                    .queue_head_is_workflow_turn(&dispatch.session_id, &dispatch.agent_id)
+                    .await
+            {
+                // The failed run lacks what a workflow node needs; its promotion prepares one.
+                restart_provider_for_queued_prompt = true;
             } else if should_advance {
                 match owned.advance_next_queued_prompt_dispatch(
                     &dispatch.session_id,
@@ -1083,23 +1091,13 @@ impl KernelRuntimeState {
             self.spawn_prompt_dispatch(next_dispatch, self.provider_runtime_lanes.clone());
         }
         if restart_provider_for_queued_prompt {
-            let session_id = dispatch.session_id.clone();
-            let agent_id = dispatch.agent_id.clone();
-            let replacement_provider_run_id = self
-                .with_app_side_effect(move |app| {
-                    app.ensure_prompt_provider_run_for_agent(&session_id, &agent_id)
-                })
-                .await?;
-            if let Some(replacement_dispatch) = self.owned.advance_next_queued_prompt_dispatch(
+            // The queue head starts the way it does after any settlement: a workflow node gets
+            // its workflow-capable run, an ordinary prompt a plain one.
+            Box::pin(self.advance_project_queued_prompt_after_settlement(
                 &dispatch.session_id,
                 &dispatch.agent_id,
-                &replacement_provider_run_id,
-            )? {
-                self.spawn_prompt_dispatch(
-                    replacement_dispatch,
-                    self.provider_runtime_lanes.clone(),
-                );
-            }
+            ))
+            .await;
         }
         Err(error)
     }
@@ -1634,23 +1632,91 @@ impl KernelRuntimeState {
             .owned
             .workflow_cancel_prompt(&dispatch.session_id, &prompt);
         let cancellation = self
-            .owned
-            .finalize_local_prompt_cancellation_with_queued_advance(
+            .finalize_cancelled_prompt(
                 &dispatch.session_id,
                 &agent_id,
                 &dispatch.prompt_id,
                 Some(&dispatch.provider_run_id),
-            );
+            )
+            .await;
         if let Some(settlement) = settlement {
             self.finish_stopped_agent_task(settlement, &prompt).await;
         }
         // A prompt the person sent while the Stop settled is promoted here; without its dispatch
         // it would stay active and never reach the provider.
-        if let Some(next) = cancellation
-            .ok()
-            .and_then(|cancellation| cancellation.dispatch)
-        {
+        if let Ok(cancellation) = cancellation {
+            self.start_queue_head_after_cancellation(&dispatch.session_id, &agent_id, cancellation)
+                .await;
+        }
+    }
+
+    /// Whether the next queued prompt is a workflow turn, which needs a prepared run.
+    async fn queue_head_is_workflow_turn(&self, session_id: &str, agent_id: &str) -> bool {
+        let Ok(session) = self.owned.session_store.get_session(session_id) else {
+            return false;
+        };
+        let Some(head) = self
+            .owned
+            .prompt_state_owner
+            .peek_next_queued_prompt(&session, agent_id)
+        else {
+            return false;
+        };
+        let (session_id, agent_id) = (session_id.to_string(), agent_id.to_string());
+        self.with_app_side_effect(move |app| {
+            crate::app::KernelAgentService::new(app).queued_prompt_is_workflow_turn(
+                &session_id,
+                &agent_id,
+                &head,
+            )
+        })
+        .await
+    }
+
+    /// Cancels the active prompt. A queue head that needs a prepared run (a workflow node) is
+    /// left queued, because the settling run would start it without the workflow tools and
+    /// with the cancelled conversation.
+    pub(super) async fn finalize_cancelled_prompt(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        prompt_id: &str,
+        provider_run_id: Option<&str>,
+    ) -> Result<OwnedPromptCancellation, DaemonError> {
+        let head_is_workflow_turn = self.queue_head_is_workflow_turn(session_id, agent_id).await;
+        if head_is_workflow_turn {
+            self.owned
+                .finalize_local_prompt_cancellation_deferring_queue_head(
+                    session_id,
+                    agent_id,
+                    prompt_id,
+                    provider_run_id,
+                )
+        } else {
+            self.owned
+                .finalize_local_prompt_cancellation_with_queued_advance(
+                    session_id,
+                    agent_id,
+                    prompt_id,
+                    provider_run_id,
+                )
+        }
+    }
+
+    /// Starts what `finalize_cancelled_prompt` left: an ordinary head it already promoted, or a
+    /// deferred head through the promotion every settlement uses, which prepares its run.
+    pub(super) async fn start_queue_head_after_cancellation(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        cancellation: OwnedPromptCancellation,
+    ) {
+        if let Some(next) = cancellation.dispatch {
             self.spawn_prompt_dispatch(next, self.provider_runtime_lanes.clone());
+        }
+        if cancellation.queue_head_deferred {
+            Box::pin(self.advance_project_queued_prompt_after_settlement(session_id, agent_id))
+                .await;
         }
     }
 
