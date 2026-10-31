@@ -7,7 +7,7 @@ import { runTerminalVerb, TERMINAL_VERBS, waitMsOf, type TerminalFlags, type Ter
 import { runExec } from "./exec-command.js"
 
 import { EVENT_VERBS, eventTimeoutSeconds, runEventsVerb } from "./events-command.js"
-import { runEventsMcp } from "./events-mcp.js"
+import { runEventsMcp, type KernelRoutes } from "./events-mcp.js"
 
 import { failureOf, lostInFlight, lostConnectionFailure } from "./kernel-command-failure.js"
 export { failureOf, lostConnectionFailure } from "./kernel-command-failure.js"
@@ -92,6 +92,18 @@ export function sendRequest(
   return withKernel(options, send => send(body))
 }
 
+// The inbox lives on this computer's kernel; a decision raised by another kernel is answered through the gateway.
+export function eventsMcpRoutes(send: SendRequest, socket: string | undefined, timeoutSeconds: number): KernelRoutes {
+  return {
+    isLocal: async kernel => {
+      const status = (await send({ RelayStatus: null }) as { RelayStatus?: { status?: { daemon_id?: string } } }).RelayStatus?.status
+      if (!status?.daemon_id) throw new CommandFailure("kernel_not_available", "This computer's Chariox kernel did not report its id; update it.")
+      return status.daemon_id === kernel
+    },
+    sendTo: (kernel, request) => sendRequest(request, { socket, kernel, timeoutSeconds }),
+  }
+}
+
 // Ends only by failing: the stream has no end of its own, and a lost connection says where to resume.
 export async function watchKernel(
   options: { socket: string | undefined; kernel: string; sessionId: string; attachmentId: string; from: number | null },
@@ -152,7 +164,7 @@ export async function runKernelsCommand(argv: string[]): Promise<boolean> {
       const socket = flags.get("--socket") as string | undefined
       if (verb === "watch") for (const signal of ["SIGINT", "SIGTERM"] as const) process.once(signal, () => process.exit(0))
       if (verb === "mcp") {
-        process.exitCode = await withKernel({ socket, timeoutSeconds: 90 }, send => runEventsMcp(send, process.stdin, process.stdout))
+        process.exitCode = await withKernel({ socket, timeoutSeconds: 90 }, send => runEventsMcp(send, process.stdin, process.stdout, eventsMcpRoutes(send, socket, 90)))
         return true
       }
       process.exitCode = await withKernel({ socket, timeoutSeconds: eventTimeoutSeconds(verb, flags) + DEFAULT_TIMEOUT_SECONDS }, send => runEventsVerb(verb, flags, positionals, send, value => console.log(JSON.stringify(value))))

@@ -16,8 +16,36 @@ const REPLY = "reply"
 type Json = Record<string, unknown>
 type Interaction = Extract<OutsideEvent, { type: "interaction" }>
 
+// Where an answer goes: the inbox is read and acknowledged on this computer's kernel, a decision is answered on the
+// kernel that raised it.
+export type KernelRoutes = {
+  isLocal(kernel: string): Promise<boolean>
+  sendTo(kernel: string, request: Json): Promise<unknown>
+}
+
 function pendingDecision(event: OutsideEvent): event is Interaction {
   return event.type === "interaction" && event.value.state === "pending"
+}
+
+// The same decision on the same kernel and session, whichever record (pending or resolved) names it.
+function decisionKey(event: Interaction): string {
+  return JSON.stringify([event.kernel, event.session_id, event.refs.interaction_id ?? ""])
+}
+
+// The records read since the last acknowledgement. The kernel acknowledges by cursor, so only the settled prefix may go:
+// a decision nobody has answered, closed or seen expire keeps itself and everything after it in the inbox.
+class Ledger {
+  private entries: { cursor: number; key: string | null; settled: boolean }[] = []
+  add(event: OutsideEvent): void {
+    this.entries.push({ cursor: event.cursor, key: pendingDecision(event) ? decisionKey(event) : null, settled: !pendingDecision(event) })
+  }
+  settle(key: string): void { for (const entry of this.entries) if (entry.key === key) entry.settled = true }
+  ackable(): number | null {
+    let cursor: number | null = null
+    for (const entry of this.entries) { if (!entry.settled) break; cursor = entry.cursor }
+    return cursor
+  }
+  acknowledged(cursor: number): void { this.entries = this.entries.filter(entry => entry.cursor > cursor) }
 }
 
 function schema(question: EventQuestion): Json {
@@ -37,7 +65,7 @@ function text(value: unknown, isError = false): Json {
   return { content: [{ type: "text", text: JSON.stringify(value) }], ...(isError ? { isError } : {}) }
 }
 
-export async function runEventsMcp(send: SendRequest, input: Readable, output: Writable): Promise<number> {
+export async function runEventsMcp(send: SendRequest, input: Readable, output: Writable, routes: KernelRoutes): Promise<number> {
   const write = (message: Json): void => { output.write(JSON.stringify({ jsonrpc: "2.0", ...message }) + "\n") }
   const waiting = new Map<string, (result: Json) => void>()
   let nextId = 1
@@ -48,37 +76,88 @@ export async function runEventsMcp(send: SendRequest, input: Readable, output: W
     write({ id, method: "elicitation/create", params })
   })
 
+  // The decisions this process has read and not yet handled; a restarted process reads them again from the inbox.
+  const open = new Map<string, Interaction>()
+  const ledger = new Ledger()
+  let ingested = 0
+  let seen: number | null = null
+
+  async function acknowledge(): Promise<void> {
+    const cursor = ledger.ackable()
+    if (cursor === null) return
+    await send({ AckEvents: { cursor } })
+    ledger.acknowledged(cursor)
+  }
+
+  // A kept record is only bookkeeping once the person was served: the next call acknowledges it again.
+  async function settle(key: string): Promise<void> {
+    ledger.settle(key)
+    open.delete(key)
+    await acknowledge().catch(() => undefined)
+  }
+
+  function ingest(events: readonly OutsideEvent[]): void {
+    for (const event of events) {
+      if (event.cursor <= ingested) continue
+      ingested = event.cursor
+      ledger.add(event)
+      if (event.type !== "interaction") continue
+      const key = decisionKey(event)
+      if (pendingDecision(event)) open.set(key, event)
+      else { ledger.settle(key); open.delete(key) }
+    }
+  }
+
+  const expired = (decision: Interaction): boolean => (decision.value.question?.expires_at_ms ?? Infinity) <= Date.now()
+
+  async function takeOpen(): Promise<Interaction | null> {
+    for (const [key, decision] of open) {
+      if (!expired(decision)) { open.delete(key); return decision }
+      await settle(key)
+    }
+    return null
+  }
+
   async function nextChoice(seconds: number): Promise<Json> {
     const deadline = Date.now() + seconds * 1000
     while (Date.now() < deadline) {
+      const decision = await takeOpen()
+      if (decision) return await present(decision)
       const wait = Math.max(1, Math.min(Math.ceil((deadline - Date.now()) / 1000), 60))
-      const response = await send({ WaitEvents: { limit: 100, timeout_ms: wait * 1000 } }) as { EventsListed?: EventsBatch; EventsCursorExpired?: unknown }
+      const response = await send({ WaitEvents: { ...(seen === null ? {} : { since: seen }), limit: 100, timeout_ms: wait * 1000 } }) as { EventsListed?: EventsBatch; EventsCursorExpired?: unknown }
       if (!response.EventsListed) throw new CommandFailure("cursor_expired", "event cursor expired; subscribe again")
       const batch = response.EventsListed
       if (batch.events.some(event => event.type === "subscription_ended")) return text({ ended: true })
-      const decision = batch.events.find(pendingDecision)
-      if (!decision) { if (batch.events.length > 0) await send({ AckEvents: { cursor: batch.next_cursor } }); continue }
-      await send({ AckEvents: { cursor: decision.cursor } })
-      return await present(decision)
+      seen = batch.next_cursor
+      ingest(batch.events)
+      await acknowledge()
     }
     return text({ timed_out: true })
   }
 
+  // The record leaves the inbox only when the decision is answered, found closed, or served to the model as text.
   async function present(decision: Interaction): Promise<Json> {
+    const key = decisionKey(decision)
     const id = decision.refs.interaction_id ?? ""
     const { question, pointer } = decision.value
-    if (!question) return text({ interaction_id: id, answerable: false, show_verbatim: pointer?.one_line ?? decision.summary })
-    if (!elicitation) return text({ interaction_id: id, session_id: decision.session_id, question })
+    if (!question) { await settle(key); return text({ interaction_id: id, answerable: false, show_verbatim: pointer?.one_line ?? decision.summary }) }
+    const local = await routes.isLocal(decision.kernel)
+    if (!elicitation) { await settle(key); return text({ interaction_id: id, ...(local ? {} : { kernel: decision.kernel }), session_id: decision.session_id, question }) }
     const answer = await elicit({ message: question.message, requestedSchema: schema(question) })
     const content = (answer.content ?? {}) as Json
+    // A dialog the person dismissed is not asked again by this process; the decision stays open in the inbox.
     if (answer.action !== "accept" || typeof content.choice !== "string") return text({ interaction_id: id, action: answer.action ?? "cancel" })
     const reply = question.text_reply?.id === content.choice && typeof content[REPLY] === "string" ? content[REPLY] : null
+    const request = respondToInteractionRequest(decision.session_id, id, content.choice, reply)
     try {
-      await send(respondToInteractionRequest(decision.session_id, id, content.choice, reply))
+      await (local ? send(request) : routes.sendTo(decision.kernel, request))
     } catch (error) {
       const code = error instanceof CommandFailure ? error.code : (error as { code?: string }).code
+      if (code === "interaction_closed") await settle(key)
+      else open.set(key, decision)
       return text({ interaction_id: id, action: "accept", choice_id: content.choice, answered: false, code: code ?? "request_failed" }, code !== "interaction_closed")
     }
+    await settle(key)
     return text({ interaction_id: id, action: "accept", choice_id: content.choice, answered: true })
   }
 
@@ -93,7 +172,7 @@ export async function runEventsMcp(send: SendRequest, input: Readable, output: W
     if (method === "tools/list") {
       return write({ id, result: { tools: [{
         name: TOOL,
-        description: "Wait for the next pending Chariox decision a person may answer and show it with this client's own chooser; sends the person's answer to the kernel. Also acknowledges the records before it. Needs `chariox events subscribe` first.",
+        description: "Wait for the next pending Chariox decision a person may answer and show it with this client's own chooser; sends the person's answer to the kernel. Acknowledges a decision only once it is answered or closed. Needs `chariox events subscribe` first.",
         inputSchema: { type: "object", properties: { timeout_s: { type: "number", description: `Seconds to wait (default ${DEFAULT_WAIT_SECONDS}, at most ${MAX_WAIT_SECONDS})` } } },
       }] } })
     }
