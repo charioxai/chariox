@@ -153,7 +153,7 @@ node "$OSS_CHECKOUT/apps/cli/scripts/path1-provider-cloud-correlation.mjs" \
 
 MP-07/MP-10: provider captures are owner-side read-only provider-API receipts,
 not this builder's authorization to extract credentials or call cloud APIs.
-`path1-provider-rebuild-capture.mjs before --server-id ... --output ...` and
+`path1-provider-rebuild-capture.mjs` (chariox-cloud `deploy/providers/hetzner/path1-rebuild-capture/`) `before --server-id ... --output ...` and
 `after --server-id ... --image-id ... --action-id ... --requested-at ... --output ...`
 are available to the owner's admitted operator context. The Cloud capture needs
 the built shared client and finalized generation; pending/wrong bindings fail.
