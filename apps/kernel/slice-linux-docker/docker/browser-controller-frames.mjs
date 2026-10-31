@@ -212,58 +212,76 @@ const prefix = (frame) => `frame:${frame.id}:${frame.loaderId}:`;
 
 // Reads the frames this page owns: its own tree and, going down from it, every isolated renderer whose parent
 // frame is already owned. The browser's other iframe targets (other tabs, advertising frames) never count against
-// this page. A page that owns more than MAX_FRAMES frames is cut there and `info.truncated` says so; `strict`
+// this page. A page that owns more than `limit` frames is cut there and `info.truncated` says so; `strict`
 // callers (they must see every frame to protect it) get snapshot_frame_limit instead.
-export async function withBrowserFrames(connection, sessionId, targetId, documentId, run, { strict = false } = {}) {
+//
+// Two phases share one set of retained frame ids. Admission is the only way an id enters it: first come, first
+// kept, never more than `limit`, the top tree before any renderer. Resolution then gives every retained frame the
+// session that renders it and never admits an id, so a frame left out cannot stop a retained one from being read.
+export async function withBrowserFrames(connection, sessionId, targetId, documentId, run, { strict = false, limit = MAX_FRAMES } = {}) {
   const attached = [];
   try {
     const top = await connection.send("Page.getFrameTree", {}, sessionId);
     if (top.frameTree?.frame?.loaderId !== documentId) {
       throw new BrowserSnapshotError("stale_document_reference", "browser top document changed");
     }
-    const root = { sessionId, tree: top.frameTree, frame: top.frameTree.frame, prefix: "" };
-    const owned = [root];
-    const owners = new Map();
-    const info = { truncated: false };
+    const retained = new Set();
     const omitted = new Set();
-    const full = () => {
-      if (owners.size < MAX_FRAMES) return false;
-      if (strict) throw new BrowserSnapshotError("snapshot_frame_limit", "browser exceeded frame bound");
-      info.truncated = true;
-      return true;
-    };
-    const remember = (entry, tree) => {
-      // A frame the parent tree already counts only changes owner; a new one must fit under the bound.
-      if (!owners.has(tree.frame.id) && full()) {
-        omitted.add(tree.frame.id);
-        return;
+    const info = { truncated: false };
+    const admit = (tree) => {
+      if (!retained.has(tree.frame.id)) {
+        if (retained.size >= limit) {
+          if (strict) throw new BrowserSnapshotError("snapshot_frame_limit", "browser exceeded frame bound");
+          info.truncated = true;
+          omitted.add(tree.frame.id);
+          return;
+        }
+        retained.add(tree.frame.id);
       }
-      owners.set(tree.frame.id, entry);
-      for (const child of tree.childFrames ?? []) remember(entry, child);
+      for (const child of tree.childFrames ?? []) admit(child);
     };
-    remember(root, root.tree);
+
+    // Phase 1: admit the top tree, then follow the isolated renderers down from retained frames.
+    admit(top.frameTree);
     const { targetInfos = [] } = await connection.send("Target.getTargets");
     const pending = targetInfos.filter((target) => target.type === "iframe");
-    for (let changed = true; changed && !info.truncated;) {
+    const renderers = [];
+    for (let changed = true; changed;) {
       changed = false;
       for (const target of [...pending]) {
-        if (info.truncated) break;
-        if (!owners.has(target.parentFrameId)) continue;
+        if (!retained.has(target.parentFrameId)) continue;
         pending.splice(pending.indexOf(target), 1);
         const { sessionId: childSession } = await connection.send("Target.attachToTarget", { targetId: target.targetId, flatten: true });
         attached.push(childSession);
         const { frameTree } = await connection.send("Page.getFrameTree", {}, childSession);
-        // A renderer whose root is a new frame that does not fit is not returned (and ends the walk); one for a counted frame resolves its owner.
-        if (!owners.has(frameTree.frame.id) && full()) break;
-        const entry = { sessionId: childSession, tree: frameTree, frame: frameTree.frame, prefix: prefix(frameTree.frame), parent: owners.get(target.parentFrameId) };
-        owned.push(entry);
-        remember(entry, entry.tree);
+        admit(frameTree);
+        renderers.push({ parentFrameId: target.parentFrameId, sessionId: childSession, tree: frameTree });
         changed = true;
       }
     }
-    // Callers walk `entry.tree`; it must hold only the frames kept under the bound.
-    for (const entry of owned) { entry.omitted = omitted; entry.tree = withoutOmitted(entry.tree, omitted); }
-    return await run(owned, info);
+
+    // Phase 2: a frame belongs to the tree that holds it, except that its own renderer replaces the placeholder
+    // its parent's tree holds; every returned tree drops the frames left out under the bound.
+    const root = { sessionId, tree: top.frameTree, frame: top.frameTree.frame, prefix: "" };
+    const entries = [root, ...renderers.filter(({ tree }) => retained.has(tree.frame.id)).map(({ parentFrameId, sessionId: owner, tree }) =>
+      ({ sessionId: owner, tree, frame: tree.frame, prefix: prefix(tree.frame), parentFrameId }))];
+    const owners = new Map();
+    const holds = (entry, tree) => {
+      if (!retained.has(tree.frame.id)) return;
+      if (tree !== entry.tree) owners.set(tree.frame.id, entry);
+      for (const child of tree.childFrames ?? []) holds(entry, child);
+    };
+    for (const entry of entries) holds(entry, entry.tree);
+    for (const entry of entries) owners.set(entry.frame.id, entry);
+    for (const entry of entries) {
+      if (entry !== root) entry.parent = owners.get(entry.parentFrameId);
+      delete entry.parentFrameId;
+      entry.omitted = omitted;
+      entry.tree = withoutOmitted(entry.tree, omitted);
+    }
+    // Callers let a later tree replace the placeholder an earlier one holds, so a parent comes before its children.
+    const depth = (entry) => { let count = 0; for (let up = entry.parent; up && count < entries.length; up = up.parent) count++; return count; };
+    return await run(entries.sort((a, b) => depth(a) - depth(b)), info);
   } finally {
     await Promise.all(attached.map((childSession) => connection.send("Target.detachFromTarget", { sessionId: childSession }).catch(() => {})));
   }
