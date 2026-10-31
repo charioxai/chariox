@@ -160,3 +160,25 @@ test('MP-11 Notes observation rejects arbitrary exception labels and source posi
  const f=fixture({exception:{exception:{className:'private-canary',description:'private-canary'},stackTrace:{callFrames:[{functionName:'private-canary',lineNumber:41,url:'private-canary'}]}}});
  await assert.rejects(()=>observeBrowserNote(f.browser,{target_id:'t',document_id:'d'}),error=>{assert.equal(error.code,'note_observer_exception');assert.equal(error.noteObserverLine,undefined);assert(!error.message.includes('private-canary'));return true});
 });
+
+test('MP-08/MP-10/MP-11 a page above the frame bound is observed only in its retained frames',async()=>{
+ const owned=[];const worlds=new Set();let contexts=100;let evaluations=0;
+ const tree={frame:{id:'top',loaderId:'doc',url:'https://example.test/'},childFrames:Array.from({length:70},(_,i)=>({frame:{id:'f'+i,parentId:'top',loaderId:'doc-f'+i,url:'https://example.test/f'+i}}))};
+ const connection={async send(method,params){
+  if(method==='Page.getFrameTree')return{frameTree:tree};
+  if(method==='Target.getTargets')return{targetInfos:[]};
+  if(method==='DOM.getFrameOwner'){owned.push(params.frameId);return{backendNodeId:1};}
+  if(method==='Page.createIsolatedWorld'){worlds.add(params.frameId);return{executionContextId:++contexts};}
+  if(method==='DOM.resolveNode')return{object:{objectId:'owner'}};
+  if(method==='Runtime.callFunctionOn')return{result:{value:false}};
+  if(method==='Runtime.releaseObject')return{};
+  if(method==='Runtime.evaluate'){evaluations++;return{result:{value:params.expression===NOTE_OBSERVER_EXPRESSION?true:null}};}
+  throw Error('unexpected '+method);
+ }};
+ const browser={ensureConnection:async()=>connection,ensureTargetSession:async()=>'root',ensureFocusWorld:async()=>({contextId:42})};
+ const result=await observeBrowserNote(browser,{target_id:'tab',document_id:'doc'});
+ assert.ok(result.selection===null);
+ assert.ok(new Set(owned).size<=63,`frame owners read for ${new Set(owned).size} children`);
+ assert.ok(worlds.size<=64,`isolated worlds created in ${worlds.size} frames`);
+ assert.ok(evaluations<=128,`${evaluations} evaluations`);
+});

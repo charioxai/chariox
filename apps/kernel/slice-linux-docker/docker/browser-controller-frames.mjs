@@ -225,10 +225,12 @@ export async function withBrowserFrames(connection, sessionId, targetId, documen
     const owned = [root];
     const owners = new Map();
     const info = { truncated: false };
+    const omitted = new Set();
     const remember = (entry, tree) => {
       if (owners.size >= MAX_FRAMES) {
         if (strict) throw new BrowserSnapshotError("snapshot_frame_limit", "browser exceeded frame bound");
         info.truncated = true;
+        omitted.add(tree.frame.id);
         return;
       }
       owners.set(tree.frame.id, entry);
@@ -252,6 +254,8 @@ export async function withBrowserFrames(connection, sessionId, targetId, documen
         changed = true;
       }
     }
+    // Callers walk `entry.tree`; it must hold only the frames kept under the bound.
+    for (const entry of owned) { entry.omitted = omitted; entry.tree = withoutOmitted(entry.tree, omitted); }
     return await run(owned, info);
   } finally {
     await Promise.all(attached.map((childSession) => connection.send("Target.detachFromTarget", { sessionId: childSession }).catch(() => {})));
@@ -286,7 +290,7 @@ export async function captureBrowserFrames(options) {
 export async function assertBrowserFramesUnchanged(connection, frames) {
   for (const entry of frames) {
     const current = await connection.send("Page.getFrameTree", {}, entry.sessionId);
-    if (frameIdentity(current.frameTree) !== frameIdentity(entry.tree)) {
+    if (frameIdentity(withoutOmitted(current.frameTree, entry.omitted)) !== frameIdentity(entry.tree)) {
       throw new BrowserSnapshotError("stale_document_reference", "browser frame tree changed during capture");
     }
   }
@@ -301,7 +305,7 @@ export async function withBrowserActionFrame(options, run) {
     const assertContext = async () => {
       for (let parent = entry.parent; parent; parent = parent.parent) {
         const current = await connection.send("Page.getFrameTree", {}, parent.sessionId);
-        if (frameIdentity(current.frameTree) !== frameIdentity(parent.tree)) {
+        if (frameIdentity(withoutOmitted(current.frameTree, parent.omitted)) !== frameIdentity(parent.tree)) {
           throw new BrowserSnapshotError("stale_document_reference", "browser parent frame changed during action");
         }
       }
@@ -309,6 +313,11 @@ export async function withBrowserActionFrame(options, run) {
     const result = await run({ ...options, sessionId: entry.sessionId, documentId: entry.frame.loaderId, nodeRef: nodeRef.slice(entry.prefix.length), assertContext });
     return { ...result, target_id: targetId, document_id: documentId };
   });
+}
+
+// The frames left out under the bound are never read, so a change to them is not a change to the capture.
+function withoutOmitted(tree, omitted = new Set()) {
+  return { ...tree, childFrames: (tree.childFrames ?? []).filter((child) => !omitted.has(child.frame.id)).map((child) => withoutOmitted(child, omitted)) };
 }
 
 function frameIdentity(tree) {
