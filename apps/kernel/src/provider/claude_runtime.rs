@@ -26,6 +26,7 @@ mod runtime_tool_wait;
 mod session_restart;
 mod state;
 mod tool_transcript;
+pub(crate) use tool_transcript::{bounded_result, bounded_result_images};
 pub(crate) mod usage;
 mod watchdog;
 

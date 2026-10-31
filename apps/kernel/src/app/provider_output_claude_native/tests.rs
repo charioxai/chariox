@@ -2553,6 +2553,39 @@ fn claude_transcript_result_keeps_the_tool_name_and_input_of_its_call() {
 }
 
 #[test]
+fn claude_transcript_result_with_an_image_block_carries_the_image_not_its_base64_text() {
+    let dir = std::env::temp_dir().join(format!(
+        "chariox-claude-transcript-result-image-test-{}",
+        std::process::id()
+    ));
+    let _ = fs::create_dir_all(&dir);
+    let transcript = dir.join("session.jsonl").display().to_string();
+    let result = serde_json::json!({
+        "type": "user", "uuid": "user-1",
+        "message": { "role": "user", "content": [
+            { "type": "tool_result", "tool_use_id": "toolu_1", "content": [
+                { "type": "text", "text": "chart.png" },
+                { "type": "image", "source": { "type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo=" } },
+                { "type": "image", "source": { "type": "base64", "media_type": "image/svg+xml", "data": "PHN2Zz4=" } }
+            ] }
+        ] }
+    });
+    fs::write(&transcript, format!("{result}\n")).expect("result should write");
+    let mut cursor = ClaudeTranscriptCursor::default();
+    let drain = drain_claude_transcript_file(&transcript, &mut cursor);
+
+    assert_eq!(drain.chunks.len(), 1);
+    let payload: Value = serde_json::from_str(&drain.chunks[0].text).expect("result is JSON");
+    assert_eq!(payload["output"], "chart.png");
+    assert_eq!(
+        payload["images"],
+        serde_json::json!(["data:image/png;base64,iVBORw0KGgo="])
+    );
+    assert!(payload.get("images_omitted").is_none());
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
 fn claude_transcript_drain_classifies_session_limit_without_success_completion() {
     let mut cursor = ClaudeTranscriptCursor::default();
     let dir = std::env::temp_dir().join(format!(
