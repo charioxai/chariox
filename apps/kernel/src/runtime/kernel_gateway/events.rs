@@ -19,6 +19,7 @@ pub(super) struct EventParts {
     /// Since when each followed kernel's requests have timed out without an answer between.
     timing_out_since: StdMutex<HashMap<(String, String), Instant>>,
 }
+mod installing;
 mod parts;
 #[cfg(test)]
 mod tests;
