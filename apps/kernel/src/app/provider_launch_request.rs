@@ -66,23 +66,6 @@ fn refresh_provider_usage_before_launch(
     Ok(())
 }
 
-/// A turn a hot reload handed over keeps running in its provider process: the
-/// launch only adopts it, so there is no capacity to check before it. Checking
-/// Codex starts a profile app-server and holds the kernel while it boots.
-fn adopts_handed_over_turn(request: &LaunchProviderRequest) -> bool {
-    #[cfg(unix)]
-    {
-        request.agent_id.as_deref().is_some_and(|agent_id| {
-            crate::hot_reload::provider_handed_over(&request.session_id, agent_id)
-        })
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = request;
-        false
-    }
-}
-
 impl DaemonApp {
     pub(crate) fn prepare_app_provider_launch_request(
         &self,
@@ -143,24 +126,22 @@ impl DaemonApp {
                 execution_owner_user_id
             };
             let profile = if request.client_interface.is_chariox() {
-                if !adopts_handed_over_turn(&request) {
-                    refresh_provider_usage_before_launch(
-                        &self.provider_account_profiles,
-                        &account_owner_user_id,
-                        &request.provider,
-                        &request.account_profile,
-                        crate::session::unix_epoch_ms(),
-                        || {
-                            crate::local::provider_requests::refresh_provider_account_profile_with_config(
-                                &self.provider_account_profiles,
-                                &account_owner_user_id,
-                                &request.provider,
-                                &request.account_profile,
-                                &self.config,
-                            )
-                        },
-                    )?;
-                }
+                refresh_provider_usage_before_launch(
+                    &self.provider_account_profiles,
+                    &account_owner_user_id,
+                    &request.provider,
+                    &request.account_profile,
+                    crate::session::unix_epoch_ms(),
+                    || {
+                        crate::local::provider_requests::refresh_provider_account_profile_with_config(
+                            &self.provider_account_profiles,
+                            &account_owner_user_id,
+                            &request.provider,
+                            &request.account_profile,
+                            &self.config,
+                        )
+                    },
+                )?;
                 self.provider_account_profiles.require_authenticated(
                     &account_owner_user_id,
                     &request.provider,
