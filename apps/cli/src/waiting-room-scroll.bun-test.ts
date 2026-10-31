@@ -89,3 +89,37 @@ test("a menu row and the help text fit the terminal next to the scrollbar", asyn
     assert.match(frame.replace(/\s+/g, " "), /Type \/ for commands, such as \/credential vault unlock\./, "the help text is whole and names the commands that work here")
   } finally { harness.renderer.destroy() }
 })
+
+// Review P2 on #1242: a refresh with unchanged inventory rebuilds the view; it must not undo the person's own scrolling.
+test("an inventory refresh keeps a manual scroll position; a new selection or a new height follows the highlight again", async () => {
+  const harness = await createTestRenderer({ width: 90, height: 14, useThread: false })
+  const scroll = new ScrollBoxRenderable(harness.renderer, { width: 90, height: 14, stickyScroll: false })
+  harness.renderer.root.add(scroll)
+  const catalog = fallbackProviderCatalog()
+  const rebuild = async (focus: "new" | "model" | "theme") => {
+    for (const child of [...scroll.getChildren()]) { scroll.remove(child.id); child.destroyRecursively() }
+    const state = { ...createWaitingRoomState(sessions, catalog, "codex", "gpt-6-luna", "low"), focus }
+    scroll.add(buildNoSessionRenderable(harness.renderer, state, sessions, catalog, {}, undefined, undefined, 90))
+    followWaitingRoomFocus(harness.renderer, () => scroll)
+    await harness.renderOnce()
+    await harness.renderOnce()
+  }
+  try {
+    await rebuild("new")
+    assert.equal(scroll.scrollTop, 0)
+    scroll.scrollTo(7)
+    await harness.renderOnce()
+    assert.equal(scroll.scrollTop, 7, "the wheel moved the view")
+    await rebuild("new")
+    assert.equal(scroll.scrollTop, 7, "an unchanged refresh leaves the view where the person put it")
+    await rebuild("theme")
+    assert.ok(scroll.scrollTop > 7, "a new selection brings its row into view")
+    scroll.scrollTo(0)
+    await harness.renderOnce()
+    await rebuild("theme")
+    assert.equal(scroll.scrollTop, 0, "a refresh of the same selection again leaves a manual scroll alone")
+    scroll.height = 10
+    await rebuild("theme")
+    assert.ok(scroll.scrollTop > 0, "a changed viewport follows the highlight")
+  } finally { harness.renderer.destroy() }
+})

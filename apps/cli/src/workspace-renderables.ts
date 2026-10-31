@@ -1,4 +1,4 @@
-import { waitingRoomFocusedRowId } from "./waiting-room-scroll.js"
+import { waitingRoomFocusedRowId, waitingRoomRowKeys } from "./waiting-room-scroll.js"
 import {
   BoxRenderable,
   TextareaRenderable,
@@ -289,15 +289,15 @@ export function buildNoSessionRenderable(
     width: finalMenuWidth + 1,
   })
   for (const entry of renderedRows) {
-    menu.add(
-      new TextRenderable(renderer, {
-        ...(entry.row.focused ? { id: waitingRoomFocusedRowId } : {}),
-        content: entry.content,
-        fg: entry.row.focused ? theme.primary : entry.row.selectable ? theme.text : theme.textMuted,
-        attributes: entry.row.focused ? TextAttributes.BOLD : TextAttributes.NONE,
-        wrapMode: "none",
-      }),
-    )
+    const line = new TextRenderable(renderer, {
+      ...(entry.row.focused ? { id: waitingRoomFocusedRowId } : {}),
+      content: entry.content,
+      fg: entry.row.focused ? theme.primary : entry.row.selectable ? theme.text : theme.textMuted,
+      attributes: entry.row.focused ? TextAttributes.BOLD : TextAttributes.NONE,
+      wrapMode: "none",
+    })
+    if (entry.row.focused) waitingRoomRowKeys.set(line, entry.row.id)
+    menu.add(line)
   }
   content.add(menu)
   const helpTextContainer = new BoxRenderable(renderer, {
