@@ -1151,7 +1151,7 @@ mod tests {
 
     /// A watched command the memory controller stops reaches the agent with
     /// the reason, not as a bare exit 137.
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn a_watched_command_stopped_for_memory_delivers_the_reason() {
         crate::test_support::isolated_env_test!();
