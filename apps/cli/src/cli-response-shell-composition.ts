@@ -1,4 +1,5 @@
 import { BoxRenderable, TextAttributes } from "@opentui/core"
+import { queuedJobsForAgent } from "@chariox/kernel-client/queued-jobs"
 import {
   sessionAgentRuntimeDisplayStateByAgent,
 } from "@chariox/kernel-client/session-runtime-status"
@@ -189,6 +190,7 @@ export function createCliResponseShellComposition(deps: CliResponseShellComposit
     customReply: deps.interactionChoiceStore.customReply,
     customEditing: deps.interactionChoiceStore.isCustomEditing,
     queuedPromptStripItemsForAgent: deps.queuedPromptStripItemsForAgent,
+    queuedJobsForAgent: (agentId: string | null | undefined) => queuedJobsForAgent(deps.isAttached() ? deps.sessionState()?.processes : [], agentId),
     selectedQueuedPromptIndexForAgent: deps.selectedQueuedPromptIndexForAgent,
     onQueuedPromptAction: deps.onQueuedPromptAction,
     providerLoginState: deps.providerLoginInteractions.stripState,

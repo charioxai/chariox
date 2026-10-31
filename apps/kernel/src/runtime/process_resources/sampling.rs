@@ -13,12 +13,20 @@ pub struct ProcessSample {
     pub age_ms: u64,
 }
 
+/// A child started this soon after its parent is part of its launcher
+/// (process ages have one-second resolution).
+const LAUNCH_WINDOW_MS: u64 = 3000;
+
 pub(super) struct ProcessTree {
     root: u32,
     owned: BTreeMap<u32, ProcessIdentity>,
     ids: BTreeMap<u32, String>,
     /// Parent of each owned process at the last sample.
     parents: BTreeMap<u32, u32>,
+    /// The root and the launcher chain that started with it (a wrapper
+    /// running the provider's server): the harness. Commands are what it
+    /// starts later.
+    harness: std::collections::BTreeSet<u32>,
     #[cfg(target_os = "linux")]
     cgroup: Option<std::sync::Arc<super::cgroup::Domain>>,
 }
@@ -37,6 +45,7 @@ impl ProcessTree {
             owned,
             ids,
             parents: BTreeMap::new(),
+            harness: std::collections::BTreeSet::from([root]),
             #[cfg(target_os = "linux")]
             cgroup: None,
         }
@@ -55,6 +64,26 @@ impl ProcessTree {
             .filter(|row| self.owned.contains_key(&row.pid))
             .map(|row| (row.pid, row.parent))
             .collect();
+        self.harness = std::collections::BTreeSet::from([self.root]);
+        let mut current = rows.iter().find(|row| row.pid == self.root);
+        while let Some(launcher) = current {
+            let mut children = rows
+                .iter()
+                .filter(|row| row.parent == launcher.pid && self.owned.contains_key(&row.pid));
+            // A launched server is a program; a shell, or what a shell starts
+            // at once, is a command.
+            current = match (children.next(), children.next()) {
+                (Some(child), None)
+                    if !shell(&launcher.command)
+                        && !shell(&child.command)
+                        && launcher.age_ms.abs_diff(child.age_ms) <= LAUNCH_WINDOW_MS =>
+                {
+                    self.harness.insert(child.pid);
+                    Some(child)
+                }
+                _ => None,
+            };
+        }
         // Once the original root is gone, only previously observed descendants
         // can remain owned. Never adopt a replacement process with its PID.
         Ok(rows
@@ -207,36 +236,92 @@ impl ProcessTree {
             .collect())
     }
 
-    /// Resident memory per command: the root's own process, and each subtree
-    /// under it (after the root ended, each job it left running).
-    pub fn commands(&self, samples: &[ProcessSample]) -> BTreeMap<u32, u64> {
-        let mut commands = BTreeMap::<u32, u64>::new();
+    /// Resident memory and processes per command: the root's own process, and
+    /// each subtree under it (after the root ended, each job it left running).
+    pub fn commands(&self, samples: &[ProcessSample]) -> BTreeMap<u32, (u64, Vec<u32>)> {
+        let mut commands = BTreeMap::<u32, (u64, Vec<u32>)>::new();
         for sample in samples {
-            let mut top = sample.pid;
-            for _ in 0..samples.len() {
-                match self.parents.get(&top) {
-                    Some(parent)
-                        if top != self.root
-                            && *parent != self.root
-                            && self.owned.contains_key(parent) =>
-                    {
-                        top = *parent
-                    }
-                    _ => break,
-                }
-            }
-            *commands.entry(top).or_default() += sample.resident_set_bytes;
+            let command = commands.entry(self.top(sample.pid)).or_default();
+            command.0 += sample.resident_set_bytes;
+            command.1.push(sample.pid);
         }
         commands
     }
 
-    /// Ends one command and what it started at once: a runaway would keep
-    /// growing through a grace period. Returns the ended process ids.
-    pub fn kill(&self, command: u32) -> Vec<String> {
-        if command == self.root {
-            self.terminate();
-            return self.ids.values().cloned().collect();
+    /// The command a process belongs to.
+    fn top(&self, pid: u32) -> u32 {
+        let mut top = pid;
+        for _ in 0..self.parents.len() {
+            match self.parents.get(&top) {
+                Some(parent)
+                    if !self.harness.contains(&top)
+                        && !self.harness.contains(parent)
+                        && self.owned.contains_key(parent) =>
+                {
+                    top = *parent
+                }
+                _ => break,
+            }
         }
+        top
+    }
+
+    /// The command of the process `process_id` names.
+    pub fn command_of(&self, process_id: &str) -> Option<u32> {
+        let pid = self
+            .ids
+            .iter()
+            .find(|(pid, id)| id.as_str() == process_id && self.owned.contains_key(pid))
+            .map(|(pid, _)| *pid)?;
+        (!self.harness.contains(&pid)).then(|| self.top(pid))
+    }
+
+    /// When a command's top process started, in clock ticks since boot.
+    #[cfg(target_os = "linux")]
+    pub fn started(&self, command: u32) -> Option<u64> {
+        self.owned.get(&command).map(|identity| identity.start)
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    pub fn started(&self, _command: u32) -> Option<u64> {
+        None
+    }
+
+    /// What a command runs: past shells that only run one child (`sh -c`,
+    /// a harness's tool shell) to that child.
+    pub fn effective(&self, command: u32, samples: &[ProcessSample]) -> u32 {
+        let mut pid = command;
+        for _ in 0..8 {
+            let shell = samples
+                .iter()
+                .find(|sample| sample.pid == pid)
+                .is_some_and(|sample| shell(&sample.command));
+            let mut children = self.parents.iter().filter(|(_, parent)| **parent == pid);
+            match (shell, children.next(), children.next()) {
+                (true, Some((child, _)), None) => pid = *child,
+                _ => break,
+            }
+        }
+        pid
+    }
+
+    /// Holds (`SIGSTOP`) or continues (`SIGCONT`) one command and everything
+    /// it started; only verified processes of this tree, never the root.
+    #[cfg(unix)]
+    pub fn signal(&self, command: u32, signal: libc::c_int) {
+        if self.harness.contains(&command) {
+            return;
+        }
+        for pid in self.subtree(command) {
+            if let Some(identity) = self.owned.get(&pid) {
+                if pid > 1 && pid <= i32::MAX as u32 && same_process(pid, identity) {
+                    let _ = unsafe { libc::kill(pid as i32, signal) };
+                }
+            }
+        }
+    }
+
+    fn subtree(&self, command: u32) -> std::collections::BTreeSet<u32> {
         let mut selected = std::collections::BTreeSet::from([command]);
         loop {
             let before = selected.len();
@@ -249,6 +334,17 @@ impl ProcessTree {
                 break;
             }
         }
+        selected
+    }
+
+    /// Ends one command and what it started at once: a runaway would keep
+    /// growing through a grace period. Returns the ended process ids.
+    pub fn kill(&self, command: u32) -> Vec<String> {
+        if command == self.root {
+            self.terminate();
+            return self.ids.values().cloned().collect();
+        }
+        let selected = self.subtree(command);
         #[cfg(unix)]
         for pid in &selected {
             if let Some(identity) = self.owned.get(pid) {
@@ -267,6 +363,11 @@ impl ProcessTree {
         pid == self.root
     }
 
+    /// Part of the harness: never held or paused.
+    pub fn in_harness(&self, pid: u32) -> bool {
+        self.harness.contains(&pid)
+    }
+
     pub fn terminate(&self) {
         #[cfg(unix)]
         for (pid, identity) in self
@@ -280,6 +381,17 @@ impl ProcessTree {
             }
         }
     }
+}
+
+fn shell(command: &str) -> bool {
+    matches!(
+        command
+            .rsplit('/')
+            .next()
+            .unwrap_or_default()
+            .trim_start_matches('-'),
+        "sh" | "bash" | "dash" | "zsh" | "ksh" | "fish"
+    )
 }
 
 fn same_process(pid: u32, identity: &ProcessIdentity) -> bool {

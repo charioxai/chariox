@@ -33,9 +33,27 @@ pub(super) enum WatchCommand {
         process_id: Option<String>,
         reply: mpsc::SyncSender<Result<Vec<String>, String>>,
     },
+    /// Admission changed one of its commands: apply it now.
+    Apply,
+    /// Start now: the user admits this waiting command whatever the room.
+    StartNow {
+        process_id: String,
+        reply: mpsc::SyncSender<Result<Vec<String>, String>>,
+    },
 }
 
 pub(crate) fn stop_for_key(key: &str, process_id: Option<String>) -> Result<Vec<String>, String> {
+    ask(key, |reply| WatchCommand::Stop { process_id, reply })
+}
+
+pub(crate) fn start_now_for_key(key: &str, process_id: String) -> Result<Vec<String>, String> {
+    ask(key, |reply| WatchCommand::StartNow { process_id, reply })
+}
+
+fn ask(
+    key: &str,
+    command: impl FnOnce(mpsc::SyncSender<Result<Vec<String>, String>>) -> WatchCommand,
+) -> Result<Vec<String>, String> {
     let state = registry()
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -50,10 +68,10 @@ pub(crate) fn stop_for_key(key: &str, process_id: Option<String>) -> Result<Vec<
         .ok_or_else(|| "process monitoring ended; refresh Health".to_string())?;
     let (reply, response) = mpsc::sync_channel(1);
     sender
-        .send(WatchCommand::Stop { process_id, reply })
+        .send(command(reply))
         .map_err(|_| "process monitoring ended; refresh Health".to_string())?;
     response.recv_timeout(Duration::from_secs(3)).map_err(|_| {
-        "process stop did not finish within its deadline; refresh Health".to_string()
+        "the process control did not finish within its deadline; refresh Health".to_string()
     })?
 }
 

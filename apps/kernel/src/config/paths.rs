@@ -201,7 +201,7 @@ impl DaemonConfig {
     }
 }
 
-pub(super) fn default_state_dir() -> PathBuf {
+pub(crate) fn default_state_dir() -> PathBuf {
     if let Some(home_dir) = chariox_home_dir() {
         return home_dir.join("state");
     }

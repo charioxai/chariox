@@ -274,6 +274,10 @@ impl RoomTerminalService {
             cols: spec.cols,
             rows: spec.rows,
         })?;
+        // A person's own command is counted but never waits for room; what an
+        // agent submits may (each submitted line sets it for the command it
+        // starts, below).
+        crate::runtime::process_resources::set_default_holdable_for_key(&run_id, false);
         let shell_pid = pty
             .process_id(&run_id)
             .ok()
@@ -404,6 +408,14 @@ impl RoomTerminalService {
                             [key] => pty.signal_key_behind_blocked_input(&run_id, *key)?,
                             _ => None,
                         };
+                        if let (true, true, None) = (shell_foreground, submits, &interrupted) {
+                            // The command this line starts belongs to who
+                            // submits it; running ones keep their own policy.
+                            crate::runtime::process_resources::record_submission_for_key(
+                                &run_id,
+                                *actor != TerminalActor::User,
+                            );
+                        }
                         match interrupted {
                             Some(dropped) => terminal.dropped_input_bytes += dropped as u64,
                             None => pty.input_writer(&run_id)?.enqueue_input(input)?,

@@ -4,8 +4,8 @@
     "MP-10",
     "MP-11"
   ],
-  "local_protocol": 923,
-  "peer_protocol": 374,
+  "local_protocol": 927,
+  "peer_protocol": 378,
   "allocation": "coordinator-authorized additive unreleased539/147",
   "reset": {
     "font_failures": [],
