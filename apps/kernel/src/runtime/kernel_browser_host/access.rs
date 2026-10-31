@@ -257,6 +257,7 @@ impl KernelBrowserHost {
             .focused(user)
             .map(str::to_owned)
     }
+    #[cfg(unix)]
     pub(crate) fn hand_over_access(&self) -> crate::runtime::user_domain_access::AccessHandover {
         self.inner
             .lock()
@@ -265,6 +266,7 @@ impl KernelBrowserHost {
             .hand_over()
     }
     /// Takes over the focus and grants a hot reload handed over.
+    #[cfg(unix)]
     pub(crate) fn adopt_access(
         &self,
         handover: crate::runtime::user_domain_access::AccessHandover,

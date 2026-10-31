@@ -67,7 +67,7 @@ pub(crate) enum HandedOverProcess {
     /// A Codex app-server keeps its PTY and port; the turn it runs continues.
     Codex {
         pty: crate::pty::PtyHandover,
-        turn: crate::provider::CodexHandover,
+        turn: Box<crate::provider::CodexHandover>,
     },
 }
 
@@ -443,7 +443,7 @@ pub(crate) fn adopting_codex_endpoint(run_id: &str) -> Option<String> {
 pub(crate) fn take_codex(run_id: &str) -> Option<crate::provider::CodexHandover> {
     let mut adopting = lock(&ADOPTING);
     match adopting.remove(run_id)? {
-        HandedOverProcess::Codex { turn, .. } => Some(turn),
+        HandedOverProcess::Codex { turn, .. } => Some(*turn),
         other => {
             adopting.insert(run_id.to_string(), other);
             None
@@ -558,7 +558,10 @@ pub(crate) fn hand_over_codex(
     };
     prepared.handover.providers.push(provider_handover(
         run,
-        HandedOverProcess::Codex { pty, turn },
+        HandedOverProcess::Codex {
+            pty,
+            turn: Box::new(turn),
+        },
     ));
 }
 
