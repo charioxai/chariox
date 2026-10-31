@@ -51,7 +51,8 @@ and kernel, with Project - Room - Agent/Terminal owners and expandable totals.
 Its collapse/expand state belongs to the viewer; process authority remains in
 the kernel.
 
-The process protocol lands in the union local **911**, peer **362**. Its shape
+The process protocol lands in the union local **911**, peer **362**. Local **913**,
+peer **364** adds the same rows to the one-shot `SessionState` response (`processes`). Its shape
 fixture is `session-processes-800.json`; regenerate protocol consumers with
 `node scripts/generate-protocol-versions.mjs` when the coordinator renumbers it.
 The focused shape check is

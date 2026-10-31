@@ -849,6 +849,8 @@ impl KernelRuntimeState {
             )?;
         }
         self.remove_destroyed_agent_provider_processes(local_provider_run_ids);
+        super::agent_archive_runtime_state::end_agent_processes(destroyed.session_id(), agent_id)
+            .await?;
         self.append_agent_durable_event("agent.deleted", &destroyed, None)
             .await?;
         // MP-08 / MP-09 / MP-10 / MP-11 A12-S02: a removed delegate is a

@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use super::events::{Fired, QUIET_BEFORE_WAITING};
 use super::terminal::{ProgramEnd, Terminal};
-use super::types::RoomTerminalOutcome;
+use super::types::{RoomTerminalOutcome, TerminalActor};
 use crate::pty::{PtyManager, PtyProcessState};
 
 /// How long an idle shell may take to start a command that was queued as
@@ -43,14 +43,32 @@ impl Terminal {
         let (produced, output_closed) = self.drain(pty, &run_id, now, &mut pumped.fired);
         pumped.output_changed |= produced;
         if let Ok(PtyProcessState::Exited { exit_code, signal }) = pty.poll_process_state(&run_id) {
+            // A job still in the session can hold the PTY open: the output
+            // closes only once the sweep has ended it.
+            if !self.exit_swept {
+                self.exit_swept = true;
+                if let Some(sweep) = self.session_sweep {
+                    sweep.stop_soon();
+                }
+            }
             if !output_closed {
                 return pumped;
             }
-            if let Some(sweep) = &self.session_sweep {
-                sweep.stop();
-            }
             let limit = pty.memory_limit_bytes(&run_id);
             let outside_end = crate::runtime::process_resources::outside_ended_for_key(&run_id);
+            if limit.is_none() && !outside_end {
+                pty.release_exited_process_jobs(
+                    &run_id,
+                    &self.record.session_id,
+                    crate::runtime::process_resources::SessionProcessOwner::Terminal(
+                        self.record.terminal_id.clone(),
+                    ),
+                    match &self.record.opened_by {
+                        TerminalActor::Agent(agent_id) => Some(agent_id.clone()),
+                        TerminalActor::User => None,
+                    },
+                );
+            }
             let _ = pty.remove_process(&run_id);
             self.record_program_end(ProgramEnd {
                 output_offset: self.log.end_offset(),

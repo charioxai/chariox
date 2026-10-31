@@ -421,6 +421,12 @@ impl KernelRuntimeState {
     pub(crate) async fn shutdown_cleanup(&self) -> Result<(), DaemonError> {
         self.owned.room_execs.shutdown();
         self.owned.room_terminals.shutdown();
+        tokio::task::spawn_blocking(|| crate::runtime::process_resources::end_owner(None, None))
+            .await
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "stop released processes",
+                message: error.to_string(),
+            })?;
         self.stop_app_grant_wakes();
         for id in self.app_control().user_views().shutdown() {
             self.app_control().views().forget_session(&id);
@@ -504,6 +510,17 @@ impl KernelRuntimeState {
         self.session_snapshot_projection_for_user(session_id, last_event_id, None)
     }
 
+    pub(crate) fn session_processes(
+        &self,
+        session_id: &str,
+    ) -> Vec<crate::runtime::process_resources::SessionProcess> {
+        crate::runtime::process_resources::for_session(
+            session_id,
+            &self.owned.provider_store,
+            &self.owned.room_terminals,
+        )
+    }
+
     fn session_snapshot_projection_for_user(
         &self,
         session_id: &str,
@@ -523,11 +540,7 @@ impl KernelRuntimeState {
         let agent_activity =
             self.agent_activity_for_session_with_unread(&session, unread_for_user_id);
         Ok(crate::runtime::projection::SessionSnapshotProjection {
-            processes: crate::runtime::process_resources::for_session(
-                session_id,
-                &self.owned.provider_store,
-                &self.owned.room_terminals,
-            ),
+            processes: self.session_processes(session_id),
             room_workflows: crate::runtime::projection::RoomWorkflowInventory::project(
                 &session,
                 unread_for_user_id.unwrap_or(crate::session::DEFAULT_LOCAL_USER_ID),

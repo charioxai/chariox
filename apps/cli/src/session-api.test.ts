@@ -3,7 +3,7 @@ import test from "node:test"
 
 import type { RuntimeSession } from "./cli-types.js"
 import type { LocalIpcClient } from "./ipc.js"
-import { createSession, getSessionState } from "./session-api.js"
+import { attachSessionView, createSession, getSessionState } from "./session-api.js"
 
 test("createSession forwards workspace live sync mode to the kernel request", async () => {
   const sent: Record<string, unknown>[] = []
@@ -174,6 +174,52 @@ test("getSessionState merges projected agent activity into the returned session"
       },
     })
   assert.equal(session.agent_activity_revision, 9)
+})
+
+test("getSessionState returns the Room's process rows with the session", async () => {
+  const row = {
+    owner: { kind: "terminal" as const, id: "terminal-1" },
+    process_id: "process-1",
+    pid: 42,
+    command: "sleep",
+    resident_set_bytes: 1024,
+    cpu_millis: 0,
+    sampled_at_ms: 10,
+    age_ms: 10,
+  }
+  const client = {
+    send: async () => ({ SessionState: { session: runtimeSession(), processes: [row] } }),
+  } as unknown as LocalIpcClient
+
+  const session = await getSessionState(client, "session-1")
+
+  assert.deepEqual(session.processes, [row])
+})
+
+test("attachSessionView returns the Room's process rows with the session", async () => {
+  const row = {
+    owner: { kind: "agent" as const, id: "agent-1" },
+    process_id: "process-1",
+    pid: 42,
+    command: "node",
+    resident_set_bytes: 1024,
+    cpu_millis: 0,
+    sampled_at_ms: 10,
+    age_ms: 10,
+  }
+  const client = {
+    send: async () => ({
+      SessionViewAttached: {
+        attachment: { id: "attachment-1", session_id: "session-1" },
+        state: { SessionState: { session: runtimeSession(), processes: [row] } },
+        history: { SessionHistoryOutline: { agents: [] } },
+      },
+    }),
+  } as unknown as LocalIpcClient
+
+  const view = await attachSessionView(client, "session-1", "client-1")
+
+  assert.deepEqual(view.session.processes, [row])
 })
 
 function runtimeSession(overrides: Partial<RuntimeSession> = {}): RuntimeSession {
