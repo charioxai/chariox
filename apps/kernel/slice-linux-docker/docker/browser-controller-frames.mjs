@@ -226,10 +226,14 @@ export async function withBrowserFrames(connection, sessionId, targetId, documen
     const owners = new Map();
     const info = { truncated: false };
     const omitted = new Set();
+    const full = () => {
+      if (owners.size < MAX_FRAMES) return false;
+      if (strict) throw new BrowserSnapshotError("snapshot_frame_limit", "browser exceeded frame bound");
+      info.truncated = true;
+      return true;
+    };
     const remember = (entry, tree) => {
-      if (owners.size >= MAX_FRAMES) {
-        if (strict) throw new BrowserSnapshotError("snapshot_frame_limit", "browser exceeded frame bound");
-        info.truncated = true;
+      if (full()) {
         omitted.add(tree.frame.id);
         return;
       }
@@ -244,6 +248,8 @@ export async function withBrowserFrames(connection, sessionId, targetId, documen
       for (const target of [...pending]) {
         if (info.truncated) break;
         if (!owners.has(target.parentFrameId)) continue;
+        // A renderer whose root does not fit is neither attached nor returned.
+        if (full()) break;
         pending.splice(pending.indexOf(target), 1);
         const { sessionId: childSession } = await connection.send("Target.attachToTarget", { targetId: target.targetId, flatten: true });
         attached.push(childSession);

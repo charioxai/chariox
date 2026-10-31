@@ -182,3 +182,29 @@ test('MP-08/MP-10/MP-11 a page above the frame bound is observed only in its ret
  assert.ok(worlds.size<=64,`isolated worlds created in ${worlds.size} frames`);
  assert.ok(evaluations<=128,`${evaluations} evaluations`);
 });
+
+test('MP-08/MP-10/MP-11 an isolated renderer reached with a full frame budget is not observed',async()=>{
+ const owned=new Set();const worlds=new Set();const read=[];let contexts=100;let evaluations=0;
+ const top={frame:{id:'top',loaderId:'doc',url:'https://example.test/'},childFrames:Array.from({length:63},(_,i)=>({frame:{id:'f'+i,parentId:'top',loaderId:'doc-f'+i,url:'https://example.test/f'+i}}))};
+ const isolated={frame:{id:'iso',parentId:'f0',loaderId:'doc-iso',url:'https://other.test/'},childFrames:Array.from({length:70},(_,i)=>({frame:{id:'i'+i,parentId:'iso',loaderId:'doc-i'+i,url:'https://other.test/i'+i}}))};
+ const connection={async send(method,params,sessionId){
+  if(method==='Page.getFrameTree'){if(sessionId==='iso-session')read.push(sessionId);return{frameTree:sessionId==='iso-session'?isolated:top};}
+  if(method==='Target.getTargets')return{targetInfos:[{targetId:'iso-target',type:'iframe',parentFrameId:'f0'}]};
+  if(method==='Target.attachToTarget')return{sessionId:'iso-session'};
+  if(method==='Target.detachFromTarget')return{};
+  if(method==='DOM.getFrameOwner'){owned.add(params.frameId);return{backendNodeId:1};}
+  if(method==='Page.createIsolatedWorld'){worlds.add(params.frameId);return{executionContextId:++contexts};}
+  if(method==='DOM.resolveNode')return{object:{objectId:'owner'}};
+  if(method==='Runtime.callFunctionOn')return{result:{value:false}};
+  if(method==='Runtime.releaseObject')return{};
+  if(method==='Runtime.evaluate'){evaluations++;return{result:{value:params.expression===NOTE_OBSERVER_EXPRESSION?true:null}};}
+  throw Error('unexpected '+method);
+ }};
+ const browser={ensureConnection:async()=>connection,ensureTargetSession:async()=>'root',ensureFocusWorld:async()=>({contextId:42})};
+ const result=await observeBrowserNote(browser,{target_id:'tab',document_id:'doc'});
+ assert.ok(result.selection===null);
+ assert.ok(!worlds.has('iso')&&![...worlds].some((id)=>id.startsWith('i')&&id!=='iso'&&/^i\d+$/.test(id)),`isolated worlds created in ${worlds.size} frames`);
+ assert.ok(worlds.size<=64,`isolated worlds created in ${worlds.size} frames`);
+ assert.ok(owned.size<=63,`frame owners read for ${owned.size} frames`);
+ assert.ok(evaluations<=128,`${evaluations} evaluations`);
+});
