@@ -17,6 +17,9 @@ use tokio::sync::watch;
 use crate::meter::{UsageCounters, UsageMeter};
 
 pub const DEFAULT_USAGE_REPORT_INTERVAL: Duration = Duration::from_secs(60);
+/// The most entries Cloud accepts in one batch
+/// (`relayUsageReportSchema.entries.maxItems`).
+pub const MAX_BATCH_ENTRIES: usize = 10_000;
 const USAGE_SIGNATURE_DOMAIN: &str = "chariox-relay-usage-v1";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -87,25 +90,41 @@ impl<S: FnMut(&UsageBatch) -> Result<(), SendError>> UsageReporter<S> {
     /// batch, then send every spooled batch, oldest first. Returns how many
     /// Cloud acknowledged; the first send that must be retried ends the round.
     pub fn report(&mut self, now_ms: u64) -> Result<usize, String> {
-        let drained = self.meter.drain();
+        let mut drained = self.meter.drain().into_iter().collect::<Vec<_>>();
         if !drained.is_empty() {
-            let batch = UsageBatch {
-                relay_id: self.relay_id.clone(),
-                batch_id: new_batch_id()?,
-                window_start_ms: self.window_start_ms,
-                window_end_ms: now_ms,
-                entries: drained
-                    .iter()
-                    .map(|((realm_id, scope), counters)| UsageEntry {
-                        realm_id: realm_id.clone(),
-                        scope: scope.clone(),
-                        counters: *counters,
-                    })
-                    .collect(),
-            };
-            if let Err(error) = write_spool(&self.spool, &batch) {
-                self.meter.restore(drained);
-                return Err(error);
+            // Cloud takes at most `MAX_BATCH_ENTRIES` entries per batch, so a
+            // large interval is spooled as several batches of the same window.
+            while !drained.is_empty() {
+                let rest = drained.split_off(drained.len().min(MAX_BATCH_ENTRIES));
+                let batch_id = match new_batch_id() {
+                    Ok(batch_id) => batch_id,
+                    Err(error) => {
+                        self.meter
+                            .restore(drained.into_iter().chain(rest).collect());
+                        return Err(error);
+                    }
+                };
+                let batch = UsageBatch {
+                    relay_id: self.relay_id.clone(),
+                    batch_id,
+                    window_start_ms: self.window_start_ms,
+                    window_end_ms: now_ms,
+                    entries: drained
+                        .iter()
+                        .map(|((realm_id, scope), counters)| UsageEntry {
+                            realm_id: realm_id.clone(),
+                            scope: scope.clone(),
+                            counters: *counters,
+                        })
+                        .collect(),
+                };
+                if let Err(error) = write_spool(&self.spool, &batch) {
+                    // Only what is not in a spooled batch goes back to the meter.
+                    self.meter
+                        .restore(drained.into_iter().chain(rest).collect());
+                    return Err(error);
+                }
+                drained = rest;
             }
             self.window_start_ms = now_ms;
         }
@@ -464,6 +483,47 @@ mod tests {
             })
             .collect();
         assert_eq!(windows, [(1_000, 2_000, 100), (2_000, 3_000, 7)]);
+    }
+
+    #[test]
+    fn a_report_larger_than_clouds_limit_is_split_without_losing_a_realm() {
+        let meter = UsageMeter::default();
+        let path = spool("split");
+        let acknowledged = Log::default();
+        let fail = Rc::new(RefCell::new(false));
+        let mut reporter = UsageReporter::open(
+            meter.clone(),
+            "relay-eu".into(),
+            path.clone(),
+            sender(&acknowledged, &fail),
+            1_000,
+        )
+        .unwrap();
+        let realms = MAX_BATCH_ENTRIES + 1;
+        for realm in 0..realms {
+            meter.record(&format!("realm-{realm:05}"), "control", Direction::In, 3);
+        }
+        assert_eq!(reporter.report(2_000).unwrap(), 2);
+        let batches = acknowledged.borrow();
+        assert!(batches
+            .iter()
+            .all(|batch| batch.entries.len() <= MAX_BATCH_ENTRIES));
+        let mut ids: Vec<_> = batches.iter().map(|batch| &batch.batch_id).collect();
+        ids.dedup();
+        assert_eq!(ids.len(), batches.len(), "each part is its own batch");
+        assert!(batches
+            .iter()
+            .all(|batch| (batch.window_start_ms, batch.window_end_ms) == (1_000, 2_000)));
+        let mut counted: Vec<_> = batches
+            .iter()
+            .flat_map(|batch| &batch.entries)
+            .map(|entry| (entry.realm_id.clone(), entry.counters.bytes_in))
+            .collect();
+        counted.sort();
+        counted.dedup();
+        assert_eq!(counted.len(), realms, "every realm is reported once");
+        assert!(counted.iter().all(|(_, bytes)| *bytes == 3));
+        assert_eq!(spooled(&path), 0);
     }
 
     #[test]
