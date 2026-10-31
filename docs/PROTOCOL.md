@@ -6058,7 +6058,8 @@ digits and `._:-`, at most 128 characters). The kernel checks the identifier whe
 preflight and does not know any provider. The wire value Cloud sends is unchanged, so no client
 changes behaviour; clients stop refusing ids they do not know, and Cloud refuses unsupported
 providers. Relay peer 375 only pairs the embedded local response union with local 924. The
-managed-upgrade list is [629, 636, 911, 924]. Focused checks:
+managed-upgrade list is [629, 636, 911, 923, 924]; 923 is the main release a
+managed kernel can run today, so it upgrades to 924 and rolls back from it. Focused checks:
 `cargo test -p chariox-kernel --lib -- protocol_shapes reimage` and
 `node --test scripts/protocol-versions.test.mjs`.
 
