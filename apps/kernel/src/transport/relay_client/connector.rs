@@ -211,7 +211,11 @@ fn cloud_token_refresh_retry_delay(daemon_id: &str, failures: u32) -> Duration {
 
 /// The wait before asking again for a token: the backoff, and never less than
 /// what Cloud said ("retry in 20 seconds").
-fn token_renewal_retry_delay(daemon_id: &str, failures: u32, refresh_error: Option<&str>) -> Duration {
+fn token_renewal_retry_delay(
+    daemon_id: &str,
+    failures: u32,
+    refresh_error: Option<&str>,
+) -> Duration {
     let hint = refresh_error
         .and_then(cloud_retry_hint)
         .unwrap_or(Duration::ZERO);
@@ -231,8 +235,7 @@ fn cloud_retry_hint(message: &str) -> Option<Duration> {
 /// The relay says this token is no good; the kernel does not present it again.
 fn relay_refused_token(message: &str) -> bool {
     let message = message.to_ascii_lowercase();
-    message.contains("relay token")
-        && (message.contains("expired") || message.contains("revoked"))
+    message.contains("relay token") && (message.contains("expired") || message.contains("revoked"))
 }
 
 /// Drops of links that had just come up. Only a link that stayed up for
@@ -1265,8 +1268,8 @@ async fn run_daemon_relay_connector_inner(
                     }
                 };
                 drop_backoff.after_connection(connected_at.elapsed());
-                let delay =
-                    relay_reconnect_delay(&daemon_id, reconnect_attempt).max(drop_backoff.delay(&daemon_id));
+                let delay = relay_reconnect_delay(&daemon_id, reconnect_attempt)
+                    .max(drop_backoff.delay(&daemon_id));
                 record_relay_reconnect(&router, &relay_url, reconnect_reason, delay);
                 reconnect_attempt = reconnect_attempt.saturating_add(1);
                 if wait_for_reconnect_delay(shutdown, delay).await {
@@ -1298,6 +1301,6 @@ async fn run_daemon_relay_connector_inner(
 }
 
 #[cfg(test)]
-mod tests;
-#[cfg(test)]
 mod refused_token_tests;
+#[cfg(test)]
+mod tests;

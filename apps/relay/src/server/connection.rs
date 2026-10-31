@@ -20,9 +20,9 @@ use crate::registry::{
 
 mod client_connect;
 mod support;
-mod token_refusal;
 #[cfg(test)]
 mod tests;
+mod token_refusal;
 mod writer;
 
 use support::*;

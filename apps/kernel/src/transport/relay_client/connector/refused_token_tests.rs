@@ -49,14 +49,12 @@ async fn count_connector_connections(
     connections
 }
 
-#[tokio::test]
-async fn expired_relay_token_is_not_presented_again() {
-    let issuer_secret = "refused-token-test-secret-0123456789abcdef".to_string();
+fn expired_kernel_token(issuer: &str, issuer_secret: &str) -> String {
     let daemon_id = crate::config::DaemonConfig::for_tests().daemon_id;
     let now = crate::session::unix_epoch_ms();
-    let token = encode_scoped_hmac_token(
+    encode_scoped_hmac_token(
         &RelayTokenClaims {
-            issuer: "refused-token-test".into(),
+            issuer: issuer.into(),
             subject: daemon_id.clone(),
             subject_kind: RelaySubjectKind::Kernel,
             realm_id: "default".into(),
@@ -75,9 +73,41 @@ async fn expired_relay_token_is_not_presented_again() {
             public_key_thumbprint: None,
             entitlements_version: None,
         },
-        &issuer_secret,
+        issuer_secret,
     )
-    .unwrap();
+    .unwrap()
+}
+
+/// b3 drill: the kernel connector against a relay binary that is already running.
+/// The relay's `relay_peer_removed` log lines are the count.
+#[tokio::test]
+#[ignore = "drill: needs CHARIOX_TOKLOOP_RELAY_URL and CHARIOX_TOKLOOP_ISSUER_SECRET for a running relay"]
+async fn drill_expired_kernel_token_against_relay_binary() {
+    let relay_url = std::env::var("CHARIOX_TOKLOOP_RELAY_URL").unwrap();
+    let issuer_secret = std::env::var("CHARIOX_TOKLOOP_ISSUER_SECRET").unwrap();
+    let seconds: u64 = std::env::var("CHARIOX_TOKLOOP_SECONDS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(60);
+    let token = expired_kernel_token("drill", &issuer_secret);
+    let app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    let (stop_tx, stop_rx) = watch::channel(false);
+    let connector = tokio::spawn(run_daemon_relay_connector_with_static_relay(
+        Arc::new(Mutex::new(app)),
+        Arc::new(RwLock::new(RelayClientState::default())),
+        stop_rx,
+        relay_url,
+        token,
+    ));
+    sleep(Duration::from_secs(seconds)).await;
+    stop_tx.send(true).unwrap();
+    let _ = timeout(Duration::from_secs(5), connector).await;
+}
+
+#[tokio::test]
+async fn expired_relay_token_is_not_presented_again() {
+    let issuer_secret = "refused-token-test-secret-0123456789abcdef".to_string();
+    let token = expired_kernel_token("refused-token-test", &issuer_secret);
     let relay = chariox_relay::server::RelayServer::with_auth_verifier(
         chariox_relay::config::RelayConfig {
             host: "127.0.0.1".into(),

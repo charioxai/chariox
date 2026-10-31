@@ -857,15 +857,22 @@ fn cloud_retry_hint_reads_the_seconds_cloud_asks_for() {
         cloud_retry_hint("cloud relay request failed with 429: cloud_api_code=rate_limited: Too many requests, retry in 20 seconds"),
         Some(Duration::from_secs(20))
     );
-    assert_eq!(cloud_retry_hint("retry in 1 second"), Some(Duration::from_secs(1)));
+    assert_eq!(
+        cloud_retry_hint("retry in 1 second"),
+        Some(Duration::from_secs(1))
+    );
     assert_eq!(cloud_retry_hint("retry in a while"), None);
     assert_eq!(cloud_retry_hint("cloud unavailable"), None);
-    assert_eq!(cloud_retry_hint("retry in 99999 seconds"), Some(Duration::from_secs(3_600)));
+    assert_eq!(
+        cloud_retry_hint("retry in 99999 seconds"),
+        Some(Duration::from_secs(3_600))
+    );
 }
 
 #[test]
 fn token_renewal_waits_at_least_the_hinted_time_and_at_most_a_minute_of_backoff() {
-    let hinted = token_renewal_retry_delay("daemon-a", 0, Some("429 rate_limited, retry in 45 seconds"));
+    let hinted =
+        token_renewal_retry_delay("daemon-a", 0, Some("429 rate_limited, retry in 45 seconds"));
     assert!(hinted >= Duration::from_secs(45));
     for failures in [6, 20, 99] {
         let delay = token_renewal_retry_delay("daemon-a", failures, None);

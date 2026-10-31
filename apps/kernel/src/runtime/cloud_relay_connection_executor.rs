@@ -75,7 +75,8 @@ pub(crate) async fn ensure_cloud_relay_connection_replacing(
         return Ok(());
     }
     let now_ms = crate::session::unix_epoch_ms();
-    let refused = refused_token.is_some_and(|refused| config.relay_token.as_deref() == Some(refused));
+    let refused =
+        refused_token.is_some_and(|refused| config.relay_token.as_deref() == Some(refused));
     if !refused && cloud_relay_runtime_token_is_fresh(&config, &profile, now_ms) {
         return Ok(());
     }
