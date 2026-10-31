@@ -5628,11 +5628,13 @@ health records so an unacknowledged listed cursor cannot silently skip a lost
 transition. Health-only loss advances the home cursor floor, even when other
 kernels retain source gaps, without fabricating source loss; subscription status
 retains the current health.
-A followed target that its kernel refuses for good while the home kernel installs it
-(its session ended before the install reached the kernel) no longer stops the
+A followed target that its kernel refuses (`events_refused`: its session ended before the
+install reached the kernel) no longer stops the
 kernel's other targets from being pulled: the home kernel drops it and records
 `{ "type": "session", "value": { "state": "ended" } }` (`agent_removed` for an
-agent target) for it, with an empty `machine`.
+agent target) for it, with an empty `machine`. Any other permanent error of the install
+is a health failure of the kernel and ends no target. A kernel that holds no part of the
+subscription settles the cleanup the home kernel owes it.
 An ended subscription keeps its unread events and ending receipt for 24 hours;
 after that it is deleted with its events, unless a remote cleanup it owes is still
 pending, and a request for it is answered like one for a subscription that never
