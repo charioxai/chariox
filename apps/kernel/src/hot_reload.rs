@@ -18,7 +18,7 @@ use crate::room_terminal::{RoomTerminalService, TerminalHandover};
 
 /// The handover this program writes and reads. A new program must print the
 /// same number for `--handover-format` before this one hands over to it.
-pub const HANDOVER_FORMAT: u32 = 7;
+pub const HANDOVER_FORMAT: u32 = 8;
 const HANDOVER_ENV: &str = "CHARIOX_HANDOVER";
 const VERIFY_TIMEOUT: Duration = Duration::from_secs(10);
 

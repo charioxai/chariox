@@ -41,7 +41,9 @@ struct HostState {
     loaded: BTreeSet<(String, String, KernelBrowserCapability)>,
     expiry_wake: Option<Arc<tokio::sync::Notify>>,
 }
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub(crate) enum KernelBrowserCapability {
     Browser,
     Computer,
@@ -1187,6 +1189,30 @@ fn require_loaded(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A hot reload keeps the user-domain tools a running agent loaded, for
+    /// its live grant, though the user has since focused another agent (who
+    /// alone could load them again).
+    #[cfg(unix)]
+    #[test]
+    fn a_hot_reload_keeps_the_user_domain_tools_an_agent_loaded() {
+        use KernelBrowserCapability::{Browser, Computer};
+        let old = KernelBrowserHost::new(PathBuf::from("/unused/hot-reload-loaded-old"));
+        old.set_focus("owner", Some("agent"));
+        old.load_for("owner", "agent", Computer).unwrap();
+        old.load_for("owner", "agent", Browser).unwrap();
+        old.set_focus("owner", Some("other"));
+        assert!(old.has_grant("owner", "agent"));
+        let handover = serde_json::to_value(old.hand_over_access()).unwrap();
+
+        let new = KernelBrowserHost::new(PathBuf::from("/unused/hot-reload-loaded-new"));
+        new.adopt_access(serde_json::from_value(handover).unwrap());
+        for capability in [Computer, Browser] {
+            assert!(new.is_loaded_for("owner", "agent", capability));
+            assert!(!new.is_loaded_for("owner", "other", capability));
+        }
+        assert!(new.load_for("owner", "agent", Computer).is_err());
+    }
 
     #[test]
     fn mp08_mp10_mp11_a07_owner_handoff_keeps_authenticated_actor_after_takeover() {
