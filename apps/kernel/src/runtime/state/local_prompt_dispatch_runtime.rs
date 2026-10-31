@@ -12,6 +12,23 @@ pub(super) enum PromptDispatchAcceptance {
     Dropped,
 }
 
+/// The person sees this sentence on the blocked task; the run and prompt ids stay in the log.
+fn prompt_ack_timeout_error(dispatch: &crate::app::KernelPromptDispatch) -> DaemonError {
+    crate::logging::warn_with_fields(
+        "daemon.prompt_dispatch",
+        "provider did not acknowledge the prompt after PTY injection",
+        serde_json::json!({
+            "session_id": dispatch.session_id,
+            "provider_run_id": dispatch.provider_run_id,
+            "prompt_id": dispatch.prompt_id,
+        }),
+    );
+    DaemonError::LocalTransport {
+        operation: CLAUDE_HEADLESS_PROMPT_ACK_OPERATION,
+        message: "The agent did not respond to your message.".to_string(),
+    }
+}
+
 const CLAUDE_HEADLESS_PROMPT_ACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 const CLAUDE_HEADLESS_PROMPT_ACK_OPERATION: &str = "acknowledge Claude headless prompt";
 
@@ -655,13 +672,7 @@ impl KernelRuntimeState {
                             return Err(DaemonError::ProviderRefusal { message });
                         }
                         if tokio::time::Instant::now() >= deadline {
-                            return Err(DaemonError::LocalTransport {
-                                operation: CLAUDE_HEADLESS_PROMPT_ACK_OPERATION,
-                                message: format!(
-                                    "provider `{}` did not acknowledge prompt `{}` after PTY injection",
-                                    dispatch.provider_run_id, dispatch.prompt_id
-                                ),
-                            });
+                            return Err(prompt_ack_timeout_error(dispatch));
                         }
                         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                     }
@@ -1834,6 +1845,36 @@ pub(in crate::runtime::state) mod tests {
     #[test]
     fn claude_headless_dispatch_allows_slow_cold_start_acknowledgement() {
         assert!(CLAUDE_HEADLESS_PROMPT_ACK_TIMEOUT >= std::time::Duration::from_secs(30));
+    }
+
+    #[test]
+    fn an_unacknowledged_prompt_reads_plainly_for_the_person() {
+        let dispatch = crate::app::KernelPromptDispatch {
+            session_id: "session-private".into(),
+            provider_run_id: "provider-run-private".into(),
+            agent_id: "agent-private".into(),
+            prompt_id: "prompt-private".into(),
+            target_active_prompt_id: None,
+            source_attachment_id: "attachment-private".into(),
+            prompt: "hello".into(),
+            hidden_system_context: String::new(),
+            attachments: Vec::new(),
+            prompt_origin: crate::session::PromptOrigin::default(),
+            external_provider: None,
+            external_provider_session_id: None,
+            external_provider_turn_id: None,
+            steering: false,
+        };
+        let shown =
+            crate::terminal::user_facing_dispatch_failure(&prompt_ack_timeout_error(&dispatch));
+        for internal in [
+            "provider-run-private",
+            "prompt-private",
+            "PTY",
+            "provider `",
+        ] {
+            assert!(!shown.contains(internal), "{internal} in {shown:?}");
+        }
     }
 
     async fn owned_runtime_state(app: &Arc<Mutex<DaemonApp>>) -> KernelRuntimeState {
