@@ -114,10 +114,12 @@ impl Entry {
 
     /// Start now: the user admits it whatever the room.
     pub(super) fn force(&mut self) -> bool {
-        let waiting = self.wait.take().is_some();
+        if self.wait.take().is_none() {
+            return false;
+        }
         self.forced = true;
         self.admitted = true;
-        waiting
+        true
     }
 }
 

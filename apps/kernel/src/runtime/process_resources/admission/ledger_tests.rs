@@ -260,6 +260,56 @@ fn a_memory_wait_does_not_resume_onto_a_disk_that_filled() {
     assert_eq!(wait(&current, 1), None, "it did not resume with both free");
 }
 #[test]
+fn a_rejected_start_now_leaves_the_running_command_pausable() {
+    let mut running = entry(2, Peak::default());
+    running.expected = None;
+    running.admitted = true;
+    running.resident = 700 * MIB;
+    assert!(!running.force(), "a running command read as waiting");
+    assert!(!running.forced && running.admitted, "flags changed");
+    let mut older = entry(1, Peak::default());
+    older.expected = None;
+    older.admitted = true;
+    older.resident = GIB;
+    let current = owner(
+        "agent",
+        true,
+        vec![command(1, GIB, 0), command(2, 700 * MIB, 8 * MIB)],
+        vec![(1, older), (2, running)],
+    );
+    let free = Arc::new(AtomicU64::new(50 * GIB));
+    let volume = volume(&free);
+    let may_stop = Ledger::new(None).pass(
+        std::slice::from_ref(&current),
+        &current,
+        &room(100 * MIB, true, &volume),
+    );
+    assert_eq!(
+        wait(&current, 2),
+        Some(Wait::Paused(WaitReason::Memory)),
+        "pressure no longer pauses a command whose Start now was refused"
+    );
+    assert!(!may_stop);
+}
+
+/// Starts `pid` under the owner's current policy, as a sample would.
+fn start(ledger: &mut Ledger, member: &Arc<Mutex<Observation>>, pid: u32, resident: u64) {
+    member
+        .lock()
+        .unwrap()
+        .commands
+        .push(command(pid, resident, 8 * MIB));
+    ledger.register(member, 512 * MIB);
+}
+
+/// An older heavy command of another owner: never the one paused.
+fn oldest(ledger: &mut Ledger) -> Arc<Mutex<Observation>> {
+    let other = owner("other", true, Vec::new(), Vec::new());
+    start(ledger, &other, 4_100_001, GIB);
+    other
+}
+
+#[test]
 fn a_persons_job_stays_unpausable_when_an_agent_types_after_it() {
     let free = Arc::new(AtomicU64::new(50 * GIB));
     let volume = volume(&free);
