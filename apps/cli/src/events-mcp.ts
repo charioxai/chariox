@@ -38,7 +38,7 @@ function text(value: unknown, isError = false): Json {
 }
 
 export async function runEventsMcp(send: SendRequest, input: Readable, output: Writable): Promise<number> {
-  const write = (message: Json) => output.write(JSON.stringify({ jsonrpc: "2.0", ...message }) + "\n")
+  const write = (message: Json): void => { output.write(JSON.stringify({ jsonrpc: "2.0", ...message }) + "\n") }
   const waiting = new Map<string, (result: Json) => void>()
   let nextId = 1
   let elicitation = false

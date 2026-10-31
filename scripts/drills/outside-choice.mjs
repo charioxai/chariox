@@ -9,7 +9,7 @@
 import assert from "node:assert/strict"
 import { execFileSync, spawn } from "node:child_process"
 import { randomBytes } from "node:crypto"
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, writeFileSync, statSync } from "node:fs"
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, writeFileSync } from "node:fs"
 import { createServer } from "node:net"
 import { DatabaseSync } from "node:sqlite"
 import { join, resolve } from "node:path"
@@ -298,6 +298,7 @@ exec env -i 'PATH=${kernelEnv.PATH}' 'HOME=${kernelEnv.HOME}' 'TMPDIR=${kernelEn
     // Then a secret request: the value is entered by the person, never by a holder.
     await ask(`Call your request_credential_secret tool exactly once to ask the person for a secret named drill-secret (prompt "Paste the drill secret"). Then say DONE.`)
     const secret = await until(async () => (await pendingInteractions()).find(i => i.id !== critical.id && i.custom_choice?.input_kind === "secret"), "secret pending", 120000)
+      .catch(async error => { results.interactions_at_timeout = (await pendingInteractions()).map(i => ({ id: i.id, level: i.level, input: i.custom_choice?.input_kind })); throw error })
     await until(() => a.records().some(e => e.refs?.interaction_id === secret.id), "holder told of the secret request", 30000)
     await attempt(secret.id)
     const told = a.records().filter(e => e.type === "interaction" && e.value.state === "pending")
@@ -319,6 +320,12 @@ exec env -i 'PATH=${kernelEnv.PATH}' 'HOME=${kernelEnv.HOME}' 'TMPDIR=${kernelEn
   throw error
 } finally {
   writeFileSync(join(evidence, "result.json"), JSON.stringify(results, null, 2) + "\n")
+  // What each scripted holder was told and answered, without its grant file.
+  for (const name of existsSync(join(dir, "out")) ? readdirSync(join(dir, "out")) : []) {
+    const target = join(evidence, name)
+    mkdirSync(target, { recursive: true })
+    for (const file of readdirSync(join(dir, "out", name)).filter(f => f === "records.jsonl" || /^(answer|late)-/.test(f))) copyFileSync(join(dir, "out", name, file), join(target, file))
+  }
   if (tmuxStarted) { try { snap("99-final") } catch { /* the session may be gone */ } try { tmux("kill-session", "-t", tmuxName) } catch { /* already gone */ } }
   for (const p of [...owned].reverse()) stopOwned(p)
   client.close?.()
