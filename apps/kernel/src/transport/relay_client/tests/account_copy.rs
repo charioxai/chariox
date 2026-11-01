@@ -944,7 +944,7 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns
             }
             let peer:RelayPeerRequest=serde_json::from_value(serde_json::json!({"kind":"install_provider_account_copy","binding":binding,"credential":canary})).unwrap();
             assert!(!format!("{peer:?}").contains(canary));
-                let response=crate::transport::relay_client::peer_requests::send_authenticated_peer_request_for_test(
+            let response=crate::transport::relay_client::peer_requests::send_authenticated_peer_request_for_test(
                 &target_router,&Arc::new(RwLock::new(RelayClientState::default())),
                 &source.daemon_id,identity,&source.relay_private_key,&target.relay_public_key,peer).await;
             let public = match response {
