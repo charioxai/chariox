@@ -24,7 +24,7 @@ test("OF-04 a command waiting for room shows as a queued-job row in its agent's 
     maxAgentsPerScreen: 1, focusedAgentId: "agent-1", activeInteractionForAgent: () => null,
     selectedChoiceIndex: store.selectedChoiceIndex, setSelectedChoiceIndex: store.setSelectedIndex,
     customReply: store.customReply, customEditing: store.isCustomEditing,
-    queuedPromptStripItemsForAgent: () => [], selectedQueuedPromptIndexForAgent: () => -1, onQueuedPromptAction: () => {},
+    queuedPromptStripItemsForAgent: () => [], selectedQueuedPromptIndexForAgent: () => -1, onQueuedPromptAction: () => {}, agentTriggerStripItemsForAgent: () => [],
     queuedJobsForAgent: agentId => queuedJobsForAgent(processes, agentId),
   })
   render()
