@@ -11,8 +11,8 @@ pub(crate) use control::{
 };
 pub use control::{ProcessControlOutcome, ProcessControlResult, ProcessControlTarget};
 pub(crate) use handover::{adopt_released, hand_over_released, ReleasedJobs};
-mod handover;
 mod admission;
+mod handover;
 mod pool;
 mod projection;
 mod sampling;

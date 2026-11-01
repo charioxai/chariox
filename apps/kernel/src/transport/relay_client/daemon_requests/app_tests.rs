@@ -1508,6 +1508,7 @@ async fn relay_requests_log_only_failures_and_slow_successes() {
     .await;
     assert!(missing.error.is_some());
     assert_eq!(relay_lines().len(), 1);
+}
 
 // MP-08 / MP-10 / MP-11: a terminal paired over a private relay acts for the kernel owner, so
 // the sessions the owner created (under the retained profile's user id) stay visible to it.
