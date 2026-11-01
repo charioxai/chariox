@@ -5660,11 +5660,12 @@ mod lost_worker_run {
         ))
     }
 
-    // MP-08 / MP-10 / MP-11 A10-S02: a worker that restarts during an accepted
-    // turn loses it. Home never runs that instruction again on its own: the
-    // turn ends, its task waits for the owner, and the queue moves on.
+    // MP-08 / MP-10 / MP-11 A10-S02 / A10-S04: a worker that restarts during an
+    // accepted turn loses it. Home never runs that instruction again on its own:
+    // the turn ends failed, its task is cancelled with that outcome (no owner
+    // card), and the queue moves on.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn worker_lost_accepted_turn_blocks_its_task_instead_of_replaying_it() {
+    async fn worker_lost_accepted_turn_ends_failed_instead_of_replaying_it() {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
             .expect("fake relay listener should bind");
@@ -5751,30 +5752,28 @@ mod lost_worker_run {
             let active = owned
                 .prompt_state_owner
                 .active_prompt_for_agent(&session, &fixture.agent_id);
-            let blocked = owned
+            let ended = owned
                 .durable_state_store
                 .agent_tasks(Some(&fixture.session_id), Some(&fixture.agent_id))
                 .unwrap()
                 .into_iter()
                 .find(|task| task.prompt_id == fixture.dispatch.prompt_id)
-                .filter(|task| task.state == ExecutionState::Blocked);
-            let interaction = blocked.as_ref().is_some_and(|task| {
-                let id = format!("task-blocked-{}-{}", task.task_id, task.blocked_revision);
-                session.active_interactions().iter().any(|i| i.id() == id)
-            });
+                .filter(|task| task.state == ExecutionState::Cancelled);
             if active.as_ref().map(|prompt| prompt.id()) == Some(successor_prompt_id.as_str())
-                && interaction
+                && ended.is_some()
             {
-                let reason = blocked.unwrap().reason;
                 assert!(
-                    reason.contains("did not run it again") && reason.contains("Resume"),
-                    "{reason}"
+                    !session
+                        .active_interactions()
+                        .iter()
+                        .any(|i| i.id().starts_with("task-blocked-")),
+                    "a lost turn ends without an owner card"
                 );
                 break;
             }
             assert!(
                 tokio::time::Instant::now() < deadline,
-                "lost turn must end with an owner decision and the successor active; active={:?} blocked={blocked:?}",
+                "lost turn must end cancelled with the successor active; active={:?} ended={ended:?}",
                 active.map(|prompt| prompt.id().to_string()),
             );
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
