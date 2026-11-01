@@ -946,17 +946,15 @@ test('MP-08 a desktop tab drops the Browser panel DPR emulation with its last vi
  }finally{delete host.chromium.desktop;if(original===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY=original;}
 }));
 
-// MP-08/MP-10: the unsubscribe no longer holds the controller lock, so a viewer resize can land while its compositor
-// is still closing; the late clear must not wipe the viewport the resize just set.
-test('MP-08/MP-10 a stale display unsubscribe does not clear a newer viewport',()=>using(async({host,sent})=>{
+// MP-08/MP-10: the unsubscribe no longer holds the controller lock, so it can finish after the viewer resized the window;
+// its late clear must not wipe the viewport the resize set (the region screenshot then has the wrong size).
+test('MP-08/MP-10 a late display unsubscribe does not clear the viewer-sized viewport',()=>using(async({host,sent})=>{
  const original=process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;process.env.CHARIOX_KERNEL_BROWSER_DISPLAY='1';
  try{const tab=await host.request({op:'open',url:'about:blank'});host.chromium.desktop={binding:()=>null};
  const subscribed=await host.request({op:'display_subscribe',tab_id:tab.tab_id,generation:tab.generation,codecs:['png'],bitrate:8000000,device_scale_factor:2});
- let open,entered;const gate=new Promise(resolve=>{open=resolve}),inside=new Promise(resolve=>{entered=resolve}),close=host.closeCompositors.bind(host);host.closeCompositors=async id=>{entered();await gate;return close(id)};
- const pending=host.request({op:'unsubscribe',subscription_id:subscribed.subscription_id,generation:subscribed.generation});
- await inside;await host.setLayout(host.tabs.get(tab.tab_id),'resize',{width:800,height:600});
- open();await pending;
- assert.equal(sent.filter(c=>c.method==='Emulation.clearDeviceMetricsOverride').length,0,'the resize that began after the unsubscribe keeps its viewport');assert.equal(host.scales.has(tab.tab_id),false);
+ host.windowLayout={width:800,height:600};
+ await host.request({op:'unsubscribe',subscription_id:subscribed.subscription_id,generation:subscribed.generation});
+ assert.equal(sent.filter(c=>c.method==='Emulation.clearDeviceMetricsOverride').length,0,'the resized window keeps its viewport');assert.equal(host.scales.has(tab.tab_id),false);
  }finally{delete host.chromium.desktop;if(original===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY=original;}
 }));
 

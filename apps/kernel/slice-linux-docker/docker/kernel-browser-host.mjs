@@ -119,7 +119,6 @@ export class KernelBrowserHost {
     this.scales = new Map();
     this.layouts = new Map();
     this.layoutRevisions = new Map();
-    this.viewportEpochs = new Map();
     // The size the person's view gave the one Chrome window (protocol 629); null keeps the canonical page.
     this.windowLayout = null;
     // The windowLayout whose every step (all Tab layouts, stream geometry, window re-bind) completed.
@@ -361,23 +360,17 @@ export class KernelBrowserHost {
   // The newest subscription owns the layout until an explicit shared-window resize takes precedence; null restores the canonical page.
   pageSize(tabId) { const l = this.layouts.get(tabId); return l ? { width: l.width, height: l.height } : { width: geometry.width, height: geometry.height }; }
   noteLayout(tabId, before) { const now = this.pageSize(tabId); if (now.width !== before.width || now.height !== before.height) this.layoutRevisions.set(tabId, this.layoutRevision(tabId) + 1); }
-  // Counts the viewport requests of a Tab: a release that began earlier must not clear what a later one set.
-  viewportEpoch(tabId) { return this.viewportEpochs.get(tabId) ?? 0; }
-  noteViewportRequest(tabId) { this.viewportEpochs.set(tabId, this.viewportEpoch(tabId) + 1); }
   layoutRevision(tabId) { return this.layoutRevisions.get(tabId) ?? 0; }
   async setLayout(tab, subscriptionId, layout) {
-    this.noteViewportRequest(tab.tab_id);
     if(subscriptionId!=='resize'&&this.layouts.get(tab.tab_id)?.subscriptionId==='resize')return;
     const before = this.pageSize(tab.tab_id);
     await this.browser.setLayout?.(tab.target_id, layout);
-    this.noteViewportRequest(tab.tab_id);
     if (layout) this.layouts.set(tab.tab_id, { ...layout, subscriptionId }); else this.layouts.delete(tab.tab_id);
     this.noteLayout(tab.tab_id, before);
   }
 
   releaseLayout(tabId, subscriptionId) {
     if (this.layouts.get(tabId)?.subscriptionId !== subscriptionId) return;
-    this.noteViewportRequest(tabId);
     const before = this.pageSize(tabId);
     this.layouts.delete(tabId);
     this.noteLayout(tabId, before);
@@ -387,11 +380,12 @@ export class KernelBrowserHost {
   // MP-08/MP-11: on the owned Computer desktop the Browser window is the
   // visible one, and an emulated density leaves it unbindable (withheld):
   // drop a tab's viewer emulation with its last Browser viewer or mirror.
-  async releaseTabScale(tabId, epoch) {
+  async releaseTabScale(tabId) {
     if(!this.chromium.desktop||!this.scales.has(tabId))return;
     if([...this.displays.values()].some(s=>s.tab_id===tabId&&s.source_kind!=='desktop')||[...this.mirror.streams.values()].some(s=>s.tab_id===tabId))return;
     this.scales.delete(tabId);
-    const tab=this.tabs.get(tabId);if(!tab||this.viewportEpoch(tabId)!==epoch)return;
+    // A viewer-sized window owns the viewport: a release that runs late (it no longer holds the backend lock) must not clear it.
+    const tab=this.tabs.get(tabId);if(!tab||this.windowLayout)return;
     try{await this.browser.clearViewport(tab.target_id);}catch{}
   }
   async closeCompositors(tabId) {
@@ -702,10 +696,9 @@ export class KernelBrowserHost {
     if(!stream||this.displays.get(stream.subscription_id)!==stream)return;
     clearTimeout(stream.timer);
     if(stream.source_kind==='desktop')return this.desktopDisplay.remove(stream);
-    const epoch=this.viewportEpoch(stream.tab_id);
     this.displays.delete(stream.subscription_id);await stream.close();
     if(![...this.displays.values()].some(s=>s.tab_id===stream.tab_id)){
-      await this.closeCompositors(stream.tab_id);await this.releaseTabScale(stream.tab_id,epoch);
+      await this.closeCompositors(stream.tab_id);await this.releaseTabScale(stream.tab_id);
     }
   }
   async displayResumeBinding(stream,signal) {
@@ -870,7 +863,7 @@ export class KernelBrowserHost {
     if (app && command.op === "navigate" && new URL(navigationUrl(command.url)).origin !== app.origin) {
       throw new UserDomainRefusal("not_granted");
     }
-    if(command.op==='resize'){this.noteViewportRequest(tab.tab_id);return resizeBrowserPage(this,tab,command,signal);}
+    if(command.op==='resize')return resizeBrowserPage(this,tab,command,signal);
     const binding = { target_id: tab.target_id, document_id: tab.document_id };
     if (command.op === "display_subscribe") return this.initialPush(command, await reserveDisplay(this,async()=>{
       if (!featureOn("CHARIOX_KERNEL_BROWSER_DISPLAY")) throw new Error("MD-DISPLAY: display disabled");
@@ -893,7 +886,7 @@ export class KernelBrowserHost {
       // The closed Tab can no longer be restored as the selection (MP-08/MP-10).
       const intent = this.pendingActive, origin = appRestoreOrigin(tab.url);
       if (intent && (intent.tab_id === tab.tab_id || (origin && intent.app_origin === origin))) this.pendingActive = null;
-      this.mirror.removeTab(tab.tab_id);this.layouts.delete(tab.tab_id);this.layoutRevisions.delete(tab.tab_id);this.viewportEpochs.delete(tab.tab_id);
+      this.mirror.removeTab(tab.tab_id);this.layouts.delete(tab.tab_id);this.layoutRevisions.delete(tab.tab_id);
       for (const [id, stream] of this.displays) if (stream.tab_id === tab.tab_id && !['browser_chrome', 'browser_auxiliary', 'browser_window'].includes(stream.regionTarget?.kind)) { await stream.close(); this.displays.delete(id); }
       await this.closeCompositors(tab.tab_id);if(this.foreground.tab===tab.tab_id)this.foreground.reset();
       this.sampleLanes.delete(tab.tab_id);
