@@ -456,7 +456,7 @@ test("captures schema-3 releases with the current 18-artifact Path-1 inventory (
     const manifest = JSON.parse(Buffer.from(evidence.releaseManifestBase64, "base64"))
     assert.equal(manifest.schemaVersion, 3)
     assert.equal(manifest.managedUpdateEvidenceVersion, 1)
-    assert.deepEqual(evidence.artifactBindings.slice(9, 12).map(({ name }) => name), DATA_VOLUME_ARTIFACTS.map(([name]) => name))
+    assert.deepEqual(evidence.artifactBindings.slice(10, 13).map(({ name }) => name), DATA_VOLUME_ARTIFACTS.map(([name]) => name))
     for (const artifact of evidence.artifactBindings) assert.equal(artifact.sha256, artifact.actualSha256)
   })
 })
