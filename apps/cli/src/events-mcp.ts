@@ -15,6 +15,8 @@ const REPLY = "reply"
 const PAGE = 100
 // An idle wait holds the inbox reader, so it lasts one short slice and another call's read or acknowledgement is never held for long.
 const WAIT_SLICE_SECONDS = 5
+// The first MCP version whose elicitation schema has titled single-select options (`oneOf` of `const`/`title`).
+const TITLED_OPTIONS_SINCE = "2025-11-25"
 
 type Json = Record<string, unknown>
 type Interaction = Extract<OutsideEvent, { type: "interaction" }>
@@ -51,13 +53,18 @@ class Ledger {
   acknowledged(cursor: number): void { this.entries = this.entries.filter(entry => entry.cursor > cursor) }
 }
 
-function schema(question: EventQuestion): Json {
-  const options = question.choices.map(choice => ({ const: choice.id, title: choice.label }))
-  if (question.text_reply) options.push({ const: question.text_reply.id, title: question.text_reply.label })
+// Labeled options as the negotiated MCP version defines them: 2025-06-18 `EnumSchema` is `enum` + `enumNames`,
+// 2025-11-25 `TitledSingleSelectEnumSchema` is `oneOf` of `const`/`title`. ISO dates compare as strings.
+function schema(question: EventQuestion, version: string | undefined): Json {
+  const options = question.choices.map(choice => ({ id: choice.id, label: choice.label }))
+  if (question.text_reply) options.push({ id: question.text_reply.id, label: question.text_reply.label })
+  const choices = version !== undefined && version >= TITLED_OPTIONS_SINCE
+    ? { oneOf: options.map(option => ({ const: option.id, title: option.label })) }
+    : { enum: options.map(option => option.id), enumNames: options.map(option => option.label) }
   return {
     type: "object",
     properties: {
-      choice: { type: "string", title: question.title ?? "Choice", oneOf: options },
+      choice: { type: "string", title: question.title ?? "Choice", ...choices },
       ...(question.text_reply ? { [REPLY]: { type: "string", title: question.text_reply.label, minLength: question.text_reply.min_length, ...(question.text_reply.max_length ? { maxLength: question.text_reply.max_length } : {}) } } : {}),
     },
     required: ["choice"],
@@ -73,6 +80,7 @@ export async function runEventsMcp(send: SendRequest, input: Readable, output: W
   const waiting = new Map<string, (result: Json) => void>()
   let nextId = 1
   let elicitation = false
+  let version: string | undefined
   const elicit = (params: Json) => new Promise<Json>(resolve => {
     const id = `elicit-${nextId++}`
     waiting.set(id, resolve)
@@ -190,7 +198,7 @@ export async function runEventsMcp(send: SendRequest, input: Readable, output: W
     if (!question) { await settle(key); return text({ interaction_id: id, answerable: false, show_verbatim: pointer?.one_line ?? decision.summary }) }
     const local = await routes.isLocal(decision.kernel)
     if (!elicitation) { await settle(key); return text({ interaction_id: id, ...(local ? {} : { kernel: decision.kernel }), session_id: decision.session_id, question }) }
-    const answer = await elicit({ message: question.message, requestedSchema: schema(question) })
+    const answer = await elicit({ message: question.message, requestedSchema: schema(question, version) })
     const content = (answer.content ?? {}) as Json
     // A dialog the person dismissed is not asked again by this process; the decision stays open in the inbox.
     if (answer.action !== "accept" || typeof content.choice !== "string") { open.delete(key); return text({ interaction_id: id, action: answer.action ?? "cancel" }) }
@@ -213,6 +221,7 @@ export async function runEventsMcp(send: SendRequest, input: Readable, output: W
     if (method === "initialize") {
       const params = (message.params ?? {}) as { protocolVersion?: string; capabilities?: Json }
       elicitation = Boolean(params.capabilities?.elicitation)
+      version = params.protocolVersion
       return write({ id, result: { protocolVersion: params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: "chariox-events", version: "1" } } })
     }
     if (method === "tools/list") {

@@ -24,7 +24,7 @@ class Inbox {
 
 // A stub harness: it talks JSON-RPC over the same pipes a real one uses, and answers elicitation as scripted.
 // `onElicit` returning undefined leaves the dialog open (the person has not answered). "k" is this computer's kernel.
-async function harness(events: Json[] | Inbox, elicitation: Json | null, onElicit: (params: Json) => Json | undefined, failAnswers: string[] = [], failRoutes = 0) {
+async function harness(events: Json[] | Inbox, elicitation: Json | null, onElicit: (params: Json) => Json | undefined, failAnswers: string[] = [], failRoutes = 0, version = "2025-06-18") {
   const inbox = events instanceof Inbox ? events : new Inbox(events)
   const sent: Json[] = []
   const routed: { kernel: string; request: Json }[] = []
@@ -63,7 +63,7 @@ async function harness(events: Json[] | Inbox, elicitation: Json | null, onElici
   const server = runEventsMcp(send as never, input, output, routes)
   let id = 0
   const call = (method: string, params: Json) => new Promise<Json>(resolve => { const n = ++id; replies.set(n, resolve); input.write(JSON.stringify({ jsonrpc: "2.0", id: n, method, params }) + "\n") })
-  await call("initialize", { protocolVersion: "2025-06-18", capabilities: elicitation ? { elicitation } : {} })
+  await call("initialize", { protocolVersion: version, capabilities: elicitation ? { elicitation } : {} })
   const respond = (dialog: Json, result: Json) => input.write(JSON.stringify({ jsonrpc: "2.0", id: dialog.id, result }) + "\n")
   return { call, respond, sent, routed, lines, inbox, close: async () => { input.end(); await server } }
 }
@@ -80,11 +80,50 @@ test("the tool shows the pending question in the client's own dialog and sends t
   assert.deepEqual(JSON.parse(reply.result.content[0].text), { interaction_id: "int-1", action: "accept", choice_id: "blue", answered: true })
   const form = h.lines[0]!.params
   assert.equal(form.message, "Which colour?")
-  assert.deepEqual(form.requestedSchema.properties.choice.oneOf, [{ const: "red", title: "Red" }, { const: "blue", title: "Blue" }, { const: "other", title: "Something else" }])
+  assert.deepEqual(form.requestedSchema.properties.choice.enum, ["red", "blue", "other"])
+  assert.deepEqual(form.requestedSchema.properties.choice.enumNames, ["Red", "Blue", "Something else"])
   const answers = h.sent.filter(request => "RespondToInteraction" in request)
   assert.deepEqual(answers, [{ RespondToInteraction: { session_id: "room", interaction_id: "int-1", choice_id: "blue", custom_reply: null } }])
   assert.deepEqual(h.sent.filter(request => "AckEvents" in request), [{ AckEvents: { cursor: 4 } }])
   await h.close()
+})
+
+// The `elicitation/create` requestedSchema of each MCP version, as its schema.ts defines it
+// (github.com/modelcontextprotocol/specification, schema/<version>/schema.ts, `ElicitRequest`):
+// 2025-06-18 `EnumSchema` = { type: "string", title?, description?, enum: string[], enumNames?: string[] };
+// 2025-11-25 `SingleSelectEnumSchema` = `UntitledSingleSelectEnumSchema` { type, title?, enum } | `TitledSingleSelectEnumSchema`
+// { type, title?, oneOf: { const, title }[] }; `enumNames` is the deprecated `LegacyTitledEnumSchema`. Both versions allow a
+// `StringSchema` { type: "string", title?, minLength?, maxLength? } beside it.
+const KEYS = {
+  "2025-06-18": { choice: ["type", "title", "enum", "enumNames"], valid: (choice: Json) => Array.isArray(choice.enum) && choice.enum.every((value: unknown) => typeof value === "string") && (choice.enumNames === undefined || (Array.isArray(choice.enumNames) && choice.enumNames.length === choice.enum.length && choice.enumNames.every((name: unknown) => typeof name === "string"))) },
+  "2025-11-25": { choice: ["type", "title", "oneOf"], valid: (choice: Json) => Array.isArray(choice.oneOf) && choice.oneOf.every((option: Json) => typeof option.const === "string" && typeof option.title === "string" && Object.keys(option).length === 2) },
+} as const
+
+function conforms(version: keyof typeof KEYS, schema: Json): void {
+  assert.equal(schema.type, "object")
+  assert.deepEqual(schema.required, ["choice"])
+  const choice = schema.properties.choice as Json
+  assert.equal(choice.type, "string")
+  assert.ok(Object.keys(choice).every(key => (KEYS[version].choice as readonly string[]).includes(key)), `${version}: unexpected keys ${Object.keys(choice)}`)
+  assert.ok(KEYS[version].valid(choice), `${version}: the choice is not a ${version} single-select enum`)
+  const reply = schema.properties.reply as Json
+  assert.ok(reply.type === "string" && Object.keys(reply).every(key => ["type", "title", "minLength", "maxLength"].includes(key)))
+}
+
+test("the chooser is encoded for the negotiated MCP version and conforms to that version's schema", async () => {
+  for (const version of ["2025-06-18", "2025-11-25"] as const) {
+    const h = await harness([decision(4, { state: "pending", question })], { form: {} }, () => ({ action: "accept", content: { choice: "blue" } }), [], 0, version)
+    assert.equal(told(await next(h)).answered, true)
+    const schema = h.lines[0]!.params.requestedSchema as Json
+    conforms(version, schema)
+    assert.equal(schema.properties.choice.oneOf === undefined, version === "2025-06-18")
+    assert.equal(schema.properties.choice.enum === undefined, version === "2025-11-25")
+    await h.close()
+  }
+  const older = await harness([decision(4, { state: "pending", question })], { form: {} }, () => ({ action: "accept", content: { choice: "blue" } }), [], 0, "2025-03-26")
+  await next(older)
+  conforms("2025-06-18", older.lines[0]!.params.requestedSchema as Json)
+  await older.close()
 })
 
 test("a typed reply travels as custom_reply and a declined dialog answers nothing", async () => {
