@@ -409,7 +409,7 @@ test("EA2-01 the access popup names the until-exit choice in words", async () =>
 test("a Vault value request shows its words, a masked field and Send/Cancel", async () => {
   const secret: PasskeyPrompt = {
     kind: "vault_secret", session_id: "kernel-access", interaction_id: "secret-request-1",
-    title: "Value for the Vault", message: "An external agent asks for the value of Drill key, for api.example.com. It goes to your Chariox Vault and no agent sees it.",
+    title: "Value for the Vault", message: "An external agent asks for the value of Drill key, for api.test. It goes to your Chariox Vault and no agent sees it.",
     approve_choice_id: "secret", refuse_choice_id: "cancel", requested_at_ms: 1, expires_at_ms: Date.now() + 300_000,
   }
   const harness = await createTestRenderer({ width: 100, height: 30, useThread: false })
@@ -422,7 +422,7 @@ test("a Vault value request shows its words, a masked field and Send/Cancel", as
     await harness.renderOnce()
     const frame = harness.captureCharFrame()
     assert.match(frame, /Value for the Vault/)
-    assert.match(frame, /Drill key, for api\.example\.com/)
+    assert.match(frame, /Drill key, for api\.test\./)
     assert.match(frame, /Secret: •{9}▏/)
     assert.match(frame, /\[ Send \] +\[ Cancel \]/)
     assert.match(frame, /Enter sends · Ctrl\+R cancels/)

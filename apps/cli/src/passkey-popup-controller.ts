@@ -81,7 +81,7 @@ export function passkeyPromptsFromEvent(prompts: unknown, userAppViews = false):
   if (!Array.isArray(prompts)) return []
   return prompts.filter((item): item is PasskeyPrompt => {
     const prompt = item as Partial<PasskeyPrompt> | null
-    return !!prompt && ["critical_approval", "access_grant", "access_extension", "sudo"].includes(prompt.kind ?? "")
+    return !!prompt && ["critical_approval", "access_grant", "access_extension", "sudo", "vault_secret"].includes(prompt.kind ?? "")
       && (isText(prompt.session_id) || (userAppViews && prompt.session_id === "" && prompt.kind === "critical_approval")) && isText(prompt.interaction_id)
       && typeof prompt.title === "string" && typeof prompt.message === "string"
       && isText(prompt.approve_choice_id) && isText(prompt.refuse_choice_id)
@@ -111,7 +111,8 @@ export function createPasskeyPopupController(deps: {
   onOpen(): void
   onClose(): void
   scroll(direction: -1 | 1): void
-  respond(prompt: PasskeyPrompt, choiceId: string, proof?: InteractionPasskeyProof): Promise<unknown>
+  /** `reply` is the typed value of a Vault value request: its custom reply, never a passkey proof. */
+  respond(prompt: PasskeyPrompt, choiceId: string, proof?: InteractionPasskeyProof, reply?: string): Promise<unknown>
   notify(message: string): void
   serverClock?: KernelClock
 }) {
@@ -210,7 +211,7 @@ export function createPasskeyPopupController(deps: {
       expiryTimer = setTimeout(() => { refreshExpiry(); render() }, delay)
     }
   }
-  const send = async (prompt: PasskeyPrompt, choiceId: string, proof?: InteractionPasskeyProof) => {
+  const send = async (prompt: PasskeyPrompt, choiceId: string, proof?: InteractionPasskeyProof, reply?: string) => {
     const epoch = connectionEpoch
     const token = {}
     pending = token
@@ -218,7 +219,7 @@ export function createPasskeyPopupController(deps: {
     error = null
     render()
     try {
-      await (proof ? deps.respond(prompt, choiceId, proof) : deps.respond(prompt, choiceId))
+      await (reply !== undefined ? deps.respond(prompt, choiceId, undefined, reply) : proof ? deps.respond(prompt, choiceId, proof) : deps.respond(prompt, choiceId))
       if (epoch !== connectionEpoch) return
       settle(prompt)
     } catch (failure) {
@@ -242,6 +243,12 @@ export function createPasskeyPopupController(deps: {
     const prompt = current()
     if (!open || !prompt || pending || !deps.connected()) return
     const typed = value
+    if (prompt.kind === "vault_secret") {
+      if (!typed) return
+      value = ""
+      await send(prompt, prompt.approve_choice_id, undefined, typed)
+      return
+    }
     // Another terminal may have opened the owner's remember window. Ordinary
     // approvals always let the kernel check it; new authority needs fresh proof.
     if (!typed && prompt.kind !== "critical_approval") {
