@@ -51,7 +51,7 @@ async function bundle(t) {
   await mkdir(join(dir, 'bin'), { recursive: true });
   await mkdir(join(dir, 'libexec'));
   await mkdir(join(dir, 'runtime/sdk'), { recursive: true });
-  for (const name of ['chariox-kernel', 'chariox', 'chariox-app-package'])
+  for (const name of ['chariox-kernel', 'chariox', 'chariox-app-package', 'chariox-app-wasm-worker'])
     await writeFile(join(dir, 'bin', name), Buffer.concat([ARM64, Buffer.from(name === 'chariox-kernel' ? LOOKUP_KERNEL : name)]), { mode: 0o755 });
   await writeFile(join(dir, 'libexec/chariox-app-runtime-install'), Buffer.concat([ARM64, Buffer.from('app_runtime_installer_requires_root')]), { mode: 0o755 });
   const inventory = '{"schema":"fixture","target":"darwin-arm64"}\n';
@@ -109,6 +109,7 @@ test('the bundle check refuses a different runtime, missing or stray binaries, l
   };
   await refused(dir => rm(join(dir, 'bin/chariox-kernel')), /missing|no bin\/chariox-kernel/u);
   await refused(dir => rm(join(dir, 'bin/chariox')), /the bundle has no bin\/chariox$/u);
+  await refused(dir => rm(join(dir, 'bin/chariox-app-wasm-worker')), /the bundle has no bin\/chariox-app-wasm-worker$/u);
   await refused(dir => writeFile(join(dir, 'bin/helper'), ARM64), /bin\/helper is not a Chariox release binary/u);
   await refused(dir => writeFile(join(dir, 'bin/chariox-relay'), '#!/bin/sh\n'), /not a Mach-O/u);
   await refused(dir => writeFile(join(dir, 'bin/chariox-relay'), X86_64), /chariox-relay is x86_64, but bin\/chariox-kernel is arm64/u);
@@ -135,7 +136,7 @@ test('the bundle check refuses a different runtime, missing or stray binaries, l
   await refused(dir => replace(join(dir, 'runtime/runtime-inventory.json'), '{"target":"darwin-x64"}'), /runtime\/ targets darwin-x64, but bin\/chariox-kernel is arm64/u);
   await refused(dir => replace(join(dir, 'runtime/runtime-inventory.json'), 'not json'), /not JSON/u);
   await refused(async dir => {
-    for (const path of ['bin/chariox-kernel', 'bin/chariox', 'bin/chariox-app-package', `libexec/${INSTALLER_TOOL}`]) await writeFile(join(dir, path), UNIVERSAL);
+    for (const path of ['bin/chariox-kernel', 'bin/chariox', 'bin/chariox-app-package', 'bin/chariox-app-wasm-worker', `libexec/${INSTALLER_TOOL}`]) await writeFile(join(dir, path), UNIVERSAL);
   }, /arm64\+x86_64; build one package per architecture/u);
   await writeFile(fixture.output, '');
   await assert.rejects(packagePlan(parseArguments(args(fixture, ['--unsigned']), {})), /already exists/u);
@@ -149,10 +150,10 @@ test('the release bundle\'s darwin layout is accepted, and chariox-cli is packag
   await rm(join(fixture.dir, 'SHA256SUMS'));
   for (const name of ['LICENSE', 'manifest.json', 'manifest.sig']) await writeFile(join(fixture.dir, name), 'not packaged\n');
   const plan = await packagePlan(parseArguments(args(fixture, ['--unsigned']), {}));
-  assert.deepEqual(plan.release.binaries.map(binary => binary.name), ['chariox', 'chariox-app-package', 'chariox-kernel', 'chariox-relay']);
+  assert.deepEqual(plan.release.binaries.map(binary => binary.name), ['chariox', 'chariox-app-package', 'chariox-app-wasm-worker', 'chariox-kernel', 'chariox-relay']);
   assert.deepEqual(plan.release.ignored, ['LICENSE', 'manifest.json', 'manifest.sig']);
   assert.equal(plan.payload.find(entry => entry.path === `${PACKAGE_DIR}/bin.sha256`).content.split('\n').filter(Boolean)
-    .map(line => line.split('  ')[1]).join(), '/usr/local/bin/chariox,/usr/local/bin/chariox-app-package,/usr/local/bin/chariox-kernel,/usr/local/bin/chariox-relay');
+    .map(line => line.split('  ')[1]).join(), '/usr/local/bin/chariox,/usr/local/bin/chariox-app-package,/usr/local/bin/chariox-app-wasm-worker,/usr/local/bin/chariox-kernel,/usr/local/bin/chariox-relay');
   // An older bundle's chariox-cli still installs beside it.
   await writeFile(join(fixture.dir, 'bin/chariox-cli'), Buffer.concat([ARM64, Buffer.from('cli')]), { mode: 0o755 });
   const older = await packagePlan(parseArguments(args(fixture, ['--unsigned']), {}));
@@ -179,7 +180,7 @@ test('the dry-run plan pins the runtime and orders the release signing steps', a
   assert.deepEqual(Object.fromEntries(context.map(entry => [entry.path.slice(CONTEXT_DIR.length + 1), entry.mode])),
     Object.fromEntries(Object.keys(CONTEXT_FILES).map(path => [path, path === PROVISIONER ? 0o755 : 0o644])));
   // Every Mach-O, the runtime worker included, must be Developer ID code of the team.
-  assert.equal(plan.checks.filter(step => step.phase === 'code-describe').length, 5);
+  assert.equal(plan.checks.filter(step => step.phase === 'code-describe').length, 6);
   assert.equal(plan.checks.every(step => step.command[0] === '/usr/bin/codesign'), true);
   assert.deepEqual(plan.steps.map(step => step.phase), ['component', 'payload', 'product', 'expand', 'sign', 'signature',
     'notarize', 'notary-log', 'staple', 'staple-check', 'gatekeeper']);
@@ -516,7 +517,7 @@ test('an unsigned package builds from a release bundle with the pinned postinsta
   assert.equal(receipt.signing, 'unsigned test package: Gatekeeper refuses it');
   assert.equal(receipt.sha256, sha256(readFileSync(fixture.output)));
   assert.deepEqual(receipt.payload.map(entry => entry.path), ['/usr/local/bin/chariox', '/usr/local/bin/chariox-app-package',
-    '/usr/local/bin/chariox-kernel', `/${PACKAGE_DIR}/chariox-app-runtime-install`,
+    '/usr/local/bin/chariox-app-wasm-worker', '/usr/local/bin/chariox-kernel', `/${PACKAGE_DIR}/chariox-app-runtime-install`,
     `/${PACKAGE_DIR}/provision-docker-admission-locks.py`, `/Library/LaunchDaemons/${ADMISSION_LABEL}.plist`, `/${PACKAGE_DIR}/start-kernel.sh`,
     `/${PACKAGE_DIR}/uninstall.sh`, `/${PACKAGE_DIR}/bin.sha256`, `/${PACKAGE_DIR}/slice-build-context.sha256`,
     '/Library/LaunchAgents/dev.chariox.kernel.plist']);

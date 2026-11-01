@@ -277,11 +277,7 @@ fn spawn(
             .map_err(|_| LifecycleError::Preparation)?;
         recovered.map_err(|_| LifecycleError::Preparation)?;
         let process = WorkerProcess::spawn_blocking(prepared, WorkerLimits::default()).map_err(
-            preparation_failed(
-                &binding.token().installation_id,
-                binding.token().generation,
-                "wasm_spawn",
-            ),
+            wasm_spawn_error(&binding.token().installation_id, binding.token().generation),
         )?;
         return Ok(PreparedProcess {
             process,
@@ -541,6 +537,19 @@ fn preparation_failed<'a, E: std::fmt::Debug>(
     }
 }
 
+/// A worker that cannot enter OS containment is a typed refusal the user can
+/// act on; every other spawn failure stays a logged preparation failure.
+fn wasm_spawn_error(
+    installation: &str,
+    generation: u64,
+) -> impl FnOnce(chariox_app_runtime::worker_process::WorkerError) -> LifecycleError + '_ {
+    use chariox_app_runtime::worker_process::WorkerError;
+    move |error| match error {
+        WorkerError::Containment => LifecycleError::Wasm("app_wasm_containment"),
+        error => preparation_failed(installation, generation, "wasm_spawn")(error),
+    }
+}
+
 fn registration_failure(error: crate::runtime::app_worker::AppWorkerError) -> LifecycleError {
     use crate::runtime::app_worker::AppWorkerError;
     match error {
@@ -566,6 +575,19 @@ fn wasm_preparation_error(
 mod registration_failure_tests {
     use super::*;
     use crate::runtime::app_worker::AppWorkerError;
+
+    #[test]
+    fn an_uncontained_worker_is_a_typed_refusal() {
+        use chariox_app_runtime::worker_process::WorkerError;
+        assert_eq!(
+            wasm_spawn_error("installed", 1)(WorkerError::Containment).to_string(),
+            "app_wasm_containment"
+        );
+        assert_eq!(
+            wasm_spawn_error("installed", 1)(WorkerError::EarlyExit).to_string(),
+            "app_lifecycle_preparation"
+        );
+    }
 
     #[test]
     fn cancelled_readiness_retains_its_cause() {

@@ -105,6 +105,7 @@ async function makeRelease(root, label, protocol, privateKey, publicKey, transit
   // Releases built before Apps carry no App binaries or App storage unit.
   const appPackage = join(rootfs, "usr/local/bin/chariox-app-package")
   const appStorage = join(rootfs, "usr/libexec/chariox-app-storage")
+  const appWasmWorker = join(rootfs, "usr/local/bin/chariox-app-wasm-worker")
   const appStorageService = join(rootfs, "etc/systemd/system/chariox-app-storage.service")
   const managedService = join(rootfs, `etc/systemd/system/${serviceName}`)
   const rootlessService = join(rootfs, "etc/systemd/system/chariox-rootless-docker.service")
@@ -121,6 +122,7 @@ async function makeRelease(root, label, protocol, privateKey, publicKey, transit
   if (includeAppArtifacts) {
     await put(appPackage, `#!/bin/sh\necho app-package-${label}\n`, 0o755)
     await put(appStorage, `#!/bin/sh\necho app-storage-${label}\n`, 0o755)
+    await put(appWasmWorker, `#!/bin/sh\necho app-wasm-worker-${label}\n`, 0o755)
     await put(appStorageService, await readFile(join(repositoryRoot, "deploy/managed-kernel/chariox-app-storage.service")))
   }
   await put(managedService, `[Service]\nExecStart=/usr/local/bin/chariox-managed-bootstrap\n# ${label}\n`)
@@ -159,6 +161,7 @@ async function makeRelease(root, label, protocol, privateKey, publicKey, transit
         ...(includeAppArtifacts ? [
           { name: "chariox-app-package", sha256: await sha256File(appPackage) },
           { name: "chariox-app-storage", sha256: await sha256File(appStorage) },
+          { name: "chariox-app-wasm-worker", sha256: await sha256File(appWasmWorker) },
         ] : []),
       ],
     }))
@@ -186,6 +189,7 @@ async function makeRelease(root, label, protocol, privateKey, publicKey, transit
     artifactSpecs.push(
       ["chariox-app-package", "/usr/local/bin/chariox-app-package", appPackage, "file"],
       ["chariox-app-storage", "/usr/libexec/chariox-app-storage", appStorage, "file"],
+      ["chariox-app-wasm-worker", "/usr/local/bin/chariox-app-wasm-worker", appWasmWorker, "file"],
       ["chariox-app-storage.service", "/etc/systemd/system/chariox-app-storage.service", appStorageService, "file"],
     )
   }

@@ -65,13 +65,12 @@ pub(crate) fn serve() -> wasmtime::Result<()> {
     // Every supervisor input is read and the installation's directories are
     // resolved; nothing runs as the App before R5's boundary, including the
     // engine's threads, registration and the ready reply.
-    crate::containment::enter(
+    cli::contain(
         &directories
             .as_ref()
             .map(crate::wasi::InstallationDirectories::files)
             .unwrap_or_default(),
-    )
-    .map_err(|error| wasmtime::Error::msg(format!("APP_SANDBOX_UNAVAILABLE: {error}")))?;
+    )?;
     wasmtime::ensure!(
         format!("sha256:{:x}", Sha256::digest(&bytes)) == launch.cache_key.component_digest,
         "trusted component digest mismatch"
@@ -105,10 +104,7 @@ pub(crate) fn serve() -> wasmtime::Result<()> {
     }
     let stream = cli::inherited_stream(3)?;
     stream.set_nonblocking(true)?;
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
-        .enable_all()
-        .build()?;
+    let runtime = cli::runtime()?;
     runtime.block_on(async move {
         let mut transport =
             crate::ipc::Ipc::start(tokio::net::UnixStream::from_std(stream)?, launch.generation)?;

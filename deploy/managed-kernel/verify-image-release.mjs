@@ -16,6 +16,8 @@ const EXPECTED_ARTIFACTS = new Map([
   ["chariox-managed-bootstrap", { path: "/usr/local/bin/chariox-managed-bootstrap", type: "file" }],
   ["chariox-app-package", { path: "/usr/local/bin/chariox-app-package", type: "file" }],
   ["chariox-app-storage", { path: "/usr/libexec/chariox-app-storage", type: "file" }],
+  // Beside the kernel: the kernel opens its WASM App worker next to its own executable.
+  ["chariox-app-wasm-worker", { path: "/usr/local/bin/chariox-app-wasm-worker", type: "file" }],
   ["chariox-app-storage.service", { path: "/etc/systemd/system/chariox-app-storage.service", type: "file" }],
   [
     "chariox-managed-bootstrap.service",
@@ -58,7 +60,12 @@ const EXPECTED_ARTIFACTS = new Map([
   ["chariox-builder-public-key", { path: "/usr/lib/chariox/builder-public-key", type: "file" }],
 ])
 // Releases built before Apps carry none of these; any later release carries all of them.
-const APP_ARTIFACT_NAMES = ["chariox-app-package", "chariox-app-storage", "chariox-app-storage.service"]
+const APP_ARTIFACT_NAMES = [
+  "chariox-app-package",
+  "chariox-app-storage",
+  "chariox-app-wasm-worker",
+  "chariox-app-storage.service",
+]
 
 function fail(message) {
   throw new Error(message)
@@ -196,7 +203,7 @@ async function verifyPath1BuilderAttestation(
     ["artifacts", "schemaVersion", "sourceCommit", "sourceTree", "target"],
     "builder attestation",
   )
-  // A release with the App artifact set attests its two App binaries after the runtime binaries.
+  // A release with the App artifact set attests its three App binaries after the runtime binaries.
   const attestsAppBinaries = verifiedArtifactDigests.has("chariox-app-package")
   if (
     attestation.schemaVersion !== 1 ||
@@ -204,7 +211,7 @@ async function verifyPath1BuilderAttestation(
     attestation.sourceTree !== manifest.sourceTree ||
     attestation.target !== MANAGED_BUILD_TARGET ||
     !Array.isArray(attestation.artifacts) ||
-    attestation.artifacts.length !== (attestsAppBinaries ? 5 : 3)
+    attestation.artifacts.length !== (attestsAppBinaries ? 6 : 3)
   ) {
     fail("builder attestation source identity or target does not match the signed release")
   }
@@ -218,6 +225,7 @@ async function verifyPath1BuilderAttestation(
     ...(attestsAppBinaries ? [
       ["chariox-app-package", verifiedArtifactDigests.get("chariox-app-package")],
       ["chariox-app-storage", verifiedArtifactDigests.get("chariox-app-storage")],
+      ["chariox-app-wasm-worker", verifiedArtifactDigests.get("chariox-app-wasm-worker")],
     ] : []),
   ]
   for (const [index, artifact] of attestation.artifacts.entries()) {

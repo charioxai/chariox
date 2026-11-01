@@ -8,6 +8,8 @@ mod landlock;
 mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
+#[cfg(any(target_os = "macos", test))]
+mod seatbelt;
 
 /// Linux address-space ceiling, independent of guest linear-memory limits.
 /// Darwin cannot admit this cap below its existing dyld mappings.
@@ -23,17 +25,7 @@ pub fn enter(files: &[PathBuf]) -> io::Result<()> {
     #[cfg(target_os = "linux")]
     linux::enter(files)?;
     #[cfg(target_os = "macos")]
-    {
-        // The Seatbelt profile has no App file grants yet; refusing keeps the
-        // boundary rather than running an installed App with ambient files.
-        if !files.is_empty() {
-            return Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "APP_SANDBOX_FILES: macOS containment does not grant App data/tmp yet",
-            ));
-        }
-        macos::enter()?;
-    }
+    macos::enter(files)?;
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     return Err(io::Error::new(
         io::ErrorKind::Unsupported,

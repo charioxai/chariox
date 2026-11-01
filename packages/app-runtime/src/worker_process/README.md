@@ -131,9 +131,10 @@ worker runs R6's state-only `MigrationWorker` before App registration and record
 `migration.step` only after success. The existing staged broker, state journal,
 health/activation fence and failed-update recovery remain authoritative.
 
-R5 replaces `wasm/domain.rs::WasmDomain::verify_before_continue` with OS
-containment, contains `wasm/compile.rs::run`, and connects native runtime
-enrollment/packaging at `WasmRuntime::beside_kernel`. Release builds refuse
-that provisional runtime until this integration; debug source drills exercise
-the launch path. The cache root and provenance key must remain outside the
-worker's filesystem authority.
+The worker enters R5's OS containment (Linux seccomp/Landlock, macOS Seatbelt)
+after reading its inputs and before its ready record, so every build profile
+launches the runtime installed beside the kernel (`WasmRuntime::beside_kernel`).
+The offline compiler subprocess (`wasm/compile.rs::run`, `precompile-stdio`)
+does not enter containment yet; it compiles but never runs App code.
+The cache root and provenance key must remain outside the worker's filesystem
+authority.

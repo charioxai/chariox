@@ -94,6 +94,19 @@ test('MP-07 / MP-11: the plan grants JIT to the CLI, App worker and Bun Setup', 
   assert.ok(text.includes(`# staple: ${STAPLE}`));
 });
 
+// The Seatbelt entry refuses a worker without a hardened-runtime signature that holds allow-jit and nothing else
+// (packages/app-wasm-worker/src/containment/macos.rs), so the kernel's WASM worker is signed like the V8 worker.
+test('the kernel-side WASM App worker is signed hardened with only the JIT entitlement', async t => {
+  const paths = await fixture(t);
+  await mkdir(join(paths.input, 'bin'));
+  await writeFile(join(paths.input, 'bin/chariox-app-wasm-worker'), Buffer.concat([MACH_O, Buffer.from('wasm worker')]));
+  const { plan } = await signMacosRelease(options(paths, ['--dry-run']),
+    { run: () => assert.fail('dry run executed a command'), platform: 'linux' });
+  assert.equal(plan.files.find(file => file.path === 'bin/chariox-app-wasm-worker').role, 'jit-executable');
+  const step = plan.steps.find(entry => entry.phase === 'sign' && entry.file.path === 'bin/chariox-app-wasm-worker');
+  assert.deepEqual(step.command.slice(5, 9), ['--options', 'runtime', '--entitlements', WORKER_ENTITLEMENTS]);
+});
+
 test('the entitlements files grant only the JIT, and for the CLI the unsigned OpenTUI library', () => {
   const keys = file => [...readFileSync(file, 'utf8').matchAll(/<key>([^<]+)<\/key>/gu)].map(match => match[1]);
   assert.deepEqual(keys(WORKER_ENTITLEMENTS), ['com.apple.security.cs.allow-jit']);

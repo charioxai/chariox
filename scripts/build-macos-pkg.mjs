@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Builds the Chariox macOS installer package from one platform release bundle:
-//   bin/      chariox-kernel and chariox, the single-executable CLI/TUI; optionally
+//   bin/      chariox-kernel, its WASM App worker chariox-app-wasm-worker (the kernel opens it
+//             only beside itself) and chariox, the single-executable CLI/TUI; optionally
 //             chariox-app-package, chariox-relay and chariox-cli. Installed in
 //             /usr/local/bin. The release bundle (release-bundle.mjs) is the source
 //             of this layout.
@@ -55,7 +56,7 @@ const SLICE_PROVISIONER = 'apps/kernel/slice-linux-docker/provision-linux-docker
 // spaces, quotes or line breaks, and no . or .. component.
 const CONTEXT_PATH = /^\.?[A-Za-z0-9_+-][A-Za-z0-9._+-]*(\/\.?[A-Za-z0-9_+-][A-Za-z0-9._+-]*)*$/u;
 const BINARIES = new Map([['chariox-kernel', true], ['chariox', true], ['chariox-app-package', false],
-  ['chariox-relay', false], ['chariox-cli', false]]);
+  ['chariox-app-wasm-worker', true], ['chariox-relay', false], ['chariox-cli', false]]);
 const RUNTIME_INSTALLER = 'chariox-app-runtime-install';
 const IDENTITY = /^Developer ID Installer: [^\r\n]+ \(([A-Z0-9]{10})\)$/u;
 const PROFILE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u;

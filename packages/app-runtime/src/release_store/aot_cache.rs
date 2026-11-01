@@ -38,8 +38,6 @@ pub enum AotError {
     Compile(String),
     #[error("app_wasm_runtime: the native App worker beside the kernel is missing, not owned by root or the kernel's user, or writable by the kernel's user; reinstall Chariox")]
     Runtime,
-    #[error("app_wasm_containment_pending: install the R5 native worker runtime")]
-    ContainmentPending,
 }
 impl From<FsError> for AotError {
     fn from(error: FsError) -> Self {

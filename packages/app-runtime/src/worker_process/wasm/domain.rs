@@ -1,6 +1,6 @@
-//! R5 hand-off: replace this process owner with an OS-contained preparation.
-//! `verify_before_continue` is the last gate before *any* guest instantiation.
-//! R4 alone must not be released as the Stage 1 containment proof.
+//! Process owner for the native WASM worker. The worker enters R5's OS
+//! containment itself before its ready record; `verify_before_continue` is the
+//! last gate before *any* guest instantiation.
 use super::*;
 use crate::worker_process::ResourceDomain;
 
@@ -39,8 +39,9 @@ impl ResourceDomain for WasmDomain {
             return Err(WorkerError::Identity);
         }
         self.pid = Some(pid);
-        // R5 must establish/verify its Linux or macOS domain here before the
-        // common monitor sends CXAWGO01; WASM limits are not OS containment.
+        // The ready record arrives only after the worker's containment entry
+        // succeeded; a failed entry exits before it. WASM limits alone are not
+        // OS containment.
         Ok(())
     }
     fn terminate(&mut self, pid: libc::pid_t) {

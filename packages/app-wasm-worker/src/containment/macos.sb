@@ -1,8 +1,9 @@
 (version 1)
 (deny default)
 (deny file-map-executable)
-; Files and network are kernel brokers. No App/package/data/tmp path is granted
-; to the native worker. Already-open IPC/log descriptors remain usable.
+; Files and network are kernel brokers. No package or host path is granted to
+; the native worker; seatbelt.rs appends only an installed App's data/tmp.
+; Already-open IPC/log descriptors remain usable.
 (allow signal (target self))
 (allow process-info-pidinfo (target self))
 (allow process-info-rusage (target self))

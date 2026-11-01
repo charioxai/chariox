@@ -121,6 +121,7 @@ verify_selected_release "$image_root" "$expected_release_digest" "$trusted_publi
 require_regular_file "$image_root/usr/local/bin/chariox-kernel"
 require_regular_file "$image_root/usr/local/bin/chariox-managed-bootstrap"
 require_regular_file "$image_root/usr/local/bin/chariox-app-package"
+require_regular_file "$image_root/usr/local/bin/chariox-app-wasm-worker"
 require_regular_file "$image_root/usr/libexec/chariox-app-storage"
 require_regular_file "$image_root/etc/systemd/system/chariox-app-storage.service"
 require_regular_file "$image_root/usr/lib/chariox/release-manifest.json"
@@ -551,6 +552,8 @@ if [ ! -e "$published_release" ]; then
   install -o root -g root -m 0755 "$image_root/usr/local/bin/chariox-kernel" "$pending_release/usr/local/bin/chariox-kernel"
   install -o root -g root -m 0755 "$image_root/usr/local/bin/chariox-managed-bootstrap" "$pending_release/usr/local/bin/chariox-managed-bootstrap"
   install -o root -g root -m 0755 "$image_root/usr/local/bin/chariox-app-package" "$pending_release/usr/local/bin/chariox-app-package"
+  # Beside the kernel, which opens its WASM App worker next to its own executable.
+  install -o root -g root -m 0755 "$image_root/usr/local/bin/chariox-app-wasm-worker" "$pending_release/usr/local/bin/chariox-app-wasm-worker"
   install -o root -g root -m 0755 "$image_root/usr/libexec/chariox-app-storage" "$pending_release/usr/libexec/chariox-app-storage"
   install -o root -g root -m 0644 "$image_root/etc/systemd/system/chariox-app-storage.service" "$pending_release/etc/systemd/system/chariox-app-storage.service"
   install -o root -g root -m 0644 "$image_root/usr/lib/chariox/release-manifest.json" "$pending_release/usr/lib/chariox/release-manifest.json"

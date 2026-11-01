@@ -1,5 +1,5 @@
-//! R4's verified component/cache preparation. R5 replaces the provisional
-//! domain in `wasm/domain.rs` with Linux/macOS containment before release.
+//! R4's verified component/cache preparation. The worker enters R5's
+//! Linux/macOS containment itself before running any App code.
 use super::{record::PreparedLaunch, wasm_config::WasmLaunch, PreparedWorker, WorkerError};
 use crate::{
     installation::StageTrustBinding,
@@ -68,21 +68,16 @@ impl WasmRuntime {
             identity,
         })
     }
+    /// The worker contains itself (Linux seccomp/Landlock, macOS Seatbelt)
+    /// before any App code runs, so every build profile launches it.
     pub fn beside_kernel() -> Result<Self, AotError> {
-        #[cfg(not(debug_assertions))]
-        {
-            Err(AotError::ContainmentPending)
-        }
-        #[cfg(debug_assertions)]
-        {
-            let kernel = std::env::current_exe()?;
-            Self::open(
-                &kernel
-                    .parent()
-                    .ok_or(AotError::Incompatible)?
-                    .join("chariox-app-wasm-worker"),
-            )
-        }
+        let kernel = std::env::current_exe()?;
+        Self::open(
+            &kernel
+                .parent()
+                .ok_or(AotError::Incompatible)?
+                .join("chariox-app-wasm-worker"),
+        )
     }
     pub fn identity(&self) -> &AotRuntimeIdentity {
         &self.identity
@@ -303,7 +298,6 @@ pub fn aot_error_code(error: &AotError) -> &'static str {
         AotError::Compile(_) => "app_aot_compile",
         AotError::Busy => "app_aot_busy",
         AotError::Limit => "app_aot_limit",
-        AotError::ContainmentPending => "app_wasm_containment_pending",
         AotError::Runtime => "app_wasm_runtime",
         _ => "app_aot_store",
     }
@@ -394,5 +388,13 @@ mod runtime_trust_tests {
         assert!(!trusted_runtime(1001, 0o100555, 1000));
         assert!(!trusted_runtime(0, 0o100644, 1000));
         assert_eq!(aot_error_code(&AotError::Runtime), "app_wasm_runtime");
+    }
+
+    #[test]
+    fn every_build_profile_opens_the_worker_beside_the_kernel() {
+        // Release kernels once refused here at compile time. No worker sits
+        // beside this test binary, so every profile must reach the file check.
+        let error = super::WasmRuntime::beside_kernel().err().unwrap();
+        assert_eq!(aot_error_code(&error), "app_wasm_runtime");
     }
 }

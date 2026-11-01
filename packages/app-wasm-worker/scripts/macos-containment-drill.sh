@@ -1,6 +1,21 @@
 #!/bin/bash
 # MP-08 / MP-09 / MP-10 / MP-11: real native policy and source-component drill.
 # No sudo, host settings, account state or shared target directories.
+#
+# Run on an Apple-silicon (or Intel) Mac from a clean checkout of the candidate:
+#   rustup toolchain install 1.99.1 --target wasm32-unknown-unknown
+#   rustup run 1.99.1 bash packages/app-wasm-worker/scripts/macos-containment-drill.sh "$HOME/chariox-macos-evidence"
+# Expected: the last line is
+#   Native exit: 0; real worker exit: 0; installed App exit: 0; release gate exit: 0. Logs: <dir>
+# and the script exits 0. In native.log every scenario reads "NATIVE <name>/<mode>: PASS"
+# except memory, without-landlock and icache ("NOT RUN (Linux-only native probe)").
+# "installation-files/green" proves, inside the signed, Seatbelt-contained probe:
+# read/write/rename/remove beneath the installation's data and tmp work; a read,
+# a write and a symlink outside them are refused; a TCP connect is refused; exec
+# is refused. installed.log ends "test result: ok. 6 passed" and includes
+# "DRILL native supervised preopens data/tmp persist across restart: PASS" (the
+# real contained serve-supervised worker). release-gate.log shows
+# every_build_profile_opens_the_worker_beside_the_kernel ... ok under --release.
 set -euo pipefail
 test "$(uname -s)" = Darwin || { echo 'Run this drill on macOS.' >&2; exit 2; }
 repo=$(cd "$(dirname "$0")/../../.." && pwd)
@@ -70,7 +85,10 @@ rustup target list --installed | grep -qx wasm32-unknown-unknown || {
 cargo build --locked --manifest-path packages/app-wasm-worker/tests/guest/Cargo.toml \
     --target wasm32-unknown-unknown --release > "$evidence/guest-build.log" 2>&1
 export CHARIOX_WORKER_DRILL_CORE="$CARGO_TARGET_DIR/wasm32-unknown-unknown/release/chariox_app_worker_drill.wasm"
-cargo test --locked -p chariox-app-wasm-worker --test containment --test process \
+# The installed-App drill reads a real signed .cxapp built from the same core.
+cargo run --locked -p chariox-app-wasm-worker --example package-drill -- \
+    "$CHARIOX_WORKER_DRILL_DIR/package" > "$evidence/package.log" 2>&1
+cargo test --locked -p chariox-app-wasm-worker --test containment --test process --test installed \
     --no-run --message-format=json > "$evidence/build.jsonl" 2> "$evidence/build.log"
 artifact() {
     python3 - "$evidence/build.jsonl" "$1" <<'PY'
@@ -85,6 +103,7 @@ PY
 worker=$(artifact chariox-app-wasm-worker)
 native=$(artifact containment)
 process=$(artifact process)
+installed=$(artifact installed)
 # This is our own scratch executable. The red copy has no hardened-runtime
 # policy; the green copy admits only the existing allow-jit entitlement.
 export CHARIOX_UNCONTAINED_PROBE="$scratch/native-uncontained"
@@ -110,11 +129,18 @@ set +e
 native_result=$?
 "$process" --ignored --nocapture --test-threads=1 > "$evidence/process.log" 2>&1
 process_result=$?
+"$installed" --ignored --nocapture --test-threads=1 > "$evidence/installed.log" 2>&1
+installed_result=$?
+# Release kernels launch the worker installed beside them (no build-profile gate).
+cargo test --locked --release -p chariox-app-runtime --lib \
+    every_build_profile_opens_the_worker_beside_the_kernel > "$evidence/release-gate.log" 2>&1
+release_result=$?
 set -e
 find "$CHARIOX_WORKER_DRILL_DIR" -name stderr.log -exec sh -c '
     for file do printf "worker stderr:\n"; cat "$file"; done
 ' sh {} + > "$evidence/worker-stderr.log"
-printf '{"unsigned_signature_refused":true,"native_exit":%s,"process_exit":%s,"scratch_removed_on_exit":true}\n' \
-    "$native_result" "$process_result" > "$evidence/result.json"
-printf 'Native exit: %s; real worker exit: %s. Logs: %s\n' "$native_result" "$process_result" "$evidence"
-test "$native_result" = 0 && test "$process_result" = 0
+printf '{"unsigned_signature_refused":true,"native_exit":%s,"process_exit":%s,"installed_exit":%s,"release_gate_exit":%s,"scratch_removed_on_exit":true}\n' \
+    "$native_result" "$process_result" "$installed_result" "$release_result" > "$evidence/result.json"
+printf 'Native exit: %s; real worker exit: %s; installed App exit: %s; release gate exit: %s. Logs: %s\n' \
+    "$native_result" "$process_result" "$installed_result" "$release_result" "$evidence"
+test "$native_result" = 0 && test "$process_result" = 0 && test "$installed_result" = 0 && test "$release_result" = 0

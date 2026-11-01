@@ -1,7 +1,7 @@
 import { spawnOwned, signalOwnedProcessGroup } from "../apps/kernel/slice-linux-docker/owned-process-signals.mjs"
 import assert from "node:assert/strict"
 import { createHash, generateKeyPairSync, sign, verify } from "node:crypto"
-import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, readlink, rename, rm, stat, symlink, writeFile } from "node:fs/promises"
+import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, readlink, realpath, rename, rm, stat, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { basename, dirname, join, posix, relative, sep } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -189,6 +189,7 @@ function packagerArguments({
   relay,
   appPackage,
   appStorage,
+  appWasmWorker,
   builderAttestation,
   builderAttestationSignature,
   trustedBuilderPublicKey,
@@ -204,6 +205,7 @@ function packagerArguments({
     "--relay", relay,
     "--app-package", appPackage,
     "--app-storage", appStorage,
+    "--app-wasm-worker", appWasmWorker,
     "--builder-attestation", builderAttestation,
     "--builder-attestation-signature", builderAttestationSignature,
     "--trusted-builder-public-key", trustedBuilderPublicKey,
@@ -314,6 +316,7 @@ async function makeFixture(root, variant = "", { dockerfileContents, omitQuotaAs
   const relay = join(root, "chariox-relay")
   const appPackage = join(root, "chariox-app-package")
   const appStorage = join(root, "chariox-app-storage")
+  const appWasmWorker = join(root, "chariox-app-wasm-worker")
   const signingKey = join(root, "release-key.pem")
   const trustedPublicKey = join(root, "trusted-release-public-key")
   const kernelContents = variant ? `kernel fixture ${variant}\n` : "kernel fixture\n"
@@ -323,6 +326,7 @@ async function makeFixture(root, variant = "", { dockerfileContents, omitQuotaAs
   await writeFile(relay, relayContents, { mode: 0o755 })
   await writeFile(appPackage, "app package fixture\n", { mode: 0o755 })
   await writeFile(appStorage, "app storage fixture\n", { mode: 0o755 })
+  await writeFile(appWasmWorker, "app wasm worker fixture\n", { mode: 0o755 })
   const { privateKey, publicKey } = generateKeyPairSync("ed25519")
   await writeFile(signingKey, privateKey.export({ format: "pem", type: "pkcs8" }), { mode: 0o600 })
   await writeFile(trustedPublicKey, rawPublicKey(publicKey).toString("base64"), { mode: 0o600 })
@@ -432,6 +436,7 @@ async function makeFixture(root, variant = "", { dockerfileContents, omitQuotaAs
       { name: "chariox-relay", sha256: binaryDigest(relayContents) },
       { name: "chariox-app-package", sha256: binaryDigest("app package fixture\n") },
       { name: "chariox-app-storage", sha256: binaryDigest("app storage fixture\n") },
+      { name: "chariox-app-wasm-worker", sha256: binaryDigest("app wasm worker fixture\n") },
     ],
   }))
   await writeFile(builderAttestation, attestationBytes, { mode: 0o644 })
@@ -451,6 +456,7 @@ async function makeFixture(root, variant = "", { dockerfileContents, omitQuotaAs
     relayContents,
     appPackage,
     appStorage,
+    appWasmWorker,
     signingKey,
     trustedPublicKey,
     builderAttestation,
@@ -553,6 +559,7 @@ test("managed kernel release packages one reproducible signed rootfs", async (co
     "usr/local/bin/chariox-kernel",
     "usr/local/bin/chariox-managed-bootstrap",
     "usr/local/bin/chariox-app-package",
+    "usr/local/bin/chariox-app-wasm-worker",
     "usr/libexec/chariox-app-storage",
     "etc/systemd/system/chariox-app-storage.service",
   ]) {
@@ -599,6 +606,7 @@ test("managed kernel release packages one reproducible signed rootfs", async (co
       { name: "chariox-managed-bootstrap", path: "/usr/local/bin/chariox-managed-bootstrap", sha256: digest("supervisor fixture\n") },
       { name: "chariox-app-package", path: "/usr/local/bin/chariox-app-package", sha256: digest("app package fixture\n") },
       { name: "chariox-app-storage", path: "/usr/libexec/chariox-app-storage", sha256: digest("app storage fixture\n") },
+      { name: "chariox-app-wasm-worker", path: "/usr/local/bin/chariox-app-wasm-worker", sha256: digest("app wasm worker fixture\n") },
       { name: "chariox-app-storage.service", path: "/etc/systemd/system/chariox-app-storage.service", sha256: digest(fixture.appStorageServiceBytes) },
       {
         name: "chariox-managed-bootstrap.service",
@@ -718,6 +726,7 @@ test("managed kernel release packages one reproducible signed rootfs", async (co
   assert.equal(snapshot.find((entry) => entry.path === "usr/local/bin/chariox-kernel").mode, 0o755)
   assert.equal(snapshot.find((entry) => entry.path === "usr/local/bin/chariox-managed-bootstrap").mode, 0o755)
   assert.equal(snapshot.find((entry) => entry.path === "usr/local/bin/chariox-app-package").mode, 0o755)
+  assert.equal(snapshot.find((entry) => entry.path === "usr/local/bin/chariox-app-wasm-worker").mode, 0o755)
   assert.equal(
     snapshot.find((entry) => entry.path.endsWith("/enter-rootless-docker-namespace.sh")).mode,
     0o755,
@@ -1563,6 +1572,7 @@ test("managed kernel builder archives the exact commit and emits a signed binary
     "COPY --from=rust-builder /opt/chariox-source/target/release/chariox-relay /chariox-relay",
     "COPY --from=rust-builder /opt/chariox-source/target/release/chariox-app-package /chariox-app-package",
     "COPY --from=rust-builder /opt/chariox-source/target/release/chariox-app-storage /chariox-app-storage",
+    "COPY --from=rust-builder /opt/chariox-source/target/release/chariox-app-wasm-worker /chariox-app-wasm-worker",
   ])
   const fixture = await makeFixture(root, "", { dockerfileContents })
   const bin = join(root, "builder-bin")
@@ -1698,6 +1708,7 @@ case "$1 $2" in
     printf 'relay from archived commit\n' > "$destination/chariox-relay"
     printf 'app package from archived commit\n' > "$destination/chariox-app-package"
     printf 'app storage from archived commit\n' > "$destination/chariox-app-storage"
+    printf 'app wasm worker from archived commit\n' > "$destination/chariox-app-wasm-worker"
     if [ "$export_case" = missing ]; then rm "$destination/chariox-relay"; fi
     if [ "$export_case" = extra ]; then printf 'unexpected\n' > "$destination/unexpected-member"; fi
     if [ "$export_case" = symlink-artifact ]; then
@@ -1772,7 +1783,7 @@ esac
   assert.equal(initialVerificationCalls[6], initialVerificationCalls[1])
   assert.deepEqual((await readdir(output)).sort(), [
     "build-attestation.json", "build-attestation.sig", "builder-public-key",
-    "chariox-app-package", "chariox-app-storage",
+    "chariox-app-package", "chariox-app-storage", "chariox-app-wasm-worker",
     "chariox-kernel", "chariox-managed-bootstrap", "chariox-relay",
   ])
   // Attestation order: the three runtime binaries, then the App binaries.
@@ -1782,6 +1793,7 @@ esac
     ["chariox-relay", "relay from archived commit\n"],
     ["chariox-app-package", "app package from archived commit\n"],
     ["chariox-app-storage", "app storage from archived commit\n"],
+    ["chariox-app-wasm-worker", "app wasm worker from archived commit\n"],
   ])
   for (const [name, contents] of artifactContents) {
     assert.equal(await readFile(join(output, name), "utf8"), contents)
@@ -1893,11 +1905,17 @@ test("managed kernel release requires a matching trusted builder attestation", a
 
   await writeAttestation({
     ...original,
-    artifacts: [original.artifacts[1], original.artifacts[0], original.artifacts[2], original.artifacts[3], original.artifacts[4]],
+    artifacts: [original.artifacts[1], original.artifacts[0], ...original.artifacts.slice(2)],
   })
   const wrongArtifacts = runPackager({ ...fixture, output: join(root, "wrong-artifacts") })
   assert.equal(wrongArtifacts.status, 1)
   assert.match(wrongArtifacts.stderr, /artifacts do not match/)
+
+  // An attestation that leaves the App WASM worker out cannot vouch for the packaged one.
+  await writeAttestation({ ...original, artifacts: original.artifacts.slice(0, 5) })
+  const unattestedWorker = runPackager({ ...fixture, output: join(root, "unattested-worker") })
+  assert.equal(unattestedWorker.status, 1)
+  assert.match(unattestedWorker.stderr, /identity or target does not match/)
 })
 
 async function writeHarnessCommand(path, contents) {
@@ -2286,6 +2304,10 @@ test("managed image installer verifies, installs twice, and rejects seeded runti
   assert.equal((await stat(join(harness.installRoot, "usr/local/bin/chariox-app-package"))).mode & 0o777, 0o755)
   assert.equal(await readFile(join(harness.installRoot, "usr/libexec/chariox-app-storage"), "utf8"), "app storage fixture\n")
   assert.equal((await stat(join(harness.installRoot, "usr/libexec/chariox-app-storage"))).mode & 0o777, 0o755)
+  // Beside the real kernel binary: the kernel opens its WASM worker next to its own executable.
+  const releaseBin = join(await realpath(join(harness.installRoot, "usr/local/bin/chariox-kernel")), "..")
+  assert.equal(await readFile(join(releaseBin, "chariox-app-wasm-worker"), "utf8"), "app wasm worker fixture\n")
+  assert.equal((await stat(join(releaseBin, "chariox-app-wasm-worker"))).mode & 0o777, 0o755)
   assert.deepEqual(JSON.parse(await readFile(join(harness.installRoot, "etc/chariox/app-storage.json"), "utf8")), {
     schema: "chariox.app-storage-enrollment.v1", owners: [{uid:998,gid:998,cgroup_root:"/sys/fs/cgroup/system.slice/chariox-managed-bootstrap.service/apps",kernel_database_paths:["/home/chariox/.chariox/state/kernel.db"]}],
   })
@@ -2885,6 +2907,26 @@ test("App developer helper is bound to builder attestation and signed installed 
   assert.match(mismatch.stderr, /artifacts do not match/)
 })
 
+
+test("the App WASM worker is part of the attested release and refused when substituted or missing", async (context) => {
+  const root = await mkdtemp(join(tmpdir(), "chariox-worker-release-"))
+  context.after(() => rm(root, { recursive: true, force: true }))
+  const fixture = await makeFixture(root)
+  await writeFile(fixture.appWasmWorker, "unattested worker\n")
+  const unattested = runPackager({ ...fixture, output: join(root, "unattested") })
+  assert.equal(unattested.status, 1)
+  assert.match(unattested.stderr, /artifacts do not match/)
+  await writeFile(fixture.appWasmWorker, "app wasm worker fixture\n")
+  const withoutWorker = runPackager({ ...fixture, appWasmWorker: join(root, "absent-worker"), output: join(root, "absent") })
+  assert.equal(withoutWorker.status, 1)
+  assert.match(withoutWorker.stderr, /App WASM worker/)
+  const output = join(root, "signed")
+  const packaged = runPackager({ ...fixture, output })
+  assert.equal(packaged.status, 0, packaged.stderr)
+  const rootfs = join(output, "rootfs")
+  await writeFile(join(rootfs, "usr/local/bin/chariox-app-wasm-worker"), "substituted worker\n")
+  assert.notEqual(runVerifier(rootfs, packaged.stdout.trim(), fixture.trustedPublicKey).status, 0)
+})
 
 test("App storage helper and unit remain bound to signed release provenance", async (context) => {
   const root = await mkdtemp(join(tmpdir(), "chariox-storage-release-"))

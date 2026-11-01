@@ -12,9 +12,6 @@ use std::{
     time::Duration,
 };
 
-#[cfg(all(not(test), not(debug_assertions)))]
-const _: () = chariox_app_runtime::assert_production_build();
-
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Launch {
@@ -51,6 +48,26 @@ pub(crate) fn inherited_stream(
         libc::close(descriptor);
     }
     Ok(stream)
+}
+/// Enter R5 containment, or tell the supervisor this worker cannot be contained
+/// (in place of its ready record) and fail. The kernel reports the typed
+/// refusal; the OS reason stays in this worker's log.
+pub fn contain(files: &[std::path::PathBuf]) -> wasmtime::Result<()> {
+    crate::containment::enter(files).map_err(|error| {
+        // If even the refusal cannot be sent, the supervisor still sees an
+        // exit before ready; the App does not start either way.
+        if let Ok(mut stream) = inherited_stream(4) {
+            let _ = stream.write_all(b"CXAWC001");
+        }
+        wasmtime::Error::msg(format!("APP_SANDBOX_UNAVAILABLE: {error}"))
+    })
+}
+/// The runtime the contained worker serves the supervisor on.
+pub fn runtime() -> std::io::Result<tokio::runtime::Runtime> {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
 }
 pub(crate) fn ready(
     generation_text: &str,
@@ -147,7 +164,7 @@ fn run() -> wasmtime::Result<()> {
             // Neither compilation, registration nor the ready reply can precede
             // containment. R4 uses this same entry for its verified AOT bytes.
             let files=directories.as_ref().map(crate::wasi::InstallationDirectories::files).unwrap_or_default();
-            crate::containment::enter(&files).map_err(|error| wasmtime::Error::msg(format!("APP_SANDBOX_UNAVAILABLE: {error}")))?;
+            contain(&files)?;
             ready(&launch.generation, &launch.installation_id, &launch.release_digest)?;
             let engine=WorkerEngine::new()?;
             let component=engine.compile(&bytes,&launch.manifest.world)?;
@@ -157,7 +174,7 @@ fn run() -> wasmtime::Result<()> {
             }
             let stream=inherited_stream(3)?;
             stream.set_nonblocking(true)?;
-            let runtime=tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build()?;
+            let runtime=runtime()?;
             runtime.block_on(async move {
                 let mut transport=Ipc::start(tokio::net::UnixStream::from_std(stream)?,launch.generation)?;
                 worker.run(transport.ipc.clone(),&mut transport.incoming).await

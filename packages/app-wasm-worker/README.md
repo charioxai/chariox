@@ -92,6 +92,9 @@ clone3-to-ENOSYS and self-query-only prlimit checks from
 `apps/app-worker/src/sandbox_linux.c`, narrowed for the Rust broker transport.
 The v1 Node/bubblewrap/cgroup path is unchanged. No user namespace, mount,
 delegated cgroup or privileged host change is required for the WASM entry.
+The one socket call admitted is `socketpair` for an `AF_UNIX` stream pair: the
+async runtime opens one for its signal driver when another crate in the same
+build enables tokio's `signal` feature, as the kernel does.
 Without installation directories every path syscall is refused by seccomp and
 Landlock is not used. With them, Landlock (Linux 5.13+) grants file rights only
 beneath `data` and `tmp` (no execute, devices, sockets or FIFOs), and only then
@@ -99,9 +102,13 @@ does seccomp admit the path syscalls those preopens need; mode, owner and
 timestamp changes stay refused because Landlock does not mediate them. Stat and
 readlink on other paths remain possible (Landlock does not cover metadata). A
 host without Landlock refuses installed Apps with `APP_SANDBOX_LANDLOCK`.
-macOS refuses installed App files until its Seatbelt profile grants them.
+On macOS the Seatbelt profile grants the same two directories (read, create,
+write and remove beneath them) plus metadata of their exact parent directories,
+which reopening a preopen resolves; the paths are profile parameters, not text.
 Inherited descriptors are closed before that boundary.
-Unsupported containment fails with `APP_SANDBOX_UNAVAILABLE` before ready.
+Unsupported containment fails with `APP_SANDBOX_UNAVAILABLE` before ready: the
+worker sends `CXAWC001` instead of its ready record and exits, and the kernel
+reports `app_wasm_containment`; the OS reason stays in the worker's log.
 On aarch64 Linux only, seccomp admits the private code-cache membarrier commands
 32/64 with zero flags for Wasmtime publication; other commands remain denied.
 
@@ -158,8 +165,9 @@ macOS reuses v1's Seatbelt entry and JIT entitlement, with a broker-only profile
 in `src/containment/macos.sb`. It requires a valid hardened-runtime signature,
 allow-jit, and no unsigned-code/page-protection/debug/library-validation escape
 entitlements, then applies the same hard resource limits and a deny-default
-profile. Native files, network, process creation and executable file mappings
-are not granted. The production release must be signed; ad-hoc signing is only
+profile. Network, process creation and executable file mappings are not
+granted, and no file is granted except an installed App's `data`/`tmp` (built
+by `src/containment/seatbelt.rs`, whose profile text Linux CI tests). The production release must be signed; ad-hoc signing is only
 for the drill's own disposable copies. Hardened runtime, rather than Seatbelt,
 must enforce the JIT exception. The pinned engine's code publisher and the
 target macOS version must pass both the native/AOT and real-component drills;
@@ -173,7 +181,8 @@ bash packages/app-wasm-worker/scripts/macos-containment-drill.sh "$HOME/chariox-
 
 The script builds in disposable state, signs only its own binaries with the
 existing minimal entitlement, runs native red/green probes and every source
-component subprocess drill, saves source/binary identities and failures, and
+component subprocess drill, installs the drill App and checks its data/tmp
+under the contained supervised worker, saves source/binary identities and failures, and
 removes its scratch on exit. It does not use sudo, change system settings or
 touch product accounts. Return its complete evidence directory, including
 `result.json` and `worker-stderr.log`. A signing/JIT/resource refusal is a failed
