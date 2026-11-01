@@ -100,12 +100,13 @@ fn start_now_admits_a_held_command_whatever_the_room() {
     );
 }
 
+const GIB: u64 = 1024 * MIB;
+
+/// A writer on a volume below its floor (a 100 GiB volume has a 10 GiB floor),
+/// paused by admission. The volume's free space is the test's to change.
 #[cfg(target_os = "linux")]
-#[test]
-fn a_command_writing_past_the_disk_floor_is_paused_until_space_frees() {
+fn paused_writer() -> (Workload, Arc<std::sync::atomic::AtomicU64>, Arc<pool::Pool>) {
     use std::sync::atomic::{AtomicU64, Ordering};
-    const GIB: u64 = 1024 * MIB;
-    // A 100 GiB volume: its floor is 10 GiB.
     let free = Arc::new(AtomicU64::new(5 * GIB));
     let reported = free.clone();
     let pool = Arc::new(pool::Pool::with_volume(
@@ -118,7 +119,7 @@ fn a_command_writing_past_the_disk_floor_is_paused_until_space_frees() {
             })
         }),
     ));
-    let mut writer = Workload::run(
+    let writer = Workload::run(
         domain(&pool, "writer", false),
         &[(
             "write",
@@ -127,11 +128,19 @@ fn a_command_writing_past_the_disk_floor_is_paused_until_space_frees() {
         )],
     );
     settle(3);
-    assert!(writer.alive("write"), "a writer on a full disk was stopped");
     assert!(
         writer.waiting("write"),
         "a writer past the floor kept writing"
     );
+    (writer, free, pool)
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_command_writing_past_the_disk_floor_is_paused_until_space_frees() {
+    use std::sync::atomic::Ordering;
+    let (mut writer, free, _pool) = paused_writer();
+    assert!(writer.alive("write"), "a writer on a full disk was stopped");
     assert!(matches!(
         state(&writer, "write"),
         SessionProcessState::Paused {
@@ -145,6 +154,94 @@ fn a_command_writing_past_the_disk_floor_is_paused_until_space_frees() {
         !writer.waiting("write"),
         "the writer did not continue with space"
     );
+}
+
+/// What the previous program's admission handed over for the paused writer.
+#[cfg(target_os = "linux")]
+fn paused_by_the_previous_program(writer: &Workload) -> admission::HeldCommand {
+    admission::HeldCommand {
+        identity: crate::runtime::kernel_access::process::inspect(writer.pid("write") as u32)
+            .unwrap()
+            .0,
+        wait: Some(admission::Wait::Paused(WaitReason::Disk)),
+        admitted: true,
+        forced: false,
+        paused_rate: 4 * MIB,
+        peak: admission::Peak::default(),
+        arrived: 1,
+    }
+}
+
+/// The next program's watch starts with the handover and no admission state
+/// of its own.
+#[cfg(target_os = "linux")]
+fn reload(writer: &Workload, handed_over: Vec<admission::HeldCommand>) {
+    admission::adopt_admission(handed_over);
+    writer.domain.state.lock().unwrap().admission.clear();
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn the_commands_admission_stopped_are_handed_over() {
+    let (writer, _free, pool) = paused_writer();
+    let handed_over: Vec<admission::HeldCommand> =
+        serde_json::from_slice(&serde_json::to_vec(&pool.held_commands()).unwrap()).unwrap();
+    assert_eq!(handed_over.len(), 1);
+    assert_eq!(handed_over[0].identity.pid, writer.pid("write") as u32);
+    assert_eq!(
+        handed_over[0].wait,
+        Some(admission::Wait::Paused(WaitReason::Disk))
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_command_admission_paused_resumes_when_space_frees_after_a_hot_reload() {
+    use std::sync::atomic::Ordering;
+    let (writer, free, _pool) = paused_writer();
+    reload(&writer, vec![paused_by_the_previous_program(&writer)]);
+    settle(2);
+    assert!(
+        writer.waiting("write"),
+        "the reload resumed the command into a full disk"
+    );
+    free.store(50 * GIB, Ordering::SeqCst);
+    settle(3);
+    assert!(
+        !writer.waiting("write"),
+        "the command stayed stopped after the reload although space is free"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_command_admission_paused_is_still_listed_and_startable_after_a_hot_reload() {
+    let (writer, _free, _pool) = paused_writer();
+    reload(&writer, vec![paused_by_the_previous_program(&writer)]);
+    settle(2);
+    assert!(
+        matches!(
+            state(&writer, "write"),
+            SessionProcessState::Paused {
+                reason: WaitReason::Disk,
+                ..
+            }
+        ),
+        "Health does not show the stopped command as waiting"
+    );
+    let key = format!("admission-{:016x}", rand::random::<u64>());
+    writer.domain.bind_key(&key);
+    let process_id = samples_for_key(&key)
+        .into_iter()
+        .find(|sample| sample.pid == writer.pid("write") as u32)
+        .unwrap()
+        .process_id;
+    assert_eq!(
+        start_now_for_key(&key, process_id.clone()),
+        Ok(vec![process_id])
+    );
+    settle(1);
+    assert!(!writer.waiting("write"), "Start now did not start it");
 }
 
 #[cfg(target_os = "linux")]

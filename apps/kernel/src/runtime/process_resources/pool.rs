@@ -118,6 +118,12 @@ impl Pool {
         members.push(Arc::downgrade(member));
     }
 
+    /// The commands whose admission has stopped them, for a kernel that
+    /// replaces its program in place.
+    pub(super) fn held_commands(&self) -> Vec<admission::HeldCommand> {
+        Vec::new()
+    }
+
     fn members(&self) -> Vec<Arc<Mutex<Observation>>> {
         self.members
             .lock()

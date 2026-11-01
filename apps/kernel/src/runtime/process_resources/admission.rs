@@ -30,7 +30,7 @@ pub enum WaitReason {
     Disk,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(super) enum Wait {
     /// Stopped before it grew: it waits for room for its expected peak.
     Held(WaitReason),
@@ -127,6 +127,24 @@ impl Entry {
         true
     }
 }
+
+/// A command the previous kernel program's admission had stopped (or was
+/// resuming) when it handed its processes over: the next program keeps it
+/// waiting and controllable, and resumes it when room frees.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) struct HeldCommand {
+    pub(super) identity: crate::runtime::kernel_access::process::ProcessIdentity,
+    pub(super) wait: Option<Wait>,
+    pub(super) admitted: bool,
+    pub(super) forced: bool,
+    pub(super) paused_rate: u64,
+    pub(super) peak: Peak,
+    pub(super) arrived: u64,
+}
+
+/// Records what the previous program handed over, for the commands of the
+/// watches this program starts for the adopted processes.
+pub(crate) fn adopt_admission(_held: Vec<HeldCommand>) {}
 
 /// The machine-wide part of admission, under the pool.
 pub(super) struct Ledger {
