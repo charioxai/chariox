@@ -103,7 +103,7 @@ fn format_summary(diagnostic: &Diagnostic) -> String {
     {
         // MP-08/MP-10: describe the known boundary failure without provider
         // output or silently changing the user's container security choice.
-        summary.push_str("; provider namespace setup was denied by the execution environment. For local Docker slices, provider sandbox compatibility is an explicit opt-in that relaxes container security (adds SYS_ADMIN, NET_ADMIN and SYS_PTRACE and relaxes seccomp and AppArmor); to accept that, run /config set slices.linux.allow_provider_sandbox_compatibility true and recreate the slice before retrying. If already enabled, verify the host supports the selected provider namespace boundary");
+        summary.push_str("; provider namespace setup was denied by the execution environment. For local Docker slices, provider sandbox compatibility (SYS_ADMIN, NET_ADMIN and SYS_PTRACE with relaxed seccomp and AppArmor) is on by default; if you set it to false, run /config set slices.linux.allow_provider_sandbox_compatibility true and recreate the slice before retrying. Otherwise verify the host supports the selected provider namespace boundary");
     }
     summary
 }
@@ -160,12 +160,12 @@ fn classify(output: &[u8], classes: &mut BTreeSet<&'static str>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
     use std::time::{Duration, Instant};
 
     #[test]
     fn startup_diagnostic_drains_verbose_output_without_exposing_values() {
-        let mut child = Command::new("sh")
+        let mut child = crate::process_spawn::command("sh")
             .args(["-c", "printf 'Error loading config: private-fixture-value\\n' >&2; head -c 100000 /dev/zero >&2"])
             .stderr(Stdio::piped())
             .spawn()
@@ -193,9 +193,7 @@ mod tests {
         assert!(
             summary.contains("/config set slices.linux.allow_provider_sandbox_compatibility true")
         );
-        assert!(summary.contains("explicit opt-in"));
-        assert!(summary.contains("relaxes container security"));
-        assert!(!summary.contains("by default"));
+        assert!(summary.contains("on by default"));
         assert!(summary.contains("recreate the slice"));
     }
 

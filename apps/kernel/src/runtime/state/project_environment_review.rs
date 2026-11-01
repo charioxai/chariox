@@ -390,7 +390,7 @@ pub(super) fn project_environment_code_summary(
         .iter()
         .map(|repository| {
             let git = |args: &[&str]| -> Option<String> {
-                let output = std::process::Command::new("git")
+                let output = crate::process_spawn::command("git")
                     .arg("-C")
                     .arg(&repository.worktree_path)
                     .args(args)

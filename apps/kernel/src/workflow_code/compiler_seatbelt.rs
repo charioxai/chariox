@@ -210,7 +210,7 @@ fn command_with_backend(
             literal(&directory)?
         ));
     }
-    let mut command = Command::new(backend);
+    let mut command = crate::process_spawn::command(backend);
     command
         .env_clear()
         .current_dir(&scratch.0)

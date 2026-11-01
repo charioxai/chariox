@@ -1,6 +1,7 @@
 import type { CliDialogOverlayMode } from "./cli-dialog-overlay.js"
 
 export type CliDialogOverlayOpenState = {
+  processesOpen?: boolean
   environmentOpen?: boolean
   managedMachineOpen?: boolean
   hotkeysOpen: boolean
@@ -9,6 +10,7 @@ export type CliDialogOverlayOpenState = {
 }
 
 export function resolveCliDialogOverlayMode(state: CliDialogOverlayOpenState): CliDialogOverlayMode {
+  if (state.processesOpen) return "processes"
   if (state.environmentOpen) return "environment"
   if (state.managedMachineOpen) {
     return "managed-machine"

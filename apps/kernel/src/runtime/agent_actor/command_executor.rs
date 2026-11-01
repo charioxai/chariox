@@ -284,6 +284,13 @@ impl AgentRuntimeCommandExecutor {
         request: crate::local::CancelActivePromptRequest,
         target_agent_id: String,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        if let Some(response) = self
+            .prompt_commands
+            .cancel_parked_agent_task(&request, &target_agent_id)
+            .await?
+        {
+            return Ok(response);
+        }
         let prepared = self
             .prompt_commands
             .cancel_agent_prompt(

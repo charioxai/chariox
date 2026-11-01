@@ -31,3 +31,19 @@ test("a rejected home interruption cannot become untracked provider cancellation
   await assert.rejects(sendClaudeRemoteRenderedInput(client, "session", "attachment", "run", "\u001b", "agent"), /not admitted/)
   assert(!requests.some(r => r.SendTerminalInput))
 })
+
+// MP-08 / MP-09 / MP-10 / MP-11: work can park after the activity snapshot.
+test("rendered Claude interruption accepts a task parked after the activity snapshot", async () => {
+  const requests: any[] = []
+  const client = { send: async (request: any) => {
+    requests.push(request)
+    return request.GetSessionState
+      ? { SessionState: { agent_activity: { agent: { active_prompt_count: 1 } } } }
+      : { AgentTaskUpdated: { session_id: "session", task: { task_id: "parked-task", state: "Cancelled" } } }
+  } } as unknown as LocalIpcClient
+  await sendClaudeRemoteRenderedInput(client, "session", "attachment", "run", "\u001b", "agent")
+  assert.deepEqual(requests.at(-1), { CancelActivePrompt: {
+    session_id: "session", attachment_id: "attachment", target_agent_id: "agent",
+  } })
+  assert(!requests.some(request => request.SendTerminalInput))
+})

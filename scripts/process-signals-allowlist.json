@@ -13,12 +13,12 @@
     },
     {
       "path": "scripts/lint-process-signals.mjs",
-      "sha256": "05b3ce862a208aee26c5e9d4c5b04c4bcd0faee00a1e9009a3c76aa9400ee436",
+      "sha256": "956867bb58b732a03df4527454252ffa9e4c618142d8a6ca9a71a1c332ca664d",
       "reason": "MP-11 lint rule definitions mention forbidden constructs as inert regular expressions; no signal is executed."
     },
     {
       "path": "scripts/lint-process-signals.test.mjs",
-      "sha256": "cb15c739199870ae586c80d06f16b373060b1dc38b90415c79145a331d7532be",
+      "sha256": "85e24045b809bc666b428722f1dc07c8a223233be6588087215024fec951a20f",
       "reason": "MP-11 inert fail-first lint fixtures deliberately contain forbidden signal source text; strings are never executed."
     },
     {
@@ -133,6 +133,104 @@
       "text": "self.assertNotIn('pkill ', (ROOT / 'start-runtime.sh').read_text())",
       "count": 1,
       "reason": "MP-11 inert regression assertion that the slice runtime start script no longer signals by process name; the string is never executed."
+    },
+    {
+      "path": "apps/kernel/src/runtime/state/project_environment_setup_recovery.rs",
+      "kind": "rust-group",
+      "text": "let _ = unsafe { libc::kill(-(identity.process_group_id as libc::pid_t), libc::SIGKILL) };",
+      "count": 4,
+      "reason": "MP-11 reviewed (mp11a signal-guards): the persisted lease pins boot id, PID and start ticks, and the leader is held stopped through a pidfd before the group send."
+    },
+    {
+      "path": "apps/kernel/src/runtime/state/project_environment_setup_recovery.rs",
+      "kind": "rust-group",
+      "text": "let result = unsafe { libc::kill(-(identity.process_group_id as libc::pid_t), libc::SIGKILL) };",
+      "count": 2,
+      "reason": "MP-11 reviewed (mp11a signal-guards): the persisted lease pins boot id, PID and start ticks, and the leader is held stopped through a pidfd before the group send."
+    },
+    {
+      "path": "apps/kernel/src/runtime/state/project_environment_setup_recovery.rs",
+      "kind": "rust-group",
+      "text": "let result = unsafe { libc::kill(-(process_group_id as libc::pid_t), 0) };",
+      "count": 1,
+      "reason": "MP-11 reviewed (mp11a signal-guards): signal 0 only probes whether the recorded group still exists."
+    },
+    {
+      "path": "packages/app-runtime/src/worker_process/monitor.rs",
+      "kind": "rust-group",
+      "text": "libc::kill(-self.pid, libc::SIGKILL);",
+      "count": 1,
+      "reason": "MP-11 reviewed (mp11a signal-guards): the worker is a posix_spawn SETSID child that is still unreaped (WNOWAIT) when its group is signalled, so the PID cannot be reused."
+    },
+    {
+      "path": "packages/app-runtime/src/worker_process/storage_linux/formatter.rs",
+      "kind": "rust-group",
+      "text": "libc::kill(-self.pid, libc::SIGKILL);",
+      "count": 1,
+      "reason": "MP-11 reviewed (mp11a signal-guards): the worker is a posix_spawn SETSID child that is still unreaped (WNOWAIT) when its group is signalled, so the PID cannot be reused."
+    },
+    {
+      "path": "packages/app-runtime/src/worker_process/storage_macos/commands.rs",
+      "kind": "rust-group",
+      "text": "libc::kill(-self.pid, libc::SIGKILL);",
+      "count": 1,
+      "reason": "MP-11 reviewed (mp11a signal-guards): the worker is a posix_spawn SETSID child that is still unreaped (WNOWAIT) when its group is signalled, so the PID cannot be reused."
+    },
+    {
+      "path": "packages/app-runtime/src/worker_process/storage_macos/tests/hosted.rs",
+      "kind": "rust-group",
+      "text": "libc::kill(-(child.id() as i32), libc::SIGKILL);",
+      "count": 1,
+      "reason": "MP-11 test-only cleanup of the fixture's own unreaped child group."
+    },
+    {
+      "path": "apps/kernel/src/slice/local_docker/home_archive_capture.rs",
+      "kind": "rust-group",
+      "text": "libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL);",
+      "count": 1,
+      "reason": "MP-11 reviewed (mp11a signal-guards): the capture child is unreaped when its private group is signalled."
+    },
+    {
+      "path": "apps/kernel/src/runtime/state/project_environment_setup_validation.rs",
+      "kind": "rust-group",
+      "text": "let _ = unsafe { libc::kill(-process_group, libc::SIGKILL) };",
+      "count": 1,
+      "reason": "MP-11 reviewed (mp11a signal-guards G-14, P3): the child's own private group, signalled around its reap; the window is the reap itself."
+    },
+    {
+      "path": "apps/kernel/src/managed_context/scm.rs",
+      "kind": "rust-group",
+      "text": "let _ = unsafe { libc::kill(-(process_group as i32), libc::SIGKILL) };",
+      "count": 1,
+      "reason": "MP-11 reviewed (mp11a signal-guards G-14, P3): the child's own private group, signalled around its reap; the window is the reap itself."
+    },
+    {
+      "path": "apps/kernel/src/managed_bootstrap/provider_path.rs",
+      "kind": "rust-group",
+      "text": "libc::kill(-pid, libc::SIGKILL);",
+      "count": 1,
+      "reason": "MP-11 reviewed (mp11a signal-guards G-14, P3): the child's own private group, signalled around its reap; the window is the reap itself."
+    },
+    {
+      "path": "apps/kernel/src/pty/manager.rs",
+      "kind": "rust-group",
+      "text": "let _ = unsafe { libc::kill(-process_group, libc::SIGKILL) };",
+      "count": 1,
+      "reason": "MP-11 reviewed (mp11a signal-guards G-14, P3): the child's own private group, signalled around its reap; the window is the reap itself."
+    },
+    {
+      "path": "apps/kernel/src/pty/manager.rs",
+      "kind": "rust-group",
+      "text": "if unsafe { libc::killpg(group, signal) } != 0 {",
+      "count": 1,
+      "reason": "MP-11 reviewed (mp11a signal-guards G-14, P3): foreground group of the PTY, re-read just before the interrupt."
+    },
+    {
+      "path": "apps/kernel/src/runtime/browser_controller_process/owned_process_group.rs",
+      "kind": "rust-group",
+      "text": "libc::kill(-(self.root as i32), libc::SIGKILL);",
+      "count": 1,
+      "reason": "MP-11 verified group send: the root's start identity is recorded while it is an unreaped child and every live member is proven ours by start identity before the send."
     }
   ]
 }

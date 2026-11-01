@@ -130,8 +130,35 @@ test("workflow queue command validates action usage", async () => {
 
   assert.deepEqual(harness.calls, [
     "footer:error:usage: /workflow queue remove [--workflow <workflow-ref>] <queue-item-ref>",
-    "footer:error:usage: /workflow queue [list|create|rename|priority|enable|disable|delete|edit|move|remove|clear|flush]",
+    "footer:error:usage: /workflow queue [list|create|rename|priority|enable|disable|delete|edit|move|retry|remove|clear|flush]",
   ])
+})
+
+test("workflow queue command retries a held notification delivery", async () => {
+  const harness = createHarness({
+    updateQueuedWorkflowPrompt: async (queueItemRef, patch) => {
+      harness.calls.push(`update:${queueItemRef}:${JSON.stringify(patch)}`)
+      return { queued_prompt: queuedPrompt({ id: queueItemRef }), session: runtimeSession({ id: "session-retried" }) }
+    },
+  })
+
+  await handleWorkflowQueueCommand(harness.deps, ["queue", "retry", "prompt-1"])
+  await handleWorkflowQueueCommand(harness.deps, ["queue", "retry"])
+
+  assert.deepEqual(harness.calls, [
+    "update:prompt-1:{\"retryDelivery\":true}",
+    "session:session-retried",
+    "footer:info:retrying held notification prompt-1",
+    "footer:error:usage: /workflow queue retry [--workflow <workflow-ref>] <queue-item-ref>",
+  ])
+})
+
+test("formatWorkflowQueuedPrompt shows an uncertain notification delivery with its decision commands", () => {
+  const text = formatWorkflowQueuedPrompt(
+    queuedPrompt({ status: "running", delivery_uncertain_until_ms: Date.UTC(2026, 9, 17, 7, 23) }),
+  )
+  assert.match(text, /status=running DELIVERY UNCERTAIN, held until 2026-10-17 07:23 UTC/)
+  assert.match(text, /retry: \/workflow queue retry prompt-1, discard: \/workflow queue remove prompt-1/)
 })
 
 test("formatWorkflowQueuedPrompt omits empty optional fields", () => {

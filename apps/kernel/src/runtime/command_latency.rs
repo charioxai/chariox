@@ -17,6 +17,7 @@ pub(crate) struct CommandTrace {
     connection_class: Option<KernelConnectionClass>,
     priority: KernelCommandPriority,
     submitted_at_ms: u64,
+    observation: Option<crate::runtime::request_metrics::RequestObservation>,
 }
 
 impl CommandTrace {
@@ -29,6 +30,7 @@ impl CommandTrace {
             connection_class: command.caller.connection_class,
             priority: command.priority.clone(),
             submitted_at_ms: command.submitted_at_ms,
+            observation: crate::runtime::request_metrics::RequestObservation::current(),
         }
     }
 
@@ -66,13 +68,22 @@ impl CommandTrace {
 pub(crate) struct LaneCommandTrace {
     command: CommandTrace,
     enqueued_at_ms: u64,
+    enqueued_at: std::time::Instant,
 }
 
 impl LaneCommandTrace {
+    pub(crate) async fn scope<F: std::future::Future>(&self, future: F) -> F::Output {
+        match &self.command.observation {
+            Some(observation) => observation.scope(future).await,
+            None => future.await,
+        }
+    }
+
     pub(crate) fn new(command: CommandTrace, enqueued_at_ms: u64) -> Self {
         Self {
             command,
             enqueued_at_ms,
+            enqueued_at: std::time::Instant::now(),
         }
     }
 
@@ -255,6 +266,9 @@ pub(crate) fn log_lane_dispatched(
     lane_id: &str,
     dispatch_started_at_ms: u64,
 ) {
+    if let Some(observation) = &trace.command.observation {
+        observation.record_queue(trace.enqueued_at.elapsed());
+    }
     if !sampled(trace.command_id()) {
         return;
     }
@@ -756,7 +770,7 @@ mod tests {
             saw_response_content: true,
             completion_recorded: true,
             settlement_requested: true,
-            active_tool_ids: std::collections::BTreeSet::new(),
+            active_tools: Default::default(),
         };
 
         let fields = provider_turn_completion_fields(&run, Some(&turn), Some(&activity), 2_075);

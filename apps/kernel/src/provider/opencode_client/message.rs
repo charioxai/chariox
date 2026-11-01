@@ -3,6 +3,28 @@
 use serde::Deserialize;
 use serde_json::Value;
 
+/// OpenCode's message for an error object (`name` and `data`), framed with the
+/// code its name and HTTP status give, the way Codex errors are.
+pub(super) fn opencode_error_text(error: &Value, message: &str) -> String {
+    let status = error
+        .get("data")
+        .and_then(|data| data.get("statusCode"))
+        .and_then(Value::as_u64);
+    let code = match (error.get("name").and_then(Value::as_str), status) {
+        (Some("ProviderAuthError"), _) => "provider_auth_error",
+        (Some("APIError"), Some(401)) => "unauthorized",
+        (Some("APIError"), Some(429)) => "rate_limit_exceeded",
+        (Some("APIError"), Some(503 | 529)) => "server_overloaded",
+        (Some("APIError"), Some(500..=599)) => "internal_server_error",
+        (Some("APIError"), _) => "other",
+        _ => return message.to_string(),
+    };
+    match error.pointer("/data/isRetryable").and_then(Value::as_bool) {
+        Some(retryable) => format!("OpenCode error [{code}; retryable={retryable}]: {message}"),
+        None => crate::provider::provider_coded_failure_text("OpenCode", code, message),
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct OpenCodeMessage {
     pub info: OpenCodeMessageInfo,
@@ -44,8 +66,8 @@ impl OpenCodeMessageInfo {
             .and_then(|value| value.get("message"))
             .and_then(Value::as_str)
             .or_else(|| error.get("message").and_then(Value::as_str))
-            .or_else(|| error.as_str())
-            .map(str::to_string)
+            .map(|message| opencode_error_text(error, message))
+            .or_else(|| error.as_str().map(str::to_string))
             .or_else(|| Some("OpenCode reported an unknown assistant error".to_string()))
     }
 

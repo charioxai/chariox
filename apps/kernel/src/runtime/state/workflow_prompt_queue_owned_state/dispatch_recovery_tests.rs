@@ -488,3 +488,187 @@ fn expire_ready_entry(restart: bool) {
         .status()
         .is_terminal());
 }
+
+// MP-08 / MP-09 / MP-10 / MP-11: queue admission commits the run and its
+// entry intent before provider preparation can persist the first prompt.
+#[test]
+fn restart_between_workflow_admission_and_prompt_preserves_the_admitted_entry() {
+    let (runtime, session, workflow, endpoint, _root) = runtime_with_idle_workflow();
+    let db = rusqlite::Connection::open(runtime.owned.durable_state_store.path()).unwrap();
+    db.execute_batch("CREATE TRIGGER interrupt_entry_prepare BEFORE INSERT ON durable_state_events WHEN NEW.kind='workflow.runtime.updated' AND json_extract(NEW.payload_json,'$.reason')='workflow_entry_prepared' BEGIN SELECT RAISE(ABORT,'crash before first prompt'); END;").unwrap();
+    assert!(runtime
+        .owned
+        .workflow_enqueue_prompt_and_maybe_start(
+            &session,
+            &workflow,
+            &endpoint,
+            Some("survive admission crash".into()),
+            None,
+            None,
+        )
+        .is_err());
+    let intent = runtime
+        .owned
+        .workflow_pending_entry(&session)
+        .unwrap()
+        .unwrap();
+    let run = runtime
+        .owned
+        .session_store
+        .read()
+        .resolve_workflow_run_ref(&session, &intent.run_id)
+        .unwrap();
+    db.execute_batch("DROP TRIGGER interrupt_entry_prepare")
+        .unwrap();
+    assert_eq!(intent.run_id, run.id());
+    assert!(!intent.submitted);
+    assert_eq!(prompt_count(&runtime, &session), 0);
+    let config = runtime.owned.config_projection.snapshot();
+    drop(runtime);
+    let runtime = runtime_state_from_app(DaemonApp::bootstrap(config.clone()).unwrap());
+    let recovered = runtime
+        .owned
+        .session_store
+        .read()
+        .resolve_workflow_run_ref(&session, run.id())
+        .unwrap();
+    assert!(
+        !recovered.status().is_terminal(),
+        "durable admitted entry must resume, not become an orphan: {recovered:?}"
+    );
+    let (_, dispatches) = runtime
+        .owned
+        .workflow_start_next_queued_prompt_for_response(&session)
+        .unwrap();
+    assert!(dispatches.admitted_workflow_prompt);
+    let submitted = runtime
+        .owned
+        .workflow_entry_intent(&session, run.id())
+        .unwrap()
+        .unwrap();
+    assert_eq!(submitted.operation_id, intent.operation_id);
+    assert!(submitted.submitted);
+    assert_eq!(prompt_count(&runtime, &session), 1);
+    drop(runtime);
+    let runtime = runtime_state_from_app(DaemonApp::bootstrap(config).unwrap());
+    runtime
+        .owned
+        .workflow_start_next_queued_prompt_for_response(&session)
+        .unwrap();
+    assert_eq!(
+        prompt_count(&runtime, &session),
+        1,
+        "second restart must not duplicate entry"
+    );
+}
+
+#[tokio::test]
+async fn restart_orphan_outcome_replaces_the_normalized_active_workflow_run() {
+    use crate::durable_state::agent_lifecycle::{Operation, Outcome};
+    let (runtime, session, workflow, endpoint, _root) = runtime_with_idle_workflow();
+    let run = runtime
+        .owned
+        .session_store
+        .write()
+        .invoke_workflow_endpoint(
+            &session,
+            &workflow,
+            &endpoint,
+            Some("lost legacy prompt".into()),
+        )
+        .unwrap();
+    runtime
+        .owned
+        .persist_workflow_runtime_session(&session, "legacy_admitted_without_prompt")
+        .unwrap();
+    let snapshot = runtime.owned.session_store.get_session(&session).unwrap();
+    let Outcome::Task(node_task) = runtime
+        .owned
+        .durable_state_store
+        .agent_lifecycle(Operation::Begin {
+            owner: snapshot.owner_user_id().into(),
+            room: session.clone(),
+            agent: run.node_runs()[0].agent_id().into(),
+            prompt: "lost-legacy-turn".into(),
+            run: Some("lost-provider".into()),
+            now: crate::session::unix_epoch_ms(),
+        })
+        .unwrap()
+    else {
+        panic!("node task")
+    };
+    runtime
+        .owned
+        .durable_state_store
+        .agent_lifecycle(Operation::BindWorkflow {
+            task: node_task.task_id,
+            prompt: "lost-legacy-turn".into(),
+            run: run.id().into(),
+            node: run.node_runs()[0].id().into(),
+        })
+        .unwrap();
+    let Outcome::Task(goal) = runtime
+        .owned
+        .durable_state_store
+        .agent_lifecycle(Operation::AdoptGoal {
+            owner: snapshot.owner_user_id().into(),
+            room: session.clone(),
+            agent: run.node_runs()[0].agent_id().into(),
+            run: run.id().into(),
+            nodes: run.node_runs().iter().map(|n| n.node_id().into()).collect(),
+            objective: "Finish the original invocation".into(),
+            now: crate::session::unix_epoch_ms(),
+        })
+        .unwrap()
+    else {
+        panic!("adoption goal")
+    };
+    let mut config = runtime.owned.config_projection.snapshot();
+    config.room_agent_tools = true;
+    drop(runtime);
+    for _ in 0..2 {
+        let app = DaemonApp::bootstrap(config.clone()).unwrap();
+        let projected = app
+            .sessions()
+            .resolve_workflow_run_ref(&session, run.id())
+            .ok();
+        let durable = app
+            .durable_state_store()
+            .resolve_workflow_run(&config.daemon_id, &session, run.id())
+            .unwrap()
+            .unwrap();
+        assert!(
+            durable.status().is_terminal(),
+            "recovery outcome must reach normalized history"
+        );
+        if let Some(projected) = projected {
+            assert_eq!(durable.status(), projected.status());
+        }
+        assert!(!durable.failure_events().is_empty());
+        let runtime = runtime_state_from_app(app);
+        let restored = runtime.owned.session_store.get_session(&session).unwrap();
+        assert_eq!(
+            runtime
+                .owned
+                .agent_workflow_source(&restored, run.id())
+                .unwrap()
+                .unwrap()
+                .status(),
+            durable.status()
+        );
+        runtime.sweep_agent_lifecycle().await.unwrap();
+        let events = runtime
+            .owned
+            .durable_state_store
+            .agent_inbox(&session, &goal.agent_id, 0)
+            .unwrap();
+        assert!(
+            events.iter().any(|e| e.source_id == run.id()
+                && e.payload["public_answer"]["reason"]
+                    == durable.failure_events().last().unwrap().message()
+                && e.payload["public_answer"]["workflow_run_id"] == run.id()
+                && e.payload["public_answer"]["recovery"].is_string()),
+            "adopted goal needs a definitive failure with reason and recovery: {events:?}"
+        );
+    }
+}

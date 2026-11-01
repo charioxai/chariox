@@ -1,8 +1,75 @@
 diff --git a/index-0wbvecnk.js b/index-0wbvecnk.js
-index 0c926100cef4bfc551c0656416278cbc5a1213b3..3fbeeee1178d8d0a3473d0bbb8dda736d5a2711b 100644
+index 0c926100cef4bfc551c0656416278cbc5a1213b3..bb6f690cc8b9bb4ee2f9fa844b1f60b05de38361 100644
 --- a/index-0wbvecnk.js
 +++ b/index-0wbvecnk.js
-@@ -12803,7 +12803,9 @@
+@@ -6794,6 +6794,7 @@ var env = new Proxy({}, {
+ // src/lib/stdin-parser.ts
+ import { Buffer as Buffer3 } from "buffer";
+ var DEFAULT_TIMEOUT_MS = 10;
++var ESC_MOUSE_HOLD_MS = 500;
+ var DEFAULT_MAX_PENDING_BYTES = 64 * 1024;
+ var INITIAL_PENDING_CAPACITY = 256;
+ var ESC = 27;
+@@ -7073,11 +7074,18 @@ class StdinParser {
+     if (this.paste || this.pendingSinceMs === null || this.pending.length === 0) {
+       return;
+     }
++    if (this.state.tag === "csi" || this.holdsEscForMouseReport(nowMsValue)) return;
+     if (nowMsValue < this.pendingSinceMs || nowMsValue - this.pendingSinceMs < this.timeoutMs) {
+       return;
+     }
+     this.forceFlush = true;
+   }
++  // MP-08 / MP-10: while a button is down, a lone ESC may be the start of a mouse
++  // report that SSH delivered late, so it waits up to ESC_MOUSE_HOLD_MS. A release
++  // that never arrives (drag left the terminal) must not hold Escape for ever.
++  holdsEscForMouseReport(nowMsValue) {
++    return this.state.tag === "esc" && this.mouseParser.mouseButtonsPressed.size > 0 && this.pendingSinceMs !== null && nowMsValue >= this.pendingSinceMs && nowMsValue - this.pendingSinceMs < ESC_MOUSE_HOLD_MS;
++  }
+   reset() {
+     if (this.destroyed) {
+       return;
+@@ -7185,6 +7193,7 @@ class StdinParser {
+               return;
+             }
+             const flushedLoneEsc = this.cursor === this.unitStart + 1 && bytes[this.unitStart] === ESC;
++            if (flushedLoneEsc) this.mouseParser.reset();
+             this.emitKeyOrResponse("unknown", decodeUtf8(bytes.subarray(this.unitStart, this.cursor)));
+             this.justFlushedEsc = flushedLoneEsc;
+             this.state = { tag: "ground" };
+@@ -7611,11 +7620,15 @@ class StdinParser {
+     if (!this.armTimeouts) {
+       return;
+     }
+-    if (this.paste || this.pendingSinceMs === null || this.pending.length === 0) {
++    // MP-08 / MP-10: CSI framing ends at its final byte, not an event-loop
++    // deadline. Overflow and a new ESC still bound/recover malformed input.
++    if (this.paste || this.state.tag === "csi" || this.pendingSinceMs === null || this.pending.length === 0) {
+       this.clearTimeout();
+       return;
+     }
+     this.clearTimeout();
++    const nowMsValue = this.clock.now();
++    const delayMs = this.holdsEscForMouseReport(nowMsValue) ? Math.max(1, ESC_MOUSE_HOLD_MS - (nowMsValue - this.pendingSinceMs)) : this.timeoutMs;
+     this.timeoutId = this.clock.setTimeout(() => {
+       this.timeoutId = null;
+       if (this.destroyed) {
+@@ -7624,10 +7637,13 @@ class StdinParser {
+       try {
+         this.flushTimeout(this.clock.now());
+         this.onTimeoutFlush?.();
++        if (!this.destroyed && !this.forceFlush && this.timeoutId === null && this.state.tag === "esc") {
++          this.reconcileTimeoutState();
++        }
+       } catch (error) {
+         console.error("stdin parser timeout flush failed", error);
+       }
+-    }, this.timeoutMs);
++    }, delayMs);
+   }
+   clearTimeout() {
+     if (!this.timeoutId) {
+@@ -12803,7 +12819,9 @@ class FFIRenderLib {
      this.opentui.symbols.textBufferSetDefaultBg(buffer, bgPtr);
    }
    textBufferSetDefaultAttributes(buffer, attributes) {
@@ -13,7 +80,7 @@ index 0c926100cef4bfc551c0656416278cbc5a1213b3..3fbeeee1178d8d0a3473d0bbb8dda736
      this.opentui.symbols.textBufferSetDefaultAttributes(buffer, attrValue);
    }
    textBufferResetDefaults(buffer) {
-@@ -13684,6 +13684,10 @@
+@@ -13684,6 +13702,10 @@ class TextBuffer {
    }
    setText(text) {
      this.guard();
@@ -24,7 +91,7 @@ index 0c926100cef4bfc551c0656416278cbc5a1213b3..3fbeeee1178d8d0a3473d0bbb8dda736
      this._textBytes = this.lib.encoder.encode(text);
      if (this._memId === undefined) {
        this._memId = this.lib.textBufferRegisterMemBuffer(this.bufferPtr, this._textBytes, false);
-@@ -13718,7 +13722,13 @@
+@@ -13718,7 +13740,13 @@ class TextBuffer {
    }
    setStyledText(text) {
      this.guard();
@@ -39,7 +106,7 @@ index 0c926100cef4bfc551c0656416278cbc5a1213b3..3fbeeee1178d8d0a3473d0bbb8dda736
      this._length = this.lib.textBufferGetLength(this.bufferPtr);
      this._byteSize = this.lib.textBufferGetByteSize(this.bufferPtr);
      this._lineInfo = undefined;
-@@ -13822,7 +13832,9 @@
+@@ -13822,7 +13850,9 @@ class TextBuffer {
    }
    clear() {
      this.guard();
@@ -50,7 +117,7 @@ index 0c926100cef4bfc551c0656416278cbc5a1213b3..3fbeeee1178d8d0a3473d0bbb8dda736
      this._length = 0;
      this._byteSize = 0;
      this._lineInfo = undefined;
-@@ -14842,6 +14854,7 @@
+@@ -14842,6 +14872,7 @@ class Renderable extends BaseRenderable {
          obj.parent = null;
          this._ctx.unregisterLifecyclePass(obj);
          this.renderableMapById.delete(id);
@@ -58,7 +125,7 @@ index 0c926100cef4bfc551c0656416278cbc5a1213b3..3fbeeee1178d8d0a3473d0bbb8dda736
          const index = this._childrenInLayoutOrder.findIndex((obj2) => obj2.id === id);
          if (index !== -1) {
            this._childrenInLayoutOrder.splice(index, 1);
-@@ -14963,6 +14976,9 @@
+@@ -14963,6 +14994,9 @@ class Renderable extends BaseRenderable {
      }
      this._childrenInLayoutOrder = [];
      this.renderableMapById.clear();

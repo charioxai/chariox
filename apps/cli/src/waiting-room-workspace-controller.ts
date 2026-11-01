@@ -159,7 +159,7 @@ export function createWaitingRoomWorkspaceController(deps: {
     const machineChanged = Boolean(pendingMachineId || previousMachine && previousMachine !== machineId)
     pendingMachineId = null
     const latestSession = [...inventory.sessions].sort((a, b) =>
-      (b.last_used_at_ms ?? b.created_at_ms) - (a.last_used_at_ms ?? a.created_at_ms))[0]
+      (b.last_activity_at_ms ?? b.created_at_ms) - (a.last_activity_at_ms ?? a.created_at_ms) || a.created_at_ms - b.created_at_ms || a.id.localeCompare(b.id))[0]
     const defaultWorkspace = inventory.launchTarget?.workspaceId || latestSession?.workspace_id || ""
     const workspace = machineChanged
       ? workspaces.get(machineId) || defaultWorkspace

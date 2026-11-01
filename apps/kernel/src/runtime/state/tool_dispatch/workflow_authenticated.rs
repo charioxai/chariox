@@ -70,12 +70,6 @@ impl KernelRuntimeState {
                 self.spawn_workflow_prompt_dispatches(dispatches);
                 Ok(result)
             }
-            Err(error)
-                if canonical_tool_name
-                    == crate::transport::runtime_tools::READ_WORKFLOW_TURN_CONTEXT_TOOL =>
-            {
-                Err(error)
-            }
             Err(local_error) => {
                 let provider_run_ids = provider_runs
                     .iter()

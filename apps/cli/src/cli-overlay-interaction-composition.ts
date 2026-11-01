@@ -1,3 +1,4 @@
+import { createSessionProcessController } from "./session-process-controller.js"
 import { createProjectEnvironmentReadController, projectEnvironmentPageSize, projectEnvironmentTextWidth } from "./project-environment-read-controller.js"
 import { MouseButton } from "@opentui/core"
 import { createEffect, on } from "solid-js"
@@ -32,6 +33,7 @@ export type CliOverlayInteractionCompositionDeps = {
   appLogger: any
   formatError: AnyFn
   debugLogsEnabled: boolean
+  sessionState: AnyFn
   isAttached: AnyFn
   loadSessions: () => Promise<void>
   availableSessions: AnyFn
@@ -93,6 +95,14 @@ export function createCliOverlayInteractionComposition(deps: CliOverlayInteracti
   })
   const hotkeyDebug = hotkeyDebugReporter.report
 
+  const processController = createSessionProcessController({
+    processes: () => deps.isAttached() ? deps.sessionState().processes ?? [] : [],
+    ownerLabel: row => row.owner.kind === "agent"
+      ? deps.sessionState().agents?.find((agent: {id: string}) => agent.id === row.owner.id)?.alias ?? row.owner.id
+      : row.owner.id,
+    render: () => dialogOverlayController.render(), schedule: deps.scheduleTimer,
+    pageSize: () => projectEnvironmentPageSize(deps.dimensions().height),
+  })
   const environmentController = createProjectEnvironmentReadController({
     send: request => deps.client.send(request),
     pageSize: () => projectEnvironmentPageSize(deps.dimensions().height),
@@ -101,12 +111,14 @@ export function createCliOverlayInteractionComposition(deps: CliOverlayInteracti
   })
   const dialogOverlayController = createCliDialogOverlayController<any, any>({
     getOpenState: () => ({
+      processesOpen: processController.isOpen(),
       environmentOpen: environmentController.isOpen(),
       hotkeysOpen: deps.hotkeysOpen(),
       terminalPairingOpen: deps.terminalPairingOpen(),
       sessionBrowserOpen: deps.sessionBrowserOpen(),
       managedMachineOpen: deps.managedMachineDialogOpen(),
     }),
+    closeProcesses: processController.close,
     closeEnvironment: environmentController.close,
     getCurrentFocus: deps.currentFocusedRenderable,
     getPromptFocus: () => deps.promptInputRefController.current() as any,
@@ -138,6 +150,8 @@ export function createCliOverlayInteractionComposition(deps: CliOverlayInteracti
         dimensions: deps.dimensions(),
         mode,
         onDismiss,
+        processConfirmation: processController.confirming(),
+        processLines: processController.visibleLines(),
         environmentLines: environmentController.visibleLines(),
         sessions: sessionBrowserSessions(),
         normalizeSessionBrowserIndex,
@@ -240,6 +254,9 @@ export function createCliOverlayInteractionComposition(deps: CliOverlayInteracti
     handlePromptSelectionSurfaceMouseUp: promptSurfaceMouseController.handleMouseUp,
     handleSessionBrowserKey: sessionBrowserController.handleKey,
     handleManagedMachineDialogKey: managedMachineDialogController.handleKey,
+    confirmProcessStop: processController.confirmAgentStop,
+    openSessionProcesses: processController.open,
+    handleSessionProcessesKey: processController.handleKey,
     openProjectEnvironment: environmentController.open,
     handleProjectEnvironmentKey: environmentController.handleKey,
     openHotkeys: dialogOverlayController.openHotkeys,

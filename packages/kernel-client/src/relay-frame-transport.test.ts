@@ -2,6 +2,23 @@ import test from "node:test"
 import assert from "node:assert/strict"
 import { createHash } from "node:crypto"
 import { RelayFrameReceiver, relayTransportUrl, relayMaxMessageBytes } from "./relay-frame-transport.js"
+const binaryChunk = (id:number, offset:number, total:number, payload:Uint8Array) => {
+ const bytes=new Uint8Array(16+payload.length),header=new DataView(bytes.buffer);
+ bytes.set(new TextEncoder().encode('CXB1'));header.setUint32(4,id);header.setUint32(8,offset);header.setUint32(12,total);bytes.set(payload,16);return bytes.buffer;
+};
+test('MP-08 MP-09 MP-10 MP-11 protocol 721 raw chunks preserve non-UTF8 ciphertext and receipt order',()=>{
+ const original=new Uint8Array(50000).map((_,n)=>n%256),receiver=new RelayFrameReceiver(),receipts:string[]=[];
+ let complete:ArrayBuffer|null=null;
+ for(let offset=0;offset<original.length;offset+=16368){
+  const wire=binaryChunk(1,offset,original.length,original.subarray(offset,offset+16368));assert(wire.byteLength<=16384);
+  complete=receiver.receiveBinary(wire,s=>receipts.push(s));
+  if(offset===0){assert.equal(complete,null);assert.equal(receiver.receiving(),true);assert.equal(receiver.receive(chunk(2,0,2,'{}'),()=>{}),'{}');}
+ }
+ assert.deepEqual(new Uint8Array(complete!),original);assert.equal(receiver.receiving(),false);
+ assert.equal(JSON.parse(receipts.at(-1)!).offset,original.length);
+ assert.throws(()=>receiver.receiveBinary(binaryChunk(1,0,original.length,original.subarray(0,16368)),()=>assert.fail()),/transfer start/);
+ assert.equal(createHash('sha256').update(new Uint8Array(binaryChunk(1,0,6,new TextEncoder().encode('public')))).digest('hex'),'fa5b707d03b00e85bbdecf394f2c67be1bbac50dac8c64aa30e37a051aa96816');
+});
 import { LOCAL_DAEMON_PROTOCOL_VERSION } from "./kernel-types.js"
 const chunk = (id: number, offset: number, total: number, payload: string) => JSON.stringify({kind:"transport_chunk",transfer_id:id,offset,total_bytes:total,payload})
 test("MP-08 MP-10 MP-11 UTF-8 reassembly preserves correlation and interleaved small frames", () => {

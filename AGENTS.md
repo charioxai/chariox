@@ -28,7 +28,7 @@ When a serialized shape a client depends on changes:
 
 ## Development stage
 
-Chariox is in development: backward compatibility with older kernels, clients and stored data is not a goal. When it simplifies the code, discontinue old kernels (re-provision or re-pair them) instead of carrying compatibility shims, legacy read paths, version-gated fallbacks or a long managed-upgrade predecessor list. Keep only what the kernels running today need: the managed-upgrade predecessor list holds the current release and the one before it, and nobody has to prove that an older protocol number never shipped before dropping it. Delete the old path you replace in the same change. This holds until the owner says Chariox has users to protect.
+Chariox is in development: backward compatibility with older kernels, clients and stored data is not a goal. When it simplifies the code, discontinue old kernels (re-provision or re-pair them) instead of carrying compatibility shims, legacy read paths, version-gated fallbacks or a long managed-upgrade predecessor list. Keep only what the kernels running today need: the managed-upgrade predecessor list holds the current release and the one before it, and nobody has to prove that an older protocol number never shipped before dropping it. Do not report the missing upgrade or rollback path from an older release as a finding. Delete the old path you replace in the same change. This holds until the owner says Chariox has users to protect.
 
 ## Runtime rules
 

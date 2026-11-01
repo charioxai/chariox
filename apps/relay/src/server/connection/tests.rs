@@ -519,7 +519,7 @@ async fn remove_client_peer_unsubscribes_active_and_pending_daemon_subscriptions
     routes.set_subscription(
         "active-subscription".to_string(),
         ActiveEventRoute {
-            display: false,
+            scope: "session".into(),
             daemon_key: daemon_key.clone(),
             client_sender,
         },
@@ -531,7 +531,7 @@ async fn remove_client_peer_unsubscribes_active_and_pending_daemon_subscriptions
             client_request_id: "client-request-pending".to_string(),
             daemon_key: daemon_key.clone(),
             kind: PendingRequestKind::Subscribe {
-                display: false,
+                scope: "session".into(),
                 subscription_id: "pending-subscription".to_string(),
                 client_public_key: "pending-public-key".to_string(),
             },
@@ -762,7 +762,7 @@ async fn slow_event_consumer_cleanup_case() -> bool {
     routes.set_subscription(
         "slow-subscription".to_string(),
         ActiveEventRoute {
-            display: false,
+            scope: "session".into(),
             daemon_key: daemon_key.clone(),
             client_sender: sender.clone(),
         },
@@ -770,7 +770,7 @@ async fn slow_event_consumer_cleanup_case() -> bool {
     routes.set_subscription(
         "other-subscription".to_string(),
         ActiveEventRoute {
-            display: false,
+            scope: "session".into(),
             daemon_key: daemon_key.clone(),
             client_sender: other_sender,
         },
@@ -1437,6 +1437,7 @@ async fn silent_peer_is_removed_within_original_heartbeat_bound() {
             registry_for_connection,
             RelayAuthVerifier::shared(Some("public-fixture".into())),
             Arc::new(AtomicU64::new(0)),
+            UsageMeter::default(),
         )
         .await
         .unwrap();
@@ -1483,6 +1484,7 @@ async fn burst_of_small_frame_receipts_keeps_the_connection() {
             registry_for_connection,
             RelayAuthVerifier::shared(Some("public-fixture".into())),
             Arc::new(AtomicU64::new(0)),
+            UsageMeter::default(),
         )
         .await
     });
@@ -1565,7 +1567,7 @@ async fn mp11_binary_event_routes_only_for_its_registered_daemon_and_realm() {
     routes.set_subscription(
         "sub".into(),
         ActiveEventRoute {
-            display: false,
+            scope: "session".into(),
             daemon_key: daemon.clone(),
             client_sender: sender,
         },
@@ -1583,18 +1585,28 @@ async fn mp11_binary_event_routes_only_for_its_registered_daemon_and_realm() {
         DaemonKey::new("other-realm", "kernel"),
         DaemonKey::new("realm", "other-kernel"),
     ] {
-        assert!(
-            !route_daemon_binary_event(&registry, &routes, &wrong, &counter, &bytes)
-                .await
-                .unwrap()
-        );
+        assert!(!route_daemon_binary_event(
+            &registry,
+            &routes,
+            &wrong,
+            &counter,
+            &ConnectionMeter::detached(),
+            &bytes
+        )
+        .await
+        .unwrap());
         assert!(receiver.try_recv().is_err());
     }
-    assert!(
-        route_daemon_binary_event(&registry, &routes, &daemon, &counter, &bytes)
-            .await
-            .unwrap()
-    );
+    assert!(route_daemon_binary_event(
+        &registry,
+        &routes,
+        &daemon,
+        &counter,
+        &ConnectionMeter::detached(),
+        &bytes
+    )
+    .await
+    .unwrap());
     let Message::Binary(delivered) = receiver.recv().await.unwrap() else {
         panic!("expected binary event");
     };
@@ -1603,11 +1615,57 @@ async fn mp11_binary_event_routes_only_for_its_registered_daemon_and_realm() {
     assert_eq!(header.subscription_id, "sub");
     assert_eq!(header.event_id, 31);
     assert_eq!(ciphertext, &[37; 1024]);
-    assert!(
-        route_daemon_binary_event(&registry, &routes, &daemon, &counter, &delivered)
-            .await
-            .is_err()
+    assert!(route_daemon_binary_event(
+        &registry,
+        &routes,
+        &daemon,
+        &counter,
+        &ConnectionMeter::detached(),
+        &delivered
+    )
+    .await
+    .is_err());
+}
+
+#[tokio::test]
+async fn binary_events_are_counted_under_their_subscription_scope() {
+    let registry = Arc::new(RwLock::new(RelayRegistry::default()));
+    let routes = registry.read().await.route_index();
+    let daemon = DaemonKey::new("realm", "kernel");
+    let (sender, mut receiver) = mpsc::channel(2);
+    routes.set_subscription(
+        "sub".into(),
+        ActiveEventRoute {
+            scope: crate::frame_transport::DISPLAY_EVENT_SCOPE.into(),
+            daemon_key: daemon.clone(),
+            client_sender: sender,
+        },
     );
+    let header = crate::binary_event::EventHeader {
+        kind: "daemon_event".into(),
+        subscription_id: "sub".into(),
+        event_id: 1,
+        sender_public_key: "opaque-key".into(),
+        nonce: "abcdefghijklmnop".into(),
+    };
+    let bytes = crate::binary_event::encode(&header, &[1; 4096]).unwrap();
+    let meter = UsageMeter::default();
+    let connection = ConnectionMeter::new(meter.clone());
+    connection.bind_realm("realm");
+    let counter = AtomicU64::new(0);
+    assert!(
+        route_daemon_binary_event(&registry, &routes, &daemon, &counter, &connection, &bytes)
+            .await
+            .unwrap()
+    );
+    let _ = receiver.recv().await;
+    let counted = meter.snapshot();
+    let display = &counted[&("realm".to_string(), "kernel_browser_display".to_string())];
+    assert_eq!(
+        (display.bytes_in, display.frames_in),
+        (bytes.len() as u64, 1)
+    );
+    assert_eq!(counted.len(), 1);
 }
 
 // MP-08 / MP-10 / MP-11: a v1 receiver must never see multiplexed v2 frames.
@@ -1625,6 +1683,7 @@ async fn mp08_mp10_mp11_old_chunk_capability_is_rejected_before_registration() {
             captured,
             RelayAuthVerifier::shared(Some("public-fixture".into())),
             Arc::new(AtomicU64::new(0)),
+            UsageMeter::default(),
         )
         .await
     });
@@ -1682,6 +1741,7 @@ async fn mp11_initial535_pin_is_checked_at_the_subscription_sender_transaction()
     // immediately after it. Tokio's fair lock makes the post-ack routing read
     // observe that replacement, without timing sleeps or production hooks.
     let held = registry.read().await;
+    let meter = ConnectionMeter::detached();
     let admitting = super::client_connect::admit(
         RelayEnvelope::ClientConnectDisplayResume {
             auth_token: "client-token".into(),
@@ -1705,6 +1765,7 @@ async fn mp11_initial535_pin_is_checked_at_the_subscription_sender_transaction()
             peer_addr: client_addr,
             outgoing_tx: &client_tx,
             relay_request_counter: &counter,
+            connection_meter: &meter,
             verified_identity: &mut identity,
             auth_expiry_deadline: &mut expiry,
             initial_resume_negotiated: true,

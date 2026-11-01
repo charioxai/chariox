@@ -105,6 +105,7 @@ impl SessionService {
         session_id: &str,
         next_status: SessionStatus,
     ) -> Result<RuntimeSession, DaemonError> {
+        self.ensure_resident_session(session_id)?;
         let session =
             self.store
                 .get_mut(session_id)
@@ -138,6 +139,7 @@ impl SessionService {
         &mut self,
         session_id: &str,
     ) -> Result<(RuntimeSession, Option<RuntimeProject>), DaemonError> {
+        self.ensure_resident_session(session_id)?;
         let deleted =
             self.store
                 .remove(session_id)
@@ -148,10 +150,9 @@ impl SessionService {
         self.ephemeral_session_ids.remove(session_id);
         let project_id = deleted.project_id().to_string();
         let project_has_visible_sessions = self
-            .store
-            .list()
+            .sessions_in_project(&project_id)?
             .into_iter()
-            .any(|session| !session.is_hidden() && session.project_id() == project_id.as_str());
+            .any(|session| !session.is_hidden() && session.id() != session_id);
         let removed_project = (!project_id.is_empty() && !project_has_visible_sessions)
             .then(|| self.projects.remove(&project_id))
             .flatten();
@@ -163,12 +164,28 @@ impl SessionService {
         session_id: &str,
         attachment_id: &str,
     ) -> Result<RuntimeSession, DaemonError> {
+        self.ensure_resident_session(session_id)?;
         let session =
             self.store
                 .get_mut(session_id)
                 .ok_or_else(|| DaemonError::SessionNotFound {
                     session_id: session_id.to_string(),
                 })?;
+
+        // Only RestoreProject brings an archived Room back; a window that was
+        // still open when the Room was archived must not resurrect it.
+        let archived = self
+            .projects
+            .get(session.project_id())
+            .is_some_and(|project| project.status() == RuntimeProjectStatus::Archived);
+        if archived && session.status() == SessionStatus::Ended {
+            self.retire_ended_session(session_id);
+            return Err(DaemonError::SessionOperationNotAllowed {
+                session_id: session_id.to_string(),
+                status: SessionStatus::Ended,
+                operation: "attach",
+            });
+        }
 
         if session.status() == SessionStatus::Ended {
             let _ = session.transition_to(SessionStatus::Parked);
@@ -524,6 +541,16 @@ impl SessionService {
         Ok(session.clone())
     }
 
+    pub(crate) fn note_session_activity(
+        &mut self,
+        session_id: &str,
+        timestamp_ms: u64,
+    ) -> Result<RuntimeSession, DaemonError> {
+        let session = self.get_session_mut_for_operation(session_id, "note session activity")?;
+        session.note_activity_at(timestamp_ms);
+        Ok(session.clone())
+    }
+
     pub(crate) fn note_prompt_sent(
         &mut self,
         session_id: &str,
@@ -787,6 +814,7 @@ impl SessionService {
         session_id: &str,
         operation: &'static str,
     ) -> Result<&mut RuntimeSession, DaemonError> {
+        self.ensure_resident_session(session_id)?;
         let session =
             self.store
                 .get_mut(session_id)

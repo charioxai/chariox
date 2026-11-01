@@ -96,6 +96,8 @@ pub(crate) struct CommandRouter {
     workspace_coordinator: WorkspaceCoordinator,
     provider_launch_pending: ProviderLaunchPendingTracker,
     kernel_gateway: Arc<crate::runtime::kernel_gateway::KernelGateway>,
+    request_metrics: crate::runtime::request_metrics::RequestMetrics,
+    daemon_health_cache: crate::runtime::daemon_health_projection::DaemonHealthCache,
 }
 
 #[cfg(test)]
