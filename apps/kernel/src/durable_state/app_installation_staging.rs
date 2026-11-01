@@ -18,6 +18,7 @@ use super::DurableWriterRequest;
 use super::{apps::AppRegistryOutcome, DurableKernelStateStore};
 use crate::error::DaemonError;
 
+#[cfg(test)]
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum AppVerifiedInstallationError {
     #[error(transparent)]
