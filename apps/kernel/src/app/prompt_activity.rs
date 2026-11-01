@@ -412,6 +412,8 @@ fn prompt_origin_label(prompt_origin: PromptOrigin) -> &'static str {
         PromptOrigin::Chariox => "chariox",
         PromptOrigin::External => "external",
         PromptOrigin::CompletionCheck => "completion_check",
+        PromptOrigin::Schedule => "schedule",
+        PromptOrigin::Notification => "notification",
     }
 }
 

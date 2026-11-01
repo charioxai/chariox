@@ -435,4 +435,5 @@ pub use workspace::*;
 /// event and `resolution` (`via`, `choice_id`) to a resolved one; an answer to a closed decision fails with
 /// the stable `interaction_closed`.
 /// Allocated 930 adds agent triggers; `/wait-in` and `/wait-every` become schedule triggers.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 930;
+/// Allocated 931 adds trigger deliveries the person can resend and removes the `/wait` schedule shape.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 931;

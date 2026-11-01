@@ -38,6 +38,85 @@ pub enum AgentTriggerOutcome {
     Coalesced,
 }
 
+/// What the pane shows next to a trigger firing it could not confirm.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TriggerDeliveryState {
+    /// The provider may or may not hold the message; it is never sent again by itself.
+    NotConfirmed,
+    /// A person sent the firing once more.
+    Resent,
+}
+
+/// A firing whose delivery could not be confirmed, kept so the person can
+/// resend it. Every firing is already in the transcript as a labelled prompt.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TriggerDelivery {
+    prompt_id: String,
+    trigger_id: String,
+    agent_id: String,
+    origin: super::PromptOrigin,
+    prompt: String,
+    busy_policy: AgentTriggerBusyPolicy,
+    state: TriggerDeliveryState,
+    recorded_at_ms: u64,
+}
+
+impl TriggerDelivery {
+    pub(crate) fn not_confirmed(
+        prompt_id: &str,
+        trigger_id: &str,
+        agent_id: &str,
+        origin: super::PromptOrigin,
+        prompt: &str,
+        busy_policy: AgentTriggerBusyPolicy,
+        recorded_at_ms: u64,
+    ) -> Self {
+        Self {
+            prompt_id: prompt_id.to_string(),
+            trigger_id: trigger_id.to_string(),
+            agent_id: agent_id.to_string(),
+            origin,
+            prompt: prompt.to_string(),
+            busy_policy,
+            state: TriggerDeliveryState::NotConfirmed,
+            recorded_at_ms,
+        }
+    }
+
+    pub fn prompt_id(&self) -> &str {
+        &self.prompt_id
+    }
+
+    pub fn trigger_id(&self) -> &str {
+        &self.trigger_id
+    }
+
+    pub fn agent_id(&self) -> &str {
+        &self.agent_id
+    }
+
+    pub fn origin(&self) -> super::PromptOrigin {
+        self.origin
+    }
+
+    pub fn prompt(&self) -> &str {
+        &self.prompt
+    }
+
+    pub fn busy_policy(&self) -> AgentTriggerBusyPolicy {
+        self.busy_policy
+    }
+
+    pub fn state(&self) -> TriggerDeliveryState {
+        self.state
+    }
+
+    pub(crate) fn set_state(&mut self, state: TriggerDeliveryState) {
+        self.state = state;
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentTrigger {
     id: String,
@@ -111,6 +190,12 @@ impl AgentTrigger {
 
     pub fn agent_id(&self) -> &str {
         &self.agent_id
+    }
+
+    pub(crate) fn enroll_local_owner(&mut self, owner: &str) {
+        if self.created_by_user_id.as_deref() == Some(super::DEFAULT_LOCAL_USER_ID) {
+            self.created_by_user_id = Some(owner.into());
+        }
     }
 
     pub fn created_by_user_id(&self) -> Option<&str> {
@@ -204,19 +289,6 @@ impl AgentTrigger {
         self.schedule_next_run(now_ms, 0);
     }
 
-    /// What recording a steered firing leaves behind, without recording it:
-    /// the durable write that consumes the steer's queue entry carries this,
-    /// so the entry and the occurrence it stood for settle together.
-    pub(crate) fn settled_by_steer(&self, now_ms: u64) -> AgentTriggerSettlement {
-        let mut settled = self.clone();
-        settled.mark_fired(now_ms, AgentTriggerOutcome::Steered, None);
-        if settled.is_one_shot() {
-            AgentTriggerSettlement::Removed(settled.id)
-        } else {
-            AgentTriggerSettlement::Updated(settled)
-        }
-    }
-
     pub(crate) fn defer_dispatch(&mut self, now_ms: u64) {
         self.dispatch_in_flight = false;
         self.schedule_next_run(now_ms, 1);
@@ -273,82 +345,6 @@ impl AgentTrigger {
                 .max(minimum_interval_seconds)
                 .saturating_mul(1_000),
         );
-    }
-
-    /// The `/wait` view of an enabled schedule trigger.
-    pub fn legacy_schedule(&self) -> Option<AgentPromptSchedule> {
-        if !self.enabled {
-            return None;
-        }
-        let AgentTriggerSource::Schedule {
-            interval_seconds,
-            repeat,
-            next_run_at_ms,
-        } = &self.source;
-        Some(AgentPromptSchedule {
-            id: self.id.clone(),
-            agent_id: self.agent_id.clone(),
-            kind: match repeat {
-                AgentTriggerRepeat::Once => AgentPromptScheduleKind::Once,
-                AgentTriggerRepeat::Every => AgentPromptScheduleKind::Recurring,
-            },
-            interval_seconds: *interval_seconds,
-            prompt: self.prompt.clone(),
-            created_at_ms: self.created_at_ms,
-            next_run_at_ms: *next_run_at_ms,
-            runs_dispatched: self.fired,
-            last_triggered_at_ms: self.last_fired_at_ms,
-            last_error: self.last_error.clone(),
-        })
-    }
-}
-
-/// A firing's recorded result: the trigger as it reads afterwards, or its id
-/// when a one-shot is done.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum AgentTriggerSettlement {
-    Updated(AgentTrigger),
-    Removed(String),
-}
-
-/// The `/wait-in` and `/wait-every` kinds.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AgentPromptScheduleKind {
-    Once,
-    Recurring,
-}
-
-/// The `/wait` schedule a `/wait-in` or `/wait-every` request answers with.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AgentPromptSchedule {
-    id: String,
-    agent_id: String,
-    kind: AgentPromptScheduleKind,
-    interval_seconds: u64,
-    prompt: String,
-    created_at_ms: u64,
-    next_run_at_ms: u64,
-    #[serde(default)]
-    runs_dispatched: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    last_triggered_at_ms: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    last_error: Option<String>,
-}
-
-impl AgentPromptSchedule {
-    pub fn id(&self) -> &str {
-        &self.id
-    }
-
-    pub fn prompt(&self) -> &str {
-        &self.prompt
-    }
-
-    pub fn next_run_at_ms(&self) -> u64 {
-        self.next_run_at_ms
     }
 }
 

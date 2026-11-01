@@ -492,6 +492,7 @@ impl DaemonApp {
             .set_agent_move_admission(app.agent_moves.clone());
         let restore_started = Instant::now();
         app.restore_durable_state()?;
+        app.enroll_existing_local_state()?;
         app.restore_agent_move_backings()?;
         if app.config.kernel_runtime_role == crate::config::KernelRuntimeRole::RemoteLeaseWorker
             && app

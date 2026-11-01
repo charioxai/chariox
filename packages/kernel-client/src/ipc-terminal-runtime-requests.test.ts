@@ -38,3 +38,10 @@ test("MP-08 MP-10 exact cancellation forwards the home prompt with protocol499",
     CancelActivePrompt: { session_id: "s", attachment_id: "a", target_agent_id: "agent" },
   })
 })
+
+test("resends a trigger firing the provider did not confirm", async () => {
+  const r = await import("./ipc-terminal-runtime-requests.js")
+  assert.deepEqual(r.resendTriggerDeliveryRequest("s", "prompt-7"), {
+    ResendTriggerDelivery: { session_id: "s", prompt_id: "prompt-7" },
+  })
+})

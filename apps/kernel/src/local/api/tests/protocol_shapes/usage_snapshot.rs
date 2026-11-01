@@ -1,4 +1,4 @@
-//! MP-08/MP-10/MP-11: account and agent references at local 930 / peer 374.
+//! MP-08/MP-10/MP-11: account and agent references at local 931 / peer 380.
 use super::*;
 use sha2::{Digest, Sha256};
 
@@ -7,7 +7,7 @@ fn usage_snapshot_770_contract_roundtrips_without_private_profiles() {
     let bytes = include_bytes!("usage-snapshot-770.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "a991f42894448d978035b50fd82505336de6e17899225fcbf59fc32d271b2538"
+        "3a7b886631f09c209277997c923a02f281e6c415147da1d65e40f6f422208835"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     for request in fixture["requests"].as_array().unwrap() {

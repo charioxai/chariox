@@ -5105,12 +5105,36 @@ session}`. 930 has one source, `{"kind": "schedule", "interval_seconds", "repeat
 queue, `steer` is queued and then steered into the running turn exactly like the queued-prompt
 steer. A refused steer leaves the firing queued, records `last_error` and raises a notice. A
 schedule whose previous firing is still queued or running coalesces (`coalesced` counts it).
-Triggers are deleted with their agent. Whoever may prompt the agent may manage its triggers. The
+Triggers are deleted with their agent and when it is archived. Whoever may prompt the agent may manage its triggers. The
 session lists them in `agent_triggers`. `/wait-in` and `/wait-every` are queue-policy schedule
-triggers: `CreateAgentPromptSchedule` / `CancelAgentPromptSchedule` create and delete them. Sessions
-stored before 930 with `agent_prompt_schedules` are not migrated, and the session no longer carries
-that field. The shape is pinned by
+triggers. 931 removes the `/wait` schedule shape: `CreateAgentPromptSchedule`,
+`CancelAgentPromptSchedule` and the session's `agent_prompt_schedules` are gone, and stored
+`/wait` schedules from earlier kernels are not migrated. The shape is pinned by
 `local_daemon_protocol_agent_trigger_shape_is_versioned`.
+
+Allocated 931 (relay peer 380) makes every trigger firing a labelled prompt and lets a person
+resend one the provider did not confirm. A firing's transcript prompt carries `prompt_origin`
+`schedule` (a schedule trigger) or `notification` (a workflow notification) and is recorded before
+the provider write, so it exists even if the kernel stops first. A steered firing that the provider
+did not confirm, whether a receipt was lost or the kernel restarted mid-delivery, is never sent
+again by itself: the session lists it in `trigger_deliveries` as `{prompt_id, trigger_id,
+agent_id, origin, prompt, busy_policy, state: "not_confirmed"|"resent", recorded_at_ms}` (newest
+last, 32 kept). `ResendTriggerDelivery {session_id, prompt_id}` answers `TriggerDeliveryResent
+{session}`: it admits one more labelled prompt under the entry's `busy_policy` (queue or steer)
+and refuses a second resend. A transient claim excludes concurrent clicks. The replacement's
+durable admission atomically consumes the resend; a failed admission leaves it `not_confirmed`.
+Relay peer 380 carries the new `schedule` and `notification` origins in a leased prompt's
+`prompt_origin`: a worker below 380 cannot read them, so the home refuses it instead of sending one.
+Once admitted, it stays `resent` even after the replacement finishes, a later processing error,
+or a restart from a stale session event or snapshot. Whoever may prompt the agent may resend. The shape is
+pinned by `local_daemon_protocol_trigger_delivery_shape_is_versioned`.
+
+The TUI advertises `/trigger resend <prompt-id>` and shows unconfirmed firings
+in the existing trigger stripe and `/trigger list`, including their origin and
+busy policy.
+
+
+Steered trigger settlement records an internal SQLite firing receipt atomically with its session event. Recovery uses that prompt identity to avoid advancing a recurring trigger twice after interrupted hold removal.
 
 MP-08 / MP-10 / MP-11: the same 560/168 allocation adds `mirror_subscribe.layout_width` and
 `layout_height` (both or neither, integers in CSS px): the size of the display that views the Tab.

@@ -38,6 +38,7 @@ import { theme } from "./theme.js"
 import { buildEmptyTranscriptRenderable } from "./workspace-renderables.js"
 import { HOTKEY_TOGGLE_LABEL } from "./hotkeys.js"
 import { STATUS_BADGE_WIDTH } from "./runtime.js"
+import { agentTriggersForAgent, unconfirmedTriggerDeliveriesForAgent } from "@chariox/kernel-client/agent-trigger-state"
 import { renderAgentInteractionStrips } from "./interaction-strip-renderer.js"
 import { createProviderAccountLabelController } from "./provider-account-label-controller.js"
 import type { ProviderAccountProfile, RuntimeInteraction } from "./cli-types.js"
@@ -192,6 +193,8 @@ export function createCliResponseShellComposition(deps: CliResponseShellComposit
     queuedJobsForAgent: (agentId: string | null | undefined) => queuedJobsForAgent(deps.isAttached() ? deps.sessionState()?.processes : [], agentId),
     selectedQueuedPromptIndexForAgent: deps.selectedQueuedPromptIndexForAgent,
     onQueuedPromptAction: deps.onQueuedPromptAction,
+    agentTriggerStripItemsForAgent: (agentId: string | null | undefined) => agentTriggersForAgent(deps.sessionState(), agentId),
+    unconfirmedTriggerDeliveriesForAgent: (agentId: string | null | undefined) => unconfirmedTriggerDeliveriesForAgent(deps.sessionState(), agentId),
     providerLoginState: deps.providerLoginInteractions.stripState,
     focusCustomChoiceOnce: deps.interactionChoiceStore.focusCustomChoiceOnce,
     onProviderLoginLinkClick: (interaction: RuntimeInteraction) => { void deps.providerLoginInteractions.openLink(interaction) },

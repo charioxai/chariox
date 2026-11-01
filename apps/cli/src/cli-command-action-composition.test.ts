@@ -8,6 +8,31 @@ import { CloudClient } from "./cloud-client.js"
 import type { CloudClientCredentialStore, CloudClientCredential } from "./cloud-client-credential-store.js"
 import { cloudClientCallerScope } from "./cloud-client-collaboration-scope.js"
 import { makeCommandDeps, makeSession } from "./command-actions-test-support.js"
+import { parseSlashCommand } from "./commands.js"
+
+test("MP-08/MP-10/MP-11 TUI resend sends the resend request", async () => {
+  const calls: Record<string, unknown>[] = []
+  const notices: string[] = []
+  const session = makeSession()
+  const applied: unknown[] = []
+  const client = { send: async (request: Record<string, unknown>) => {
+    calls.push(request)
+    if ("ResendTriggerDelivery" in request) return { TriggerDeliveryResent: { session } }
+    throw new Error("unexpected request")
+  } }
+  const base = { ...makeCommandDeps(), client, options: {}, preferencesState: () => ({}), kernelConnected: () => true,
+    flashFooter: (message: string) => notices.push(message),
+    applySessionState: (value: unknown) => applied.push(value),
+  }
+  const deps = new Proxy(base, { get: (target, key) => key in target ? target[key as keyof typeof target] : () => {} })
+  const handlers = createCliCommandActionComposition(deps as unknown as CliCommandActionCompositionDeps)
+  const command = parseSlashCommand("/trigger resend firing-1")!
+  await handlers.handleTriggerCommand(command as Extract<typeof command, { kind: "trigger" }>)
+  const resends = calls.filter(call => "ResendTriggerDelivery" in call)
+  assert.deepEqual(resends, [{ ResendTriggerDelivery: { session_id: "session-1", prompt_id: "firing-1" } }])
+  assert.deepEqual(applied, [session])
+  assert.ok(notices.some(message => /sent again/.test(message)))
+})
 
 // MP-08 / MP-11: actual composition + slash handler, with both authority profiles.
 for (const resume of [false, true]) {

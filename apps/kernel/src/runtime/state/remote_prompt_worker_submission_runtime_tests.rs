@@ -499,6 +499,180 @@ async fn connected_held_prompt_response_does_not_block_remote_manifest_sync() {
     );
 }
 
+// MP-08/MP-10/MP-11: shared PromptOrigin is also part of the peer contract.
+#[tokio::test]
+async fn trigger_origins_cross_only_the_versioned_peer_boundary() {
+    for origin in [
+        crate::session::PromptOrigin::Schedule,
+        crate::session::PromptOrigin::Notification,
+    ] {
+        trigger_origin_peer_submission(
+            origin,
+            crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+            true,
+        )
+        .await;
+        trigger_origin_peer_submission(origin, 239, false).await;
+    }
+}
+
+async fn trigger_origin_peer_submission(
+    origin: crate::session::PromptOrigin,
+    version: u32,
+    supported: bool,
+) {
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.relay_url = Some(CANCELLATION_GUARD_RELAY_URL.to_string());
+    config.relay_token = Some("manifest-lane-test-token".to_string());
+    let home_public_key = config.relay_public_key.clone();
+    let worker_config = crate::config::DaemonConfig::for_tests();
+
+    let mut app = DaemonApp::bootstrap(config).expect("home app should bootstrap");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            "manifest-lane-workspace",
+            "manifest-lane-worktree",
+        ))
+        .expect("home session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(AttachRequest::new(
+            session.id(),
+            "manifest-lane-client",
+            ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("home attachment should be created");
+    app.agents
+        .bind_remote_execution(
+            agent.id(),
+            crate::agent::RemoteAgentBinding {
+                worker_kernel_id: CANCELLATION_GUARD_WORKER_ID.to_string(),
+                worker_machine_id: "worker-machine-manifest-lane".to_string(),
+                execution_lease_id: "lease-manifest-lane".to_string(),
+                leased_agent_id: CANCELLATION_GUARD_LEASED_AGENT_ID.to_string(),
+                active_worker_provider_run_id: None,
+                relay_url: None,
+                relay_token: None,
+                relay_peer_protocol_version: Some(version),
+            },
+        )
+        .expect("home agent should bind to the fake worker");
+
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let session_id = session.id().to_string();
+    let agent_id = agent.id().to_string();
+    let attachment_id = attachment.id().to_string();
+    let mut submission = runtime
+        .owned
+        .submit_remote_prepared_prompt(&KernelPreparedPromptSubmission {
+            session_id: session_id.clone(),
+            prompt: PromptQueueItem::new(
+                "pending:manifest-lane",
+                &attachment_id,
+                &agent_id,
+                "hold the worker response while manifest sync runs",
+                PromptStatus::Queued,
+            )
+            .with_prompt_origin(origin),
+            force_queue: false,
+            refresh_projection: true,
+        })
+        .expect("remote prompt should be admitted")
+        .expect("remote prompt should produce a dispatch");
+    let mut dispatch = submission
+        .remote_dispatch
+        .take()
+        .expect("accepted remote prompt should carry a dispatch");
+    let submitted_prompt = PromptQueueItem::new(
+        format!("worker-{}", dispatch.prompt_id),
+        "worker-attachment",
+        &dispatch.leased_agent_id,
+        dispatch.prompt.clone(),
+        PromptStatus::Running,
+    );
+
+    let relay_state = Arc::clone(&runtime.owned.relay_state);
+    let (outgoing_tx, mut peer_requests, _event_rx) =
+        crate::transport::relay_client::RelayOutgoingSender::channel(8);
+    {
+        let mut relay = relay_state.write().await;
+        relay.test_set_connected_sender(outgoing_tx, CANCELLATION_GUARD_RELAY_URL);
+        relay.remember_peer_public_key(
+            CANCELLATION_GUARD_WORKER_ID,
+            worker_config.relay_public_key.clone(),
+        );
+    }
+
+    let submit_runtime = runtime.clone();
+    let submit_prompt = dispatch.prompt.clone();
+    let submit_task = tokio::spawn(async move {
+        submit_remote_prompt_to_worker_with_binding_refresh(
+            &submit_runtime,
+            &mut dispatch,
+            submit_prompt,
+            Vec::new(),
+        )
+        .await
+    });
+
+    if !supported {
+        tokio::select! {
+            result = submit_task => {
+                let error = result.unwrap().expect_err("legacy worker must refuse new trigger origins");
+                assert!(error.to_string().contains("incompatible or legacy relay peer protocol"));
+                assert!(peer_requests.try_recv().is_err(), "no request may cross the unsupported peer boundary");
+            }
+            _ = peer_requests.recv() => panic!("legacy worker was sent a trigger origin it cannot deserialize"),
+            _ = tokio::time::sleep(std::time::Duration::from_secs(3)) => panic!("legacy worker refusal timed out"),
+        }
+        return;
+    }
+    let (submit_request_id, request) =
+        receive_fake_worker_request(&mut peer_requests, &worker_config.relay_private_key).await;
+    let crate::transport::relay_peer::RelayPeerRequest::SubmitLeasedPrompt {
+        git_context: Some(context),
+        ..
+    } = request
+    else {
+        panic!("trigger submission must carry its origin to the worker");
+    };
+    assert_eq!(context.prompt_origin, Some(origin));
+    let value = serde_json::to_value(&context).unwrap();
+    assert_eq!(
+        value["prompt_origin"],
+        serde_json::to_value(origin).unwrap()
+    );
+    let round_trip: crate::transport::relay_peer::RemoteGitTurnContext =
+        serde_json::from_value(value).unwrap();
+    assert_eq!(round_trip.prompt_origin, Some(origin));
+    let submit_response = crate::transport::relay_peer::RelayPeerResponse::LeasedPromptSubmitted {
+        provider_run_id: "provider-run-manifest-lane".to_string(),
+        outcome: crate::session::PromptSubmissionOutcome::Started {
+            prompt: submitted_prompt,
+        },
+    };
+    let encrypted_submit_response = crate::transport::relay_crypto::encrypt_payload_for_peer(
+        &worker_config.relay_private_key,
+        &home_public_key,
+        &serde_json::to_vec(&submit_response).expect("submit response should encode"),
+    )
+    .expect("fake worker should encrypt the submit response");
+    crate::transport::relay_client::resolve_pending_peer_response_for_test(
+        &relay_state,
+        submit_request_id,
+        CANCELLATION_GUARD_WORKER_ID.to_string(),
+        encrypted_submit_response,
+    )
+    .await;
+    assert_eq!(
+        submit_task
+            .await
+            .expect("prompt submission task should not panic")
+            .expect("prompt submission should succeed"),
+        "provider-run-manifest-lane"
+    );
+}
+
 const WORKFLOW_CREDENTIAL_CANARY: &str = "workflow-submit-token-canary";
 
 #[derive(Clone, Copy)]
@@ -1251,4 +1425,160 @@ fn a_worker_account_refusal_fails_the_prompt_instead_of_reconciling() {
             if !remote_prompt_error_should_retry_transport(error)
                 && !remote_prompt_error_should_refresh_binding(error)
     ));
+}
+
+// MP-08/MP-10/MP-11: failed idle admission must retry through the real peer
+// dispatch path, rather than consuming a resend with no dispatch left to run.
+#[tokio::test]
+async fn trigger_resend_idle_remote_admission_failure_retries_one_peer_submission() {
+    let mut config = super::super::agent_trigger_runtime_state::tests::durable_state_config(
+        "resend-remote-admission-failure",
+    );
+    config.relay_url = Some(CANCELLATION_GUARD_RELAY_URL.into());
+    config.relay_token = Some("resend-worker-test-token".into());
+    let (_worktree, runtime, config, session_id, agent_id, _) =
+        super::super::agent_trigger_runtime_state::tests::durable_unconfirmed_trigger_delivery_with_config(config).await;
+    let session = runtime.owned.session_snapshot(&session_id).unwrap();
+    runtime
+        .owned
+        .prompt_state_owner
+        .complete_active_prompt_only(&session, &agent_id)
+        .unwrap();
+    let (active, queued) = runtime
+        .owned
+        .prompt_state_owner
+        .state_parts(&session, &agent_id);
+    runtime
+        .owned
+        .mirror_prompt_owner_agent_state(&session_id, &agent_id, active, queued)
+        .unwrap();
+    runtime
+        .owned
+        .agent_store
+        .write()
+        .bind_remote_execution(
+            &agent_id,
+            crate::agent::RemoteAgentBinding {
+                worker_kernel_id: CANCELLATION_GUARD_WORKER_ID.into(),
+                worker_machine_id: "resend-worker-machine".into(),
+                execution_lease_id: "resend-worker-lease".into(),
+                leased_agent_id: CANCELLATION_GUARD_LEASED_AGENT_ID.into(),
+                active_worker_provider_run_id: None,
+                relay_url: None,
+                relay_token: None,
+                relay_peer_protocol_version: Some(
+                    crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+                ),
+            },
+        )
+        .unwrap();
+    let worker_config = crate::config::DaemonConfig::for_tests();
+    let relay_state = Arc::clone(&runtime.owned.relay_state);
+    let (outgoing_tx, mut peer_requests, _event_rx) =
+        crate::transport::relay_client::RelayOutgoingSender::channel(8);
+    {
+        let mut relay = relay_state.write().await;
+        relay.test_set_connected_sender(outgoing_tx, CANCELLATION_GUARD_RELAY_URL);
+        relay.remember_peer_public_key(
+            CANCELLATION_GUARD_WORKER_ID,
+            worker_config.relay_public_key.clone(),
+        );
+    }
+    let owner = runtime.owned.agent_store.get_agent(&agent_id).unwrap();
+    let request = crate::local::ResendTriggerDeliveryRequest {
+        session_id: session_id.clone(),
+        prompt_id: "original-firing".into(),
+    };
+    let connection = rusqlite::Connection::open(runtime.owned.durable_state_store.path()).unwrap();
+    connection
+        .execute_batch(
+            "CREATE TRIGGER reject_remote_resend BEFORE INSERT ON durable_trigger_resends
+             BEGIN SELECT RAISE(FAIL, 'injected remote resend admission failure'); END;",
+        )
+        .unwrap();
+    let error = runtime
+        .resend_trigger_delivery(request.clone(), owner.owner_user_id())
+        .await
+        .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("injected remote resend admission failure"));
+    assert!(peer_requests.try_recv().is_err());
+    let session = runtime.owned.session_snapshot(&session_id).unwrap();
+    let (active, queued) = runtime
+        .owned
+        .prompt_state_owner
+        .state_parts(&session, &agent_id);
+    assert!(active.is_none() && queued.is_empty());
+    connection
+        .execute_batch("DROP TRIGGER reject_remote_resend;")
+        .unwrap();
+    let retry_runtime = runtime.clone();
+    let retry_request = request.clone();
+    let owner_user_id = owner.owner_user_id().to_string();
+    let retry = tokio::spawn(async move {
+        retry_runtime
+            .resend_trigger_delivery(retry_request, &owner_user_id)
+            .await
+    });
+    retry.await.unwrap().unwrap();
+    let current = runtime.owned.session_snapshot(&session_id).unwrap();
+    let pending = runtime
+        .owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&current, &agent_id)
+        .expect("idle resend must admit a dispatchable prompt");
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        while peer_requests.is_empty() { tokio::task::yield_now().await; }
+    }).await.unwrap_or_else(|_| panic!("resend dispatch stalled at {}; interaction {:?}",
+        super::super::remote_prompt_dispatch_execution_runtime::remote_prompt_dispatch_test_stages(pending.id()),
+        runtime.owned.session_snapshot(&session_id).unwrap().active_interaction_for_agent(&agent_id).map(|item| item.title())));
+    let (request_id, received) =
+        receive_fake_worker_request(&mut peer_requests, &worker_config.relay_private_key).await;
+    let crate::transport::relay_peer::RelayPeerRequest::SubmitLeasedPrompt {
+        git_context: Some(context),
+        prompt,
+        ..
+    } = received
+    else {
+        panic!("retry must submit one replacement to the worker");
+    };
+    assert_eq!(
+        context.prompt_origin,
+        Some(crate::session::PromptOrigin::Schedule)
+    );
+    let response = crate::transport::relay_peer::RelayPeerResponse::LeasedPromptSubmitted {
+        provider_run_id: "resend-worker-run".into(),
+        outcome: crate::session::PromptSubmissionOutcome::Started {
+            prompt: PromptQueueItem::new(
+                "resend-worker-prompt",
+                "resend-worker-attachment",
+                CANCELLATION_GUARD_LEASED_AGENT_ID,
+                prompt,
+                PromptStatus::Running,
+            ),
+        },
+    };
+    let encrypted = crate::transport::relay_crypto::encrypt_payload_for_peer(
+        &worker_config.relay_private_key,
+        &config.relay_public_key,
+        &serde_json::to_vec(&response).unwrap(),
+    )
+    .unwrap();
+    crate::transport::relay_client::resolve_pending_peer_response_for_test(
+        &relay_state,
+        request_id,
+        CANCELLATION_GUARD_WORKER_ID.into(),
+        encrypted,
+    )
+    .await;
+    assert!(runtime
+        .owned
+        .durable_state_store
+        .trigger_resend_admitted(&session_id, "original-firing")
+        .unwrap());
+    assert!(runtime
+        .resend_trigger_delivery(request, owner.owner_user_id())
+        .await
+        .is_err());
 }

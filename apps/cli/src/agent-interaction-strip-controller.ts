@@ -1,5 +1,7 @@
+import type { TriggerDelivery } from "@chariox/kernel-client/kernel-types"
 import type { RuntimeInteraction } from "./cli-types.js"
 import type { ProviderLoginStripState } from "./provider-login-interaction-controller.js"
+import type { AgentTriggerStripItem } from "@chariox/kernel-client/agent-trigger-state"
 import type { QueuedPromptStripItem } from "@chariox/kernel-client/queued-prompt-strip-state"
 import type { QueuedJob } from "@chariox/kernel-client/queued-jobs"
 
@@ -19,6 +21,8 @@ type AgentInteractionStripRenderOptions<TRenderer, TBox, TAgent extends { id: st
   queuedJobsForAgent?: (agentId: string | null | undefined) => readonly QueuedJob[]
   selectedQueuedPromptIndexForAgent: (agentId: string | null | undefined) => number
   onQueuedPromptAction: (item: QueuedPromptStripItem, action: "steer" | "cancel") => void
+  agentTriggerStripItemsForAgent: (agentId: string | null | undefined) => readonly AgentTriggerStripItem[]
+  unconfirmedTriggerDeliveriesForAgent?: (agentId: string | null | undefined) => readonly TriggerDelivery[]
   providerLoginState?: (interaction: RuntimeInteraction) => ProviderLoginStripState | null
   focusCustomChoiceOnce?: (interactionId: string, index: number, requestedAtMs: number) => void
   onProviderLoginLinkClick?: (interaction: RuntimeInteraction) => void
@@ -44,6 +48,8 @@ export type AgentInteractionStripControllerDeps<
   queuedJobsForAgent?: (agentId: string | null | undefined) => readonly QueuedJob[]
   selectedQueuedPromptIndexForAgent: (agentId: string | null | undefined) => number
   onQueuedPromptAction: (item: QueuedPromptStripItem, action: "steer" | "cancel") => void
+  agentTriggerStripItemsForAgent: (agentId: string | null | undefined) => readonly AgentTriggerStripItem[]
+  unconfirmedTriggerDeliveriesForAgent?: (agentId: string | null | undefined) => readonly TriggerDelivery[]
   providerLoginState?: (interaction: RuntimeInteraction) => ProviderLoginStripState | null
   focusCustomChoiceOnce?: (interactionId: string, index: number, requestedAtMs: number) => void
   onProviderLoginLinkClick?: (interaction: RuntimeInteraction) => void
@@ -75,6 +81,8 @@ export function createAgentInteractionStripController<
         ...(deps.queuedJobsForAgent ? { queuedJobsForAgent: deps.queuedJobsForAgent } : {}),
         selectedQueuedPromptIndexForAgent: deps.selectedQueuedPromptIndexForAgent,
         onQueuedPromptAction: deps.onQueuedPromptAction,
+        agentTriggerStripItemsForAgent: deps.agentTriggerStripItemsForAgent,
+        ...(deps.unconfirmedTriggerDeliveriesForAgent ? { unconfirmedTriggerDeliveriesForAgent: deps.unconfirmedTriggerDeliveriesForAgent } : {}),
         ...(deps.providerLoginState ? { providerLoginState: deps.providerLoginState } : {}),
         ...(deps.focusCustomChoiceOnce ? { focusCustomChoiceOnce: deps.focusCustomChoiceOnce } : {}),
         ...(deps.onProviderLoginLinkClick ? { onProviderLoginLinkClick: deps.onProviderLoginLinkClick } : {}),

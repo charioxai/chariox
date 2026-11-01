@@ -340,6 +340,22 @@ impl DaemonApp {
         self.recover_pending_slice_backup_restores()?;
         self.reconcile_slice_backup_restore_acknowledgements()?;
         self.restore_normalized_workflow_runtime_state()?;
+        // Admission receipts survive completed prompts, stale session events
+        // and snapshots captured before the live projection caught up.
+        for receipt in self.durable_state.admitted_trigger_resends()? {
+            if self.sessions.get_session(&receipt.session_id).is_err() {
+                continue;
+            }
+            let moved = self.sessions.write().move_trigger_delivery(
+                &receipt.session_id,
+                &receipt.original_prompt_id,
+                crate::session::TriggerDeliveryState::NotConfirmed,
+                crate::session::TriggerDeliveryState::Resent,
+            )?;
+            if moved.is_some() {
+                self.update_session_projection(self.sessions.get_session(&receipt.session_id)?);
+            }
+        }
         self.reconcile_restored_default_project_workspaces()?;
         self.remove_restored_projects_without_visible_sessions()?;
         self.reconcile_restored_duplicate_project_names()?;
@@ -1124,7 +1140,6 @@ impl DaemonApp {
                     "removed_terminal_workflow_prompt_count": reconciliation.removed_terminal_workflow_prompt_count,
                     "interrupted_prompt_count": reconciliation.interrupted_prompt_count,
                     "stopped_workflow_run_count": reconciliation.stopped_workflow_run_count,
-                    "settled_trigger_steer_count": reconciliation.settled_trigger_steer_count,
                 }),
             );
         }
@@ -1346,11 +1361,6 @@ impl DaemonApp {
                     prompt_state.last_activity_at_ms,
                 )?;
                 prompt_state.restore_private_states();
-                if let Some(settlement) = prompt_state.trigger_settlement.take() {
-                    self.sessions
-                        .write()
-                        .apply_agent_trigger_settlement(&prompt_state.session_id, settlement)?;
-                }
                 if let Some(timestamp_ms) = prompt_state.last_prompt_sent_at_ms {
                     self.agents
                         .note_prompt_sent_at(&prompt_state.agent_id, timestamp_ms)?;
