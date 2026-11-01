@@ -2,8 +2,9 @@
 //! run. The home ends the turn and wakes its waiters, then keeps the worker's
 //! run as a stored obligation until the worker has been told to stop it. Nothing
 //! the home can see proves a worker stopped on its own: only a worker enforces
-//! its own lease ceiling, and an ordinary kernel enforces none, so elapsed time
-//! never ends the obligation.
+//! its own lease ceiling, and an ordinary kernel enforces none, so neither
+//! elapsed time nor the removal of the agent or its Room ends the obligation.
+//! It belongs to the exact lease and run, not to the Room, and is swept without it.
 use super::*;
 use crate::durable_state::agent_lifecycle::{Operation, UnstoppedWorkerRun, WorkerStopMutation};
 
@@ -38,10 +39,9 @@ impl KernelRuntimeState {
     }
 
     /// Asks each worker to cancel the run the home gave up on. An obligation ends
-    /// when the worker acknowledges the cancellation or no longer holds the run,
-    /// or when its agent was deleted and a last cancellation has been tried. Any
-    /// other answer, including none, keeps it for a later sweep, spaced further
-    /// apart after each failure.
+    /// only when the worker acknowledges the cancellation or answers that it no
+    /// longer holds the run or its leased agent. Any other answer, including
+    /// none, keeps it for a later sweep, spaced further apart after each failure.
     pub(super) async fn discharge_worker_stop_obligations(
         &self,
         now: u64,
@@ -73,11 +73,7 @@ impl KernelRuntimeState {
         }))
         .await;
         for (run, stopped) in attempts {
-            let agent_removed = matches!(
-                self.owned.agent_store.get_agent(&run.agent_id),
-                Err(DaemonError::AgentNotFound { .. })
-            );
-            let mutation = if stopped || agent_removed {
+            let mutation = if stopped {
                 WorkerStopMutation::Discharge(run)
             } else {
                 let delay = crate::durable_state::agent_lifecycle::SWEEP_MS
