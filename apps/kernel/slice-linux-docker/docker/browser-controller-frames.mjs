@@ -228,16 +228,19 @@ export async function withBrowserFrames(connection, sessionId, targetId, documen
     const retained = new Set();
     const omitted = new Set();
     const info = { truncated: false };
-    const admit = (tree) => {
-      if (!retained.has(tree.frame.id)) {
-        if (retained.size >= limit) {
-          if (strict) throw new BrowserSnapshotError("snapshot_frame_limit", "browser exceeded frame bound");
-          info.truncated = true;
-          omitted.add(tree.frame.id);
-          return;
-        }
-        retained.add(tree.frame.id);
+    const claim = (id) => {
+      if (retained.has(id)) return true;
+      if (retained.size >= limit) {
+        if (strict) throw new BrowserSnapshotError("snapshot_frame_limit", "browser exceeded frame bound");
+        info.truncated = true;
+        omitted.add(id);
+        return false;
       }
+      retained.add(id);
+      return true;
+    };
+    const admit = (tree) => {
+      if (!claim(tree.frame.id)) return;
       for (const child of tree.childFrames ?? []) admit(child);
     };
 
@@ -251,6 +254,10 @@ export async function withBrowserFrames(connection, sessionId, targetId, documen
       for (const target of [...pending]) {
         if (!retained.has(target.parentFrameId)) continue;
         pending.splice(pending.indexOf(target), 1);
+        // An iframe target is named after the frame it renders, so its place under the bound is decided before the
+        // renderer is opened: a frame left out costs no attachment, and a discarded advertising iframe that
+        // disappears meanwhile cannot fail the read.
+        if (!claim(target.targetId)) continue;
         const { sessionId: childSession } = await connection.send("Target.attachToTarget", { targetId: target.targetId, flatten: true });
         attached.push(childSession);
         const { frameTree } = await connection.send("Page.getFrameTree", {}, childSession);

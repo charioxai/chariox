@@ -6,7 +6,8 @@ import { observeBrowserNote, NOTE_OBSERVER_EXPRESSION } from './browser-controll
 // MP-08/MP-10/MP-11: the frame bound, enumerated instead of exemplified. A scenario is a top frame with `top`
 // children c0..; `isolated` lists children that live in their own renderer (a placeholder in the top tree, a
 // renderer tree with `size` descendants); `nested` makes the first descendant isolated again (one frame below);
-// `reverse` reverses the order the browser lists its targets in.
+// `reverse` reverses the order the browser lists its targets in. As in the browser, an iframe target is named
+// after the frame it renders.
 const MAX_FRAMES = 64;
 const frame = (id, parent) => ({ id, ...(parent ? { parentId: parent } : {}), loaderId: 'doc-' + id, url: 'https://example.test/' + id });
 const node = (id, parent, childFrames = []) => ({ frame: frame(id, parent), childFrames });
@@ -17,9 +18,9 @@ function build({ top, isolated, nested, reverse }) {
   const targets = [];
   for (let i = 0; i < top; i++) sessionOf.set('c' + i, 'page');
   const renderer = (id, parent, descendants) => {
-    const session = 's-t-' + id;
+    const session = 's-' + id;
     trees.set(session, node(id, parent, descendants));
-    targets.push({ type: 'iframe', targetId: 't-' + id, parentFrameId: parent });
+    targets.push({ type: 'iframe', targetId: id, parentFrameId: parent });
     for (const child of descendants) if (!sessionOf.has(child.frame.id)) sessionOf.set(child.frame.id, session);
     sessionOf.set(id, session);
     return session;
@@ -30,7 +31,7 @@ function build({ top, isolated, nested, reverse }) {
     renderer(id, 'top', own);
     if (nested && size > 0) renderer(own[0].frame.id, id, [node(`n${at}`, own[0].frame.id)]);
   }
-  targets.push({ type: 'iframe', targetId: 't-foreign', parentFrameId: 'elsewhere' });
+  targets.push({ type: 'iframe', targetId: 'foreign', parentFrameId: 'elsewhere' });
   if (reverse) targets.reverse();
   return { trees, targets, sessionOf };
 }
@@ -50,6 +51,14 @@ function check(scenario, limit, owners, label) {
   else assert.equal(owners.size, Math.min(limit, reachable), `${label}: the bound is filled from the frames reachable through retained parents`);
 }
 
+// The work promises the same: one attachment and one tree read per retained renderer, never one per omitted target.
+function boundedWork(connection, owners, label) {
+  const { attachedTargets, trees } = connection.calls;
+  for (const target of attachedTargets) assert.ok(owners.has(target), `${label}: ${target} was opened although it is beyond the bound`);
+  assert.ok(new Set(attachedTargets).size === attachedTargets.length, `${label}: a renderer was opened twice`);
+  assert.ok(trees.filter((session) => session !== 'page').length === attachedTargets.length, `${label}: more than one tree read per renderer`);
+}
+
 function* scenarios(limit, { tops, positions, sizes }) {
   for (const top of tops) {
     const at = positions(top);
@@ -64,13 +73,17 @@ function* scenarios(limit, { tops, positions, sizes }) {
 }
 const describe = (s) => `top=${s.top} isolated=${JSON.stringify(s.isolated)} nested=${s.nested} reverse=${s.reverse}`;
 
-function cdp(scenario) {
+// `unattachable` names renderers that are gone by the time the browser is asked to open them.
+function cdp(scenario, unattachable = () => false) {
   const { trees, targets } = build(scenario);
-  const calls = { attached: new Set(), detached: new Set(), trees: [] };
+  const calls = { attached: new Set(), detached: new Set(), trees: [], attachedTargets: [] };
   const connection = { calls, async send(method, params, sessionId) {
     if (method === 'Page.getFrameTree') { calls.trees.push(sessionId); return { frameTree: trees.get(sessionId) }; }
     if (method === 'Target.getTargets') return { targetInfos: targets };
-    if (method === 'Target.attachToTarget') { const session = 's-' + params.targetId; calls.attached.add(session); return { sessionId: session }; }
+    if (method === 'Target.attachToTarget') {
+      if (unattachable(params.targetId)) throw new Error('No target with given id found');
+      calls.attachedTargets.push(params.targetId);
+      const session = 's-' + params.targetId; calls.attached.add(session); return { sessionId: session }; }
     if (method === 'Target.detachFromTarget') { calls.detached.add(params.sessionId); return {}; }
     return {};
   } };
@@ -95,6 +108,7 @@ test('MP-08/MP-10/MP-11 withBrowserFrames keeps at most the bound and reads ever
     if (!scenario.nested) assert.equal(info.truncated, scenario.top + 1 + scenario.isolated.reduce((sum, { size }) => sum + size, 0) > limit, `${describe(scenario)}: truncation is reported exactly when frames were left out`);
     else if (scenario.top + 1 > limit) assert.ok(info.truncated, `${describe(scenario)}: truncation is reported`);
     check(scenario, limit, owners, describe(scenario));
+    boundedWork(connection, owners, describe(scenario));
     assert.deepEqual([...connection.calls.attached].sort(), [...connection.calls.detached].sort(), `${describe(scenario)}: every attached renderer is detached`);
     cases++;
   }
@@ -102,8 +116,8 @@ test('MP-08/MP-10/MP-11 withBrowserFrames keeps at most the bound and reads ever
 });
 
 // The same scenarios through the note observer at the real bound: the frames it polls are the frames it keeps.
-function noteBrowser(scenario) {
-  const connection = cdp(scenario);
+function noteBrowser(scenario, unattachable) {
+  const connection = cdp(scenario, unattachable);
   const worlds = new Map(), polled = new Map(), ownerReads = new Set();
   let contexts = 100;
   const send = connection.send.bind(connection);
@@ -124,8 +138,8 @@ function noteBrowser(scenario) {
   return { browser, connection, worlds, polled, ownerReads };
 }
 
-async function observed(scenario) {
-  const { browser, connection, worlds, polled, ownerReads } = noteBrowser(scenario);
+async function observed(scenario, unattachable) {
+  const { browser, connection, worlds, polled, ownerReads } = noteBrowser(scenario, unattachable);
   await observeBrowserNote(browser, { target_id: 'tab', document_id: 'doc-top' });
   const owners = new Map();
   for (const [context, session] of polled) {
@@ -144,6 +158,7 @@ test('MP-08/MP-10/MP-11 a note is observed only in retained frames, each through
     const { owners, connection, ownerReads } = await observed(scenario);
     check(scenario, limit, owners, describe(scenario));
     for (const id of ownerReads) assert.ok(owners.has(id), `${describe(scenario)}: the owner of ${id} was read beyond the bound`);
+    boundedWork(connection, owners, describe(scenario));
     assert.deepEqual([...connection.calls.attached].sort(), [...connection.calls.detached].sort(), `${describe(scenario)}: every attached renderer is detached`);
     cases++;
   }
@@ -154,7 +169,38 @@ test('MP-08/MP-10/MP-11 a note is observed only in retained frames, each through
 test('MP-08/MP-10/MP-11 review case: a retained isolated child of a page with one frame too many is read through its renderer', async () => {
   const scenario = { top: MAX_FRAMES, isolated: [{ at: 0, size: 0 }], nested: false, reverse: false };
   const { owners } = await observed(scenario);
-  assert.equal(owners.get('c0'), 's-t-c0');
+  assert.equal(owners.get('c0'), 's-c0');
   assert.equal(owners.size, MAX_FRAMES);
   assert.ok(!owners.has('c' + (MAX_FRAMES - 1)), 'the first frame beyond the bound is not observed');
+});
+
+// The review's case: a thousand isolated placeholder children keep the top and 63 of them. The others are never
+// opened, so a read costs 63 attachments however many advertising iframes the browser holds, and one that is gone
+// by now cannot fail it.
+const isolatedChildren = (top) => ({ top, isolated: Array.from({ length: top }, (_, at) => ({ at, size: 0 })), nested: false, reverse: false });
+const beyondBound = (targetId) => Number(targetId.slice(1)) >= MAX_FRAMES - 1;
+
+test('MP-08/MP-10/MP-11 a page with a thousand isolated children opens only the renderers it keeps, even when the others are gone', async () => {
+  const scenario = isolatedChildren(1000);
+  for (const unattachable of [() => false, beyondBound]) {
+    const connection = cdp(scenario, unattachable);
+    const owners = new Map();
+    const info = await withBrowserFrames(connection, 'page', 'tab', 'doc-top', async (entries, state) => {
+      for (const entry of entries) owners.set(entry.frame.id, entry.sessionId);
+      return state;
+    });
+    assert.ok(info.truncated, 'truncation is reported');
+    assert.equal(owners.size, MAX_FRAMES);
+    assert.equal(connection.calls.attachedTargets.length, MAX_FRAMES - 1, 'one attachment per retained renderer');
+    assert.equal(connection.calls.trees.filter((session) => session !== 'page').length, MAX_FRAMES - 1, 'one tree read per retained renderer');
+    boundedWork(connection, owners, 'thousand children');
+    assert.deepEqual([...connection.calls.attached].sort(), [...connection.calls.detached].sort(), 'every attached renderer is detached');
+  }
+});
+
+test('MP-08/MP-10/MP-11 a note on a page with a thousand isolated children is observed in the retained frames although the others are gone', async () => {
+  const { owners, connection } = await observed(isolatedChildren(1000), beyondBound);
+  assert.equal(owners.size, MAX_FRAMES);
+  assert.equal(connection.calls.attachedTargets.length, MAX_FRAMES - 1);
+  boundedWork(connection, owners, 'thousand children');
 });
