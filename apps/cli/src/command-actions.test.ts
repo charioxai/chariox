@@ -34,7 +34,6 @@ test("/trigger creates, changes, removes and lists the focused agent's triggers"
   const triggerSession = makeSession({ agent_triggers: [trigger] })
   const handlers = createCommandActionHandlers(makeCommandDeps({
     sessionState: () => triggerSession,
-    supportsAgentTriggers: async () => true,
     sendAgentTriggerRequest: async (request: Record<string, unknown>) => {
       calls.push(JSON.stringify(request))
       return { session: triggerSession }
@@ -78,7 +77,7 @@ test("/trigger list retains unconfirmed firings after their once trigger retired
     { ...delivery, prompt_id: "other-agent", agent_id: "agent-2" },
   ] })
   const handlers = createCommandActionHandlers(makeCommandDeps({
-    sessionState: () => session, supportsAgentTriggers: async () => true,
+    sessionState: () => session,
     appendNotice: (message: string) => notices.push(message),
   }))
   const command = parseSlashCommand("/trigger list")!
@@ -86,28 +85,6 @@ test("/trigger list retains unconfirmed firings after their once trigger retired
   await handlers.handleTriggerCommand(command as Extract<typeof command, { kind: "trigger" }>)
   assert.match(notices.join("\n"), /Schedule.*Not confirmed.*steer.*\/trigger resend firing-1/)
   assert.doesNotMatch(notices.join("\n"), /already-resent|other-agent|No triggers/)
-})
-
-test("kernels without agent triggers refuse /wait and /trigger with an upgrade notice", async () => {
-  const calls: Record<string, unknown>[] = []
-  const errors: string[] = []
-  const handlers = createCommandActionHandlers(makeCommandDeps({
-    supportsAgentTriggers: async () => false,
-    sendAgentTriggerRequest: async (request: Record<string, unknown>) => {
-      calls.push(request)
-      return { session: makeSession() }
-    },
-    flashFooter: (message: string, tone: string) => { if (tone === "error") errors.push(message) },
-  }))
-  const commands = ["/wait-in 1 Ping", "/wait-every 0.5 Check", "/trigger", "/trigger every 1 Ping", "/trigger in 1 --steer Ping", "/trigger off t1", "/trigger remove t1"]
-  for (const raw of commands) {
-    const command = parseSlashCommand(raw)
-    assert.equal(command?.kind, "trigger")
-    await handlers.handleTriggerCommand(command as Extract<typeof command, { kind: "trigger" }>)
-  }
-  assert.equal(calls.length, 0, "no request reaches a kernel without agent triggers")
-  assert.equal(errors.length, commands.length)
-  assert.ok(errors.every((message) => /kernel.*900.*upgrade/i.test(message)))
 })
 
 test("formatAgentListSummary renders aliases and pluralization", () => {

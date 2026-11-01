@@ -1,4 +1,3 @@
-import { agentTriggersCapability, triggerDeliveryResendCapability } from "@chariox/kernel-client/ipc-requests"
 import { randomUUID } from "node:crypto"
 import { listProviderAccountCopyOffers, copyProviderAccountFromKernel } from "./provider-api.js"
 import { withAgentTaskUpdate } from "@chariox/kernel-client/agent-task-state"
@@ -859,14 +858,6 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
       resumeMetaagentTask(client, sessionId, metaagentId),
     abortMetaagentTask: (sessionId, metaagentId, reason) =>
       abortMetaagentTask(client, sessionId, metaagentId, reason),
-    supportsAgentTriggers: async () => {
-      const response = await client.send<{ RelayStatus: { status: { capabilities?: string[] } } }>({ RelayStatus: null })
-      return response.RelayStatus.status.capabilities?.includes(agentTriggersCapability) ?? false
-    },
-    supportsTriggerDeliveryResend: async () => {
-      const response = await client.send<{ RelayStatus: { status: { capabilities?: string[] } } }>({ RelayStatus: null })
-      return response.RelayStatus.status.capabilities?.includes(triggerDeliveryResendCapability) ?? false
-    },
     sendAgentTriggerRequest: async (request) => {
       const response = await client.send<Record<string, unknown>>(request)
       const payload = ["AgentTriggerCreated", "AgentTriggerUpdated", "AgentTriggerDeleted", "TriggerDeliveryResent"]
