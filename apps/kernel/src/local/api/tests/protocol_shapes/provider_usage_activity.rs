@@ -1453,7 +1453,7 @@ fn provider_catalog_summary_protocol_660_snapshot() {
             "{:x}",
             Sha256::digest(include_str!("../../types/provider_control.rs").as_bytes())
         ),
-        "c64e8d89d6dc13fa96e7e6b6ce3716f56d2da620415669a68527cc213bd097f1"
+        "a4a36a95eb80a38e0ae0cbe99da511df4e4cc0ea44c18f096842b32382734134"
     );
     assert_eq!(
         LOCAL_DAEMON_PROTOCOL_VERSION,
