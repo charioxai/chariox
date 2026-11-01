@@ -280,6 +280,11 @@ impl std::fmt::Debug for RuntimeProviderLogin {
     }
 }
 
+/// The longest value an owner may type for an outside agent's Vault request: a long bearer token
+/// fits. The clients advertise the same limit (`VAULT_SECRET_MAX_LENGTH` in the kernel client, the
+/// secret page and popups in Cloud), and the interaction resolver enforces it.
+pub(crate) const VAULT_SECRET_MAX_CHARS: usize = 8192;
+
 impl RuntimeInteraction {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -410,7 +415,7 @@ impl RuntimeInteraction {
             "Secret",
             None,
             Some(1),
-            Some(512),
+            Some(VAULT_SECRET_MAX_CHARS),
         ));
         interaction.timeout_sec = Some(timeout_sec);
         interaction
