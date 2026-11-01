@@ -30,7 +30,36 @@ pub(super) struct ProcessTree {
     unreadable: BTreeMap<u32, u8>,
     #[cfg(target_os = "linux")]
     cgroup: Option<std::sync::Arc<super::cgroup::Domain>>,
+    /// Without a cgroup: the environment entry the workload's processes
+    /// inherit, however far they detach from it.
+    #[cfg(target_os = "linux")]
+    marker: Option<Vec<u8>>,
+    /// Processes already read without the marker, by the age they had then.
+    #[cfg(target_os = "linux")]
+    unmarked: BTreeMap<u32, u64>,
+    /// Since when the workload owned nothing, while it is still waited on.
+    #[cfg(target_os = "linux")]
+    empty_since: Option<std::time::Instant>,
 }
+
+/// A job that is mid-exec cannot be told from a stranger yet; the workload
+/// is over once nothing of it showed up for this long.
+#[cfg(target_os = "linux")]
+const NOTHING_LEFT_GRACE: std::time::Duration = std::time::Duration::from_secs(1);
+
+#[cfg(target_os = "linux")]
+const MARKER_NAME: &str = "CHARIOX_RESOURCE_DOMAIN";
+
+#[cfg(target_os = "linux")]
+pub(super) fn new_marker() -> String {
+    format!("{:032x}", rand::random::<u128>())
+}
+
+#[cfg(target_os = "linux")]
+pub(super) fn marker_entry(marker: &str) -> String {
+    format!("{MARKER_NAME}={marker}")
+}
+
 impl ProcessTree {
     pub fn new(root: u32) -> Self {
         let mut tree = Self {
@@ -42,6 +71,12 @@ impl ProcessTree {
             unreadable: BTreeMap::new(),
             #[cfg(target_os = "linux")]
             cgroup: None,
+            #[cfg(target_os = "linux")]
+            marker: None,
+            #[cfg(target_os = "linux")]
+            unmarked: BTreeMap::new(),
+            #[cfg(target_os = "linux")]
+            empty_since: None,
         };
         tree.identify_root();
         tree
@@ -69,6 +104,11 @@ impl ProcessTree {
         self.owned.insert(pid, identity);
         self.ids
             .insert(pid, format!("process-{:032x}", rand::random::<u128>()));
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn set_marker(&mut self, marker: &str) {
+        self.marker = Some(marker_entry(marker).into_bytes());
     }
 
     #[cfg(target_os = "linux")]
@@ -134,6 +174,8 @@ impl ProcessTree {
                 }
             }
         }
+        #[cfg(target_os = "linux")]
+        self.adopt_marked(rows);
         let mut changed = true;
         while changed {
             changed = false;
@@ -148,7 +190,75 @@ impl ProcessTree {
                 }
             }
         }
+        #[cfg(target_os = "linux")]
+        if self.owned.is_empty() {
+            self.empty_since.get_or_insert_with(std::time::Instant::now);
+        } else {
+            self.empty_since = None;
+        }
         Ok(())
+    }
+
+    /// A job that detached (`setsid job &`) and lost its parent is no
+    /// descendant any more. Without a cgroup it is still the workload's:
+    /// it inherited the marker from the process that started it.
+    #[cfg(target_os = "linux")]
+    fn adopt_marked(&mut self, rows: &[Row]) {
+        let Some(marker) = self.marker.clone() else {
+            return;
+        };
+        let present = rows
+            .iter()
+            .map(|row| row.pid)
+            .collect::<std::collections::BTreeSet<_>>();
+        self.unmarked.retain(|pid, _| present.contains(pid));
+        for row in rows {
+            // A process only gets older: a younger one means a recycled PID.
+            let known = self
+                .unmarked
+                .get(&row.pid)
+                .is_some_and(|age| row.age_ms >= *age);
+            if known || self.owned.contains_key(&row.pid) {
+                continue;
+            }
+            match std::fs::read(format!("/proc/{}/environ", row.pid)) {
+                Ok(environment)
+                    if environment
+                        .split(|byte| *byte == 0)
+                        .any(|entry| entry == marker) =>
+                {
+                    if let Ok((identity, _)) = inspect(row.pid) {
+                        self.adopt(row.pid, identity);
+                    }
+                }
+                // Empty while the process is mid-exec or a zombie: not an answer yet.
+                Ok(environment) if environment.is_empty() => {}
+                Ok(_) => {
+                    self.unmarked.insert(row.pid, row.age_ms);
+                }
+                // Another user's process: it never becomes readable.
+                Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+                    self.unmarked.insert(row.pid, row.age_ms);
+                }
+                // Exited, or not readable yet: ask again at the next sample.
+                Err(_) => {}
+            }
+        }
+    }
+
+    /// Whether the workload left nothing running. A shared sample may predate
+    /// a job that detached as the root ended, so a marked workload reads a
+    /// fresh one, and only a lasting emptiness counts.
+    #[cfg(target_os = "linux")]
+    pub fn left_nothing_running(&mut self) -> bool {
+        if self.marker.is_none() {
+            return true;
+        }
+        if !read_process_rows().is_ok_and(|rows| self.observe(&rows).is_ok()) {
+            return false;
+        }
+        self.empty_since
+            .is_some_and(|since| since.elapsed() >= NOTHING_LEFT_GRACE)
     }
 
     pub fn stop(

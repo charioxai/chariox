@@ -245,6 +245,64 @@ fn shell_exec_keeps_owned_root_and_subsequent_children_addressable() {
     );
 }
 
+/// The cgroup-free twin of `cgroup_observations_include_children_that_detach_between_samples`.
+#[cfg(target_os = "linux")]
+#[test]
+fn without_a_cgroup_a_child_that_detached_is_observed_and_ended_with_its_owner() {
+    use std::io::{BufRead, Write};
+    let prepared = PreparedDomain::watchdog("detached-test", None, roomy());
+    let script = "import os,time,sys\nsys.stdin.readline()\np=os.fork()\nif p==0:\n c=os.fork()\n if c==0:\n  os.setsid(); time.sleep(30); os._exit(0)\n print(c,flush=True); os._exit(0)\nos.waitpid(p,0); time.sleep(30)";
+    let (program, args) = prepared.command("python3".into(), vec!["-c".into(), script.into()]);
+    let mut child = std::process::Command::new(program)
+        .args(args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut domain = prepared.start(child.id()).unwrap();
+    let key = format!("detached-watchdog-{}", child.id());
+    domain.bind_key(&key);
+    child.stdin.take().unwrap().write_all(b"go\n").unwrap();
+    let mut line = String::new();
+    std::io::BufReader::new(child.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    let detached: u32 = line.trim().parse().unwrap();
+    let until = |condition: &dyn Fn() -> bool| {
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while !condition() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        condition()
+    };
+    let observed = until(&|| samples_for_key(&key).iter().any(|row| row.pid == detached));
+    // The workload's own process ends first, as when a shell returns.
+    let _ = child.kill();
+    let _ = child.wait();
+    domain.release(
+        "detached-session",
+        SessionProcessOwner::Agent("detached-agent".into()),
+        None,
+    );
+    std::thread::sleep(4 * INTERVAL);
+    let owner = SessionProcessOwner::Agent("detached-agent".into());
+    let still_observed = released_keys_for_session("detached-session")
+        .into_iter()
+        .filter(|(row_owner, _)| *row_owner == owner)
+        .flat_map(|(_, key)| samples_for_key(&key))
+        .any(|row| row.pid == detached);
+    stop_released(Some("detached-session"), Some(&owner));
+    let ended = until(&|| !crate::test_support::process_alive(detached as i32));
+    // SAFETY: the positive PID of the job this test started; never a group.
+    unsafe { libc::kill(detached as i32, libc::SIGKILL) };
+    assert!(observed, "the detached child was missing from observations");
+    assert!(
+        still_observed,
+        "the detached child was dropped when its parent ended"
+    );
+    assert!(ended, "the detached child outlived its owner");
+}
+
 #[cfg(unix)]
 #[test]
 fn watchdog_covers_children_created_after_shell_exec() {
