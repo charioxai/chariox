@@ -11,6 +11,19 @@ if args[:2] != ["serve", "agent-trigger"]:
     sys.exit(2)
 port = int(args[4])
 kernel = urllib.parse.urlparse(args[args.index("--kernel-url") + 1])
+# The real client binds a credential to an exact, path-free loopback endpoint
+# (canonicalLoopbackKernelEndpoint in packages/kernel-client/src/ipc.ts).
+if (
+    kernel.scheme != "ws"
+    or kernel.hostname not in ("127.0.0.1", "[::1]")
+    or kernel.path not in ("", "/")
+    or kernel.username
+    or kernel.password
+    or kernel.query
+    or kernel.fragment
+):
+    sys.stderr.write("the kernel credential needs a canonical loopback endpoint\n")
+    sys.exit(14)
 
 path = os.environ.get("CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE")
 if not path:
@@ -26,7 +39,7 @@ os.unlink(path)
 kernel_socket = socket.create_connection((kernel.hostname, kernel.port))
 kernel_socket.sendall(
     (
-        f"GET {kernel.path} HTTP/1.1\r\nHost: {kernel.hostname}:{kernel.port}\r\n"
+        f"GET / HTTP/1.1\r\nHost: {kernel.hostname}:{kernel.port}\r\n"
         "Upgrade: websocket\r\nConnection: Upgrade\r\n"
         f"Sec-WebSocket-Key: {base64.b64encode(os.urandom(16)).decode()}\r\n"
         f"Sec-WebSocket-Version: 13\r\nAuthorization: Bearer {token}\r\n\r\n"
