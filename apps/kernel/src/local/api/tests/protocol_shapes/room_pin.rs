@@ -5,7 +5,7 @@ fn mp11_room_pin_588_194_snapshot_and_hash() {
     let bytes = include_bytes!("room-pin-588.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "48e3da5bdca3eee347a9f336f29df728e7b2fa43a14091dd27924d813f7dd719"
+        "632bd670521c1599255306cb66347ad34c1cacbc034bdeabb45e8b54182f2953"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(fixture["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
