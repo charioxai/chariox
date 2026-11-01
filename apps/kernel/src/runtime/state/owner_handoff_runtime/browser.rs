@@ -217,7 +217,7 @@ impl KernelRuntimeState {
         })
     }
 
-    pub(super) async fn save_handoff_secret(
+    pub(in crate::runtime::state) async fn save_handoff_secret(
         &self,
         handoff: &RuntimeHandoff,
         key: &str,

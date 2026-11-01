@@ -755,3 +755,130 @@ async fn an_overwrite_answer_replaces_a_stored_value_that_has_no_record() {
     assert_eq!(value.as_str(), "typed-by-the-owner");
     assert!(fixture.registry.get("token_slot").unwrap().is_some());
 }
+
+fn handoff_on(origin: &str) -> crate::session::RuntimeHandoff {
+    crate::session::RuntimeHandoff {
+        kind: crate::session::HandoffKind::Secret,
+        reason: crate::session::HandoffReason::ModelRefusal,
+        agent_id: "agent".into(),
+        task_id: "task".into(),
+        obligation_id: "obligation".into(),
+        explanation: "Enter the password".into(),
+        target: crate::session::HandoffTarget {
+            tab_id: "tab".into(),
+            generation: 1,
+            document_id: "doc".into(),
+            node_ref: "backend:7".into(),
+            origin: origin.into(),
+            path: "/login".into(),
+            label: "Password".into(),
+        },
+        change: Vec::new(),
+        expires_at_ms: crate::session::unix_epoch_ms() + 900_000,
+        save_to_vault_offered: true,
+    }
+}
+
+#[tokio::test]
+async fn the_owners_hand_off_save_replaces_a_stored_value_that_has_no_record() {
+    let fixture = request_fixture("handoff-orphan").await;
+    let runtime = &fixture.room.runtime;
+    fixture
+        .service
+        .set_vault_secret("site_login", "original-value")
+        .unwrap();
+
+    runtime
+        .save_handoff_secret(
+            &handoff_on("https://example.com"),
+            "site_login",
+            "typed-by-the-owner",
+        )
+        .await
+        .expect("the owner's own save must replace what is stored");
+
+    let value = fixture
+        .service
+        .vault_secret_for_dictation("site_login")
+        .unwrap()
+        .unwrap();
+    assert_eq!(value.as_str(), "typed-by-the-owner");
+    assert!(fixture.registry.get("site_login").unwrap().is_some());
+}
+
+#[tokio::test]
+async fn the_owner_saves_again_after_deleting_the_handle_record() {
+    let fixture = request_fixture("handoff-deleted").await;
+    let runtime = &fixture.room.runtime;
+    let handoff = handoff_on("https://example.com");
+    runtime
+        .save_handoff_secret(&handoff, "site_login", "first-value")
+        .await
+        .unwrap();
+    fixture.registry.remove("site_login").unwrap();
+
+    runtime
+        .save_handoff_secret(&handoff, "site_login", "second-value")
+        .await
+        .expect("the owner's save over the value of a deleted handle must succeed");
+
+    let value = fixture
+        .service
+        .vault_secret_for_dictation("site_login")
+        .unwrap()
+        .unwrap();
+    assert_eq!(value.as_str(), "second-value");
+}
+
+#[tokio::test]
+async fn the_owners_hand_off_save_replaces_the_value_of_its_own_handle() {
+    let fixture = request_fixture("handoff-own-handle").await;
+    let runtime = &fixture.room.runtime;
+    let handoff = handoff_on("https://example.com");
+    runtime
+        .save_handoff_secret(&handoff, "site_login", "first-value")
+        .await
+        .unwrap();
+
+    runtime
+        .save_handoff_secret(&handoff, "site_login", "second-value")
+        .await
+        .expect("the owner's save over their own saved handle must succeed");
+
+    let value = fixture
+        .service
+        .vault_secret_for_dictation("site_login")
+        .unwrap()
+        .unwrap();
+    assert_eq!(value.as_str(), "second-value");
+}
+
+#[tokio::test]
+async fn the_owners_hand_off_save_never_takes_the_slot_of_another_handle() {
+    let fixture = request_fixture("handoff-other-handle").await;
+    let runtime = &fixture.room.runtime;
+    fixture
+        .service
+        .set_vault_secret("other_slot", "other-value")
+        .unwrap();
+    fixture
+        .registry
+        .upsert(owner_credential("other_slot"))
+        .unwrap();
+
+    let saved = runtime
+        .save_handoff_secret(
+            &handoff_on("https://example.com"),
+            "other_slot",
+            "typed-by-the-owner",
+        )
+        .await;
+
+    assert!(saved.is_err(), "another handle's slot was taken");
+    let value = fixture
+        .service
+        .vault_secret_for_dictation("other_slot")
+        .unwrap()
+        .unwrap();
+    assert_eq!(value.as_str(), "other-value");
+}
