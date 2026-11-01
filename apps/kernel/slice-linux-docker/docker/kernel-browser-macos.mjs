@@ -16,6 +16,9 @@ export const headless = () => true;
 export function videoDecodeArguments() { return []; }
 export function launchEnvironment(environment) {
   const native = { ...environment };
+  // MP-08/MP-10: unlike Linux, Browser has no private desktop on macOS.
+  // Keep its pages in the clients instead of opening windows on the owner's screen.
+  native.CHARIOX_KERNEL_BROWSER_HEADLESS = "1";
   delete native.DISPLAY;
   delete native.XAUTHORITY;
   delete native.WAYLAND_DISPLAY;

@@ -440,4 +440,6 @@ pub use workspace::*;
 /// Landing union 932 carries 924 (opaque reimage `providerId`), 925 (hot reload `kernel_reload`), 926 (direct
 /// data channel liveness), 927 (process admission), 928 (outside interaction `question`/`resolution`), 929 (Vault
 /// secret requests) and 930 to 932 (agent triggers).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 932;
+/// Browser header 955 adds the portable active Tab, history bounds and bounded favicon PNGs to the
+/// `KernelBrowser` state (`active_tab_id`, `can_go_back`, `can_go_forward`, `favicon_png_base64`).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 955;
