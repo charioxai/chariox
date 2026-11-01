@@ -12,6 +12,7 @@ const TOOL = "chariox_next_choice"
 const DEFAULT_WAIT_SECONDS = 540
 const MAX_WAIT_SECONDS = 900
 const REPLY = "reply"
+const PAGE = 100
 
 type Json = Record<string, unknown>
 type Interaction = Extract<OutsideEvent, { type: "interaction" }>
@@ -110,26 +111,43 @@ export async function runEventsMcp(send: SendRequest, input: Readable, output: W
 
   const expired = (decision: Interaction): boolean => (decision.value.question?.expires_at_ms ?? Infinity) <= Date.now()
 
-  async function takeOpen(): Promise<Interaction | null> {
+  // The first decision still worth asking. It stays in `open` until a definitive outcome, so a failure before the
+  // person is served leaves it to the next call.
+  async function firstOpen(): Promise<Interaction | null> {
     for (const [key, decision] of open) {
-      if (!expired(decision)) { open.delete(key); return decision }
+      if (!expired(decision)) return decision
       await settle(key)
     }
     return null
   }
 
+  async function read(request: Json): Promise<EventsBatch> {
+    const response = await send(request) as { EventsListed?: EventsBatch }
+    if (!response.EventsListed) throw new CommandFailure("cursor_expired", "event cursor expired; subscribe again")
+    seen = response.EventsListed.next_cursor
+    ingest(response.EventsListed.events)
+    return response.EventsListed
+  }
+
+  // Every record already in the inbox, page after page, so a decision answered elsewhere is closed before it is asked.
+  async function drain(): Promise<boolean> {
+    for (;;) {
+      const batch = await read({ ListEvents: { ...(seen === null ? {} : { since: seen }), limit: PAGE } })
+      if (batch.events.some(event => event.type === "subscription_ended")) return true
+      if (batch.events.length < PAGE) return false
+    }
+  }
+
   async function nextChoice(seconds: number): Promise<Json> {
     const deadline = Date.now() + seconds * 1000
     while (Date.now() < deadline) {
-      const decision = await takeOpen()
+      if (await drain()) return text({ ended: true })
+      await acknowledge()
+      const decision = await firstOpen()
       if (decision) return await present(decision)
       const wait = Math.max(1, Math.min(Math.ceil((deadline - Date.now()) / 1000), 60))
-      const response = await send({ WaitEvents: { ...(seen === null ? {} : { since: seen }), limit: 100, timeout_ms: wait * 1000 } }) as { EventsListed?: EventsBatch; EventsCursorExpired?: unknown }
-      if (!response.EventsListed) throw new CommandFailure("cursor_expired", "event cursor expired; subscribe again")
-      const batch = response.EventsListed
+      const batch = await read({ WaitEvents: { ...(seen === null ? {} : { since: seen }), limit: PAGE, timeout_ms: wait * 1000 } })
       if (batch.events.some(event => event.type === "subscription_ended")) return text({ ended: true })
-      seen = batch.next_cursor
-      ingest(batch.events)
       await acknowledge()
     }
     return text({ timed_out: true })
@@ -146,7 +164,7 @@ export async function runEventsMcp(send: SendRequest, input: Readable, output: W
     const answer = await elicit({ message: question.message, requestedSchema: schema(question) })
     const content = (answer.content ?? {}) as Json
     // A dialog the person dismissed is not asked again by this process; the decision stays open in the inbox.
-    if (answer.action !== "accept" || typeof content.choice !== "string") return text({ interaction_id: id, action: answer.action ?? "cancel" })
+    if (answer.action !== "accept" || typeof content.choice !== "string") { open.delete(key); return text({ interaction_id: id, action: answer.action ?? "cancel" }) }
     const reply = question.text_reply?.id === content.choice && typeof content[REPLY] === "string" ? content[REPLY] : null
     const request = respondToInteractionRequest(decision.session_id, id, content.choice, reply)
     try {
@@ -154,7 +172,6 @@ export async function runEventsMcp(send: SendRequest, input: Readable, output: W
     } catch (error) {
       const code = error instanceof CommandFailure ? error.code : (error as { code?: string }).code
       if (code === "interaction_closed") await settle(key)
-      else open.set(key, decision)
       return text({ interaction_id: id, action: "accept", choice_id: content.choice, answered: false, code: code ?? "request_failed" }, code !== "interaction_closed")
     }
     await settle(key)

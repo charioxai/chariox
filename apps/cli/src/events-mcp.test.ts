@@ -19,12 +19,12 @@ const resolved = (cursor: number, at: { kernel?: string; id?: string } = {}) => 
 class Inbox {
   acknowledged = 0
   constructor(readonly events: Json[]) {}
-  wait(since?: number): Json[] { return this.events.filter(event => event.cursor > (since ?? this.acknowledged)) }
+  wait(since?: number, limit = Infinity): Json[] { return this.events.filter(event => event.cursor > (since ?? this.acknowledged)).slice(0, limit) }
 }
 
 // A stub harness: it talks JSON-RPC over the same pipes a real one uses, and answers elicitation as scripted.
 // `onElicit` returning undefined leaves the dialog open (the person has not answered). "k" is this computer's kernel.
-async function harness(events: Json[] | Inbox, elicitation: Json | null, onElicit: (params: Json) => Json | undefined, failAnswers: string[] = []) {
+async function harness(events: Json[] | Inbox, elicitation: Json | null, onElicit: (params: Json) => Json | undefined, failAnswers: string[] = [], failRoutes = 0) {
   const inbox = events instanceof Inbox ? events : new Inbox(events)
   const sent: Json[] = []
   const routed: { kernel: string; request: Json }[] = []
@@ -46,17 +46,18 @@ async function harness(events: Json[] | Inbox, elicitation: Json | null, onElici
   const fail = (request: Json) => { const code = failAnswers.shift(); if (code) throw new CommandFailure(code, "answer failed"); return request }
   const send = async (request: Json) => {
     sent.push(request)
-    if ("WaitEvents" in request) {
-      const events = inbox.wait((request.WaitEvents as Json).since as number | undefined)
-      if (events.length === 0) await new Promise(resolve => setTimeout(resolve, 20))
-      return { EventsListed: { events, next_cursor: events.at(-1)?.cursor ?? (request.WaitEvents as Json).since ?? inbox.acknowledged, oldest_cursor: 1, timed_out: events.length === 0 } }
+    if ("WaitEvents" in request || "ListEvents" in request) {
+      const query = (request.WaitEvents ?? request.ListEvents) as Json
+      const events = inbox.wait(query.since as number | undefined, query.limit as number)
+      if (events.length === 0 && "WaitEvents" in request) await new Promise(resolve => setTimeout(resolve, 20))
+      return { EventsListed: { events, next_cursor: events.at(-1)?.cursor ?? query.since ?? inbox.acknowledged, oldest_cursor: 1, timed_out: events.length === 0 } }
     }
     if ("AckEvents" in request) inbox.acknowledged = Math.max(inbox.acknowledged, (request.AckEvents as Json).cursor as number)
     if ("RespondToInteraction" in request) fail(request)
     return { ack: true }
   }
   const routes = {
-    isLocal: async (kernel: string) => kernel === "k",
+    isLocal: async (kernel: string) => { if (failRoutes-- > 0) throw new Error("relay status failed"); return kernel === "k" },
     sendTo: async (kernel: string, request: Json) => { routed.push({ kernel, request }); fail(request); return { ack: true } },
   }
   const server = runEventsMcp(send as never, input, output, routes)
@@ -166,6 +167,42 @@ test("a batch with a pending record, its resolution, an expired question and a l
   assert.deepEqual(elicitedQuestions(h), ["Still open?"])
   assert.deepEqual(h.sent.filter(request => "RespondToInteraction" in request).map(request => (request.RespondToInteraction as Json).interaction_id), ["int-live"])
   assert.equal(h.inbox.acknowledged, 7)
+  await h.close()
+})
+
+test("a queued question that was answered elsewhere while another one was open is not asked", async () => {
+  const inbox = new Inbox([pending(4), pending(5, { id: "int-2" }, { message: "Second?" })])
+  const h = await harness(inbox, { form: {} }, params => {
+    if (params.message === "Which colour?") inbox.events.push(resolved(6, { id: "int-2" }))
+    return { action: "accept", content: { choice: "red" } }
+  })
+  assert.equal(told(await next(h)).interaction_id, "int-1")
+  assert.deepEqual(told(await next(h, 1)), { timed_out: true })
+  assert.deepEqual(elicitedQuestions(h), ["Which colour?"])
+  assert.equal(inbox.acknowledged, 6)
+  await h.close()
+})
+
+test("a pending record and its resolution on a later page of the inbox are reconciled before asking", async () => {
+  const filler = Array.from({ length: 49 }, (_, index) => [pending(3 + index * 2, { id: `old-${index}` }), resolved(4 + index * 2, { id: `old-${index}` })]).flat()
+  const inbox = new Inbox([pending(1), pending(2, { id: "int-2" }, { message: "Second?" }), ...filler, resolved(101, { id: "int-2" })])
+  const h = await harness(inbox, { form: {} }, () => ({ action: "accept", content: { choice: "red" } }))
+  assert.equal(told(await next(h)).interaction_id, "int-1")
+  assert.deepEqual(told(await next(h, 1)), { timed_out: true })
+  assert.deepEqual(elicitedQuestions(h), ["Which colour?"])
+  assert.equal(inbox.acknowledged, 101)
+  await h.close()
+})
+
+test("a failed routing lookup keeps the question for the retry in the same process", async () => {
+  const h = await harness([pending(4)], { form: {} }, () => ({ action: "accept", content: { choice: "red" } }), [], 1)
+  const failed = await next(h)
+  assert.equal(failed.result.isError, true)
+  assert.deepEqual(told(failed), { error: "request_failed" })
+  assert.equal(h.lines.length, 0)
+  assert.deepEqual(acks(h), [])
+  assert.deepEqual(told(await next(h)), { interaction_id: "int-1", action: "accept", choice_id: "red", answered: true })
+  assert.deepEqual(acks(h), [4])
   await h.close()
 })
 
