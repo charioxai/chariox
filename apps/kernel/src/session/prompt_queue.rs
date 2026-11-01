@@ -1328,12 +1328,15 @@ mod tests {
         assert_eq!(promoted.agent_trigger_id(), Some("wait-1"));
         assert!(promoted.hidden_system_context().is_empty());
 
-        let mut legacy = serde_json::to_value(private).unwrap();
-        let legacy_fields = legacy.as_object_mut().unwrap();
-        let trigger_id = legacy_fields.remove("agent_trigger_id").unwrap();
-        legacy_fields.insert("agent_prompt_schedule_id".to_string(), trigger_id);
-        let legacy: DurablePromptPrivateState = serde_json::from_value(legacy).unwrap();
-        assert_eq!(legacy.agent_trigger_id.as_deref(), Some("wait-1"));
+        let mut stored = serde_json::to_value(private).unwrap();
+        let fields = stored.as_object_mut().unwrap();
+        let trigger_id = fields.remove("agent_trigger_id").unwrap();
+        fields.insert("agent_prompt_schedule_id".to_string(), trigger_id);
+        let stored: DurablePromptPrivateState = serde_json::from_value(stored).unwrap();
+        assert_eq!(
+            stored.agent_trigger_id, None,
+            "the pre-trigger field name is no longer read"
+        );
     }
 
     #[test]

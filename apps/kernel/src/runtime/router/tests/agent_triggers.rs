@@ -463,7 +463,7 @@ async fn destroying_an_agent_removes_its_wait_schedules() {
         .await
         .expect("snapshot should read");
     let snapshot = serde_json::to_value(&snapshot).unwrap();
-    let schedule_agents = snapshot["agent_prompt_schedules"]
+    let schedule_agents = snapshot["agent_triggers"]
         .as_array()
         .expect("the kept agent's schedule should remain")
         .iter()
@@ -473,7 +473,7 @@ async fn destroying_an_agent_removes_its_wait_schedules() {
 }
 
 #[test]
-fn sessions_written_before_triggers_migrate_wait_schedules_and_keep_the_legacy_view() {
+fn stored_wait_schedules_are_not_migrated_and_triggers_have_no_legacy_view() {
     let session = crate::session::RuntimeSession::new(
         "session-wait-reload",
         None,
@@ -482,64 +482,57 @@ fn sessions_written_before_triggers_migrate_wait_schedules_and_keep_the_legacy_v
         "machine",
         "kernel",
     );
-    let legacy = serde_json::json!({
+    let mut stored = serde_json::to_value(&session).unwrap();
+    stored["agent_prompt_schedules"] = serde_json::json!([{
         "id": "wait-1", "agent_id": "agent-1", "kind": "recurring", "interval_seconds": 300,
         "prompt": "Continue the audit.", "created_at_ms": 1_000, "next_run_at_ms": 301_000,
         "runs_dispatched": 2, "last_triggered_at_ms": 1_000,
-    });
-    let mut written_before = serde_json::to_value(&session).unwrap();
-    written_before["agent_prompt_schedules"] = serde_json::json!([legacy.clone()]);
+    }]);
+    let read: crate::session::RuntimeSession = serde_json::from_value(stored).unwrap();
+    assert!(
+        read.agent_triggers().is_empty(),
+        "a /wait schedule stored before triggers is dropped, not migrated"
+    );
 
-    let migrated: crate::session::RuntimeSession =
-        serde_json::from_value(written_before).expect("a pre-900 session should read");
-    let [trigger] = migrated.agent_triggers() else {
-        panic!("the /wait-every schedule should become one trigger");
-    };
-    assert_eq!(trigger.id(), "wait-1");
-    assert_eq!(trigger.agent_id(), "agent-1");
-    assert_eq!(
-        trigger.source(),
-        &crate::session::AgentTriggerSource::Schedule {
-            interval_seconds: 300,
-            repeat: crate::session::AgentTriggerRepeat::Every,
-            next_run_at_ms: 301_000,
-        }
+    let mut session = session;
+    session.add_agent_trigger(crate::session::AgentTrigger::schedule(
+        "trigger-1",
+        "agent-1",
+        "user-1",
+        300,
+        crate::session::AgentTriggerRepeat::Every,
+        crate::session::AgentTriggerBusyPolicy::Queue,
+        "Continue the audit.",
+        1_000,
+    ));
+    let written = serde_json::to_value(&session).unwrap();
+    assert!(written.get("agent_triggers").is_some());
+    assert!(
+        written.get("agent_prompt_schedules").is_none(),
+        "a session is no longer written with the /wait view"
     );
-    assert_eq!(
-        trigger.busy_policy(),
-        crate::session::AgentTriggerBusyPolicy::Queue
-    );
-    assert!(trigger.enabled());
-    assert_eq!(trigger.fired(), 2);
-    assert_eq!(trigger.created_by_user_id(), None);
-
-    // Written again it carries both shapes, and reading that back neither
-    // duplicates nor loses the trigger.
-    let written = serde_json::to_value(&migrated).unwrap();
-    assert_eq!(
-        written["agent_prompt_schedules"],
-        serde_json::json!([legacy])
-    );
-    let reread: crate::session::RuntimeSession = serde_json::from_value(written).unwrap();
-    assert_eq!(reread.agent_triggers(), migrated.agent_triggers());
 }
 
 #[tokio::test]
-async fn a_migrated_wait_schedule_whose_agent_is_gone_is_removed_with_a_notice() {
+async fn a_trigger_whose_agent_is_gone_is_removed_with_a_notice() {
     let worktree = crate::test_support::TestWorktree::new("trigger-orphan");
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, _agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(worktree.session_request())
         .expect("session should create");
     let session_store = app.session_state_store();
-    // Before 900 a /wait-every outlived its destroyed agent.
-    let mut stored =
-        serde_json::to_value(session_store.get_session(session.id()).unwrap()).unwrap();
-    stored["agent_prompt_schedules"] = serde_json::json!([{
-        "id": "wait-orphan", "agent_id": "agent-destroyed-before-900", "kind": "recurring",
-        "interval_seconds": 60, "prompt": "Check.", "created_at_ms": 1_000, "next_run_at_ms": 61_000,
-    }]);
-    session_store.restore_session(serde_json::from_value(stored).unwrap());
+    let mut stored = session_store.get_session(session.id()).unwrap();
+    stored.add_agent_trigger(crate::session::AgentTrigger::schedule(
+        "wait-orphan",
+        "agent-destroyed",
+        "user-1",
+        60,
+        crate::session::AgentTriggerRepeat::Every,
+        crate::session::AgentTriggerBusyPolicy::Queue,
+        "Check.",
+        1_000,
+    ));
+    session_store.restore_session(stored);
     let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
 
     boxed_schedule_future(|| router.runtime_state.dispatch_due_agent_triggers(61_000)).await;
