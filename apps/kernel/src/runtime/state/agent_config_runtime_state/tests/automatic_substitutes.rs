@@ -74,7 +74,7 @@ impl FailingTurn {
             .collect()
     }
 
-    fn rerun_notices(&self) -> Vec<String> {
+    pub(super) fn rerun_notices(&self) -> Vec<String> {
         self.notices()
             .into_iter()
             .filter(|notice| notice.starts_with("This turn runs on "))

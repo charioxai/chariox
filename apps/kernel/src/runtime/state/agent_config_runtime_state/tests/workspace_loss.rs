@@ -4,7 +4,9 @@ use crate::durable_state::agent_lifecycle::ExecutionState;
 
 #[tokio::test]
 async fn a_turn_whose_workspace_is_removed_ends_failed_and_names_the_directory() {
-    let turn = failing_turn(&[]).await;
+    // A configured substitute must not take over a turn whose workspace is gone:
+    // it would run in the same missing directory.
+    let turn = failing_turn(&[("dev-stub", "workspace-substitute", None)]).await;
     turn.run_in_worktree().await;
     let mut config = turn.runtime.owned.config_projection.snapshot();
     config.room_agent_tools = true;
@@ -24,6 +26,11 @@ async fn a_turn_whose_workspace_is_removed_ends_failed_and_names_the_directory()
     assert!(
         turn.active_prompt().is_none(),
         "the turn on a removed workspace kept running"
+    );
+    assert!(
+        turn.rerun_notices().is_empty(),
+        "a substitute took over the turn: {:?}",
+        turn.rerun_notices()
     );
     let task = turn
         .runtime
