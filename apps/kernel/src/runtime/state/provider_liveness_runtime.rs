@@ -49,8 +49,7 @@ impl KernelRuntimeState {
             let terminal_diagnostic = exit.ended_run.terminal_diagnostic().map(str::to_string);
             if let Some(diagnostic) = terminal_diagnostic.as_deref() {
                 if owned.provider_run_has_active_prompt(session_id, &exit.ended_run)? {
-                    let termination = crate::provider::ProviderRunTermination::runtime_failure(
-                        "provider run was already ended during liveness reconciliation",
+                    let termination = crate::provider::ProviderRunTermination::exit_unobserved(
                         crate::session::unix_epoch_ms(),
                     );
                     self.settle_unexpected_provider_run_exit_with_diagnostic(
@@ -81,8 +80,7 @@ impl KernelRuntimeState {
             let session_outcome = if owned
                 .provider_run_has_active_prompt(session_id, &exit.ended_run)?
             {
-                let termination = crate::provider::ProviderRunTermination::runtime_failure(
-                    "provider run was already ended during liveness reconciliation",
+                let termination = crate::provider::ProviderRunTermination::exit_unobserved(
                     crate::session::unix_epoch_ms(),
                 );
                 let diagnosed = owned
@@ -185,12 +183,14 @@ impl KernelRuntimeState {
                         agent_id: "provider run has no agent".to_string(),
                     }
                 })?;
-                let termination = termination_for_process_exit(
-                    process_exit
-                        .as_ref()
-                        .map(|exit| (exit.exit_code, exit.signal.as_deref())),
-                    crate::session::unix_epoch_ms(),
-                );
+                let termination = process_exit
+                    .as_ref()
+                    .map(|exit| exit.termination_at(crate::session::unix_epoch_ms()))
+                    .unwrap_or_else(|| {
+                        crate::provider::ProviderRunTermination::unknown_process_exit(
+                            crate::session::unix_epoch_ms(),
+                        )
+                    });
                 self.settle_unexpected_provider_run_exit_with_diagnostic(
                     session_id,
                     provider_run_id,
@@ -226,12 +226,14 @@ impl KernelRuntimeState {
                 .ok_or_else(|| DaemonError::AgentNotFound {
                     agent_id: "provider run has no agent".to_string(),
                 })?;
-        let termination = termination_for_process_exit(
-            process_exit
-                .as_ref()
-                .map(|exit| (exit.exit_code, exit.signal.as_deref())),
-            crate::session::unix_epoch_ms(),
-        );
+        let termination = process_exit
+            .as_ref()
+            .map(|exit| exit.termination_at(crate::session::unix_epoch_ms()))
+            .unwrap_or_else(|| {
+                crate::provider::ProviderRunTermination::unknown_process_exit(
+                    crate::session::unix_epoch_ms(),
+                )
+            });
         let session_outcome = self
             .settle_unexpected_provider_run_exit_with_diagnostic(
                 session_id,
@@ -312,6 +314,23 @@ impl KernelRuntimeState {
         termination: crate::provider::ProviderRunTermination,
         terminal_diagnostic: Option<&str>,
     ) -> Result<crate::app::ProviderRunExitSessionSummary, DaemonError> {
+        let mut termination = termination;
+        // The failed turn's transcript entry renders the settled failure, so the
+        // provider's own terminal output has to be part of it.
+        if let (Some(diagnostic), Some(failure)) = (
+            terminal_diagnostic.filter(|diagnostic| !diagnostic.trim().is_empty()),
+            termination.failure.as_mut(),
+        ) {
+            *failure = crate::provider::TurnOutcome::new(
+                failure.kind,
+                failure.retryable,
+                &format!(
+                    "{}. Provider terminal diagnostic: {}",
+                    failure.reason,
+                    crate::provider::sanitize_provider_diagnostic(diagnostic)
+                ),
+            );
+        }
         let provider_run = self
             .owned
             .ensure_provider_run_in_session(session_id, provider_run_id)?;
@@ -358,14 +377,26 @@ impl KernelRuntimeState {
             ),
         }
         };
-        self.fail_owned_provider_prompt_with_termination(
-            session_id,
-            provider_run_id,
-            &message,
-            true,
-            Some(termination.clone()),
-        )
-        .await?;
+        // Claim this prompt before retirement awaits the app lock. A second
+        // liveness observer must not publish another failure for the same turn.
+        let settled = self
+            .fail_owned_provider_prompt_with_termination_if_matches(
+                session_id,
+                provider_run_id,
+                &message,
+                true,
+                (!active_prompt.is_external()).then_some(active_prompt.id()),
+                Some(termination.clone()),
+                None,
+            )
+            .await?;
+        if !settled {
+            return Ok(crate::app::ProviderRunExitSessionSummary {
+                had_active_prompt: false,
+                cancelled_prompt: false,
+                started_next_prompt: false,
+            });
+        }
         let next_active_prompt = self
             .owned
             .prompt_state_owner
@@ -383,6 +414,7 @@ impl KernelRuntimeState {
     }
 }
 
+#[cfg(test)]
 fn termination_for_process_exit(
     process_exit: Option<(Option<u32>, Option<&str>)>,
     occurred_at_ms: u64,

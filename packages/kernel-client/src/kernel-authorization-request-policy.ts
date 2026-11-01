@@ -2,6 +2,7 @@
 // The kernel owns expiry/revocation. Replaying can duplicate the authorization.
 export function waitsForKernelAuthorization(request: unknown): boolean {
   if (typeof request !== "object" || request === null) return false
+  if ("CopyProviderAccountFromKernel" in request) return true
   if ("RequestKernelAccess" in request || "RequestKernelSudo" in request || "ExtendKernelSudo" in request) return true
   if (!("SubmitPrompt" in request)) return false
   const submission = request.SubmitPrompt

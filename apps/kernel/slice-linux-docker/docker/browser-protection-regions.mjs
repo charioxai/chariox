@@ -387,11 +387,12 @@ export async function measurePresented(browser, policy) {
 
 // Measure, let the measured layout reach the screen, capture, re-measure. A
 // changed page, window, frame tree or region set retries with a fresh
-// measurement; after `attempts` it refuses the capture rather than inventing a visual mask.
+// measurement; after `attempts` the capture runs unmeasured (`capture(null)`): the caller covers the kernel-browser
+// windows whole instead of refusing a capture that may carry no Vault value at all.
 export async function fenceBrowserCapture(browser, policy, capture, attempts = 3) {
   for (let attempt = 0; attempt < attempts; attempt++) {
     const before = await measurePresented(browser, policy);
-    if (!before) break;
+    if (!before) return capture(null);
     const captured = Date.now();
     const result = await capture(before);
     const ended = Date.now() + 1;
@@ -401,7 +402,7 @@ export async function fenceBrowserCapture(browser, policy, capture, attempts = 3
     if (after && protectionDigest(after) === protectionDigest(before) &&
         (!browser.connection?.presentationFence || browser.connection.presentationFence.stable(captured, ended))) return result;
   }
-  throw Error('MP-11: fill-target capture fence unavailable');
+  return capture(null);
 }
 
 // Streams: a frame captured with protection serial S is released only when a

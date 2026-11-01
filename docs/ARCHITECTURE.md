@@ -235,6 +235,30 @@ Current implementation note:
 - a generic WebSocket transport for agent endpoints is still intentionally deferred
 - the current `WorkspaceCoordinator` remains a coarse safety/scheduling boundary for worktree-level claims, while Workspace Live Sync managed mode owns fine-grained text coordination and opaque whole-file coordination for Chariox-managed provider sessions
 
+Request timing is retained in bounded per-kind windows. The health collector runs
+outside request workers and publishes a bounded snapshot once a second. Its
+invariant diagnostics retain counts and a sample rather than every mismatch.
+SQLite commits use the shared durable writer; synchronous actor callers yield
+the Tokio worker while awaiting settlement. SQLite filesystem sync callbacks are
+timed separately from the commit and caller wait. Checkpoint capture stays
+ordered with projection publication, then releases that boundary before encoding
+and saving its immutable result. Outside run states enter the durable queue under
+the activity boundary only when they changed since the last publication, and the
+writer commits them in queue order; no caller waits for them. A subscribe takes
+its run-state baseline with blocking store reads under the same boundary.
+
+An ended session leaves the live session and agent projections, command queues,
+terminal streams, and resident session store. Its record is indexed in SQLite in
+the same transaction as the end event. History reads, project restore and reattach
+load that record on demand; deletion removes it in the deletion transaction.
+Interactive PTYs drain a bounded nonblocking batch per turn. A continuously
+writing process cannot extend a turn, and exit is published only after the output
+reader reaches EOF, preserving the final bytes. Terminal artifacts and completion
+events enter a bounded writer queue without waiting under the terminal registry;
+open/close receipts settle outside that registry. Codex tool transcripts retain a
+64 KiB UTF-8 tail with an explicit omission marker, including completed output,
+so large provider tool output cannot retain and repeatedly copy the full stream.
+
 ### 3.3.1.1 Kernel Runtime and Workflow Details
 
 Detailed target-kernel implementation model, workflow model, workflow messaging, endpoint/run-output behavior, publication runtime behavior, agent binding rules, and observability baseline now live in [ARCHITECTURE_KERNEL_RUNTIME_WORKFLOW.md](ARCHITECTURE_KERNEL_RUNTIME_WORKFLOW.md). Keep this main architecture file focused on top-level component boundaries and authority rules.
@@ -276,6 +300,11 @@ Current architectural interpretation:
 - relay-visible machine metadata remains plain routing/liveness metadata; trust decisions and aliases are local home-kernel state, not relay authority
 - relay health endpoints expose transport-level backpressure counters such as target queue saturation and slow subscription closures; these metrics are for operations and scale drills only and do not require inspecting encrypted runtime payloads
 
+#### 3.4.1 Relay byte metering
+
+The relay counts bytes, never content. For every authenticated connection it adds the size of each frame it receives (`bytes_in`) and each frame it writes (`bytes_out`, chunk frames included; WebSocket, TLS and TCP framing excluded) to a counter keyed by realm and stream scope. The scope is the label a client gave when it subscribed (`session` when it gave none, for example `kernel_browser_display`, `waiting_room_inventory`); requests, replies and presence are `control`; the Selkies display tunnel is `display_tunnel`. A label outside `[a-z0-9_.-]{1,48}` or beyond 16 scopes per realm is counted as `other`, and once the table holds 8192 keys a realm adds at most one `other` key of its own, so memory grows only with the realms that talk to the relay. A connection belongs to the first realm it authenticates in; a later request that proves another realm closes it. The relay knows nothing about what a stream carries.
+
+Reporting is opt-in: set `CHARIOX_RELAY_USAGE_URL` (Cloud API origin), `CHARIOX_RELAY_ID`, `CHARIOX_RELAY_USAGE_SPOOL` (a directory on disk the relay user can write) and the shared `CHARIOX_RELAY_SCOPED_HMAC_SECRET`; `CHARIOX_RELAY_USAGE_INTERVAL_SECS` defaults to 60. Each round drains the counters into their own batch (random id, own window; more than 10,000 entries, Cloud's limit, become several batches of the same window), writes it to the spool directory, then `POST`s every spooled batch to `/relay/usage`, oldest first, and deletes each file once Cloud answered. A failed send is retried as the same batch, an outage keeps one file per interval, a restart resumes every spooled batch, and Cloud counts a batch id once and takes none whose window ended more than 14 days ago. Only what was still in memory when the process died (at most one interval) is lost; a stopping relay sends a last report. Cloud stores the totals per account, scope and UTC hour and lets an account owner or admin read them (`GET /relay/usage`). Nothing is limited or enforced.
 
 ### Docker Remote-Machine Lab
 
@@ -573,7 +602,7 @@ Tab rules:
 
 Browser mode exposes structured tab, accessibility, document, lifecycle, console, and network observations. Computer mode exposes the same Environment through its graphical display and desktop input. Switching modes does not create a browser, move state, or change authority.
 
-Vault-backed Computer credential input uses that same desktop-input authority. The agent supplies only a credential handle. For a leased agent, its worker forwards that handle-only call to home instead of resolving a secret or creating a parallel Action locally. The home kernel validates the Computer-specific credential policy, requires user confirmation, resolves the secret, and admits the redacted `secret_input` Action against the authoritative Room. The secret reaches the physical worker only inside the existing encrypted Room controller command, where stdin types it into the current desktop focus without using the clipboard. Browser credential input remains DOM-bound and automatically rejects unmasked targets; Computer input relies on explicit user verification because arbitrary X11 controls do not expose a universal password-field contract.
+Vault-backed Computer credential input uses that same desktop-input authority. The agent supplies only a credential handle. For a leased agent, its worker forwards that handle-only call to home instead of resolving a secret or creating a parallel Action locally. The home kernel validates the Computer-specific credential policy, resolves the secret, and admits the redacted `secret_input` Action against the authoritative Room. The secret reaches the physical worker only inside the existing encrypted Room controller command, where stdin types it into the current desktop focus without using the clipboard. Browser credential input remains DOM-bound and automatically rejects unmasked targets; Computer input is bound to the focused control and masked in the agent's observations, because arbitrary X11 controls do not expose a universal password-field contract.
 
 #### Canonical viewport
 

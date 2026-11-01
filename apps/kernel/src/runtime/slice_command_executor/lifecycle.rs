@@ -1247,10 +1247,10 @@ fn local_docker_slice_relay_for_config(
                 // The home kernel's Cloud profile contains machine credentials and
                 // session tokens. It must never be copied into a provider-visible slice.
                 cloud_relay_config_json: None,
-                worker_machine_id: config
-                    .cloud_relay
-                    .as_ref()
-                    .and_then(|profile| profile.machine_id.clone()),
+                worker_machine_id: crate::runtime::cloud_relay_control::active_cloud_profile(
+                    config,
+                )
+                .and_then(|profile| profile.machine_id.clone()),
             };
         }
     }
@@ -1280,6 +1280,9 @@ async fn hosted_cloud_slice_relay_token(
     slice: &crate::slice::SliceRecord,
     fallback_relay_token: String,
 ) -> Result<String, DaemonError> {
+    if !crate::runtime::cloud_relay_control::cloud_relay_transport_selected(config) {
+        return Ok(fallback_relay_token);
+    }
     let Some(profile) = config.cloud_relay.clone() else {
         return Ok(fallback_relay_token);
     };
@@ -1302,6 +1305,9 @@ async fn activate_hosted_slice_relay_token(
     worker: &chariox_relay::protocol::RelayKernelPresence,
 ) -> Result<(), DaemonError> {
     let config = config_projection.snapshot();
+    if !crate::runtime::cloud_relay_control::cloud_relay_transport_selected(&config) {
+        return Ok(());
+    }
     let Some(profile) = config.cloud_relay.as_ref() else {
         return Ok(());
     };
@@ -1596,6 +1602,49 @@ fn configured_relay_is_container_reachable(relay_url: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn retained_profile_private_slice_never_issues_or_activates_cloud_grants() {
+        // MP-08 / MP-10 / MP-11: non-loopback private relays keep operator tokens.
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.relay_url = Some("ws://operator-relay:49100".into());
+        config.relay_token = Some("synthetic-private-transport".into());
+        config.cloud_relay = Some(cloud_profile());
+        let selected = slice(Vec::new());
+        let token = hosted_cloud_slice_relay_token(
+            &config,
+            &selected,
+            "synthetic-private-transport".into(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(token, "synthetic-private-transport");
+        let relay = local_docker_slice_relay_for_config(&config, &selected, Some(token));
+        assert_eq!(relay.worker_machine_id, None);
+        let worker = chariox_relay::protocol::RelayKernelPresence {
+            kernel_id: "worker-1".into(),
+            machine_id: "machine-slice-1".into(),
+            machine_alias: None,
+            relay_alias: None,
+            kernel_alias: None,
+            available_providers: Vec::new(),
+            provider_accounts: Vec::new(),
+            capabilities: Vec::new(),
+            accepting_remote_leases: true,
+            leased_agent_count: 0,
+            local_session_count: 0,
+            public_key: "worker-public-key".into(),
+        };
+        activate_hosted_slice_relay_token(
+            &DaemonConfigProjectionStore::new(config.clone()),
+            &config,
+            &Arc::new(RwLock::new(RelayClientState::default())),
+            &selected,
+            &worker,
+        )
+        .await
+        .unwrap();
+    }
 
     #[test]
     fn relaunch_failure_names_every_agent_and_the_retry_action() {

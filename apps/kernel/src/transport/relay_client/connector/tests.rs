@@ -817,3 +817,36 @@ async fn relay_event_writer_preserves_controls_bounded_events_and_fifo() {
         .collect();
     assert_eq!(reasons, ["priority", "event-1", "event-2"]);
 }
+
+#[test]
+fn retained_cloud_private_relay_does_not_hydrate_cloud_transport() {
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+        kernel_id: None,
+        kernel_credential: None,
+        kernel_public_key_thumbprint: None,
+        api_url: "https://cloud.example.test".to_string(),
+        email: "user@example.test".to_string(),
+        account_id: "account-1".to_string(),
+        user_id: "user-1".to_string(),
+        account_slug: "account".to_string(),
+        realm_id: "realm-1".to_string(),
+        relay_url: "wss://relay.example.test".to_string(),
+        issuer_id: "issuer-1".to_string(),
+        client_id: None,
+        client_alias: None,
+        machine_id: None,
+        machine_alias: None,
+        machine_credential: Some("machine-credential".to_string()),
+        cloud_session_token: None,
+        cloud_session_expires_at_ms: None,
+        token_expires_at_ms: None,
+    });
+
+    config.relay_url = Some("ws://127.0.0.1:47000".into());
+    config.relay_token = Some("synthetic-private-relay".into());
+    assert!(
+        !should_refresh_cloud_relay(&config),
+        "MP-08 / MP-10 / MP-11 restart must retain the active private override"
+    );
+}

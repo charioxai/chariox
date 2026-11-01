@@ -161,7 +161,7 @@ export function createPasskeyPopupRenderer(renderer: CliRenderer, actions: {
         height: Math.max(2, Math.min(wanted, dimensions.height - top - 1 - fixedRows)),
         flexShrink: 0, scrollY: true, scrollX: false,
       })
-      if (showKind) body.add(text(`${prompt.kind === "critical_approval" ? "Critical approval" : prompt.kind === "sudo" ? prompt.lifetime_minutes ? "Sudo window" : "Sudo operation scope" : "External agent access"}${view.count > 1 ? ` · ${view.index + 1} of ${view.count}` : ""}`, { muted: true }))
+      if (showKind) body.add(text(`${prompt.kind === "critical_approval" ? "Critical approval" : prompt.kind === "sudo" ? "Sudo window" : "External agent access"}${view.count > 1 ? ` · ${view.index + 1} of ${view.count}` : ""}`, { muted: true }))
       body.add(text(prompt.title || "Critical approval", { accent: true, bold: true }))
       body.add(text(prompt.message))
       if (prompt.sudo_request) {
@@ -191,7 +191,7 @@ export function createPasskeyPopupRenderer(renderer: CliRenderer, actions: {
       // Hidden input: only the length is ever rendered.
       const remember = text(prompt.kind === "critical_approval"
         ? `Remember for: ${view.passkey.rememberMinutes ? `${view.passkey.rememberMinutes} minutes` : "off"}`
-        : prompt.kind === "sudo" ? prompt.lifetime_minutes ? `Window: ${hours(view.passkey.lifetime)} · maximum ${hours(prompt.max_lifetime_minutes)} · fresh passkey required` : "Operation scope · fresh passkey required"
+        : prompt.kind === "sudo" ? `Window: ${hours(view.passkey.lifetime)} · maximum ${hours(prompt.max_lifetime_minutes)} · fresh passkey required`
         : `Access for: ${view.passkey.lifetime === UNTIL_AGENT_EXITS ? "until the agent exits" : `${view.passkey.lifetime} minutes`}`)
       remember.onMouseUp = (event) => {
         event.stopPropagation()
@@ -207,7 +207,7 @@ export function createPasskeyPopupRenderer(renderer: CliRenderer, actions: {
       panel.add(buttons)
       section(text(view.pending ? "Waiting for the kernel…"
         : !view.connected ? "Disconnected · reconnect to answer"
-        : `Enter approves · Ctrl+R refuses${view.prompt?.kind === "critical_approval" ? " · Tab remember" : view.prompt?.kind === "sudo" ? view.prompt.lifetime_minutes ? " · Tab duration" : "" : " · Tab lifetime"}${view.count > 1 ? " · ←/→ requests" : ""}`, { muted: true }))
+        : `Enter approves · Ctrl+R refuses${view.prompt?.kind === "critical_approval" ? " · Tab remember" : view.prompt?.kind === "sudo" ? " · Tab duration" : " · Tab lifetime"}${view.count > 1 ? " · ←/→ requests" : ""}`, { muted: true }))
       scrim.add(panel)
       box.add(scrim)
       box.requestRender()

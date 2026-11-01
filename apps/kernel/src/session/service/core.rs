@@ -16,7 +16,7 @@ impl SessionService {
         Self {
             store: SessionStore::new(),
             room_environments: RoomEnvironmentRegistry::new(),
-            room_environment_durable_state: None,
+            durable_state: None,
             projects: BTreeMap::new(),
             ephemeral_session_ids: BTreeSet::new(),
             host_machine_id: config.host_machine_id.clone(),
@@ -27,7 +27,6 @@ impl SessionService {
             next_workflow_endpoint_number: 0,
             next_workflow_node_number: 0,
             next_workflow_edge_number: 0,
-            next_workflow_node_run_number: 0,
             next_workflow_message_number: 0,
             next_workflow_watchdog_number: 0,
             next_workflow_publication_number: 0,
@@ -100,6 +99,20 @@ impl SessionService {
         let session = self.create_session(request)?;
         self.ephemeral_session_ids.insert(session.id().to_string());
         Ok(session)
+    }
+
+    pub(crate) fn restore_ephemeral_session(
+        &mut self,
+        session: RuntimeSession,
+    ) -> Result<RuntimeSession, DaemonError> {
+        if !session.is_hidden() {
+            return Err(DaemonError::LocalTransport {
+                operation: "restore moved execution",
+                message: "Move backing Room must remain hidden".into(),
+            });
+        }
+        self.ephemeral_session_ids.insert(session.id().to_string());
+        Ok(self.store.insert(session))
     }
 
     pub(crate) fn is_ephemeral_session(&self, session_id: &str) -> bool {
@@ -243,6 +256,9 @@ impl SessionService {
         mut session: RuntimeSession,
         default_project_name_hint: Option<&str>,
     ) -> RuntimeSession {
+        if let Some(held) = self.store.get(session.id()) {
+            session.note_activity_at(held.last_activity_at_ms());
+        }
         session.purge_unsupported_workflow_publications();
         if session.is_hidden() {
             session.clear_project_id_for_hidden_restore();
@@ -313,7 +329,9 @@ impl SessionService {
             .collect()
     }
 
-    pub(crate) fn remove_projects_without_visible_sessions(&mut self) -> Vec<RuntimeProject> {
+    pub(crate) fn remove_projects_without_visible_sessions(
+        &mut self,
+    ) -> Result<Vec<RuntimeProject>, DaemonError> {
         let visible_project_ids = self
             .store
             .list()
@@ -324,17 +342,29 @@ impl SessionService {
         // MP-08/MP-10: Named Projects are explicit durable resources. Copy
         // publishes one before the target's first session; keep it across restart.
         // Empty Default Projects are session-derived and still need legacy cleanup.
-        let empty_project_ids = self
+        let mut empty_project_ids = Vec::new();
+        for project in self
             .projects
             .values()
             .filter(|project| project.kind() == RuntimeProjectKind::Default)
             .filter(|project| !visible_project_ids.contains(project.id()))
-            .map(|project| project.id().to_string())
-            .collect::<Vec<_>>();
-        empty_project_ids
+        {
+            let has_retired = self
+                .durable_state
+                .as_ref()
+                .map(|state| {
+                    state.retired_project_has_visible_session(&self.host_daemon_id, project.id())
+                })
+                .transpose()?
+                .unwrap_or(false);
+            if !has_retired {
+                empty_project_ids.push(project.id().to_string());
+            }
+        }
+        Ok(empty_project_ids
             .into_iter()
             .filter_map(|project_id| self.projects.remove(&project_id))
-            .collect()
+            .collect())
     }
 
     pub(crate) fn reconcile_duplicate_project_names(&mut self) -> Vec<RuntimeProject> {
@@ -492,12 +522,24 @@ impl SessionService {
         })
     }
 
-    pub fn sessions_in_project(&self, project_id: &str) -> Vec<RuntimeSession> {
-        self.store
-            .list()
-            .into_iter()
+    pub fn sessions_in_project(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<RuntimeSession>, DaemonError> {
+        let mut sessions = BTreeMap::new();
+        if let Some(state) = &self.durable_state {
+            for session in state.retired_project_sessions(&self.host_daemon_id, project_id)? {
+                sessions.insert(session.id().to_owned(), session);
+            }
+        }
+        for session in self
+            .store
+            .iter()
             .filter(|session| session.project_id() == project_id)
-            .collect()
+        {
+            sessions.insert(session.id().to_owned(), session.clone());
+        }
+        Ok(sessions.into_values().collect())
     }
 
     pub fn set_project_pinned(
@@ -914,11 +956,12 @@ impl SessionService {
     }
 
     pub fn get_session(&self, session_id: &str) -> Result<RuntimeSession, DaemonError> {
-        self.store
-            .get(session_id)
-            .cloned()
+        if let Some(session) = self.store.get(session_id) {
+            return Ok(session.clone());
+        }
+        self.retired_session(session_id)?
             .ok_or_else(|| DaemonError::SessionNotFound {
-                session_id: session_id.to_string(),
+                session_id: session_id.into(),
             })
     }
 

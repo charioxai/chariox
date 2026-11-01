@@ -12,19 +12,31 @@ impl DaemonApp {
             .list(crate::session::DEFAULT_LOCAL_USER_ID, None)
             .unwrap_or_default()
             .into_iter()
-            .map(|account| RelayProviderAccountSummary {
-                provider: account.provider,
-                state: serde_json::to_value(account.auth_state)
-                    .ok()
-                    .and_then(|value| value.as_str().map(str::to_string))
-                    .unwrap_or_else(|| "unknown".to_string()),
-                auth_type: None,
-                account_id: Some(account.profile_id),
-                email: account.identity_summary,
-                organization_id: None,
-                organization_name: None,
-                subscription_type: account.plan,
-                alias: Some(account.label),
+            .map(|account| {
+                let copyable = account.provider == "claude"
+                    && account.auth_state
+                        == crate::account_profile::ProviderAccountAuthState::Authenticated
+                    && crate::provider::provider_account_credential_uses_vault(
+                        crate::session::DEFAULT_LOCAL_USER_ID,
+                        &account.provider,
+                        &account.profile_id,
+                    )
+                    .unwrap_or(false);
+                RelayProviderAccountSummary {
+                    provider: account.provider,
+                    state: serde_json::to_value(account.auth_state)
+                        .ok()
+                        .and_then(|value| value.as_str().map(str::to_string))
+                        .unwrap_or_else(|| "unknown".to_string()),
+                    copyable,
+                    auth_type: None,
+                    account_id: Some(account.profile_id),
+                    email: account.identity_summary,
+                    organization_id: None,
+                    organization_name: None,
+                    subscription_type: account.plan,
+                    alias: Some(account.label),
+                }
             })
             .collect();
         DaemonRegistration {

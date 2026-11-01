@@ -5,10 +5,13 @@
 
 #[path = "account_profile_copy.rs"]
 mod account_copy;
+#[path = "account_profile_usage.rs"]
+mod usage;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, RwLock};
 
 use base64::Engine as _;
@@ -960,6 +963,9 @@ pub struct ProviderAccountProfileRegistry {
     path: PathBuf,
     document: Arc<RwLock<RegistryDocument>>,
     usage_refresh_attempts: Arc<ProviderAccountUsageRefreshCoordinator>,
+    /// Counts saved changes, so the relay connector republishes the logins it
+    /// advertises when one is added, renamed or signed out after it connected.
+    generation: Arc<AtomicU64>,
 }
 
 type ProviderAccountUsageRefreshKey = (String, String, String);
@@ -1045,6 +1051,7 @@ impl ProviderAccountProfileRegistry {
             path,
             document: Arc::new(RwLock::new(document)),
             usage_refresh_attempts: Arc::new(ProviderAccountUsageRefreshCoordinator::default()),
+            generation: Arc::new(AtomicU64::new(0)),
         };
         if changed {
             let document = registry.read_document()?;
@@ -1637,6 +1644,23 @@ impl ProviderAccountProfileRegistry {
         let mut document = self.write_document()?;
         let (label, label_source) =
             resolved_new_profile_label(&document, owner_user_id, provider, label)?;
+        // An unsuccessful enrollment retains its isolated provider root so a
+        // retry can reuse it, including when the first client lost its reply.
+        if let Some(existing) = document.profiles.iter().find(|stored| {
+            stored.public.owner_user_id == owner_user_id
+                && stored.public.provider == provider
+                && stored.public.label.eq_ignore_ascii_case(&label)
+                && stored.public.origin == ProviderAccountProfileOrigin::CharioxCreated
+                && !stored.materialized_replica
+                && matches!(
+                    stored.public.auth_state,
+                    ProviderAccountAuthState::Unknown | ProviderAccountAuthState::NotConfigured
+                )
+                && stored.public.identity_summary.is_none()
+                && stored.public.plan.is_none()
+        }) {
+            return Ok(existing.public.clone());
+        }
         ensure_unique_label(&document, owner_user_id, provider, &label)?;
         let profile_id = unique_profile_id(&document, owner_user_id, provider, &label);
         let managed_root = self
@@ -3465,7 +3489,13 @@ impl ProviderAccountProfileRegistry {
     fn persist_locked(&self, document: &RegistryDocument) -> Result<(), DaemonError> {
         let bytes = serde_json::to_vec_pretty(document)
             .map_err(|error| registry_error("write account profile registry", error.to_string()))?;
-        atomic_write_private_internal(&self.path, &bytes, true)
+        atomic_write_private_internal(&self.path, &bytes, true)?;
+        self.generation.fetch_add(1, Ordering::Release);
+        Ok(())
+    }
+
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation.load(Ordering::Acquire)
     }
 }
 
@@ -4018,10 +4048,9 @@ fn ensure_unique_label_except(
             && profile.public.profile_id != excluded_profile_id
             && profile.public.label.eq_ignore_ascii_case(label)
     }) {
-        return Err(registry_error(
-            "validate account profile",
-            format!("an account profile labeled `{label}` already exists for {provider}"),
-        ));
+        return Err(DaemonError::ProviderAccountNameTaken {
+            label: label.to_string(),
+        });
     }
     Ok(())
 }
@@ -4595,7 +4624,7 @@ fn collect_claude_keychain_credentials(
     service: &str,
     files: &mut Vec<ProviderAccountMaterializationFile>,
 ) -> Result<(), DaemonError> {
-    let output = std::process::Command::new("security")
+    let output = crate::process_spawn::command("security")
         .args(["find-generic-password", "-s", service, "-w"])
         .output()
         .map_err(registry_io("export Claude Keychain credentials"))?;
@@ -5157,6 +5186,59 @@ mod tests {
             ),
             crate::session::DEFAULT_LOCAL_USER_ID
         );
+    }
+
+    #[test]
+    fn unfinished_account_name_can_be_reused_but_signed_in_name_cannot() {
+        let (root, registry) = fixture();
+        let first = registry
+            .create_managed("owner-a", "claude", "chariox")
+            .unwrap();
+        let retry = registry
+            .create_managed("owner-a", "claude", "CHARIOX")
+            .unwrap();
+        assert_eq!(retry.profile_id, first.profile_id);
+        registry
+            .update_observation(
+                "owner-a",
+                "claude",
+                &first.profile_id,
+                ProviderAccountAuthState::NotConfigured,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        assert_eq!(
+            registry
+                .create_managed("owner-a", "claude", "chariox")
+                .unwrap()
+                .profile_id,
+            first.profile_id
+        );
+        registry
+            .update_observation(
+                "owner-a",
+                "claude",
+                &first.profile_id,
+                ProviderAccountAuthState::Authenticated,
+                Some("person@example.test".into()),
+                Some("pro".into()),
+                None,
+                None,
+            )
+            .unwrap();
+        let error = registry
+            .create_managed("owner-a", "claude", "chariox")
+            .unwrap_err();
+        let mapped = crate::transport::kernel_protocol::map_kernel_error(&error);
+        assert_eq!(mapped.code, "provider_account_name_taken");
+        assert_eq!(
+            mapped.message,
+            "An account named chariox already exists. Choose another name."
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 
     fn fixture() -> (PathBuf, ProviderAccountProfileRegistry) {

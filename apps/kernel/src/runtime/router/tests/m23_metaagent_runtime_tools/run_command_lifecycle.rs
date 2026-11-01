@@ -535,6 +535,113 @@ async fn metaagent_run_command_allows_agent_slice_placement_and_safe_lifecycle_c
 }
 
 #[test]
+fn agent_spawn_slice_accepts_worker_kernel_id_and_names_the_callers_slice() {
+    run_large_stack_async_test(
+        "agent-spawn-slice-worker-id",
+        agent_spawn_slice_accepts_worker_kernel_id_and_names_the_callers_slice_inner,
+    );
+}
+
+/// A model inside a slice only learns the worker kernel ID from scoped
+/// discovery, never the slice id or name that `--slice` historically required.
+async fn agent_spawn_slice_accepts_worker_kernel_id_and_names_the_callers_slice_inner() {
+    let env = TestMetaRuntimeEnv::new("agent-spawn-slice-worker-id");
+    let workspace = env.root.join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace should be created");
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            workspace.to_string_lossy(),
+            workspace.to_string_lossy(),
+        ))
+        .expect("session should be created");
+    let metaagent = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("meta"))
+        .expect("metaagent should spawn");
+    let metaagent = activate_test_agent_meta_mode(&mut app, metaagent);
+    let meta_run = launch_test_provider(
+        &mut app,
+        session.id(),
+        metaagent.id(),
+        "dev-stub",
+        "dev-stub",
+        "meta-model",
+    );
+    let meta_auth_token = meta_run
+        .runtime_mcp_auth_token()
+        .expect("meta run should expose runtime MCP auth token")
+        .to_string();
+    let worker_kernel_id = app.config().daemon_id.clone();
+    let host_machine_id = app.config().host_machine_id.clone();
+    let slice = app
+        .slices()
+        .create(
+            &worker_kernel_id,
+            &host_machine_id,
+            crate::slice::CreateSliceInput {
+                source_slice_ref: None,
+                name: "linux-dev".to_string(),
+                backend: crate::slice::SliceBackendKind::LocalDocker,
+                os: "linux".to_string(),
+                display_mode: crate::slice::SliceDisplayMode::Headless,
+                display_backend: Default::default(),
+                workspace_id: Some(session.workspace_id().to_string()),
+                worktree_id: Some(session.worktree_id().to_string()),
+                workspace_mount: Some(session.worktree_id().to_string()),
+                development: None,
+                worker_kernel_ref: Some(worker_kernel_id.clone()),
+                display_url: None,
+                provider_auth: Vec::new(),
+                from_saved_state: None,
+                now_ms: crate::session::unix_epoch_ms(),
+            },
+        )
+        .expect("test slice should be seeded");
+    app.slices()
+        .attach_agent(
+            &slice.id,
+            session.id(),
+            metaagent.id(),
+            crate::session::unix_epoch_ms(),
+        )
+        .expect("caller should be attached to its slice");
+    let app = Arc::new(Mutex::new(app));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
+    let run = |command: String| {
+        let router = &router;
+        let token = &meta_auth_token;
+        async move {
+            router
+                .dispatch_authenticated_runtime_tool_call(
+                    token,
+                    crate::transport::runtime_tools::META_RUN_COMMAND_TOOL,
+                    serde_json::json!({ "command": command }),
+                )
+                .await
+                .expect("agent spawn should dispatch")
+        }
+    };
+
+    let by_worker_id = run(format!(
+        "agent spawn by-worker-id --slice {worker_kernel_id}"
+    ))
+    .await;
+    assert!(by_worker_id.ok, "{:?}", by_worker_id.payload);
+
+    let unresolved = run("agent spawn by-current --slice current".to_string()).await;
+    assert!(!unresolved.ok);
+    let message = unresolved
+        .payload
+        .get("error")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        message.contains("unknown slice `current`") && message.contains("--slice linux-dev"),
+        "error must name the caller's slice: {message}"
+    );
+}
+
+#[test]
 fn collaborator_metaagents_are_allowed_and_controller_scoped() {
     run_large_stack_async_test(
         "collaborator-metaagent-scope",

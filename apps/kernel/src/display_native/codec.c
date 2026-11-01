@@ -51,6 +51,8 @@ static __typeof__(&x264_encoder_open) cx_x264_encoder_open;
 int cx_openh264_available(void);
 void *cx_openh264_open(int width,int height,int bitrate,int threads,int max_qp,double *model);
 int cx_openh264_rate(void *encoder,int bitrate);
+int cx_openh264_key_bytes(void *encoder);
+int cx_openh264_refining(void *encoder);
 int cx_openh264_restart(void *encoder);
 int cx_openh264_encode(void *encoder,uint8_t *const planes[3],const int strides[3],int width,int height,uint64_t sequence,uint8_t **packet,size_t *capacity,int *key);
 void cx_openh264_close(void *encoder);
@@ -211,6 +213,8 @@ uint64_t cx_codec_guard_decodes(struct Codec *c) {return c->guard_decodes;}
 int cx_codec_reduced(struct Codec *c) {return c->row_count==1&&c->enc_width!=c->width;}
 int cx_codec_backend(struct Codec *c) {return c->hardware_requested?(c->device&&!c->fallback?1:2):0;}
 int cx_codec_openh264(struct Codec *c) {return c->openh264;}
+/* MP-08/MP-10 (P2): a whole-frame OpenH264 picture above the QP floor refines on unchanged readbacks. */
+int cx_codec_refining(struct Codec *c) {return c->row_count==1&&c->rows[0].openh264&&cx_openh264_refining(c->rows[0].openh264);}
 static int hardware_open(struct Codec *c,struct Row *row,int h,int rate) {
     if(!c->device||c->fallback)return -1;
     const AVCodec *encoder=avcodec_find_encoder_by_name("h264_vaapi");
@@ -500,13 +504,14 @@ int cx_codec_encode(struct Codec *c,const uint8_t *source,unsigned resets,const 
         else for (int i=0;i<n;i++) { if(nals[i].i_payload<0 || packet_offset+nals[i].i_payload>(size_t)length)return -1;memcpy(row->packet+packet_offset,nals[i].p_payload,nals[i].i_payload);packet_offset+=nals[i].i_payload;if(nals[i].i_type==NAL_SLICE_IDR)key=1; }
         if (packet_offset!=(size_t)length)return -1;
         /* MP-08/MP-10 (owner 2026-10-09): a noise IDR can exceed the
-         * unchanged 45 KB recovery contract even at QP 51. Retry once at
-         * the presenter's existing reduced geometry, then keep that geometry
+         * 45 KB recovery contract (OpenH264: its IDR budget) even at QP 51.
+         * Retry once at the presenter's existing reduced geometry, then keep that geometry
          * for its delta chain. Full-resolution exact repair certifies every
          * pixel later. Protected rows retain their existing native output
          * guard and aggregate budget. Unprotected keys without a bounded
          * admitted geometry take the exact fallback. */
-        if(c->row_count==1&&!count&&key&&length>45000) {
+        int key_bound=row->openh264&&cx_openh264_key_bytes(row->openh264)>45000?cx_openh264_key_bytes(row->openh264):45000;
+        if(c->row_count==1&&!count&&key&&length>key_bound) {
             int retry=!count&&!c->key_reduced&&!(c->device&&!c->fallback)&&
                 c->enc_width==c->width&&
                 ((c->width==1920&&c->height==1080)||(c->width==2560&&c->height==1600));

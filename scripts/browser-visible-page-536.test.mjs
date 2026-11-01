@@ -5,7 +5,6 @@ import {readFileSync} from 'node:fs';
 import {createHash} from 'node:crypto';
 import {localProtocolVersion,relayPeerProtocolVersion} from './lib/protocol-versions.mjs';
 import {KernelBrowserHost} from '../apps/kernel/slice-linux-docker/docker/kernel-browser-host.mjs';
-import {NavigationDisplays} from '../apps/kernel/slice-linux-docker/docker/kernel-browser-navigation-display.mjs';
 import * as region from '../apps/browser-display/region-binding.mjs';
 test('MP-08/MP-10/MP-11: default native subscribe reaches visible-page admission before legacy viewport fitting',async()=>{
  const previous=process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;process.env.CHARIOX_KERNEL_BROWSER_DISPLAY='1';
@@ -13,7 +12,6 @@ test('MP-08/MP-10/MP-11: default native subscribe reaches visible-page admission
   generation:1,start:async()=>{},protection:{unknown:false},streams:new Map(),displays:new Map(),chromium:{desktop:{binding:()=>({})}},
   target:async()=>assert.fail('default subscribe must never reach the resizing legacy capture'),
  });
- host.navigationDisplays=new NavigationDisplays(host);
  try{await assert.rejects(host.request({op:'display_subscribe',tab_id:'t',generation:0,codecs:['png','avc1.420033'],bitrate:8000000,device_scale_factor:1}),e=>e.code==='user_domain_stale_reference');}
  finally{if(previous===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY=previous;}
 });

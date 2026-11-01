@@ -1,4 +1,4 @@
-//! MP-08 / MP-09 / MP-10 / MP-11: a lane cannot outlive its executor deadline.
+//! MP-08 / MP-09 / MP-10 / MP-11: an agent run cannot outlive its executor deadline.
 use super::*;
 use crate::durable_state::agent_lifecycle::{Operation, Outcome};
 use crate::local::{
@@ -26,7 +26,7 @@ impl KernelRuntimeOwnedState {
                     || d.deadline_ms <= crate::session::unix_epoch_ms()
             })
         {
-            return Err(refusal("agent_deadline_reached", "lane deadline reached; this agent cannot start another turn. Start a new lane agent for new work"));
+            return Err(refusal("agent_deadline_reached", "agent deadline reached; this agent cannot start another turn. Start a new agent for new work"));
         }
         Ok(())
     }
@@ -45,7 +45,7 @@ impl KernelRuntimeState {
             });
         }
         if agent.remote_execution().is_some() {
-            return Err(refusal("agent_deadline_requires_executor", "arm a lane deadline on its executing kernel; leased-agent deadlines require worker enforcement"));
+            return Err(refusal("agent_deadline_requires_executor", "arm an agent deadline on its executing kernel; leased-agent deadlines require worker enforcement"));
         }
         let Outcome::Deadline(deadline) =
             self.owned
@@ -87,7 +87,7 @@ impl KernelRuntimeState {
             {
                 continue;
             }
-            // Fence every due lane before awaiting any physical cleanup.
+            // Fence every due agent before awaiting any physical cleanup.
             self.owned
                 .durable_state_store
                 .agent_lifecycle(Operation::ReachDeadline {

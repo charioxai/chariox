@@ -53,8 +53,7 @@ impl DurableKernelStateStore {
                     response,
                 },
             )))?;
-        receiver
-            .recv()
+        crate::durable_state::await_writer_response(receiver)
             .map_err(|_| DaemonError::LocalTransport {
                 operation: "durable_state.await_app_binding",
                 message: "App binding check did not complete".into(),

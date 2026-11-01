@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -211,20 +211,35 @@ pub fn adapter_response_to_execution(
     prepared: PreparedConnectorCall,
     response: ConnectorAdapterResponse,
 ) -> Result<ConnectorExecution, DaemonError> {
+    // The adapter ran with the Vault value injected; what comes back reaches the model.
+    let boundary = credential_boundary(prepared.request.credential.as_ref());
     if !response.ok {
-        return Err(connector_error(
-            "connector.execute",
-            response
-                .error
-                .unwrap_or_else(|| "connector adapter call failed".to_string()),
-        ));
+        let error = response
+            .error
+            .unwrap_or_else(|| "connector adapter call failed".to_string());
+        return Err(connector_error("connector.execute", boundary.scrub(&error)));
     }
+    let mut result = response.result.unwrap_or(Value::Null);
+    boundary.scrub_json(&mut result);
     Ok(ConnectorExecution {
         connector: prepared.connector,
         operation: prepared.operation,
         safety: prepared.safety,
-        result: response.result.unwrap_or(Value::Null),
+        result,
     })
+}
+
+fn credential_boundary(
+    credential: Option<&ConnectorAdapterCredential>,
+) -> crate::secret::HttpSecretBoundary {
+    let mut boundary = crate::secret::HttpSecretBoundary::new("");
+    if let Some(credential) = credential {
+        boundary.add(&credential.secret);
+        if let UserCredentialInjectionConfig::Basic { username } = &credential.injection {
+            boundary.add(&format!("{username}:{}", credential.secret));
+        }
+    }
+    boundary
 }
 
 fn adapter_response_to_prepare_result(
@@ -293,7 +308,7 @@ fn run_adapter_request_once(
     request: &ConnectorAdapterRequest,
 ) -> Result<ConnectorAdapterResponse, DaemonError> {
     let command = adapter.resolved_command()?;
-    let mut process = Command::new(&command);
+    let mut process = crate::process_spawn::command(&command);
     for name in crate::provider::managed_provider_control_env_remove() {
         process.env_remove(name);
     }
@@ -699,6 +714,73 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         root
+    }
+
+    #[test]
+    fn connector_results_and_errors_do_not_carry_the_injected_credential() {
+        let secret = "vault value+/=7f3a";
+        let form = url::form_urlencoded::byte_serialize(secret.as_bytes()).collect::<String>();
+        let prepared = || PreparedConnectorCall {
+            connector: "demo".to_string(),
+            operation: "lookup".to_string(),
+            safety: ConnectorSafety::Read,
+            request: ConnectorAdapterRequest {
+                id: "call-1".to_string(),
+                request_type: ConnectorAdapterRequestType::Call,
+                connector: "demo".to_string(),
+                operation: Some("lookup".to_string()),
+                arguments: None,
+                config: None,
+                operations: Vec::new(),
+                credential: Some(ConnectorAdapterCredential {
+                    id: "api".to_string(),
+                    secret: secret.to_string(),
+                    injection: UserCredentialInjectionConfig::Basic {
+                        username: "svc".to_string(),
+                    },
+                    allowed_hosts: Vec::new(),
+                }),
+                timeout_ms: 1_000,
+                max_response_bytes: 1_024,
+            },
+            adapter: CharioxConnectorAdapterDefinition {
+                kind: "connector-adapter".to_string(),
+                name: "demo".to_string(),
+                version: None,
+                adapter_protocol: "jsonl".to_string(),
+                command: PathBuf::from("demo"),
+                args: Vec::new(),
+                description: None,
+                source: None,
+                manifest_path: None,
+            },
+        };
+        let failed = ConnectorAdapterResponse {
+            id: "call-1".to_string(),
+            ok: false,
+            result: None,
+            error: Some(format!("http://host/r?key={form}: status code 401")),
+        };
+        let error = adapter_response_to_execution(prepared(), failed)
+            .expect_err("a failed call is an error")
+            .to_string();
+        assert!(
+            !error.contains(&form) && error.contains("[redacted]"),
+            "{error}"
+        );
+        let echoed = ConnectorAdapterResponse {
+            id: "call-1".to_string(),
+            ok: true,
+            result: Some(serde_json::json!({"echo": [format!("svc:{secret}")], "n": 1})),
+            error: None,
+        };
+        let execution = adapter_response_to_execution(prepared(), echoed).unwrap();
+        assert!(
+            !execution.result.to_string().contains(secret),
+            "{}",
+            execution.result
+        );
+        assert_eq!(execution.result["n"], 1);
     }
 
     #[test]

@@ -254,6 +254,25 @@ impl KernelRuntimeOwnedState {
         &self,
         request: crate::local::UpdateQueuedWorkflowPromptRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        if request.retry_delivery {
+            let queued_prompt = self
+                .resolve_held_notification_delivery(
+                    &request.session_id,
+                    &request.queue_item_ref,
+                    true,
+                )?
+                .ok_or_else(|| DaemonError::InvalidWorkflowGraphReference {
+                    session_id: request.session_id.clone(),
+                    workflow_id: "workflow".to_string(),
+                    reference: request.queue_item_ref.clone(),
+                    message: "queued workflow prompt is not a held notification delivery",
+                })?;
+            let session = self.workflow_session(&request.session_id)?;
+            return Ok(LocalDaemonResponse::QueuedWorkflowPromptUpdated {
+                queued_prompt,
+                session,
+            });
+        }
         let activity_mutation = self.begin_managed_activity_mutation();
         let queued_prompt = self.session_store.write().update_queued_workflow_prompt(
             &request.session_id,
@@ -277,6 +296,17 @@ impl KernelRuntimeOwnedState {
         &self,
         request: crate::local::RemoveQueuedWorkflowPromptRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        if let Some(queued_prompt) = self.resolve_held_notification_delivery(
+            &request.session_id,
+            &request.queue_item_ref,
+            false,
+        )? {
+            let session = self.workflow_session(&request.session_id)?;
+            return Ok(LocalDaemonResponse::QueuedWorkflowPromptRemoved {
+                queued_prompt,
+                session,
+            });
+        }
         let activity_mutation = self.begin_managed_activity_mutation();
         let queued_prompt = self
             .session_store

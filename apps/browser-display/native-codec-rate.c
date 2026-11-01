@@ -14,6 +14,7 @@ int cx_codec_openh264(void *);
 int cx_codec_reduced(void *);
 int cx_codec_encode(void *,const uint8_t *,unsigned,const struct Rect *,size_t,struct RowResult *);
 int cx_codec_rate(void *,int);
+int cx_codec_refining(void *);
 void cx_codec_repair_bounds(void *,const uint8_t *,const uint8_t *,unsigned,int,int,int,int,int *);
 void *cx_openh264_open(int,int,int,int,int,double *);
 int cx_openh264_rate(void *,int);
@@ -49,7 +50,8 @@ static void clipped_white_is_exact(void) {
  * frames at the negotiated rate (row_vbv), with margin for the prediction:
  * OpenH264's own RC sent 4x that and delayed every click echo. */
 static void full_page_change_fits_vbv(void) {
-    const int width=1280,height=800,rate=8000000;const size_t bound=rate/60*3/2/8*3/2;
+    /* P2: an IDR may spend OpenH264's 5-frame budget; every later frame fits the 1.5-frame VBV. */
+    const int width=1280,height=800,rate=8000000;const size_t bound=rate/60*3/2/8*3/2,key_bound=rate/60*5/8*5/4;
     unsigned char *light=malloc(width*height*4),*dark=malloc(width*height*4);
     srand(7);memset(light,255,width*height*4);
     /* An article column: lines of words, Wikipedia-like activity. */
@@ -72,9 +74,16 @@ static void full_page_change_fits_vbv(void) {
             /* Infinite GOP: a full-page change is never an IDR unless reset. */
             for (int r=0;r<n;r++) assert(f?!result[r].key:result[r].key);
             size_t total=0;for (int r=0;r<n;r++) total+=result[r].length;
-            printf("MP-08/MP-10 full-page change rows=%d frame=%d bytes=%zu bound=%zu\n",rows,f,total,bound);fflush(stdout);
-            assert(total<=bound);
+            printf("MP-08/MP-10 full-page change rows=%d frame=%d bytes=%zu bound=%zu\n",rows,f,total,f?bound:key_bound);fflush(stdout);
+            assert(total<=(f?bound:key_bound));
         }
+        if (rows==1) {
+            /* P2: the coarse whole frame asks for unchanged readbacks; they refine it to the QP floor and stop. */
+            int refinements=0;
+            while (cx_codec_refining(codec)&&refinements<40) {assert(cx_codec_encode(codec,frames[2],0,NULL,0,result)==1&&!result[0].key);refinements++;}
+            printf("MP-08/MP-10 refinement frames to the QP floor: %d\n",refinements);fflush(stdout);
+            assert(refinements>0&&refinements<40&&!cx_codec_refining(codec));
+        } else assert(!cx_codec_refining(codec));
         cx_codec_close(codec);
     }
     free(light);free(dark);puts("MP-08/MP-10 OpenH264 full-page change fits the x264 VBV PASS");
@@ -100,7 +109,7 @@ static void reset_restarts_without_reopening(void) {
     }
     free(pixels);puts("MP-08/MP-10 OpenH264 reset restarts the encoder with an IDR PASS");
 }
-/* MP-08/MP-10: the recovery key budget is unchanged even for noise. The
+/* MP-08/MP-10: the recovery key stays within the IDR budget even for noise. The
  * presenter already admits 1280x720 motion on a 1920x1080 exact canvas. */
 static void noisy_recovery_key_fits(void) {
   for (int size=0;size<2;size++) {
@@ -118,8 +127,10 @@ static void noisy_recovery_key_fits(void) {
     for (int f=0;f<3;f++) {
         struct RowResult result[8];
         int n=cx_codec_encode(codec,pixels,255,NULL,0,result);assert(n==1);
-        printf("MP-08/MP-10 noisy recovery key width=%d bytes=%zu bound=45000 reduced=%d\n",width,result[0].length,cx_codec_reduced(codec));fflush(stdout);
-        assert(result[0].key&&result[0].sequence==1&&result[0].length<=45000);
+        /* OpenH264's IDR budget: 1.25 x 5 frames of 8 Mbit/s at 60 fps. */
+        const size_t bound=104166;
+        printf("MP-08/MP-10 noisy recovery key width=%d bytes=%zu bound=%zu reduced=%d\n",width,result[0].length,bound,cx_codec_reduced(codec));fflush(stdout);
+        assert(result[0].key&&result[0].sequence==1&&result[0].length<=bound);
         assert(cx_codec_reduced(codec));
         if(stream)assert(fwrite(result[0].bytes,1,result[0].length,stream)==result[0].length);
         /* No native pixel may be certified from the scaled reference. */

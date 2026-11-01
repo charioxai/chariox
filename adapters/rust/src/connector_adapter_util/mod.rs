@@ -195,6 +195,16 @@ pub fn inject_http_credential(
     Ok(())
 }
 
+/// ureq prints the full request URL, which can carry a query-injected credential.
+pub fn http_call_error(error: ureq::Error) -> String {
+    match error {
+        ureq::Error::Status(code, _) => format!("HTTP status code {code}"),
+        ureq::Error::Transport(transport) => {
+            format!("HTTP transport failed ({})", transport.kind())
+        }
+    }
+}
+
 pub fn response_body_limited(response: ureq::Response, max_bytes: u64) -> Result<Value, String> {
     let status = response.status();
     let mut reader = response.into_reader().take(max_bytes.saturating_add(1));

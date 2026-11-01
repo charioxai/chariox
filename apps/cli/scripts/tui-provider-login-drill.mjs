@@ -226,6 +226,18 @@ try {
   }, 90_000, 'kernel login interaction with authorization URL').catch(async error => { await capture('no-login-interaction'); throw error })
   await sleep(1500)
   await capture('login-strip')
+  const loginId = loginInteraction.provider_login.login.login_id
+  const reattach = () => rpc.send({ SetProviderAccountCredential: {
+    provider: 'claude', account_profile: profileId, value: '', run: true, overwrite: true,
+    session_id: sessionId, agent_id: loginInteraction.agent_id,
+  } })
+  const repeated = await reattach()
+  const concurrent = await Promise.all([reattach(), reattach()])
+  await sleep(1000)
+  const active = (await rpc.send({ GetProviderLoginStatus: { login_id: loginId } })).ProviderLoginStatus.login
+  record('repeated and concurrent scoped starts retain the original driver',
+    [repeated, ...concurrent].every(response => response.ProviderLoginStarted.login.login_id === loginId)
+      && active.state === 'running' && await shows('Code:'))
   const stripRows = await rows()
   const first = stripRows.findIndex(row => row.includes('1. Cmd-click the link'))
   const second = stripRows.findIndex(row => row.includes('2. Authorize Chariox in your browser.'))
@@ -286,6 +298,25 @@ try {
     await capture('returned')
     record('returns to the focused code field', (await rows()).some(r => r.includes(options['split-paste'] === 'yes' ? `> Code: ${'*'.repeat('dry#state'.length)}▏` : '> Code: <paste the code>▏')))
   } else {
+    if (!fixture) {
+      await press('\x1b[200~incompleteDrillCode\x1b[201~')
+      await press('\r')
+      await waitFor(() => shows('The code looks incomplete.'), 30_000, 'incomplete code retry')
+      await capture('incomplete-code')
+      record('incomplete input restores the code field with one plain explanation',
+        await shows('Code:') && !(await shows('Checking the code…')))
+      // MP-08/MP-09/MP-10/MP-11: ambiguous callbacks are rejected before
+      // reaching the official provider, then the same interaction accepts input.
+      for (let attempt = 0; attempt < 2; attempt++) {
+        await press('\x1b[200~abc#def other#state\x1b[201~')
+        await press('\r')
+        await waitFor(async () => await shows('The code could not be read.') && await shows('Code:') && !(await shows('Checking the code…')), 30_000, 'invalid code retry')
+        await capture(`invalid-code-${attempt + 1}`)
+        record(`ambiguous input restores the code field on attempt ${attempt + 1}`,
+          await shows('Code:') && !(await shows('Checking the code…')))
+      }
+
+    }
     // Paste into the already focused native-strip code field, then submit once.
     const code = 'invalidDrillCode0123456789#invalidDrillState'
     await press(`\x1b[200~${code}\x1b[201~`)
@@ -314,18 +345,17 @@ try {
       record('result names where the account was saved', (await screen()).includes(`Signed in to Claude`) && (await screen()).includes(`saved to ${label}`)
         && auth.ProviderAuthStatus.status.auth_state === 'authenticated', { authState: auth.ProviderAuthStatus.status.auth_state })
     } else {
-      // Official CLI, invalid code: the provider's own error is shown.
-      await waitFor(async () => /OAuth error|error|invalid/i.test((await rows()).slice(0, 34).join('\n')) || await shows('sign-in failed'), 45_000, 'provider verdict').catch(() => {})
+      // Official CLI, invalid code: the kernel resets the challenge and explains the retry.
+      await waitFor(async () => /That code was not accepted|OAuth error|error|invalid/i.test((await rows()).slice(0, 34).join('\n')) || await shows('sign-in failed'), 45_000, 'provider verdict').catch(() => {})
       await capture('code-rejected')
-      const rejected = /OAuth error: Request failed with status code 4\d\d/.test(await screen()) || await shows('sign-in failed')
-      // The provider drops its link after a rejection: the strip says what to do next.
-      const nextStep = await shows('This link expired. Press Esc, then 1 to cancel, and sign in again.') || await shows('1. Cmd-click the link')
+      const rejected = await shows('That code was not accepted.')
+      const nextStep = await shows('Code:') && !(await shows('Checking the code…'))
       record('the provider rejection is visible with the next step', rejected && nextStep, { rejected, nextStep })
       // Esc leaves the field; 1 cancels through the kernel interaction.
       await press('\x1b'); await sleep(300); await press('1')
       await waitFor(() => shows('sign-in cancelled'), 30_000, 'cancel result').catch(() => {})
       await capture('cancelled')
-      record('cancel ends with a result and a retry action', await shows(`Claude · ${label}: sign-in cancelled`) && await shows(`Retry: /provider login claude ${label}`))
+      record('cancel ends with a result and a retry action', await shows(`Claude · ${label}`) && await shows('sign-in cancelled') && await shows(`Retry: /provider login claude ${label}`))
     }
   }
   if (attach) {

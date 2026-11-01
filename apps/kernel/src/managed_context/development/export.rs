@@ -50,6 +50,14 @@ pub(crate) fn export_development_context_with_vault(
         selected_sources.push((selection, canonical_worktree));
     }
 
+    let mut snapshot_budget = ManifestMemoryBudget::new();
+    let source_snapshots = selected_sources
+        .iter()
+        .map(|(_, worktree)| {
+            source_snapshot::SourceSnapshot::capture(worktree, &mut snapshot_budget, vault)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
     fs::create_dir_all(archive_parent)
         .map_err(|error| context_io_error("create archive parent", error))?;
     let canonical_archive_parent = fs::canonicalize(archive_parent)
@@ -78,16 +86,19 @@ pub(crate) fn export_development_context_with_vault(
     let mut materialized_entries = 0_u64;
     let mut manifest_budget = ManifestMemoryBudget::new();
     manifest_budget.consume(request.project_id.len().saturating_add(256))?;
-    for (selection, canonical_worktree) in selected_sources {
+    for ((selection, canonical_worktree), snapshot) in
+        selected_sources.iter().zip(&source_snapshots)
+    {
         let (exported, estimate) = export_repository(
             selection,
-            &canonical_worktree,
+            canonical_worktree,
             &staging_root,
             &mut repository_ids,
             &mut target_directories,
             &mut manifest_budget,
             vault,
         )?;
+        snapshot.verify_exported(&exported)?;
         materialized_entries = materialized_entries.saturating_add(estimate.materialized_entries);
         source_repositories.push(DevelopmentSourceRepositoryMapping {
             source_workspace_id: selection.workspace_id.clone(),
@@ -150,6 +161,16 @@ pub(crate) fn export_development_context_with_vault(
         .map_err(|error| context_io_error("inspect development context archive", error))?
         .len();
     let archive_sha256 = sha256_file(&temporary_archive_path)?;
+    // Recheck the whole Project after archive construction: a supporting
+    // workspace must not hide a change to an already exported primary.
+    let mut snapshot_budget = ManifestMemoryBudget::new();
+    for ((_, worktree), expected) in selected_sources.iter().zip(&source_snapshots) {
+        let current =
+            source_snapshot::SourceSnapshot::capture(worktree, &mut snapshot_budget, vault)?;
+        if &current != expected {
+            return Err(source_snapshot::source_changed());
+        }
+    }
     cleanup.remove_staging()?;
     publish_archive_no_clobber(
         &temporary_archive_path,
@@ -417,14 +438,16 @@ fn export_repository(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct RepositorySourceState {
-    head_sha: String,
-    branch: Option<String>,
-    upstream: Option<String>,
-    origin_url: Option<String>,
+pub(super) struct RepositorySourceState {
+    pub(super) head_sha: String,
+    pub(super) branch: Option<String>,
+    pub(super) upstream: Option<String>,
+    pub(super) origin_url: Option<String>,
 }
 
-fn repository_source_state(worktree: &Path) -> Result<RepositorySourceState, DaemonError> {
+pub(super) fn repository_source_state(
+    worktree: &Path,
+) -> Result<RepositorySourceState, DaemonError> {
     Ok(RepositorySourceState {
         head_sha: git_text(worktree, &["rev-parse", "--verify", "HEAD"])?,
         branch: git_optional_text(worktree, &["symbolic-ref", "--short", "-q", "HEAD"])?,

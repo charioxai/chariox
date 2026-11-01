@@ -5,8 +5,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use chariox_adapters::connector_adapter_util::{
-    credential_host_target, inject_http_credential, render_json_template, render_template_string,
-    response_body_limited, run_adapter,
+    credential_host_target, http_call_error, inject_http_credential, render_json_template,
+    render_template_string, response_body_limited, run_adapter,
 };
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -78,6 +78,7 @@ fn call_request(request: ConnectorAdapterRequest) -> Result<Value, String> {
     });
     let agent = ureq::AgentBuilder::new()
         .timeout(std::time::Duration::from_millis(request.timeout_ms))
+        .redirects(0)
         .build();
     let mut http_request = agent.post(url.as_str());
     for (name, value) in headers {
@@ -85,7 +86,7 @@ fn call_request(request: ConnectorAdapterRequest) -> Result<Value, String> {
     }
     let response = http_request
         .send_string(&serde_json::to_string(&body).map_err(|error| error.to_string())?)
-        .map_err(|error| error.to_string())?;
+        .map_err(http_call_error)?;
     response_body_limited(response, request.max_response_bytes)
 }
 

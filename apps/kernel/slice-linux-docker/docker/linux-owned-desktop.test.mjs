@@ -9,6 +9,12 @@ import path from 'node:path';
 import { LinuxOwnedDesktop, desktopEnvironment, desktopBusAddress, ownsDesktopDisplay } from './linux-owned-desktop.mjs';
 import { validOwnedPid, processIdentity, descendants, signalOwned, settleOwned } from './linux-owned-process.mjs';
 
+test('MP-08 owned desktop sizes are bounded and keep the ordinary desktop default',()=>{
+ assert.deepEqual(new LinuxOwnedDesktop('/unstarted').size,{width:1280,height:800});
+ for(const size of [null,{width:0,height:800},{width:1280,height:NaN},{width:4097,height:800}])
+  assert.throws(()=>new LinuxOwnedDesktop('/unstarted',{size}),/invalid owned desktop dimensions/);
+});
+
 test('MP-11 a fabricated desktop binding and live PID cannot mint display ownership',()=>{
  const desktop=new LinuxOwnedDesktop('/unstarted');
  desktop.current={environment:{DISPLAY:':0'}};
@@ -117,7 +123,7 @@ test('MP-11 stale root identity cannot acquire descendants or signal a replaceme
 
 test('MP-08 / MP-11 Xvfb uses owned private tmp without global socket or keymap writes', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'culinux-private-tmp-'));
-  const desktop = new LinuxOwnedDesktop(root);
+  const desktop = new LinuxOwnedDesktop(root, {size:{width:1920,height:1167}});
   desktop.uid = 1000;
   let launched;
   desktop.launch = async (name, args, env) => {
@@ -133,6 +139,7 @@ test('MP-08 / MP-11 Xvfb uses owned private tmp without global socket or keymap 
     assert.equal(launched.env.TMPDIR, '/tmp');
     assert.equal(launched.env.XAUTHORITY, '/tmp/Xauthority');
     assert(launched.args.includes('-displayfd'));
+    assert(launched.args.includes('1920x1167x24'), 'the private screen must fit the admitted browser viewport and band');
     assert(launched.args.includes('tcp'));
     assert(!launched.args.includes('-ac'));
     assert(!launched.args.includes('--unshare-net'));

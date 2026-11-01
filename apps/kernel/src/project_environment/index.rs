@@ -291,7 +291,7 @@ pub(super) fn referenced_names(line: &str) -> BTreeSet<String> {
 
 fn ignored_files(root: &Path) -> Result<BTreeSet<String>, DaemonError> {
     // Filename-only Git plumbing. Values and contents never cross the provider boundary.
-    let output = std::process::Command::new("git")
+    let output = crate::process_spawn::command("git")
         .args(["-C"])
         .arg(root)
         .args([

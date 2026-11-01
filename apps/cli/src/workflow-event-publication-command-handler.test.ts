@@ -23,6 +23,7 @@ test("TUI publication handler creates an event-based publication for the selecte
     selectedWorkflowId: () => "workflow-2",
     sendWorkflowEventPublicationRequest: async (request) => {
       requests.push(request)
+      if ("ListWorkflows" in request) return { WorkflowsListed: { workflows: updated.workflows } }
       return {
         WorkflowPublicationCreated: {
           publication: {
@@ -39,7 +40,7 @@ test("TUI publication handler creates an event-based publication for the selecte
     },
   }, ["create", "endpoint-1", "event_publication", "--kind", "event_based"])
 
-  assert.deepEqual(requests, [{
+  assert.deepEqual(requests, [{ ListWorkflows: { session_id: "session-1" } }, {
     CreateWorkflowPublication: {
       session_id: "session-1",
       workflow_ref: "workflow-2",

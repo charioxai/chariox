@@ -78,6 +78,7 @@ pub(super) const COMMANDS: &[MetaCommandDoc] = &[
             "agent spawn linux-checker --kernel linux-worker",
             "agent spawn isolated-builder --slice new:headless",
             "agent spawn slice-worker --slice linux-dev",
+            "agent spawn slice-child --slice <self.location.kernel_id>",
         ],
         tags: &["agent", "spawn", "worker", "orchestration"],
         intents: &[
@@ -92,7 +93,7 @@ pub(super) const COMMANDS: &[MetaCommandDoc] = &[
         policy: MetaCommandPolicy::Allow,
         authority: "owned agents only",
         routed: true,
-        description: "Create a regular agent owned by the current user. Agents in Meta mode cannot spawn another agent in Meta mode. Spawn can choose provider, model, and effort/variant, and uses the same placement option contract as normal agent/session launch surfaces: directory placement, remote kernel placement, existing slice placement, and new slice creation.",
+        description: "Create a regular agent owned by the current user. Agents in Meta mode cannot spawn another agent in Meta mode. Spawn can choose provider, model, and effort/variant, and uses the same placement option contract as normal agent/session launch surfaces: directory placement, remote kernel placement, existing slice placement, and new slice creation. `--slice` takes a slice id or name, or the full worker kernel ID (`self.location.kernel_id` from scoped discovery) to place the child on the slice the calling agent runs in; `current`, aliases and ID prefixes are not accepted. Omitting placement creates the child on the home kernel.",
     },
     MetaCommandDoc {
         name: "agent focus",

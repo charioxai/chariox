@@ -703,6 +703,7 @@ mod tests {
             structured_endpoint: None,
             provider_session_id: None,
             native_tui: false,
+            native_checkpoint_binding: None,
         }
     }
 }

@@ -53,11 +53,18 @@ test("one table maps every kernel error code to its exit code", () => {
     2: ["usage", "file_path_invalid"],
     3: ["kernel_access_human_only", "kernel_access_ended", "kernel_access_not_covered", "kernel_access_already_granted", "command_id_required", "duplicate_command_conflict", "file_permission_denied"],
     4: ["kernel_unknown", "kernel_ambiguous", "kernel_offline", "kernel_unreachable", "kernel_unpaired", "kernel_incompatible", "kernel_not_available"],
-    5: ["kernel_request_timeout", "kernel_connection_lost", "kernel_outcome_unknown"],
+    5: ["kernel_request_timeout", "kernel_connection_lost", "kernel_outcome_unknown", "kernel_access_unconfirmed"],
   }
   for (const [exit, codes] of Object.entries(expected)) for (const code of codes) assert.equal(exitCodeFor(code), Number(exit), code)
-  for (const code of ["kernel_request_overloaded", "ledger_unavailable", "anything_else", "file_not_found", "file_exists", "file_hash_mismatch", "file_offset_mismatch", "file_io_failed"]) assert.equal(exitCodeFor(code), 1)
-  assert.deepEqual(EXIT_CODES.map(entry => entry.exit), [0, 2, 3, 4, 5, 6, 7])
+  for (const code of ["session_not_found", "kernel_response_too_large", "kernel_request_overloaded", "ledger_unavailable", "anything_else", "file_not_found", "file_exists", "file_hash_mismatch", "file_offset_mismatch", "file_io_failed"]) assert.equal(exitCodeFor(code), 1)
+  assert.deepEqual(EXIT_CODES.map(entry => entry.exit), [0, 1, 2, 3, 4, 5, 6, 7])
+})
+
+test("the exit-code table of the access guide is the table the CLI uses", () => {
+  const rows = new Map([...readFileSync(new URL("../../../docs/KERNEL_ACCESS.md", import.meta.url), "utf8").matchAll(/^\| (\d) \| .*? \|(.*)\|$/gm)].map(match => [Number(match[1]), match[2]!]))
+  assert.deepEqual([...rows.keys()], EXIT_CODES.map(entry => entry.exit))
+  for (const entry of EXIT_CODES) for (const code of entry.codes) assert.ok(rows.get(entry.exit)!.includes(`\`${code}\``), `exit ${entry.exit} lists ${code}`)
+  assert.match(guideText(), /\n  1 request failed/)
 })
 
 const kernelSource = new URL("../../kernel/src/", import.meta.url)

@@ -198,3 +198,29 @@ fn compact_task_wire_shapes_are_bound_to_assigned_protocol493() {
         "amint must fold compact task frames into the assigned union"
     );
 }
+
+// MP-08 / MP-10 / MP-11: protocol643 Stop may cancel a task after its prompt ended.
+#[test]
+fn parked_stop_response_semantics_are_versioned() {
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
+    assert!(crate::test_support::expected_local_protocol_version() >= 643);
+    let request = LocalDaemonRequest::CancelActivePrompt(crate::local::CancelActivePromptRequest {
+        session_id: "room".into(),
+        attachment_id: "terminal".into(),
+        target_agent_id: Some("agent".into()),
+        expected_prompt_id: None,
+    });
+    let expected: serde_json::Value =
+        serde_json::from_str(include_str!("parked-stop-643.json")).unwrap();
+    let response: LocalDaemonResponse =
+        serde_json::from_value(expected["response"].clone()).unwrap();
+    let value = serde_json::json!({"request":request, "response":response});
+    assert_eq!(value, expected);
+    assert_eq!(
+        format!("{:x}", Sha256::digest(value.to_string().as_bytes())),
+        "5d4d7cab46a07c8f05fa4223b2853b66cb117a99a13ccd4c68446d87b2e4d731"
+    );
+}

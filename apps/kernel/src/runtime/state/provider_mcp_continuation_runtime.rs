@@ -1,5 +1,9 @@
 use super::*;
 
+/// The relaunch sleeps 12 s before it starts the provider, and a cold provider
+/// start on a loaded host takes tens of seconds more; the continuation outlasts both.
+const PROVIDER_RELAUNCH_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
+
 impl KernelRuntimeState {
     pub(super) fn runtime_catalog_signature_for_agent(
         &self,
@@ -27,7 +31,7 @@ impl KernelRuntimeState {
         token: &str,
     ) -> Vec<(String, String, serde_json::Value)> {
         let mut tools: Vec<_> = self
-            .runtime_tool_specs_for_auth_token(token)
+            .runtime_tool_specs_for_current_grants(token)
             .into_iter()
             .filter(|tool| tool.name != sudo::SUDO_TOOL && tool.name != sudo::VAULT_GENERATE)
             .map(|tool| (tool.name, tool.description, tool.input_schema))
@@ -335,6 +339,13 @@ impl KernelRuntimeState {
         else {
             return Ok(());
         };
+        // Accepted catalog work belongs to the kernel's continuation. Replacing
+        // its source provider must not invalidate that continuation's caller epoch.
+        // Keep external grants and peer authority scoped through the replacement.
+        let state = self.with_room_provider_origin(None, None);
+        if state.owned.agent_store.get_agent(agent_id)?.archived() {
+            return Ok(());
+        }
         let previous_provider_run_id = self
             .owned
             .provider_store
@@ -348,44 +359,20 @@ impl KernelRuntimeState {
                     Some(run.id().to_string())
                 }
             });
-        let outcome = self
-            .reload_agent_provider_if_idle_for_reason(
-                &continuation.session_id,
-                &continuation.agent_id,
-                &continuation.reload_reason,
-            )
-            .await?;
-        if outcome == ProviderReloadOutcome::Deferred {
-            let mut queued = self.owned.pending_mcp_continuations.write();
-            if let Some(newer) = queued.get_mut(agent_id) {
-                newer.reload_reason = newer
-                    .reload_reason
-                    .clone()
-                    .merge(&continuation.reload_reason);
-            } else {
-                queued.insert(agent_id.to_owned(), continuation);
+        // The agent was promised a continuation: it either resumes or the owner is told.
+        let hidden_system_context = match state
+            .refresh_provider_for_continuation(&continuation, previous_provider_run_id.as_deref())
+            .await
+        {
+            Ok(Some(context)) => context,
+            Ok(None) => return Ok(()),
+            Err(error) => {
+                self.report_lost_catalog_continuation(&continuation, previous_provider_run_id);
+                return Err(error);
             }
-            drop(queued);
-            // Usually the existing poller still owns the original budget. A
-            // prompt-completion callback may restart previously expired work,
-            // but a Deferred poll attempt never spawns a replacement task.
-            self.ensure_pending_mcp_continuation_poller(session_id, agent_id);
-            return Ok(());
-        }
-        if outcome == ProviderReloadOutcome::Reloaded {
-            self.wait_for_agent_provider_relaunch(
-                &continuation.session_id,
-                &continuation.agent_id,
-                previous_provider_run_id.as_deref(),
-            )
-            .await?;
-        }
-
-        let (hidden_system_context, _manifest) =
-            crate::prompt_assembly::PromptAssemblyService::from_env()?
-                .assemble_mcp_skill_continuation_context(&continuation.mcp_name)?;
+        };
         if self.owned.config_projection.snapshot().room_agent_tools {
-            return self
+            return state
                 .dispatch_catalog_task_continuation(
                     continuation,
                     previous_provider_run_id,
@@ -404,7 +391,7 @@ impl KernelRuntimeState {
             crate::session::PromptStatus::Queued,
         )
         .with_hidden_system_context(hidden_system_context);
-        let mut submission = self
+        let mut submission = state
             .submit_prepared_prompt(crate::app::KernelPreparedPromptSubmission {
                 session_id: continuation.session_id,
                 prompt,
@@ -413,12 +400,65 @@ impl KernelRuntimeState {
             })
             .await?;
         if let Some(dispatch) = submission.dispatch.take() {
-            self.spawn_prompt_dispatch(dispatch, self.owned.provider_store.run_operation_lanes());
+            state.spawn_prompt_dispatch(dispatch, self.owned.provider_store.run_operation_lanes());
         }
         if let Some(dispatch) = submission.remote_dispatch.take() {
-            self.spawn_remote_prompt_dispatch(dispatch);
+            state.spawn_remote_prompt_dispatch(dispatch);
         }
         Ok(())
+    }
+
+    /// Reloads the provider and returns the context the continuation turn
+    /// carries; `None` when the reload is deferred and the continuation was re-queued.
+    async fn refresh_provider_for_continuation(
+        &self,
+        continuation: &PendingMcpContinuation,
+        previous_provider_run_id: Option<&str>,
+    ) -> Result<Option<String>, DaemonError> {
+        // The kernel's own attachment keeps the session attached while the
+        // provider relaunches. Without it a client leaving after the turn lets
+        // the detached-session parking take the new run, which then never
+        // becomes Running for the continuation.
+        self.ensure_mcp_continuation_attachment(continuation)?;
+        let outcome = self
+            .reload_agent_provider_if_idle_for_reason(
+                &continuation.session_id,
+                &continuation.agent_id,
+                &continuation.reload_reason,
+            )
+            .await?;
+        if outcome == ProviderReloadOutcome::Deferred {
+            let mut queued = self.owned.pending_mcp_continuations.write();
+            if let Some(newer) = queued.get_mut(&continuation.agent_id) {
+                newer.reload_reason = newer
+                    .reload_reason
+                    .clone()
+                    .merge(&continuation.reload_reason);
+            } else {
+                queued.insert(continuation.agent_id.clone(), continuation.clone());
+            }
+            drop(queued);
+            // Usually the existing poller still owns the original budget. A
+            // prompt-completion callback may restart previously expired work,
+            // but a Deferred poll attempt never spawns a replacement task.
+            self.ensure_pending_mcp_continuation_poller(
+                &continuation.session_id,
+                &continuation.agent_id,
+            );
+            return Ok(None);
+        }
+        if outcome == ProviderReloadOutcome::Reloaded {
+            self.wait_for_agent_provider_relaunch(
+                &continuation.session_id,
+                &continuation.agent_id,
+                previous_provider_run_id,
+            )
+            .await?;
+        }
+        let (hidden_system_context, _manifest) =
+            crate::prompt_assembly::PromptAssemblyService::from_env()?
+                .assemble_mcp_skill_continuation_context(&continuation.mcp_name)?;
+        Ok(Some(hidden_system_context))
     }
 
     // An accepted capability continuation belongs to the kernel, even after the
@@ -456,13 +496,13 @@ impl KernelRuntimeState {
         Ok(attachment.id().to_string())
     }
 
-    async fn wait_for_agent_provider_relaunch(
+    pub(super) async fn wait_for_agent_provider_relaunch(
         &self,
         session_id: &str,
         agent_id: &str,
         previous_provider_run_id: Option<&str>,
     ) -> Result<(), DaemonError> {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let deadline = tokio::time::Instant::now() + PROVIDER_RELAUNCH_WAIT;
         loop {
             let ready = self
                 .owned
@@ -475,7 +515,7 @@ impl KernelRuntimeState {
             if ready {
                 return Ok(());
             }
-            if std::time::Instant::now() >= deadline {
+            if tokio::time::Instant::now() >= deadline {
                 return Err(DaemonError::LocalTransport {
                     operation: "wait_for_mcp_provider_relaunch",
                     message: format!(

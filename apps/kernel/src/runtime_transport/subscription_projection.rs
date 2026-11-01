@@ -20,8 +20,18 @@ pub(crate) fn session_projection_events(
     // An archived terminal run is replaced by the separately drained update.
     // A full hot-session snapshot would immediately erase that archive in clients.
     // Room inventory alone still needs the full snapshot for canvas consumers.
+    let processes_only_changed = previous.is_some_and(|previous| {
+        previous.session == snapshot.session
+            && previous.provider_run == snapshot.provider_run
+            && previous.agent_activity == snapshot.agent_activity
+            && previous.room_workflows == snapshot.room_workflows
+    });
     let replaces_snapshot = has_terminal_workflow_update
-        || !events.is_empty()
+        || events.iter().any(|event| {
+            // Resource samples carry no provider or prompt state. A concurrent
+            // transition still needs the snapshot when no other delta covers it.
+            !matches!(event, KernelEvent::SessionProcessesChanged { .. }) || processes_only_changed
+        })
         || workflow_events
             .iter()
             .any(|event| !matches!(event, KernelEvent::RoomWorkflowsChanged { .. }))
@@ -58,6 +68,7 @@ mod tests {
             "kernel",
         );
         SessionSnapshotProjection {
+            processes: Vec::new(),
             room_workflows: crate::runtime::projection::RoomWorkflowInventory::project(
                 &session,
                 crate::session::DEFAULT_LOCAL_USER_ID,
@@ -78,6 +89,66 @@ mod tests {
     }
 
     #[test]
+    fn mk03_return_projection_change_survives_other_deltas() {
+        let mut before = snapshot();
+        let mut agent = crate::agent::AgentInstance::new(
+            "agent",
+            "agent-ref",
+            before.session.id(),
+            None,
+            "codex",
+            Some("gpt-6-luna".into()),
+            Some("low".into()),
+            None,
+            crate::agent::GridPosition::new(0, 0, 1, 1),
+        );
+        agent.set_remote_execution(Some(crate::agent::RemoteAgentBinding {
+            worker_kernel_id: "worker".into(),
+            worker_machine_id: "machine".into(),
+            execution_lease_id: "lease".into(),
+            leased_agent_id: "leased-agent".into(),
+            active_worker_provider_run_id: None,
+            relay_url: None,
+            relay_token: None,
+            relay_peer_protocol_version: Some(240),
+        }));
+        before.session.set_agents(vec![agent.clone()]);
+        let mut after = before.clone();
+        agent.set_remote_execution(None);
+        agent.set_account_profile(Some("returned-account".into()));
+        after.session.set_agents(vec![agent]);
+        after
+            .session
+            .add_active_interaction(crate::session::RuntimeInteraction::new(
+                "interaction",
+                "agent",
+                crate::session::RuntimeInteractionKind::Permission,
+                crate::session::RuntimeInteractionLevel::Warning,
+                None,
+                "Owner decision",
+                vec![crate::session::RuntimeInteractionChoice::new(
+                    "cancel", "Cancel", "cancel", None,
+                )],
+                None,
+                None,
+                None,
+            ));
+        let events = session_projection_events(&after, Some(&before), false);
+        assert!(events
+            .iter()
+            .any(|event| matches!(event, KernelEvent::RuntimeInteractionsChanged { .. })));
+        assert!(
+            events.iter().any(
+                |event| matches!(event, KernelEvent::SessionSnapshot { session, .. }
+                    if session.agents()[0].remote_execution().is_none()
+                        && session.agents()[0].provider_account_profile() == "returned-account"
+                )
+            ),
+            "Return route/account changes must reach subscribers beside another projection delta"
+        );
+    }
+
+    #[test]
     fn metadata_delta_does_not_repeat_the_full_session() {
         let before = snapshot();
         let mut after = before.clone();
@@ -85,6 +156,74 @@ mod tests {
         assert!(matches!(
             session_projection_events(&after, Some(&before), false).as_slice(),
             [KernelEvent::SessionMetadataChanged { .. }]
+        ));
+    }
+
+    fn add_process(snapshot: &mut SessionSnapshotProjection) {
+        use crate::runtime::process_resources::{
+            ProcessSample, SessionProcess, SessionProcessOwner,
+        };
+        snapshot.processes.push(SessionProcess {
+            owner: SessionProcessOwner::Agent("agent".into()),
+            process: ProcessSample {
+                process_id: "process".into(),
+                pid: 42,
+                command: "provider".into(),
+                resident_set_bytes: 1024,
+                cpu_millis: 0,
+                sampled_at_ms: 10,
+                age_ms: 10,
+            },
+        });
+    }
+
+    #[test]
+    fn process_delta_does_not_repeat_the_full_session() {
+        let before = snapshot();
+        let mut after = before.clone();
+        add_process(&mut after);
+        assert!(matches!(
+            session_projection_events(&after, Some(&before), false).as_slice(),
+            [KernelEvent::SessionProcessesChanged { .. }]
+        ));
+    }
+
+    #[test]
+    fn process_delta_keeps_simultaneous_session_and_provider_changes() {
+        let before = snapshot();
+        let mut after = before.clone();
+        add_process(&mut after);
+        after.session.set_alias(Some("after".into()));
+        after.provider_run = Some(
+            crate::provider::RuntimeProviderRun::from_control_capability_inference(
+                "run",
+                after.session.id().into(),
+                Some("agent".into()),
+                "codex".into(),
+            ),
+        );
+        assert!(matches!(
+            session_projection_events(&after, Some(&before), false).as_slice(),
+            [
+                KernelEvent::SessionProcessesChanged { .. },
+                KernelEvent::SessionSnapshot { .. }
+            ]
+        ));
+    }
+
+    #[test]
+    fn process_delta_keeps_the_room_workflow_inventory_snapshot() {
+        let before = snapshot();
+        let mut after = before.clone();
+        add_process(&mut after);
+        after.room_workflows.revision.push_str("-changed");
+        assert!(matches!(
+            session_projection_events(&after, Some(&before), false).as_slice(),
+            [
+                KernelEvent::SessionProcessesChanged { .. },
+                KernelEvent::RoomWorkflowsChanged { .. },
+                KernelEvent::SessionSnapshot { .. }
+            ]
         ));
     }
 

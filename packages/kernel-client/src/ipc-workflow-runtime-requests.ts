@@ -3,6 +3,9 @@ import type {
   WorkflowScheduleTrigger,
 } from "./kernel-types.js"
 
+/** Retrying a held notification delivery needs a kernel that tracks uncertain sends. */
+export const queuedNotificationRetryMinimumProtocolVersion = 670
+
 export type CreateWorkflowPublicationOptions = {
   expectedWorkflowRevision?: number | null
   operationKey?: string | null
@@ -381,7 +384,7 @@ export function listQueuedWorkflowPromptsRequest(sessionId: string) {
 export function updateQueuedWorkflowPromptRequest(
   sessionId: string,
   queueItemRef: string,
-  patch: { prompt?: string | null; queueRef?: string | null },
+  patch: { prompt?: string | null; queueRef?: string | null; retryDelivery?: boolean },
 ) {
   return {
     UpdateQueuedWorkflowPrompt: {
@@ -389,6 +392,7 @@ export function updateQueuedWorkflowPromptRequest(
       queue_item_ref: queueItemRef,
       prompt: patch.prompt ?? null,
       queue_ref: patch.queueRef ?? null,
+      ...(patch.retryDelivery ? { retry_delivery: true } : {}),
     },
   }
 }

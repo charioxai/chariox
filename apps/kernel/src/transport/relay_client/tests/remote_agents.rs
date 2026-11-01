@@ -810,6 +810,7 @@ async fn assert_remote_native_terminal_resize(
         structured_endpoint: None,
         provider_session_id: None,
         native_tui: true,
+        native_checkpoint_binding: None,
     });
     let launch_command = KernelCommand::from_local_request(
         "launch-remote-native-resize",
@@ -2892,6 +2893,7 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
         }],
         notices: Vec::new(),
         completions: vec![crate::transport::relay_peer::RelayProjectedCompletion {
+            failure: None,
             message_id: "promoted-worker-completion".into(),
             completed_at_ms: crate::session::unix_epoch_ms(),
             home_prompt_id: Some(promoted.id().to_string()),

@@ -10,7 +10,6 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -257,7 +256,7 @@ impl ManagedReleaseUpdateClient {
     fn start_update_unit(&self, update: &UpdateCommand, archive: &Path) -> Result<(), DaemonError> {
         let tooling = std::fs::canonicalize(CURRENT_RELEASE)
             .map_err(|error| update_error(format!("resolve current release: {error}")))?;
-        let status = Command::new("sudo")
+        let status = crate::process_spawn::command("sudo")
             .args([
                 "-n",
                 "systemd-run",
@@ -356,7 +355,7 @@ fn cleanup_attempt_storage(update_id: &str) -> Result<(), DaemonError> {
         .join(
             "usr/lib/chariox/slice-build-context/deploy/managed-kernel/release-update-storage.py",
         );
-    let status = Command::new("sudo")
+    let status = crate::process_spawn::command("sudo")
         .args(["-n", "python3"])
         .arg(tooling)
         .args(["cleanup", STAGING_ROOT, update_id])
@@ -435,7 +434,7 @@ fn recovery_pending() -> Result<bool, DaemonError> {
 }
 
 fn update_unit_settled() -> Result<bool, DaemonError> {
-    let output = Command::new("systemctl")
+    let output = crate::process_spawn::command("systemctl")
         .args([
             "show",
             "--property=LoadState",
@@ -584,7 +583,7 @@ mod tests {
         let archive = root.join("download.tar.gz");
         let run = |archive_bytes: &[u8]| {
             std::fs::write(&archive, archive_bytes).expect("archive");
-            let status = Command::new("sh")
+            let status = crate::process_spawn::command("sh")
                 .arg("-c")
                 .arg(update_script(
                     &root.join("release"),
@@ -597,7 +596,7 @@ mod tests {
             assert!(!archive.exists() && !staging.join(&update.update_id).exists());
             status.success()
         };
-        let packed = Command::new("tar")
+        let packed = crate::process_spawn::command("tar")
             .args(["-czf", "-", "-C"])
             .arg(root.join("source"))
             .args(["rootfs"])
@@ -638,7 +637,7 @@ mod tests {
         ).expect("interrupted upgrade fixture");
         std::fs::write(&archive, &packed).expect("archive");
         let restart = || {
-            Command::new("sh")
+            crate::process_spawn::command("sh")
                 .arg("-c")
                 .arg(update_script(
                     &root.join("releases/release"),

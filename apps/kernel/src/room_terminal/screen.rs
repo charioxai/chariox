@@ -4,6 +4,10 @@ pub(super) const SCROLLBACK_LINES: usize = 5000;
 
 pub(super) struct Screen {
     parser: vt100::Parser,
+    #[cfg(test)]
+    pub(super) pause_feed: Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>,
+    #[cfg(test)]
+    pub(super) pause_text: Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>,
 }
 
 pub(super) struct ScreenText {
@@ -18,6 +22,10 @@ impl Screen {
     pub(super) fn new(rows: u16, cols: u16) -> Self {
         Self {
             parser: vt100::Parser::new(rows, cols, SCROLLBACK_LINES),
+            #[cfg(test)]
+            pause_feed: None,
+            #[cfg(test)]
+            pause_text: None,
         }
     }
 
@@ -34,6 +42,11 @@ impl Screen {
     }
 
     pub(super) fn feed(&mut self, bytes: &[u8]) {
+        #[cfg(test)]
+        if let Some((entered, release)) = self.pause_feed.take() {
+            let _ = entered.send(());
+            let _ = release.recv_timeout(std::time::Duration::from_secs(10));
+        }
         self.parser.process(bytes);
     }
 
@@ -46,6 +59,11 @@ impl Screen {
     }
 
     pub(super) fn text(&mut self) -> ScreenText {
+        #[cfg(test)]
+        if let Some((entered, release)) = self.pause_text.take() {
+            let _ = entered.send(());
+            let _ = release.recv_timeout(std::time::Duration::from_secs(10));
+        }
         let scrollback = self.scrollback_text();
         let screen = self.parser.screen();
         let (cursor_row, cursor_col) = screen.cursor_position();

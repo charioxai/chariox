@@ -22,6 +22,7 @@ mod cloud_relay;
 mod computer_hold;
 mod core;
 mod credential_enrollment;
+mod daemon_health;
 mod dictation;
 mod display_resumption;
 mod disposable_worker;
@@ -62,6 +63,7 @@ mod session_view;
 mod slice_disk_quota;
 mod slice_display;
 mod slice_logs;
+mod tab_display;
 mod user_app_views;
 mod user_domain_access;
 mod workflow_code;
@@ -115,5 +117,10 @@ mod screenshot;
 mod ssh_machine;
 mod waiting_room_workspace;
 
+mod provider_tool_images;
 mod room_pin;
 mod usage_snapshot;
+mod vault_unlock;
+
+mod provider_login;
+mod session_activity;

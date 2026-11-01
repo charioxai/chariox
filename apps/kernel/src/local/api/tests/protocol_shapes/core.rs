@@ -862,6 +862,7 @@ fn local_daemon_protocol_batch_launch_and_prompt_shape_is_versioned() {
                 structured_endpoint: None,
                 provider_session_id: None,
                 native_tui: false,
+                native_checkpoint_binding: None,
             },
             LaunchProviderRunRequest {
                 session_id: "session-1".to_string(),
@@ -874,6 +875,7 @@ fn local_daemon_protocol_batch_launch_and_prompt_shape_is_versioned() {
                 structured_endpoint: Some("http://127.0.0.1:4567".to_string()),
                 provider_session_id: None,
                 native_tui: false,
+                native_checkpoint_binding: None,
             },
         ],
     });
@@ -936,6 +938,7 @@ fn local_daemon_protocol_move_agent_to_local_shape_is_versioned() {
     );
 
     let request = LocalDaemonRequest::MoveAgentToLocal(MoveAgentToLocalRequest {
+        abort_pending: false,
         session_id: "session-1".to_string(),
         agent_ref: "agent-1".to_string(),
     });
@@ -1202,6 +1205,7 @@ fn waiting_room_session_pages_have_versioned_shapes_and_hash() {
         crate::test_support::expected_local_protocol_version()
     );
     let request = LocalDaemonRequest::ListWaitingRoomSessions(ListWaitingRoomSessionsRequest {
+        inventory_version: None,
         cursor: Some("after-session".into()),
         limit: Some(500),
     });

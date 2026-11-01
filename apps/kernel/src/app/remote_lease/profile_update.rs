@@ -48,6 +48,9 @@ impl RemoteLeaseRuntime<'_> {
             })?;
         let account_profile =
             self.resolve_leased_profile_account(&leased_agent, &provider, &account_profile)?;
+        if crate::provider::adapter_key_for_provider(&leased_agent.provider) != "codex" {
+            self.ensure_leased_provider_capacity(&provider, Some(leased_agent_id))?;
+        }
         let profile_changed = leased_agent.provider != provider
             || leased_agent.account_profile != account_profile
             || leased_agent.model != model
@@ -147,6 +150,9 @@ impl RemoteLeaseRuntime<'_> {
             return Ok(current.clone());
         }
         self.resolve_leased_profile_account(&leased_agent, &provider, &account_profile)?;
+        if crate::provider::adapter_key_for_provider(&leased_agent.provider) != "codex" {
+            self.ensure_leased_provider_capacity(&provider, Some(leased_agent_id))?;
+        }
         if self
             .app
             .prompt_owner_active_prompt_for_agent(
