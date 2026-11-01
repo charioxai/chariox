@@ -5112,11 +5112,11 @@ triggers. 931 removes the `/wait` schedule shape: `CreateAgentPromptSchedule`,
 `/wait` schedules from earlier kernels are not migrated. The shape is pinned by
 `local_daemon_protocol_agent_trigger_shape_is_versioned`.
 
-Allocated 955 (relay peer 395) adds the portable header state to the `KernelBrowser` state: `active_tab_id` (the Tab Chromium
+Allocated 933 (relay peer 382) adds the portable header state to the `KernelBrowser` state: `active_tab_id` (the Tab Chromium
 shows, `null` when none or while a pending activation is unsettled) and, per Tab, `can_go_back` and `can_go_forward` (Chromium's
 navigation history bounds, `null` while unknown) and `favicon_png_base64` (a bounded PNG read from Chromium's own favicon cache, `null`
 without one). `null` means unknown: a client keeps Back and Forward disabled for it and never invents an icon. They are presentation
-hints; they never admit input or pixels. `mp08_mp10_browser_header_955_shape_and_hash` pins the shape.
+hints; they never admit input or pixels. `mp08_mp10_browser_header_933_shape_and_hash` pins the shape.
 
 Allocated 932 (relay peer 381; allocated as 386) adds the HTTP trigger source `{"kind": "http", "ingress_id", "port"}` (the
 create request sends `{"kind": "http"}` and the kernel picks both), `InvokeAgentTrigger

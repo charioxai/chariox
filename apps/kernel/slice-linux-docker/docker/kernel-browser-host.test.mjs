@@ -1445,8 +1445,8 @@ test('MP-11 agents cannot reach extension management; the person can', () => usi
 
 // MP-08/MP-10/MP-11 (protocol 530/138): the public Browser state keys are the hashed
 // Rust fixture's; a new key needs a protocol bump and a new fixture.
-test('MP-08 public Browser state keys match the protocol 955 fixture', () => using(async ({ host }) => {
-  const fixture = JSON.parse(await readFile(new URL('../../src/local/api/tests/protocol_shapes/browser-header-955.json', import.meta.url), 'utf8'));
+test('MP-08 public Browser state keys match the protocol 933 fixture', () => using(async ({ host }) => {
+  const fixture = JSON.parse(await readFile(new URL('../../src/local/api/tests/protocol_shapes/browser-header-933.json', import.meta.url), 'utf8'));
   const display = process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;
   process.env.CHARIOX_KERNEL_BROWSER_DISPLAY = '1';
   try {
@@ -2649,7 +2649,7 @@ test('MP-08/MP-10/MP-11: a crash arriving during inventory does not cancel recov
   assert.equal(sent.filter(call => call.method === 'Page.reload').length, 0, 'pressure must hold recovery while close stays usable');
 }));
 
-test('MP-08/MP-10 protocol955 portable header follows Chromium without a native band', () => using(async ({host,connection}) => {
+test('MP-08/MP-10 protocol933 portable header follows Chromium without a native band', () => using(async ({host,connection}) => {
  const first=await host.request({op:'open',url:'https://example.com/first'}),second=await host.request({op:'open',url:'https://example.com/second'});
  const png=encodePng(16,16,Buffer.alloc(16*16*4,255));
  const send=connection.send;connection.send=async(method,params,session)=>method==='Page.getNavigationHistory'?{currentIndex:1,entries:[{id:1},{id:2}]}:send(method,params,session);

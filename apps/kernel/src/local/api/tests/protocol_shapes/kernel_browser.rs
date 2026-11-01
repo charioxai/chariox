@@ -578,7 +578,7 @@ fn mp08_mp10_mp11_mirror_completion_550_158_snapshot_hash() {
     let bytes = include_bytes!("browser-mirror2-completion-550.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "380a0ee4b2dbd167fcbca411589840bbf75202809661f775053bea93845b3568"
+        "caf09a7bd12622a5353c8bbfae283deeb053a3d9f53692103ebb9ca4cfedb44e"
     );
     let value: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(value["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
@@ -681,7 +681,7 @@ fn browser_resize_protocol629_snapshot() {
     let bytes = include_bytes!("browser-resize-629.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "4165ba7ba199750b273e95dd0c8b0fb57cb9f65d2e7670eacfd2c5def2e24129"
+        "9319c1f67991e3c8d0ab20d0609cea1db31c0569a231e793f0bd9d17436a771e"
     );
     let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     let request: LocalDaemonRequest = serde_json::from_value(snapshot["request"].clone()).unwrap();
@@ -712,17 +712,17 @@ fn browser_dialog_protocol630_snapshot() {
 
 // MP-08/MP-10: coordinator-allocated portable Browser header, including no-band clients.
 #[test]
-fn mp08_mp10_browser_header_955_shape_and_hash() {
+fn mp08_mp10_browser_header_933_shape_and_hash() {
     const {
-        assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 955);
+        assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 933);
     }
     const {
-        assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 395);
+        assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 382);
     }
-    let bytes = include_bytes!("browser-header-955.json");
+    let bytes = include_bytes!("browser-header-933.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "1274dc853a2703ab0b882d3d149171aaa0c10c234c2fde7641aa93a8670bf828"
+        "c40616d3090c0400564b46218885c55180ba190eaaa73b1bf20def5bd984b555"
     );
     let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     let response: LocalDaemonResponse =

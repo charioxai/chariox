@@ -177,7 +177,7 @@ test('a current component worker is attached without reload',async()=>{
  assert(!sent.some(call=>call.method==='Target.detachFromTarget'||call.params?.expression==='chrome.runtime.reload()'));
 });
 
-test('MP-08/MP-10/MP-11 protocol955 favicons are bounded Chromium-cache PNGs',async()=>{
+test('MP-08/MP-10/MP-11 protocol933 favicons are bounded Chromium-cache PNGs',async()=>{
  const root=await mkdtemp(path.join(os.tmpdir(),'chariox-header-icons-'));
  try{
   const directory=await writeTabGroupsExtension(root),source=await readFile(path.join(directory,'sw.js'),'utf8');
