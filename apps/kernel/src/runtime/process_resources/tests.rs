@@ -611,3 +611,83 @@ fn a_root_unreadable_for_one_sample_stays_owned() {
         "one unreadable sample ended ownership of the root"
     );
 }
+
+/// Starting `ps` fails with `errno` until dropped.
+#[cfg(unix)]
+struct PsFailing;
+#[cfg(unix)]
+impl PsFailing {
+    fn with(errno: i32) -> Self {
+        sampling::ps_failure::set(Some(errno));
+        Self
+    }
+}
+#[cfg(unix)]
+impl Drop for PsFailing {
+    fn drop(&mut self) {
+        sampling::ps_failure::set(None);
+    }
+}
+
+#[cfg(unix)]
+fn watched_sleep(unit: &str) -> (std::process::Child, ProcessDomain, String) {
+    let child = std::process::Command::new("sleep")
+        .arg("30")
+        .spawn()
+        .unwrap();
+    let domain = PreparedDomain::watchdog(unit, None, roomy())
+        .start(child.id())
+        .unwrap();
+    let key = format!("{unit}-{:016x}", rand::random::<u64>());
+    domain.bind_key(&key);
+    (child, domain, key)
+}
+
+#[cfg(unix)]
+#[test]
+fn a_kernel_out_of_descriptors_for_a_moment_keeps_the_tree_it_watches() {
+    let (mut child, _domain, key) = watched_sleep("descriptors-short");
+    let pid = child.id();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while !samples_for_key(&key).iter().any(|sample| sample.pid == pid) {
+        assert!(std::time::Instant::now() < deadline, "never sampled");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let failing = PsFailing::with(libc::EMFILE);
+    std::thread::sleep(Duration::from_secs(3));
+    let kept = child.try_wait().unwrap().is_none();
+    drop(failing);
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while !samples_for_key(&key).iter().any(|sample| sample.pid == pid) {
+        if std::time::Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let sampled_again = samples_for_key(&key).iter().any(|sample| sample.pid == pid);
+    let _ = child.kill();
+    let _ = child.wait();
+    assert!(
+        kept,
+        "the sampler ended the tree because ps could not start for a moment"
+    );
+    assert!(
+        sampled_again,
+        "sampling did not resume once descriptors were free"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_missing_ps_ends_the_tree_it_watches() {
+    let (mut child, _domain, _key) = watched_sleep("ps-missing");
+    let _failing = PsFailing::with(libc::ENOENT);
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while child.try_wait().unwrap().is_none() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "a tree nobody can meter kept running"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}

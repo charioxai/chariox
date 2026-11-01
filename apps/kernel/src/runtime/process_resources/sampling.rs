@@ -696,19 +696,23 @@ struct Row {
     command: String,
 }
 
-fn process_rows() -> Result<Vec<Row>, String> {
-    // One shared sample avoids a ps process for every watchdog tick.
-    type CachedRows = (std::time::Instant, Result<Vec<Row>, String>);
+type CachedRows = (std::time::Instant, Result<Vec<Row>, String>);
+
+/// One shared sample avoids a ps process for every watchdog tick.
+fn cached_rows() -> std::sync::MutexGuard<'static, CachedRows> {
     static ROWS: std::sync::OnceLock<std::sync::Mutex<CachedRows>> = std::sync::OnceLock::new();
-    let mut cache = ROWS
-        .get_or_init(|| {
-            std::sync::Mutex::new((
-                std::time::Instant::now() - std::time::Duration::from_secs(1),
-                Err("process sample unavailable".into()),
-            ))
-        })
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
+    ROWS.get_or_init(|| {
+        std::sync::Mutex::new((
+            std::time::Instant::now() - std::time::Duration::from_secs(1),
+            Err("process sample unavailable".into()),
+        ))
+    })
+    .lock()
+    .unwrap_or_else(|e| e.into_inner())
+}
+
+fn process_rows() -> Result<Vec<Row>, String> {
+    let mut cache = cached_rows();
     if cache.0.elapsed() >= std::time::Duration::from_millis(200) {
         cache.1 = read_process_rows();
         cache.0 = std::time::Instant::now();
@@ -754,9 +758,36 @@ pub(super) fn ensure_available() -> std::io::Result<()> {
     process_rows().map(|_| ()).map_err(std::io::Error::other)
 }
 
+fn run_ps() -> std::io::Result<std::process::Output> {
+    #[cfg(test)]
+    if let Some(code) = ps_failure::injected() {
+        return Err(std::io::Error::from_raw_os_error(code));
+    }
+    crate::process_spawn::command("ps")
+        .env("LC_ALL", "C")
+        .args(["-axo", "pid=,ppid=,rss=,pcpu=,etime=,lstart=,comm="])
+        .output()
+}
+
+/// Makes starting `ps` fail with an errno, as a kernel at its descriptor limit does.
+#[cfg(test)]
+pub(super) mod ps_failure {
+    static ERRNO: std::sync::Mutex<Option<i32>> = std::sync::Mutex::new(None);
+
+    pub(super) fn injected() -> Option<i32> {
+        *ERRNO.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Also forgets the table read meanwhile, so the next read sees the change.
+    pub(in crate::runtime::process_resources) fn set(errno: Option<i32>) {
+        *ERRNO.lock().unwrap_or_else(|e| e.into_inner()) = errno;
+        super::cached_rows().0 = std::time::Instant::now() - std::time::Duration::from_secs(1);
+    }
+}
+
 fn read_process_rows() -> Result<Vec<Row>, String> {
     let sampled_at_ms = crate::session::unix_epoch_ms();
-    let output = crate::process_spawn::command("ps").env("LC_ALL", "C").args(["-axo", "pid=,ppid=,rss=,pcpu=,etime=,lstart=,comm="]).output()
+    let output = run_ps()
         .map_err(|error| format!("process resource monitor cannot start ps: {error}; install ps and check the kernel PATH"))?;
     if !output.status.success() {
         return Err(
