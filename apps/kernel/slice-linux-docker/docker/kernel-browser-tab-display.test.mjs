@@ -50,7 +50,7 @@ test('MP-08/MP-11 an unwatched display parks every 20 s for minutes and keeps it
   const host=Object.create(KernelBrowserHost.prototype),{stream,parks}=parkedStream();stream.park(false);
   const closed=[];stream.close=async()=>{closed.push(stream.subscription_id)};
   Object.assign(stream,{subscription_id:'d',observed_by:'viewer',tabDisplay:true,expires:Date.now()+60_000});
-  Object.assign(host,{generation:1,protection:{values:[]},streams:new Map(),displays:new Map([['d',stream]]),start:async()=>{}});
+  Object.assign(host,{generation:1,protection:{values:[]},streams:new Map(),viewportEpochs:new Map(),displays:new Map([['d',stream]]),start:async()=>{}});
   host.displaySessions=new DisplaySessions(host);host.armDisplayExpiry(stream);
   const park=()=>host.requestNow({op:'display_park',subscription_id:'d',generation:1,observed_by:'viewer',parked:true,watch:true});
   for(let i=0;i<15;i++){t.mock.timers.tick(20_000);await park();await Promise.resolve();}
