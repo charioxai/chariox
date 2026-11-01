@@ -34,9 +34,9 @@ pub(super) struct ProcessTree {
     /// inherit, however far they detach from it.
     #[cfg(target_os = "linux")]
     marker: Option<Vec<u8>>,
-    /// Processes already read without the marker, by the age they had then.
+    /// Processes already read without the marker, by the birth they had then.
     #[cfg(target_os = "linux")]
-    unmarked: BTreeMap<u32, u64>,
+    unmarked: BTreeMap<u32, String>,
     /// Since when the workload owned nothing, while it is still waited on.
     #[cfg(target_os = "linux")]
     empty_since: Option<std::time::Instant>,
@@ -213,11 +213,12 @@ impl ProcessTree {
             .collect::<std::collections::BTreeSet<_>>();
         self.unmarked.retain(|pid, _| present.contains(pid));
         for row in rows {
-            // A process only gets older: a younger one means a recycled PID.
+            // Another birth at this PID is another process, even when no
+            // sample saw the PID free in between.
             let known = self
                 .unmarked
                 .get(&row.pid)
-                .is_some_and(|age| row.age_ms >= *age);
+                .is_some_and(|birth| *birth == row.birth);
             if known || self.owned.contains_key(&row.pid) {
                 continue;
             }
@@ -234,11 +235,11 @@ impl ProcessTree {
                 // Empty while the process is mid-exec or a zombie: not an answer yet.
                 Ok(environment) if environment.is_empty() => {}
                 Ok(_) => {
-                    self.unmarked.insert(row.pid, row.age_ms);
+                    self.unmarked.insert(row.pid, row.birth.clone());
                 }
                 // Another user's process: it never becomes readable.
                 Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
-                    self.unmarked.insert(row.pid, row.age_ms);
+                    self.unmarked.insert(row.pid, row.birth.clone());
                 }
                 // Exited, or not readable yet: ask again at the next sample.
                 Err(_) => {}
@@ -491,6 +492,9 @@ struct Row {
     rss: u64,
     cpu: u64,
     age_ms: u64,
+    /// When the process started, as `ps` prints it (whole seconds): unlike the
+    /// elapsed time it is the same at every sample of one process.
+    birth: String,
     sampled_at_ms: u64,
     command: String,
 }
@@ -521,7 +525,7 @@ pub(super) fn ensure_available() -> std::io::Result<()> {
 
 fn read_process_rows() -> Result<Vec<Row>, String> {
     let sampled_at_ms = crate::session::unix_epoch_ms();
-    let output = crate::process_spawn::command("ps").args(["-axo", "pid=,ppid=,rss=,pcpu=,etime=,comm="]).output()
+    let output = crate::process_spawn::command("ps").env("LC_ALL", "C").args(["-axo", "pid=,ppid=,rss=,pcpu=,etime=,lstart=,comm="]).output()
         .map_err(|error| format!("process resource monitor cannot start ps: {error}; install ps and check the kernel PATH"))?;
     if !output.status.success() {
         return Err(
@@ -538,6 +542,12 @@ fn read_process_rows() -> Result<Vec<Row>, String> {
             let rss = fields.next()?.parse::<u64>().ok()?.checked_mul(1024)?;
             let cpu = (fields.next()?.parse::<f64>().ok()? * 10.0) as u64;
             let age_ms = elapsed_ms(fields.next()?)?;
+            // Weekday, month, day, time and year.
+            let birth = fields.by_ref().take(5).collect::<Vec<_>>();
+            if birth.len() < 5 {
+                return None;
+            }
+            let birth = birth.join(" ");
             let command = fields.collect::<Vec<_>>().join(" ");
             Some(Row {
                 pid,
@@ -545,6 +555,7 @@ fn read_process_rows() -> Result<Vec<Row>, String> {
                 rss,
                 cpu,
                 age_ms,
+                birth,
                 sampled_at_ms,
                 command,
             })
@@ -573,4 +584,47 @@ fn elapsed_ms(text: &str) -> Option<u64> {
     days.checked_mul(86400)?
         .checked_add(seconds)?
         .checked_mul(1000)
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod marker_cache_tests {
+    use super::*;
+
+    fn row(pid: u32, birth: &str) -> Row {
+        Row {
+            pid,
+            parent: 1,
+            rss: 0,
+            cpu: 0,
+            age_ms: 0,
+            birth: birth.into(),
+            sampled_at_ms: 0,
+            command: "sleep".into(),
+        }
+    }
+
+    #[test]
+    fn a_process_born_at_a_cached_pid_is_read_again() {
+        let marker = new_marker();
+        let mut job = std::process::Command::new("sleep")
+            .arg("30")
+            .env(MARKER_NAME, &marker)
+            .spawn()
+            .unwrap();
+        let pid = job.id();
+        let mut tree = ProcessTree::new(std::process::id());
+        // Stands for the unmarked process that held this PID first.
+        tree.set_marker("another-workload");
+        tree.adopt_marked(&[row(pid, "born-first")]);
+        tree.set_marker(&marker);
+        tree.adopt_marked(&[row(pid, "born-first")]);
+        let kept_skipping = !tree.owned.contains_key(&pid);
+        // The PID is reused with no sample in between that lacks it.
+        tree.adopt_marked(&[row(pid, "born-second")]);
+        let adopted = tree.owned.contains_key(&pid);
+        let _ = job.kill();
+        let _ = job.wait();
+        assert!(kept_skipping, "a process already read was read again");
+        assert!(adopted, "a marked process on a reused PID was skipped");
+    }
 }
