@@ -129,6 +129,8 @@ pub struct MoveAgentToRemoteRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MoveAgentToLocalRequest {
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub abort_pending: bool,
     pub session_id: String,
     pub agent_ref: String,
 }

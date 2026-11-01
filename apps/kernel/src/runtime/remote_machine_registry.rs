@@ -120,7 +120,7 @@ pub(crate) async fn live_registry_machines(
     config: &crate::config::DaemonConfig,
 ) -> Result<Vec<chariox_relay::protocol::RelayMachinePresence>, DaemonError> {
     let discovery_config =
-        crate::runtime::cloud_api_client::scoped_metadata_config(config, true).await?;
+        crate::runtime::cloud_api_client::relay_metadata_discovery_config(config).await?;
     crate::transport::relay_discovery::list_live_machines(&discovery_config).await
 }
 

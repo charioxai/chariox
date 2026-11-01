@@ -240,3 +240,11 @@ export function supportsReversibleAgentArchive(protocolVersion: number | null | 
 export function listArchivedAgentsRequest(sessionId: string) {
   return { ListArchivedAgents: { session_id: sessionId } }
 }
+
+/** Requires local protocol 638. Restores the source route of a pending Move/Return. */
+export function abortAgentMoveRequest(sessionId: string, agentRef: string, localProtocol: number) {
+  if (!Number.isInteger(localProtocol) || localProtocol < 638) {
+    throw new Error("Cancelling a pending Move requires kernel protocol 638; update the kernel first")
+  }
+  return { MoveAgentToLocal: { session_id: sessionId, agent_ref: agentRef, abort_pending: true } }
+}

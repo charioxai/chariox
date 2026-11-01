@@ -1,4 +1,4 @@
-import {displayGeometry as geometry, chromeBandHeight, featureOn} from './kernel-browser-geometry.mjs';
+import {displayGeometry as geometry, pageLimit, chromeBandHeight, featureOn} from './kernel-browser-geometry.mjs';
 // MD-2: host Chromium lifetime. Never touches a slice or an existing Chrome.
 import { spawn } from "node:child_process";
 import { access, mkdir, readlink, open } from "node:fs/promises";
@@ -34,7 +34,7 @@ export async function executable(environment = process.env, platform = process.p
 
 // MP-08/MP-10: a private owned window renders at the viewer's device scale
 // natively (emulated view scaling renders text differently from CDP).
-export function launchArguments(profile, headless, display = false, scale = 1) {
+export function launchArguments(profile, headless, display = false, scale = 1, videoDecode = []) {
   return [
     `--user-data-dir=${profile}`, "--remote-debugging-pipe",
     "--no-first-run", "--no-default-browser-check",
@@ -44,7 +44,7 @@ export function launchArguments(profile, headless, display = false, scale = 1) {
     // MP-08/MP-11: the kernel loads its tab-groups component extension over this pipe.
     "--enable-unsafe-extension-debugging",
     // Without a usable GPU Chromium refuses WebGL unless software GL is opted in; real GPUs still win.
-    "--enable-unsafe-swiftshader",
+    "--enable-unsafe-swiftshader", ...videoDecode,
     `--window-size=${geometry.width},${geometry.height+(display?chromeBandHeight:0)}`, ...(headless ? ["--headless=new"] : []),
     // MP-08/MP-10: remote panels have no shared physical LCD subpixel order.
     ...(display ? ["--disable-lcd-text", `--force-device-scale-factor=${scale}`, "--disable-renderer-backgrounding", "--disable-background-timer-throttling", "--disable-backgrounding-occluded-windows",
@@ -79,7 +79,10 @@ export class HostChromium {
     this.environment = environment;
     this.child = null;
     this.browserPid = null;
-    this.desktop = process.platform === "linux" ? new LinuxOwnedDesktop(root, { environment }) : null;
+    // A resized browser window must remain inside its owned screen. Its page
+    // renders at native density; screenshot DPR does not enlarge this desktop.
+    this.desktop = process.platform === "linux" ? new LinuxOwnedDesktop(root, { environment,
+      size:{width:pageLimit.width,height:pageLimit.height+chromeBandHeight} }) : null;
     // MP-08/MP-10: on the shared owned desktop Chromium is one window at the
     // desktop's scale; only a private owned display may rescale it.
     this.scale = this.desktop ? 1 : geometry.dpr;
@@ -154,7 +157,7 @@ export class HostChromium {
       environment = chromiumTemporaryEnvironment(environment, this.temporaryDirectory.fd);
     }
     const args = launchArguments(profile,
-      environment.CHARIOX_KERNEL_BROWSER_HEADLESS === "1", featureOn("CHARIOX_KERNEL_BROWSER_DISPLAY",environment) || featureOn("CHARIOX_KERNEL_BROWSER_MIRROR",environment), this.desktop?.binding() ? 1 : this.scale);
+      environment.CHARIOX_KERNEL_BROWSER_HEADLESS === "1", featureOn("CHARIOX_KERNEL_BROWSER_DISPLAY",environment) || featureOn("CHARIOX_KERNEL_BROWSER_MIRROR",environment), this.desktop?.binding() ? 1 : this.scale, platformPolicy(process.platform).videoDecodeArguments(environment));
     this.policy = process.platform === "linux" && linux.policyNamespaceAvailable() ? "managed" : "unavailable";
     const launch = this.policy === "managed" ? linux.policyLaunch(await writePolicyLayer(this.root, this.environment), temporary, binary, args) : { command: binary, args };
     const command = this.desktop?.binding() ? desktopCommand(launch.command, launch.args) : { binary: launch.command, args: launch.args };

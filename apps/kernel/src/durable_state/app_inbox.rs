@@ -104,7 +104,7 @@ impl DurableKernelStateStore {
                 response,
             })))
             .map_err(|_| InboxError::Corrupt)?;
-        receiver.recv().map_err(|_| InboxError::Corrupt)?
+        crate::durable_state::await_writer_response(receiver).map_err(|_| InboxError::Corrupt)?
     }
 }
 

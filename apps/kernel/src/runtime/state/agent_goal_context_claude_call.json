@@ -1,0 +1,10 @@
+{
+  "id": "toolu_0127BXRSY51N3hMSVtn31aox",
+  "tool": "mcp__chariox__chariox_kernel_request",
+  "status": "completed",
+  "input": {
+    "request": {
+      "ListSessions": null
+    }
+  }
+}

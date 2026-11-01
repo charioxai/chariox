@@ -270,7 +270,7 @@ async fn deploy(state: &Path, input: Value) -> Result<Value, DaemonError> {
     }
     let bytes =
         Zeroizing::new(serde_json::to_vec(&input).map_err(|_| error("invalid SSH operation"))?);
-    let mut child = tokio::process::Command::new("node")
+    let mut child = crate::process_spawn::async_command("node")
         .arg(scratch.0.join("apps/kernel/ssh-machine/driver.mjs"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

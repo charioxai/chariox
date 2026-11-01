@@ -649,23 +649,39 @@ impl KernelRuntimeState {
                     ));
                 }
             }
+            // A covering /sudo task is the owner's decision; every fence of the checked
+            // grant (prompt witness, delivery, run, epochs) still applies to the same prompt.
             permit.prompt_id = Some(
-                self.confirm_app_capability_request(
-                    &agent,
-                    &format!("App installation `{installation_id}`"),
-                    || {
-                        self.app_binding_revision(target.id(), installation_id)
-                            == permit.target_revision
-                            && self.app_prompt_delivery(&agent) == permit.prompt_delivery
-                    },
-                )
-                .await?,
+                if self
+                    .sudo_task_authorizes_agent(session.id(), agent.id())
+                    .await
+                {
+                    self.owner_requested_prompt(&agent).ok_or_else(|| {
+                        crate::runtime::state::capability_grant_runtime::refused(
+                            crate::error::UserDomainRefusalReason::NotRequested,
+                        )
+                    })?
+                } else {
+                    self.confirm_app_capability_request(
+                        &agent,
+                        &format!("App installation `{installation_id}`"),
+                        || {
+                            self.app_binding_revision(target.id(), installation_id)
+                                == permit.target_revision
+                                && self.app_prompt_delivery(&agent) == permit.prompt_delivery
+                        },
+                    )
+                    .await?
+                },
             );
             return Ok(Some(permit));
         }
         if target.has_extension_grant(ExtensionKind::App, installation_id)
             || !crate::session::effective_agent_user_authority(&session, Some(&agent))
                 .requires_approval()
+            || self
+                .sudo_task_authorizes_agent(session.id(), agent.id())
+                .await
         {
             return Ok(Some(permit));
         }

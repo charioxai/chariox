@@ -18,16 +18,18 @@ use crate::credential::CharioxCredentialRegistry;
 use crate::error::DaemonError;
 
 mod http_boundary;
-use http_boundary::{decode_http_response, http_error, HttpSecretBoundary};
+pub(crate) use http_boundary::HttpSecretBoundary;
+use http_boundary::{decode_http_response, http_error};
 mod vault;
 pub(crate) use vault::remove_installed_transferred_vault;
 use vault::vault_store_for_config;
 pub use vault::{
     change_chariox_encrypted_vault_passphrase, chariox_encrypted_vault_status,
-    clear_all_chariox_encrypted_vault_unlocks, export_transferred_vault_snapshot,
-    extend_chariox_encrypted_vault, install_transferred_vault_snapshot,
-    is_chariox_vault_locked_error, lock_chariox_encrypted_vault, restore_transferred_vault_unlock,
-    sync_chariox_encrypted_vault, unlock_chariox_encrypted_vault,
+    chariox_vault_single_use_unlocked, clear_all_chariox_encrypted_vault_unlocks,
+    export_transferred_vault_snapshot, extend_chariox_encrypted_vault,
+    install_transferred_vault_snapshot, is_chariox_vault_locked_error,
+    lock_chariox_encrypted_vault, restore_transferred_vault_unlock, sync_chariox_encrypted_vault,
+    unlock_chariox_encrypted_vault, unlock_existing_chariox_encrypted_vault,
     validate_installed_transferred_vault, validate_transferred_vault_snapshot_for_export,
     CharioxVaultUnlockStatus, CredentialVaultStore, TransferredVaultSnapshot,
     TransferredVaultSourceBinding, VaultPasskeyVerifier, VaultUnlockLease,
@@ -134,6 +136,18 @@ impl PreparedCredentialHttpRequest {
             self.request.call()
         }
         .map_err(|error| http_error(error, self.max_response_bytes, &self.boundary))?;
+        if matches!(response.status(), 301 | 302 | 303 | 307 | 308) {
+            if let Some(location) = response.header("location") {
+                return Err(secret_error(
+                    "http_request_with_credential",
+                    format!(
+                        "HTTP {} redirect to `{}` was not followed: the credential is only sent to its allowed hosts. Request that URL directly if the credential covers it",
+                        response.status(),
+                        self.boundary.scrub(location)
+                    ),
+                ));
+            }
+        }
         decode_http_response(response, self.max_response_bytes, &self.boundary)
     }
 }
@@ -348,8 +362,10 @@ impl RuntimeSecretService {
                 "max_response_bytes must be greater than zero".to_string(),
             ));
         }
+        // A redirect would resend a header credential to a host outside allowed_hosts.
         let agent = crate::outbound_dial::agent_builder()
             .timeout(std::time::Duration::from_millis(request.timeout_ms))
+            .redirects(0)
             .build();
         let mut http_request = match method.as_str() {
             "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD" => {

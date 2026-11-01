@@ -669,3 +669,23 @@ fn projection_invariant_health_reports_canonical_agent_membership_drift() {
             && mismatch.agent_id.as_deref() == Some(ghost_agent.id())
     }));
 }
+
+#[test]
+fn invariant_diagnostics_retain_a_bounded_sample_under_widespread_drift() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+    let (session, _) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .unwrap();
+    let snapshot = super::snapshot(
+        vec![session; 5_000],
+        &AgentRuntimeProjectionStore::default(),
+        &[],
+        &BTreeMap::new(),
+        &[],
+    );
+    assert!(
+        snapshot.mismatches.len() <= 16,
+        "health retained {} mismatches",
+        snapshot.mismatches.len()
+    );
+}

@@ -1,4 +1,4 @@
-//! MP-08 / MP-09 / MP-10 / MP-11: unconditional executor-local lane deadline.
+//! MP-08 / MP-09 / MP-10 / MP-11: unconditional executor-local agent deadline.
 use super::*;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

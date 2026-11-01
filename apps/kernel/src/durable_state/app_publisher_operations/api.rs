@@ -9,8 +9,7 @@ impl DurableKernelStateStore {
                 PublisherOperationRequest { command, response },
             )))
             .map_err(|_| PublisherOperationError::Storage)?;
-        receive
-            .recv()
+        crate::durable_state::await_writer_response(receive)
             .map_err(|_| PublisherOperationError::CommitUnknown)?
     }
     pub(crate) fn begin_publisher_enrollment(

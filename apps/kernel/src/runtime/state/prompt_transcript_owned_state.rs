@@ -96,6 +96,45 @@ impl KernelRuntimeOwnedState {
         self.notify_metaagent_trace_activity(&dispatch.session_id, Some(&dispatch.agent_id));
     }
 
+    pub(super) fn record_failed_provider_tools(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        agent_id: &str,
+        termination: &crate::provider::ProviderRunTermination,
+    ) {
+        let metadata = self.active_prompt_transcript_metadata_for_agent(session_id, Some(agent_id));
+        let outputs = self
+            .prompt_activity
+            .take_failed_provider_tools(provider_run_id, &termination.reason)
+            .into_iter()
+            .map(|chunk| {
+                let entry = SessionHistoryEntry::provider_output(
+                    session_id,
+                    provider_run_id,
+                    Some(agent_id),
+                    chunk.kind.clone(),
+                    chunk.merge_key.clone(),
+                    String::from_utf8_lossy(&chunk.bytes).into_owned(),
+                )
+                .with_prompt_origin(metadata.prompt_origin)
+                .with_source_attachment_id(metadata.source_attachment_id.clone());
+                (
+                    TerminalOutputBatchAppend {
+                        provider_run_id: provider_run_id.into(),
+                        agent_id: Some(agent_id.into()),
+                        kind: chunk.kind,
+                        merge_key: chunk.merge_key,
+                        sequence: None,
+                        bytes: chunk.bytes,
+                    },
+                    Some(entry),
+                )
+            })
+            .collect();
+        self.append_history_and_fan_out(session_id, None, outputs);
+    }
+
     pub(super) fn record_provider_failure_output(
         &self,
         session_id: &str,
@@ -103,7 +142,58 @@ impl KernelRuntimeOwnedState {
         agent_id: &str,
         message: &str,
     ) {
-        let message = crate::provider::sanitize_provider_diagnostic(message);
+        self.append_provider_failure_entry(
+            session_id,
+            provider_run_id,
+            agent_id,
+            crate::provider::sanitize_provider_diagnostic(message),
+        );
+    }
+
+    /// A failed turn's typed notice: already redacted, so it keeps its own
+    /// words and its recovery whole.
+    pub(super) fn record_provider_failure_notice(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        agent_id: &str,
+        failure: &crate::provider::TurnOutcome,
+    ) {
+        self.append_provider_failure_entry(session_id, provider_run_id, agent_id, failure.notice());
+    }
+
+    /// A refused dispatch shows the owner the provider's own failure when it
+    /// reported one; a kernel-side error stays an internal diagnostic.
+    pub(super) fn record_dispatch_failure_output(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        agent_id: &str,
+        adapter_key: &str,
+        error: &DaemonError,
+    ) -> Option<crate::provider::TurnOutcome> {
+        let failure = crate::terminal::provider_dispatch_failure(adapter_key, error);
+        match &failure {
+            Some(failure) => {
+                self.record_provider_failure_notice(session_id, provider_run_id, agent_id, failure)
+            }
+            None => self.record_provider_failure_output(
+                session_id,
+                provider_run_id,
+                agent_id,
+                &format!("Provider prompt dispatch failed: {error}"),
+            ),
+        }
+        failure
+    }
+
+    fn append_provider_failure_entry(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        agent_id: &str,
+        message: String,
+    ) {
         if message.is_empty() {
             return;
         }
@@ -220,6 +310,15 @@ impl KernelRuntimeOwnedState {
             message_id,
             completed_at_ms,
         );
+        if let Err(error) =
+            self.record_session_activity(session_id, crate::session::unix_epoch_ms())
+        {
+            crate::logging::error_with_fields(
+                "daemon.activity",
+                "Could not persist session message activity",
+                serde_json::json!({"session_id": session_id, "error": error.to_string()}),
+            );
+        }
         self.notify_metaagent_trace_activity(session_id, agent_id.as_deref());
     }
 
@@ -249,11 +348,8 @@ impl KernelRuntimeOwnedState {
         let mut prompt_metadata_cache =
             std::collections::BTreeMap::<Option<String>, ActivePromptTranscriptMetadata>::new();
         let mut terminal_outputs = Vec::with_capacity(outputs.len());
-        for mut output in outputs {
+        for output in outputs {
             self.collect_private_assessment(session_id, &output);
-            output.bytes = self
-                .room_secret_observations
-                .protect_unframed_bytes(session_id, &output.bytes);
             let agent_id = output.agent_id;
             let delta_bytes = terminal_output_delta_bytes(
                 session_id,
@@ -317,7 +413,10 @@ impl KernelRuntimeOwnedState {
             }
             if output.kind == crate::terminal::TerminalOutputKind::ProviderReasoning {
                 if let Some(agent_id) = agent_id.as_deref() {
-                    let message = String::from_utf8_lossy(&bounded_bytes).into_owned();
+                    let message = self.room_secret_observations.scrub_text_or_withhold(
+                        session_id,
+                        &String::from_utf8_lossy(&bounded_bytes),
+                    );
                     self.record_workflow_thinking_trace(
                         session_id,
                         &output.provider_run_id,
@@ -364,16 +463,13 @@ impl KernelRuntimeOwnedState {
             .and_then(|run| run.agent_instance_id().map(str::to_string));
         let prompt_metadata =
             self.active_prompt_transcript_metadata_for_agent(session_id, agent_id.as_deref());
-        let bytes = self
-            .room_secret_observations
-            .protect_unframed_bytes(session_id, bytes);
         let delta_bytes = terminal_output_delta_bytes(
             session_id,
             provider_run_id,
             agent_id.as_deref(),
             &kind,
             &merge_key,
-            &bytes,
+            bytes,
         );
         let bounded_bytes = bounded_terminal_output_bytes(&kind, &delta_bytes);
         self.log_provider_output_truncation(

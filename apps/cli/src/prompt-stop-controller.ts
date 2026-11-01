@@ -11,6 +11,8 @@ type PromptStopControllerOptions = {
   getActivePrompt: () => PromptStopActivePrompt | null | undefined
   getSessionId: () => string
   getFallbackStreamingAgentId: () => string | null
+  getCancellableTaskAgentId?: () => string | null
+  onNothingToCancel?: () => void
   cancelActivePrompt: (sessionId: string, attachmentId: string, targetAgentId?: string | null) => Promise<void>
   onCancellationRequested: (targetAgentId: string | null) => void
   onCancellationFailed: (error: unknown) => void
@@ -31,12 +33,18 @@ export function createPromptStopController(
     async request() {
       const attachment = options.getAttachment()
       const prompt = options.getActivePrompt()
-      if (inFlight || !prompt || !attachment) {
+      if (inFlight || !attachment) {
         return false
       }
 
       // MP-08 / MP-09 / MP-10 / MP-11 A10/G03: preserve this target across I/O.
-      const targetAgentId = prompt.target_agent_id ?? options.getFallbackStreamingAgentId()
+      const targetAgentId = prompt
+        ? prompt.target_agent_id ?? options.getFallbackStreamingAgentId()
+        : options.getCancellableTaskAgentId?.() ?? null
+      if (!prompt && !targetAgentId) {
+        options.onNothingToCancel?.()
+        return false
+      }
       inFlight = true
       try {
         await options.cancelActivePrompt(options.getSessionId(), attachment.id, targetAgentId)

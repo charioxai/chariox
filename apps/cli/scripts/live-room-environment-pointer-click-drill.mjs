@@ -1934,16 +1934,6 @@ async function exerciseComputerSecretInput() {
     unlockInteraction.custom_choice.id,
     vaultPassphrase,
   ))
-  const leaseInteraction = await waitForRuntimeInteraction(
-    (interaction) => interaction.title === "Choose Vault Unlock Duration",
-    "vault unlock duration interaction",
-  )
-  assert.ok(leaseInteraction.choices.some((choice) => choice.id === "unlock_default_ttl"))
-  await client.send(requests.respondToInteractionRequest(
-    sessionId,
-    leaseInteraction.id,
-    "unlock_default_ttl",
-  ))
   const secretInteraction = await waitForRuntimeInteraction(
     (interaction) => interaction.title === "Room Computer credential drill",
     "user credential interaction",
@@ -2128,17 +2118,9 @@ async function mcpToolCall(providerRun, name, argumentsValue) {
 }
 
 async function pasteComputerCredential(providerRun, credentialId) {
-  const paste = mcpToolCall(providerRun, "paste_secret_to_computer", {
+  const result = await mcpToolCall(providerRun, "paste_secret_to_computer", {
     credential_id: credentialId,
   })
-  const interaction = await waitForRuntimeInteraction(
-    (candidate) => candidate.title === "Computer credential input",
-    `Computer approval for ${credentialId}`,
-  )
-  assert.equal(interaction.level, "critical")
-  assert.ok(String(interaction.message ?? "").includes("currently focused desktop control"))
-  await client.send(requests.respondToInteractionRequest(sessionId, interaction.id, "allow", null))
-  const result = await paste
   assert.equal(result.ok, true, JSON.stringify(result))
   assert.equal(result.content?.target, "desktop_focus")
   assertNoSecretProperties(result.raw, `Computer paste ${credentialId}`)

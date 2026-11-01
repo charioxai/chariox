@@ -36,6 +36,8 @@ const SLICE_BUILD_CONTEXT_SOURCES = [
   // Signed upgrade tooling: an installed release updates itself with its own scripts.
   "deploy/managed-kernel",
   "examples/workflow-code",
+  // The slice image checks its process sampler against a real launched process at build time.
+  "scripts/check-process-sampler.mjs",
   "packages/aegs-sdk",
   "packages/app-package",
   "packages/app-runtime",

@@ -1527,7 +1527,7 @@ pub(crate) fn command_from_provider_launch(
     let program = launch
         .pty_program
         .ok_or_else(|| isolation_error("managed utility launch did not expose an executable"))?;
-    let mut command = Command::new(program);
+    let mut command = crate::process_spawn::command(program);
     command.args(launch.pty_args);
     for (name, _) in std::env::vars() {
         if crate::secret::secret_like_env_name(&name) {
@@ -2246,7 +2246,7 @@ fn canonical_directory(path: &Path, label: &str) -> Result<PathBuf, DaemonError>
 
 #[cfg(target_os = "linux")]
 fn resolve_git_root(path: &Path) -> Option<PathBuf> {
-    let output = std::process::Command::new("git")
+    let output = crate::process_spawn::command("git")
         .arg("-C")
         .arg(path)
         .args(["rev-parse", "--show-toplevel"])
@@ -3465,7 +3465,7 @@ mod tests {
             .pty_program
             .as_deref()
             .expect("managed launch should select bubblewrap");
-        let output = match Command::new(bwrap)
+        let output = match crate::process_spawn::command(bwrap)
             .args(&prepared_args)
             .current_dir(&selected)
             .output()
@@ -3573,9 +3573,9 @@ mod tests {
         let uid = unsafe { libc::getuid() }.to_string();
         let gid = unsafe { libc::getgid() }.to_string();
         let mut install = if uid == "0" {
-            Command::new("install")
+            crate::process_spawn::command("install")
         } else {
-            let mut command = Command::new("sudo");
+            let mut command = crate::process_spawn::command("sudo");
             command.args(["-n", "--", "install"]);
             command
         };
@@ -3932,7 +3932,7 @@ mod tests {
         assert!(!profile_executed.exists());
         assert!(!openbox_executed.exists());
 
-        let outer = Command::new("/bin/bash")
+        let outer = crate::process_spawn::command("/bin/bash")
             .args(["-lc", ":"])
             .env("HOME", &home)
             .env_remove("BASH_ENV")
@@ -3990,7 +3990,7 @@ mod tests {
                 .expect("runtime command directory should exist");
         }
 
-        let git_init = Command::new("git")
+        let git_init = crate::process_spawn::command("git")
             .arg("-C")
             .arg(&repository)
             .args(["init", "--quiet"])
@@ -4243,7 +4243,7 @@ mod tests {
             let _ = std::fs::remove_dir_all(root);
             return;
         }
-        let output = match Command::new(bwrap).args(args).output() {
+        let output = match crate::process_spawn::command(bwrap).args(args).output() {
             Ok(output) => output,
             Err(error) => {
                 eprintln!("skipped managed bwrap selected-home probe: {error}");
@@ -4331,7 +4331,7 @@ mod tests {
             .to_string(),
             "managed-runtime-user-missing-anchor-probe".to_string(),
         ]);
-        let output = match Command::new(bwrap).args(args).output() {
+        let output = match crate::process_spawn::command(bwrap).args(args).output() {
             Ok(output) => output,
             Err(error) => {
                 eprintln!("skipped managed bwrap missing-anchor probe: {error}");
@@ -4506,7 +4506,7 @@ mod tests {
             .to_string(),
             "managed-runtime-home-startup-openbox-probe".to_string(),
         ]);
-        let output = match Command::new(bwrap).args(args).output() {
+        let output = match crate::process_spawn::command(bwrap).args(args).output() {
             Ok(output) => output,
             Err(error) => {
                 eprintln!("skipped managed bwrap runtime-home startup/Openbox probe: {error}");
@@ -4569,7 +4569,7 @@ mod tests {
         // The follow-up lifecycle shapes run outside bwrap. Since the
         // provider's attempted profile and Openbox writes were masked, outer
         // bash -lc/Openbox have no provider-controlled startup code to execute.
-        let outer = Command::new("/bin/bash")
+        let outer = crate::process_spawn::command("/bin/bash")
             .args(["-lc", ":"])
             .env("HOME", &home)
             .env_remove("BASH_ENV")
@@ -4679,7 +4679,7 @@ mod tests {
             "managed-trusted-bwrap-probe".to_string(),
             helper.display().to_string(),
         ]);
-        let output = match Command::new(bwrap).args(args).output() {
+        let output = match crate::process_spawn::command(bwrap).args(args).output() {
             Ok(output) => output,
             Err(error) => {
                 eprintln!("skipped managed bwrap trusted-helper probe: {error}");
@@ -4988,7 +4988,7 @@ printf 'managed account environment probe passed\n'
         // MP-01/MP-03: keep the launch assertions above on restricted CI hosts.
         // Probe namespace support separately so a bad account bind or child
         // permission failure cannot be mistaken for a host restriction.
-        let namespace_probe = Command::new(BWRAP_PATH)
+        let namespace_probe = crate::process_spawn::command(BWRAP_PATH)
             .args(["--unshare-user", "--ro-bind", "/", "/", "--", "/bin/true"])
             .output()
             .expect("Bubblewrap namespace capability probe should run");
@@ -5246,7 +5246,7 @@ printf 'managed account environment probe passed\n'
         let global_config = root.join("hostile-global.gitconfig");
         for repository in [&approved_primary, &approved_supporting, &unapproved] {
             std::fs::create_dir_all(repository).expect("repository root should create");
-            let status = Command::new("git")
+            let status = crate::process_spawn::command("git")
                 .arg("-C")
                 .arg(repository)
                 .args(["init", "--quiet"])
@@ -5272,7 +5272,7 @@ printf 'managed account environment probe passed\n'
         );
 
         let git_status = |repository: &Path| {
-            let mut command = Command::new("git");
+            let mut command = crate::process_spawn::command("git");
             command
                 .arg("-C")
                 .arg(repository)
@@ -5423,7 +5423,7 @@ printf 'managed account environment probe passed\n'
             MANAGED_SLICE_PUBLICATION_ROOT_ENV,
             previous_publication_root,
         );
-        let output = match Command::new(bwrap).args(args).output() {
+        let output = match crate::process_spawn::command(bwrap).args(args).output() {
             Ok(output) => output,
             Err(error) => {
                 eprintln!("skipped managed bwrap slice-publication probe: {error}");
@@ -5612,7 +5612,7 @@ printf 'managed account environment probe passed\n'
             window == ["--tmpfs", slice_code.to_str().expect("slice path utf8")]
         }));
 
-        let status = Command::new("git")
+        let status = crate::process_spawn::command("git")
             .arg("-C")
             .arg(&outside_repository)
             .args(["init", "--quiet"])
@@ -5624,14 +5624,14 @@ printf 'managed account environment probe passed\n'
             "ordinary filesystem\n",
         )
         .expect("ordinary repository should be writable");
-        let status = Command::new("git")
+        let status = crate::process_spawn::command("git")
             .arg("-C")
             .arg(&outside_repository)
             .args(["add", "README.md"])
             .status()
             .expect("Git add should start outside the transfer root");
         assert!(status.success());
-        let status = Command::new("git")
+        let status = crate::process_spawn::command("git")
             .arg("-C")
             .arg(&outside_repository)
             .args([
@@ -5644,14 +5644,14 @@ printf 'managed account environment probe passed\n'
             .status()
             .expect("Git commit should start outside the transfer root");
         assert!(status.success());
-        let status = Command::new("git")
+        let status = crate::process_spawn::command("git")
             .args(["clone", "--quiet"])
             .arg(&outside_repository)
             .arg(&cloned_repository)
             .status()
             .expect("Git clone should start outside the transfer root");
         assert!(status.success());
-        let status = Command::new("git")
+        let status = crate::process_spawn::command("git")
             .arg("-C")
             .arg(&cloned_repository)
             .args(["status", "--porcelain"])
@@ -5973,12 +5973,12 @@ printf 'managed account environment probe passed\n'
             args
         };
 
-        let mut first = Command::new(bwrap);
+        let mut first = crate::process_spawn::command(bwrap);
         first
             .args(make_args(&runtime_a, &token_b, "Bearer sibling-a"))
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
-        let mut second = Command::new(bwrap);
+        let mut second = crate::process_spawn::command(bwrap);
         second
             .args(make_args(&runtime_b, &token_a, "Bearer sibling-b"))
             .stdout(std::process::Stdio::piped())

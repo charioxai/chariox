@@ -261,6 +261,11 @@ async fn browser_loader_reports_deferred_tools_and_retains_one_kernel_continuati
     );
     assert!(!correction);
     assert!(!task.correction_used);
+    assert!(runtime
+        .owned
+        .agent_workflow_task_context(&task)
+        .unwrap()
+        .is_none());
     assert_eq!(
         task.state,
         crate::durable_state::agent_lifecycle::ExecutionState::Working

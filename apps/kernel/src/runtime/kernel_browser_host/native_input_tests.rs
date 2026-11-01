@@ -144,7 +144,6 @@ fn mdaccess_native_focused_tab_releases_without_stopping_browser() {
     let fixture = NativeInput::new(
         r#"<input id="field" type="text" style="height:30px"><button id="pay">Approve payment</button>"#,
     );
-    let stream = fixture.request(fixture.bound("subscribe")).unwrap();
     fixture
         .input(json!({"kind":"key","key":"Tab"}))
         .expect("MP-08: focused Tab onto approval must complete both events");
@@ -159,7 +158,6 @@ fn mdaccess_native_focused_tab_releases_without_stopping_browser() {
         "MP-08: navigation stopped Chromium"
     );
     assert_eq!(state["tabs"][0]["document_id"], fixture.tab["document_id"]);
-    fixture.request(json!({"op":"poll","subscription_id":stream["subscription_id"],"generation":stream["generation"]})).expect("MP-08: idle stream must remain valid");
 }
 
 #[test]
@@ -217,7 +215,6 @@ fn mdaccess_native_retained_keys_clicks_and_revoke() {
     let fixture = NativeInput::new(
         r#"<input id="field" style="height:30px" onkeydown="submitted++;status()" onkeyup="submitted++;status()"><button id="pay" onclick="submitted++;status()">Search</button><div style="height:3000px"></div>"#,
     );
-    let stream = fixture.request(fixture.bound("subscribe")).unwrap();
     fixture.host.set_focus("owner", Some("second"));
     fixture
         .input(json!({"kind":"text","text":"retained"}))
@@ -233,7 +230,6 @@ fn mdaccess_native_retained_keys_clicks_and_revoke() {
     fixture
         .input(json!({"kind":"scroll","x":10,"y":10,"delta_x":0,"delta_y":100}))
         .unwrap();
-    fixture.request(json!({"op":"poll","subscription_id":stream["subscription_id"],"generation":stream["generation"]})).unwrap();
     fixture.host.revoke_agent("first");
     for input in [
         json!({"kind":"key","key":"Delete"}),

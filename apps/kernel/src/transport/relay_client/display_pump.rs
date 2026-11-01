@@ -44,6 +44,25 @@ struct PumpState {
     /// Gate closures in the congestion window, with the oldest unacked frame that closed each.
     closes: VecDeque<(Instant, u64)>,
     synced_at: Option<Instant>,
+    /// Nobody watches: no capture and no reprobe until an acknowledgement asks for an independent frame.
+    paused: bool,
+    /// Paused acknowledgements seen, and how many of them the host display has been told about.
+    pauses: u64,
+    host: HostView,
+}
+
+/// What the host display was last told: its source reads nothing while parked, and each hold renews its 60 s expiry.
+#[derive(Default)]
+struct HostView {
+    parked: bool,
+    pauses: u64,
+}
+
+/// What the host display needs next to follow the pump.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct HostPark {
+    parked: bool,
+    pauses: u64,
 }
 
 #[derive(Debug, PartialEq)]
@@ -93,6 +112,9 @@ impl PumpState {
             + Duration::from_millis(5)
     }
     fn admit(&mut self, now: Instant) -> Gate {
+        if self.paused {
+            return Gate::Closed;
+        }
         // MP-08/MP-10/MP-11: private fixed-label timings, no peer or payload.
         self.mark(
             "push_rtt_floor",
@@ -147,8 +169,45 @@ impl PumpState {
             congested: self.closes.len() >= 2,
         })
     }
+    /// Nobody watches: forget what is in flight instead of letting the stall gate reprobe, and resume from an
+    /// independent frame.
+    fn pause(&mut self) {
+        self.started = true;
+        self.paused = true;
+        self.pauses += 1;
+        self.sent.clear();
+        self.gated_at = None;
+        self.reset = true;
+    }
+    /// A paused pump parks the host display on its first paused acknowledgement and again on each later one (the
+    /// host expires an unused display after 60 s); the independent-frame request that resumes it releases the host first.
+    fn next_host_park(&self) -> Option<HostPark> {
+        let wanted = HostPark {
+            parked: self.paused,
+            pauses: self.pauses,
+        };
+        let told = HostPark {
+            parked: self.host.parked,
+            pauses: self.host.pauses,
+        };
+        (wanted != told && (self.paused || self.host.parked)).then_some(wanted)
+    }
+    fn host_told(&mut self, park: HostPark) {
+        self.host = HostView {
+            parked: park.parked,
+            pauses: park.pauses,
+        };
+    }
     fn acknowledge(&mut self, sequence: u64, lost: bool, now: Instant, held_ms: Option<u32>) {
         self.started = true;
+        if self.paused {
+            // An acknowledgement of a frame sent before the pause may arrive after it: only the viewer asking
+            // for an independent frame (watched again) resumes.
+            if !lost {
+                return;
+            }
+            self.paused = false;
+        }
         self.reset |= lost;
         self.acked = self.acked.max(sequence);
         while let Some(&(sent, at)) = self.sent.front() {
@@ -239,12 +298,17 @@ impl DisplayPump {
         sequence: u64,
         lost: bool,
         held_ms: Option<u32>,
+        paused: bool,
     ) -> Option<&'static str> {
         let status = self.with(|state| {
             if state.generation != generation {
                 return None;
             }
-            state.acknowledge(sequence, lost, Instant::now(), held_ms);
+            if paused {
+                state.pause();
+            } else {
+                state.acknowledge(sequence, lost, Instant::now(), held_ms);
+            }
             Some(if state.failed {
                 "failed"
             } else if state.stopped {
@@ -361,6 +425,26 @@ pub(super) async fn run(route: PumpRoute, pump: Arc<DisplayPump>) {
     loop {
         if pump.with(|state| state.stopped) || !lease_alive(&route).await {
             return;
+        }
+        if let Some(park) = pump.with(|state| state.next_host_park()) {
+            if park.parked {
+                direct.end();
+            }
+            match park_host(&route, generation, park.parked).await {
+                Ok(()) => {
+                    faults = Faults::default();
+                    pump.with(|state| state.host_told(park));
+                }
+                Err(error) => match faults.error(&error, Instant::now()) {
+                    Next::Fail => {
+                        crate::transport::kernel_browser_display::pump_failed(&error);
+                        pump.with(|state| state.failed = true);
+                        return;
+                    }
+                    Next::Retry { delay, .. } => sleep(delay).await,
+                },
+            }
+            continue;
         }
         let credit = match pump.with(|state| state.admit(Instant::now())) {
             Gate::Closed => {
@@ -500,6 +584,24 @@ fn seal(
         .map_err(|_| failed("invalid display frame"))?;
     relay_crypto::encrypt_payload_for_peer(private_key, &route.public_key, &bytes)
         .map_err(|_| failed("display encryption failed"))
+}
+
+/// An unwatched display reads nothing back from its source and keeps its host binding alive without a capture.
+async fn park_host(route: &PumpRoute, generation: u64, parked: bool) -> Result<(), DaemonError> {
+    route
+        .router
+        .runtime_state()
+        .kernel_browser_display_request(
+            &route.caller,
+            KernelBrowserDisplayRequest::Park {
+                subscription_id: route.display_id.clone(),
+                generation,
+                parked,
+                watch: true,
+            },
+        )
+        .await
+        .map(|_| ())
 }
 
 // One ACK gate and event transport; Room placement supplies worker-sealed CXD1
@@ -715,6 +817,77 @@ mod tests {
     }
 
     #[test]
+    fn mp08_a_paused_pump_stays_dormant_past_the_reprobe_until_an_independent_frame_is_asked() {
+        let start = Instant::now();
+        let unwatched = start + STALL + REPROBE + Duration::from_secs(30);
+        let mut state = PumpState::default();
+        state.acknowledge(0, false, start, None);
+        assert!(matches!(state.admit(start), Gate::Open(_)));
+        state.sent.push_back((1, start));
+        // Without a pause, silence reopens the gate on the reprobe: an animated page keeps producing bursts.
+        let mut silent = PumpState::default();
+        silent.acknowledge(0, false, start, None);
+        silent.sent.push_back((1, start));
+        assert_eq!(
+            silent.admit(start + STALL + Duration::from_millis(1)),
+            Gate::Closed
+        );
+        assert!(matches!(silent.admit(unwatched), Gate::Open(_)));
+        // A paused pump never does, however long nobody watches.
+        state.pause();
+        assert_eq!(
+            state.admit(start + STALL + Duration::from_millis(1)),
+            Gate::Closed
+        );
+        assert_eq!(state.admit(unwatched), Gate::Closed);
+        // The late acknowledgement of a frame sent before the pause does not resume it.
+        state.acknowledge(1, false, unwatched, Some(0));
+        assert_eq!(state.admit(unwatched), Gate::Closed);
+        // Watched again: the independent-frame request resumes it with a reset.
+        state.acknowledge(1, true, unwatched, None);
+        let Gate::Open(credit) = state.admit(unwatched) else {
+            panic!("watched again resumes the pump")
+        };
+        assert!(credit.reset && state.sent.is_empty());
+    }
+
+    #[test]
+    fn mp08_a_paused_pump_parks_the_host_display_on_every_paused_ack_and_releases_it_when_watched()
+    {
+        let start = Instant::now();
+        let mut state = PumpState::default();
+        state.acknowledge(0, false, start, None);
+        assert_eq!(
+            state.next_host_park(),
+            None,
+            "a watched pump leaves the host display alone"
+        );
+        state.pause();
+        let park = state
+            .next_host_park()
+            .expect("the first paused ack parks the host display");
+        assert!(park.parked);
+        state.host_told(park);
+        assert_eq!(state.next_host_park(), None);
+        // The host expires an unused display after 60 s: each repeated paused ack renews it.
+        state.pause();
+        let renew = state
+            .next_host_park()
+            .expect("a repeated paused ack renews the host display");
+        assert!(renew.parked);
+        state.host_told(renew);
+        assert_eq!(state.next_host_park(), None);
+        // Watched again: release the source before the independent frame.
+        state.acknowledge(1, true, start, None);
+        let release = state
+            .next_host_park()
+            .expect("watching releases the host display");
+        assert!(!release.parked);
+        state.host_told(release);
+        assert_eq!(state.next_host_park(), None);
+    }
+
+    #[test]
     fn mp10_repeated_gate_closure_reports_congestion() {
         let start = Instant::now();
         let mut state = PumpState::default();
@@ -778,7 +951,7 @@ mod tests {
     #[test]
     fn mp10_new_pump_first_frame_is_independent() {
         let pump = DisplayPump::new(7, "display");
-        assert_eq!(pump.acknowledge(7, 13, false, None), Some("running"));
+        assert_eq!(pump.acknowledge(7, 13, false, None, false), Some("running"));
         let now = Instant::now();
         let Gate::Open(credit) = pump.with(|state| state.admit(now)) else {
             panic!()
@@ -793,8 +966,8 @@ mod tests {
     #[test]
     fn mp10_foreign_generation_ack_is_refused() {
         let pump = DisplayPump::new(7, "display");
-        assert_eq!(pump.acknowledge(8, 1, false, None), None);
-        assert_eq!(pump.acknowledge(7, 1, false, None), Some("running"));
+        assert_eq!(pump.acknowledge(8, 1, false, None, false), None);
+        assert_eq!(pump.acknowledge(7, 1, false, None, false), Some("running"));
     }
     // MP-08/MP-10/MP-11: receiver-side decode/queue hold is not wire RTT.
     #[test]

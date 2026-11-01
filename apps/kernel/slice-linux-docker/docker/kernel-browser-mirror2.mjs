@@ -172,8 +172,10 @@ const observerRef = stream => `globalThis.__charioxMirror2.get(${JSON.stringify(
 
 // Chrome serializes a var() shorthand that a later declaration partly overrides (border:var(--w) solid;
 // border-color:red) as empty longhands (`border-top-width: ;`), which a viewer parser drops. A rule whose
-// text came out that way is kept as its source text.
-const SERIALIZER = String.raw`const lossy=/[;{]\s*(?!--)[a-z][a-z-]*:\s*;/;const rules=text=>{const sheet=new CSSStyleSheet();sheet.replaceSync(text);let out='';for(const rule of sheet.cssRules)out+=rule.cssText+'\n';return out};const chunks=text=>{const out=[];let depth=0,start=0,quote='';for(let i=0;i<text.length;i++){const c=text[i];if(quote){if(c==='\\')i++;else if(c===quote)quote=''}else if(c==='"'||c==="'")quote=c;else if(c==='/'&&text[i+1]==='*'){i=text.indexOf('*/',i+2);if(i<0)break;i++}else if(c==='{')depth++;else if((c==='}'&&!--depth)||(c===';'&&!depth)){out.push(text.slice(start,i+1));start=i+1}}return out};const serialize=text=>{const out=rules(text);if(!lossy.test(out))return out;let result='';for(const chunk of chunks(text)){const one=rules(chunk);if(!lossy.test(one)){result+=one;continue}const open=chunk.indexOf('{');result+=/^\s*@/.test(chunk)?chunk.slice(0,open+1)+serialize(chunk.slice(open+1,chunk.lastIndexOf('}')))+'}\n':chunk+'\n'}return result};const parse=serialize;`;
+// text came out that way is kept as its source text. Escapes outside strings (`.content-\[\'\'\]`) are not quotes,
+// and an unterminated last chunk is kept (CSS closes it at the end of the sheet). A copy with fewer rules than the
+// source is never published: the label selects the whole-page video (MIRROR-FIDELITY-GUARD).
+const SERIALIZER = String.raw`const lossy=/[;{]\s*(?!--)[a-z][a-z-]*:\s*;/;const rules=text=>{const sheet=new CSSStyleSheet();sheet.replaceSync(text);let out='';for(const rule of sheet.cssRules)out+=rule.cssText+'\n';return out};const scan=(text,visit)=>{let quote='';for(let i=0;i<text.length;i++){const c=text[i];if(quote){if(c==='\\')i++;else if(c===quote)quote=''}else if(c==='\\')i++;else if(c==='"'||c==="'")quote=c;else if(c==='/'&&text[i+1]==='*'){i=text.indexOf('*/',i+2);if(i<0)break;i++}else if(visit(c,i))return i}return -1};const chunks=text=>{const out=[];let depth=0,start=0;scan(text,(c,i)=>{if(c==='{')depth++;else if((c==='}'&&!--depth)||(c===';'&&!depth)){out.push(text.slice(start,i+1));start=i+1}});if(text.slice(start).trim())out.push(text.slice(start));return out};const serialize=text=>{const out=rules(text);if(!lossy.test(out))return out;let result='';for(const chunk of chunks(text)){const one=rules(chunk);if(!lossy.test(one)){result+=one;continue}const open=scan(chunk,c=>c==='{');result+=/^\s*@/.test(chunk)?chunk.slice(0,open+1)+serialize(chunk.slice(open+1,chunk.lastIndexOf('}')))+'}\n':chunk+'\n'}return result};const count=text=>{const sheet=new CSSStyleSheet();sheet.replaceSync(text);return sheet.cssRules.length};const parse=text=>{const out=serialize(text);if(count(out)!==count(text))throw new Error('mirror2:css_incomplete');return out};`;
 // CSSOM-normalized cross-origin sheet bodies by source (see crossOriginSheet), least recently used first out.
 export class ParsedSheets {
   constructor(entries = 32, chars = 32 * 1024 * 1024) { this.bodies = new Map(); this.entries = entries; this.chars = chars; this.size = 0; }
@@ -310,6 +312,8 @@ export class Mirror2 {
   }
   async next(stream, command, scope, { signal } = {}) {
     if (command.known_sheets !== undefined && (!Array.isArray(command.known_sheets) || command.known_sheets.length > 128 || command.known_sheets.some(digest => typeof digest !== 'string' || !/^[a-f0-9]{24}$/.test(digest)))) throw new Error('MP-11: invalid mirror sheet dictionary');
+    // A viewer lists its retained sheets with a reset credit and again only when the list changes: a reset the kernel starts itself uses the last list.
+    if (command.known_sheets !== undefined || command.after_sequence === 0) stream.knownSheets = command.known_sheets ?? [];
     if (command.wait_ms !== undefined && (!Number.isInteger(command.wait_ms) || command.wait_ms < 0 || command.wait_ms > MAX_WAIT_MS)) throw new Error('MP-11: invalid mirror wait');
     // Credits are answered in order; each packet's base is its predecessor.
     // A queued credit's wait starts when its predecessor is answered (expired
@@ -375,8 +379,6 @@ export class Mirror2 {
       snapshot_complete: false, css_width: this.host.pageSize(tabId).width, css_height: this.host.pageSize(tabId).height, device_scale_factor: this.host.scales.get(tabId) ?? 1,
       scroll: [0, 0], focused: null, selection: null, resources: [], tiles: [] };
     this.remember(stream, sequence, packet, true);
-    // The viewer answers this packet with a native page display: start it now, while the packet travels.
-    this.host.navigationDisplays?.start(scope, tabId, documentId);
     this.host.timing?.('mirror2_navigation_preview', started);
     return packet;
   }
@@ -481,7 +483,7 @@ export class Mirror2 {
         for (const [key, entry] of stream.resources) if (entry.slot) stream.resources.delete(key); else if (!entry.sent || entry.sentAt > (stream.acked ?? 0)) { entry.sent = false; entry.offset = 0; }
         if (world.snapshotPending?.policy !== policy) await this.protectTargets(world, tab, policy, '', patience);
         const snapshotAt = timestamp();
-        const snap = await this.snapshotOnce(world, policy, patience, command.known_sheets ?? [], this.snapshotOptions(stream, world));
+        const snap = await this.snapshotOnce(world, policy, patience, stream.knownSheets ?? [], this.snapshotOptions(stream, world));
         this.host.timing?.('mirror2_snapshot', snapshotAt);
         if (snap.resync) return snap;
         await this.markClosedHosts(world, snap);
@@ -489,7 +491,7 @@ export class Mirror2 {
         const sheetsAt = timestamp();
         const sheetOps = await this.sheetOps(world, snap.sheets, true);
         // A pruned sheet's full text follows on a quiet packet; a viewer that retains it gets it by reference now.
-        const known = new Set(command.known_sheets ?? []);
+        const known = new Set(stream.knownSheets ?? []);
         stream.deferredSheets = [];
         for (const op of sheetOps) if (op.full) { if (known.has(sheetDigest(op.full))) op.css = op.full; else stream.deferredSheets.push({ op: 'css', id: op.id, css: op.full }); delete op.full; }
         stream.deferredAt = Date.now(); stream.fullPending = snap.full_pending ?? 0;
@@ -538,10 +540,9 @@ export class Mirror2 {
       }
       // An opted-in viewer can prepare DOM/CSS before the font bytes arrive;
       // its positive native-font requirements still fence the paint handover.
-      // Legacy viewers retain first-packet fonts. Resource bytes otherwise
-      // travel only without DOM changes, so an echo never queues behind them.
+      // Legacy viewers retain first-packet fonts; other resource bytes follow resourcesRide.
       const fontsAt = timestamp();
-      resources = reset ? stream.fontRequirements === true ? [] : await this.materialize(world, stream, 'font', source.loaded) : this.empty(stream, source) || this.streamingRest(stream, source) ? await this.materialize(world, stream, null, source.loaded) : this.fontsDue(stream) ? await this.materialize(world, stream, 'font', source.loaded) : [];
+      resources = reset ? stream.fontRequirements === true ? [] : await this.materialize(world, stream, 'font', source.loaded) : this.resourcesRide(stream, source) ? await this.materialize(world, stream, null, source.loaded) : this.fontsDue(stream) ? await this.materialize(world, stream, 'font', source.loaded) : [];
       if (reset) this.host.timing?.('mirror2_fonts', fontsAt);
       // Long poll: nothing to send yet -> wait for the page (or newly loaded bytes).
       // A navigation ends the wait at once (MP-08/MP-10): the next credit resets to the new document.
@@ -572,16 +573,17 @@ export class Mirror2 {
     if (fallback) resources = [];
     mark('observe_resources');
     assertDocument();
-    const sheets = await this.sheetOps(world, source?.sheets);
+    let sheets = [];
+    try { sheets = await this.sheetOps(world, source?.sheets); } catch (error) {
+      if (error?.mirrorReason !== 'css_incomplete') throw error;
+      fallback = error.mirrorReason; source = null; reset = true; resources = [];
+      this.host.timing?.(`mirror2_fallback_${fallback}`, timestamp());
+    }
     // A pruned first-paint sheet's full text follows without viewer input, once the page is quiet (or after 1 s).
     if (!reset && !fallback) {
       const replaced = new Set([...source.ops ?? [], ...sheets].filter(op => op.op === 'css').map(op => op.id));
       stream.deferredSheets = (stream.deferredSheets ?? []).filter(op => !replaced.has(op.id));
-      if (!resources.length && this.sheetsDue(stream) && (this.emptyDom(stream, source) || Date.now() - stream.deferredAt > 1000)) {
-        let full = stream.deferredSheets.shift();
-        if (!full) { stream.fullPending--; full = await this.evaluate(world, `${world.ref}.fullSheet()`); }
-        if (full && !replaced.has(full.id)) sheets.push({ op: 'css', id: full.id, css: full.css });
-      }
+      if (this.sheetsDue(stream) && (this.emptyDom(stream, source) || Date.now() - stream.deferredAt > 1000)) sheets.push(...await this.dueSheets(world, stream, replaced));
     }
     let tiles = [];
     // Stills, like image bytes, never ride on a DOM change or follow viewer input
@@ -612,7 +614,7 @@ export class Mirror2 {
     this.host.timing?.event?.('mirror2_resource_batch', { reset: Number(reset), font_base64_bytes: resources.filter(r => r.mime_type.startsWith('font/')).reduce((n, r) => n + r.data_base64.length, 0), other_base64_bytes: resources.filter(r => !r.mime_type.startsWith('font/')).reduce((n, r) => n + r.data_base64.length, 0) });
     if (tiles.length) packet.tiles = tiles;
     if (fallback) packet.fallback = fallback;
-    else if (reset) { packet.root = source.root; packet.nodes = source.nodes; packet.ops = [...(source.ops ?? []), ...sheets]; }
+    else if (reset) { packet.root = source.root; packet.nodes = source.nodes; packet.ops = [...(source.ops ?? []), ...sheets]; if (['quirks', 'limited-quirks'].includes(source.document_mode)) packet.document_mode = source.document_mode; }
     else packet.ops = [...source.ops, ...sheets];
     // Morphed nodes (a new page node under a viewer id) count as changed targets.
     for (const id of [...(packet.ops ?? []).filter(op => op.op === 'attr').map(op => op.id), ...(reset ? [] : source?.changed ?? [])]) stream.attrSequence.set(id, sequence);
@@ -622,7 +624,7 @@ export class Mirror2 {
     for (const record of [...(packet.nodes ?? []), ...(packet.ops ?? []).flatMap(op => op.op === 'children' ? op.nodes : [])]) if (!stream.introduced.has(record.id)) stream.introduced.set(record.id, sequence);
     for (const id of [...(packet.ops ?? []).filter(op => op.op === 'attr' && TARGET_ATTRIBUTES.has(op.name)).map(op => op.id), ...(reset ? [] : source?.changed ?? [])]) stream.identity.set(id, sequence);
     this.regions.record(stream, packet);
-    if (reset) stream.sheetRefs = new Set(command.known_sheets ?? []);
+    if (reset) stream.sheetRefs = new Set(stream.knownSheets ?? []);
     dedupeMirrorSheets(packet, stream.sheetRefs ??= new Set());
     if (packet.nodes) packet.nodes = encodeMirrorRecords(packet.nodes, null);
     if (packet.ops) packet.ops = packet.ops.map(op => op.op === 'children' ? { ...op, nodes: encodeMirrorRecords(op.nodes, op.id) } : op);
@@ -691,6 +693,19 @@ export class Mirror2 {
   // for the on-screen images: their bytes travel with the rest's chunks unless viewer input is recent.
   streamingRest(stream, source) { return stream.viewportFirst && source.snapshot_viewport_complete === true && source.snapshot_complete !== true && !this.recentInput(stream); }
   // A packet's resource budget; smaller within a second of viewer input.
+  // Resource bytes ride a packet without DOM changes, a streaming viewport-first rest, or (P9) any packet without recent
+  // input: a settling document's images then follow its DOM in the same packets, and an echo never queues behind them.
+  resourcesRide(stream, source) { return this.empty(stream, source) || this.streamingRest(stream, source) || !this.recentInput(stream); }
+  // P9: every due full sheet rides one packet up to the packet budget; each used to cost a credit round trip.
+  async dueSheets(world, stream, replaced) {
+    const sheets = []; let budget = this.packetBytes(stream);
+    do {
+      let full = stream.deferredSheets.shift();
+      if (!full) { stream.fullPending--; full = await this.evaluate(world, `${world.ref}.fullSheet()`); }
+      if (full && !replaced.has(full.id)) { sheets.push({ op: 'css', id: full.id, css: full.css }); budget -= full.css.length; }
+    } while (budget > 0 && this.sheetsDue(stream));
+    return sheets;
+  }
   packetBytes(stream) { return this.recentInput(stream) ? INPUT_PACKET_BYTES : RESOURCE_PACKET_BYTES; }
   sheetsDue(stream) { return (stream.deferredSheets?.length > 0 || stream.fullPending > 0) && !this.recentInput(stream); }
   recentInput(stream) { return Date.now() - (stream.inputAt ?? 0) < QUIET_MS; }
@@ -826,7 +841,8 @@ export class Mirror2 {
     const ops = [];
     for (let at = 0; at < sheets.length; at += 4) {
       const batch = await Promise.all(sheets.slice(at, at + 4).map(async sheet => {
-        const text = await this.crossOriginSheet(world, sheet.url, firstPaint ? sheet.id : null).catch(() => null);
+        // An unreadable sheet keeps its last copy; an incomplete one is never published (the stream selects video).
+        const text = await this.crossOriginSheet(world, sheet.url, firstPaint ? sheet.id : null).catch(error => { if (error?.mirrorReason === 'css_incomplete') throw error; return null; });
         if (text === null) return [];
         const [css, used] = Array.isArray(text) ? text : [text, null];
         return [typeof used === 'string' && used.length < css.length ? { op: 'css', id: sheet.id, css: used, full: css } : { op: 'css', id: sheet.id, css }];
@@ -857,7 +873,8 @@ export class Mirror2 {
       const body = await this.resourceBody(world, requested, 16 * 1024 * 1024);
       let text = body?.toString('utf8');
       if (text === undefined) {
-        const frameId = (await frames()).get(requested); if (!frameId) return false;
+        // A document's own sheet can be missing from its resource tree (Stripe's 3.6 MB login sheet); its frame still has it.
+        const frameId = (await frames()).get(requested) ?? world.frame?.id; if (!frameId) return false;
         const reply = await world.connection.send('Page.getResourceContent', { frameId, url: requested }, world.sessionId);
         text = reply.base64Encoded ? Buffer.from(reply.content, 'base64').toString('utf8') : reply.content;
       }
@@ -978,14 +995,19 @@ export class Mirror2 {
     // Nodes of a mirrored cross-origin frame live in that frame's own world.
     const frameOf = id => { const slot = id ? slotOf(id) : 0; if (!slot) return null; const entry = stream.frameSlots.get(slot); if (!entry) throw new Error('MP-11: changed mirror input target'); return entry; };
     const inFrame = async (entry, expression) => { assertNotCancelled(signal); assertEpoch(); await assertCurrentDocument(world.connection, world.sessionId, tab.target_id, tab.document_id); const value = await this.evaluate(entry.child, expression); assertEpoch(); return value; };
+    // A nested frame's owner lives in its host frame's world: the chain runs from the page's own child to the entry.
+    const hosts = entry => { const chain = []; for (let at = entry; at;) { chain.unshift(at); if (!at.hostSlot) break; at = stream.frameSlots.get(at.hostSlot); if (!at) throw new Error('MP-11: changed mirror input target'); } return chain; };
+    const onHost = (entry, expression) => entry.hostSlot ? inFrame(stream.frameSlots.get(entry.hostSlot), expression) : call(expression);
+    const ownerOf = entry => entry.hostSlot ? localId(entry.owner) : entry.owner;
     if (action.kind === 'selection' && slotOf(action.anchor_id) !== slotOf(action.focus_id)) throw new Error('MP-11: invalid mirror selection');
     // A viewer scrolled ahead of the native page (smooth scrolling still animating): the point comes into range within a moment.
     const retryOffscreen = async resolve => { for (let attempt = 0; ; attempt++) { try { return await resolve(); } catch (error) { if (error?.mirrorReason !== 'offscreen_node' || attempt >= 3) throw error; assertNotCancelled(signal); await new Promise(done => setTimeout(done, 150)); } } };
     if (action.kind === 'click' || action.kind === 'scroll') {
       const entry = frameOf(action.node_id);
       let at, local = null;
+      const chain = entry ? hosts(entry) : [], hostPoints = [];
       if (entry) {
-        const localAt = () => inFrame(entry, `${m}.point(${JSON.stringify({ node_id: localId(action.node_id), x: action.x, y: action.y })})`);
+        const wheel = action.kind === 'scroll', localAt = () => inFrame(entry, `${m}.point(${JSON.stringify({ node_id: localId(action.node_id), x: action.x, y: action.y, ...(wheel ? { wheel } : {}) })})`);
         // The frame's point, then the frame as its owner's scrolling ancestors show it; each level reveals what the viewer scrolled ahead.
         const aim = async () => {
           try { local = await retryOffscreen(localAt); } catch (error) {
@@ -994,20 +1016,27 @@ export class Mirror2 {
             await inFrame(entry, `${m}.reveal(${JSON.stringify({ node_id: localId(action.node_id) })})`);
             local = await localAt();
           }
-          return retryOffscreen(() => call(`${m}.frameOrigin(${JSON.stringify(entry.owner)},${JSON.stringify([local.x, local.y])})`));
+          // Level by level, inside out: the point in each host's viewport, the page's last.
+          let point = local;
+          for (const level of chain.toReversed()) {
+            const origin = await retryOffscreen(() => onHost(level, `${m}.frameOrigin(${JSON.stringify(ownerOf(level))},${JSON.stringify([point.x, point.y])}${wheel ? ',true' : ''})`));
+            point = { x: origin[4], y: origin[5] }; hostPoints.unshift(point);
+          }
+          return point;
         };
-        let origin;
-        try { origin = await aim(); } catch (error) {
-          // The frame itself is clipped by a scroll pane of the page that owns it: scroll the native page to the frame.
+        let point;
+        try { point = await aim(); } catch (error) {
+          // A frame is clipped by a scroll pane of the document that owns it: scroll that document to the frame, outermost first.
           if (error?.mirrorReason !== 'offscreen_node') throw error;
-          stream.ownScrolls.set(null, JSON.stringify(await call(`${m}.reveal(${JSON.stringify({ node_id: entry.owner })})`))); stream.movedAt = Date.now();
-          origin = await aim();
+          hostPoints.length = 0;
+          for (const level of chain) { const revealed = await onHost(level, `${m}.reveal(${JSON.stringify({ node_id: ownerOf(level) })})`); if (!level.hostSlot) { stream.ownScrolls.set(null, JSON.stringify(revealed)); stream.movedAt = Date.now(); } }
+          point = await aim();
         }
-        at = { x: Math.floor(origin[0] + (origin[2] ?? 1) * local.x), y: Math.floor(origin[1] + (origin[3] ?? 1) * local.y) };
+        at = { x: Math.floor(point.x), y: Math.floor(point.y) };
         const {width,height} = this.host.pageSize(tab.tab_id);
         if (at.x < 0 || at.y < 0 || at.x >= width || at.y >= height) throw new Error('MP-11: changed mirror input target');
       } else {
-        const pointAt = () => call(`${m}.point(${JSON.stringify({ node_id: action.node_id, x: action.x, y: action.y })})`);
+        const pointAt = () => call(`${m}.point(${JSON.stringify({ node_id: action.node_id, x: action.x, y: action.y, ...(action.kind === 'scroll' ? { wheel: true } : {}) })})`);
         try { at = await retryOffscreen(pointAt); } catch (error) {
           // Still outside the native viewport: scroll the native page to the node the viewer showed (the echo is this viewer's own).
           if (error?.mirrorReason !== 'offscreen_node') throw error;
@@ -1020,7 +1049,7 @@ export class Mirror2 {
       // physical event; release stays paired even if the page reacts.
       const guard = async () => {
         assertEpoch(); assertNotCancelled(signal); if (checked) return;
-        if (entry) { await call(`${m}.hitCheck(${JSON.stringify(at)},${JSON.stringify(entry.owner)})`); await inFrame(entry, `${m}.hitCheck(${JSON.stringify(local)},${JSON.stringify(localId(action.node_id))})`); }
+        if (entry) { for (const [depth, level] of chain.entries()) await onHost(level, `${m}.hitCheck(${JSON.stringify(depth ? hostPoints[depth] : at)},${JSON.stringify(ownerOf(level))})`); await inFrame(entry, `${m}.hitCheck(${JSON.stringify(local)},${JSON.stringify(localId(action.node_id))})`); }
         else await call(`${m}.hitCheck(${JSON.stringify(at)},${JSON.stringify(action.node_id)})`);
         checked = true;
       };
@@ -1043,7 +1072,7 @@ export class Mirror2 {
       const entry = frameOf(action.node_id), request = { ...action, node_id: entry ? localId(action.node_id) : action.node_id }, expression = `${m}.${action.kind}(${JSON.stringify(request)})`;
       return { perform: async () => {
         // Protocol 492: a committed control state names a control the viewer saw, inside a document it saw.
-        if (action.kind === 'set') { if (entry) { seen((await inFrame(entry, `${m}.ancestry(${JSON.stringify(request.node_id)})`)).map(id => rebaseId(id, entry.slot))); seen(await call(`${m}.ancestry(${JSON.stringify(entry.owner)})`)); } else seen(await call(`${m}.ancestry(${JSON.stringify(action.node_id)})`)); }
+        if (action.kind === 'set') { if (entry) { seen((await inFrame(entry, `${m}.ancestry(${JSON.stringify(request.node_id)})`)).map(id => rebaseId(id, entry.slot))); for (const level of hosts(entry)) seen((await onHost(level, `${m}.ancestry(${JSON.stringify(ownerOf(level))})`)).map(id => rebaseId(id, level.hostSlot))); } else seen(await call(`${m}.ancestry(${JSON.stringify(action.node_id)})`)); }
         await (entry ? inFrame(entry, expression) : call(expression));
       } };
     }

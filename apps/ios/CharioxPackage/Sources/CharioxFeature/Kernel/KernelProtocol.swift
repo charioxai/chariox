@@ -130,6 +130,7 @@ public enum LocalDaemonResponse: Equatable, Sendable, Decodable {
     case skillsListed([CharioxSkillMetadata])
     case promptSubmitted(RuntimeSession)
     case promptCancelled
+    case agentTaskUpdated(taskID: String)
     case interactionResponded(interactionID: String, session: RuntimeSession)
     case workspaceLiveSyncStatus(WorkspaceLiveSyncStatus)
     case workspaceLinkAttached(session: RuntimeSession)
@@ -218,6 +219,11 @@ public enum LocalDaemonResponse: Equatable, Sendable, Decodable {
         }
         if container.allKeys.contains(where: { $0.stringValue == "PromptCancelled" }) {
             self = .promptCancelled
+            return
+        }
+        if let key = container.allKeys.first(where: { $0.stringValue == "AgentTaskUpdated" }) {
+            let payload = try container.decode(AgentTaskUpdatedPayload.self, forKey: key)
+            self = .agentTaskUpdated(taskID: payload.task.taskID)
             return
         }
         if let key = container.allKeys.first(where: { $0.stringValue == "InteractionResponded" }) {
@@ -457,6 +463,18 @@ private struct SkillsListedPayload: Decodable, Equatable, Sendable {
 
 private struct PromptSubmittedPayload: Decodable, Equatable, Sendable {
     let session: RuntimeSession
+}
+
+private struct AgentTaskUpdatedPayload: Decodable, Equatable, Sendable {
+    let task: Task
+
+    struct Task: Decodable, Equatable, Sendable {
+        let taskID: String
+
+        enum CodingKeys: String, CodingKey {
+            case taskID = "task_id"
+        }
+    }
 }
 
 private struct InteractionRespondedPayload: Decodable, Equatable, Sendable {

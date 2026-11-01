@@ -22,6 +22,9 @@ pub(crate) fn request_session_scope(
     request: &LocalDaemonRequest,
 ) -> Option<SessionMembershipScope> {
     match request {
+        LocalDaemonRequest::StopSessionProcesses(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
         LocalDaemonRequest::AddSshMachine(_) | LocalDaemonRequest::RemoveSshMachine(_) => None,
         LocalDaemonRequest::PrepareBrowserImport(request) => Some(
             SessionMembershipScope::SessionId(request.selection.session_id.clone()),
@@ -642,6 +645,7 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::RequestKernelSudo(_)
         | LocalDaemonRequest::RenewKernelSudoRequester(_)
         | LocalDaemonRequest::RequestKernelAccess(_)
+        | LocalDaemonRequest::CoverKernelAccessProcess(_)
         | LocalDaemonRequest::ListKernelAccessGrants(_)
         | LocalDaemonRequest::RevokeKernelAccessGrant(_)
         | LocalDaemonRequest::SubscribeEvents(_)
@@ -727,6 +731,8 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::RemoveProviderAccountProfile(_)
         | LocalDaemonRequest::DeleteProviderAccountProfileData(_)
         | LocalDaemonRequest::CopyProviderAccountToKernel(_)
+        | LocalDaemonRequest::ListProviderAccountCopyOffers(_)
+        | LocalDaemonRequest::CopyProviderAccountFromKernel(_)
         | LocalDaemonRequest::SetProviderAccountCredential(_)
         | LocalDaemonRequest::InstallMcpServer(_)
         | LocalDaemonRequest::UpdateMcpServer(_)
@@ -792,6 +798,7 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::DeleteCredentialSecret(_)
         | LocalDaemonRequest::GetCredentialVaultStatus(_)
         | LocalDaemonRequest::LockCredentialVault(_)
+        | LocalDaemonRequest::UnlockCredentialVault(_)
         | LocalDaemonRequest::ManageCredentialVault(_)
         | LocalDaemonRequest::PreflightProviderAccountPortability(_)
         | LocalDaemonRequest::ListManagedEnvironmentCatalog(_)
@@ -903,6 +910,8 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::ObserveEventConnectionAuthorization(_)
         | LocalDaemonRequest::RefreshEventConnection(_)
         | LocalDaemonRequest::TestEventConnection(_)
+        | LocalDaemonRequest::ListEventConnectionEvents(_)
+        | LocalDaemonRequest::ReplayEventConnectionEvent(_)
         | LocalDaemonRequest::ReconnectEventConnection(_)
         | LocalDaemonRequest::ListEventConnectionResources(_)
         | LocalDaemonRequest::ListEventConnectionDependencies(_)
@@ -1073,6 +1082,7 @@ mod tests {
             structured_endpoint: None,
             provider_session_id: None,
             native_tui: false,
+            native_checkpoint_binding: None,
         }
     }
 }

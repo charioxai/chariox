@@ -176,7 +176,7 @@ pub(crate) fn startup_readiness_run(
 }
 
 #[test]
-fn repeated_claude_permission_render_is_stored_once() {
+fn claude_permission_recent_appends_every_drain_as_received() {
     let root = std::env::temp_dir().join(format!(
         "chariox-claude-permission-recent-test-{}-{}",
         std::process::id(),
@@ -185,14 +185,11 @@ fn repeated_claude_permission_render_is_stored_once() {
     fs::create_dir_all(&root).expect("test root should be created");
     let context_file = root.join("context.json");
     let context_file = context_file.display().to_string();
-    let rendered =
-        "--dangerously-skip-permissions cannot be used with root/sudo privileges for security reasons";
 
-    let first = update_claude_permission_recent(&context_file, rendered);
-    let second = update_claude_permission_recent(&context_file, rendered);
+    update_claude_permission_recent(&context_file, "/tmp/project");
+    let recent = update_claude_permission_recent(&context_file, "/project");
 
-    assert_eq!(first, second);
-    assert_eq!(second.matches(rendered).count(), 1, "{second}");
+    assert_eq!(recent, "/tmp/project/project");
     let _ = fs::remove_dir_all(root);
 }
 
@@ -1761,6 +1758,12 @@ fn workspace_trust_approval_frame(choices: &str, expected_input: &str, frame_mod
     assert!(interaction
         .message()
         .contains("queued task will not be sent"));
+    // The title asks the question; the message must not say it a second time.
+    assert!(
+        !interaction.message().contains("asks to trust"),
+        "{}",
+        interaction.message()
+    );
     assert_eq!(interaction.choices().len(), 2);
     let marker = claude_native_marker(&context_file).expect("trust marker should be present");
     assert!(marker.starts_with("startup-workspace-trust:"), "{marker}");
@@ -2511,6 +2514,41 @@ fn claude_transcript_drain_maps_assistant_text_reasoning_and_tools() {
         drain_claude_transcript_file(&transcript.display().to_string(), &mut cursor);
     assert!(after_terminal.terminal_assistant_message_ids.is_empty());
 
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn claude_transcript_result_keeps_the_tool_name_and_input_of_its_call() {
+    let dir = std::env::temp_dir().join(format!(
+        "chariox-claude-transcript-result-test-{}",
+        std::process::id()
+    ));
+    let _ = fs::create_dir_all(&dir);
+    let transcript = dir.join("session.jsonl").display().to_string();
+    let call = serde_json::json!({
+        "type": "assistant", "uuid": "assistant-1",
+        "message": { "id": "msg_1", "role": "assistant", "stop_reason": "tool_use", "content": [
+            { "type": "tool_use", "id": "toolu_1", "name": "Bash", "input": { "command": "pwd" } }
+        ] }
+    });
+    let result = serde_json::json!({
+        "type": "user", "uuid": "user-1",
+        "message": { "role": "user", "content": [
+            { "type": "tool_result", "tool_use_id": "toolu_1", "content": [{ "type": "text", "text": "/work" }] }
+        ] }
+    });
+    let mut cursor = ClaudeTranscriptCursor::default();
+    // The call and its result reach the kernel in separate drains.
+    fs::write(&transcript, format!("{call}\n")).expect("call should write");
+    drain_claude_transcript_file(&transcript, &mut cursor);
+    fs::write(&transcript, format!("{call}\n{result}\n")).expect("result should write");
+    let drain = drain_claude_transcript_file(&transcript, &mut cursor);
+
+    assert_eq!(drain.chunks.len(), 1);
+    let payload: Value = serde_json::from_str(&drain.chunks[0].text).expect("result is JSON");
+    assert_eq!(payload["tool"], "Bash");
+    assert_eq!(payload["input"]["command"], "pwd");
+    assert_eq!(payload["status"], "completed");
     let _ = fs::remove_dir_all(dir);
 }
 
@@ -3736,3 +3774,5 @@ fn notes_reach_claude_hidden_context_once_and_fit_the_bridge_limit() {
     assert!(!context.contains("Attachment 1"));
     assert!(context.len() < 48_000, "{}", context.len());
 }
+
+mod workspace_scope;
