@@ -27,7 +27,9 @@ async fn watched_process_query_goes_over_the_connected_relay_that_reaches_the_wo
         wake_id: wake.id.clone(),
         binding: binding.clone(),
     };
-    let call = home.state.leased_process_request(&wake, &binding, action);
+    let call = home
+        .state
+        .leased_process_request(&wake, &binding, action, Duration::from_secs(5));
     let reply = home
         .rig
         .answer(|_| RelayPeerResponse::LeasedWatchedProcess { receipt: None });

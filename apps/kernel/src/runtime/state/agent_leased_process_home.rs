@@ -124,11 +124,6 @@ impl KernelRuntimeState {
         if let (Some(url), Some(token)) = (remote.relay_url.clone(), remote.relay_token.clone()) {
             config.apply_remote_relay_override(url, token);
         }
-        let timeout = if matches!(action, Action::Start { .. }) {
-            Duration::from_secs(310)
-        } else {
-            Duration::from_secs(5)
-        };
         let response = tokio::time::timeout(timeout, async {
             self.enqueue_leased_worker_request(
                 &config,
