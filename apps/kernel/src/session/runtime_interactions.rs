@@ -382,6 +382,40 @@ impl RuntimeInteraction {
             })
     }
 
+    /// An outside agent's request for a Vault value: the owner answers with the secret
+    /// choice or cancels. Critical like every Vault value request, so no grant holder answers it.
+    pub(crate) fn for_vault_secret(
+        id: impl Into<String>,
+        operation_id: impl Into<String>,
+        title: impl Into<String>,
+        message: impl Into<String>,
+        timeout_sec: u64,
+    ) -> Self {
+        let mut interaction = Self::for_kernel_operation(
+            id,
+            operation_id,
+            title,
+            message,
+            vec![RuntimeInteractionChoice::new(
+                "cancel",
+                "Cancel",
+                "cancel",
+                Some(RuntimeInteractionChoiceStyle::Danger),
+            )],
+        );
+        interaction.kind = RuntimeInteractionKind::Choice;
+        interaction.level = RuntimeInteractionLevel::Critical;
+        interaction.custom_choice = Some(RuntimeInteractionCustomChoice::secret(
+            "secret",
+            "Secret",
+            None,
+            Some(1),
+            Some(512),
+        ));
+        interaction.timeout_sec = Some(timeout_sec);
+        interaction
+    }
+
     /// A kernel-owned decision, projected without creating an agent or prompt.
     /// Only the dedicated registration path binds its authenticated owner.
     pub(crate) fn for_kernel_operation(

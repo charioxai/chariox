@@ -17,6 +17,8 @@ pub enum LocalDaemonRequest {
     RequestKernelAccess(RequestKernelAccessRequest),
     CoverKernelAccessProcess(CoverKernelAccessProcessRequest),
     RequestKernelSudo(RequestKernelSudoRequest),
+    RequestVaultSecret(RequestVaultSecretRequest),
+    GetVaultSecretStatus(GetVaultSecretStatusRequest),
     ExtendKernelSudo(ExtendKernelSudoRequest),
     RenewKernelSudoRequester(RenewKernelSudoRequesterRequest),
     ListKernelAccessGrants(ListKernelAccessGrantsRequest),

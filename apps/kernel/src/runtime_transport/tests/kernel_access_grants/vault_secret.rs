@@ -10,6 +10,14 @@ fn request(id: &str, overwrite: bool) -> Value {
     serde_json::json!({"RequestVaultSecret":{"credential_id":id,"label":"Drill key","overwrite":overwrite}})
 }
 
+/// The owner's own client opens the Vault, as it does before an agent can use it.
+async fn unlock(kernel: &mut Kernel) {
+    let unlocked = kernel
+        .request(serde_json::json!({"UnlockCredentialVault":{"passphrase":PASSKEY}}))
+        .await;
+    assert!(unlocked["error"].is_null(), "{unlocked}");
+}
+
 fn status(interaction_id: &str) -> Value {
     serde_json::json!({"GetVaultSecretStatus":{"interaction_id":interaction_id}})
 }
@@ -70,6 +78,26 @@ fn files_under(root: &Path, found: &mut Vec<PathBuf>) {
     }
 }
 
+/// What the kernel logged, for the message of a failed request.
+fn kernel_log(root: &Path) -> String {
+    let mut files = Vec::new();
+    files_under(&root.join("state"), &mut files);
+    files
+        .iter()
+        .filter(|file| file.to_string_lossy().contains("log"))
+        .map(|file| {
+            let text = std::fs::read_to_string(file).unwrap_or_default();
+            let tail = text.len().saturating_sub(2500);
+            format!(
+                "{}:\n{}",
+                file.display(),
+                text.get(tail..).unwrap_or_default()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn assert_value_absent(root: &Path, texts: &[String]) {
     let forms: [String; 2] = [
         CANARY.to_owned(),
@@ -104,9 +132,7 @@ async fn an_outside_agent_gets_a_link_and_the_owner_types_the_value_in_a_client(
 
     let unavailable = holder.request(request("drill_key", false));
     assert!(
-        unavailable["error"]["message"]
-            .as_str()
-            .is_some_and(|message| message.contains("secret_link_unavailable")),
+        unavailable["error"]["code"] == "secret_link_unavailable",
         "no page host must fail loudly: {unavailable}"
     );
 
@@ -116,9 +142,14 @@ async fn an_outside_agent_gets_a_link_and_the_owner_types_the_value_in_a_client(
         "an agent must not choose where the link points"
     );
     assert!(kernel.request(set).await["error"].is_null());
+    unlock(&mut kernel).await;
 
     let started = holder.request(request("drill_key", false));
-    assert!(started["error"].is_null(), "{started}");
+    assert!(
+        started["error"].is_null(),
+        "{started}\n{}",
+        kernel_log(&kernel.root)
+    );
     let requested = &started["response"]["VaultSecretRequested"];
     let interaction_id = requested["interaction_id"].as_str().unwrap().to_owned();
     assert_eq!(requested["credential_id"], "drill_key");
@@ -184,8 +215,14 @@ async fn the_owner_cancels_and_a_second_request_for_the_same_handle_needs_overwr
     grant(&mut kernel, &mut holder).await;
     let set = serde_json::json!({"SetUserConfigValue":{"path":"secret_link.page_url","value":"https://page.test"}});
     assert!(kernel.request(set).await["error"].is_null());
+    unlock(&mut kernel).await;
 
     let first = holder.request(request("drill_key", false));
+    assert!(
+        first["error"].is_null(),
+        "{first}\n{}",
+        kernel_log(&kernel.root)
+    );
     let id = first["response"]["VaultSecretRequested"]["interaction_id"]
         .as_str()
         .unwrap()
@@ -206,9 +243,7 @@ async fn the_owner_cancels_and_a_second_request_for_the_same_handle_needs_overwr
 
     let third = holder.request(request("drill_key", false));
     assert!(
-        third["error"]["message"]
-            .as_str()
-            .is_some_and(|message| message.contains("overwrite")),
+        third["error"]["code"] == "secret_request_exists",
         "an existing handle needs overwrite: {third}"
     );
     let fourth = holder.request(request("drill_key", true));

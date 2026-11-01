@@ -21,6 +21,7 @@ mod publication_state;
 mod relay_peer_keys;
 mod relay_profile;
 mod room_environment;
+mod secret_link;
 mod slices;
 mod socket_path;
 mod storage;
@@ -55,6 +56,7 @@ pub use persisted_daemon::{
 pub(crate) use private_file::write_private_file;
 pub use provider::{UserProviderConfig, WorkspaceLiveSyncConfig, WorkspaceLiveSyncMode};
 pub use room_environment::RoomEnvironmentWorkerBinding;
+pub use secret_link::UserSecretLinkConfig;
 pub use slices::{
     SliceImageBuildPolicy, UserLinuxSliceConfig, UserSlicesConfig,
     DEFAULT_LINUX_SLICE_DOCKER_IMAGE, DEFAULT_LOCAL_DOCKER_SLICE_MEMORY_MB,
@@ -517,6 +519,8 @@ pub struct CharioxUserConfig {
     #[serde(default)]
     pub kernel_access: UserKernelAccessConfig,
     #[serde(default)]
+    pub secret_link: UserSecretLinkConfig,
+    #[serde(default)]
     pub workflow: UserWorkflowConfig,
     #[serde(default)]
     pub credential_vault: UserCredentialVaultConfig,
@@ -535,6 +539,7 @@ impl Default for CharioxUserConfig {
             relay: UserRelayConfig::default(),
             kernel: UserKernelConfig::default(),
             kernel_access: UserKernelAccessConfig::default(),
+            secret_link: UserSecretLinkConfig::default(),
             workflow: UserWorkflowConfig::default(),
             credential_vault: UserCredentialVaultConfig::default(),
         }

@@ -62,6 +62,22 @@ impl KernelRuntimeState {
     }
 
     pub(crate) async fn control_access_for_test(&self, action: &str, vault: &std::path::Path) {
+        if let Some(handle) = action.strip_prefix("vault-secret-sha256:") {
+            use sha2::Digest;
+            let user_config = self.owned.config_projection.snapshot().user_config;
+            let service = crate::secret::RuntimeSecretService::with_vault_config(
+                crate::credential::load_user_credentials().unwrap(),
+                &user_config.credential_vault,
+            )
+            .unwrap();
+            let value = service.vault_secret_for_dictation(handle).unwrap().unwrap();
+            std::fs::write(
+                vault.parent().unwrap().join("vault-secret-sha256"),
+                format!("{:x}", sha2::Sha256::digest(value.as_bytes())),
+            )
+            .unwrap();
+            return;
+        }
         if self.control_credential_access_for_test(action, vault).await {
             return;
         }

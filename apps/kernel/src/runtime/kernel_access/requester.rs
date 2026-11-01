@@ -128,6 +128,16 @@ fn codex_native_candidates(launcher: &Path) -> Vec<PathBuf> {
     candidates
 }
 
+/// The product name of a harness this kernel recognises; never text from the process.
+pub(crate) fn harness_name(harness: Option<KernelAccessProviderHarness>) -> Option<&'static str> {
+    match harness {
+        Some(KernelAccessProviderHarness::Codex) => Some("Codex"),
+        Some(KernelAccessProviderHarness::Claude) => Some("Claude Code"),
+        Some(KernelAccessProviderHarness::Opencode) => Some("OpenCode"),
+        None => None,
+    }
+}
+
 /// The owner-facing copy of an access decision. It names only a harness this
 /// kernel recognises by exact configured path, never text from the process;
 /// PID, path and start time stay in the requester record and the audit log.
@@ -136,12 +146,7 @@ pub(crate) fn popup_copy(
     grant: bool,
     remaining_minutes: u64,
 ) -> (&'static str, String) {
-    let name = match harness {
-        Some(KernelAccessProviderHarness::Codex) => Some("Codex"),
-        Some(KernelAccessProviderHarness::Claude) => Some("Claude Code"),
-        Some(KernelAccessProviderHarness::Opencode) => Some("OpenCode"),
-        None => None,
-    };
+    let name = harness_name(harness);
     if grant {
         let who = name.map_or("An external agent".to_owned(), |n| {
             format!("{n} (an external agent)")

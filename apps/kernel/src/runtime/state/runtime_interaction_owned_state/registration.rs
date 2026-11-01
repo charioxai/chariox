@@ -48,6 +48,18 @@ impl KernelRuntimeOwnedState {
             );
         }
         if session_id == crate::runtime::kernel_access::ACCESS_INTERACTION_SCOPE {
+            if interaction
+                .kernel_operation_id()
+                .is_some_and(|id| id.starts_with(crate::runtime::state::VAULT_SECRET_OPERATION))
+            {
+                return self.register_kernel_wide_secret_interaction(
+                    interaction,
+                    responder,
+                    kernel_operation_owner,
+                    forwarding,
+                    terminal_credential_owner,
+                );
+            }
             return self.register_kernel_wide_access_interaction(
                 interaction,
                 responder,

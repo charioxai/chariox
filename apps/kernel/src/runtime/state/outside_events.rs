@@ -280,7 +280,7 @@ impl KernelRuntimeOwnedState {
                 .any(crate::session::RuntimeInteractionChoice::requires_passkey);
         let pointer=(human && state == EventInteractionState::Pending).then(|| {
             let kernel=self.config_projection.snapshot().daemon_id;
-            EventApprovalPointer { approval_id:interaction.id().into(),kind:passkey.map_or_else(||if interaction.provider_login_is_human_only() { "provider_login" } else { "critical_approval" },|prompt|match prompt.kind { PasskeyPromptKind::CriticalApproval=>"critical_approval",PasskeyPromptKind::AccessGrant=>"access_grant",PasskeyPromptKind::AccessExtension=>"access_extension",PasskeyPromptKind::Sudo=>"sudo" }).into(),
+            EventApprovalPointer { approval_id:interaction.id().into(),kind:passkey.map_or_else(||if interaction.provider_login_is_human_only() { "provider_login" } else { "critical_approval" },|prompt|match prompt.kind { PasskeyPromptKind::CriticalApproval=>"critical_approval",PasskeyPromptKind::AccessGrant=>"access_grant",PasskeyPromptKind::AccessExtension=>"access_extension",PasskeyPromptKind::Sudo=>"sudo",PasskeyPromptKind::VaultSecret=>"vault_secret" }).into(),
                 one_line:format!("Approval pending on kernel {kernel}. Open Chariox there and answer its approval popup."),kernel,link:None,
                 expires_at:passkey.map_or_else(||crate::session::unix_epoch_ms().saturating_add(interaction.timeout_sec().unwrap_or(600).saturating_mul(1000)),|prompt|prompt.expires_at_ms) }
         });

@@ -292,11 +292,12 @@ pub use api::{
 pub use api::{
     CoverKernelAccessProcessRequest, CoveredProcess, ExtendKernelSudoRequest,
     ForgetGatewayKernelRequest, GatewayAttachmentRef, GatewayKernel, GatewayKernelStatus,
-    GatewayKernelVia, HeartbeatAttachmentsRequest, JoinKernelLinkRequest, KernelAccessGrant,
-    KernelDirectoryEntry, KernelFileKind, KernelFileStat, KernelSudoTurn,
-    ListGatewayKernelsRequest, ListKernelAccessGrantsRequest, ListKernelDirectoryRequest,
-    OnBehalfOf, ReadKernelFileRequest, RenewKernelSudoRequesterRequest, RequestKernelAccessRequest,
-    RequestKernelSudoRequest, RevokeKernelAccessGrantRequest, StatKernelFileRequest,
+    GatewayKernelVia, GetVaultSecretStatusRequest, HeartbeatAttachmentsRequest,
+    JoinKernelLinkRequest, KernelAccessGrant, KernelDirectoryEntry, KernelFileKind, KernelFileStat,
+    KernelSudoTurn, ListGatewayKernelsRequest, ListKernelAccessGrantsRequest,
+    ListKernelDirectoryRequest, OnBehalfOf, ReadKernelFileRequest, RenewKernelSudoRequesterRequest,
+    RequestKernelAccessRequest, RequestKernelSudoRequest, RequestVaultSecretRequest,
+    RevokeKernelAccessGrantRequest, StatKernelFileRequest, VaultSecretStatus,
     WriteKernelFileRequest, KERNEL_FILE_MAX_BYTES, KERNEL_FILE_MAX_CHUNK_BYTES,
 };
 pub use api::{

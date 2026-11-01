@@ -85,6 +85,12 @@ impl CharioxUserConfig {
                 );
             }
             "relay.url" => self.relay.url = normalized_optional(Some(value)),
+            "secret_link.page_url" => {
+                let mut candidate = self.secret_link.clone();
+                candidate.page_url = Some(value.trim().trim_end_matches('/').to_owned());
+                candidate.validate()?;
+                self.secret_link = candidate;
+            }
             "relay.accept_remote_leases" => {
                 self.relay.accept_remote_leases =
                     Some(parse_config_bool("relay.accept_remote_leases", &value)?)
@@ -519,6 +525,7 @@ impl CharioxUserConfig {
                 self.ui.worktree_aliases.remove(key);
             }
             "relay.url" => self.relay.url = None,
+            "secret_link.page_url" => self.secret_link.page_url = None,
             "relay.accept_remote_leases" => self.relay.accept_remote_leases = None,
             "history.operational.backend" => {
                 return Err(DaemonError::InvalidConfig {

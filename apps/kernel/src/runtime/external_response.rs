@@ -206,6 +206,8 @@ response_policies! {
         CloudRelayLoggedOut,
         // MP-08 / MP-11: protection-filtered like ScreenshotCaptured and RoomBrowserArtifact.
         KernelSudoRequested,
+        VaultSecretRequested,
+        VaultSecretStatusReported,
         KernelSudoExtended,
         KernelAccessGranted,
         KernelAccessCovered,

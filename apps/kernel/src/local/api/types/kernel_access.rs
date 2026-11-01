@@ -41,6 +41,8 @@ pub enum PasskeyPromptKind {
     AccessGrant,
     AccessExtension,
     Sudo,
+    /// Protocol 929: an outside agent asks for a Vault value; the approve choice is the secret.
+    VaultSecret,
 }
 
 /// Protocol 568: how long an access grant lasts. `UntilHolderExits` has no

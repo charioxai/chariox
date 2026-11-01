@@ -203,6 +203,7 @@ pub(crate) fn request_is_cacheable(request: &LocalDaemonRequest) -> bool {
     !matches!(
         request,
         LocalDaemonRequest::RequestKernelSudo(_)
+            | LocalDaemonRequest::RequestVaultSecret(_)
             | LocalDaemonRequest::ExtendKernelSudo(_)
             | LocalDaemonRequest::RenewKernelSudoRequester(_)
             // The result carries a relay token that joins a terminal; it is
