@@ -247,6 +247,17 @@ fn mp10_desktop_mirror_wait_does_not_block_input_or_cross_responses() {
     }
 }
 
+// The Browser view drops its native preview with an `unsubscribe` right after a navigation paints; releasing the
+// preview's compositor took seconds on the controller and held the backend lock meanwhile, so the owner's first click
+// and keys after the navigation (and a region capture) queued behind it.
+#[test]
+fn mp10_display_unsubscribe_wait_does_not_block_input_or_cross_responses() {
+    held_observation_allows_desktop_input(
+        "host.browser",
+        json!({"op":"unsubscribe","subscription_id":"view","generation":1}),
+    );
+}
+
 // r55: a selection note on a busy page waits for the renderer (5 s per CDP call) and must not hold the controller
 // lock meanwhile: it blocked every other request of the user (screenshots, state, credits, input) for that long.
 // The same holds for the cursor under the pointer, which the viewer asks on every pointer move.
@@ -276,7 +287,7 @@ while IFS= read -r request; do
  case "$request" in
  *'"method":"health"'*) printf 'health\n' >> "$root/health"; result='{"state":"ready","process_id":'$$'}' ;;
  *'"method":"host.protect"'*) printf 'policy\n' >> "$root/policy"; result='{}' ;;
- *'"op":"screenshot"'*|*'"op":"mirror_next"'*|*'"op":"note_selection"'*|*'"op":"pointer_cursor"'*)
+ *'"op":"screenshot"'*|*'"op":"mirror_next"'*|*'"op":"note_selection"'*|*'"op":"pointer_cursor"'*|*'"op":"unsubscribe"'*)
    printf 'started\n' > "$root/capture"
    (while ! test -f "$root/release"; do sleep 0.01; done; printf '{"id":%s,"ok":true,"result":{"frame_sent":false}}\n' "$id") &
    continue ;;
