@@ -102,12 +102,12 @@
     },
     {
       "category": "outside_end",
-      "reason": "provider process tree stopped by a session controller",
+      "reason": "Stopped from Health.",
       "timestamp_ms": 10000,
       "failure": {
-        "kind": "other",
+        "kind": "cancelled",
         "retryable": false,
-        "reason": "provider process tree stopped by a session controller"
+        "reason": ""
       }
     },
     {

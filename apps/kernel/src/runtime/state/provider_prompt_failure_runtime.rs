@@ -111,6 +111,22 @@ impl KernelRuntimeState {
             owned.record_failed_provider_tools(session_id, provider_run_id, &agent_id, termination);
         }
         let guarded_prompt_id = active_prompt.id().to_string();
+        // A stop from Health is plain to the person; what the provider printed
+        // while its tree was stopped stays in the kernel log.
+        let stopped_reason = provider_termination
+            .as_ref()
+            .filter(|termination| {
+                termination.category == crate::provider::ProviderRunTerminationCategory::OutsideEnd
+            })
+            .map(|termination| termination.reason.clone());
+        if stopped_reason.is_some() {
+            tracing::info!(
+                provider_run_id,
+                detail = %crate::secret_redaction::redact_secrets(message),
+                "provider turn stopped by a session controller"
+            );
+        }
+        let message = stopped_reason.as_deref().unwrap_or(message);
         self.flush_provider_history(provider_run_id).await?;
         // The settled turn always says why it failed. A failure without
         // termination evidence, such as a rejected dispatch, is typed from its
@@ -264,13 +280,15 @@ impl KernelRuntimeState {
         if !attempt_recorded {
             self.record_failed_provider_attempt(&failed_attempt).await?;
         }
-        let _ = self.inject_metaagent_turn_failure_event(
-            session_id,
-            &agent_id,
-            &active_prompt,
-            Some(provider_run_id),
-            &safe_message,
-        );
+        if failure.is_error() {
+            let _ = self.inject_metaagent_turn_failure_event(
+                session_id,
+                &agent_id,
+                &active_prompt,
+                Some(provider_run_id),
+                &safe_message,
+            );
+        }
         // Provider EOF/error cannot promote a partial answer to done. Task
         // bookkeeping is best-effort: the prompt failure path below always runs.
         let task_settlement = if owned.config_projection.snapshot().room_agent_tools {
@@ -337,14 +355,16 @@ impl KernelRuntimeState {
         .await?;
         // Recorded before any queued prompt or substitute is started, so the
         // agent's next turn carries the note.
-        owned.record_failed_request(
-            session_id,
-            provider_run_id,
-            provider_run.adapter_key(),
-            &agent_id,
-            &active_prompt,
-            message,
-        );
+        if failure.is_error() {
+            owned.record_failed_request(
+                session_id,
+                provider_run_id,
+                provider_run.adapter_key(),
+                &agent_id,
+                &active_prompt,
+                message,
+            );
+        }
         if workflow_failed {
             let dispatches = owned.workflow_maybe_start_next_queued_prompt(session_id);
             owned
