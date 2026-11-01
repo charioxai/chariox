@@ -36,6 +36,7 @@ export type AgentSpawnCommandHandlerDeps = {
   currentModelId: () => string
   currentVariantId: () => string
   currentProviderId: () => string
+  currentAccountProfileId?: () => string
   flashFooter: (message: string, tone: FooterTone) => void
   formatError: (error: unknown) => string
   createSlice?: (options: {
@@ -199,7 +200,10 @@ export async function handleAgentSpawnCommand(
     const sliceRef = await prepareSliceForSpawn(deps, parsed.sliceRef, parsed.sliceDisplayMode, worktreeId, remoteRef)
     const payload = await spawnAndLaunchAgent(deps, {
       provider,
-      accountProfile: parsed.accountProfile,
+      // Without a model the kernel takes the session defaults' provider, so the
+      // account comes from them too; the focused agent's account would belong
+      // to its own provider.
+      accountProfile: parsed.accountProfile ?? (model ? currentAccountProfileId(deps) : undefined),
       alias,
       model: model ?? null,
       effort,
@@ -456,4 +460,8 @@ async function spawnAndLaunchAgent(
     agent: payload.agent,
     session: refreshedSession,
   }
+}
+
+function currentAccountProfileId(deps: AgentSpawnCommandHandlerDeps): string {
+  return deps.currentAccountProfileId?.() || "default"
 }

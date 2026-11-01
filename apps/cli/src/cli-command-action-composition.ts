@@ -236,6 +236,7 @@ export type CliCommandActionCompositionDeps = {
   providerRunState: AnyFn
   currentModelId: AnyFn
   currentVariantId: AnyFn
+  currentAccountProfileId?: AnyFn
   focusedAgentId: AnyFn
   multiAgentResponseLayout: AnyFn
   maxAgentsPerScreen: AnyFn
@@ -357,6 +358,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     providerRunState,
     currentModelId,
     currentVariantId,
+    currentAccountProfileId,
     focusedAgentId,
     multiAgentResponseLayout,
     maxAgentsPerScreen,
