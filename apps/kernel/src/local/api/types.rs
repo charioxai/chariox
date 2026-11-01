@@ -427,4 +427,7 @@ pub use workspace::*;
 /// a direct path silent for 2.5 s (TR-16).
 /// Version 927 adds admission: `SessionProcess.state` (`running`, `held` or `paused`, with the
 /// reason, place in line, need and free room) and `StartSessionProcessNow` (`SessionProcessStartedNow`).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 927;
+/// Allocated 928 adds `question` (the decision as the person sees it) to a pending outside `Interaction`
+/// event and `resolution` (`via`, `choice_id`) to a resolved one; an answer to a closed decision fails with
+/// the stable `interaction_closed`.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 928;

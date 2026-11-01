@@ -149,8 +149,7 @@ impl KernelRuntimeOwnedState {
                     self.publish_outside_interaction(
                         session_id,
                         &previous,
-                        crate::local::EventInteractionState::Resolved,
-                        None,
+                        InteractionPhase::cancelled(),
                     )?;
                 }
                 if pending
@@ -187,8 +186,7 @@ impl KernelRuntimeOwnedState {
                     self.publish_outside_interaction(
                         session_id,
                         &previous,
-                        crate::local::EventInteractionState::Resolved,
-                        None,
+                        InteractionPhase::cancelled(),
                     )?;
                 }
                 pending.remove(id);
@@ -361,8 +359,7 @@ impl KernelRuntimeOwnedState {
         if let Err(error) = self.publish_outside_interaction(
             session_id,
             &interaction,
-            crate::local::EventInteractionState::Pending,
-            passkey_prompt.as_deref(),
+            InteractionPhase::Pending(&pending),
         ) {
             self.answer_goal_native_approval(pending.goal_approval.as_ref())?;
             return Err(error);
@@ -406,8 +403,7 @@ impl KernelRuntimeOwnedState {
                         .publish_outside_interaction(
                             session_id,
                             &interaction,
-                            crate::local::EventInteractionState::Resolved,
-                            None,
+                            InteractionPhase::cancelled(),
                         )
                         .is_err()
                     {

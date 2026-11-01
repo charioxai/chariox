@@ -1141,6 +1141,11 @@ pub(crate) fn map_kernel_error(error: &DaemonError) -> KernelTransportError {
             kernel_error("provider_protocol_error", error, true)
         }
         DaemonError::LocalTransport { operation, .. }
+            if *operation == crate::runtime::state::INTERACTION_CLOSED =>
+        {
+            kernel_error(crate::runtime::state::INTERACTION_CLOSED, error, false)
+        }
+        DaemonError::LocalTransport { operation, .. }
             if *operation == "credential_vault_locked" =>
         {
             kernel_error("credential_vault_locked", error, false)

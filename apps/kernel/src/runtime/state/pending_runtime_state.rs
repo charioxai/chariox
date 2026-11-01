@@ -107,6 +107,29 @@ pub(super) struct PendingWorkerInteractionLifetime {
 }
 
 impl PendingInteraction {
+    /// Whether only the owner's terminal may answer `interaction`, for every choice
+    /// including refusal. The grant policy and the outside event both read this one
+    /// rule, so an event never offers a question the kernel then refuses.
+    pub(super) fn requires_terminal(
+        &self,
+        interaction: &crate::session::RuntimeInteraction,
+    ) -> bool {
+        self.passkey_prompt.is_some()
+            || self.terminal_credential_owner.is_some()
+            || self.kernel_operation_owner.is_some()
+            || self.user_domain_interaction.is_some()
+            || super::is_handoff_interaction_id(interaction.id())
+            || interaction.provider_login_is_human_only()
+            || interaction.level() == crate::session::RuntimeInteractionLevel::Critical
+            || interaction
+                .choices()
+                .iter()
+                .any(crate::session::RuntimeInteractionChoice::requires_passkey)
+            || interaction.custom_choice().is_some_and(|custom| {
+                custom.input_kind() == crate::session::RuntimeInteractionInputKind::Secret
+            })
+    }
+
     pub(super) fn belongs_to(&self, sessions: &crate::session::SessionStateStore) -> bool {
         sessions.matches_identity(&self.session_store_identity)
     }

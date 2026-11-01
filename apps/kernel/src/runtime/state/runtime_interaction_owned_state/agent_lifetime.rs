@@ -303,8 +303,7 @@ impl KernelRuntimeOwnedState {
                 self.publish_outside_interaction(
                     &pending.session_id,
                     &interaction,
-                    crate::local::EventInteractionState::Resolved,
-                    None,
+                    InteractionPhase::cancelled(),
                 )?;
             }
             sessions.restore_session(session);

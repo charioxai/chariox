@@ -160,7 +160,8 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// MP-08/MP-09/MP-10/MP-11: 376 pairs local 925 (the relay close's `kernel_reload`).
 /// 377 pairs the embedded local union with local 926 (direct data channel liveness).
 /// 378 pairs the embedded local union with local 927 (`SessionProcess.state`, `StartSessionProcessNow`).
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 378;
+/// Allocated 379 pairs the embedded local response union with local 928 (`question` and `resolution` on outside interaction events).
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 379;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;

@@ -18,6 +18,9 @@ pub(crate) fn external_request_failure_message(code: &str) -> &'static str {
     }
     match code {
         "session_not_found" => "session not found; check its name or list available sessions",
+        "interaction_closed" => {
+            "the decision is no longer open: someone else answered it or it expired"
+        }
         _ => "external request failed; details are available only in the host terminal",
     }
 }

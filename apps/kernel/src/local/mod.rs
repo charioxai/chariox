@@ -348,7 +348,8 @@ pub use api::{
 
 pub use api::{
     AckEventsRequest, EventApprovalPointer, EventInteractionState, EventKernelHealth,
-    EventKernelIssue, EventRefs, EventRunState, EventSessionState, EventSubscription, EventTarget,
-    EventsBatch, GetEventSubscriptionRequest, ListEventsRequest, OutsideEvent, OutsideEventValue,
-    SubscribeEventsRequest, UnsubscribeEventsRequest, WaitEventsRequest,
+    EventKernelIssue, EventQuestion, EventQuestionChoice, EventQuestionTextReply, EventRefs,
+    EventResolution, EventResolutionVia, EventRunState, EventSessionState, EventSubscription,
+    EventTarget, EventsBatch, GetEventSubscriptionRequest, ListEventsRequest, OutsideEvent,
+    OutsideEventValue, SubscribeEventsRequest, UnsubscribeEventsRequest, WaitEventsRequest,
 };

@@ -487,8 +487,14 @@ impl KernelRuntimeOwnedState {
             self.publish_outside_interaction(
                 session_id,
                 &interaction,
-                crate::local::EventInteractionState::Resolved,
-                None,
+                InteractionPhase::Resolved(crate::local::EventResolution {
+                    via: if terminal_answer || take_host {
+                        crate::local::EventResolutionVia::Terminal
+                    } else {
+                        crate::local::EventResolutionVia::ExternalAgent
+                    },
+                    choice_id: Some(choice_id.into()),
+                }),
             )?;
         }
         if let Some(session) = session.as_mut() {
@@ -674,11 +680,14 @@ impl KernelRuntimeOwnedState {
             drop(activity_mutation);
             return self.withdraw_agent_interaction_locked(interaction_id, &pending);
         };
+        let resolution = timeout_runtime_interaction_resolution(&interaction);
         self.publish_outside_interaction(
             session_id,
             &interaction,
-            crate::local::EventInteractionState::Resolved,
-            None,
+            InteractionPhase::Resolved(crate::local::EventResolution {
+                via: crate::local::EventResolutionVia::Timeout,
+                choice_id: resolution.choice_id.clone(),
+            }),
         )?;
         // The provider continues its turn with the timeout reply, so the goal leaves the wait.
         self.answer_goal_native_approval(pending.goal_approval.as_ref())?;
@@ -686,7 +695,6 @@ impl KernelRuntimeOwnedState {
         sessions.restore_session(session);
         activity_mutation.record();
         drop(sessions);
-        let resolution = timeout_runtime_interaction_resolution(&interaction);
         if let Some(sender) = pending
             .responder
             .lock()

@@ -6123,3 +6123,20 @@ queued-job row from `state` and stop it with `StopSessionProcesses`.
 `StartSessionProcessNow { session_id, process_id }` starts a waiting command whatever the
 room and answers `SessionProcessStartedNow { process_id }`; a command that is not waiting
 is refused. The embedded local union changes, so the relay peer moves to 378.
+
+Local protocol 928 and relay peer 379: the `interaction` outside event tells an outside agent the
+question it may show the person. A `pending` record carries `question` `{ title?, message,
+choices[{ id, label, style? }], text_reply?{ id, label, placeholder?, min_length, max_length? },
+expires_at_ms?, default_on_timeout? }` exactly when the grant holder may answer the decision; it
+has no choice reply texts, passkey flags or secret inputs, and the message is bounded to 8 KiB,
+the choices to 8 and the labels to 120 characters. Every other decision (critical level, a choice
+that needs the passkey, a passkey prompt, a secret input, provider login, credential, user-domain,
+hand-off or kernel-operation decision) carries the section 8 `pointer` and the summary `owner
+approval`; the event and the grant refusal read the same rule (`PendingInteraction::requires_terminal`),
+so an event never offers a question the kernel then refuses. A `resolved` record carries
+`resolution` `{ via: terminal | external_agent | timeout | cancelled, choice_id? }`, never reply
+text. An answer to a decision that is no longer pending fails with the stable code
+`interaction_closed` (a passkey prompt a terminal answered keeps `PASSKEY_ALREADY_ANSWERED`), and
+each applied answer writes an `interaction.answered` audit event `{ session_id, choice_id,
+connection_class, at_ms }` without the reply text. The managed-upgrade list is [629, 636, 911, 923, 928].
+Focused checks: `cargo test -p chariox-kernel --lib choice_events` and `node --test dist/agent-command-table.test.js`.
