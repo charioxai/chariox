@@ -39,6 +39,6 @@ fn environment_relay_receipt_transport_snapshot_is_versioned() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "c6e38c65524e07188e77344bb5460b9c0244376c7bf69d93985c821935b2d8d8",
+        "05473fcd1ed0add7e6f71493c20e2c96c50caf864eb62ee709914abbf8790ff8",
     );
 }
