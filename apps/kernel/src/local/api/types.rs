@@ -419,4 +419,6 @@ pub use workspace::*;
 /// 919 (user-side browser frame stream removed, `display_ack` `paused`), 920 (mirror `document_mode`,
 /// `pointer_cursor`) and 923 (session-less Vault unlock).
 /// MP-08/MP-10/MP-11: provisional 950 (renumbered at the landing) acknowledges the leased projection drain (peer 390).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 950;
+/// MP-08/MP-10/MP-11: provisional 952 (renumbered at the landing) adds non-blocking task-owned questions
+/// (`asking_task_id` on interactions, answered through `RespondToInteraction`; peer 392).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 952;

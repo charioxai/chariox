@@ -262,6 +262,7 @@ async fn pruning_dead_store_tokens_closes_only_kernel_operation_responders() {
             id.into(),
             super::super::PendingInteraction {
                 goal_approval: None,
+                async_task_id: None,
                 kernel_wide_interaction: None,
                 agent_lifetime: None,
                 session_id: "same-session".into(),
