@@ -84,6 +84,19 @@ impl Kernel {
         std::fs::read_to_string(self.root.join("credential-policy")).unwrap()
     }
 
+    /// The stored handle record as the registry holds it.
+    async fn credential_record(&mut self, id: &str) -> Value {
+        self.control(&format!("credential-record:{id}")).await;
+        serde_json::from_str(&std::fs::read_to_string(self.root.join("credential-record")).unwrap())
+            .unwrap()
+    }
+
+    /// SHA-256 of the value the Vault holds under `key`.
+    async fn vault_value_sha256(&mut self, key: &str) -> String {
+        self.control(&format!("vault-secret-sha256:{key}")).await;
+        std::fs::read_to_string(self.root.join("vault-secret-sha256")).unwrap()
+    }
+
     async fn secret_status(&mut self, holder: &mut Client, interaction_id: &str, want: &str) {
         timeout(Duration::from_secs(10), async {
             loop {
@@ -397,4 +410,83 @@ async fn overwriting_a_handle_cannot_widen_the_hosts_it_is_bound_to() {
 
     let same = holder.request(request_for("drill_key", true, &[HOST]));
     assert!(same["error"].is_null(), "{same}");
+}
+
+#[tokio::test]
+async fn overwriting_a_handle_keeps_its_record_and_changes_only_the_value() {
+    let mut kernel = Kernel::start().await;
+    let mut holder = Client::start(&kernel.root);
+    grant(&mut kernel, &mut holder).await;
+    let set = serde_json::json!({"SetUserConfigValue":{"path":"secret_link.page_url","value":"https://page.test"}});
+    assert!(kernel.request(set).await["error"].is_null());
+    unlock(&mut kernel).await;
+
+    kernel.control("seed-credential:owner_key|owner-vault-slot").await;
+    let before = kernel.credential_record("owner_key").await;
+    assert_eq!(before["injection"]["name"], "x-api-key");
+    let seeded = kernel.vault_value_sha256("owner-vault-slot").await;
+
+    let started = holder.request(request("owner_key", true));
+    let id = started["response"]["VaultSecretRequested"]["interaction_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{started}"))
+        .to_owned();
+    assert!(kernel.request(answer(&id, "secret", Some(CANARY))).await["error"].is_null());
+    kernel.secret_status(&mut holder, &id, "stored").await;
+
+    assert_eq!(
+        kernel.credential_record("owner_key").await,
+        before,
+        "the overwrite replaced the handle's record"
+    );
+    let after = kernel.vault_value_sha256("owner-vault-slot").await;
+    assert_ne!(after, seeded, "the value at the handle's own Vault key did not change");
+    assert_eq!(
+        after,
+        format!("{:x}", Sha256::digest(CANARY.as_bytes())),
+        "the new value is not at the handle's own Vault key"
+    );
+    assert_eq!(kernel.credential_allowed_hosts("owner_key").await, [HOST]);
+}
+
+#[tokio::test]
+async fn a_default_port_binding_is_accepted_and_usable_on_that_port_only() {
+    let mut kernel = Kernel::start().await;
+    let mut holder = Client::start(&kernel.root);
+    grant(&mut kernel, &mut holder).await;
+    let set = serde_json::json!({"SetUserConfigValue":{"path":"secret_link.page_url","value":"https://page.test"}});
+    assert!(kernel.request(set).await["error"].is_null());
+    unlock(&mut kernel).await;
+
+    let started = holder.request(request_for(
+        "drill_key",
+        false,
+        &["api.example.com:443", "localhost:80", "localhost:8080"],
+    ));
+    let id = started["response"]["VaultSecretRequested"]["interaction_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("default ports are bindable: {started}"))
+        .to_owned();
+    assert!(kernel.request(answer(&id, "secret", Some(CANARY))).await["error"].is_null());
+    kernel.secret_status(&mut holder, &id, "stored").await;
+
+    for url in [
+        "https://api.example.com/v1",
+        "http://localhost/v1",
+        "http://localhost:8080/v1",
+    ] {
+        assert_eq!(kernel.credential_policy("drill_key", url).await, "ok", "{url}");
+    }
+    for url in [
+        "https://api.example.com:8443/v1",
+        "http://api.example.com/v1",
+        "http://localhost:9090/v1",
+        "https://evil.example.net/v1",
+    ] {
+        assert_eq!(
+            kernel.credential_policy("drill_key", url).await,
+            "credential_policy",
+            "{url}"
+        );
+    }
 }

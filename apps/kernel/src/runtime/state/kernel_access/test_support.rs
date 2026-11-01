@@ -91,6 +91,54 @@ impl KernelRuntimeState {
             .unwrap();
             return;
         }
+        if let Some(seed) = action.strip_prefix("seed-credential:") {
+            let (handle, vault_key) = seed.split_once('|').unwrap();
+            let user_config = self.owned.config_projection.snapshot().user_config;
+            let service = crate::secret::RuntimeSecretService::with_vault_config(
+                crate::credential::load_user_credentials().unwrap(),
+                &user_config.credential_vault,
+            )
+            .unwrap();
+            let registry = crate::credential::CharioxCredentialRegistry::user().unwrap();
+            service
+                .upsert_vault_backed_credential_with_secret(
+                    &registry,
+                    crate::config::UserCredentialConfig {
+                        id: handle.into(),
+                        description: Some("Owner key".into()),
+                        source: crate::config::UserCredentialSourceConfig::Vault {
+                            key: vault_key.into(),
+                        },
+                        allowed_hosts: vec!["api.example.com".into()],
+                        allowed_uses: vec![
+                            crate::config::UserCredentialUse::Http,
+                            crate::config::UserCredentialUse::Mcp,
+                        ],
+                        injection: crate::config::UserCredentialInjectionConfig::Header {
+                            name: "x-api-key".into(),
+                            value: "${secret}".into(),
+                        },
+                        metadata: None,
+                    },
+                    "seed-value",
+                    false,
+                )
+                .unwrap();
+            return;
+        }
+        if let Some(handle) = action.strip_prefix("credential-record:") {
+            let credential = crate::credential::load_user_credentials()
+                .unwrap()
+                .into_iter()
+                .find(|credential| credential.id == handle)
+                .unwrap();
+            std::fs::write(
+                vault.parent().unwrap().join("credential-record"),
+                serde_json::to_string(&credential).unwrap(),
+            )
+            .unwrap();
+            return;
+        }
         if let Some(check) = action.strip_prefix("credential-policy:") {
             let (handle, url) = check.split_once('|').unwrap();
             let user_config = self.owned.config_projection.snapshot().user_config;
