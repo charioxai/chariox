@@ -15,6 +15,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             stopped,
         } => super::deadlines::reached(tx, room, agent, now, stopped),
         Operation::LeasedProcess(mutation) => super::leased_processes::apply(tx, mutation),
+        Operation::WorkerStop(mutation) => super::worker_stops::apply(tx, mutation),
         Operation::CreateLeasedWake {
             task,
             prompt,

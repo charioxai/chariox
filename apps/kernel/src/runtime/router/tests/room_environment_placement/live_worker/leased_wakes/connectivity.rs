@@ -533,7 +533,20 @@ async fn restart_home(
         Arc::clone(&fixture.worker),
     ));
     drop((old_store, old_runtime));
-    let app = DaemonApp::bootstrap(fixture.home_state.config.clone()).unwrap();
+    // Background work of the dead home still holds its state for a moment.
+    let app = timeout(Duration::from_secs(10), async {
+        loop {
+            match DaemonApp::bootstrap(fixture.home_state.config.clone()) {
+                Ok(app) => break app,
+                Err(error) if error.to_string().contains("already owned") => {
+                    tokio::time::sleep(Duration::from_millis(50)).await
+                }
+                Err(error) => panic!("the home restarts from its durable state: {error}"),
+            }
+        }
+    })
+    .await
+    .expect("the dead home releases its durable state");
     let restarted = Arc::new(CommandRouter::with_interactive_capacity(
         Arc::new(Mutex::new(app)),
         2,

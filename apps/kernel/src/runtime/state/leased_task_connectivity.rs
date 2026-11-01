@@ -119,7 +119,7 @@ impl KernelRuntimeState {
             }
         }
         for (task, binding, offline_ms) in lost {
-            Box::pin(self.end_turn_on_lost_worker(&task, &binding, offline_ms, now)).await?;
+            Box::pin(self.end_turn_on_lost_worker(&task, &binding, offline_ms)).await?;
         }
         Ok(())
     }
@@ -157,7 +157,6 @@ impl KernelRuntimeState {
         task: &AgentTaskExecution,
         binding: &crate::agent::RemoteAgentBinding,
         offline_ms: u64,
-        now: u64,
     ) -> Result<(), DaemonError> {
         let Some(run) = binding.active_worker_provider_run_id.as_deref() else {
             return Ok(());
@@ -177,6 +176,13 @@ impl KernelRuntimeState {
              Chariox cancels it when the worker is reachable again",
             offline_ms / 1000
         );
+        self.open_worker_stop_obligation(
+            &task.room_id,
+            &task.agent_id,
+            binding,
+            &task.prompt_id,
+            run,
+        )?;
         self.settle_lost_remote_prompt_run(
             &task.room_id,
             &task.agent_id,
@@ -185,9 +191,7 @@ impl KernelRuntimeState {
             &lost,
             "the relay reports the worker kernel is not connected",
         )
-        .await?;
-        self.open_worker_stop_obligation(binding, &task.prompt_id, run, now);
-        Ok(())
+        .await
     }
 }
 
