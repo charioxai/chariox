@@ -106,13 +106,20 @@ if [[ -n "${CHARIOX_ORIG_ZDOTDIR+x}" ]]; then
 fi
 [[ -r "${ZDOTDIR:-$HOME}/.zshenv" ]] && source "${ZDOTDIR:-$HOME}/.zshenv"
 __chariox_precmd() {
-  local status_code=$? job=
-  # `$!` is the last background job; the job table needs a module not every build has.
-  [[ -n "${!-}" ]] && kill -0 "$!" 2>/dev/null && job=$!
-  print -rn -- $'\e]133;D;'"$status_code;$job"$'\a'
+  local status_code=$? word
+  local -a pgids
+  # One word per job, `state:mark:pid=state[:pid=state...]`: the first pid is
+  # the process group the job leads.
+  for word in ${(v)jobstates}; do
+    word=${word#*:*:}
+    pgids+=(${word%%=*})
+  done
+  print -rn -- $'\e]133;D;'"$status_code;${(j:,:)pgids}"$'\a'
 }
 __chariox_preexec() { print -rn -- $'\e]133;C\a'; }
 __chariox_install() {
+  # `$jobstates` comes from this module; not every build loads it on use.
+  zmodload zsh/parameter 2>/dev/null
   precmd_functions=(${precmd_functions:#__chariox_install})
   precmd_functions=(__chariox_precmd $precmd_functions)
   preexec_functions=(__chariox_preexec $preexec_functions)
