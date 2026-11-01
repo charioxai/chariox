@@ -905,6 +905,7 @@ mod tests {
             session,
             agent_activity: Default::default(),
             agent_activity_revision: 0,
+            processes: Vec::new(),
         }
     }
 
