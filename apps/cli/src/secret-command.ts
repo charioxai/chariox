@@ -21,13 +21,13 @@ async function status(send: Send, interactionId: string): Promise<VaultSecretSta
 }
 
 async function request(argv: string[]): Promise<number> {
-  const { flags, positionals } = parseArguments("secret request", argv)
+  const { flags, repeated, positionals } = parseArguments("secret request", argv)
   const label = flags.get("--label")
   if (typeof label !== "string" || !label.trim()) throw new CommandFailure("usage", usageOf("secret request"))
   const socket = flags.get("--socket") as string | undefined
   const waitSeconds = seconds(flags.get("--timeout"))
   return withKernel({ socket, timeoutSeconds: REQUEST_SECONDS }, async send => {
-    const asked = await send({ RequestVaultSecret: { credential_id: positionals[0], label, overwrite: flags.has("--overwrite") } })
+    const asked = await send({ RequestVaultSecret: { credential_id: positionals[0], label, hosts: repeated.get("--host") ?? [], overwrite: flags.has("--overwrite") } })
     const requested = (asked as VaultSecretRequestedResponse).VaultSecretRequested
     console.log(requested.link)
     console.log(JSON.stringify(requested))

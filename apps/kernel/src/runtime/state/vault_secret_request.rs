@@ -18,6 +18,7 @@ fn refusal(code: &str) -> DaemonError {
 pub(crate) const VAULT_SECRET_OPERATION: &str = "secret-request:";
 const SECRET_REQUEST_TIMEOUT_SEC: u64 = 600;
 const LABEL_MAX_CHARS: usize = 80;
+const HOSTS_MAX: usize = 8;
 /// Finished requests stay readable this long, so a slow poll still learns the outcome.
 const FINISHED_RETENTION_MS: u64 = 3_600_000;
 const REQUESTS_KEPT: usize = 64;
@@ -51,12 +52,24 @@ impl KernelRuntimeState {
             return Err(refusal("secret_request_denied"));
         }
         let label = clean_label(&request.label)?;
+        let hosts = clean_hosts(&request.hosts)?;
         let page = secret_page(&snapshot)?;
         self.require_unlocked_vault()?;
-        let credential = vault_credential(&request.credential_id, &label, &grant)?;
+        let credential = vault_credential(&request.credential_id, &label, hosts, &grant)?;
         let registry = crate::credential::CharioxCredentialRegistry::user()?;
-        if !request.overwrite && registry.get(&credential.id)?.is_some() {
-            return Err(refusal("secret_request_exists"));
+        if let Some(existing) = registry.get(&credential.id)? {
+            if !request.overwrite {
+                return Err(refusal("secret_request_exists"));
+            }
+            // Replacing the value must not send the old handle's key to new hosts.
+            let bound = |hosts: &[String]| {
+                let mut hosts = hosts.to_vec();
+                hosts.sort();
+                hosts
+            };
+            if bound(&existing.allowed_hosts) != bound(&credential.allowed_hosts) {
+                return Err(refusal("secret_request_invalid"));
+            }
         }
 
         let interaction_id = format!("secret-request-{:016x}", rand::random::<u64>());
@@ -67,7 +80,8 @@ impl KernelRuntimeState {
             format!("{VAULT_SECRET_OPERATION}{interaction_id}"),
             "Value for the Vault",
             format!(
-                "{who} asks for the value of {label}. It goes to your Chariox Vault and no agent sees it."
+                "{who} asks for the value of {label}, for {}. It goes to your Chariox Vault and no agent sees it.",
+                credential.allowed_hosts.join(", ")
             ),
             SECRET_REQUEST_TIMEOUT_SEC,
         );
@@ -235,6 +249,46 @@ fn clean_label(label: &str) -> Result<String, DaemonError> {
     Ok(label.to_owned())
 }
 
+/// The hosts the key may go to, exactly as `allowed_hosts` matches them: `host` or
+/// `host:port`, lowercase, no scheme, path or wildcard, and no IP literal but loopback.
+fn clean_hosts(hosts: &[String]) -> Result<Vec<String>, DaemonError> {
+    if hosts.is_empty() || hosts.len() > HOSTS_MAX {
+        return Err(refusal("secret_request_invalid"));
+    }
+    let mut clean: Vec<String> = Vec::with_capacity(hosts.len());
+    for entry in hosts {
+        if !host_is_bindable(entry) {
+            return Err(refusal("secret_request_invalid"));
+        }
+        if !clean.contains(entry) {
+            clean.push(entry.clone());
+        }
+    }
+    Ok(clean)
+}
+
+fn host_is_bindable(entry: &str) -> bool {
+    let Ok(url) = url::Url::parse(&format!("http://{entry}")) else {
+        return false;
+    };
+    // Rebuilding the entry from the parsed parts rejects a scheme, path, credentials,
+    // uppercase, wildcard and any spelling the matcher would not see as written.
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    let rebuilt = match url.port() {
+        Some(port) => format!("{host}:{port}"),
+        None => host.to_owned(),
+    };
+    let literal_ok = match url.host() {
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        Some(url::Host::Domain(_)) => true,
+        None => false,
+    };
+    rebuilt == entry && literal_ok && !entry.contains('*')
+}
+
 /// The page that serves the link: the configured one, else the enrolled Cloud's web app.
 fn secret_page(snapshot: &crate::config::DaemonConfig) -> Result<String, DaemonError> {
     let configured = snapshot.user_config.secret_link.page_url.clone();
@@ -250,11 +304,12 @@ fn secret_page(snapshot: &crate::config::DaemonConfig) -> Result<String, DaemonE
         .ok_or_else(|| refusal("secret_link_unavailable"))
 }
 
-/// A new handle takes the plain Authorization header; an existing handle keeps its record
-/// when the owner replaces the value.
+/// A new handle takes the plain Authorization header, bound to the hosts the agent named;
+/// an existing handle keeps its record when the owner replaces the value.
 fn vault_credential(
     id: &str,
     label: &str,
+    hosts: Vec<String>,
     grant: &crate::local::KernelAccessGrant,
 ) -> Result<crate::config::UserCredentialConfig, DaemonError> {
     let now = crate::session::unix_epoch_ms();
@@ -262,7 +317,7 @@ fn vault_credential(
         id: id.to_owned(),
         description: Some(label.to_owned()),
         source: crate::config::UserCredentialSourceConfig::Vault { key: id.to_owned() },
-        allowed_hosts: Vec::new(),
+        allowed_hosts: hosts,
         allowed_uses: vec![crate::config::UserCredentialUse::Http],
         injection: crate::config::UserCredentialInjectionConfig::Header {
             name: "authorization".to_owned(),

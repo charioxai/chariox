@@ -41,6 +41,8 @@ test("the guide tells an agent what to do with a secret link, from the command t
   assert.match(guide, /Never ask for the value in chat/)
   assert.equal(exitCodeFor("secret_link_unavailable"), 3)
   assert.match(usageOf("secret request"), /--label TEXT/)
+  assert.match(usageOf("secret request"), /--host HOST \[--host HOST \.\.\.\]/)
+  assert.match(guide, /the owner sees them before typing/)
 })
 
 test("the parser accepts every flag the table lists and refuses anything else", () => {
@@ -48,9 +50,10 @@ test("the parser accepts every flag the table lists and refuses anything else", 
     const positionals = (spec.args ?? []).map(name => name.toLowerCase())
     for (const flag of spec.flags) {
       const parsed = parseArguments(spec.name, [...positionals, ...flag.value ? [flag.name, "x"] : [flag.name]])
-      assert.equal(parsed.flags.get(flag.name), flag.value ? "x" : true)
+      assert.equal(flag.repeat ? parsed.repeated.get(flag.name)?.[0] : parsed.flags.get(flag.name), flag.value ? "x" : true)
       assert.deepEqual(parsed.positionals, positionals)
-      assert.throws(() => parseArguments(spec.name, [...positionals, ...flag.value ? [flag.name, "x", flag.name, "y"] : [flag.name, flag.name]]), CommandFailure)
+      if (flag.repeat) assert.deepEqual(parseArguments(spec.name, [...positionals, flag.name, "x", flag.name, "y"]).repeated.get(flag.name), ["x", "y"])
+      else assert.throws(() => parseArguments(spec.name, [...positionals, ...flag.value ? [flag.name, "x", flag.name, "y"] : [flag.name, flag.name]]), CommandFailure)
       if (flag.value) assert.throws(() => parseArguments(spec.name, [...positionals, flag.name]), CommandFailure)
     }
     assert.throws(() => parseArguments(spec.name, [...positionals, "--passkey", "never"]), (error: unknown) => error instanceof CommandFailure && error.code === "usage")

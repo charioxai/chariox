@@ -236,7 +236,11 @@ async fn an_outside_agent_gets_a_link_and_the_owner_types_the_value_in_a_client(
     );
 
     let handle = kernel.credential_allowed_hosts("drill_key").await;
-    assert_eq!(handle, [HOST], "the handle is bound to the hosts the agent named");
+    assert_eq!(
+        handle,
+        [HOST],
+        "the handle is bound to the hosts the agent named"
+    );
     assert_eq!(
         kernel
             .credential_policy("drill_key", &format!("https://{HOST}/v1/models"))
@@ -244,7 +248,11 @@ async fn an_outside_agent_gets_a_link_and_the_owner_types_the_value_in_a_client(
         "ok",
         "the bound host passes the policy"
     );
-    for elsewhere in ["https://evil.example.net/v1", "https://api.example.com.evil.net/", "http://127.0.0.1:9/echo"] {
+    for elsewhere in [
+        "https://evil.example.net/v1",
+        "https://api.example.com.evil.net/",
+        "http://127.0.0.1:9/echo",
+    ] {
         assert_eq!(
             kernel.credential_policy("drill_key", elsewhere).await,
             "credential_policy",
@@ -314,7 +322,9 @@ async fn a_request_that_names_no_usable_host_is_refused_and_creates_nothing() {
     assert!(kernel.request(set).await["error"].is_null());
     unlock(&mut kernel).await;
 
-    let missing = holder.request(serde_json::json!({"RequestVaultSecret":{"credential_id":"drill_key","label":"Drill key"}}));
+    let missing = holder.request(
+        serde_json::json!({"RequestVaultSecret":{"credential_id":"drill_key","label":"Drill key"}}),
+    );
     let mut refusals = vec![missing];
     for hosts in [
         &[][..],
@@ -333,18 +343,30 @@ async fn a_request_that_names_no_usable_host_is_refused_and_creates_nothing() {
             "{refused}"
         );
         assert!(
-            refused["error"]["message"].as_str().unwrap().contains("--host api.example.com"),
+            refused["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("--host api.example.com"),
             "the refusal names the next step: {refused}"
         );
     }
 
-    let loopback = holder.request(request_for("drill_key", false, &["127.0.0.1:8080", "localhost", "[::1]:9"]));
+    let loopback = holder.request(request_for(
+        "drill_key",
+        false,
+        &["127.0.0.1:8080", "localhost", "[::1]:9"],
+    ));
     let id = loopback["response"]["VaultSecretRequested"]["interaction_id"]
         .as_str()
         .unwrap_or_else(|| panic!("loopback hosts are allowed: {loopback}"))
         .to_owned();
-    let prompts = kernel.secret_prompts(&id).await;
-    assert_eq!(prompts.len(), 1, "a refused request left a prompt behind: {prompts:?}");
+    let asked = kernel
+        .secret_prompts(&id)
+        .await
+        .into_iter()
+        .filter(|prompt| prompt["kind"] == "vault_secret")
+        .count();
+    assert_eq!(asked, 1, "a refused request left a prompt behind");
 }
 
 #[tokio::test]

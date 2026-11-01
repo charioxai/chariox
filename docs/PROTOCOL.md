@@ -6052,14 +6052,15 @@ web). The managed-upgrade list is [629, 636, 923]. Focused checks:
 
 ### Vault value requests from an outside agent — local 929
 
-`RequestVaultSecret { credential_id, label, overwrite }` (grant holders on the local socket only; not forwarded
+`RequestVaultSecret { credential_id, label, hosts, overwrite }` (grant holders on the local socket only; not forwarded
 to other kernels) answers `VaultSecretRequested { interaction_id, link, expires_at, credential_id }` at once and
 raises a Critical kernel-wide decision on the `kernel-access` scope: a `PasskeyPrompt` with `kind` `vault_secret`
 (`approve_choice_id` `secret`, `refuse_choice_id` `cancel`) that every owner terminal shows. The owner answers it with
 `RespondToInteraction { session_id: "kernel-access", interaction_id, choice_id: "secret", custom_reply: <value> }`
 (or `cancel`); a grant holder is refused for every choice, like any passkey prompt. The kernel stores the value in
-the Vault under `credential_id` (a new handle gets an `Authorization: Bearer ${secret}` header over HTTP; an existing
-one needs `overwrite`) and the agent reads only `GetVaultSecretStatus { interaction_id }` →
+the Vault under `credential_id` (a new handle gets an `Authorization: Bearer ${secret}` header over HTTP, bound to `hosts`: at least one
+`host` or `host:port`, lowercase, no scheme, path or `*`, no IP literal but loopback, else `secret_request_invalid`; the
+prompt names the label and the hosts; an existing one needs `overwrite` and the same hosts) and the agent reads only `GetVaultSecretStatus { interaction_id }` →
 `VaultSecretStatusReported { interaction_id, credential_id, status }` with `status` one of `pending`, `stored`,
 `cancelled`, `timed_out`. The value is never in a response, an event, the command cache, history or a log.
 `link` is `<page>/s/<kernel_id>/<interaction_id>`, `<page>` being `secret_link.page_url` (HTTPS, set by the owner only)

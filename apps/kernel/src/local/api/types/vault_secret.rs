@@ -9,6 +9,10 @@ pub struct RequestVaultSecretRequest {
     pub credential_id: String,
     /// What the owner is asked for, in the agent's words (shown after the kernel's own sentence).
     pub label: String,
+    /// The API hosts that may receive the key (`host` or `host:port`, lowercase): the handle
+    /// is bound to them. Required; an empty list is refused.
+    #[serde(default)]
+    pub hosts: Vec<String>,
     #[serde(default)]
     pub overwrite: bool,
 }

@@ -3,7 +3,7 @@ import {
   listProjectsRequest, listSessionsRequest, searchWorkspaceDirectoriesRequest, spawnAgentRequest, submitPromptRequest,
 } from "./ipc-requests.js"
 
-type Flag = { name: string; value?: string; required?: true }
+type Flag = { name: string; value?: string; required?: true; repeat?: true }
 type CommandSpec = { name: string; flags: readonly Flag[]; args?: readonly string[]; summary: string; note?: string }
 
 const SOCKET: Flag = { name: "--socket", value: "PATH" }
@@ -32,10 +32,10 @@ export const COMMANDS: readonly CommandSpec[] = [
   },
   {
     name: "secret request",
-    flags: [{ name: "--label", value: "TEXT", required: true }, OVERWRITE, { name: "--no-wait" }, TIMEOUT, SOCKET],
+    flags: [{ name: "--label", value: "TEXT", required: true }, { name: "--host", value: "HOST", required: true, repeat: true }, OVERWRITE, { name: "--no-wait" }, TIMEOUT, SOCKET],
     args: ["CREDENTIAL_ID"],
     summary: "ask the user for a value that goes straight into their Vault under CREDENTIAL_ID; prints the link as its first line, then waits for stored, cancelled or timed_out (--no-wait: exit 6)",
-    note: "Show the link to the user verbatim and do not open it. Never ask for the value in chat and never type it yourself: you do not receive it. Use the stored value only through its credential handle.",
+    note: "Name the host(s) that will receive the key with --host (repeat it, for example api.example.com or localhost:8080); the owner sees them before typing, and the handle works for no other host. Show the link to the user verbatim and do not open it. Never ask for the value in chat and never type it yourself: you do not receive it. Use the stored value only through its credential handle.",
   },
   { name: "secret status", flags: [SOCKET], args: ["INTERACTION_ID"], summary: "pending, stored, cancelled or timed_out for a secret request you made" },
   { name: "kernels", flags: [SOCKET], summary: "list the kernels this kernel can reach" },
@@ -147,7 +147,7 @@ function commandSpec(command: string): CommandSpec {
 function usage(spec: CommandSpec): string {
   const flags = spec.flags.map(flag => {
     const text = `${flag.name}${flag.value ? ` ${flag.value}` : ""}`
-    return flag.required ? text : `[${text}]`
+    return flag.required ? (flag.repeat ? `${text} [${text} ...]` : text) : `[${text}]`
   })
   return `Usage: chariox ${[spec.name, ...flags, ...spec.args ?? []].join(" ")}`
 }
@@ -156,19 +156,22 @@ export function parseFlags(command: string, argv: readonly string[]): Map<string
   return parseArguments(command, argv).flags
 }
 
-export function parseArguments(command: string, argv: readonly string[]): { flags: Map<string, string | true>; positionals: string[] } {
+export function parseArguments(command: string, argv: readonly string[]): { flags: Map<string, string | true>; repeated: Map<string, string[]>; positionals: string[] } {
   const spec = commandSpec(command)
   const values = new Map<string, string | true>()
+  const repeated = new Map<string, string[]>()
   const positionals: string[] = []
   for (let i = 0; i < argv.length; i++) {
     if (!argv[i]!.startsWith("--")) { positionals.push(argv[i]!); continue }
     const flag = spec.flags.find(entry => entry.name === argv[i])
     const value = flag?.value ? argv[++i] : true
-    if (!flag || !value || values.has(flag.name)) throw new CommandFailure("usage", usage(spec))
+    if (!flag || !value) throw new CommandFailure("usage", usage(spec))
+    if (flag.repeat) { repeated.set(flag.name, [...repeated.get(flag.name) ?? [], String(value)]); continue }
+    if (values.has(flag.name)) throw new CommandFailure("usage", usage(spec))
     values.set(flag.name, value)
   }
   if (positionals.length !== (spec.args?.length ?? 0)) throw new CommandFailure("usage", usage(spec))
-  return { flags: values, positionals }
+  return { flags: values, repeated, positionals }
 }
 
 export function guideText(): string {

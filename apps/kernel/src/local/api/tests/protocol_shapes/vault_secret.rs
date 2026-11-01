@@ -7,11 +7,12 @@ fn vault_secret_request_929_shapes_are_pinned() {
     let request = LocalDaemonRequest::RequestVaultSecret(crate::local::RequestVaultSecretRequest {
         credential_id: "drill_key".into(),
         label: "Drill key".into(),
+        hosts: vec!["api.example.com".into()],
         overwrite: false,
     });
     assert_eq!(
         serde_json::to_value(&request).unwrap(),
-        serde_json::json!({"RequestVaultSecret": {"credential_id": "drill_key", "label": "Drill key", "overwrite": false}})
+        serde_json::json!({"RequestVaultSecret": {"credential_id": "drill_key", "label": "Drill key", "hosts": ["api.example.com"], "overwrite": false}})
     );
     assert!(serde_json::from_value::<LocalDaemonRequest>(
         serde_json::json!({"RequestVaultSecret": {"credential_id": "k", "label": "l", "value": "typed"}})
