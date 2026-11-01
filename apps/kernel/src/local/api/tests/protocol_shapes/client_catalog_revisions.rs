@@ -15,13 +15,14 @@ fn client_catalog_revisions_534_142_are_versioned_and_hashed() {
             "{:x}",
             Sha256::digest(include_str!("../../types/provider_control.rs").as_bytes())
         ),
-        "ef81436c58a7185d77f9e787e462f7cc1c74b69656fd3b4d502ad3a6636cd002"
+        "a4a36a95eb80a38e0ae0cbe99da511df4e4cc0ea44c18f096842b32382734134"
     );
     let request =
         LocalDaemonRequest::GetClientCatalogRevisions(crate::local::GetProviderCatalogRequest {
             provider: Some("codex".into()),
             account_profiles: [("codex".into(), "work".into())].into(),
             execution_location: crate::local::api::ProviderCatalogExecutionLocation::Local,
+            summary_only: false,
         });
     let response = LocalDaemonResponse::ClientCatalogRevisions {
         revisions: crate::local::ClientCatalogRevisions {
