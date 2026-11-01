@@ -49,6 +49,16 @@ pub(crate) async fn ensure_cloud_relay_connection(
     runtime_state: &KernelRuntimeState,
     config_projection: &DaemonConfigProjectionStore,
 ) -> Result<(), DaemonError> {
+    ensure_cloud_relay_connection_replacing(runtime_state, config_projection, None).await
+}
+
+/// `refused_token` is a token the relay refused although the kernel still
+/// counted it fresh (clock skew, early revocation): it is renewed, not reused.
+pub(crate) async fn ensure_cloud_relay_connection_replacing(
+    runtime_state: &KernelRuntimeState,
+    config_projection: &DaemonConfigProjectionStore,
+    refused_token: Option<&str>,
+) -> Result<(), DaemonError> {
     // MP-08 / MP-10 / MP-11: automatic refresh cannot undo a private override.
     // ConnectCloudRelay remains the explicit operation that selects Cloud again.
     if !crate::runtime::cloud_relay_control::cloud_relay_transport_selected(
@@ -65,7 +75,9 @@ pub(crate) async fn ensure_cloud_relay_connection(
         return Ok(());
     }
     let now_ms = crate::session::unix_epoch_ms();
-    if cloud_relay_runtime_token_is_fresh(&config, &profile, now_ms) {
+    let refused =
+        refused_token.is_some_and(|refused| config.relay_token.as_deref() == Some(refused));
+    if !refused && cloud_relay_runtime_token_is_fresh(&config, &profile, now_ms) {
         return Ok(());
     }
 
