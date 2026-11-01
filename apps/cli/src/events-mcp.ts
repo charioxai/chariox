@@ -13,6 +13,8 @@ const DEFAULT_WAIT_SECONDS = 540
 const MAX_WAIT_SECONDS = 900
 const REPLY = "reply"
 const PAGE = 100
+// An idle wait holds the inbox reader, so it lasts one short slice and another call's read or acknowledgement is never held for long.
+const WAIT_SLICE_SECONDS = 5
 
 type Json = Record<string, unknown>
 type Interaction = Extract<OutsideEvent, { type: "interaction" }>
@@ -84,12 +86,25 @@ export async function runEventsMcp(send: SendRequest, input: Readable, output: W
   const ledger = new Ledger()
   let ingested = 0
   let seen: number | null = null
+  // The inbox is read once for every call, so the end of the subscription is state, not something one batch carried.
+  let ended = false
 
-  async function acknowledge(): Promise<void> {
-    const cursor = ledger.ackable()
-    if (cursor === null) return
-    await send({ AckEvents: { cursor } })
-    ledger.acknowledged(cursor)
+  // The only way to the inbox: one request in flight, so replies cannot arrive out of order. Request bodies are built
+  // inside the lock from the current cursor, never before waiting for it.
+  let inboxQueue: Promise<unknown> = Promise.resolve()
+  function exclusive<T>(work: () => Promise<T>): Promise<T> {
+    const run = inboxQueue.then(work, work)
+    inboxQueue = run.catch(() => undefined)
+    return run
+  }
+
+  function acknowledge(): Promise<void> {
+    return exclusive(async () => {
+      const cursor = ledger.ackable()
+      if (cursor === null) return
+      await send({ AckEvents: { cursor } })
+      ledger.acknowledged(cursor)
+    })
   }
 
   // A kept record is only bookkeeping once the person was served: the next call acknowledges it again.
@@ -104,6 +119,7 @@ export async function runEventsMcp(send: SendRequest, input: Readable, output: W
       if (event.cursor <= ingested) continue
       ingested = event.cursor
       ledger.add(event)
+      if (event.type === "subscription_ended") ended = true
       if (event.type !== "interaction") continue
       const key = decisionKey(event)
       if (pendingDecision(event)) open.set(key, event)
@@ -125,35 +141,42 @@ export async function runEventsMcp(send: SendRequest, input: Readable, output: W
     return null
   }
 
-  async function read(request: Json): Promise<EventsBatch> {
-    const response = await send(request) as { EventsListed?: EventsBatch }
-    if (!response.EventsListed) throw new CommandFailure("cursor_expired", "event cursor expired; subscribe again")
-    seen = response.EventsListed.next_cursor
-    ingest(response.EventsListed.events)
-    return response.EventsListed
+  // `seen` only moves forward. A cursor below the acknowledgement floor (another process acknowledged past it) is
+  // recovered once by reading again from the floor; a second refusal fails loudly.
+  function read(kind: "ListEvents" | "WaitEvents", timeoutMs?: number): Promise<EventsBatch> {
+    return exclusive(async () => {
+      for (let attempt = 0; ; attempt++) {
+        const body = { ...(seen === null ? {} : { since: seen }), limit: PAGE, ...(timeoutMs === undefined ? {} : { timeout_ms: timeoutMs }) }
+        const response = await send({ [kind]: body }) as { EventsListed?: EventsBatch; EventsCursorExpired?: { oldest_cursor: number } }
+        if (response.EventsListed) {
+          seen = Math.max(seen ?? 0, response.EventsListed.next_cursor)
+          ingest(response.EventsListed.events)
+          return response.EventsListed
+        }
+        if (!response.EventsCursorExpired || attempt > 0) throw new CommandFailure("cursor_expired", "event cursor expired; subscribe again")
+        seen = Math.max(seen ?? 0, response.EventsCursorExpired.oldest_cursor - 1)
+      }
+    })
   }
 
   // Every record already in the inbox, page after page, so a decision answered elsewhere is closed before it is asked.
-  async function drain(): Promise<boolean> {
-    for (;;) {
-      const batch = await read({ ListEvents: { ...(seen === null ? {} : { since: seen }), limit: PAGE } })
-      if (batch.events.some(event => event.type === "subscription_ended")) return true
-      if (batch.events.length < PAGE) return false
-    }
+  async function drain(): Promise<void> {
+    for (;;) if ((await read("ListEvents")).events.length < PAGE) return
   }
 
   async function nextChoice(seconds: number): Promise<Json> {
     const deadline = Date.now() + seconds * 1000
     while (Date.now() < deadline) {
-      if (await drain()) return text({ ended: true })
+      await drain()
+      if (ended) return text({ ended: true })
       await acknowledge()
       const decision = await claimFirstOpen()
       if (decision) {
         try { return await present(decision) } finally { inFlight.delete(decisionKey(decision)) }
       }
-      const wait = Math.max(1, Math.min(Math.ceil((deadline - Date.now()) / 1000), 60))
-      const batch = await read({ WaitEvents: { ...(seen === null ? {} : { since: seen }), limit: PAGE, timeout_ms: wait * 1000 } })
-      if (batch.events.some(event => event.type === "subscription_ended")) return text({ ended: true })
+      const wait = Math.max(1, Math.min(Math.ceil((deadline - Date.now()) / 1000), WAIT_SLICE_SECONDS))
+      await read("WaitEvents", wait * 1000)
+      if (ended) return text({ ended: true })
       await acknowledge()
     }
     return text({ timed_out: true })
