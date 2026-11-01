@@ -279,6 +279,44 @@ mod tests {
         );
     }
 
+    fn failed_with(
+        operation: &'static str,
+        message: &str,
+    ) -> Result<Result<RelayPeerResponse, DaemonError>, tokio::time::error::Elapsed> {
+        Ok(Err(DaemonError::LocalTransport {
+            operation,
+            message: message.into(),
+        }))
+    }
+
+    #[test]
+    fn offline_is_counted_from_the_first_offline_report_not_from_earlier_uncertainty() {
+        let key = ("task".to_string(), "worker".to_string(), "lease".to_string());
+        let mut uncertain = BTreeMap::new();
+        let at = |seconds: u64| seconds * 1_000;
+        assert_eq!(
+            observe(&mut uncertain, &key, Probe::Unreachable, at(0)),
+            Verdict::BecameUncertain
+        );
+        assert_eq!(
+            observe(&mut uncertain, &key, Probe::Unreachable, at(25)),
+            Verdict::Unchanged
+        );
+        assert_eq!(
+            observe(&mut uncertain, &key, Probe::WorkerOffline, at(30)),
+            Verdict::Unchanged,
+            "the first offline report after a long uncertainty starts the grace period"
+        );
+        assert_eq!(
+            observe(&mut uncertain, &key, Probe::WorkerOffline, at(49)),
+            Verdict::Unchanged
+        );
+        assert_eq!(
+            observe(&mut uncertain, &key, Probe::WorkerOffline, at(50)),
+            Verdict::Lost { offline_ms: 20_000 }
+        );
+    }
+
     #[test]
     fn a_shared_relay_that_refuses_the_connection_says_nothing_about_the_worker() {
         assert!(classify_probe(&refused(), false) == Probe::Unreachable);
