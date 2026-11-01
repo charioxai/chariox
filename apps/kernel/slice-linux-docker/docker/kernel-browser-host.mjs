@@ -2,7 +2,7 @@ import {resolveDisplayTarget,nativeStateObservationOptions} from './kernel-brows
 import {capturePageScreenshot} from './kernel-browser-screenshot.mjs';
 import { mirror2ObserverExpression } from './kernel-browser-mirror2-observer.mjs';
 import {captureVisiblePage,pngFallbackCommand,subscribeVisiblePage,visiblePageInputSource,viewerPageInputActive,nativeInputDocumentTarget} from './kernel-browser-page-display.mjs';
-import {reserveDisplay} from './kernel-browser-display-admission.mjs';
+import {reserveDisplay,maxDisplays} from './kernel-browser-display-admission.mjs';
 import { appRestoreOrigin } from "./browser-app-restore.mjs";
 import { DesktopDisplay } from './kernel-desktop-display.mjs';
 import {displayGeometry as geometry,hostViewport,featureOn} from './kernel-browser-geometry.mjs';
@@ -865,7 +865,7 @@ export class KernelBrowserHost {
       if (!featureOn("CHARIOX_KERNEL_BROWSER_DISPLAY")) throw new Error("MD-DISPLAY: display disabled");
       if (!Array.isArray(command.codecs) || !command.codecs.includes("png") || command.codecs.length > 8 ||
         !Number.isInteger(command.bitrate) || command.bitrate < 500_000 || command.bitrate > 64_000_000 ||
-        ![1, 2].includes(command.device_scale_factor) || this.displays.size >= 8) throw new Error("MD-DISPLAY: invalid display negotiation");
+        ![1, 2].includes(command.device_scale_factor) || this.displays.size >= maxDisplays) throw new Error("MD-DISPLAY: invalid display negotiation");
       // MP-08/MP-10/MP-11: observation never changes the native page density.
       const scale = this.viewport().device_scale_factor;
       this.scales.set(tab.tab_id, scale);

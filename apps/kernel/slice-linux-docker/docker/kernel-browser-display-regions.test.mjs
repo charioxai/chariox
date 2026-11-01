@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {subscribeRegion, regionInput, regionInputTarget} from './kernel-browser-display-regions.mjs';
+import {maxDisplays} from './kernel-browser-display-admission.mjs';
 
 function fixture(kind='region') {
  const tab={tab_id:'t',target_id:'target',document_id:'doc'},calls=[];
@@ -238,13 +239,13 @@ test('MP-11 the omnibox dropdown over the page binds the active Tab for masks an
 
 test('MP-08/MP-10/MP-11 concurrent native starts reserve the bounded display capacity',async()=>{
  const f=fixture('browser_chrome'),release=Promise.withResolvers(),entered=Promise.withResolvers();let starting=0;
- class Capture extends f.Capture {async start(){if(++starting===8)entered.resolve();await release.promise;return this;}}
- const pending=Array.from({length:8},()=>subscribeRegion(f.host,f.command,'terminal:a',undefined,{Capture}));
+ class Capture extends f.Capture {async start(){if(++starting===maxDisplays)entered.resolve();await release.promise;return this;}}
+ const pending=Array.from({length:maxDisplays},()=>subscribeRegion(f.host,f.command,'terminal:a',undefined,{Capture}));
  try{
   await entered.promise;
-  const ninth=subscribeRegion(f.host,f.command,'terminal:a',undefined,{Capture}).then(()=>null,e=>e);
-  const result=await Promise.race([ninth,new Promise(r=>setTimeout(()=>r(null),100))]);
-  assert(result instanceof Error,'pending native starts must count against the eight-display limit');
+  const over=subscribeRegion(f.host,f.command,'terminal:a',undefined,{Capture}).then(()=>null,e=>e);
+  const result=await Promise.race([over,new Promise(r=>setTimeout(()=>r(null),100))]);
+  assert(result instanceof Error,'pending native starts must count against the display limit');
  }finally{
   release.resolve();await Promise.allSettled(pending);await new Promise(r=>setImmediate(r));
   for(const s of [...f.host.displays.values()])await s.close();
