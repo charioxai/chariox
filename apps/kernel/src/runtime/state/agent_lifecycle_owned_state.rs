@@ -456,7 +456,11 @@ impl KernelRuntimeOwnedState {
                 agent_id: agent_id.to_string(),
             });
         };
-        if !self.acts_for_owner_in(session.owner_user_id(), caller_user_id, agent.owner_user_id()) {
+        if !self.acts_for_owner_in(
+            session.owner_user_id(),
+            caller_user_id,
+            agent.owner_user_id(),
+        ) {
             return Err(agent_owner_denied(&agent, caller_user_id, "focus agent"));
         }
         let agent = self
