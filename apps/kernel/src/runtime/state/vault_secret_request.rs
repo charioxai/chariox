@@ -57,7 +57,8 @@ impl KernelRuntimeState {
         self.require_unlocked_vault()?;
         let credential = vault_credential(&request.credential_id, &label, hosts, &grant)?;
         let registry = crate::credential::CharioxCredentialRegistry::user()?;
-        let credential = replacing_or_new(&registry, credential, request.overwrite)?;
+        let service = self.vault_secret_service()?;
+        let credential = replacing_or_new(&registry, &service, credential, request.overwrite)?;
 
         let interaction_id = format!("secret-request-{:016x}", rand::random::<u64>());
         let who = super::super::kernel_access::requester::harness_name(grant.holder_harness)
@@ -153,16 +154,12 @@ impl KernelRuntimeState {
         };
         let value = zeroize::Zeroizing::new(value);
         let stored = async {
-            let user_config = self.owned.config_projection.snapshot().user_config;
-            let service = crate::secret::RuntimeSecretService::with_vault_config(
-                crate::credential::load_user_credentials()?,
-                &user_config.credential_vault,
-            )?;
+            let service = self.vault_secret_service()?;
             let registry = crate::credential::CharioxCredentialRegistry::user()?;
             // The handle may have changed while the owner typed: the record to store against is
             // chosen under the same Vault lifecycle lock as the write.
             let _guard = self.vault_observation_mutation_guard().await;
-            let credential = replacing_or_new(&registry, credential.clone(), overwrite)?;
+            let credential = replacing_or_new(&registry, &service, credential.clone(), overwrite)?;
             self.upsert_vault_credential_locked(
                 &service,
                 &registry,
@@ -184,6 +181,14 @@ impl KernelRuntimeState {
                 VaultSecretStatus::Cancelled
             }
         }
+    }
+
+    fn vault_secret_service(&self) -> Result<crate::secret::RuntimeSecretService, DaemonError> {
+        let user_config = self.owned.config_projection.snapshot().user_config;
+        crate::secret::RuntimeSecretService::with_vault_config(
+            crate::credential::load_user_credentials()?,
+            &user_config.credential_vault,
+        )
     }
 
     fn record_secret_request(&self, interaction_id: &str, request: SecretRequest) {
@@ -312,15 +317,19 @@ fn secret_page(snapshot: &crate::config::DaemonConfig) -> Result<String, DaemonE
 /// request names exactly the hosts it is already bound to.
 fn replacing_or_new(
     registry: &crate::credential::CharioxCredentialRegistry,
+    service: &crate::secret::RuntimeSecretService,
     requested: crate::config::UserCredentialConfig,
     overwrite: bool,
 ) -> Result<crate::config::UserCredentialConfig, DaemonError> {
     let Some(existing) = registry.get(&requested.id)? else {
-        // The new handle stores under its own id; another handle may already keep its value there.
+        // The new handle stores under its own id. Another handle may keep its value there, and
+        // a value may stay in the Vault after its handle was removed or without ever having one:
+        // only an explicit `overwrite` replaces that.
         if let crate::config::UserCredentialSourceConfig::Vault { key } = &requested.source {
             if registry
                 .other_handle_using_vault_key(key, &requested.id)?
                 .is_some()
+                || (!overwrite && service.vault_slot_holds_value(key)?)
             {
                 return Err(refusal("secret_request_exists"));
             }

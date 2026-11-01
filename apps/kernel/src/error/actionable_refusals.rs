@@ -21,7 +21,7 @@ pub(crate) fn message(code: &str) -> Option<&'static str> {
         "heartbeat_interval_not_routable" => "a subscription routed to another kernel uses that kernel's heartbeat interval; leave heartbeat_interval_ms out of the subscribe frame",
         "secret_link_unavailable" => "this kernel has no page for secret links; ask the user to answer in a connected Chariox client, or to set secret_link.page_url",
         "vault_locked" => "the user's Vault is locked; ask them to unlock it in a Chariox client, then ask again",
-        "secret_request_exists" => "a credential with this id already exists; ask again with overwrite true to replace its value, or choose another id",
+        "secret_request_exists" => "this id already has a credential or a stored value; ask again with overwrite true (--overwrite) to replace the value, or choose another id",
         "secret_request_invalid" => "the credential id is letters, digits, - and _ separated by dots, the label is one line of 1 to 80 characters, and the key needs the API host(s) that may receive it, for example `--host api.example.com` (an existing handle keeps the hosts it has)",
         "secret_request_denied" => "the user's settings do not let agents create Vault credentials on this kernel",
         "secret_request_unknown" => "this agent has no such secret request; use the interaction_id that chariox secret request printed",

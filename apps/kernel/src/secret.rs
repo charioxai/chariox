@@ -557,6 +557,15 @@ impl RuntimeSecretService {
         Ok(())
     }
 
+    /// Whether the Vault holds a value under `key`, whatever handle (if any) names it.
+    pub fn vault_slot_holds_value(&self, key: &str) -> Result<bool, DaemonError> {
+        validate_vault_key(key)?;
+        Ok(self
+            .vault_store
+            .find_secret(self.vault_service_name()?, key.trim())?
+            .is_some())
+    }
+
     pub fn upsert_vault_backed_credential_with_secret(
         &self,
         registry: &CharioxCredentialRegistry,

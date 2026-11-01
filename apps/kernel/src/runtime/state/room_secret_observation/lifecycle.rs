@@ -158,8 +158,9 @@ impl KernelRuntimeState {
     ) -> Result<crate::secret::VaultCredentialUpsertResult, DaemonError> {
         crate::credential::validate_credential_registration(&credential)?;
         let previous = registry.get(&credential.id)?;
-        // A new handle must not take over the Vault slot of another handle: storing would
-        // replace that handle's value.
+        // A new handle must not take over a Vault slot that holds a value: storing would
+        // replace the value of the handle that uses it, or one that was stored or kept
+        // without a record. `overwrite` is the caller's explicit choice to replace the latter.
         if previous.is_none() {
             if let crate::config::UserCredentialSourceConfig::Vault { key } = &credential.source {
                 if let Some(holder) = registry.other_handle_using_vault_key(key, &credential.id)? {
@@ -170,10 +171,17 @@ impl KernelRuntimeState {
                         ),
                     });
                 }
+                if !overwrite && service.vault_slot_holds_value(key)? {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "credential_vault_upsert",
+                        message: format!(
+                            "Vault key `{key}` already holds a value; pass overwrite=true to replace it"
+                        ),
+                    });
+                }
             }
         }
-        // A new handle can still overwrite an existing Vault key. Rejecting an
-        // existing handle or an empty value must not revoke unrelated observations.
+        // Rejecting an existing handle or an empty value must not revoke unrelated observations.
         if (overwrite || previous.is_none()) && !secret.is_empty() {
             if let crate::config::UserCredentialSourceConfig::Vault { key } = &credential.source {
                 self.revoke_vault_observation_values(key).await?;
