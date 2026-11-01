@@ -532,7 +532,7 @@ impl KernelRuntimeState {
         let Some(resolution) = self
             .await_vault_unlock_interaction(
                 session_id,
-                vault_passphrase_interaction(session_id, agent_id, operation),
+                vault_passphrase_interaction(&self.vault_requester(session_id, agent_id), agent_id),
                 operation,
                 &vault_path,
                 &mut unlocks,
@@ -622,7 +622,7 @@ impl KernelRuntimeState {
         let resolution = self
             .await_vault_interaction(
                 session_id,
-                vault_manage_interaction(session_id, agent_id),
+                vault_manage_interaction(&self.vault_requester(session_id, agent_id), agent_id),
                 "credential_vault_manage",
                 "vault management",
             )
@@ -695,12 +695,60 @@ impl KernelRuntimeState {
         let resolution = self
             .await_vault_interaction(
                 session_id,
-                vault_passphrase_change_interaction(session_id, agent_id, step),
+                vault_passphrase_change_interaction(
+                    &self.vault_requester(session_id, agent_id),
+                    agent_id,
+                    step,
+                ),
                 VAULT_PASSPHRASE_CHANGE,
                 "vault passphrase change",
             )
             .await?;
         vault_secret_from_resolution(resolution, VAULT_PASSPHRASE_CHANGE, "passphrase change")
+    }
+}
+
+/// How a Vault prompt names who is asking: the agent's alias and the Room's
+/// name when the kernel has them, never an id.
+struct VaultRequester {
+    agent: Option<String>,
+    room: Option<String>,
+}
+
+impl VaultRequester {
+    fn subject(&self) -> String {
+        match (&self.agent, &self.room) {
+            (Some(agent), Some(room)) => format!("{agent} in {room}"),
+            (Some(agent), None) => agent.clone(),
+            (None, Some(room)) => format!("An agent in {room}"),
+            (None, None) => "An agent".to_string(),
+        }
+    }
+
+    fn room_prefix(&self) -> String {
+        self.room
+            .as_ref()
+            .map(|room| format!("{room}: "))
+            .unwrap_or_default()
+    }
+}
+
+impl KernelRuntimeState {
+    fn vault_requester(&self, session_id: &str, agent_id: &str) -> VaultRequester {
+        VaultRequester {
+            agent: self
+                .owned
+                .agent_store
+                .get_agent(agent_id)
+                .ok()
+                .and_then(|agent| agent.alias().map(str::to_owned)),
+            room: self
+                .owned
+                .session_store
+                .get_session(session_id)
+                .ok()
+                .and_then(|session| session.alias().map(str::to_owned)),
+        }
     }
 }
 
@@ -714,7 +762,7 @@ enum VaultPassphraseChangeStep {
 }
 
 fn vault_passphrase_change_interaction(
-    session_id: &str,
+    requester: &VaultRequester,
     agent_id: &str,
     step: VaultPassphraseChangeStep,
 ) -> crate::session::RuntimeInteraction {
@@ -722,13 +770,11 @@ fn vault_passphrase_change_interaction(
         VaultPassphraseChangeStep::Current => (
             "current",
             "Current passphrase",
-            "Enter the current vault passphrase (your Chariox passkey). If you set it in the terminal before the case-preserving input fix, it is your passphrase with A-Z in lower case and without spaces or emoji.",
+            "Enter the current vault passphrase (your Chariox passkey).",
         ),
-        VaultPassphraseChangeStep::New => (
-            "new",
-            "New passphrase",
-            "Enter the new vault passphrase.",
-        ),
+        VaultPassphraseChangeStep::New => {
+            ("new", "New passphrase", "Enter the new vault passphrase.")
+        }
         VaultPassphraseChangeStep::Repeat => (
             "repeat",
             "Repeat new passphrase",
@@ -745,7 +791,7 @@ fn vault_passphrase_change_interaction(
         crate::session::RuntimeInteractionKind::Choice,
         crate::session::RuntimeInteractionLevel::Critical,
         Some("Change Chariox Vault Passphrase".to_string()),
-        format!("Session `{session_id}`: {message}"),
+        format!("{}{message}", requester.room_prefix()),
         vec![crate::session::RuntimeInteractionChoice::new(
             "cancel",
             "Cancel",
@@ -765,9 +811,8 @@ fn vault_passphrase_change_interaction(
 }
 
 fn vault_passphrase_interaction(
-    session_id: &str,
+    requester: &VaultRequester,
     agent_id: &str,
-    operation: &'static str,
 ) -> crate::session::RuntimeInteraction {
     let choices = vec![crate::session::RuntimeInteractionChoice::new(
         "cancel",
@@ -776,17 +821,14 @@ fn vault_passphrase_interaction(
         Some(crate::session::RuntimeInteractionChoiceStyle::Danger),
     )];
     crate::session::RuntimeInteraction::new(
-        format!(
-            "vault-unlock-{}-{}",
-            agent_id,
-            rand::random::<u64>()
-        ),
+        format!("vault-unlock-{}-{}", agent_id, rand::random::<u64>()),
         agent_id,
         crate::session::RuntimeInteractionKind::Choice,
         crate::session::RuntimeInteractionLevel::Critical,
         Some("Unlock Chariox Vault".to_string()),
         format!(
-            "Agent `{agent_id}` in session `{session_id}` needs Chariox Vault access for `{operation}`. Enter the vault passphrase."
+            "{} needs the Vault. Enter the vault passphrase.",
+            requester.subject()
         ),
         choices,
         Some(crate::session::RuntimeInteractionCustomChoice::secret(
@@ -887,7 +929,7 @@ fn unlock_lease_for_choice(
 }
 
 fn vault_manage_interaction(
-    session_id: &str,
+    requester: &VaultRequester,
     agent_id: &str,
 ) -> crate::session::RuntimeInteraction {
     crate::session::RuntimeInteraction::new(
@@ -901,7 +943,8 @@ fn vault_manage_interaction(
         crate::session::RuntimeInteractionLevel::Info,
         Some("Chariox Vault Unlocked".to_string()),
         format!(
-            "The Chariox Vault is unlocked for session `{session_id}`. Extend the unlock window, change the passphrase, or lock it now."
+            "{}The Vault is unlocked. Extend the unlock window, change the passphrase, or lock it now.",
+            requester.room_prefix()
         ),
         vec![
             crate::session::RuntimeInteractionChoice::new(
@@ -1138,7 +1181,7 @@ mod tests {
 
     #[test]
     fn vault_passphrase_prompt_cannot_encode_an_unlock_lease_as_the_secret() {
-        let interaction = vault_passphrase_interaction("session-1", "agent-1", "test");
+        let interaction = vault_passphrase_interaction(&requester(None, None), "agent-1");
 
         assert_eq!(
             interaction
@@ -1182,7 +1225,7 @@ mod tests {
 
     #[test]
     fn vault_manage_offers_a_passphrase_change_through_secret_prompts() {
-        let manage = vault_manage_interaction("session-1", "agent-1");
+        let manage = vault_manage_interaction(&requester(None, None), "agent-1");
         assert!(manage
             .choices()
             .iter()
@@ -1193,7 +1236,8 @@ mod tests {
             VaultPassphraseChangeStep::New,
             VaultPassphraseChangeStep::Repeat,
         ] {
-            let interaction = vault_passphrase_change_interaction("session-1", "agent-1", step);
+            let interaction =
+                vault_passphrase_change_interaction(&requester(None, None), "agent-1", step);
             assert_eq!(
                 interaction
                     .choices()
@@ -1222,6 +1266,61 @@ mod tests {
             DaemonError::LocalTransport { message, .. }
                 if message == "Chariox vault passphrase change was cancelled"
         ));
+    }
+
+    fn requester(agent: Option<&str>, room: Option<&str>) -> VaultRequester {
+        VaultRequester {
+            agent: agent.map(str::to_owned),
+            room: room.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn vault_prompts_name_alias_and_room_never_ids() {
+        let agent_id = "agent-bfd2428adc43df51a0ffd9d68bcb09b7";
+        for (agent, room) in [
+            (None, None),
+            (Some("Reviewer"), None),
+            (None, Some("Launch room")),
+            (Some("Reviewer"), Some("Launch room")),
+        ] {
+            let requester = requester(agent, room);
+            let mut interactions = vec![
+                vault_passphrase_interaction(&requester, agent_id),
+                vault_manage_interaction(&requester, agent_id),
+            ];
+            for step in [
+                VaultPassphraseChangeStep::Current,
+                VaultPassphraseChangeStep::New,
+                VaultPassphraseChangeStep::Repeat,
+            ] {
+                interactions.push(vault_passphrase_change_interaction(
+                    &requester, agent_id, step,
+                ));
+            }
+            for interaction in &interactions {
+                let text = format!(
+                    "{} {}",
+                    interaction.title().unwrap_or_default(),
+                    interaction.message()
+                );
+                assert!(
+                    !["agent-", "runtime_tool_", "case-preserving", "`"]
+                        .iter()
+                        .any(|internal| text.contains(internal))
+                        && !text
+                            .split(|c: char| !c.is_ascii_hexdigit())
+                            .any(|run| run.len() >= 16),
+                    "raw id or internal wording in: {text}"
+                );
+                if let Some(room) = room {
+                    assert!(text.contains(room), "room name missing in: {text}");
+                }
+            }
+            if let Some(agent) = agent {
+                assert!(interactions[0].message().contains(agent));
+            }
+        }
     }
 
     #[test]
