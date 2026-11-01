@@ -106,6 +106,11 @@ pub struct SessionHistoryPromptAttachment {
 }
 
 impl SessionHistoryPromptAttachment {
+    /// The local file this attachment sent, when it is one.
+    pub fn local_path(&self) -> Option<String> {
+        local_file_url_path(&self.url)
+    }
+
     pub fn from_prompt_attachment(attachment: &crate::session::PromptAttachment) -> Self {
         Self {
             url: attachment.url().to_string(),

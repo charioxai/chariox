@@ -863,9 +863,12 @@ fn operational_history_store_excludes_external_observed_prompts_from_chariox_own
 
     assert_eq!(
         store
-            .load_chariox_owned_prompt_texts("session-1", "agent-1")
+            .load_chariox_owned_prompts("session-1", "agent-1")
             .expect("chariox-owned prompts should load"),
-        vec!["chariox".to_string()]
+        vec![crate::history::CharioxOwnedPrompt {
+            text: "chariox".to_string(),
+            attachment_paths: Vec::new()
+        }]
     );
 
     drop(store);
