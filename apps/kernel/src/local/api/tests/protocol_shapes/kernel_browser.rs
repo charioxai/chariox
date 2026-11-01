@@ -721,6 +721,10 @@ fn mp08_mp10_browser_header_955_shape_and_hash() {
         "1274dc853a2703ab0b882d3d149171aaa0c10c234c2fde7641aa93a8670bf828"
     );
     let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
-    let response: LocalDaemonResponse = serde_json::from_value(snapshot["response"].clone()).unwrap();
-    assert_eq!(serde_json::to_value(response).unwrap(), snapshot["response"]);
+    let response: LocalDaemonResponse =
+        serde_json::from_value(snapshot["response"].clone()).unwrap();
+    assert_eq!(
+        serde_json::to_value(response).unwrap(),
+        snapshot["response"]
+    );
 }
