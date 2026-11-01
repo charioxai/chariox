@@ -221,7 +221,7 @@ impl Pool {
             .upgrade()
             .map_or(0, |budget| budget.used());
         #[cfg(not(target_os = "linux"))]
-        let charged = 0;
+        let charged: u64 = 0;
         let mut room = self
             .ceiling
             .saturating_sub(self.margin)
