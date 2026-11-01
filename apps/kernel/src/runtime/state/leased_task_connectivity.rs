@@ -95,26 +95,18 @@ impl KernelRuntimeState {
                     binding.worker_kernel_id.clone(),
                     binding.execution_lease_id.clone(),
                 );
-                let message = if *probe == Probe::Connected {
-                    uncertain
-                        .remove(&key)
-                        .map(|_| "Worker connection restored.")
-                } else {
-                    let newly_uncertain = !uncertain.contains_key(&key);
-                    let first_failed = *uncertain.entry(key.clone()).or_insert(now);
-                    if *probe == Probe::WorkerOffline
-                        && now.saturating_sub(first_failed) >= WORKER_LOSS_GRACE_MS
-                    {
-                        lost.push((task.clone(), binding, now.saturating_sub(first_failed)));
-                    }
-                    newly_uncertain.then_some(
+                let message = match observe(&mut uncertain, &key, *probe, now) {
+                    Verdict::Restored => Some("Worker connection restored."),
+                    Verdict::BecameUncertain => Some(
                         "Worker connection uncertain. The kernel is checking for reconnection.",
-                    )
+                    ),
+                    Verdict::Lost { offline_ms } => {
+                        lost.push((task.clone(), binding, offline_ms));
+                        None
+                    }
+                    Verdict::Unchanged => None,
                 };
                 if let Some(message) = message {
-                    // A connection probe alone never settles a task; only the
-                    // relay's own report that the worker is gone, held for the
-                    // grace period, does.
                     self.owned.record_notice_for_agent(
                         &task.room_id,
                         task.provider_run_id.as_deref(),
@@ -167,6 +159,45 @@ impl KernelRuntimeState {
             "the relay reports the worker kernel is not connected",
         )
         .await
+    }
+}
+
+type TaskKey = (String, String, String);
+
+#[derive(Debug, PartialEq, Eq)]
+enum Verdict {
+    Unchanged,
+    BecameUncertain,
+    Restored,
+    /// The relay has reported the worker offline for the whole grace period.
+    Lost { offline_ms: u64 },
+}
+
+/// Folds one probe into the task's connection state. A probe alone never
+/// settles a task; only the relay's own report that the worker is gone, held
+/// for the grace period, does.
+fn observe(
+    uncertain: &mut BTreeMap<TaskKey, u64>,
+    key: &TaskKey,
+    probe: Probe,
+    now: u64,
+) -> Verdict {
+    if probe == Probe::Connected {
+        return if uncertain.remove(key).is_some() {
+            Verdict::Restored
+        } else {
+            Verdict::Unchanged
+        };
+    }
+    let newly_uncertain = !uncertain.contains_key(key);
+    let first_failed = *uncertain.entry(key.clone()).or_insert(now);
+    let offline_ms = now.saturating_sub(first_failed);
+    if probe == Probe::WorkerOffline && offline_ms >= WORKER_LOSS_GRACE_MS {
+        Verdict::Lost { offline_ms }
+    } else if newly_uncertain {
+        Verdict::BecameUncertain
+    } else {
+        Verdict::Unchanged
     }
 }
 
