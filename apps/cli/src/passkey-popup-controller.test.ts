@@ -8,6 +8,11 @@ const prompt = (id: string, sessionId = "session-1"): PasskeyPrompt => ({
   title: "Approve App action", message: "An App asks to perform a protected action.",
   approve_choice_id: "approve", refuse_choice_id: "deny", requested_at_ms: 1, expires_at_ms: 300_001,
 })
+const secretPrompt = (id: string): PasskeyPrompt => ({
+  kind: "vault_secret", session_id: "kernel-access", interaction_id: id,
+  title: "Value for the Vault", message: "An external agent asks for the value of Drill key, for api.example.com. It goes to your Chariox Vault and no agent sees it.",
+  approve_choice_id: "secret", refuse_choice_id: "cancel", requested_at_ms: 1, expires_at_ms: 300_001,
+})
 const key = (name: string, extra: Partial<PasskeyPopupKey> = {}): PasskeyPopupKey => ({
   name, preventDefault() { this.defaultPrevented = true }, stopPropagation() {}, ...extra,
 })
@@ -32,8 +37,9 @@ function harness(serverClock?: import("./kernel-clock.js").KernelClock) {
     connected: () => connected, onView() {},
     ...(serverClock ? {serverClock} : {}),
     onOpen: () => focus.push("open"), onClose: () => focus.push("close"), scroll() {},
-    respond: (prompt, choiceId, proof) => {
-      requests.push(proof ? [prompt.interaction_id, choiceId, proof] : [prompt.interaction_id, choiceId])
+    respond: (prompt, choiceId, proof, ...rest: unknown[]) => {
+      // A Vault value request is answered with a custom reply, never a passkey proof.
+      requests.push(proof ? [prompt.interaction_id, choiceId, proof] : rest[0] !== undefined ? [prompt.interaction_id, choiceId, { reply: rest[0] }] : [prompt.interaction_id, choiceId])
       return new Promise<void>((yes, no) => { resolve = yes; reject = no })
     },
     notify: (message) => notices.push(message),
@@ -433,5 +439,47 @@ test("MP-08/MP-10/MP-11 a new sudo extension remains visible beside an answered 
   assert.equal(h.popup.show(), true)
   assert.equal(h.popup.view().prompt?.interaction_id, retry.interaction_id)
   assert.equal(h.popup.view().count, 1)
+  assert.equal(h.popup.view().passkey.length, 0)
+})
+
+test("a Vault value request reaches the popup and the typed value is its custom reply", async () => {
+  assert.deepEqual(passkeyPromptsFromEvent([secretPrompt("s1"), prompt("p1")]), [secretPrompt("s1"), prompt("p1")])
+  const h = harness()
+  h.popup.apply([secretPrompt("s1")])
+  h.popup.show()
+  assert.equal(h.popup.view().open, true)
+  h.popup.handleKey(key("return"))
+  assert.deepEqual(h.requests, [], "nothing to send before a value is typed")
+  assert.equal(h.popup.view().error, null)
+  type(h, "sk-live-1")
+  assert.equal(h.popup.view().passkey.length, 9)
+  assert.equal(JSON.stringify(h.popup.view()).includes("sk-live-1"), false, "the view holds only the length")
+  h.popup.handleKey(key("return"))
+  assert.deepEqual(h.requests, [["s1", "secret", { reply: "sk-live-1" }]])
+  assert.equal(h.popup.view().passkey.length, 0, "the value is dropped once sent")
+  h.resolve()
+  await settle()
+  assert.equal(h.popup.view().open, false)
+})
+
+test("a refused Vault value is not kept for the next try", async () => {
+  const h = harness()
+  h.popup.apply([secretPrompt("s1")])
+  h.popup.show()
+  type(h, "sk-live-1")
+  h.popup.handleKey(key("return"))
+  h.reject("unreachable")
+  await settle()
+  assert.equal(h.popup.view().passkey.length, 0)
+  assert.equal(JSON.stringify(h.popup.view()).includes("sk-live-1"), false)
+})
+
+test("Ctrl+R cancels a Vault value request and sends no value", () => {
+  const h = harness()
+  h.popup.apply([secretPrompt("s1")])
+  h.popup.show()
+  type(h, "half")
+  h.popup.handleKey(key("r", { ctrl: true, sequence: "\u0012" }))
+  assert.deepEqual(h.requests, [["s1", "cancel"]])
   assert.equal(h.popup.view().passkey.length, 0)
 })

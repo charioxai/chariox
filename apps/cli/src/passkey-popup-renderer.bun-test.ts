@@ -405,3 +405,27 @@ test("EA2-01 the access popup names the until-exit choice in words", async () =>
     assert.match(h.captureCharFrame(), /Access for: until the agent exits/)
   } finally { h.renderer.destroy() }
 })
+
+test("a Vault value request shows its words, a masked field and Send/Cancel", async () => {
+  const secret: PasskeyPrompt = {
+    kind: "vault_secret", session_id: "kernel-access", interaction_id: "secret-request-1",
+    title: "Value for the Vault", message: "An external agent asks for the value of Drill key, for api.example.com. It goes to your Chariox Vault and no agent sees it.",
+    approve_choice_id: "secret", refuse_choice_id: "cancel", requested_at_ms: 1, expires_at_ms: Date.now() + 300_000,
+  }
+  const harness = await createTestRenderer({ width: 100, height: 30, useThread: false })
+  const box = new BoxRenderable(harness.renderer, { position: "absolute", left: 0, top: 0 })
+  harness.renderer.root.add(box)
+  const surface = createPasskeyPopupRenderer(harness.renderer, noActions)
+  surface.assign(box)
+  try {
+    surface.render({ ...view, prompt: secret, passkey: { length: 9, rememberMinutes: 0 } }, { width: 100, height: 30 })
+    await harness.renderOnce()
+    const frame = harness.captureCharFrame()
+    assert.match(frame, /Value for the Vault/)
+    assert.match(frame, /Drill key, for api\.example\.com/)
+    assert.match(frame, /Secret: •{9}▏/)
+    assert.match(frame, /\[ Send \] +\[ Cancel \]/)
+    assert.match(frame, /Enter sends · Ctrl\+R cancels/)
+    assert.doesNotMatch(frame, /Passkey:|Remember for|Access for|Approve|Refuse/)
+  } finally { harness.renderer.destroy() }
+})
