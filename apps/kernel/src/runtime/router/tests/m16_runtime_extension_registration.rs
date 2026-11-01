@@ -193,6 +193,194 @@ async fn mcp_proxy_rejects_ambiguous_provider_run_tokens() {
     );
 }
 
+/// A one-shot streamable HTTP MCP server that answers `tools/call` with the given result.
+fn serve_one_mcp_reply(result: serde_json::Value) -> (String, std::thread::JoinHandle<()>) {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("test listener should bind");
+    let url = format!(
+        "http://{}/mcp",
+        listener.local_addr().expect("listener address")
+    );
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("proxy should connect");
+        let mut buffer = [0_u8; 4096];
+        let _ = stream.read(&mut buffer).expect("request should read");
+        let body = serde_json::json!({"jsonrpc": "2.0", "id": 1, "result": result}).to_string();
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        )
+        .expect("response should write");
+    });
+    (url, server)
+}
+
+/// A router with one local agent that was granted the MCP server `docs`, which answers one tool call.
+fn router_with_granted_docs_server(
+    env_name: &str,
+    reply: serde_json::Value,
+) -> (
+    TestCapabilityEnv,
+    CommandRouter,
+    String,
+    std::thread::JoinHandle<()>,
+) {
+    let env = TestCapabilityEnv::new(env_name);
+    let workspace = env.root.join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace should be created");
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            workspace.to_string_lossy(),
+            workspace.to_string_lossy(),
+        ))
+        .expect("session should be created");
+    let (url, server) = serve_one_mcp_reply(reply);
+    let provider_run = app
+        .providers()
+        .start_run_provider_only(
+            LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "dev-stub",
+                "default",
+                "m16-model",
+            )
+            .with_agent_id(agent.id())
+            .with_runtime_mcp_binding(crate::provider::RuntimeMcpBinding::new(
+                "http://127.0.0.1:43120/mcp",
+                "audit-token",
+            ))
+            .with_mcp_servers(vec![
+                crate::mcp::CharioxMcpServerConfig::streamable_http("docs", url),
+            ]),
+        )
+        .expect("provider run should start")
+        .into_run();
+    app.update_provider_run_projection(provider_run);
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+    (env, router, agent.id().to_string(), server)
+}
+
+#[tokio::test]
+async fn local_agent_mcp_tool_calls_are_audited_without_arguments_or_output() {
+    let (_env, router, agent_id, server) = router_with_granted_docs_server(
+        "local-mcp-call-audit",
+        serde_json::json!({"content": [{"type": "text", "text": "SECRET-OUTPUT"}]}),
+    );
+
+    let call = |name: &'static str, tool: &'static str| {
+        router.dispatch_authenticated_mcp_proxy_call(
+            "audit-token",
+            name,
+            serde_json::json!({
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": tool, "arguments": {"query": "SECRET-ARGUMENT"}}
+            }),
+        )
+    };
+    call("docs", "search")
+        .await
+        .expect("granted server should answer");
+    call("unlisted", "search")
+        .await
+        .expect_err("an ungranted server is refused");
+    router
+        .dispatch_authenticated_mcp_proxy_call(
+            "audit-token",
+            "docs",
+            serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}),
+        )
+        .await
+        .expect_err("the one-shot server is gone; a list is not a tool call");
+    server.join().expect("test server should finish");
+
+    let events = router
+        .runtime_state
+        .list_home_extension_audit_events(&agent_id, DEFAULT_LOCAL_USER_ID, 20)
+        .expect("audit events should load");
+    let calls: Vec<_> = events
+        .iter()
+        .filter(|event| event.kind == "agent.mcp_tool_call")
+        .collect();
+    let summary: Vec<_> = calls
+        .iter()
+        .map(|event| {
+            (
+                event.payload["tool"]["name"].as_str().unwrap_or_default(),
+                event.payload["tool"]["tool_name"]
+                    .as_str()
+                    .unwrap_or_default(),
+                event.payload["status"].as_str().unwrap_or_default(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        summary,
+        vec![
+            ("docs", "search", "allowed"),
+            ("unlisted", "search", "denied")
+        ],
+        "only tool calls are recorded, with the outcome"
+    );
+    let recorded = serde_json::to_string(&calls).expect("events serialize");
+    assert!(
+        !recorded.contains("SECRET-ARGUMENT") && !recorded.contains("SECRET-OUTPUT"),
+        "the audit never holds arguments or output: {recorded}"
+    );
+}
+
+#[tokio::test]
+async fn extension_audit_keeps_old_events_behind_newer_unrelated_ones() {
+    let (_env, router, agent_id, server) = router_with_granted_docs_server(
+        "extension-audit-behind-noise",
+        serde_json::json!({"content": [{"type": "text", "text": "ok"}]}),
+    );
+    router
+        .dispatch_authenticated_mcp_proxy_call(
+            "audit-token",
+            "docs",
+            serde_json::json!({
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": "search", "arguments": {}}
+            }),
+        )
+        .await
+        .expect("granted server should answer");
+    server.join().expect("test server should finish");
+    // Far more than the 200 events a read loads: the agent's own traffic after the call.
+    for index in 0..250 {
+        router
+            .runtime_state
+            .durable_state_store()
+            .append_event(
+                "agent.activity",
+                Some(agent_id.clone()),
+                serde_json::json!({ "index": index }),
+            )
+            .expect("unrelated event should append");
+    }
+
+    let events = router
+        .runtime_state
+        .list_home_extension_audit_events(&agent_id, DEFAULT_LOCAL_USER_ID, 20)
+        .expect("audit events should load");
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.kind == "agent.mcp_tool_call")
+            .count(),
+        1,
+        "the tool call is still listed: {events:?}"
+    );
+    assert!(
+        events.iter().all(|event| event.kind != "agent.activity"),
+        "only extension events are listed"
+    );
+}
+
 #[tokio::test]
 async fn yolo_agent_registers_global_mcp_and_can_grant_it_in_same_provider_session() {
     let env = TestCapabilityEnv::new("yolo-mcp");

@@ -154,13 +154,6 @@ impl DaemonApp {
             ),
         );
         let runtime_state = router.runtime_state();
-        if let Err(error) = runtime_state.restore_kernel_access_grants() {
-            crate::logging::error_with_fields(
-                "kernel.access",
-                "could not restore access grants; holders must request access again",
-                serde_json::json!({ "error": error.to_string() }),
-            );
-        }
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
         let managed_activity_task = managed_activity_reporter
             .map(|reporter| tokio::spawn(reporter.run(runtime_state.clone(), shutdown_rx.clone())));

@@ -20,6 +20,7 @@ export type CliStdinKeyControllerDeps = {
   providerAccountRecoveryOwnsInput?: (() => boolean) | undefined
   dialogOverlayOpen: () => boolean
   closeActiveDialogOverlay: () => void
+  handleSessionProcessesKey?: (event: CliStdinKeyEvent) => boolean
   handleProjectEnvironmentKey?: (event: CliStdinKeyEvent) => boolean
   handleManagedMachineDialogKey?: (event: CliStdinKeyEvent) => boolean
   handleSessionBrowserKey: (event: CliStdinKeyEvent) => boolean
@@ -82,6 +83,7 @@ export function createCliStdinKeyController(
       deps.closeActiveDialogOverlay()
       return true
     }
+    if (deps.handleSessionProcessesKey?.(event)) return true
     if (deps.handleProjectEnvironmentKey?.(event)) return true
     if (deps.handleManagedMachineDialogKey?.(event)) {
       return true

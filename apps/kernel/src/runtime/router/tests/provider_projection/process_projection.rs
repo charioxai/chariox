@@ -30,6 +30,7 @@ async fn list_provider_processes_uses_warmed_projection_without_app_lock_inner()
         structured_endpoint: None,
         provider_session_id: None,
         native_tui: false,
+        native_checkpoint_binding: None,
     });
     let launch_command = KernelCommand::from_local_request(
         "cmd-process-provider-launch",
@@ -541,6 +542,7 @@ async fn teardown_provider_processes_refreshes_session_projection_without_app_lo
         structured_endpoint: None,
         provider_session_id: None,
         native_tui: false,
+        native_checkpoint_binding: None,
     });
     let launch_command = KernelCommand::from_local_request(
         "cmd-teardown-refresh-launch",

@@ -71,7 +71,9 @@ async fn a_peer_under_two_grant_holders_uses_the_nearest_holders_grant() {
         state.owned.kernel_access.lock().unwrap().grants.insert(
             id.into(),
             Grant {
+                covered: Vec::new(),
                 summary: KernelAccessGrant {
+                    covered: Vec::new(),
                     grant_id: id.into(),
                     owner_user_id: "local".into(),
                     holder_pid: holder.pid,
@@ -87,6 +89,7 @@ async fn a_peer_under_two_grant_holders_uses_the_nearest_holders_grant() {
     }
     let order: Vec<_> = state
         .access_grants_for(&identity(peer))
+        .unwrap()
         .into_iter()
         .map(|grant| grant.summary.grant_id)
         .collect();

@@ -254,7 +254,7 @@ fn browser_mirror2_native_font_failures_550_shape_is_pinned() {
     let bytes = include_bytes!("browser-mirror2-font-failures-550.json");
     assert_eq!(
         format!("{:x}", sha2::Sha256::digest(bytes)),
-        "47a6ea0b0b852d9d4b4c7d2c50ed43de28cc27a64f73d54b641a9f439a7fe1e3"
+        "c3447d09d6e732584a12049bbe46d349cfb887071b61dd8a609b7fd36cfc9eea"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(fixture["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
@@ -275,7 +275,7 @@ fn browser_mirror2_font_absent_567_shape_is_pinned() {
     let bytes = include_bytes!("browser-mirror2-font-absent-567.json");
     assert_eq!(
         format!("{:x}", sha2::Sha256::digest(bytes)),
-        "cc5ce4e289d1f5e928289c621c17502fff5fb1a94558f8fd6792497fbf568196"
+        "bc5ee0812ab9b1034c01ce8fe5ddfd555db1e5d2e638a09889241dc2de4ff462"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(fixture["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
@@ -303,7 +303,7 @@ fn browser_mirror2_viewport_first_629_shape_is_pinned() {
     let bytes = include_bytes!("browser-mirror2-viewport-first-629.json");
     assert_eq!(
         format!("{:x}", sha2::Sha256::digest(bytes)),
-        "ae25f5d13765c31110cd25bd2fd9a440597bc90fa909c1e773ec604521e2501f"
+        "afc4c7e7c7d035c0372b381acf792a76402854c2e57bb05b5f3836f770fdfb0b"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(fixture["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
@@ -331,7 +331,7 @@ fn browser_mirror2_visited_links_629_shape_is_pinned() {
     let bytes = include_bytes!("browser-mirror2-visited-links-629.json");
     assert_eq!(
         format!("{:x}", sha2::Sha256::digest(bytes)),
-        "f1637ccd128a40d770a9dab07556da111eef4ed849459f1f6da1a28986997062"
+        "3d4a931ea9cc4a0eba785cc86b034740bf330219e53ba55a8cab8ea107b0c5ac"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(fixture["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
@@ -358,7 +358,7 @@ fn browser_mirror2_document_font_requirements_550_shape_is_pinned() {
     let bytes = include_bytes!("browser-mirror2-font-requirements-550.json");
     assert_eq!(
         format!("{:x}", sha2::Sha256::digest(bytes)),
-        "6f8f9cd5d112d4ee6fb72c8ab58588451f81377ef0cf08604cc75b62c9d78d15"
+        "ca7793c9bb454a99969a9c40f5e3bb5cb4b109007af3588d15c4ca29883c388e"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(fixture["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
@@ -397,4 +397,32 @@ fn browser_mirror2_layout_560_shape_is_pinned() {
         serde_json::to_value(subscribe).unwrap(),
         fixture["subscribe"]
     );
+}
+
+#[test]
+fn browser_pointer_cursor_and_document_mode_920_shape_is_pinned() {
+    // MP-08/MP-10/MP-11: protocol 920 / relay peer 371: a mirror reset carries the page's document mode when it is not
+    // no-quirks, and `pointer_cursor` reads the CSS cursor the page shows at a point (the viewer shows it over video).
+    let bytes = include_bytes!("browser-pointer-cursor-document-mode-920.json");
+    assert_eq!(
+        format!("{:x}", sha2::Sha256::digest(bytes)),
+        "c764dd7b1b3aeab9f0faf62fe0e85f17cdc2ec30ca10adb1696b34f3de19a1b4"
+    );
+    let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    assert_eq!(fixture["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
+    assert_eq!(
+        fixture["peer_protocol"],
+        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION
+    );
+    let request: LocalDaemonRequest =
+        serde_json::from_value(fixture["pointer_cursor"].clone()).unwrap();
+    assert_eq!(
+        serde_json::to_value(request).unwrap(),
+        fixture["pointer_cursor"]
+    );
+    for name in ["pointer_cursor_result", "quirks_reset"] {
+        let wire = serde_json::json!({"KernelBrowser": {"result": fixture[name]}});
+        let typed: LocalDaemonResponse = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(serde_json::to_value(typed).unwrap(), wire);
+    }
 }

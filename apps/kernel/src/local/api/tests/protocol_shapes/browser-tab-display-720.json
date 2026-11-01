@@ -1,0 +1,21 @@
+{
+  "local_protocol": 720,
+  "requests": [
+    {
+      "KernelBrowser": {
+        "command": {
+          "op": "display_subscribe",
+          "tab_id": "tab-2",
+          "generation": 7,
+          "codecs": ["png", "avc1.420033", "chariox-video-dependencies-v1", "chariox-relay-binary-v96"],
+          "bitrate": 8000000,
+          "device_scale_factor": 2,
+          "initial_push": true,
+          "tab_display": true
+        }
+      }
+    },
+    { "KernelBrowser": { "command": { "op": "display_park", "subscription_id": "host-display-1", "generation": 7, "parked": true } } },
+    { "KernelBrowser": { "command": { "op": "display_park", "subscription_id": "host-display-1", "generation": 7, "parked": false } } }
+  ]
+}

@@ -86,14 +86,14 @@ pub(super) fn export_directory(
     ))
 }
 
-type SnapshotOverlay = (
+pub(super) type SnapshotOverlay = (
     Vec<DevelopmentOverlayEntry>,
     Vec<String>,
     u64,
     BTreeMap<String, zeroize::Zeroizing<Vec<u8>>>,
 );
 
-fn snapshot(
+pub(super) fn snapshot(
     worktree: &Path,
     root: &File,
     repository_id: &str,
@@ -101,13 +101,7 @@ fn snapshot(
     budget: &mut ManifestMemoryBudget,
     vault: Option<&vault_artifacts::ExportVault<'_>>,
 ) -> Result<SnapshotOverlay, DaemonError> {
-    let patterns = match open_relative(root, Path::new(".charioxignore")) {
-        Ok(file) => {
-            overlay::parse_context_ignore_patterns(read_bounded(file, MAX_CONTEXT_IGNORE_BYTES)?.0)?
-        }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Vec::new(),
-        Err(error) => return Err(context_io_error("open directory ignore rules", error)),
-    };
+    let patterns = overlay::read_context_ignore_patterns(worktree)?;
     let mut pending = vec![PathBuf::new()];
     let mut directories = BTreeSet::new();
     let mut files = BTreeSet::new();
@@ -130,11 +124,21 @@ fn snapshot(
                 .to_string();
             validate_relative_path(&path_text)?;
             if overlay::context_force_excluded_path(&path_text)
-                || (vault.is_none()
-                    && crate::workspace_live_sync_ignore::workspace_live_sync_force_excluded_path(
-                        &path_text,
-                    ))
-                || overlay::user_ignore_pattern_matches_any(&patterns, &path_text)
+                || (vault.is_none() && overlay::plain_context_force_excluded_path(&path_text))
+            {
+                continue;
+            }
+            let file_type = entry
+                .file_type()
+                .map_err(|error| context_io_error("inspect directory workspace entry", error))?;
+            let rule_path = if file_type.is_dir() {
+                format!("{path_text}/")
+            } else {
+                path_text.clone()
+            };
+            let excluded = overlay::user_rules_exclude_path(&rule_path, &patterns);
+            if excluded
+                && (!file_type.is_dir() || !overlay::may_include_descendant(&patterns, &path_text))
             {
                 continue;
             }
@@ -147,7 +151,9 @@ fn snapshot(
                 .map_err(|error| context_io_error("inspect directory workspace entry", error))?;
             budget.consume(path_text.len() + 256)?;
             if metadata.is_dir() {
-                directories.insert(path_text);
+                if !excluded {
+                    directories.insert(path_text);
+                }
                 pending.push(path);
             } else if metadata.is_file() {
                 files.insert(path_text);
@@ -156,6 +162,19 @@ fn snapshot(
             }
         }
     }
+    // Selected children of ignored directories still need declared parents.
+    // Do not publish unrelated ignored directories that were only traversed.
+    let mut parents = BTreeSet::new();
+    for path in directories.iter().chain(files.iter()) {
+        let mut current = path.as_str();
+        while let Some((parent, _)) = current.rsplit_once('/') {
+            if !directories.contains(parent) && parents.insert(parent.to_string()) {
+                budget.consume(parent.len() + 256)?;
+            }
+            current = parent;
+        }
+    }
+    directories.extend(parents);
     let mut stored = BTreeSet::new();
     let mut pending_objects = BTreeMap::new();
     let mut size = 0;

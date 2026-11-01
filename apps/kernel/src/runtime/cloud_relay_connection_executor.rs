@@ -49,6 +49,13 @@ pub(crate) async fn ensure_cloud_relay_connection(
     runtime_state: &KernelRuntimeState,
     config_projection: &DaemonConfigProjectionStore,
 ) -> Result<(), DaemonError> {
+    // MP-08 / MP-10 / MP-11: automatic refresh cannot undo a private override.
+    // ConnectCloudRelay remains the explicit operation that selects Cloud again.
+    if !crate::runtime::cloud_relay_control::cloud_relay_transport_selected(
+        &config_projection.snapshot(),
+    ) {
+        return Ok(());
+    }
     migrate_legacy_kernel_profile(runtime_state, config_projection).await?;
     let config = config_projection.snapshot();
     let Some(profile) = config.cloud_relay.clone() else {
@@ -448,6 +455,37 @@ fn relay_kernel_target_alias(kernel: &chariox_relay::protocol::RelayKernelPresen
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn automatic_cloud_refresh_keeps_an_explicit_private_relay() {
+        // MP-08 / MP-10 / MP-11: retained enrollment does not select the transport;
+        // only an explicit ConnectCloudRelay does.
+        let root = crate::test_support::TestWorktree::new("private-relay-refresh");
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.user_config.state.path =
+            Some(root.path().join("kernel/state.db").display().to_string());
+        config.relay_url = Some("ws://operator-relay:49100".into());
+        config.relay_token = Some("synthetic-private-transport".into());
+        config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+            api_url: "http://127.0.0.1:1".into(),
+            relay_url: "wss://cloud-relay".into(),
+            kernel_id: Some(config.daemon_id.clone()),
+            kernel_credential: Some("synthetic-enrollment".into()),
+            ..Default::default()
+        });
+        let app = crate::app::DaemonApp::bootstrap(config.clone()).unwrap();
+        let projection = app.config_projection_store();
+        let router = crate::runtime::router::CommandRouter::with_interactive_capacity(
+            Arc::new(tokio::sync::Mutex::new(app)),
+            1,
+        );
+        ensure_cloud_relay_connection(&router.runtime_state(), &projection)
+            .await
+            .unwrap();
+        let after = projection.snapshot();
+        assert_eq!(after.relay_url, config.relay_url);
+        assert_eq!(after.relay_token, config.relay_token);
+    }
 
     #[test]
     fn keyed_terminal_renewal_keeps_the_requested_subject_without_repairing_it() {

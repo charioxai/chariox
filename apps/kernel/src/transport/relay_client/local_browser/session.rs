@@ -2,7 +2,8 @@
 
 use tokio::task::JoinSet;
 
-use super::admission::LocalBrowserSocket;
+use futures_util::{Sink, Stream};
+
 use super::leases::LocalBrowserLeaseState;
 use super::*;
 use crate::runtime_transport::CONNECTION_INBOUND_REQUEST_LIMIT;
@@ -11,11 +12,10 @@ const SESSION_QUEUE_LIMIT: usize = 1024;
 const PING_INTERVAL: Duration = Duration::from_secs(10);
 const IDLE_TIMEOUT: Duration = Duration::from_secs(35);
 
-pub(super) async fn run(
-    direct: Arc<LocalBrowserDirect>,
-    socket: LocalBrowserSocket,
-    grant: LocalBrowserGrant,
-) {
+pub(super) async fn run<S, E>(direct: Arc<LocalBrowserDirect>, socket: S, grant: LocalBrowserGrant)
+where
+    S: Stream<Item = Result<Message, E>> + Sink<Message> + Unpin,
+{
     let mut identity = grant.identity.clone();
     let lease_id = grant.lease_id.clone();
     let mut lease = direct.activate_lease(&lease_id, &grant);
@@ -32,7 +32,9 @@ pub(super) async fn run(
         .saturating_sub(crate::session::unix_epoch_ms());
     let expiry = sleep(Duration::from_millis(expiry_ms));
     tokio::pin!(expiry);
-    let mut ping = tokio::time::interval(PING_INTERVAL);
+    // The upgrade just proved the connection live: the first keepalive is one interval out.
+    let mut ping =
+        tokio::time::interval_at(tokio::time::Instant::now() + PING_INTERVAL, PING_INTERVAL);
     ping.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut last_read = Instant::now();
     crate::logging::info_with_fields(

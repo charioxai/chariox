@@ -61,6 +61,32 @@ impl AttachmentServiceStore {
         self.write().detach_with_effect(sessions, attachment_id)
     }
 
+    pub(crate) fn restore_attachment(
+        &self,
+        sessions: &mut SessionService,
+        attachment: RuntimeAttachment,
+    ) -> Result<(), DaemonError> {
+        if sessions
+            .get_session(attachment.session_id())?
+            .owner_user_id()
+            != attachment.owner_user_id()
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "restore moved attachment",
+                message: "Move attachment owner differs from its execution Room".into(),
+            });
+        }
+        sessions.add_attachment_to_session(attachment.session_id(), attachment.id())?;
+        let mut service = self.write();
+        service
+            .last_heartbeat_at_ms
+            .insert(attachment.id().to_string(), crate::session::unix_epoch_ms());
+        service
+            .attachments
+            .insert(attachment.id().to_string(), attachment);
+        Ok(())
+    }
+
     pub fn get_attachment(&self, attachment_id: &str) -> Result<RuntimeAttachment, DaemonError> {
         self.read().get_attachment(attachment_id)
     }

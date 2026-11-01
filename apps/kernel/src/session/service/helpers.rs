@@ -1,7 +1,6 @@
 use super::*;
 
 pub(super) fn collect_ready_workflow_dispatches(
-    next_workflow_node_run_number: &mut u64,
     session_id: &str,
     workflow_id: &str,
     workflow: &WorkflowDefinition,
@@ -76,7 +75,7 @@ pub(super) fn collect_ready_workflow_dispatches(
         };
 
         let node_run = WorkflowNodeRun::new(
-            next_workflow_node_run_id(next_workflow_node_run_number),
+            new_workflow_node_run_id(),
             target_node.id().to_string(),
             workflow_run
                 .runtime_agent_id_for_node(target_node.id())
@@ -206,9 +205,9 @@ fn select_synchronized_workflow_message_indices(
         })
 }
 
-fn next_workflow_node_run_id(next_workflow_node_run_number: &mut u64) -> String {
-    *next_workflow_node_run_number += 1;
-    format!("workflow-node-run-{next_workflow_node_run_number}")
+// Node turns outlive the service that creates them, including across restarts.
+pub(super) fn new_workflow_node_run_id() -> String {
+    format!("{:032x}", rand::random::<u128>())
 }
 
 fn next_workflow_node_iteration_index(workflow_run: &WorkflowRun, node_id: &str) -> u64 {
@@ -482,14 +481,6 @@ impl SessionService {
 
     pub(super) fn next_workflow_run_id(&mut self) -> String {
         format!("{:032x}", rand::random::<u128>())
-    }
-
-    pub(super) fn next_workflow_node_run_id(&mut self) -> String {
-        self.next_workflow_node_run_number = self.next_workflow_node_run_number.wrapping_add(1);
-        format!(
-            "{:016x}",
-            ordered_entity_id(unix_epoch_ms(), self.next_workflow_node_run_number)
-        )
     }
 
     pub(super) fn next_workflow_message_id(&mut self) -> String {

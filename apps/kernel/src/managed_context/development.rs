@@ -233,6 +233,7 @@ mod import;
 mod import_archive;
 mod import_materialize;
 mod overlay;
+mod source_snapshot;
 pub(crate) mod vault_artifacts;
 pub(crate) use export::{export_development_context_with_vault, publish_archive_no_clobber};
 

@@ -373,6 +373,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
         }
         if let Some(run) = existing.as_ref().filter(|_| existing_profile_matches) {
             request = request.with_resume_state(run.resume_state().clone());
+            // Catalog refresh must keep the environment validated by ordinary Project setup.
+            if let Some((home, path)) = run.preparation_environment() {
+                request = request.with_preparation_environment(home, path);
+            }
             if request.variant.is_none() {
                 request = request.with_variant(run.variant().map(str::to_string));
             }

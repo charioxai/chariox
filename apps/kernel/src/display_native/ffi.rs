@@ -157,6 +157,7 @@ extern "C" {
     pub(super) fn cx_codec_diagnostic(c: *mut c_void) -> *const std::ffi::c_char;
     pub(super) fn cx_codec_backend(c: *mut c_void) -> i32;
     pub(super) fn cx_codec_openh264(c: *mut c_void) -> i32;
+    pub(super) fn cx_codec_refining(c: *mut c_void) -> i32;
     pub(super) fn cx_codec_reduced(c: *mut c_void) -> i32;
     pub(super) fn cx_codec_unprotected(c: *mut c_void, unprotected: i32);
     #[cfg(test)]

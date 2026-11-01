@@ -1090,6 +1090,7 @@ mod receipt_reconciliation {
                         output_chunks: Vec::new(),
                         notices: Vec::new(),
                         completions: vec![crate::transport::relay_peer::RelayProjectedCompletion {
+                            failure: None,
                             message_id: "cancel-claimed-completion".to_string(),
                             completed_at_ms: 1,
                             home_prompt_id: Some(prompt_id.clone()),
@@ -1507,6 +1508,7 @@ mod receipt_reconciliation {
                         output_chunks: Vec::new(),
                         notices: Vec::new(),
                         completions: vec![crate::transport::relay_peer::RelayProjectedCompletion {
+                            failure: None,
                             message_id: "completed-receipt-assistant-message".to_string(),
                             completed_at_ms: 1,
                             home_prompt_id: Some(listener_prompt_id),
@@ -2285,6 +2287,7 @@ mod receipt_reconciliation {
             output_chunks: Vec::new(),
             notices: Vec::new(),
             completions: vec![crate::transport::relay_peer::RelayProjectedCompletion {
+                failure: None,
                 message_id: "assistant-message-1".to_string(),
                 completed_at_ms: 1,
                 home_prompt_id: Some(dispatch.prompt_id.clone()),
@@ -2305,6 +2308,7 @@ mod receipt_reconciliation {
             output_chunks: Vec::new(),
             notices: Vec::new(),
             completions: vec![crate::transport::relay_peer::RelayProjectedCompletion {
+                failure: None,
                 message_id: "assistant-message-other".to_string(),
                 completed_at_ms: 2,
                 home_prompt_id: Some("another-home-prompt".to_string()),
@@ -2631,6 +2635,7 @@ fn completed_worker_projection(
         output_chunks: Vec::new(),
         notices: Vec::new(),
         completions: vec![crate::transport::relay_peer::RelayProjectedCompletion {
+            failure: None,
             message_id: "assistant-completed".to_string(),
             completed_at_ms: crate::session::unix_epoch_ms(),
             home_prompt_id: Some(home_prompt_id.to_string()),
@@ -3448,6 +3453,7 @@ mod projection_drain {
                 "run-next",
                 &ended_event(vec![
                     crate::transport::relay_peer::RelayProjectedCompletion {
+                        failure: None,
                         message_id: "completion-final".to_string(),
                         completed_at_ms: 1,
                         home_prompt_id: Some(prompt_id.clone()),

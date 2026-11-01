@@ -60,7 +60,15 @@ impl PendingProviderReloadStore {
 }
 
 #[derive(Debug, Clone)]
+pub(super) struct PendingGoalApproval {
+    pub(super) task_id: String,
+    pub(super) prompt_id: String,
+    pub(super) blocked_revision: u64,
+}
+
+#[derive(Debug, Clone)]
 pub(super) struct PendingInteraction {
+    pub(super) goal_approval: Option<PendingGoalApproval>,
     /// Kernel-wide decisions live on the same interaction board without a session.
     pub(super) kernel_wide_interaction: Option<crate::session::RuntimeInteraction>,
     pub(super) session_id: String,

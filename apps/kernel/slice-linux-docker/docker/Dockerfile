@@ -179,6 +179,9 @@ RUN printf '%s\n' 'deb [check-valid-until=no] https://snapshot.debian.org/archiv
   && test -x /usr/bin/x-terminal-emulator \
   && rm -rf /var/lib/apt/lists/*
 
+COPY scripts/check-process-sampler.mjs /usr/local/lib/chariox/check-process-sampler.mjs
+RUN node /usr/local/lib/chariox/check-process-sampler.mjs
+
 # Nested Docker cannot write an unprivileged uid_map on every host. The
 # setuid helper only sets up Bubblewrap's namespace and drops its caps
 # before the provider starts. Slice launches select the supported Bubblewrap
@@ -239,6 +242,7 @@ COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controlle
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-input.mjs /opt/chariox-slice/browser-controller-input.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-notes.mjs /opt/chariox-slice/browser-controller-notes.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-focus-world.mjs /opt/chariox-slice/browser-focus-world.mjs
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-cursor.mjs /opt/chariox-slice/browser-controller-cursor.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-cdp.mjs /opt/chariox-slice/browser-controller-cdp.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/selkies-capture.py /opt/chariox-slice/selkies-capture.py
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-resources.mjs /opt/chariox-slice/browser-controller-resources.mjs
@@ -307,6 +311,7 @@ RUN chmod +x /opt/chariox-slice/browser-cdp.mjs \
     /opt/chariox-slice/browser-controller-actions.mjs \
     /opt/chariox-slice/browser-controller-input.mjs \
     /opt/chariox-slice/browser-focus-world.mjs \
+    /opt/chariox-slice/browser-controller-cursor.mjs \
     /opt/chariox-slice/browser-controller-cdp.mjs \
     /opt/chariox-slice/browser-controller-resources.mjs \
     /opt/chariox-slice/browser-controller-cookie-fence.mjs \
@@ -397,7 +402,6 @@ COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/kernel-browser-cd
      apps/kernel/slice-linux-docker/docker/kernel-browser-native.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-visible-page.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-page-display.mjs \
-     apps/kernel/slice-linux-docker/docker/kernel-browser-navigation-display.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-layout-observer.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-owned-display.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-pixel-worker.mjs \

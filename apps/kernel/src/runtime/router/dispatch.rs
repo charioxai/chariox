@@ -33,7 +33,13 @@ impl CommandRouter {
         // MD-4: admission policy remains shared; unrelated branches stay off caller stacks.
         let response_command = command.clone();
         let follow_request = request.clone();
-        let mut response = Box::pin(router.dispatch_authorized(command, request)).await;
+        let mut response = router
+            .request_metrics
+            .observe(
+                command.command_type.clone(),
+                Box::pin(router.dispatch_authorized(command, request)),
+            )
+            .await;
         if let (Some(grant_id), Ok(response)) =
             (response_command.external_grant_id(), &mut response)
         {
@@ -200,6 +206,14 @@ impl CommandRouter {
             return Err(crate::runtime::kernel_access::error(
                 "agents cannot answer approvals; the user answers in a Chariox terminal",
             ));
+        }
+        if let Err(error) = self
+            .runtime_state
+            .ensure_vault_change_allowed(&command, &request)
+        {
+            let result = Err(error);
+            log_command_completed(&command_trace, &result);
+            return result;
         }
         if matches!(&request, LocalDaemonRequest::RenewKernelSudoRequester(_)) {
             return Err(crate::runtime::kernel_access::error(

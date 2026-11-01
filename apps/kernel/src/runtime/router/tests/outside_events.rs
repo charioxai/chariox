@@ -69,6 +69,11 @@ fn outside_router_collects_states_and_ends_a_running_wait_on_revoke() {
             "outside-run",
             "outside-trace",
         );
+        router
+            .runtime_state()
+            .outside_store()
+            .outside_settled()
+            .unwrap();
         let LocalDaemonResponse::EventsListed {
             events,
             next_cursor,
@@ -625,6 +630,11 @@ fn outside_router_a_removed_agent_leaves_the_other_targets_flowing() {
             "kept-run",
             "kept-trace",
         );
+        router
+            .runtime_state()
+            .outside_store()
+            .outside_settled()
+            .unwrap();
         let LocalDaemonResponse::EventsListed { events, .. } = dispatch(
             &router,
             &grant,

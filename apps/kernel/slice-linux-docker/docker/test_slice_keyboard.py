@@ -297,6 +297,19 @@ class PhysicalChordTests(unittest.TestCase):
                 with self.assertRaises(ValueError):m.main(args,io.BytesIO(text))
             inject.assert_not_called()
 
+    def test_room_navigation_keys_skip_the_text_focus_proof_but_text_and_chords_keep_it(self):
+        # Chromium is never traversed by the native focus proof, so it would refuse these on every web page.
+        m,c=self.native()
+        for key,admitted in [('End',False),('PageDown',False),('down',False),('Page_Up',False),('ArrowLeft',False),
+                             ('s',True),('Return',True),('space',True),('shift+End',True),('ctrl+a',True)]:
+            with patch.dict(m.os.environ,{'CHARIOX_COMPUTER_AGENT_INPUT':'1'}), patch.object(m,'room_input_guard',return_value=lambda:None) as guard, patch.object(m,'key_repeat') as repeat:
+                m.main(['key-repeat','1'],io.BytesIO(key.encode()))
+            self.assertEqual(guard.called,admitted,key)
+            self.assertEqual(repeat.call_args.kwargs['before_press'] is not None,admitted,key)
+        with patch.dict(m.os.environ,{'CHARIOX_COMPUTER_AGENT_INPUT':'1'}), patch.object(m,'room_input_guard',side_effect=ValueError('protected native focus')), patch.object(m,'type_text') as type_text:
+            with self.assertRaises(ValueError):m.main([],io.BytesIO(b'End'))
+        type_text.assert_not_called()
+
     def test_agent_room_holds_reach_the_hold_helper(self):
         m,c=self.native()
         for args,data,call in [(['hold-key','100'],b's',('key','s',100)),(['hold-button','middle','100','10','10'],b'',('button','middle',100,10,10))]:

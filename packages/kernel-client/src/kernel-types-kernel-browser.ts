@@ -30,21 +30,23 @@ export type KernelBrowserCommand =
   | { op: "mirror_input"; tab_id: string; generation: number; document_id: string; subscription_id: string; sequence: number; action: KernelBrowserMirrorAction }
   | { op: "display_capture" | "display_takeover" | "display_release"; tab_id: string; generation: number }
   | { op: "display_actors" }
-  | { op: "display_subscribe"; target?: KernelBrowserDisplayTarget; tab_id: string; generation: number; codecs: string[]; bitrate: number; device_scale_factor: 1 | 2; initial_push?: boolean }
+  | { op: "display_subscribe"; target?: KernelBrowserDisplayTarget; tab_id: string; generation: number; codecs: string[]; bitrate: number; device_scale_factor: 1 | 2; initial_push?: boolean; tab_display?: boolean }
   | { op: "display_next"; subscription_id: string; generation: number; after_sequence: number }
   // MP-08/MP-10/MP-11: fresh admission and delivery identity, same producer.
   | { op: "display_suspend" | "display_resume"; subscription_id: string; generation: number }
+  // MP-08/MP-10 (protocol 720): park a Tab display while the DOM mirror paints; the Tab's next commit unparks it.
+  | { op: "display_park"; subscription_id: string; generation: number; parked: boolean }
   // MP-08/MP-10: protocol 491 push acknowledgement on a relay display subscription.
-  | { op: "display_ack"; subscription_id: string; generation: number; sequence: number; lost: boolean; held_ms?: number }
+  | { op: "display_ack"; subscription_id: string; generation: number; sequence: number; lost: boolean; held_ms?: number; paused?: boolean }
   | { op: "display_input"; binding_id?: string; sequence?: number; tab_id: string; generation: number; document_id: string; input: KernelBrowserInput }
   | { op: "start" | "state" | "stop" }
   | { op: "open"; url: string }
-  | { op: "close" | "snapshot" | "screenshot" | "subscribe"; tab_id: string; generation: number }
+  | { op: "close" | "snapshot" | "screenshot"; tab_id: string; generation: number }
   | { op: "resize"; tab_id: string; generation: number; width: number; height: number }
   | { op: "navigate"; tab_id: string; generation: number; url: string }
   | { op: "input"; tab_id: string; generation: number; input: KernelBrowserInput }
   | { op: "dialog"; tab_id: string; generation: number; document_id: string; dialog_id: string; action: "accept" | "dismiss"; prompt_text?: string }
-  | { op: "poll" | "unsubscribe"; subscription_id: string; generation: number }
+  | { op: "unsubscribe"; subscription_id: string; generation: number }
 export type KernelBrowserRequest = { KernelBrowser: { command: KernelBrowserCommand } }
 export type KernelBrowserFrame = {
   generation: number; tab_id: string; mime_type: "image/png" | "image/jpeg";
