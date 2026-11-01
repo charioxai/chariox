@@ -180,12 +180,9 @@ impl Terminal {
                 self.commands_started += 1;
                 Fired::new()
             }
-            ShellMark::CommandFinished {
-                exit_code,
-                background,
-            } => {
+            ShellMark::CommandFinished { exit_code, jobs } => {
                 if let Some(run_id) = &self.run_id {
-                    crate::runtime::process_resources::line_finished_for_key(run_id, background);
+                    crate::runtime::process_resources::line_finished_for_key(run_id, &jobs);
                 }
                 self.mark_tracking = true;
                 self.first_prompt_deadline = None;

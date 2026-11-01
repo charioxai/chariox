@@ -198,7 +198,7 @@ impl Ledger {
                 std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
                 std::collections::btree_map::Entry::Vacant(vacant) => {
                     // Who started it is not known yet: asked again next sample.
-                    let Some(holdable) = submissions.claim(command.pid, now) else {
+                    let Some(holdable) = submissions.claim(command.pid, command.group, now) else {
                         continue;
                     };
                     self.arrivals += 1;

@@ -19,13 +19,15 @@ fi
 __chariox_debug_start=0
 __chariox_status() { return "$1"; }
 __chariox_prompt() {
-  local __chariox_status_code=$? __chariox_hook
+  local __chariox_status_code=$? __chariox_hook __chariox_jobs
   # Old Bash skips DEBUG for top-level subshell syntax. Finish those lines
   # with a paired mark; the PTY tracks their foreground jobs while they run.
   if [[ $__chariox_debug_start == 1 && $__chariox_at_prompt == 1 ]]; then
     printf '\033]133;C\007'
   fi
-  printf '\033]133;D;%s;%s\007' "$__chariox_status_code" "${!-}"
+  # The job table says which line started each background job.
+  __chariox_jobs=$(jobs -p)
+  printf '\033]133;D;%s;%s\007' "$__chariox_status_code" "${__chariox_jobs//$'\n'/,}"
   for __chariox_hook in "${__chariox_prompt_hooks[@]}"; do
     __chariox_status "$__chariox_status_code"
     eval "$__chariox_hook"

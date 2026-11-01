@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use super::events::{FinishBinding, OutputMatcher};
-use super::service::submitted_lines;
+use super::service::enters;
 use super::*;
 
 struct TempDir(std::path::PathBuf);
@@ -368,44 +368,33 @@ async fn one_driver_rule_protects_a_foreground_program() {
 }
 
 #[test]
-fn only_lines_with_something_on_them_are_submitted() {
-    assert_eq!(submitted_lines(b"cat"), 0, "typing without a line break");
-    assert_eq!(submitted_lines(b"\r"), 0, "an empty line");
-    assert_eq!(submitted_lines(b"  \r\n"), 0, "a blank line");
-    assert_eq!(submitted_lines(b"true\r"), 1);
-    assert_eq!(submitted_lines(b"true\r\n"), 1, "a CRLF is one line break");
+fn every_enter_at_a_prompt_is_a_submission() {
+    assert_eq!(enters(b"cat"), 0, "typing without a line break");
+    assert_eq!(enters(b"\r"), 1, "Enter on text typed earlier, or empty");
+    assert_eq!(enters(b"\x1b[A\r"), 1, "a recalled line");
+    assert_eq!(enters(b"true\r\n"), 1, "a CRLF is one line break");
+    assert_eq!(enters(b"a\rb\n\nc"), 3, "the last is still being typed");
     assert_eq!(
-        submitted_lines(b"a\rb\n\nc"),
-        2,
-        "the last is still being typed"
+        enters(b"\x1b[200~a\nb\r\x1b[201~\r"),
+        1,
+        "a paste in brackets is one line"
     );
 }
 
-/// Types each input in turn (`None` opens the terminal on the login shell, a
-/// program runs that shell without marks), then returns, per pid file the
-/// inputs write, whether the kernel may hold that command for room.
+/// Types each input in turn (on the login shell, or on `shell` when given),
+/// then returns, per pid file the inputs write, whether the kernel may hold
+/// that command for room.
 async fn who_owns(
-    program: Option<Vec<String>>,
+    shell: Option<&str>,
     inputs: &[(&TerminalActor, String)],
     pid_files: &[&str],
 ) -> Vec<bool> {
     let root = TempDir::new();
     let service = service(root.path());
-    let id = match program {
-        None => open(&service, root.path()).terminal_id,
-        Some(command) => service
-            .open(OpenRoomTerminal {
-                session_id: "room-1".to_string(),
-                working_directory: root.path().to_path_buf(),
-                cols: 100,
-                rows: 30,
-                title: None,
-                opened_by: agent("a"),
-                command: Some(command),
-            })
-            .expect("terminal opens")
-            .terminal_id,
-    };
+    if let Some(shell) = shell {
+        service.use_shell_for_test(shell);
+    }
+    let id = open(&service, root.path()).terminal_id;
     let run_id = service
         .terminal_for_test(&id)
         .lock_open()
@@ -548,7 +537,10 @@ async fn a_pipeline_in_the_background_belongs_to_its_line_in_every_member() {
     assert_eq!(
         who_owns(
             None,
-            &[(&a, line.to_string()), (&TerminalActor::User, "true\r".to_string())],
+            &[
+                (&a, line.to_string()),
+                (&TerminalActor::User, "true\r".to_string())
+            ],
             &["head", "tail"]
         )
         .await,
@@ -573,12 +565,12 @@ async fn a_running_command_is_decided_while_a_later_line_waits_behind_it() {
 
 #[tokio::test]
 async fn an_agents_command_stays_the_agents_in_a_shell_that_reports_no_marks() {
-    // Marks exist for bash and zsh; a shell started as a program reports none.
+    // Marks exist for bash and zsh; any other login shell (fish) reports none.
     let a = agent("a");
     let started = Instant::now();
     assert_eq!(
         who_owns(
-            Some(vec!["/bin/bash".into(), "--norc".into(), "-i".into()]),
+            Some("/bin/dash"),
             &[(&a, format!("{SLEEPER}\r"))],
             &["sleeper"]
         )

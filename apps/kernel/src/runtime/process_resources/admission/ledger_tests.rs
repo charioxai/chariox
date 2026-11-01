@@ -31,6 +31,7 @@ fn room<'a>(memory: u64, tight: bool, volume: &'a Volume) -> Room<'a> {
 fn command(pid: u32, resident: u64, growth: u64) -> pool::CommandUse {
     pool::CommandUse {
         pid,
+        group: None,
         resident,
         growth,
         writes: 0,
@@ -379,12 +380,12 @@ fn submit(member: &Arc<Mutex<Observation>>, holdable: bool) {
 }
 
 /// The shell reads the next accepted line, runs it and returns to the prompt;
-/// `background` is the job it left running.
-fn run_line(member: &Arc<Mutex<Observation>>, background: Option<u32>) {
+/// `jobs` are the process groups its job table holds.
+fn run_line(member: &Arc<Mutex<Observation>>, jobs: &[u32]) {
     let mut member = member.lock().unwrap();
     let now = std::time::Instant::now();
     member.submissions.line_started(now);
-    member.submissions.line_finished(background, now);
+    member.submissions.line_finished(jobs);
 }
 
 /// An older heavy command of another owner: never the one paused.
@@ -414,10 +415,10 @@ fn a_persons_job_stays_unpausable_when_an_agent_types_after_it() {
     // An agent's job, then a person's own (the newest), then an agent types
     // at the prompt the person's job returned.
     submit(&terminal, true);
-    run_line(&terminal, Some(4_100_002));
+    run_line(&terminal, &[4_100_002]);
     start(&mut ledger, &terminal, 4_100_002, 700 * MIB);
     submit(&terminal, false);
-    run_line(&terminal, Some(4_100_003));
+    run_line(&terminal, &[4_100_003]);
     start(&mut ledger, &terminal, 4_100_003, 700 * MIB);
     submit(&terminal, true);
     pressed(&mut ledger, other, &terminal);
@@ -439,7 +440,7 @@ fn an_agents_job_stays_pausable_when_the_person_types_after_it() {
     let other = oldest(&mut ledger);
     let terminal = owner("terminal", true, Vec::new(), Vec::new());
     submit(&terminal, true);
-    run_line(&terminal, Some(4_100_002));
+    run_line(&terminal, &[4_100_002]);
     start(&mut ledger, &terminal, 4_100_002, 700 * MIB);
     // The person types at the prompt the agent's job returned.
     submit(&terminal, false);
@@ -460,8 +461,8 @@ fn an_agents_job_first_sampled_after_a_persons_line_is_still_the_agents() {
     // ran before the sampler first sees it.
     submit(&terminal, true);
     submit(&terminal, false);
-    run_line(&terminal, Some(4_100_002));
-    run_line(&terminal, Some(4_100_002));
+    run_line(&terminal, &[4_100_002]);
+    run_line(&terminal, &[4_100_002]);
     start(&mut ledger, &terminal, 4_100_002, 700 * MIB);
     pressed(&mut ledger, other, &terminal);
     assert_eq!(
@@ -478,8 +479,8 @@ fn a_persons_job_first_sampled_after_an_agents_line_is_still_the_persons() {
     let terminal = owner("terminal", true, Vec::new(), Vec::new());
     submit(&terminal, false);
     submit(&terminal, true);
-    run_line(&terminal, Some(4_100_002));
-    run_line(&terminal, Some(4_100_002));
+    run_line(&terminal, &[4_100_002]);
+    run_line(&terminal, &[4_100_002]);
     start(&mut ledger, &terminal, 4_100_002, 700 * MIB);
     pressed(&mut ledger, other, &terminal);
     assert_eq!(

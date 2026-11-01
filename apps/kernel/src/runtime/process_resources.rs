@@ -248,6 +248,7 @@ impl PreparedDomain {
                         };
                         pool::CommandUse {
                             pid,
+                            group: process_group(pid),
                             resident,
                             growth,
                             writes,
@@ -623,14 +624,14 @@ fn with_submissions_for_key(key: &str, update: impl FnOnce(&mut submissions::Sub
     }
 }
 
-/// Whether commands that no submitted line explains (a terminal's own shell
-/// start) may wait for room.
-pub(crate) fn set_default_holdable_for_key(key: &str, holdable: bool) {
-    with_submissions_for_key(key, |lines| lines.set_default(holdable));
+/// The workload of `key` is a terminal's shell: its own start is a person's,
+/// and `reports_lines` says whether the shell marks the lines it runs.
+pub(crate) fn bind_terminal_for_key(key: &str, reports_lines: bool) {
+    with_submissions_for_key(key, |lines| lines.for_terminal(reports_lines));
 }
 
-/// A line was accepted in the terminal bound to `key`: the commands it starts
-/// may wait for room unless a person submitted it.
+/// An Enter was accepted at the prompt of the terminal bound to `key`: the
+/// command its line starts may wait for room unless a person submitted it.
 pub(crate) fn submit_line_for_key(key: &str, holdable: bool) {
     with_submissions_for_key(key, |lines| {
         lines.submit(holdable, std::time::Instant::now())
@@ -642,12 +643,16 @@ pub(crate) fn line_started_for_key(key: &str) {
     with_submissions_for_key(key, |lines| lines.line_started(std::time::Instant::now()));
 }
 
-/// The shell finished its line; `background` is the job it last put in the
-/// background.
-pub(crate) fn line_finished_for_key(key: &str, background: Option<u32>) {
-    with_submissions_for_key(key, |lines| {
-        lines.line_finished(background, std::time::Instant::now())
-    });
+/// The shell is back at its prompt; `jobs` are the process groups of its job
+/// table.
+pub(crate) fn line_finished_for_key(key: &str, jobs: &[u32]) {
+    with_submissions_for_key(key, |lines| lines.line_finished(jobs));
+}
+
+fn process_group(pid: u32) -> Option<u32> {
+    // SAFETY: getpgid only reads the kernel's process table.
+    let group = unsafe { libc::getpgid(i32::try_from(pid).ok()?) };
+    u32::try_from(group).ok().filter(|group| *group > 1)
 }
 
 /// Whether the command whose top process is `pid` may wait, once the sampler

@@ -33,6 +33,8 @@ pub(super) struct Pool {
 #[derive(Clone, Copy)]
 pub(super) struct CommandUse {
     pub pid: u32,
+    /// Its process group: the shell's job it belongs to.
+    pub group: Option<u32>,
     pub resident: u64,
     pub growth: u64,
     pub writes: u64,
