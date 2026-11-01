@@ -31,16 +31,20 @@ async function harness(events: Json[] | Inbox, elicitation: Json | null, onElici
   const input = new PassThrough(), output = new PassThrough()
   const lines: Json[] = []
   const replies = new Map<number, (message: Json) => void>()
+  // Everything the server wrote that is neither a reply to a call nor an elicitation request (notifications, stray replies).
+  const other: Json[] = []
   output.on("data", chunk => {
     for (const line of String(chunk).split("\n").filter(Boolean)) {
       const message = JSON.parse(line) as Json
       if (message.method === "elicitation/create") {
         lines.push(message)
         const result = onElicit(message.params)
-        if (result) input.write(JSON.stringify({ jsonrpc: "2.0", id: message.id, result }) + "\n")
+        if (result) input.write(JSON.stringify({ jsonrpc: "2.0", id: message.id, ...("error" in result ? { error: result.error } : { result }) }) + "\n")
         continue
       }
-      replies.get(message.id)?.(message)
+      const reply = replies.get(message.id)
+      if (reply) reply(message)
+      else other.push(message)
     }
   })
   const fail = (request: Json) => { const code = failAnswers.shift(); if (code) throw new CommandFailure(code, "answer failed"); return request }
@@ -63,9 +67,10 @@ async function harness(events: Json[] | Inbox, elicitation: Json | null, onElici
   const server = runEventsMcp(send as never, input, output, routes)
   let id = 0
   const call = (method: string, params: Json) => new Promise<Json>(resolve => { const n = ++id; replies.set(n, resolve); input.write(JSON.stringify({ jsonrpc: "2.0", id: n, method, params }) + "\n") })
-  await call("initialize", { protocolVersion: version, capabilities: elicitation ? { elicitation } : {} })
+  const initialized = await call("initialize", { protocolVersion: version, capabilities: elicitation ? { elicitation } : {} })
   const respond = (dialog: Json, result: Json) => input.write(JSON.stringify({ jsonrpc: "2.0", id: dialog.id, result }) + "\n")
-  return { call, respond, sent, routed, lines, inbox, close: async () => { input.end(); await server } }
+  const raw = (text: string) => input.write(text + "\n")
+  return { call, respond, raw, other, initialized, sent, routed, lines, inbox, close: async () => { input.end(); await server } }
 }
 const next = (h: Awaited<ReturnType<typeof harness>>, timeout_s = 5) => h.call("tools/call", { name: "chariox_next_choice", arguments: { timeout_s } })
 const told = (reply: Json) => JSON.parse(reply.result.content[0].text) as Json
@@ -120,9 +125,11 @@ test("the chooser is encoded for the negotiated MCP version and conforms to that
     assert.equal(schema.properties.choice.enum === undefined, version === "2025-11-25")
     await h.close()
   }
+  // A version this server does not speak is answered with the latest one it does, and that is the version it encodes for.
   const older = await harness([decision(4, { state: "pending", question })], { form: {} }, () => ({ action: "accept", content: { choice: "blue" } }), [], 0, "2025-03-26")
   await next(older)
-  conforms("2025-06-18", older.lines[0]!.params.requestedSchema as Json)
+  assert.equal(older.initialized.result.protocolVersion, "2025-11-25")
+  conforms("2025-11-25", older.lines[0]!.params.requestedSchema as Json)
   await older.close()
 })
 
@@ -274,6 +281,184 @@ test("a question in an open dialog is not shown again to an overlapping call, an
   h.respond(h.lines[1]!, { action: "accept", content: { choice: "red" } })
   assert.deepEqual(told(await retry), { interaction_id: "int-1", action: "accept", choice_id: "red", answered: true })
   assert.equal(h.inbox.acknowledged, 4)
+  await h.close()
+})
+
+const asked = { name: "chariox_next_choice", arguments: { timeout_s: 5 } }
+
+// MCP 2025-11-25 client/elicitation#capabilities: `{}` is `{ form: {} }`, `{ url: {} }` alone does not support forms and a
+// server MUST NOT send the request; for 2025-06-18 the capability is the empty object and means forms.
+test("a form chooser is sent only to a client whose negotiated elicitation capability supports forms", async () => {
+  const cases: [string, Json | null, boolean][] = [
+    ["2025-11-25", {}, true], ["2025-11-25", { form: {} }, true], ["2025-11-25", { form: {}, url: {} }, true],
+    ["2025-11-25", { url: {} }, false], ["2025-11-25", null, false],
+    ["2025-06-18", {}, true], ["2025-06-18", { form: {} }, true], ["2025-06-18", null, false],
+  ]
+  for (const [version, capability, forms] of cases) {
+    const h = await harness([pending(4)], capability, () => ({ action: "accept", content: { choice: "red" } }), [], 0, version)
+    const reply = told(await next(h))
+    assert.equal(h.lines.length, forms ? 1 : 0, `${version} ${JSON.stringify(capability)}`)
+    if (forms) assert.equal(reply.answered, true)
+    else {
+      assert.equal(reply.question.message, "Which colour?", `${version} ${JSON.stringify(capability)}: the question reaches the model as text`)
+      assert.equal(reply.question.choices.length, 2)
+      assert.equal(typeof reply.how_to_answer, "string")
+    }
+    await h.close()
+  }
+})
+
+// An error reply to `elicitation/create` (the spec's -32602 for a mode the client did not declare, or any other) means the
+// person was not asked: it is not a dismissal.
+test("an error answer to the form request serves the question as text and keeps it open", async () => {
+  const refused = await harness([pending(4)], { form: {} }, () => ({ error: { code: -32602, message: "elicitation mode not supported" } }))
+  const shown = told(await next(refused))
+  assert.equal(shown.question.message, "Which colour?")
+  assert.equal(shown.interaction_id, "int-1")
+  assert.equal(typeof shown.how_to_answer, "string")
+  assert.deepEqual(acks(refused), [])
+  // The client said forms are unsupported: the next call goes straight to text and now the person was served.
+  const again = told(await next(refused))
+  assert.equal(again.question.message, "Which colour?")
+  assert.equal(refused.lines.length, 1)
+  assert.deepEqual(acks(refused), [4])
+  await refused.close()
+  let failing = true
+  const transient = await harness([pending(4)], { form: {} }, () => failing ? { error: { code: -32603, message: "internal error" } } : { action: "accept", content: { choice: "red" } })
+  assert.equal(told(await next(transient)).question.message, "Which colour?")
+  assert.deepEqual(acks(transient), [])
+  failing = false
+  assert.deepEqual(told(await next(transient)), { interaction_id: "int-1", action: "accept", choice_id: "red", answered: true })
+  assert.deepEqual(acks(transient), [4])
+  await transient.close()
+})
+
+test("a transport failure writing the form request is not a dismissal either", async () => {
+  const input = new PassThrough(), output = new PassThrough()
+  const write = output.write.bind(output)
+  output.write = ((chunk: unknown, ...rest: unknown[]) => {
+    if (String(chunk).includes("elicitation/create")) throw new Error("broken pipe")
+    return (write as (...args: unknown[]) => boolean)(chunk, ...rest)
+  }) as never
+  const events = [pending(4)]
+  const acked: number[] = []
+  const send = async (request: Json) => {
+    if ("WaitEvents" in request || "ListEvents" in request) return { EventsListed: { events: events.filter(event => event.cursor > (((request.WaitEvents ?? request.ListEvents) as Json).since ?? 0)), next_cursor: 4, oldest_cursor: 1, timed_out: false } }
+    if ("AckEvents" in request) acked.push((request.AckEvents as Json).cursor as number)
+    return { ack: true }
+  }
+  const server = runEventsMcp(send as never, input, output, { isLocal: async () => true, sendTo: async () => ({}) })
+  const lines: Json[] = []
+  output.on("data", chunk => { for (const line of String(chunk).split("\n").filter(Boolean)) lines.push(JSON.parse(line)) })
+  input.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-11-25", capabilities: { elicitation: { form: {} } } } }) + "\n")
+  input.write(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/call", params: asked }) + "\n")
+  await until(() => lines.some(line => line.id === 2))
+  const shown = JSON.parse(lines.find(line => line.id === 2)!.result.content[0].text) as Json
+  assert.equal(shown.question.message, "Which colour?")
+  assert.deepEqual(acked, [])
+  input.end()
+  await server
+})
+
+// MCP 2025-11-25 basic/utilities/cancellation: the receiver SHOULD stop, free resources and not answer the cancelled request.
+test("a cancelled tools/call releases its question, closes its dialog and sends no answer", async () => {
+  const h = await harness([pending(4)], { form: {} }, () => undefined)
+  h.raw(JSON.stringify({ jsonrpc: "2.0", id: 40, method: "tools/call", params: asked }))
+  await until(() => h.lines.length === 1)
+  h.raw(JSON.stringify({ jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: 40, reason: "user" } }))
+  await until(() => h.other.some(message => message.method === "notifications/cancelled"))
+  assert.equal(h.other.find(message => message.method === "notifications/cancelled")!.params.requestId, h.lines[0]!.id)
+  // A late answer to the closed dialog changes nothing; the question is still open and the next call asks it again.
+  h.respond(h.lines[0]!, { action: "accept", content: { choice: "red" } })
+  const retry = next(h)
+  await until(() => h.lines.length === 2)
+  h.respond(h.lines[1]!, { action: "accept", content: { choice: "blue" } })
+  assert.deepEqual(told(await retry), { interaction_id: "int-1", action: "accept", choice_id: "blue", answered: true })
+  assert.equal(h.other.some(message => message.id === 40), false, "no response to the cancelled call")
+  assert.deepEqual(h.sent.filter(request => "RespondToInteraction" in request).map(request => (request.RespondToInteraction as Json).choice_id), ["blue"])
+  await h.close()
+})
+
+test("a call cancelled while it waits shows nothing when a question arrives later", async () => {
+  const inbox = new Inbox([])
+  const h = await harness(inbox, { form: {} }, () => ({ action: "accept", content: { choice: "red" } }))
+  h.raw(JSON.stringify({ jsonrpc: "2.0", id: 41, method: "tools/call", params: asked }))
+  await new Promise(resolve => setTimeout(resolve, 50))
+  h.raw(JSON.stringify({ jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: 41 } }))
+  await new Promise(resolve => setTimeout(resolve, 50))
+  inbox.events.push(pending(4))
+  await new Promise(resolve => setTimeout(resolve, 300))
+  assert.equal(h.lines.length, 0)
+  assert.equal(h.other.some(message => message.id === 41), false)
+  await h.close()
+})
+
+// MCP 2025-06-18 and 2025-11-25 basic/lifecycle#version-negotiation, basic/index (JSON-RPC), basic/transports#stdio.
+test("initialize answers a version it supports with the same one and another with the latest", async () => {
+  for (const [offered, answered] of [["2025-06-18", "2025-06-18"], ["2025-11-25", "2025-11-25"], ["2024-11-05", "2025-11-25"], ["2099-01-01", "2025-11-25"]]) {
+    const h = await harness([], null, () => undefined, [], 0, offered)
+    assert.equal(h.initialized.result.protocolVersion, answered)
+    assert.deepEqual(h.initialized.result.capabilities, { tools: {} })
+    await h.close()
+  }
+  const h = await harness([], null, () => undefined)
+  const missing = await h.call("initialize", { capabilities: {} })
+  assert.equal(missing.result.protocolVersion, "2025-11-25")
+  await h.close()
+})
+
+test("malformed JSON-RPC gets the JSON-RPC error and a reply is never answered", async () => {
+  const h = await harness([], null, () => undefined)
+  h.raw("{not json")
+  h.raw(JSON.stringify([{ jsonrpc: "2.0", id: 1, method: "ping" }]))
+  h.raw(JSON.stringify({ jsonrpc: "2.0", id: null, method: "ping" }))
+  h.raw(JSON.stringify({ jsonrpc: "2.0", id: 7, method: "tools/call", params: "x" }))
+  h.raw(JSON.stringify({ jsonrpc: "2.0", id: "elicit-9", result: {} }))
+  h.raw(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }))
+  h.raw(JSON.stringify({ jsonrpc: "2.0", method: "no/such" }))
+  await until(() => h.other.length >= 4)
+  await new Promise(resolve => setTimeout(resolve, 50))
+  assert.deepEqual(h.other.map(message => [message.id ?? null, message.error?.code]), [[null, -32700], [null, -32600], [null, -32600], [7, -32602]])
+  await h.close()
+})
+
+test("a request is answered even when its id looks like one of ours, an unknown method is -32601 and ping is empty", async () => {
+  const h = await harness([pending(4)], { form: {} }, () => undefined)
+  void next(h)
+  await until(() => h.lines.length === 1)
+  const ours = h.lines[0]!.id as string
+  h.raw(JSON.stringify({ jsonrpc: "2.0", id: ours, method: "ping" }))
+  await until(() => h.other.some(message => message.id === ours))
+  assert.deepEqual(h.other.find(message => message.id === ours)!.result, {})
+  assert.equal((await h.call("resources/list", {})).error.code, -32601)
+  assert.deepEqual((await h.call("ping", {})).result, {})
+  await h.close()
+})
+
+// MCP 2025-11-25 server/tools#error-handling: a bad argument is a tool execution error (isError), an unknown tool is -32602.
+test("a bad timeout_s is a tool execution error and an unknown tool a protocol error", async () => {
+  const h = await harness([], { form: {} }, () => undefined)
+  // server/tools#listing-tools: name, description and an object inputSchema; no nextCursor, so the list is complete.
+  const tool = (await h.call("tools/list", {})).result
+  assert.deepEqual([Object.keys(tool).sort(), tool.tools.length, tool.tools[0].inputSchema.type, typeof tool.tools[0].description], [["tools"], 1, "object", "string"])
+  const bad = await h.call("tools/call", { name: "chariox_next_choice", arguments: { timeout_s: "soon" } })
+  assert.equal(bad.result.isError, true)
+  assert.equal(h.sent.length, 0)
+  assert.equal((await h.call("tools/call", { name: "nope", arguments: {} })).error.code, -32602)
+  await h.close()
+})
+
+// MCP elicitation: "Servers SHOULD validate received data matches the requested schema".
+test("an accepted answer that is not one of the offered options is rejected and the question stays open", async () => {
+  const answers: Json[] = [{ choice: "purple" }, { choice: "other" }, { choice: "other", reply: "x".repeat(21) }, { choice: "red" }]
+  const h = await harness([pending(4)], { form: {} }, () => ({ action: "accept", content: answers.shift() }))
+  for (const code of ["invalid_answer", "invalid_answer", "invalid_answer"]) {
+    const reply = await next(h)
+    assert.equal(reply.result.isError, true)
+    assert.equal(told(reply).code, code)
+  }
+  assert.equal(h.sent.some(request => "RespondToInteraction" in request), false)
+  assert.deepEqual(told(await next(h)), { interaction_id: "int-1", action: "accept", choice_id: "red", answered: true })
   await h.close()
 })
 
