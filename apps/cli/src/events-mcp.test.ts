@@ -64,7 +64,8 @@ async function harness(events: Json[] | Inbox, elicitation: Json | null, onElici
   let id = 0
   const call = (method: string, params: Json) => new Promise<Json>(resolve => { const n = ++id; replies.set(n, resolve); input.write(JSON.stringify({ jsonrpc: "2.0", id: n, method, params }) + "\n") })
   await call("initialize", { protocolVersion: "2025-06-18", capabilities: elicitation ? { elicitation } : {} })
-  return { call, sent, routed, lines, inbox, close: async () => { input.end(); await server } }
+  const respond = (dialog: Json, result: Json) => input.write(JSON.stringify({ jsonrpc: "2.0", id: dialog.id, result }) + "\n")
+  return { call, respond, sent, routed, lines, inbox, close: async () => { input.end(); await server } }
 }
 const next = (h: Awaited<ReturnType<typeof harness>>, timeout_s = 5) => h.call("tools/call", { name: "chariox_next_choice", arguments: { timeout_s } })
 const told = (reply: Json) => JSON.parse(reply.result.content[0].text) as Json
@@ -203,6 +204,37 @@ test("a failed routing lookup keeps the question for the retry in the same proce
   assert.deepEqual(acks(h), [])
   assert.deepEqual(told(await next(h)), { interaction_id: "int-1", action: "accept", choice_id: "red", answered: true })
   assert.deepEqual(acks(h), [4])
+  await h.close()
+})
+
+test("overlapping calls show different questions while the first dialog stays open", async () => {
+  const h = await harness([pending(4), pending(5, { id: "int-2" }, { message: "Second?" })], { form: {} }, () => undefined)
+  const first = next(h)
+  await until(() => h.lines.length === 1)
+  const second = next(h)
+  await until(() => h.lines.length === 2)
+  assert.deepEqual(elicitedQuestions(h), ["Which colour?", "Second?"])
+  h.respond(h.lines[1]!, { action: "accept", content: { choice: "blue" } })
+  assert.deepEqual(told(await second), { interaction_id: "int-2", action: "accept", choice_id: "blue", answered: true })
+  h.respond(h.lines[0]!, { action: "accept", content: { choice: "red" } })
+  assert.deepEqual(told(await first), { interaction_id: "int-1", action: "accept", choice_id: "red", answered: true })
+  assert.equal(h.inbox.acknowledged, 5)
+  await h.close()
+})
+
+test("a question in an open dialog is not shown again to an overlapping call, and a failed answer releases it", async () => {
+  const h = await harness([pending(4)], { form: {} }, () => undefined, ["request_failed"])
+  const first = next(h)
+  await until(() => h.lines.length === 1)
+  assert.deepEqual(told(await next(h, 1)), { timed_out: true })
+  assert.equal(h.lines.length, 1)
+  h.respond(h.lines[0]!, { action: "accept", content: { choice: "red" } })
+  assert.equal(told(await first).answered, false)
+  const retry = next(h)
+  await until(() => h.lines.length === 2)
+  h.respond(h.lines[1]!, { action: "accept", content: { choice: "red" } })
+  assert.deepEqual(told(await retry), { interaction_id: "int-1", action: "accept", choice_id: "red", answered: true })
+  assert.equal(h.inbox.acknowledged, 4)
   await h.close()
 })
 

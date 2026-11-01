@@ -79,6 +79,8 @@ export async function runEventsMcp(send: SendRequest, input: Readable, output: W
 
   // The decisions this process has read and not yet handled; a restarted process reads them again from the inbox.
   const open = new Map<string, Interaction>()
+  // Decisions a call is asking right now: overlapping calls skip them, and the call frees one when it ends, whatever the outcome.
+  const inFlight = new Set<string>()
   const ledger = new Ledger()
   let ingested = 0
   let seen: number | null = null
@@ -111,12 +113,14 @@ export async function runEventsMcp(send: SendRequest, input: Readable, output: W
 
   const expired = (decision: Interaction): boolean => (decision.value.question?.expires_at_ms ?? Infinity) <= Date.now()
 
-  // The first decision still worth asking. It stays in `open` until a definitive outcome, so a failure before the
-  // person is served leaves it to the next call.
-  async function firstOpen(): Promise<Interaction | null> {
+  // The first decision still worth asking that no other call is asking, reserved for the caller. It stays in `open`
+  // until a definitive outcome, so a failure before the person is served leaves it to the next call.
+  async function claimFirstOpen(): Promise<Interaction | null> {
     for (const [key, decision] of open) {
-      if (!expired(decision)) return decision
-      await settle(key)
+      if (inFlight.has(key)) continue
+      if (expired(decision)) { await settle(key); continue }
+      inFlight.add(key)
+      return decision
     }
     return null
   }
@@ -143,8 +147,10 @@ export async function runEventsMcp(send: SendRequest, input: Readable, output: W
     while (Date.now() < deadline) {
       if (await drain()) return text({ ended: true })
       await acknowledge()
-      const decision = await firstOpen()
-      if (decision) return await present(decision)
+      const decision = await claimFirstOpen()
+      if (decision) {
+        try { return await present(decision) } finally { inFlight.delete(decisionKey(decision)) }
+      }
       const wait = Math.max(1, Math.min(Math.ceil((deadline - Date.now()) / 1000), 60))
       const batch = await read({ WaitEvents: { ...(seen === null ? {} : { since: seen }), limit: PAGE, timeout_ms: wait * 1000 } })
       if (batch.events.some(event => event.type === "subscription_ended")) return text({ ended: true })
