@@ -212,7 +212,7 @@ deliberate contract change (`CHARIOX_UPDATE_VECTORS=1`) and review the diff.
   package installs; until then catalogs list views with no actions.
 ## A4 inspection (MP-08 / MP-10 / MP-11)
 
-`InspectAppView` (local 646; peer 245) reads an **existing** Room App Tab.
+`InspectAppView` (local 933; peer 381) reads an **existing** Room App Tab.
 The kernel selects the focused Tab unless the caller supplies `target_id`
 (the logical Room Tab ID, also used by `--tab`). It resolves that ID to the
 current controller target on every read and returns the logical ID in
@@ -285,7 +285,7 @@ Forms used only by humans can register without action markup. They do not appear
 in the agent catalog and need no signed action declaration.
 
 Room browser actions carry the kernel-selected agent separately from their
-locator/action data (peer protocol 245). App clicks use the same scoped input
+locator/action data (peer protocol 381). App clicks use the same scoped input
 caller as native browser input. Explicit submit and fill-and-submit bind only
 the synchronous submission of the requested form. Human events remain unscoped.
 Execution receipts include the caller, so retrying an execution under a different

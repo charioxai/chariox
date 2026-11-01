@@ -141,7 +141,7 @@ once, with the existing post-Open authority recheck.
 `browser-controller-apps.mjs` attributes background startup calls to the opening
 agent and preserves the running handler's actor during adoption. The existing
 Room backend actor/grant/turn checks and observation protection still apply.
-The allocation is local 648 / peer 246; clients need no higher minimum to use
+Local 933 / peer 381 carry it; clients need no higher minimum to use
 an existing human open.
 
 `browser-controller-app-idle.mjs` uses a ten-minute default, configurable with

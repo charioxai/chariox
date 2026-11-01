@@ -1172,11 +1172,7 @@ fn mp08_room_computer_449_peer92_shapes() {
 
 // MP-08/MP-10/MP-11: the agent request crosses the local and peer Room boundary.
 #[test]
-fn app_view_agent_protocol_645_peer_244_is_versioned_and_hashed() {
-    const {
-        assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 645);
-        assert!(RELAY_PEER_PROTOCOL_VERSION >= 244);
-    };
+fn app_view_agent_request_is_hashed() {
     assert_eq!(
         LOCAL_DAEMON_PROTOCOL_VERSION,
         crate::test_support::expected_local_protocol_version()
@@ -1200,11 +1196,7 @@ fn app_view_agent_protocol_645_peer_244_is_versioned_and_hashed() {
 
 // MP-08/MP-09/MP-10/MP-11: A3 adds typed unprojected Room opens.
 #[test]
-fn app_view_unprojected_protocol_648_peer_246_is_versioned_and_hashed() {
-    const {
-        assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 648);
-        assert!(RELAY_PEER_PROTOCOL_VERSION >= 246);
-    };
+fn app_view_unprojected_open_is_hashed() {
     let wire = serde_json::json!({"kind":"app_view","request":{
         "op":"open","origin_label":"a","installation_id":"todo",
         "projection":{"kind":"agent","agent":"agent-7"},"entry":"index.html","assets":[]

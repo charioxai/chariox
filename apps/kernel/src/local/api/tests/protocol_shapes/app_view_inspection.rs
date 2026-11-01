@@ -5,7 +5,7 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 
 #[test]
-fn app_view_inspection_protocol_646_245_snapshot() {
+fn app_view_inspection_snapshot() {
     let request = LocalDaemonRequest::InspectAppView(InspectAppViewRequest {
         session_id: "room".into(),
         target_id: None,
@@ -60,7 +60,7 @@ fn app_view_inspection_protocol_646_245_snapshot() {
     );
     let snapshot = json!({"local_protocol":LOCAL_DAEMON_PROTOCOL_VERSION,"peer_protocol":crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,"requests":[request,explicit], "peer_command":peer_command,"response":response});
     let expected: serde_json::Value =
-        serde_json::from_str(include_str!("app-view-inspection-646.json")).unwrap();
+        serde_json::from_str(include_str!("app-view-inspection-933.json")).unwrap();
     assert_eq!(snapshot, expected);
     assert_eq!(
         format!(

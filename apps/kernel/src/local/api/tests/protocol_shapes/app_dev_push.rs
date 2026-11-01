@@ -4,10 +4,7 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 
 #[test]
-fn app_dev_push_contract_requires_the_allocated_protocol() {
-    const {
-        assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 647);
-    };
+fn app_dev_push_contract_snapshot() {
     assert_eq!(
         LOCAL_DAEMON_PROTOCOL_VERSION,
         crate::test_support::expected_local_protocol_version()
@@ -30,7 +27,7 @@ fn app_dev_push_contract_requires_the_allocated_protocol() {
     }
     let snapshot = json!({"local_protocol":LOCAL_DAEMON_PROTOCOL_VERSION,"requests":requests,"responses":responses});
     let expected: serde_json::Value =
-        serde_json::from_str(include_str!("app-dev-push-647.json")).unwrap();
+        serde_json::from_str(include_str!("app-dev-push-933.json")).unwrap();
     assert_eq!(snapshot, expected);
     assert_eq!(
         format!(

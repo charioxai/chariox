@@ -46,7 +46,7 @@ build records. New pushes evict the oldest finished record when necessary;
 finished history never throttles sequential saves. An evicted failure returns
 `not_found` on status lookup; durable installer operations remain replayable.
 Kernel restart can interrupt a build before installation starts; an unknown
-request then needs a new push. Local protocol 647 is required. No peer shape
+request then needs a new push. Local protocol 933 carries it. No peer shape
 changes in D2.
 
 Agents in a Room where the developer has started a dev push get `app_dev_push`.

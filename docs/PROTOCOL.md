@@ -6049,3 +6049,16 @@ time), shared by this request, the passkey check and the unlock prompt an agent'
 Clients need kernel protocol >=923 (`credentialVaultUnlockMinimumProtocolVersion` in the
 web). The managed-upgrade list is [629, 636, 923]. Focused checks:
 `cargo test -p chariox-kernel --lib vault_unlock` and `node --test scripts/protocol-versions.test.mjs`.
+
+### Apps v2 — local 933 / relay peer 381
+
+One allocation carries the whole Apps v2 Stage 1 line. Local requests: `BeginAppInstall` and
+`BeginAppUpdate` take a `source` (`local_file`, `register`, `dev_push`; omitted means `local_file`),
+`BeginAppDevPush` and `GetAppDevPush` start and poll a kernel-side build from the workspace
+(`AppDevPushBuilding`, `AppDevPushFailed`), and `InspectAppView` reads an open Room App Tab
+(`AppViewInspected`). Room App views take the versioned App-agent request and unprojected Room opens
+over the existing Room browser controller command. Relay peer 381 admits the App-agent request and the
+unprojected projection, and pairs the embedded local union with local 933. Clients carry no separate
+minimum for these requests: a kernel older than 933 refuses an unknown variant, and development
+stage kernels are re-provisioned. The managed-upgrade list is [629, 636, 911, 923, 933]. Focused checks:
+`cargo test -p chariox-kernel --lib protocol_shapes` and `pnpm protocol:conformance`.

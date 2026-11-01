@@ -4,11 +4,11 @@ import { isAbsolute, resolve } from "node:path"
 import { setTimeout as delay } from "node:timers/promises"
 import {
   beginAppPackageUploadRequest, putAppPackageUploadChunkRequest, abortAppPackageUploadRequest,
-  appDevRegisterMinimumProtocolVersion, beginAppInstallRequest, beginAppUpdateRequest, getAppInstallOperationRequest, cancelAppInstallOperationRequest, getAppInstallationRequest,
+  beginAppInstallRequest, beginAppUpdateRequest, getAppInstallOperationRequest, cancelAppInstallOperationRequest, getAppInstallationRequest,
   getAppInstallationJournalRequest,
 } from "@chariox/kernel-client/ipc-requests"
 import type { AppInstallationSummary, AppInstallOperationSummary, AppPackageUploadSummary } from "@chariox/kernel-client/kernel-types"
-import { KernelProtocolMinimumError, withProtocolMinimum } from "./protocol-minimum-diagnostic.js"
+import { KernelProtocolMinimumError } from "./protocol-minimum-diagnostic.js"
 import { AppFileSource, checkCancelled, chunkBytes, InstallCancelled, InstallFileChanged } from "./app-install-file/source.js"
 
 type Send = (request: Record<string, unknown>) => Promise<Record<string, unknown>>
@@ -296,12 +296,7 @@ export class AppFileInstaller {
     for (let retry = 0; retry < 3; retry++) {
       checkCancelled(cancelled)
       try {
-        const begin = request.BeginAppInstall ?? request.BeginAppUpdate
-        const hasSource = begin && typeof begin === "object" && "source" in begin
-        const response = await (hasSource ? withProtocolMinimum(() => this.send(request), {
-          capability: "App dev and register", requestVariant: request.BeginAppInstall ? "BeginAppInstall" : "BeginAppUpdate",
-          unknownField: "source", minimumProtocolVersion: appDevRegisterMinimumProtocolVersion,
-        }) : this.send(request))
+        const response = await this.send(request)
         const failure = response.AppRequestFailed as { code?: unknown } | undefined
         if (!failure) return response
         const code = typeof failure.code === "string" ? failure.code : "invalid_response"

@@ -503,7 +503,7 @@ pub struct OpenAppViewRequest {
 /// where it sits and whether it is minimized. It wins over the App's own
 /// placement; omitted fields keep their current value, and `reset` first
 /// drops the choice, handing the panel back to the App.
-/// Protocol 646: inspect an open Room App view by logical Room Tab ID;
+/// Inspect an open Room App view by logical Room Tab ID;
 /// omission selects the focused Tab.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

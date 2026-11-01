@@ -52,15 +52,3 @@ test("process-control snapshot covers the generated protocol pair", () => {
   assert.ok(snapshot.shapes.some(shape => shape.StopSessionProcesses))
   assert.ok(snapshot.shapes.some(shape => shape.SessionProcessesStopped))
 })
-
-// MP-08 / MP-10 / MP-11: D1 adds dev/register sources and channel projections.
-test("D1 App sources use the coordinator-allocated local protocol", () => {
-  const pair = JSON.parse(readFileSync(new URL("fixtures/protocol-versions.json", repositoryRoot), "utf8"))
-  assert.ok(pair.local >= 644, "dev/register shapes require allocated protocol 644")
-})
-
-test("MP-08/MP-10/MP-11 A4 inspection uses coordinator-allocated 646/245", () => {
-  const pair = JSON.parse(readFileSync(new URL("fixtures/protocol-versions.json", repositoryRoot), "utf8"))
-  assert.ok(pair.local >= 646, "App inspection requires allocated local 646")
-  assert.ok(pair.relayPeer >= 245, "App inspection uses the existing peer AppView command at allocated 245")
-})

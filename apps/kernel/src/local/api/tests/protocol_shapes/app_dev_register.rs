@@ -5,7 +5,7 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 
 #[test]
-fn app_dev_register_protocol_644_snapshot_and_legacy_requests() {
+fn app_dev_register_snapshot_and_default_source() {
     let old = json!({"BeginAppInstall": {
         "session_id":"session", "request_id":"retry",
         "upload_handle":format!("upload_{}", "a".repeat(64)),
@@ -61,7 +61,7 @@ fn app_dev_register_protocol_644_snapshot_and_legacy_requests() {
     }
     let snapshot = json!({"local_protocol":LOCAL_DAEMON_PROTOCOL_VERSION, "requests":requests,"response":response});
     let expected: serde_json::Value =
-        serde_json::from_str(include_str!("app-dev-register-644.json")).unwrap();
+        serde_json::from_str(include_str!("app-dev-register-933.json")).unwrap();
     assert_eq!(
         snapshot, expected,
         "D1's serialized shapes require the allocated local version"

@@ -1,4 +1,3 @@
-export const appDevPushMinimumProtocolVersion = 647
 export function beginAppDevPushRequest(options: { sessionId: string; requestId: string; directory: string }) {
   return { BeginAppDevPush: { session_id: options.sessionId, request_id: options.requestId, directory: options.directory } }
 }
@@ -6,7 +5,6 @@ export function getAppDevPushRequest(options: { sessionId: string; requestId: st
   return { GetAppDevPush: { session_id: options.sessionId, request_id: options.requestId } }
 }
 
-export const appDevRegisterMinimumProtocolVersion = 644
 export const appHostActionMinimumProtocolVersion = 409
 export const appFileRevokeMinimumProtocolVersion = 394
 export const appDataSnapshotRestoreMinimumProtocolVersion = 410
@@ -260,7 +258,6 @@ export function answerUserDomainInteractionRequest(options: {
   } }
 }
 
-export const appViewInspectionMinimumProtocolVersion = 646
 export function inspectAppViewRequest(sessionId: string, targetId?: string) {
   return { InspectAppView: { session_id: sessionId, ...(targetId ? { target_id: targetId } : {}) } }
 }
