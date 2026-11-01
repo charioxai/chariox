@@ -418,4 +418,5 @@ pub use workspace::*;
 /// Landing union 923 carries 913 (`SessionState` `processes`), 917 (direct browser sessions over WebRTC),
 /// 919 (user-side browser frame stream removed, `display_ack` `paused`), 920 (mirror `document_mode`,
 /// `pointer_cursor`) and 923 (session-less Vault unlock).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 923;
+/// MP-08/MP-10/MP-11: provisional 950 (renumbered at the landing) acknowledges the leased projection drain (peer 390).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 950;

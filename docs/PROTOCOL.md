@@ -574,7 +574,7 @@ Remote native TUI composition:
 - worker output, notices, completions, and permission interactions MUST return to the home kernel through existing leased runtime projection and native interaction relay paths
 - relay peer protocol v3 extends leased runtime projection with an optional worker `provider_run` snapshot. The home kernel MUST project that worker-owned run onto the home session/agent, including any resolved `provider_session_id` and resume state, because some providers such as Codex only expose the durable thread id after the first turn rather than at launch time.
 - relay peer protocol v7 correlates projected completions with `home_prompt_id`. Workers retain the latest settled completion for pull-based replay, and home kernels MUST ignore a stale replay when that prompt is no longer active. This makes a completion recoverable when a fire-and-forget worker projection is lost without allowing the replay to settle a later queued turn.
-- relay peer protocol 196 (local 590) acknowledges pulled projections; both kernels must speak 196. Each `drain_leased_runtime_projection` carries the required `acknowledged_projection_sequence`, the last projection sequence the home applied for that leased agent (persisted by the home). A worker answering with `projection_sequence` keeps that projection and answers every later drain with it until a drain acknowledges it, then drains new output. A reply lost on the way home (a relay writer closing at reconnect, a home timeout) is therefore answered again: no output is lost, and the home applies each sequence once. The worker no longer pushes a projection after a steer; the home's next drain carries it. A home recovering a settled worker receipt (restart, cancellation) applies and acknowledges the retained output of that run before its completion.
+- relay peer protocol 390 (local 950) acknowledges pulled projections; both kernels must speak 390. Each `drain_leased_runtime_projection` carries the required `acknowledged_projection_sequence`, the last projection sequence the home applied for that leased agent (persisted by the home). A worker answering with `projection_sequence` keeps that projection and answers every later drain with it until a drain acknowledges it, then drains new output. A reply lost on the way home (a relay writer closing at reconnect, a home timeout) is therefore answered again: no output is lost, and the home applies each sequence once. The worker no longer pushes a projection after a steer; the home's next drain carries it. A home recovering a settled worker receipt (restart, cancellation) applies and acknowledges the retained output of that run before its completion.
 - relay peer protocol v8 carries an optional exact worker-local skill requirement set for native TUI launch and prompt submission. Standard workers validate matching local package hashes without receiving package payloads; home-managed slices may materialize packages first. Workers project the validated set onto the leased backing agent so per-prompt hidden skill context stays worker-local and grant revocations cannot leave stale skills active.
 - relay peer protocol v9 adds idempotent queued-prompt steering for leased agents. The home kernel keeps queue/history authority and removes the queued prompt only after the worker acknowledges provider delivery; the worker keys delivery by the home queued prompt ID, rejects stale active-turn targets, and replays acknowledgements without injecting duplicate provider input.
 - relay peer protocol v10 forwards provider-targeted terminal resizes to leased worker PTYs. The worker validates that the requested provider run belongs to the leased agent and acknowledges the applied dimensions; the home kernel does not report a remote resize as successful before that acknowledgement.
@@ -742,7 +742,7 @@ at local 491. The display history includes bounded stripes (447), binary frames
 with WebP tiles and scroll rectangles (466), and relay display push/ACKs (475).
 Binary transport downgrade does not admit an obsolete worker runtime: remote
 lease creation, restored bindings, Room browser forwarding, context transfer and
-hosted slice receipts require peer 196 or newer. The aggregate also includes main's
+hosted slice receipts require peer 181 or newer. The aggregate also includes main's
 local 491 / relay peer 101 (#974) kernel ownership, waiting-room and Room
 workflow contracts. Client feature floors are listed separately below; the
 merged 585/181 allocation identifies the integrated runtime contract; the landing's
@@ -756,9 +756,9 @@ when their bytes arrive after its prompt boundary. Both kernels must speak 181;
 178 workers do not provide this identity. Ordinary failed completions retain the
 worker termination and settle as failed work.
 
-MP-08 / MP-10 / MP-11: 590/196 makes the leased projection drain acknowledged
-(see the leased runtime projection rules above). 573 stays reciprocal for
-upgrade and rollback; 372 is the oldest unpinned intermediate removed to make room.
+MP-08 / MP-10 / MP-11: 950/390 makes the leased projection drain acknowledged
+(see the leased runtime projection rules above). A kernel on an older peer cannot
+drain an acknowledged projection.
 
 MP-08 / MP-10 / MP-11: coordinator-allocated 513/121 adds the paired terminal
 actor normalization for display metadata/credits and the historical workflow
@@ -6054,3 +6054,12 @@ time), shared by this request, the passkey check and the unlock prompt an agent'
 Clients need kernel protocol >=923 (`credentialVaultUnlockMinimumProtocolVersion` in the
 web). The managed-upgrade list is [629, 636, 923]. Focused checks:
 `cargo test -p chariox-kernel --lib vault_unlock` and `node --test scripts/protocol-versions.test.mjs`.
+
+### Acknowledged leased projection drain — local 950 / relay peer 390
+
+A worker keeps a drained leased projection until the home kernel acknowledges it, so a lost
+reply or a home restart cannot lose output. `drain_leased_runtime_projection` carries the
+required `acknowledged_projection_sequence`; `leased_runtime_projection_drained` carries the
+optional `projection_sequence` of the event it retains. Both kernels must speak peer 390. The
+managed-upgrade list is [629, 636, 911, 950]. Focused checks:
+`cargo test -p chariox-kernel --lib protocol_shapes` and `pnpm protocol:conformance`.

@@ -34,7 +34,7 @@ fn drain_leased_runtime_projection_protocol_shape_is_stable() {
     );
 }
 
-// MP-08 / MP-10 A10-S02: peer 196 makes the acknowledgement part of every drain; a
+// MP-08 / MP-10 A10-S02: peer 390 makes the acknowledgement part of every drain; a
 // drain without it is from a worker contract that consumed output on a lost reply.
 #[test]
 fn drain_without_a_projection_acknowledgement_is_refused() {

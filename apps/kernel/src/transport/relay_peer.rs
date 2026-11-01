@@ -156,7 +156,8 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// MP-08/MP-10/MP-11: allocated 371 pairs the embedded local response union with local 920.
 /// 374 pairs the embedded local response union with local 923 (`CredentialVaultUnlocked`).
 /// Landing union 374 pairs the embedded local union with local 923 (it carries peers 364, 370 and 371).
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 374;
+/// MP-08/MP-10/MP-11: provisional 390 (renumbered at the landing) acknowledges the leased projection drain; it pairs with local 950.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 390;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;
@@ -977,7 +978,7 @@ pub enum RelayPeerRequest {
         provider_run_id: String,
         #[serde(default)]
         pump_output: bool,
-        /// Peer 196: the last projection sequence the home applied for this leased
+        /// Peer 390: the last projection sequence the home applied for this leased
         /// agent. The worker keeps a drained projection until this acknowledges it.
         acknowledged_projection_sequence: u64,
     },
