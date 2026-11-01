@@ -375,6 +375,7 @@ struct KernelRuntimeOwnedState {
     remote_steer_receipt_reconciliations:
         Arc<std::sync::Mutex<BTreeSet<(String, String, String)>>>,
     slice_private_relay_connectors: Arc<Mutex<BTreeMap<String, SlicePrivateRelayConnector>>>,
+    agent_trigger_gateways: agent_trigger_gateway::AgentTriggerGatewayStore,
     workflow_publication_runtimes:
         crate::runtime::state::workflow_publication_runtime_lifecycle::WorkflowPublicationRuntimeProcessStore,
     project_environment_placements: project_environment_placement::ProjectEnvironmentPlacements,
@@ -458,6 +459,8 @@ mod agent_config_runtime_state;
 mod agent_lifecycle_owned_state;
 mod agent_profile_compaction;
 mod agent_profile_owned_state;
+mod agent_trigger_gateway;
+mod agent_trigger_http;
 mod agent_trigger_runtime_state;
 mod agent_turn_actions_runtime_state;
 mod agent_utility_runtime_state;
@@ -1152,6 +1155,7 @@ impl KernelRuntimeState {
                     BTreeSet::new(),
                 )),
                 slice_private_relay_connectors: Arc::new(Mutex::new(BTreeMap::new())),
+                agent_trigger_gateways: Default::default(),
                 workflow_publication_runtimes:
                     crate::runtime::state::workflow_publication_runtime_lifecycle::WorkflowPublicationRuntimeProcessStore::default(),
                 project_environment_placements: Default::default(),

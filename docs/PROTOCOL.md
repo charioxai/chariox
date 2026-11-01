@@ -5112,9 +5112,16 @@ triggers. 931 removes the `/wait` schedule shape: `CreateAgentPromptSchedule`,
 `/wait` schedules from earlier kernels are not migrated. The shape is pinned by
 `local_daemon_protocol_agent_trigger_shape_is_versioned`.
 
+Allocated 932 (relay peer 386) adds the HTTP trigger source `{"kind": "http", "ingress_id", "port"}` (the
+create request sends `{"kind": "http"}` and the kernel picks both), `InvokeAgentTrigger
+{session_id, trigger_id, payload}` answering `AgentTriggerInvoked {invocation}` and
+`ReadAgentTriggerTranscript {session_id, trigger_id, cursor?}` answering `AgentTriggerTranscript`.
+The `schedule`, `http` and `notification` prompt origins also travel in
+`SubmitLeasedPrompt.git_context.prompt_origin`: the home refuses a worker below peer 386 instead of sending one. `local_daemon_protocol_http_agent_trigger_shape_is_versioned` pins the shapes.
+
 Allocated 931 (relay peer 380) makes every trigger firing a labelled prompt and lets a person
 resend one the provider did not confirm. A firing's transcript prompt carries `prompt_origin`
-`schedule` (a schedule trigger) or `notification` (a workflow notification) and is recorded before
+`schedule` (a schedule trigger), `http` (an HTTP trigger) or `notification` (a workflow notification) and is recorded before
 the provider write, so it exists even if the kernel stops first. A steered firing that the provider
 did not confirm, whether a receipt was lost or the kernel restarted mid-delivery, is never sent
 again by itself: the session lists it in `trigger_deliveries` as `{prompt_id, trigger_id,
@@ -5126,7 +5133,9 @@ durable admission atomically consumes the resend; a failed admission leaves it `
 Relay peer 380 carries the new `schedule` and `notification` origins in a leased prompt's
 `prompt_origin`: a worker below 380 cannot read them, so the home refuses it instead of sending one.
 Once admitted, it stays `resent` even after the replacement finishes, a later processing error,
-or a restart from a stale session event or snapshot. Whoever may prompt the agent may resend. The shape is
+or a restart from a stale session event or snapshot. Whoever may prompt the agent may resend. An HTTP
+trigger's `AgentTriggerTranscript` also carries `deliveries`, the `not_confirmed` entries of that
+trigger, for the local trigger page. The shape is
 pinned by `local_daemon_protocol_trigger_delivery_shape_is_versioned`.
 
 The TUI advertises `/trigger resend <prompt-id>` and shows unconfirmed firings

@@ -148,9 +148,19 @@ fn run_serve_command(workspace_root: &Path, args: &[String]) -> Result<ExitCode,
         print_serve_help();
         return Ok(ExitCode::SUCCESS);
     }
+    if matches!(&target, ServeTarget::AgentTrigger { .. })
+        && !["127.0.0.1", "::1"].contains(&host.as_str())
+    {
+        return Err("agent HTTP triggers bind to loopback only (127.0.0.1 or ::1)".into());
+    }
     ensure_server_built(workspace_root)?;
     let node = env::var("NODE_BIN").unwrap_or_else(|_| "node".to_string());
-    let server_entry = workspace_root.join("apps/server/dist/index.js");
+    let server_entry =
+        workspace_root.join(if matches!(&target, ServeTarget::AgentTrigger { .. }) {
+            "apps/server/dist/agent-trigger-main.js"
+        } else {
+            "apps/server/dist/index.js"
+        });
     let mut command = Command::new(&node);
     command
         .arg(server_entry)
@@ -161,6 +171,14 @@ fn run_serve_command(workspace_root: &Path, args: &[String]) -> Result<ExitCode,
         .env("HOST", host)
         .env("PORT", port);
     match target {
+        ServeTarget::AgentTrigger {
+            session_id,
+            trigger_id,
+        } => {
+            command
+                .env("CHARIOX_AGENT_TRIGGER_SESSION_ID", session_id)
+                .env("CHARIOX_AGENT_TRIGGER_ID", trigger_id);
+        }
         ServeTarget::Package(package_path) => {
             command.env("CHARIOX_PUBLICATION_PACKAGE", package_path);
         }
@@ -198,6 +216,10 @@ fn run_serve_command(workspace_root: &Path, args: &[String]) -> Result<ExitCode,
 }
 
 enum ServeTarget {
+    AgentTrigger {
+        session_id: String,
+        trigger_id: String,
+    },
     Package(PathBuf),
     Source {
         session_id: String,
@@ -206,7 +228,10 @@ enum ServeTarget {
 }
 
 fn parse_serve_target(args: &[String]) -> Result<(ServeTarget, String, usize), String> {
-    if args.first().map(String::as_str) == Some("source") {
+    if matches!(
+        args.first().map(String::as_str),
+        Some("source" | "agent-trigger")
+    ) {
         let session_id = args
             .get(1)
             .filter(|value| !value.trim().is_empty() && !value.starts_with('-'))
@@ -219,9 +244,16 @@ fn parse_serve_target(args: &[String]) -> Result<(ServeTarget, String, usize), S
             .ok_or_else(serve_usage)?;
         let port = parse_serve_port(args.get(3))?;
         return Ok((
-            ServeTarget::Source {
-                session_id,
-                publication_id,
+            if args[0] == "agent-trigger" {
+                ServeTarget::AgentTrigger {
+                    session_id,
+                    trigger_id: publication_id,
+                }
+            } else {
+                ServeTarget::Source {
+                    session_id,
+                    publication_id,
+                }
             },
             port,
             4,

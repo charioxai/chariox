@@ -41,3 +41,11 @@ test("agent trigger stripe lists one agent's triggers soonest first with policy 
   assert.deepEqual(agentTriggersForAgent(null, "agent-1"), [])
   assert.deepEqual(agentTriggersForAgent({ agent_triggers: [] }, null), [])
 })
+
+test("MP-08/MP-10/MP-11: HTTP trigger strips have a loopback URL and no countdown", () => {
+  const [item] = agentTriggersForAgent({ agent_triggers: [trigger({ id: "http", agent_id: "agent-1",
+    source: { kind: "http", ingress_id: "local-ingress", port: 32123 } })] }, "agent-1")
+  assert.equal(item?.label, "HTTP")
+  assert.equal(item?.localUrl, "http://127.0.0.1:32123/local-ingress/")
+  assert.equal(item?.nextRunAtMs, null)
+})

@@ -19,7 +19,13 @@ impl SessionService {
                 let agent_triggers = session
                     .agent_triggers()
                     .iter()
-                    .filter(|trigger| trigger.enabled() && !trigger.dispatch_in_flight())
+                    .filter(|trigger| {
+                        matches!(
+                            trigger.source(),
+                            crate::session::AgentTriggerSource::Schedule { .. }
+                        ) && trigger.enabled()
+                            && !trigger.dispatch_in_flight()
+                    })
                     .map(|trigger| trigger.next_run_at_ms());
                 watchdogs.chain(agent_triggers)
             })
@@ -73,6 +79,57 @@ impl SessionService {
         Ok(self
             .agent_trigger_session_mut(session_id)?
             .add_agent_trigger(trigger))
+    }
+
+    pub(crate) fn create_agent_http_trigger(
+        &mut self,
+        session_id: &str,
+        agent_id: &str,
+        owner: &str,
+        port: std::num::NonZeroU16,
+        policy: AgentTriggerBusyPolicy,
+        prompt: Option<String>,
+    ) -> Result<AgentTrigger, DaemonError> {
+        self.get_session(session_id)?;
+        let prompt = prompt.filter(|p| !p.trim().is_empty()).unwrap_or_else(|| "A request arrived through your local HTTP trigger. Decide what to do with its input.".into());
+        let trigger = AgentTrigger::http(
+            self.next_agent_trigger_id(),
+            agent_id,
+            owner,
+            port,
+            policy,
+            prompt,
+            unix_epoch_ms(),
+        );
+        Ok(self
+            .agent_trigger_session_mut(session_id)?
+            .add_agent_trigger(trigger))
+    }
+
+    pub(crate) fn claim_http_agent_trigger(
+        &mut self,
+        session_id: &str,
+        trigger_id: &str,
+        payload: serde_json::Value,
+    ) -> Result<Option<AgentTriggerDispatch>, DaemonError> {
+        let session = self.agent_trigger_session_mut(session_id)?;
+        let trigger = session
+            .agent_triggers_mut()
+            .iter_mut()
+            .find(|t| t.id() == trigger_id)
+            .ok_or_else(|| agent_trigger_not_found(session_id, trigger_id))?;
+        if !trigger.claim_http_dispatch() {
+            return Ok(None);
+        }
+        Ok(Some(AgentTriggerDispatch {
+            payload: Some(payload),
+            claim_generation: trigger.dispatch_generation(),
+            session_id: session_id.into(),
+            trigger_id: trigger.id().into(),
+            agent_id: trigger.agent_id().into(),
+            prompt: trigger.prompt().into(),
+            busy_policy: trigger.busy_policy(),
+        }))
     }
 
     pub fn update_agent_trigger(
@@ -132,6 +189,7 @@ impl SessionService {
             for trigger in session.agent_triggers_mut() {
                 if trigger.claim_dispatch(now_ms) {
                     dispatches.push(AgentTriggerDispatch {
+                        payload: None,
                         claim_generation: trigger.dispatch_generation(),
                         session_id: session_id.clone(),
                         trigger_id: trigger.id().to_string(),

@@ -436,4 +436,5 @@ pub use workspace::*;
 /// the stable `interaction_closed`.
 /// Allocated 930 adds agent triggers; `/wait-in` and `/wait-every` become schedule triggers.
 /// Allocated 931 adds trigger deliveries the person can resend and removes the `/wait` schedule shape.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 931;
+/// Allocated 932 adds the HTTP trigger source and `InvokeAgentTrigger`/`ReadAgentTriggerTranscript`.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 932;

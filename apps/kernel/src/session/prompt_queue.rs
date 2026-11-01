@@ -24,6 +24,8 @@ pub enum PromptOrigin {
     External,
     /// A schedule trigger fired this prompt.
     Schedule,
+    /// A local HTTP trigger fired this prompt.
+    Http,
     /// A workflow notification was delivered as this prompt.
     Notification,
 }
@@ -33,7 +35,10 @@ impl PromptOrigin {
     /// trigger or notification fired them. Not an external provider's prompts
     /// and not the hidden completion check.
     pub fn is_chariox_prompt(self) -> bool {
-        matches!(self, Self::Chariox | Self::Schedule | Self::Notification)
+        matches!(
+            self,
+            Self::Chariox | Self::Schedule | Self::Http | Self::Notification
+        )
     }
 }
 
@@ -1368,7 +1373,11 @@ mod tests {
         assert!(!chariox_prompt.is_external());
         assert!(external_prompt.is_external());
         assert!(!external_prompt.is_chariox_owned());
-        for origin in [PromptOrigin::Schedule, PromptOrigin::Notification] {
+        for origin in [
+            PromptOrigin::Schedule,
+            PromptOrigin::Http,
+            PromptOrigin::Notification,
+        ] {
             let fired = chariox_prompt.clone().with_prompt_origin(origin);
             assert!(
                 fired.is_chariox_owned() && !fired.is_external(),

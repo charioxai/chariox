@@ -931,6 +931,21 @@ impl SessionRuntimeStore {
         self.with_session_projection_action_result(result).await
     }
 
+    pub(super) async fn invoke_agent_trigger(
+        &self,
+        request: crate::local::InvokeAgentTriggerRequest,
+        caller_user_id: &str,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<SessionProjectionAction>,
+    ) {
+        let result = self
+            .state
+            .invoke_agent_trigger(request, caller_user_id)
+            .await;
+        self.with_session_projection_action_result(result).await
+    }
+
     pub(super) async fn delete_agent_trigger(
         &self,
         request: crate::local::DeleteAgentTriggerRequest,

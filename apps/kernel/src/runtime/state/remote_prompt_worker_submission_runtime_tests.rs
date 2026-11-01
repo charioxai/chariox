@@ -504,6 +504,7 @@ async fn connected_held_prompt_response_does_not_block_remote_manifest_sync() {
 async fn trigger_origins_cross_only_the_versioned_peer_boundary() {
     for origin in [
         crate::session::PromptOrigin::Schedule,
+        crate::session::PromptOrigin::Http,
         crate::session::PromptOrigin::Notification,
     ] {
         trigger_origin_peer_submission(
@@ -514,6 +515,19 @@ async fn trigger_origins_cross_only_the_versioned_peer_boundary() {
         .await;
         trigger_origin_peer_submission(origin, 239, false).await;
     }
+}
+
+// MP-08/MP-10/MP-11: peer 380 predates the `http` prompt origin; a worker there cannot read it.
+const PEER_BEFORE_HTTP_ORIGIN: u32 = 380;
+
+#[tokio::test]
+async fn http_origin_is_refused_for_a_worker_before_the_http_peer_boundary() {
+    trigger_origin_peer_submission(
+        crate::session::PromptOrigin::Http,
+        PEER_BEFORE_HTTP_ORIGIN,
+        false,
+    )
+    .await;
 }
 
 async fn trigger_origin_peer_submission(

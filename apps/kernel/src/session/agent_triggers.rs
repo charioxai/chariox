@@ -22,6 +22,10 @@ pub enum AgentTriggerRepeat {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum AgentTriggerSource {
+    Http {
+        ingress_id: String,
+        port: std::num::NonZeroU16,
+    },
     Schedule {
         interval_seconds: u64,
         repeat: AgentTriggerRepeat,
@@ -184,6 +188,49 @@ impl AgentTrigger {
         }
     }
 
+    pub(crate) fn http(
+        id: String,
+        agent_id: &str,
+        owner: &str,
+        port: std::num::NonZeroU16,
+        policy: AgentTriggerBusyPolicy,
+        prompt: String,
+        now_ms: u64,
+    ) -> Self {
+        Self {
+            id: id.clone(),
+            agent_id: agent_id.into(),
+            created_by_user_id: Some(owner.into()),
+            source: AgentTriggerSource::Http {
+                ingress_id: id,
+                port,
+            },
+            busy_policy: policy,
+            prompt,
+            enabled: true,
+            created_at_ms: now_ms,
+            fired: 0,
+            coalesced: 0,
+            last_fired_at_ms: None,
+            last_outcome: None,
+            last_error: None,
+            dispatch_in_flight: false,
+            dispatch_generation: 0,
+        }
+    }
+
+    pub(crate) fn claim_http_dispatch(&mut self) -> bool {
+        if !matches!(self.source, AgentTriggerSource::Http { .. })
+            || !self.enabled
+            || self.dispatch_in_flight
+        {
+            return false;
+        }
+        self.dispatch_in_flight = true;
+        self.dispatch_generation = self.dispatch_generation.wrapping_add(1);
+        true
+    }
+
     pub fn id(&self) -> &str {
         &self.id
     }
@@ -243,13 +290,20 @@ impl AgentTrigger {
     }
 
     pub fn next_run_at_ms(&self) -> u64 {
-        let AgentTriggerSource::Schedule { next_run_at_ms, .. } = &self.source;
-        *next_run_at_ms
+        match &self.source {
+            AgentTriggerSource::Schedule { next_run_at_ms, .. } => *next_run_at_ms,
+            AgentTriggerSource::Http { .. } => u64::MAX,
+        }
     }
 
     pub(crate) fn is_one_shot(&self) -> bool {
-        let AgentTriggerSource::Schedule { repeat, .. } = &self.source;
-        *repeat == AgentTriggerRepeat::Once
+        matches!(
+            self.source,
+            AgentTriggerSource::Schedule {
+                repeat: AgentTriggerRepeat::Once,
+                ..
+            }
+        )
     }
 
     pub(crate) fn dispatch_in_flight(&self) -> bool {
@@ -257,7 +311,11 @@ impl AgentTrigger {
     }
 
     pub(crate) fn claim_dispatch(&mut self, now_ms: u64) -> bool {
-        if !self.enabled || self.dispatch_in_flight || now_ms < self.next_run_at_ms() {
+        if !matches!(self.source, AgentTriggerSource::Schedule { .. })
+            || !self.enabled
+            || self.dispatch_in_flight
+            || now_ms < self.next_run_at_ms()
+        {
             return false;
         }
         self.dispatch_in_flight = true;
@@ -339,7 +397,10 @@ impl AgentTrigger {
             interval_seconds,
             next_run_at_ms,
             ..
-        } = &mut self.source;
+        } = &mut self.source
+        else {
+            return;
+        };
         *next_run_at_ms = now_ms.saturating_add(
             (*interval_seconds)
                 .max(minimum_interval_seconds)
@@ -361,6 +422,7 @@ impl AgentTriggers {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentTriggerDispatch {
+    pub(crate) payload: Option<serde_json::Value>,
     pub(crate) claim_generation: u64,
     pub session_id: String,
     pub trigger_id: String,

@@ -113,13 +113,16 @@ impl KernelRuntimeOwnedState {
     }
 }
 
-enum AgentTriggerFiring {
+pub(super) enum AgentTriggerFiring {
     Fired {
+        prompt_id: String,
         outcome: AgentTriggerOutcome,
         steer_refusal: Option<String>,
     },
     /// The steer path already settled the trigger ahead of the queue removal.
-    Settled,
+    Settled {
+        prompt_id: String,
+    },
     Coalesced,
     AgentGone,
     /// The agent is archived: nothing fires, and the trigger waits for its next run.
@@ -133,10 +136,17 @@ impl KernelRuntimeState {
         request: crate::local::CreateAgentTriggerRequest,
         caller_user_id: &str,
     ) -> Result<crate::local::LocalDaemonResponse, DaemonError> {
-        let crate::local::AgentTriggerSourceRequest::Schedule {
-            interval_seconds,
-            repeat,
-        } = request.source;
+        let (interval_seconds, repeat) = match &request.source {
+            crate::local::AgentTriggerSourceRequest::Http => {
+                return self
+                    .create_http_agent_trigger(request, caller_user_id)
+                    .await
+            }
+            crate::local::AgentTriggerSourceRequest::Schedule {
+                interval_seconds,
+                repeat,
+            } => (*interval_seconds, *repeat),
+        };
         let (trigger, session) = self.create_agent_schedule_trigger(
             &request.session_id,
             &request.agent_id,
@@ -260,6 +270,7 @@ impl KernelRuntimeState {
             });
         }
         let dispatch = AgentTriggerDispatch {
+            payload: None,
             claim_generation: 0,
             session_id: request.session_id.clone(),
             trigger_id: delivery.trigger_id().to_string(),
@@ -346,7 +357,7 @@ impl KernelRuntimeState {
     }
 
     /// Whoever may prompt an agent may arm, change and remove its triggers.
-    fn ensure_agent_trigger_access(
+    pub(super) fn ensure_agent_trigger_access(
         &self,
         session_id: &str,
         trigger_id: &str,
@@ -423,6 +434,7 @@ impl KernelRuntimeState {
                 Ok(AgentTriggerFiring::Fired {
                     outcome,
                     steer_refusal,
+                    ..
                 }) => self.owned.session_store.write().mark_agent_trigger_fired(
                     &dispatch.session_id,
                     &dispatch.trigger_id,
@@ -444,7 +456,7 @@ impl KernelRuntimeState {
                     .session_store
                     .write()
                     .defer_agent_trigger(&dispatch.session_id, &dispatch.trigger_id, now_ms),
-                Ok(AgentTriggerFiring::Skipped | AgentTriggerFiring::Settled) => continue,
+                Ok(AgentTriggerFiring::Skipped | AgentTriggerFiring::Settled { .. }) => continue,
                 Ok(AgentTriggerFiring::AgentGone) => {
                     self.record_agent_trigger_notice(
                         &dispatch,
@@ -493,7 +505,7 @@ impl KernelRuntimeState {
         }
     }
 
-    async fn fire_agent_trigger(
+    pub(super) async fn fire_agent_trigger(
         &self,
         dispatch: &AgentTriggerDispatch,
     ) -> Result<AgentTriggerFiring, DaemonError> {
@@ -519,20 +531,21 @@ impl KernelRuntimeState {
         // A schedule represents one outstanding request, whether queued or
         // already running. The dispatch claim prevents overlapping ticks from
         // admitting another occurrence before this submission settles.
-        if active
-            .iter()
-            .chain(queued.iter())
-            .any(|prompt| prompt.agent_trigger_id() == Some(dispatch.trigger_id.as_str()))
+        if dispatch.payload.is_none()
+            && active
+                .iter()
+                .chain(queued.iter())
+                .any(|prompt| prompt.agent_trigger_id() == Some(dispatch.trigger_id.as_str()))
         {
             return Ok(AgentTriggerFiring::Coalesced);
         }
-        self.deliver_agent_trigger_prompt(
-            dispatch,
-            Some(dispatch),
-            crate::session::PromptOrigin::Schedule,
-            None,
-        )
-        .await
+        let origin = if dispatch.payload.is_some() {
+            crate::session::PromptOrigin::Http
+        } else {
+            crate::session::PromptOrigin::Schedule
+        };
+        self.deliver_agent_trigger_prompt(dispatch, Some(dispatch), origin, None)
+            .await
     }
 
     /// Admits the trigger's message as a labelled prompt of its agent. A
@@ -548,18 +561,39 @@ impl KernelRuntimeState {
             .owned
             .ensure_agent_trigger_attachment(&dispatch.session_id)?;
         let prompt_id = self.owned.session_store.reserve_prompt_id();
+        // A resent HTTP firing already carries its quoted input in the text.
+        let template_id =
+            if dispatch.payload.is_some() || origin == crate::session::PromptOrigin::Http {
+                "runtime/agent-trigger"
+            } else {
+                "runtime/scheduled-prompt"
+            };
+        let prompt_text = match &dispatch.payload {
+            None => dispatch.prompt.clone(),
+            Some(payload) => {
+                // JSON escaping prevents external text from closing the data block.
+                let payload = payload
+                    .to_string()
+                    .replace('<', "\\u003c")
+                    .replace('>', "\\u003e");
+                format!(
+                    "{}\n\n<chariox-trigger-input kind=\"http\">\n{}\n</chariox-trigger-input>",
+                    dispatch.prompt, payload
+                )
+            }
+        };
         let (scheduled_context, scheduled_manifest_entry) =
             crate::prompt_assembly::render_configured_prompt_with_manifest(
-                "runtime/scheduled-prompt",
-                crate::prompt_assembly::bundled_prompt_template("runtime/scheduled-prompt")
+                template_id,
+                crate::prompt_assembly::bundled_prompt_template(template_id)
                     .expect("scheduled prompt context must be registered"),
                 &[("SCHEDULE_ID", &dispatch.trigger_id)],
             );
         let prompt = crate::session::PromptQueueItem::new(
-            prompt_id,
+            prompt_id.clone(),
             &source_attachment_id,
             &dispatch.agent_id,
-            &dispatch.prompt,
+            &prompt_text,
             crate::session::PromptStatus::Queued,
         )
         .with_agent_trigger(&dispatch.trigger_id)
@@ -633,6 +667,7 @@ impl KernelRuntimeState {
         let queued_prompt_id = match &submission.outcome {
             crate::session::PromptSubmissionOutcome::Started { .. } => {
                 return Ok(AgentTriggerFiring::Fired {
+                    prompt_id: prompt_id.clone(),
                     outcome: AgentTriggerOutcome::Started,
                     steer_refusal: None,
                 });
@@ -644,6 +679,7 @@ impl KernelRuntimeState {
         }
         if dispatch.busy_policy == AgentTriggerBusyPolicy::Queue {
             return Ok(AgentTriggerFiring::Fired {
+                prompt_id: queued_prompt_id.clone(),
                 outcome: AgentTriggerOutcome::Queued,
                 steer_refusal: None,
             });
@@ -665,7 +701,7 @@ impl KernelRuntimeState {
                             &dispatch.trigger_id,
                             &dispatch.agent_id,
                             origin,
-                            &dispatch.prompt,
+                            &prompt_text,
                             dispatch.busy_policy,
                             crate::session::unix_epoch_ms(),
                         )
@@ -685,9 +721,12 @@ impl KernelRuntimeState {
             Ok(TriggerSteerDelivery::Confirmed)
                 if settlement_started.load(std::sync::atomic::Ordering::SeqCst) =>
             {
-                Ok(AgentTriggerFiring::Settled)
+                Ok(AgentTriggerFiring::Settled {
+                    prompt_id: queued_prompt_id.clone(),
+                })
             }
             Ok(TriggerSteerDelivery::Confirmed) => Ok(AgentTriggerFiring::Fired {
+                prompt_id: queued_prompt_id.clone(),
                 outcome: AgentTriggerOutcome::Steered,
                 steer_refusal: None,
             }),
@@ -699,7 +738,9 @@ impl KernelRuntimeState {
                         dispatch.trigger_id
                     ),
                 );
-                Ok(AgentTriggerFiring::Settled)
+                Ok(AgentTriggerFiring::Settled {
+                    prompt_id: queued_prompt_id.clone(),
+                })
             }
             Err(error) if settlement_started.load(std::sync::atomic::Ordering::SeqCst) => {
                 Err(error)
@@ -711,6 +752,7 @@ impl KernelRuntimeState {
                     format!("Trigger `{}`: {refusal}", dispatch.trigger_id),
                 );
                 Ok(AgentTriggerFiring::Fired {
+                    prompt_id: queued_prompt_id.clone(),
                     outcome: AgentTriggerOutcome::Queued,
                     steer_refusal: Some(refusal),
                 })
