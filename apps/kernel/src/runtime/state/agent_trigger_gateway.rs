@@ -159,7 +159,7 @@ async fn launch_gateway(
                 .owned
                 .config_projection
                 .snapshot()
-                .kernel_websocket_url(),
+                .kernel_websocket_origin(),
         )
         .stdin(Stdio::piped())
         .stdout(Stdio::null())

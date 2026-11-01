@@ -386,8 +386,14 @@ impl DaemonConfig {
     }
 
     pub fn kernel_websocket_url(&self) -> String {
+        format!("{}/kernel", self.kernel_websocket_origin())
+    }
+
+    /// The endpoint kernel clients connect to: without a path, which is what a
+    /// credential read from the environment is bound to.
+    pub fn kernel_websocket_origin(&self) -> String {
         format!(
-            "ws://{}:{}/kernel",
+            "ws://{}:{}",
             self.kernel_websocket_host, self.kernel_websocket_port
         )
     }
