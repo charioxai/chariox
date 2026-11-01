@@ -482,3 +482,42 @@ fn an_owner_without_a_cap_has_no_default_limit() {
         "a breach would end every process of the owner"
     );
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_root_unreadable_at_start_is_listed_and_counted_once_readable() {
+    // A process that is still executing its program answers `inspect` with a
+    // failure for a moment, as a fresh terminal shell does on a host without
+    // cgroup delegation (where the watch has no cgroup to find the root in).
+    let mut child = std::process::Command::new("sleep")
+        .arg("30")
+        .spawn()
+        .unwrap();
+    let mut tree = {
+        let _unreadable =
+            crate::runtime::kernel_access::process::fault::inject(child.id(), libc::EACCES);
+        sampling::ProcessTree::new(child.id())
+    };
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    let mut samples = Vec::new();
+    while std::time::Instant::now() < deadline {
+        samples = tree.sample().unwrap();
+        if samples.iter().any(|sample| sample.pid == child.id()) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let commands = tree.commands(&samples);
+    let _ = child.kill();
+    let _ = child.wait();
+    assert!(
+        samples.iter().any(|sample| sample.pid == child.id()),
+        "the root never appears in the feed"
+    );
+    assert!(
+        commands
+            .get(&child.id())
+            .is_some_and(|resident| *resident > 0),
+        "the root's memory is not counted for limits and pressure: {commands:?}"
+    );
+}

@@ -19,27 +19,46 @@ pub(super) struct ProcessTree {
     ids: BTreeMap<u32, String>,
     /// Parent of each owned process at the last sample.
     parents: BTreeMap<u32, u32>,
+    /// The root could not be read at start and is not owned yet.
+    root_unidentified: bool,
     #[cfg(target_os = "linux")]
     cgroup: Option<std::sync::Arc<super::cgroup::Domain>>,
 }
 impl ProcessTree {
     pub fn new(root: u32) -> Self {
-        let mut owned = BTreeMap::new();
-        if let Ok((identity, _)) = inspect(root) {
-            owned.insert(root, identity);
-        }
-        let ids = owned
-            .keys()
-            .map(|pid| (*pid, format!("process-{:032x}", rand::random::<u128>())))
-            .collect();
-        Self {
+        let mut tree = Self {
             root,
-            owned,
-            ids,
+            owned: BTreeMap::new(),
+            ids: BTreeMap::new(),
             parents: BTreeMap::new(),
+            root_unidentified: true,
             #[cfg(target_os = "linux")]
             cgroup: None,
-        }
+        };
+        tree.identify_root();
+        tree
+    }
+
+    /// A root still executing its program answers `inspect` with a failure for
+    /// a moment. It is identified at the first readable sample: only a child of
+    /// the kernel is adopted, and a root that already ended never is.
+    fn identify_root(&mut self) {
+        let settled = match inspect(self.root) {
+            Ok((identity, parent)) => {
+                if parent == std::process::id() {
+                    self.adopt(self.root, identity);
+                }
+                true
+            }
+            Err(error) => error.kind() == std::io::ErrorKind::NotFound,
+        };
+        self.root_unidentified = !settled;
+    }
+
+    fn adopt(&mut self, pid: u32, identity: ProcessIdentity) {
+        self.owned.insert(pid, identity);
+        self.ids
+            .insert(pid, format!("process-{:032x}", rand::random::<u128>()));
     }
 
     #[cfg(target_os = "linux")]
@@ -73,12 +92,18 @@ impl ProcessTree {
     }
 
     fn observe(&mut self, rows: &[Row]) -> Result<(), String> {
-        // A recorded start identity survives exec but never PID recycling.
-        self.owned
-            .retain(|pid, identity| same_process(*pid, identity));
+        if self.root_unidentified {
+            self.identify_root();
+        }
+        // A recorded start identity survives exec but never PID recycling. An
+        // unreadable process may be mid-exec: it stays owned until it is gone.
+        self.owned.retain(|pid, identity| match inspect(*pid) {
+            Ok((current, _)) => same_birth(&current, identity),
+            Err(error) => error.kind() != std::io::ErrorKind::NotFound,
+        });
         self.ids.retain(|pid, _| self.owned.contains_key(pid));
         #[cfg(target_os = "linux")]
-        if let Some(group) = &self.cgroup {
+        if let Some(group) = self.cgroup.clone() {
             for pid in group
                 .pids()
                 .map_err(|error| format!("owned process cgroup membership unavailable: {error}"))?
@@ -86,9 +111,7 @@ impl ProcessTree {
                 if pid > 1 && !self.owned.contains_key(&pid) && group.owns(pid) {
                     if let Ok((identity, _)) = inspect(pid) {
                         if group.owns(pid) && same_process(pid, &identity) {
-                            self.owned.insert(pid, identity);
-                            self.ids
-                                .insert(pid, format!("process-{:032x}", rand::random::<u128>()));
+                            self.adopt(pid, identity);
                         }
                     }
                 }
@@ -101,11 +124,7 @@ impl ProcessTree {
                 if !self.owned.contains_key(&row.pid) && self.owned.contains_key(&row.parent) {
                     if let Ok((identity, parent)) = inspect(row.pid) {
                         if parent == row.parent {
-                            self.owned.insert(row.pid, identity);
-                            self.ids.insert(
-                                row.pid,
-                                format!("process-{:032x}", rand::random::<u128>()),
-                            );
+                            self.adopt(row.pid, identity);
                             changed = true;
                         }
                     }
