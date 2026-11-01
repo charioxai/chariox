@@ -6,6 +6,11 @@ import { createHash } from 'node:crypto'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+// A signal option is `-s X`, `-n N` or `-TERM`; without one `-9` is the signal, not a group.
+const SHELL_SIGNAL_OPTION = String.raw`(?:-[sn]\s+\S+|-(?:SIG)?[A-Z0-9]+)`
+const SHELL_NEGATIVE_TARGET = String.raw`["'\\]*-["'\\]*(?:\$|[0-9])`
+const SHELL_SYSTEM_TARGET = String.raw`[01](?=\s|$|[;'")])`
+
 export function signalViolations(source) {
   const sites = []
   const rules = [
@@ -16,7 +21,8 @@ export function signalViolations(source) {
     ['python-owned-numeric', /\b(?:owned_signals|owned)\s*\.\s*(?:group|pid)\s*\(\s*(?:[\w.]+\.pid\b|(?:pid|pgid|browser_pid)\b|os\.(?:getpid|getpgrp)\s*\(|[-+]?\d+\b)/g],
     ['python-group', /\bos\s*\.\s*(?:killpg\b|kill\s*\(\s*(?:-[^,]+|[01])\s*,)/g],
     ['name-signal', /\b(?:pkill|killall)\b/g],
-    ['shell-group', /\bkill\s+(?:(?:-s\s+\S+|-(?:SIG)?[A-Z0-9]+)\s+(?:--\s+)?(?:["'\\]*-["'\\]*(?:\$|[0-9])|[01](?=\s|$|[;'")]))|--\s+["'\\]*-["'\\]*(?:\$|[0-9]))/g],
+    ['shell-group', new RegExp(String.raw`\bkill\s+(?:(?:${SHELL_SIGNAL_OPTION}\s+)?(?:--\s+)?${SHELL_SYSTEM_TARGET}|(?:${SHELL_SIGNAL_OPTION}\s+)?--\s+${SHELL_NEGATIVE_TARGET}|${SHELL_SIGNAL_OPTION}\s+${SHELL_NEGATIVE_TARGET})`, 'g')],
+    ['rust-group', /(?<![.\w])killpg\s*\(|(?<![.\w])kill\s*\(\s*(?:-|[01]\s*,)/g],
   ]
   for (const [kind, pattern, predicate] of rules) {
     for (const match of source.matchAll(pattern)) {
@@ -33,7 +39,7 @@ export function lintProcessSignals({ root, files, allowlist = { sites: [], guard
   const failures = [], allowed = [], used = new Map(), guardsUsed = new Set()
   let count = 0
   for (const path of files) {
-    if (/\.[^/]+$/.test(path) && !/\.(?:[cm]?js|tsx?|py|sh|bash)$/.test(path)) continue
+    if (/\.[^/]+$/.test(path) && !/\.(?:[cm]?js|tsx?|py|sh|bash|rs)$/.test(path)) continue
     const source = readFileSync(resolve(root, path), 'utf8')
     const sites = signalViolations(source)
     count += sites.length

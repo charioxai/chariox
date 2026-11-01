@@ -335,13 +335,7 @@ async function respondToVaultUnlockInteraction({ client, sessionId, agentId, pas
       String(entry.title ?? '').includes('Unlock Chariox Vault'),
   })
   await client.send(respondToInteractionRequest(sessionId, interaction.id, interaction.custom_choice.id, passphrase))
-  const lease = await waitForInteraction({
-    ...wait,
-    label: 'vault unlock duration interaction',
-    predicate: (entry) => entry.agent_id === agentId && entry.title === 'Choose Vault Unlock Duration',
-  })
-  await client.send(respondToInteractionRequest(sessionId, lease.id, 'unlock_default_ttl'))
-  return { ...interaction, choices: lease.choices }
+  return interaction
 }
 
 // The owner's sudo popup: approve with the Chariox passkey (the vault passphrase) for one hour.

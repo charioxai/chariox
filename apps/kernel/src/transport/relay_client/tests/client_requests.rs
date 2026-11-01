@@ -483,34 +483,34 @@ async fn relay_client_command_ids_reject_conflicting_retries() {
     let daemon_public_key = expect_client_connected(&mut client_socket).await;
     let command_id = format!("stable-relay-command-{}", std::process::id());
 
-    let list_request_private_key = send_client_command_request(
+    // Reads are answered again on replay; a command id guards state changes.
+    let pin_request_private_key = send_client_command_request(
         &mut client_socket,
-        "list-1",
+        "pin-1",
         &command_id,
         &config,
         &daemon_public_key,
-        LocalDaemonRequest::ListSessions(ListSessionsRequest),
-    )
-    .await;
-    let list_response =
-        expect_client_response(&mut client_socket, "list-1", &list_request_private_key).await;
-    assert!(matches!(
-        list_response,
-        LocalDaemonResponse::SessionsListed { sessions } if sessions.iter().any(|session| session.id() == created_session_id)
-    ));
-
-    let _state_private_key = send_client_command_request(
-        &mut client_socket,
-        "state-1",
-        &command_id,
-        &config,
-        &daemon_public_key,
-        LocalDaemonRequest::GetSessionState(GetSessionStateRequest {
+        LocalDaemonRequest::SetRoomPinned(SetRoomPinnedRequest {
             session_id: created_session_id.clone(),
+            pinned: true,
         }),
     )
     .await;
-    let error = expect_client_response_error(&mut client_socket, "state-1").await;
+    expect_client_response(&mut client_socket, "pin-1", &pin_request_private_key).await;
+
+    let _unpin_private_key = send_client_command_request(
+        &mut client_socket,
+        "unpin-1",
+        &command_id,
+        &config,
+        &daemon_public_key,
+        LocalDaemonRequest::SetRoomPinned(SetRoomPinnedRequest {
+            session_id: created_session_id.clone(),
+            pinned: false,
+        }),
+    )
+    .await;
+    let error = expect_client_response_error(&mut client_socket, "unpin-1").await;
     assert_eq!(error.code, "duplicate_command_conflict");
     assert!(!error.retryable);
 

@@ -584,6 +584,7 @@ mod tests {
                         completed_at_ms: crate::session::unix_epoch_ms(),
                         home_prompt_id: Some(home_prompt_id.into()),
                         provider_termination: None,
+                        failure: None,
                     }],
                 },
             )
@@ -815,6 +816,7 @@ mod tests {
                             completed_at_ms: crate::session::unix_epoch_ms(),
                             home_prompt_id: Some(id.into()),
                             provider_termination: None,
+                            failure: None,
                         }],
                     },
                 )

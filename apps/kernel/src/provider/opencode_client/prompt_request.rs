@@ -82,12 +82,7 @@ impl OpenCodeClient {
             body["tools"] = serde_json::Value::Object(tools);
         }
 
-        self.send_no_content_request(
-            "POST",
-            &format!("/session/{session_id}/prompt_async"),
-            Some(&body),
-        )?;
-        Ok(())
+        self.send_prompt_request(&format!("/session/{session_id}/prompt_async"), &body)
     }
 }
 

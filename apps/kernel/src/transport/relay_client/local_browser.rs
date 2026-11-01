@@ -21,6 +21,7 @@ use super::*;
 
 mod admission;
 mod leases;
+mod rtc;
 mod session;
 #[cfg(test)]
 mod tests;
@@ -80,6 +81,8 @@ pub(crate) struct LocalBrowserDirect {
     grants: std::sync::Mutex<BTreeMap<String, LocalBrowserGrant>>,
     leases: std::sync::Mutex<BTreeMap<String, leases::LocalBrowserLease>>,
     authority: watch::Sender<Option<LocalBrowserAuthority>>,
+    authority_watch: std::sync::Once,
+    rtc: rtc::RtcEndpoint,
 }
 
 impl LocalBrowserDirect {
@@ -97,6 +100,10 @@ impl LocalBrowserDirect {
             command_result_cache,
             shutdown,
             configured_port(std::env::var(LOCAL_BROWSER_PORT_ENV).ok().as_deref()),
+            rtc::RtcEndpoint::new(
+                configured_port(std::env::var(rtc::UDP_PORT_ENV).ok().as_deref()),
+                Arc::new(rtc::host_addresses),
+            ),
         )
     }
 
@@ -107,6 +114,7 @@ impl LocalBrowserDirect {
         command_result_cache: RelayCommandResultCache,
         shutdown: watch::Receiver<bool>,
         port: Option<u16>,
+        rtc: rtc::RtcEndpoint,
     ) -> Arc<Self> {
         let authority = current_authority(&router.relay_config_snapshot());
         let (bound, bound_rx) = mpsc::unbounded_channel();
@@ -122,6 +130,8 @@ impl LocalBrowserDirect {
             grants: std::sync::Mutex::new(BTreeMap::new()),
             leases: std::sync::Mutex::new(BTreeMap::new()),
             authority: watch::channel(authority).0,
+            authority_watch: std::sync::Once::new(),
+            rtc,
         });
         // Spawned here rather than on bind: the accept loop dispatches requests
         // that can issue grants, so it must not be part of `ensure_endpoint`.
@@ -152,6 +162,58 @@ impl LocalBrowserDirect {
         identity: &RelayCallerIdentity,
         client: LocalDirectClient,
     ) -> Result<serde_json::Value, RelayError> {
+        self.watch_authority_once();
+        let (grant, authority) = self.mint_grant(identity, client)?;
+        let endpoint = self
+            .ensure_endpoint()
+            .await
+            .inspect_err(|_| self.forget_grant(&grant.lease_id))?;
+        let mut issued = serde_json::json!({
+            "endpoint": format!("ws://127.0.0.1:{}{LOCAL_BROWSER_PATH}", endpoint.port),
+            "grant": grant.lease_id,
+            "kernel_id": self.router.relay_daemon_id(),
+            "endpoint_epoch": endpoint.epoch,
+            "expires_at_ms": grant.expires_at_ms,
+        });
+        let name = match client {
+            LocalDirectClient::Browser => "LocalBrowserConnectIssued",
+            LocalDirectClient::Terminal => {
+                issued["paired_origin"] = serde_json::json!(authority.origin);
+                "LocalTerminalConnectIssued"
+            }
+        };
+        Ok(serde_json::json!({name: issued}))
+    }
+
+    /// Protocol 917: the browser's WebRTC offer, carried by the relay-verified
+    /// identity, earns a grant redeemable only on the data channel it describes.
+    pub(super) async fn issue_rtc_grant(
+        self: &Arc<Self>,
+        identity: &RelayCallerIdentity,
+        offer: &str,
+    ) -> Result<serde_json::Value, RelayError> {
+        self.watch_authority_once();
+        let (grant, _) = self.mint_grant(identity, LocalDirectClient::Browser)?;
+        let (answer, epoch) = self
+            .rtc
+            .accept(Arc::downgrade(self), offer, &grant.lease_id)
+            .await
+            .inspect_err(|_| self.forget_grant(&grant.lease_id))?;
+        Ok(serde_json::json!({"LocalBrowserConnectIssued": {
+            "answer": answer,
+            "grant": grant.lease_id,
+            "kernel_id": self.router.relay_daemon_id(),
+            "endpoint_epoch": epoch,
+            "expires_at_ms": grant.expires_at_ms,
+        }}))
+    }
+
+    /// Checks the caller and stores a fresh single-use grant for it.
+    fn mint_grant(
+        &self,
+        identity: &RelayCallerIdentity,
+        client: LocalDirectClient,
+    ) -> Result<(LocalBrowserGrant, LocalBrowserAuthority), RelayError> {
         let authority = self
             .refresh_authority()
             .ok_or_else(|| unavailable("this kernel is not paired with a Cloud origin"))?;
@@ -175,49 +237,36 @@ impl LocalBrowserDirect {
                 false,
             )
         })?;
-        let paired_origin = authority.origin.clone();
-        let endpoint = self.ensure_endpoint().await?;
-        let grant = random_token();
-        {
-            let mut grants = self.grants.lock().expect("local browser grants poisoned");
-            grants.retain(|_, grant| grant.expires_at_ms > now_ms);
-            while grants.len() >= MAX_OUTSTANDING_GRANTS {
-                let oldest = grants
-                    .iter()
-                    .min_by_key(|(_, grant)| grant.expires_at_ms)
-                    .map(|(id, _)| id.clone());
-                match oldest {
-                    Some(id) => grants.remove(&id),
-                    None => break,
-                };
-            }
-            grants.insert(
-                grant.clone(),
-                LocalBrowserGrant {
-                    lease_id: grant.clone(),
-                    client,
-                    identity: identity.clone(),
-                    thumbprint,
-                    authority,
-                    expires_at_ms,
-                },
-            );
-        }
-        let mut issued = serde_json::json!({
-            "endpoint": format!("ws://127.0.0.1:{}{LOCAL_BROWSER_PATH}", endpoint.port),
-            "grant": grant,
-            "kernel_id": self.router.relay_daemon_id(),
-            "endpoint_epoch": endpoint.epoch,
-            "expires_at_ms": expires_at_ms,
-        });
-        let name = match client {
-            LocalDirectClient::Browser => "LocalBrowserConnectIssued",
-            LocalDirectClient::Terminal => {
-                issued["paired_origin"] = serde_json::json!(paired_origin);
-                "LocalTerminalConnectIssued"
-            }
+        let lease_id = random_token();
+        let grant = LocalBrowserGrant {
+            lease_id: lease_id.clone(),
+            client,
+            identity: identity.clone(),
+            thumbprint,
+            authority: authority.clone(),
+            expires_at_ms,
         };
-        Ok(serde_json::json!({name: issued}))
+        let mut grants = self.grants.lock().expect("local browser grants poisoned");
+        grants.retain(|_, grant| grant.expires_at_ms > now_ms);
+        while grants.len() >= MAX_OUTSTANDING_GRANTS {
+            let oldest = grants
+                .iter()
+                .min_by_key(|(_, grant)| grant.expires_at_ms)
+                .map(|(id, _)| id.clone());
+            match oldest {
+                Some(id) => grants.remove(&id),
+                None => break,
+            };
+        }
+        grants.insert(lease_id, grant.clone());
+        Ok((grant, authority))
+    }
+
+    fn forget_grant(&self, grant: &str) {
+        self.grants
+            .lock()
+            .expect("local browser grants poisoned")
+            .remove(grant);
     }
 
     /// Single-use redemption: a grant is removed before it is checked.
@@ -281,10 +330,21 @@ impl LocalBrowserDirect {
         Ok(bound)
     }
 
+    /// Starts the revocation watch with the first grant of either carrier, so
+    /// a kernel that is only reached over the data channel retires its
+    /// sessions too, and a kernel nobody connects to polls nothing.
+    fn watch_authority_once(self: &Arc<Self>) {
+        self.authority_watch.call_once(|| {
+            tokio::spawn(Self::watch_authority(Arc::downgrade(self)));
+        });
+    }
+
     /// Revocation: logout, re-pairing to another account or realm, Cloud
     /// origin change, or kernel key rotation retires every direct session.
-    async fn watch_authority(&self) {
-        let mut shutdown = self.shutdown.clone();
+    async fn watch_authority(direct: std::sync::Weak<Self>) {
+        let Some(mut shutdown) = direct.upgrade().map(|direct| direct.shutdown.clone()) else {
+            return;
+        };
         loop {
             tokio::select! {
                 _ = shutdown.changed() => return,
@@ -293,7 +353,10 @@ impl LocalBrowserDirect {
             if *shutdown.borrow() {
                 return;
             }
-            self.refresh_authority();
+            let Some(direct) = direct.upgrade() else {
+                return;
+            };
+            direct.refresh_authority();
         }
     }
 

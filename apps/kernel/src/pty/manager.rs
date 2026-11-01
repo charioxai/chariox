@@ -200,6 +200,15 @@ pub struct PtySpawnRequest {
     pub working_directory: Option<PathBuf>,
     pub cols: u16,
     pub rows: u16,
+    /// Set for a provider process: what its tools start belongs to the agent,
+    /// across restarts of the process.
+    pub agent: Option<PtyAgent>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PtyAgent {
+    pub session_id: String,
+    pub agent_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -238,6 +247,8 @@ impl PtyProcessState {
 }
 
 struct PtyProcess {
+    resources: crate::runtime::process_resources::ProcessDomain,
+    agent: Option<PtyAgent>,
     discovery_config: Option<crate::provider::OpenCodeDiscoveryConfigDirectory>,
     child: Box<dyn Child + Send + Sync>,
     master: Box<dyn MasterPty + Send>,
@@ -248,6 +259,38 @@ struct PtyProcess {
     exit_code: Option<u32>,
     signal: Option<String>,
     reference_count: usize,
+}
+
+impl PtyProcess {
+    /// The process ends for a restart, not with its agent: jobs its tools
+    /// detached stay the agent's, under the same limit. A process that still
+    /// runs takes the commands it is running with it. Stopping or deleting
+    /// the agent ends the jobs.
+    fn hand_jobs_to_agent(&mut self, running: bool) {
+        let Some(agent) = self
+            .agent
+            .take()
+            .filter(|_| self.resources.memory_limit_bytes().is_none())
+        else {
+            return;
+        };
+        if let Some(leader) = running
+            .then(|| {
+                self.child
+                    .process_id()
+                    .and_then(|pid| i32::try_from(pid).ok())
+            })
+            .flatten()
+        {
+            crate::runtime::process_resources::SessionSweep::capture(leader)
+                .stop_with_descendants();
+        }
+        self.resources.release(
+            &agent.session_id,
+            crate::runtime::process_resources::SessionProcessOwner::Agent(agent.agent_id),
+            None,
+        );
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -392,6 +435,7 @@ impl PtyManager {
         let process_key = run.pty_target().unwrap_or(run.id()).to_string();
         if let Some(process) = self.processes.get_mut(&process_key) {
             process.reference_count += 1;
+            process.resources.bind_key(run.id());
             self.process_aliases
                 .insert(run.id().to_string(), process_key.clone());
             self.output_signal
@@ -454,6 +498,10 @@ impl PtyManager {
             working_directory: run.working_directory().cloned(),
             cols: 120,
             rows: 40,
+            agent: run.agent_instance_id().map(|agent_id| PtyAgent {
+                session_id: run.session_id().to_string(),
+                agent_id: agent_id.to_string(),
+            }),
         };
 
         self.spawn_with_credentials(request, credentials, false)?;
@@ -524,6 +572,7 @@ impl PtyManager {
         }
         if let Some(process) = self.processes.get_mut(&request.process_key) {
             process.reference_count += 1;
+            process.resources.bind_key(&request.provider_run_id);
             self.process_aliases
                 .insert(request.provider_run_id.clone(), request.process_key.clone());
             self.output_signal
@@ -552,8 +601,23 @@ impl PtyManager {
                 message: error.to_string(),
             })?;
 
-        let mut command = CommandBuilder::new(request.program);
-        for arg in request.args {
+        let prepared = crate::runtime::process_resources::PreparedDomain::new(
+            request
+                .agent
+                .as_ref()
+                .map_or(request.provider_run_id.as_str(), |agent| {
+                    agent.agent_id.as_str()
+                }),
+        )
+        .map_err(|error| DaemonError::PtySpawn {
+            provider_run_id: request.provider_run_id.clone(),
+            message: error.to_string(),
+        })?;
+        #[cfg(unix)]
+        let inner_program = request.program.clone();
+        let (program, args) = prepared.command(request.program, request.args);
+        let mut command = CommandBuilder::new(program);
+        for arg in args {
             command.arg(arg);
         }
         for (name, _) in std::env::vars() {
@@ -579,6 +643,17 @@ impl PtyManager {
             command.cwd(working_directory);
         }
 
+        #[cfg(unix)]
+        crate::runtime::process_resources::validate_executable(
+            &inner_program,
+            command.get_cwd().map(std::path::Path::new),
+            command.get_env("PATH"),
+        )
+        .map_err(|error| DaemonError::PtySpawn {
+            provider_run_id: request.provider_run_id.clone(),
+            message: error.to_string(),
+        })?;
+
         // portable-pty calls setsid before exec on Unix, including sandbox
         // wrappers. Keep its controlling-terminal and isolation setup intact.
         let mut child = crate::process_spawn::spawn_pty(pair.slave, command).map_err(|error| {
@@ -588,6 +663,23 @@ impl PtyManager {
             }
         })?;
 
+        let resources = match child
+            .process_id()
+            .ok_or_else(|| std::io::Error::other("PTY child PID unavailable"))
+            .and_then(|pid| prepared.start(pid))
+        {
+            Ok(resources) => resources,
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(DaemonError::PtySpawn {
+                    provider_run_id: request.provider_run_id.clone(),
+                    message: error.to_string(),
+                });
+            }
+        };
+
+        resources.bind_key(&request.provider_run_id);
         let mut reader = pair
             .master
             .try_clone_reader()
@@ -699,6 +791,8 @@ impl PtyManager {
             PtyProcess {
                 discovery_config: None,
                 child,
+                resources,
+                agent: request.agent,
                 master: pair.master,
                 process_group,
                 input_writer,
@@ -879,6 +973,34 @@ impl PtyManager {
         Some((size.cols, size.rows))
     }
 
+    /// One bounded turn for an interactive consumer. A producer refilling the
+    /// queue cannot extend this turn; EOF is reported only after every byte.
+    pub(crate) fn drain_output_batch(
+        &mut self,
+        provider_run_id: &str,
+    ) -> Result<(Vec<PtyOutputChunk>, bool), DaemonError> {
+        const CHUNKS_PER_TURN: usize = 16;
+        let key = self.resolve_process_key(provider_run_id)?;
+        let process =
+            self.processes
+                .get_mut(&key)
+                .ok_or_else(|| DaemonError::PtyProcessNotFound {
+                    provider_run_id: provider_run_id.into(),
+                })?;
+        let mut chunks = Vec::new();
+        for _ in 0..CHUNKS_PER_TURN {
+            match process.output_rx.try_recv() {
+                Ok(bytes) => chunks.push(PtyOutputChunk {
+                    provider_run_id: provider_run_id.into(),
+                    bytes,
+                }),
+                Err(mpsc::TryRecvError::Empty) => return Ok((chunks, false)),
+                Err(mpsc::TryRecvError::Disconnected) => return Ok((chunks, true)),
+            }
+        }
+        Ok((chunks, false))
+    }
+
     pub fn drain_output(
         &mut self,
         provider_run_id: &str,
@@ -1002,6 +1124,11 @@ impl PtyManager {
         self.resolve_process_key(provider_run_id)
     }
 
+    pub(crate) fn memory_limit_bytes(&self, provider_run_id: &str) -> Option<u64> {
+        let key = self.process_aliases.get(provider_run_id)?;
+        self.processes.get(key)?.resources.memory_limit_bytes()
+    }
+
     pub fn process_id(&self, provider_run_id: &str) -> Result<Option<u32>, DaemonError> {
         let process_key = self.resolve_process_key(provider_run_id)?;
         let process =
@@ -1115,12 +1242,46 @@ impl PtyManager {
         Ok(None)
     }
 
+    /// The owner ends this process's session itself (a Room terminal's sweep),
+    /// so exiting or removing the process does not also kill its process group.
+    pub fn hand_group_cleanup_to_owner(&mut self, provider_run_id: &str) {
+        if let Some(process) = self
+            .process_aliases
+            .get(provider_run_id)
+            .and_then(|key| self.processes.get_mut(key))
+        {
+            process.process_group = None;
+        }
+    }
+
+    /// Lets jobs that left an exited process's session outlive it; see
+    /// `ProcessDomain::release`.
+    pub fn release_exited_process_jobs(
+        &mut self,
+        provider_run_id: &str,
+        session_id: &str,
+        owner: crate::runtime::process_resources::SessionProcessOwner,
+        opened_by: Option<String>,
+    ) {
+        if let Some(process) = self
+            .process_aliases
+            .get(provider_run_id)
+            .and_then(|key| self.processes.get_mut(key))
+            .filter(|process| process.exit_code.is_some() || process.signal.is_some())
+        {
+            process.resources.release(session_id, owner, opened_by);
+        }
+    }
+
     pub fn remove_process(&mut self, provider_run_id: &str) -> Result<bool, DaemonError> {
         let Some(process_key) = self.process_aliases.remove(provider_run_id) else {
             return Ok(false);
         };
         self.output_signal
             .unregister_alias(&process_key, provider_run_id);
+        if let Some(process) = self.processes.get(&process_key) {
+            process.resources.unbind_key(provider_run_id);
+        }
 
         self.remove_process_by_key(&process_key, Some(provider_run_id))
     }
@@ -1150,6 +1311,7 @@ impl PtyManager {
 
         let status = if process.exit_code.is_some() || process.signal.is_some() {
             // Already reaped by output drain or liveness polling.
+            process.hand_jobs_to_agent(false);
             return Ok(true);
         } else {
             try_wait_pty_process(&mut process).map_err(|error| DaemonError::PtyCleanup {
@@ -1158,6 +1320,7 @@ impl PtyManager {
             })?
         };
 
+        process.hand_jobs_to_agent(status.is_none());
         if status.is_none() {
             terminate_pty_process_group(process.master.as_ref(), process.process_group);
             process
@@ -1540,6 +1703,7 @@ mod tests {
             let mut manager = PtyManager::new();
             manager
                 .spawn(PtySpawnRequest {
+                    agent: None,
                     process_key: RUN.into(),
                     provider_run_id: RUN.into(),
                     program: "/usr/bin/bwrap".into(),
@@ -1613,6 +1777,7 @@ mod tests {
         let mut manager = PtyManager::new();
         manager
             .spawn(PtySpawnRequest {
+                agent: None,
                 process_key: "stub-pty:real-exit-code".to_string(),
                 provider_run_id: provider_run_id.to_string(),
                 program: "/bin/sh".to_string(),
@@ -1657,6 +1822,7 @@ mod tests {
         let mut manager = PtyManager::new();
         manager
             .spawn(PtySpawnRequest {
+                agent: None,
                 process_key: "stub-pty:early-exit-diagnostic".to_string(),
                 provider_run_id: provider_run_id.to_string(),
                 program: "/bin/sh".to_string(),
@@ -1700,6 +1866,7 @@ mod tests {
         let mut manager = PtyManager::new();
         manager
             .spawn(PtySpawnRequest {
+                agent: None,
                 process_key: "stub-pty:real-signal".to_string(),
                 provider_run_id: provider_run_id.to_string(),
                 program: "/bin/sh".to_string(),
@@ -1766,6 +1933,7 @@ mod tests {
         fixture
             .0
             .spawn(PtySpawnRequest {
+                agent: None,
                 process_key: "stub-pty:with-descendant".to_string(),
                 provider_run_id: RUN.to_string(),
                 program: "/bin/sh".to_string(),
@@ -1849,6 +2017,7 @@ mod tests {
         let mut manager = PtyManager::new();
         manager
             .spawn(PtySpawnRequest {
+                agent: None,
                 process_key: "stub-pty:with-orphan-descendant".to_string(),
                 provider_run_id: provider_run_id.to_string(),
                 program: "/bin/sh".to_string(),
@@ -1923,7 +2092,7 @@ mod tests {
     #[test]
     fn mp08_mp10_removal_after_reaping_does_not_signal_a_reused_group() {
         use std::os::unix::process::CommandExt;
-        let mut probe = std::process::Command::new("/bin/sh");
+        let mut probe = crate::process_spawn::command("/bin/sh");
         probe.args(["-c", "sleep 30"]);
         unsafe {
             probe.pre_exec(|| {
@@ -1950,6 +2119,7 @@ mod tests {
         let id = "mp08-mp10-reaped-leader";
         manager
             .spawn(PtySpawnRequest {
+                agent: None,
                 process_key: id.into(),
                 provider_run_id: id.into(),
                 program: "/bin/sh".into(),
@@ -2118,6 +2288,7 @@ mod tests {
         let mut manager = PtyManager::new();
         manager
             .spawn(PtySpawnRequest {
+                agent: None,
                 process_key: "stub-pty:no-echo".to_string(),
                 provider_run_id: provider_run_id.to_string(),
                 program: "/bin/sh".to_string(),
@@ -2280,6 +2451,29 @@ mod tests {
 
         assert_eq!(manager.processes.len(), 1);
         assert_eq!(manager.process_aliases.len(), 2);
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        let first_rows = loop {
+            let rows = crate::runtime::process_resources::samples_for_key(first_run.id());
+            if !rows.is_empty() || std::time::Instant::now() >= deadline {
+                break rows;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        };
+        assert!(
+            !first_rows.is_empty(),
+            "the shared PTY must have process rows"
+        );
+        assert_eq!(
+            crate::runtime::process_resources::samples_for_key(second_run.id())
+                .into_iter()
+                .map(|row| (row.pid, row.process_id))
+                .collect::<Vec<_>>(),
+            first_rows
+                .iter()
+                .map(|row| (row.pid, row.process_id.clone()))
+                .collect::<Vec<_>>(),
+            "every live PTY alias must resolve the retained resource domain"
+        );
 
         manager
             .write_input(first_run.id(), b"shared pty\n")
@@ -2301,6 +2495,21 @@ mod tests {
         assert!(!manager.has_process(first_run.id()));
         assert!(manager.has_process(second_run.id()));
         assert_eq!(manager.processes.len(), 1);
+        assert!(crate::runtime::process_resources::samples_for_key(first_run.id()).is_empty());
+        assert!(crate::runtime::process_resources::stop_for_key(first_run.id(), None).is_err());
+        let surviving = crate::runtime::process_resources::samples_for_key(second_run.id());
+        assert!(
+            !surviving.is_empty(),
+            "the surviving alias keeps its observations"
+        );
+        let stopped = crate::runtime::process_resources::stop_for_key(second_run.id(), None)
+            .expect("the surviving PTY alias can stop its owned tree");
+        assert!(surviving
+            .iter()
+            .all(|row| stopped.contains(&row.process_id)));
+        assert!(crate::runtime::process_resources::outside_ended_for_key(
+            second_run.id()
+        ));
 
         manager
             .remove_process(second_run.id())
@@ -2308,6 +2517,8 @@ mod tests {
         assert!(!manager.has_process(second_run.id()));
         assert!(manager.processes.is_empty());
         assert!(manager.process_aliases.is_empty());
+        assert!(crate::runtime::process_resources::samples_for_key(second_run.id()).is_empty());
+        assert!(crate::runtime::process_resources::stop_for_key(second_run.id(), None).is_err());
     }
 
     fn wait_for_output(
@@ -2350,5 +2561,59 @@ mod tests {
             );
             thread::sleep(Duration::from_millis(10));
         }
+    }
+    #[cfg(unix)]
+    #[test]
+    fn memory_limit_ends_only_the_overweight_pty_tree() {
+        let _environment = crate::env_lock::lock();
+        let previous = std::env::var_os("CHARIOX_PROCESS_MEMORY_LIMIT_MIB");
+        std::env::set_var("CHARIOX_PROCESS_MEMORY_LIMIT_MIB", "32");
+        let mut pty = PtyManager::new();
+        for (run, program, args) in [
+            (
+                "memory-regression",
+                "python3",
+                vec![
+                    "-c",
+                    "import time; x=bytearray(64*1024*1024); time.sleep(30)",
+                ],
+            ),
+            ("memory-sibling", "/bin/sleep", vec!["30"]),
+        ] {
+            pty.spawn(PtySpawnRequest {
+                agent: None,
+                process_key: run.into(),
+                provider_run_id: run.into(),
+                program: program.into(),
+                args: args.into_iter().map(str::to_string).collect(),
+                env: Default::default(),
+                env_remove: vec![],
+                working_directory: None,
+                cols: 80,
+                rows: 24,
+            })
+            .unwrap();
+        }
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut state = PtyProcessState::Running;
+        while std::time::Instant::now() < deadline {
+            state = pty.poll_process_state("memory-regression").unwrap();
+            if state.is_exited() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        let sibling = pty.poll_process_state("memory-sibling").unwrap();
+        pty.remove_process("memory-regression").unwrap();
+        pty.remove_process("memory-sibling").unwrap();
+        match previous {
+            Some(value) => std::env::set_var("CHARIOX_PROCESS_MEMORY_LIMIT_MIB", value),
+            None => std::env::remove_var("CHARIOX_PROCESS_MEMORY_LIMIT_MIB"),
+        }
+        assert!(
+            state.is_exited(),
+            "the memory limit did not stop its PTY tree"
+        );
+        assert_eq!(sibling, PtyProcessState::Running);
     }
 }

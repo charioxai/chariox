@@ -6,7 +6,7 @@ use std::{
     io::Read,
     os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::Stdio,
     sync::mpsc,
     time::Duration,
 };
@@ -54,7 +54,7 @@ pub(super) fn start() -> Option<std::io::Result<PathBuf>> {
 // Do not select an ambient PATH runtime or duplicate the enrollment schema.
 #[cfg(target_os = "linux")]
 fn launch(launcher: &Path, uid: u32) -> std::io::Result<PathBuf> {
-    let mut child = Command::new(launcher)
+    let mut child = crate::process_spawn::command(launcher)
         .env_clear()
         .env("PATH", "/usr/bin:/bin")
         .stdin(Stdio::null())

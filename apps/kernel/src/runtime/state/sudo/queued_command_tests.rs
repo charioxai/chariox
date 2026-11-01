@@ -1,6 +1,6 @@
 //! MP-08 / MP-10 / MP-11 A04: a queued sudo command keeps its submitting turn.
-use super::tests::{fixture_with_options, popup};
-use super::window_tests::{approve, open, start_continuation};
+use super::tests::fixture_with_options;
+use super::window_tests::{open, start_continuation};
 use super::*;
 use crate::runtime::command::{KernelCaller, KernelCommand, KernelCommandSource};
 use crate::runtime::session_actor::{FocusedAgentProjection, SessionRuntime};
@@ -43,15 +43,9 @@ async fn assert_queued_command(end_turn: bool, include_run: bool) {
     let f = fixture_with_options(None, true);
     let window = open(&f, None).await;
     let request = spawn(&window.session_id, "sudo-queued", None);
-    // The owner approves this exact operation for the elevated turn.
-    let confirmation = tokio::spawn({
-        let state = f.state.clone();
-        let window = window.clone();
-        let request = request.clone();
-        async move { state.confirm_sudo_scope(&window, &request).await }
-    });
-    approve(&f, &popup(&f.state).await, None).await.unwrap();
-    confirmation.await.unwrap().unwrap();
+    f.state
+        .authorize_sudo_request(&window.entry_id, &request)
+        .unwrap();
     let probe = Arc::new(tokio::sync::Notify::new());
     let mut lane_state = f.state.clone();
     lane_state.observe_app_lock_wait_for_test(probe.clone());

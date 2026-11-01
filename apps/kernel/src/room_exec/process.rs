@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
-use tokio::process::{Child, Command};
+use tokio::process::Child;
 use tokio::sync::{mpsc, watch};
 
 use super::buffer::PIPE_READ_BYTES;
@@ -28,7 +28,7 @@ impl Drop for Process {
 }
 
 pub(super) fn spawn(cwd: &Path, argv: &[String]) -> Result<Process, DaemonError> {
-    let mut command = Command::new(&argv[0]);
+    let mut command = crate::process_spawn::async_command(&argv[0]);
     command
         .args(&argv[1..])
         .current_dir(cwd)

@@ -284,11 +284,15 @@ impl KernelRuntimeOwnedState {
                     {
                         self.provider_run_projection.update(run);
                     }
-                    self.record_provider_failure_output(
+                    let failure = self.record_dispatch_failure_output(
                         &finished.session_id,
                         &finished.provider_run_id,
                         &finished.agent_id,
-                        &diagnostic,
+                        provider_run
+                            .as_ref()
+                            .map(|run| run.adapter_key())
+                            .unwrap_or_default(),
+                        &error,
                     );
                     match self.settle_failed_local_prompt_without_advance(
                         &finished.session_id,
@@ -296,6 +300,7 @@ impl KernelRuntimeOwnedState {
                         &finished.prompt_id,
                         &finished.provider_run_id,
                         &diagnostic,
+                        failure,
                     ) {
                         Ok(Some(released_claim)) => {
                             self.record_failed_request(
@@ -380,6 +385,7 @@ impl KernelRuntimeOwnedState {
                     prompt.id(),
                     &finished.provider_run_id,
                     &format!("Provider prompt cancellation failed: {error}"),
+                    None,
                 );
             } else {
                 // Some providers do not emit a terminal event after a successful
@@ -480,6 +486,9 @@ impl KernelRuntimeOwnedState {
             )?;
         match cleared {
             crate::agent::ProviderResumeClearOutcome::Cleared => {}
+            crate::agent::ProviderResumeClearOutcome::Required => {
+                return Ok(FailedPromptResumePreparation::NotRequired)
+            }
             crate::agent::ProviderResumeClearOutcome::AlreadyAbsent => {
                 return Ok(FailedPromptResumePreparation::Cleared(settlement_claim));
             }
@@ -625,7 +634,17 @@ impl KernelRuntimeOwnedState {
         // Prompt state is mirrored before settlement history is appended. The active turn is
         // the reporter's barrier across that window, so publish a second change only after the
         // turn has been cleared by the completed settlement path.
-        if active_turn.is_some() {
+        if let Some(turn) = active_turn.as_ref() {
+            if let Err(error) = self.record_session_activity(
+                &turn.session_id,
+                observed_at_ms.unwrap_or_else(crate::session::unix_epoch_ms),
+            ) {
+                crate::logging::error_with_fields(
+                    "daemon.activity",
+                    "Could not persist session turn activity",
+                    serde_json::json!({"session_id": turn.session_id, "error": error.to_string()}),
+                );
+            }
             activity_mutation.record_prompt_finish_at(observed_at_ms);
             self.runtime_projection_changes.record_change();
         } else {
@@ -699,7 +718,7 @@ impl KernelRuntimeOwnedState {
                 saw_response_content: false,
                 completion_recorded: false,
                 settlement_requested: false,
-                active_tool_ids: std::collections::BTreeSet::new(),
+                active_tools: Default::default(),
             },
         );
         let active_turn = self
@@ -726,6 +745,15 @@ impl KernelRuntimeOwnedState {
                 )
             });
         if let Some(turn) = active_turn {
+            if let Err(error) =
+                self.record_session_activity(&turn.session_id, crate::session::unix_epoch_ms())
+            {
+                crate::logging::error_with_fields(
+                    "daemon.activity",
+                    "Could not persist session turn activity",
+                    serde_json::json!({"session_id": turn.session_id, "error": error.to_string()}),
+                );
+            }
             let activity_mutation = self.begin_managed_activity_mutation();
             self.active_turns.start(turn);
             self.active_turns
@@ -803,7 +831,7 @@ impl KernelRuntimeOwnedState {
                 saw_response_content: true,
                 completion_recorded: true,
                 settlement_requested: true,
-                active_tool_ids: std::collections::BTreeSet::new(),
+                active_tools: Default::default(),
             });
         self.schedule_provider_output_check_after(provider_run_id, FAILED_SETTLEMENT_RETRY_DELAY);
     }
@@ -821,7 +849,7 @@ impl KernelRuntimeOwnedState {
                 saw_response_content: true,
                 completion_recorded: false,
                 settlement_requested: true,
-                active_tool_ids: std::collections::BTreeSet::new(),
+                active_tools: Default::default(),
             });
         self.schedule_provider_output_check_after(provider_run_id, PROMPT_SETTLEMENT_RECHECK_DELAY);
     }

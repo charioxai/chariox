@@ -699,6 +699,13 @@ impl RuntimeSession {
     }
 
     pub fn reconcile_after_kernel_restart(&mut self) -> KernelRestartReconciliation {
+        self.reconcile_after_kernel_restart_with_admitted_entries(&BTreeSet::new())
+    }
+
+    pub(crate) fn reconcile_after_kernel_restart_with_admitted_entries(
+        &mut self,
+        admitted_entry_run_ids: &BTreeSet<String>,
+    ) -> KernelRestartReconciliation {
         let mut reconciliation = KernelRestartReconciliation {
             removed_orphaned_workflow_prompt_count: self.reconcile_workflow_queue_ownership(),
             ..KernelRestartReconciliation::default()
@@ -879,6 +886,7 @@ impl RuntimeSession {
                 .iter()
                 .any(|(run_id, _)| run_id == workflow_run.id())
                 || durable_workflow_run_targets.contains(workflow_run.id())
+                || admitted_entry_run_ids.contains(workflow_run.id())
             {
                 continue;
             }

@@ -4,6 +4,9 @@ use super::*;
 
 impl KernelRuntimeOwnedState {
     pub(in crate::runtime::state) fn sweep_kernel_operation_interactions(&self, shutdown: bool) {
+        if let Err(error) = self.sweep_stale_task_owner_interactions() {
+            tracing::warn!(%error, "task owner decision withdrawal failed; interaction admission will retry");
+        }
         {
             let Ok(_mutation) = self.pending_interactions.mutation.lock() else {
                 return;

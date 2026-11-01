@@ -189,7 +189,7 @@ mod tests {
                 .repo_root
                 .is_none()
         );
-        let output = std::process::Command::new("git")
+        let output = crate::process_spawn::command("git")
             .args(["init", "-b", "main"])
             .current_dir(&root)
             .output()

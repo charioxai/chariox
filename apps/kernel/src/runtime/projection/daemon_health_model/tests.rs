@@ -265,6 +265,8 @@ fn daemon_health_projection_records_actor_queue_snapshots() {
             },
         },
         ProjectionInvariantHealthSnapshot {
+            mismatch_count: 0,
+            mismatch_counts_by_kind: Default::default(),
             checked_sessions: 1,
             checked_agents: 3,
             mismatches: Vec::new(),

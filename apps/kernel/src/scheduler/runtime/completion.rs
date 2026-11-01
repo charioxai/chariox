@@ -217,9 +217,11 @@ pub(crate) fn build_workflow_completion_snapshot_from_history(
     let provider_output = provider_output_entries.join("");
     let structured_output = parse_workflow_structured_output(&provider_output);
     if structured_output.is_none() {
-        if let Some(snapshot) =
-            workflow_completion_snapshot_from_validated_tool_output(node_run, &provider_output)
-        {
+        if let Some(snapshot) = workflow_completion_snapshot_from_validated_tool_output(
+            session.workflow(workflow_run.workflow_id())?,
+            node_run,
+            &provider_output,
+        ) {
             return Some(snapshot);
         }
         crate::logging::warn_with_fields(
@@ -261,6 +263,7 @@ pub(crate) fn build_workflow_completion_snapshot_from_history(
 }
 
 fn workflow_completion_snapshot_from_validated_tool_output(
+    workflow: &crate::session::WorkflowDefinition,
     node_run: &crate::session::WorkflowNodeRun,
     provider_output: &str,
 ) -> Option<WorkflowCompletionSnapshot> {
@@ -284,10 +287,25 @@ fn workflow_completion_snapshot_from_validated_tool_output(
             call.arguments_json(),
         )
         .ok()?;
-    let summary = workflow_completion_summary(provider_output);
+    let mut matching_edges = workflow.edges().iter().filter(|edge| {
+        edge.from_node_id() == node_run.node_id()
+            && edge.handoff_schema_ref() == Some(args.handoff_schema_ref.as_str())
+    });
+    let edge = matching_edges.next()?;
+    if matching_edges.next().is_some() {
+        return None;
+    }
+    // Validation binds a payload to a schema, so only a unique matching edge
+    // can recover its route without broadcasting it to unrelated recipients.
+    let output = serde_json::json!({
+        "workflow_handoffs": [{
+            "edge_id": edge.id(),
+            "output": { "message": args.handoff_json },
+        }],
+    });
     Some(WorkflowCompletionSnapshot::new(
-        summary,
-        Some(WorkflowOutputPayload::new(args.handoff_json, Vec::new())),
+        workflow_completion_summary(provider_output),
+        Some(WorkflowOutputPayload::new(output.to_string(), Vec::new())),
     ))
 }
 

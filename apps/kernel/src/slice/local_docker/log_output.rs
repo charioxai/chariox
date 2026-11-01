@@ -110,7 +110,7 @@ mod tests {
     use super::*;
     #[test]
     fn command_stdout_and_stderr_are_bounded_while_both_are_drained() {
-        let output = Command::new("sh")
+        let output = crate::process_spawn::command("sh")
             .args([
                 "-c",
                 "head -c 2097152 /dev/zero; head -c 2097152 /dev/zero >&2",

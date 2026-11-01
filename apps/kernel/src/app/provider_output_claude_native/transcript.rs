@@ -16,7 +16,20 @@ pub(super) struct ClaudeTranscriptCursor {
     seen_keys: BTreeSet<String>,
     #[serde(default)]
     seen_assistant_message_ids: BTreeSet<String>,
+    /// Calls whose result has not arrived yet: the result line names only the call id.
+    #[serde(default)]
+    pending_tool_calls: BTreeMap<String, ClaudeToolCall>,
 }
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct ClaudeToolCall {
+    tool: String,
+    input: Value,
+}
+
+/// A larger input stays in the call's own history entry; the result keeps only the tool's name.
+const PENDING_TOOL_INPUT_BYTES: usize = 8 * 1024;
+const PENDING_TOOL_CALLS: usize = 64;
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 struct ClaudeTranscriptFileCursor {
@@ -149,7 +162,7 @@ pub(super) fn drain_claude_transcript_raw_since(
         if let Some(prompt) = claude_transcript_enqueued_prompt(&value) {
             drain.enqueued_prompts.push(prompt);
         }
-        let chunks = claude_transcript_chunks(&value);
+        let chunks = claude_transcript_chunks(&value, &mut cursor.pending_tool_calls);
         if drain.terminal_failure.is_none() {
             drain.terminal_failure = chunks.iter().find_map(|chunk| {
                 crate::provider::classify_provider_terminal_failure_output_text(
@@ -232,18 +245,24 @@ fn claude_transcript_entry_key(path: &str, index: usize, value: &Value) -> Strin
         .unwrap_or_else(|| format!("{path}:line:{index}"))
 }
 
-fn claude_transcript_chunks(value: &Value) -> Vec<ClaudeTranscriptChunk> {
+fn claude_transcript_chunks(
+    value: &Value,
+    pending_tool_calls: &mut BTreeMap<String, ClaudeToolCall>,
+) -> Vec<ClaudeTranscriptChunk> {
     let Some(kind) = value.get("type").and_then(Value::as_str) else {
         return Vec::new();
     };
     match kind {
-        "assistant" => claude_assistant_transcript_chunks(value),
-        "user" => claude_tool_result_transcript_chunks(value),
+        "assistant" => claude_assistant_transcript_chunks(value, pending_tool_calls),
+        "user" => claude_tool_result_transcript_chunks(value, pending_tool_calls),
         _ => Vec::new(),
     }
 }
 
-fn claude_assistant_transcript_chunks(value: &Value) -> Vec<ClaudeTranscriptChunk> {
+fn claude_assistant_transcript_chunks(
+    value: &Value,
+    pending_tool_calls: &mut BTreeMap<String, ClaudeToolCall>,
+) -> Vec<ClaudeTranscriptChunk> {
     let message = value.get("message").unwrap_or(value);
     let message_id =
         claude_transcript_assistant_message_id(value).unwrap_or_else(|| "assistant".to_string());
@@ -280,11 +299,29 @@ fn claude_assistant_transcript_chunks(value: &Value) -> Vec<ClaudeTranscriptChun
                 }
             }
             "tool_use" => {
+                let name = block.get("name").and_then(Value::as_str).unwrap_or("tool");
+                let input = block.get("input").cloned().unwrap_or(Value::Null);
+                if let Some(id) = block.get("id").and_then(Value::as_str) {
+                    if pending_tool_calls.len() < PENDING_TOOL_CALLS {
+                        let kept = if input.to_string().len() <= PENDING_TOOL_INPUT_BYTES {
+                            input.clone()
+                        } else {
+                            Value::Null
+                        };
+                        pending_tool_calls.insert(
+                            id.to_string(),
+                            ClaudeToolCall {
+                                tool: name.to_string(),
+                                input: kept,
+                            },
+                        );
+                    }
+                }
                 let payload = serde_json::json!({
                     "id": block.get("id").cloned().unwrap_or(Value::Null),
-                    "tool": block.get("name").and_then(Value::as_str).unwrap_or("tool"),
+                    "tool": name,
                     "status": "started",
-                    "input": block.get("input").cloned().unwrap_or(Value::Null),
+                    "input": input,
                 });
                 chunks.push(ClaudeTranscriptChunk {
                     kind: TerminalOutputKind::ProviderTool,
@@ -304,7 +341,10 @@ fn claude_assistant_transcript_chunks(value: &Value) -> Vec<ClaudeTranscriptChun
     chunks
 }
 
-fn claude_tool_result_transcript_chunks(value: &Value) -> Vec<ClaudeTranscriptChunk> {
+fn claude_tool_result_transcript_chunks(
+    value: &Value,
+    pending_tool_calls: &mut BTreeMap<String, ClaudeToolCall>,
+) -> Vec<ClaudeTranscriptChunk> {
     let message = value.get("message").unwrap_or(value);
     let Some(content) = message.get("content").and_then(Value::as_array) else {
         return Vec::new();
@@ -323,12 +363,17 @@ fn claude_tool_result_transcript_chunks(value: &Value) -> Vec<ClaudeTranscriptCh
                 .get("is_error")
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
-            let payload = serde_json::json!({
+            // The result replaces the call's history entry, so it carries the call's name and input.
+            let call = pending_tool_calls.remove(tool_use_id);
+            let mut payload = serde_json::json!({
                 "id": tool_use_id,
-                "tool": "tool_result",
+                "tool": call.as_ref().map_or("tool_result", |call| call.tool.as_str()),
                 "status": if is_error { "failed" } else { "completed" },
                 "output": content,
             });
+            if let Some(call) = call {
+                payload["input"] = call.input;
+            }
             Some(ClaudeTranscriptChunk {
                 kind: TerminalOutputKind::ProviderTool,
                 merge_key_suffix: format!("tool:{tool_use_id}"),

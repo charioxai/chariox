@@ -400,3 +400,94 @@ fn workflow_max_concurrent_limits_ready_downstream_dispatches() {
             || message.target_node_id() == worker_b.id())
         .all(|message| message.consumed_by_node_run_id().is_some()));
 }
+
+#[test]
+fn restored_workflow_handoffs_keep_distinct_node_run_ids() {
+    let config = test_config();
+    let mut service = SessionService::new(&config);
+    let session = service
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .unwrap();
+    seed_agents(
+        &mut service,
+        session.id(),
+        &["agent-1", "agent-2", "agent-3"],
+    );
+    let workflow = service.create_workflow(session.id(), None).unwrap();
+    let mut nodes = Vec::new();
+    for agent in ["agent-1", "agent-2", "agent-3"] {
+        nodes.push(
+            service
+                .add_workflow_node(session.id(), workflow.id(), agent)
+                .unwrap(),
+        );
+    }
+    for pair in nodes.windows(2) {
+        service
+            .add_workflow_edge(
+                session.id(),
+                workflow.id(),
+                pair[0].id(),
+                pair[1].id(),
+                None,
+                None,
+            )
+            .unwrap();
+    }
+    let endpoint = service
+        .create_workflow_endpoint(session.id(), workflow.id(), nodes[0].id(), None)
+        .unwrap();
+    let run = service
+        .invoke_workflow_endpoint(
+            session.id(),
+            workflow.id(),
+            endpoint.id(),
+            Some("Inspect this repository".into()),
+        )
+        .unwrap();
+    let mut current = run.node_runs()[0].clone();
+    let mut ids = std::collections::BTreeSet::from([current.id().to_string()]);
+    for target in &nodes[1..] {
+        service
+            .start_workflow_node_run(session.id(), run.id(), current.id())
+            .unwrap();
+        let saved = serde_json::to_vec(&service.get_session(session.id()).unwrap()).unwrap();
+        service = SessionService::new(&config);
+        service.restore_session(serde_json::from_slice(&saved).unwrap());
+        let completion = service
+            .complete_workflow_node_run(session.id(), run.id(), current.id(), None, None)
+            .unwrap();
+        assert_eq!(completion.dispatches.len(), 1);
+        let next = &completion.dispatches[0].node_run;
+        assert_eq!(next.node_id(), target.id());
+        assert!(
+            ids.insert(next.id().to_string()),
+            "a restored handoff reused another node's turn identity"
+        );
+        assert_eq!(
+            completion.dispatches[0].messages[0].consumed_by_node_run_id(),
+            None
+        );
+        let saved_run = service
+            .resolve_workflow_run_ref(session.id(), run.id())
+            .unwrap();
+        assert!(saved_run
+            .messages()
+            .iter()
+            .any(|message| message.target_node_id() == target.id()
+                && message.consumed_by_node_run_id() == Some(next.id())));
+        current = next.clone();
+    }
+    let started = service
+        .start_workflow_node_run(session.id(), run.id(), current.id())
+        .unwrap();
+    assert_eq!(started.active_node_run_id(), Some(current.id()));
+    assert_eq!(
+        started
+            .node_runs()
+            .iter()
+            .filter(|node| node.status() == WorkflowNodeRunStatus::Running)
+            .count(),
+        1
+    );
+}

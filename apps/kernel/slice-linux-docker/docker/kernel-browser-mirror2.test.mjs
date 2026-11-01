@@ -512,6 +512,18 @@ test('MP-10 M2: completed stylesheet bodies do not wait for Page resource-conten
  assert.equal(await mirror.crossOriginSheet(world,'https://public.example/style.css'),body.toString());assert.deepEqual(calls,[]);
 });
 
+// mirrorfid (dashboard.stripe.com/login after another site): the 3.6 MB cross-origin sheet's body had left the network
+// buffer and the document's resource tree did not list it, so the viewer kept an empty sheet. The document's own frame
+// still has the content.
+test('a cross-origin stylesheet missing from the network buffer and the resource tree is read from its document frame',async()=>{
+ const body='body{color:green}',asked=[];
+ const world={connection:{async send(method,params){asked.push([method,params?.frameId]);if(method==='Page.getResourceTree')return {frameTree:{frame:{id:'F'},resources:[{url:'https://public.example/other.css'}]}};if(method==='Page.getResourceContent'&&params.frameId==='F'&&params.url==='https://public.example/big.css')return {content:body,base64Encoded:false};throw Error(`unexpected ${method}`)}},sessionId:'S',frame:{id:'F',loaderId:'D'},ref:'observer'};
+ const mirror=new Mirror2({host:{browser:{responseBodies:{async read(){return null}}}}});
+ mirror.evaluate=async(_world,expression)=>{if(expression.includes('compatMode'))return false;assert(expression.includes(body));return {css:body,parsed:[body],used:null}};
+ assert.equal(await mirror.crossOriginSheet(world,'https://public.example/big.css'),body);
+ assert.deepEqual(asked,[['Page.getResourceTree',undefined],['Page.getResourceContent','F']]);
+});
+
 // mirrorfix F2 (Amazon search mirrored unstyled): every Amazon sheet href ends in `#<revision>`, which CDP never reports.
 test('a cross-origin stylesheet whose href has a fragment is read by its request URL',async()=>{
  const body=Buffer.from('body{color:green}'),asked=[];
@@ -620,6 +632,14 @@ test('MP-11 retained sheet advertisements are bounded before issuing a credit', 
  const mirror=new Mirror2({host:{}}),stream={chain:Promise.resolve(),issued:0};mirror.packet=async()=>({sequence:1});
  for(const known_sheets of [false,['not-a-digest'],Array(129).fill('a'.repeat(24))]) await assert.rejects(mirror.next(stream,{known_sheets},'scope'),/invalid mirror sheet dictionary/);
  assert.equal((await mirror.next(stream,{known_sheets:['a'.repeat(24)]},'scope')).sequence,1);
+});
+
+test('MP-08/MP-09/MP-10/MP-11 a reset credit lists the retained sheets and later credits keep that list until they change it', async () => {
+ const mirror=new Mirror2({host:{}}),stream={chain:Promise.resolve(),issued:0},a='a'.repeat(24),b='b'.repeat(24);mirror.packet=async()=>({sequence:1});
+ await mirror.next(stream,{after_sequence:0,known_sheets:[a]},'scope');assert.deepEqual(stream.knownSheets,[a]);
+ await mirror.next(stream,{after_sequence:1},'scope');assert.deepEqual(stream.knownSheets,[a],'an unchanged list is not repeated on every credit');
+ await mirror.next(stream,{after_sequence:1,known_sheets:[a,b]},'scope');assert.deepEqual(stream.knownSheets,[a,b]);
+ await mirror.next(stream,{after_sequence:0},'scope');assert.deepEqual(stream.knownSheets,[],'a reset without a list means the viewer retains nothing');
 });
 
 test('MP-10 independent sheet bodies overlap in batches of at most four and retain cascade order', async () => {
@@ -1064,7 +1084,7 @@ for (const kind of ['click', 'scroll']) test(`MP-08/MP-10 resized iframe region 
   mirror.regionBoxes = async()=>[{id:region,box:[1400,820,100,60]}];
   mirror.evaluate = async (owner,expression) => {
     if(expression.includes('.point(')){assert.equal(owner,child);return {x:4,y:8};}
-    if(expression.includes('.frameOrigin(')){assert.equal(owner,world);return [1400,820,1,1];}
+    if(expression.includes('.frameOrigin(')){assert.equal(owner,world);const local=/frameOrigin\([^,]*,(\[[^\]]*\])/.exec(expression);const [x,y]=local?JSON.parse(local[1]):[];return local?[1400,820,1,1,1400+x,820+y]:[1400,820,1,1];}
     return true;
   };
   mirror.regions.record(stream,{reset:true,nodes:[{id:region,parent:null,kind:'tile'}]});
@@ -1078,4 +1098,47 @@ for (const kind of ['click', 'scroll']) test(`MP-08/MP-10 resized iframe region 
     await assert.rejects(lease.resolveInput(command,'scope'),/region_retired/,'a resize still retires the old lease');
     await assert.rejects(mirror.resolveInput(stream,tab,{subscription_id:'s',sequence:1,action:{kind,node_id:region,x:4,y:8,delta_x:0,delta_y:120}},'scope'),/changed mirror input target/,'the committed smaller viewport remains the input bound');
   } finally {await lease.close();}
+});
+// P9: a settling document's remaining work used to cost one credit round trip per sheet and per resource batch.
+test('P9: without recent input every due full sheet rides one packet within the packet budget', async () => {
+  const mirror = new Mirror2({ host: {} });let fullCalls=0;
+  mirror.evaluate = async (w, expression) => { assert.match(expression, /fullSheet/); fullCalls++; return { id: 'f', css: 'p{}' }; };
+  const sheet = (id, size) => ({ op: 'css', id, css: 'x'.repeat(size) });
+  const stream = { deferredSheets: [sheet('a', 10), sheet('b', 10), sheet('c', 10)], fullPending: 1, inputAt: 0, resources: new Map() };
+  assert.deepEqual((await mirror.dueSheets({ ref: 'm' }, stream, new Set(['b']))).map(op => op.id), ['a', 'c', 'f']);
+  assert.equal(fullCalls, 1);assert.equal(stream.fullPending, 0);
+  const large = { deferredSheets: [sheet('a', 200_000), sheet('b', 200_000), sheet('c', 10)], fullPending: 0, inputAt: 0, resources: new Map() };
+  assert.deepEqual((await mirror.dueSheets({ ref: 'm' }, large, new Set())).map(op => op.id), ['a', 'b'], 'the 256 KB budget bounds the packet');
+  assert.equal(large.deferredSheets.length, 1);
+});
+test('P9: resource bytes ride DOM changes only without recent input', () => {
+  const mirror = new Mirror2({ host: {} });
+  const stream = { resources: new Map(), header: {}, ownScrolls: new Map(), inputAt: 0 }, source = { ops: [{ op: 'text' }] };
+  assert.equal(mirror.resourcesRide(stream, source), true, 'a settling document carries its images with its DOM');
+  stream.inputAt = Date.now();
+  assert.equal(mirror.resourcesRide(stream, source), false, 'an echo never queues behind resource bytes');
+});
+
+// mirrorfid (dashboard.stripe.com/login): a child frame whose delta keeps failing is re-mounted under the same owner,
+// which put it back in the map being drained; the credit re-mounted it forever and the page's next packet (with its
+// deferred full stylesheet) never left. One credit drains each child attached when it began, once.
+test('MP-10: a child frame whose delta keeps failing is re-mounted once per credit, not in an endless loop', async () => {
+  const { MirrorFrames } = await import('./kernel-browser-mirror2-frames.mjs');
+  const stream = { frames: new Map(), frameSlots: new Map() };
+  const frames = new MirrorFrames({ parentWorld: () => ({ ref: 'top' }), evaluate: async () => ({ unexpected_field: true }) });
+  const entry = { owner: 'n5', slot: 1, hostSlot: 0, depth: 1, child: { ref: 'child' }, loaderId: 'L' };
+  stream.frames.set('n5', entry); stream.frameSlots.set(1, entry);
+  let mounts = 0;
+  frames.loaderId = async () => 'L';
+  frames.owners = async () => new Map([['n5', { id: 'f' }]]);
+  frames.mount = async (_host, hostSlot, s, owner) => {
+    if (++mounts > 5) throw new Error('re-mounted in a loop');
+    const next = { ...entry, slot: 1 + mounts }; s.frames.set(owner, next); s.frameSlots.set(next.slot, next);
+    return { records: [{ id: `n${next.slot}-1` }], ops: [], resources: [] };
+  };
+  const out = await frames.drain(stream, null, null);
+  assert.equal(mounts, 1);
+  assert.deepEqual(out.ops.map(op => op.op), ['children']);
+  await frames.drain(stream, null, null);
+  assert.equal(mounts, 2, 'the next credit tries the re-mounted child again');
 });

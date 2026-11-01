@@ -352,6 +352,7 @@ fn public_session_state_preserves_failed_settlement_termination_after_late_compl
                 Some(300),
                 crate::git_observer::CompletedTurnSettlementStatus::Failed,
                 Some(termination.clone()),
+                termination.failure.clone(),
             );
         app.completed_git_turn_snapshot_store()
             .record_prompt_settlement_with_termination(
@@ -362,6 +363,7 @@ fn public_session_state_preserves_failed_settlement_termination_after_late_compl
                 450,
                 Some(300),
                 crate::git_observer::CompletedTurnSettlementStatus::Completed,
+                None,
                 None,
             );
     });
@@ -559,6 +561,7 @@ fn queued_native_tui_turn_projects_undo_action_after_provider_launch_inner() {
                 structured_endpoint: None,
                 provider_session_id: None,
                 native_tui: true,
+                native_checkpoint_binding: None,
             },
         ))
         .expect("provider launch should be accepted")

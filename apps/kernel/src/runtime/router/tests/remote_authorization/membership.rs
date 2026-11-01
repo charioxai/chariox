@@ -108,6 +108,7 @@ async fn remote_provider_batch_launch_requires_membership_in_every_session() {
                 structured_endpoint: None,
                 provider_session_id: None,
                 native_tui: false,
+                native_checkpoint_binding: None,
             },
             crate::local::LaunchProviderRunRequest {
                 session_id: session_b_id.clone(),
@@ -120,6 +121,7 @@ async fn remote_provider_batch_launch_requires_membership_in_every_session() {
                 structured_endpoint: None,
                 provider_session_id: None,
                 native_tui: false,
+                native_checkpoint_binding: None,
             },
         ],
     });

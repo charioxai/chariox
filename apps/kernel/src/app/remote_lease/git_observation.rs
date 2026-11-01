@@ -177,12 +177,11 @@ impl<'a> RemoteLeaseRuntime<'a> {
 
 #[cfg(test)]
 mod tests {
-    use std::process::Command;
 
     use super::*;
 
     fn run_test_git(cwd: &std::path::Path, args: &[&str]) {
-        let output = Command::new("git")
+        let output = crate::process_spawn::command("git")
             .args(args)
             .current_dir(cwd)
             .output()

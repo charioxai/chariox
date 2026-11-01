@@ -110,12 +110,25 @@ pub(super) async fn admit_frame(
         ..
     } = frame
     {
-        let covered = !runtime_state.access_grants_for(peer).is_empty();
+        let covered = match runtime_state.access_grants_for(peer) {
+            Ok(grants) => !grants.is_empty(),
+            Err(refusal) => {
+                deny_frame(
+                    runtime,
+                    outgoing_tx,
+                    close_tx,
+                    close_requested,
+                    frame,
+                    refusal,
+                );
+                return Err(());
+            }
+        };
         if bound.is_some() || covered {
             let refusal = if covered {
                 Refusal::AlreadyGranted
             } else {
-                Refusal::Ended
+                runtime_state.access_end_for(peer).unwrap_or(Refusal::Ended)
             };
             deny_frame(
                 runtime,
@@ -210,20 +223,79 @@ pub(super) async fn admit_frame(
         });
         return Err(());
     }
+    // A covered process names a background process: the covering needs this socket's OS peer.
+    if let KernelIncomingFrame::Request {
+        request_id,
+        request: crate::local::LocalDaemonRequest::CoverKernelAccessProcess(request),
+        kernel: None,
+        ..
+    } = frame
+    {
+        let covered = {
+            let mut binding = bound_grant.lock().expect("bound grant poisoned");
+            let covered =
+                runtime_state.cover_kernel_access_process(peer, binding.as_deref(), request);
+            if let Ok((grant_id, _)) = &covered {
+                binding.get_or_insert_with(|| grant_id.clone());
+            }
+            covered
+        };
+        let (response, error) = match covered {
+            Ok((grant_id, process)) => (
+                Some(
+                    serde_json::to_value(crate::local::LocalDaemonResponse::KernelAccessCovered {
+                        grant_id,
+                        process,
+                    })
+                    .unwrap(),
+                ),
+                None,
+            ),
+            Err(e) => (
+                None,
+                Some(match Refusal::exact(&e) {
+                    Some(refusal) => refusal.transport_error(),
+                    None => map_kernel_error(&e),
+                }),
+            ),
+        };
+        let _ = try_send_outgoing_frame(
+            outgoing_tx,
+            close_tx,
+            close_requested,
+            &runtime.transport_health,
+            KernelOutgoingFrame::Response {
+                kernel: None,
+                request_id: request_id.clone(),
+                response: Box::new(response),
+                error,
+            },
+            None,
+            None,
+        );
+        return Err(());
+    }
     let (grant, verdict) = {
         let mut binding = bound_grant.lock().expect("bound grant poisoned");
-        let mut candidates = runtime_state.access_grants_for(peer);
-        candidates.retain(|grant| {
-            binding
-                .as_ref()
-                .is_none_or(|id| id == &grant.summary.grant_id)
+        let candidates = runtime_state.access_grants_for(peer);
+        let grant = candidates.as_ref().ok().and_then(|candidates| {
+            candidates
+                .iter()
+                .find(|grant| {
+                    binding
+                        .as_ref()
+                        .is_none_or(|id| id == &grant.summary.grant_id)
+                })
+                .cloned()
         });
-        let grant = candidates.first().cloned();
         let verdict = match &grant {
+            None if candidates.is_err() => Err(Refusal::Unconfirmed),
             // A socket stays bound to its first grant: once that is gone, so is access.
-            None if binding.is_some() => Err(Refusal::Ended),
-            None if runtime_state.access_ended_for(peer) => Err(Refusal::Ended),
-            None => Err(Refusal::NotCovered),
+            None => match runtime_state.access_end_for(peer) {
+                Some(ended) => Err(ended),
+                None if binding.is_some() => Err(Refusal::Ended),
+                None => Err(Refusal::NotCovered),
+            },
             Some(grant) => match frame {
                 // The target kernel owns the interaction and the session; the
                 // origin checks the grant and the request shape only.
@@ -306,11 +378,7 @@ fn deny_frame(
             kernel: None,
             request_id,
             response: Box::new(None),
-            error: Some(KernelTransportError {
-                code: refusal.code().into(),
-                message: refusal.message().into(),
-                retryable: false,
-            }),
+            error: Some(refusal.transport_error()),
         },
         None,
         None,
@@ -323,7 +391,7 @@ pub(super) fn delivery_live(
     bound: &std::sync::Mutex<Option<String>>,
 ) -> bool {
     peer.is_none_or(|peer| {
-        peer.alive()
+        !peer.gone()
             && bound
                 .lock()
                 .expect("bound grant poisoned")

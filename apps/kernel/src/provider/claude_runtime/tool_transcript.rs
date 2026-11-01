@@ -9,6 +9,8 @@ const IDENTITY_BYTES: usize = 256;
 const MESSAGE_BLOCKS: usize = 64;
 const RESULT_BYTES: usize = 16 * 1024;
 const RESULT_BLOCKS: usize = 256;
+const RESULT_IMAGES: usize = 4;
+const IMAGE_BASE64_BYTES: usize = 512 * 1024;
 const TRUNCATED: &str = "\n[chariox: tool transcript truncated]";
 
 struct BoundedJson(Vec<u8>);
@@ -42,6 +44,44 @@ fn append_result(output: &mut String, text: &str) -> bool {
     }
     output.push_str(&text[..length]);
     length < text.len()
+}
+
+/// The result's PNG, JPEG, GIF and WebP blocks as data URLs, for the transcript to draw, and how many of those were too large or past the limit; other blocks are left out.
+fn bounded_result_images(content: Option<&Value>) -> (Vec<String>, usize) {
+    let Some(Value::Array(items)) = content else {
+        return (Vec::new(), 0);
+    };
+    let mut images = Vec::new();
+    let mut omitted = 0;
+    for item in items {
+        if item.get("type").and_then(Value::as_str) != Some("image") {
+            continue;
+        }
+        let Some((media_type, data)) = (|| {
+            let source = item.get("source")?;
+            if source.get("type")?.as_str()? != "base64" {
+                return None;
+            }
+            let media_type = source.get("media_type")?.as_str()?;
+            let data = source.get("data")?.as_str()?;
+            let base64 = data
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'='));
+            (matches!(
+                media_type,
+                "image/png" | "image/jpeg" | "image/gif" | "image/webp"
+            ) && base64)
+                .then_some((media_type, data))
+        })() else {
+            continue;
+        };
+        if data.len() > IMAGE_BASE64_BYTES || images.len() == RESULT_IMAGES {
+            omitted += 1;
+        } else {
+            images.push(format!("data:{media_type};base64,{data}"));
+        }
+    }
+    (images, omitted)
 }
 
 fn bounded_result(content: Option<&Value>) -> String {
@@ -140,6 +180,13 @@ impl ClaudeToolTranscript {
                     payload["status"] = json!(if failed { "error" } else { "completed" });
                     let output = bounded_result(block.get("content"));
                     payload[if failed { "error" } else { "output" }] = json!(output);
+                    let (images, omitted) = bounded_result_images(block.get("content"));
+                    if !images.is_empty() {
+                        payload["images"] = json!(images);
+                    }
+                    if omitted > 0 {
+                        payload["images_omitted"] = json!(omitted);
+                    }
                     return Some(payload);
                 }
                 if kind != Some("assistant")
@@ -375,6 +422,57 @@ mod tests {
             .collect::<Vec<_>>();
         let output = transcript.observe(&result("blocks", json!(blocks)));
         assert_eq!(output[0]["output"], TRUNCATED);
+    }
+
+    #[test]
+    fn result_images_become_data_urls_and_oversized_ones_are_counted_and_unknown_ones_left_out() {
+        let mut transcript = ClaudeToolTranscript::default();
+        transcript.observe(&invocation("shot", "Read"));
+        let png = json!({"type":"image","source":{"type":"base64","media_type":"image/png","data":"iVBORw0KGgo="}});
+        let svg = json!({"type":"image","source":{"type":"base64","media_type":"image/svg+xml","data":"PHN2Zy8+"}});
+        let huge = json!({"type":"image","source":{"type":"base64","media_type":"image/png","data":"A".repeat(IMAGE_BASE64_BYTES + 1)}});
+        let url = json!({"type":"image","source":{"type":"url","url":"https://example.com/a.png"}});
+        let output = transcript.observe(&result(
+            "shot",
+            json!([{"type":"text","text":"caption"}, png, svg, huge, url]),
+        ));
+        assert_eq!(output[0]["output"], "caption");
+        assert_eq!(
+            output[0]["images"],
+            json!(["data:image/png;base64,iVBORw0KGgo="])
+        );
+        assert_eq!(output[0]["images_omitted"], 1);
+        transcript.observe(&invocation("plain", "Read"));
+        let plain = transcript.observe(&result("plain", json!("text only")));
+        assert!(plain[0].get("images").is_none());
+    }
+
+    #[test]
+    fn result_images_match_the_protocol_snapshot() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../local/api/tests/protocol_shapes/provider-tool-images-910.json"
+        ))
+        .unwrap();
+        let mut transcript = ClaudeToolTranscript::default();
+        let mut call = invocation("toolu_chart", "Read");
+        call["message"]["content"][0]["input"] = json!({"file_path": "/work/chart.png"});
+        transcript.observe(&call);
+        let png = json!({"type":"image","source":{"type":"base64","media_type":"image/png","data":"iVBORw0KGgo="}});
+        let output = transcript.observe(&result(
+            "toolu_chart",
+            json!([{"type":"text","text":"chart.png"}, png]),
+        ));
+        assert_eq!(output[0], fixture["tool_with_image"]);
+
+        let mut call = invocation("toolu_huge", "Read");
+        call["message"]["content"][0]["input"] = json!({"file_path": "/work/huge.png"});
+        transcript.observe(&call);
+        let huge = json!({"type":"image","source":{"type":"base64","media_type":"image/png","data":"A".repeat(IMAGE_BASE64_BYTES + 1)}});
+        let output = transcript.observe(&result(
+            "toolu_huge",
+            json!([{"type":"text","text":"huge.png"}, huge]),
+        ));
+        assert_eq!(output[0], fixture["tool_with_omitted_image"]);
     }
 
     #[test]

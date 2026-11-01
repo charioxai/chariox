@@ -75,9 +75,11 @@ impl DurableKernelStateStore {
                 budget,
                 response,
             })))?;
-        receiver.recv().map_err(|_| DaemonError::LocalTransport {
-            operation: "app.tools.enqueue",
-            message: "App tool admission did not complete".into(),
+        crate::durable_state::await_writer_response(receiver).map_err(|_| {
+            DaemonError::LocalTransport {
+                operation: "app.tools.enqueue",
+                message: "App tool admission did not complete".into(),
+            }
         })?
     }
 

@@ -190,7 +190,6 @@ pub(super) fn projected_session_absence_response(
     request: &LocalDaemonRequest,
 ) -> Option<Result<LocalDaemonResponse, DaemonError>> {
     let session_id = match request {
-        LocalDaemonRequest::AttachToSession(request) => &request.session_id,
         LocalDaemonRequest::FocusAgent(request) => &request.session_id,
         LocalDaemonRequest::AcknowledgeAgentOutputSeen(request) => &request.session_id,
         LocalDaemonRequest::CycleAgentFocus(request) => &request.session_id,

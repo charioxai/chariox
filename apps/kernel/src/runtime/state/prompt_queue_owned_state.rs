@@ -229,6 +229,20 @@ impl KernelRuntimeOwnedState {
         queued_prompts: std::collections::VecDeque<crate::session::PromptQueueItem>,
         activity_mutation: super::managed_activity_runtime_state::ManagedActivityMutation<'_>,
     ) -> Result<(), DaemonError> {
+        let before = self.session_store.get_session(session_id)?;
+        let previous_active = before
+            .active_prompt_for_agent(agent_id)
+            .map(|prompt| prompt.id());
+        let next_active = active_prompt.as_ref().map(|prompt| prompt.id());
+        let submitted = queued_prompts.iter().any(|prompt| {
+            !before
+                .queued_prompts_for_agent(agent_id)
+                .is_some_and(|held| held.iter().any(|held| held.id() == prompt.id()))
+        });
+        if previous_active != next_active || submitted {
+            self.session_store
+                .note_session_activity(session_id, crate::session::unix_epoch_ms())?;
+        }
         let session = self.session_store.mirror_agent_prompt_state(
             session_id,
             agent_id,

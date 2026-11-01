@@ -359,7 +359,7 @@ mod tests {
     use std::fs;
     use std::io::Write;
     use std::path::Path;
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
 
     use crate::provider::{
         AgentPermissionLevel, LaunchProviderRequest, ProviderResumeState, RuntimeMcpBinding,
@@ -389,7 +389,7 @@ mod tests {
             "error_details": "429 Too Many Requests",
             "last_assistant_message": "You've hit your session limit · resets 4am (Europe/Madrid)"
         });
-        let mut child = Command::new("node")
+        let mut child = crate::process_spawn::command("node")
             .arg(
                 native
                     .events_file
@@ -447,7 +447,11 @@ mod tests {
 
     #[test]
     fn status_line_captures_official_subscription_windows_atomically() {
-        if Command::new("node").arg("--version").output().is_err() {
+        if crate::process_spawn::command("node")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
             return;
         }
         let request = LaunchProviderRequest::new(
@@ -464,7 +468,7 @@ mod tests {
             .parent()
             .expect("usage file should have a root")
             .join("usage-handler.mjs");
-        let mut child = Command::new("node")
+        let mut child = crate::process_spawn::command("node")
             .arg(handler)
             .env("CHARIOX_CLAUDE_USAGE_FILE", &native.usage_file)
             .stdin(Stdio::piped())
@@ -506,7 +510,11 @@ mod tests {
 
     #[test]
     fn status_line_preserves_usage_when_a_later_tick_has_no_rate_limits() {
-        if Command::new("node").arg("--version").output().is_err() {
+        if crate::process_spawn::command("node")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
             return;
         }
         let request = LaunchProviderRequest::new(
@@ -529,7 +537,7 @@ mod tests {
             br#"{"rate_limits":{"five_hour":{"used_percentage":21}}}"#.as_slice(),
             br#"{"model":{"display_name":"Claude"}}"#.as_slice(),
         ] {
-            let mut child = Command::new("/bin/sh")
+            let mut child = crate::process_spawn::command("/bin/sh")
                 .args(["-c", usage_command])
                 // The generated native command must override an inherited
                 // internal probe flag instead of capturing ordinary ticks.
@@ -555,7 +563,11 @@ mod tests {
 
     #[test]
     fn permission_request_hook_uses_permission_request_specific_decision_contract() {
-        if Command::new("node").arg("--version").output().is_err() {
+        if crate::process_spawn::command("node")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
             return;
         }
         let request = LaunchProviderRequest::new(
@@ -578,7 +590,7 @@ mod tests {
         .expect("shared Claude permission contract should be valid JSON");
 
         for contract_case in contract {
-            let mut child = Command::new("node")
+            let mut child = crate::process_spawn::command("node")
                 .arg(&hook_handler)
                 .env("CHARIOX_CLAUDE_NATIVE_EVENTS", &native.events_file)
                 .env("CHARIOX_CLAUDE_NATIVE_CONTEXT", &native.context_file)
@@ -648,7 +660,11 @@ mod tests {
 
     #[test]
     fn ask_mode_permission_request_hook_returns_the_kernel_decision() {
-        if Command::new("node").arg("--version").output().is_err() {
+        if crate::process_spawn::command("node")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
             return;
         }
         let request = LaunchProviderRequest::new(
@@ -666,7 +682,7 @@ mod tests {
             .expect("events file should have a root")
             .join("hook-handler.mjs");
         let spawn_hook = |input: serde_json::Value| {
-            let mut child = Command::new("node")
+            let mut child = crate::process_spawn::command("node")
                 .arg(&hook_handler)
                 .env("CHARIOX_CLAUDE_NATIVE_EVENTS", &native.events_file)
                 .env("CHARIOX_CLAUDE_NATIVE_CONTEXT", &native.context_file)
@@ -815,7 +831,7 @@ mod tests {
         ] {
             fs::write(&native.context_file, &context).unwrap();
             let children = (0..CLAUDE_NATIVE_CONTEXT_HOOK_CHUNKS).map(|index| {
-                let mut child = Command::new("node").arg(&hook)
+                let mut child = crate::process_spawn::command("node").arg(&hook)
                     .env("CHARIOX_CLAUDE_NATIVE_EVENTS", &native.events_file)
                     .env("CHARIOX_CLAUDE_NATIVE_CONTEXT", &native.context_file)
                     .env("CHARIOX_CLAUDE_NATIVE_CONTEXT_RESPONSES", &native.context_response_dir)
@@ -868,7 +884,7 @@ mod tests {
             fs::write(&native.context_file, "STALE PREVIOUS TURN").unwrap();
             fs::write(&native.events_file, "").unwrap();
             let children = (0..CLAUDE_NATIVE_CONTEXT_HOOK_CHUNKS).rev().map(|index| {
-                let mut child = Command::new("node").arg(&hook)
+                let mut child = crate::process_spawn::command("node").arg(&hook)
                     .env("CHARIOX_CLAUDE_NATIVE_EVENTS", &native.events_file)
                     .env("CHARIOX_CLAUDE_NATIVE_CONTEXT", &native.context_file)
                     .env("CHARIOX_CLAUDE_NATIVE_CONTEXT_RESPONSES", &native.context_response_dir)
@@ -1055,7 +1071,11 @@ mod tests {
 
     #[test]
     fn session_start_hook_removes_materialized_mcp_credentials() {
-        if Command::new("node").arg("--version").output().is_err() {
+        if crate::process_spawn::command("node")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
             return;
         }
         let request = LaunchProviderRequest::new(
@@ -1083,7 +1103,7 @@ mod tests {
             .parent()
             .expect("events file should have a root")
             .join("hook-handler.mjs");
-        let mut child = Command::new("node")
+        let mut child = crate::process_spawn::command("node")
             .arg(hook_handler)
             .env("CHARIOX_CLAUDE_NATIVE_EVENTS", &native.events_file)
             .stdin(Stdio::piped())
@@ -1123,7 +1143,7 @@ mod tests {
             .parent()
             .unwrap()
             .join("hook-handler.mjs");
-        let mut child = Command::new("node")
+        let mut child = crate::process_spawn::command("node")
             .arg(hook)
             .env("CHARIOX_CLAUDE_NATIVE_EVENTS", &native.events_file)
             .stdin(Stdio::piped())
@@ -1149,7 +1169,7 @@ mod tests {
             .parent()
             .unwrap()
             .join("hook-handler.mjs");
-        let mut child = Command::new("node")
+        let mut child = crate::process_spawn::command("node")
             .arg(hook)
             .env("CHARIOX_CLAUDE_NATIVE_EVENTS", &native.events_file)
             .env("CHARIOX_CLAUDE_NATIVE_CONTEXT", &native.context_file)

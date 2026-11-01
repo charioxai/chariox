@@ -113,7 +113,8 @@ extension RuntimeSession {
             focusedAgentID: focusedAgentID,
             agents: agents,
             createdAtMs: 1,
-            lastUsedAtMs: lastUsedAtMs
+            lastUsedAtMs: lastUsedAtMs,
+        lastActivityAtMs: lastUsedAtMs
         )
     }
 }
