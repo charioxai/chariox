@@ -2555,6 +2555,18 @@ mod room_terminal_peer_shapes {
     }
 
     #[test]
+    fn room_browser_action_caller_snapshot_and_hash() {
+        assert_wire::<RelayPeerRequest>(
+            serde_json::json!({"command":{"action":{"kind":"click"},"agent_id":"agent-1","document_id":"doc","execution_id":"input-1","kind":"action","node_ref":"backend:1","target_id":"target","timeout_ms":500},"kind":"room_browser_controller","session_id":"room","slice_id":"slice"}),
+            "41f2c13ea62d9beb81d1a132d9565af2e073188334f53845e1e79744ae6304fd",
+        );
+        assert_wire::<RelayPeerRequest>(
+            serde_json::json!({"command":{"action":{"kind":"click"},"agent_id":null,"document_id":"doc","execution_id":"input-1","kind":"action","node_ref":"backend:1","target_id":"target","timeout_ms":500},"kind":"room_browser_controller","session_id":"room","slice_id":"slice"}),
+            "4660dbbf9c897fe827902d22e1789099d917918aa1cb2f3ee14dfd0c41715217",
+        );
+    }
+
+    #[test]
     fn room_terminal_peer_request_and_response_shapes() {
         let request = RelayPeerRequest::RoomTerminal {
             leased_agent_id: "leased-1".into(),
