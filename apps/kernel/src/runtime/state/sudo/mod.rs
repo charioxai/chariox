@@ -34,6 +34,10 @@ mod catalog_tests;
 #[cfg(test)]
 mod goal_tests;
 #[cfg(test)]
+mod forgotten_machine_tests;
+#[cfg(test)]
+mod leased_route_tests;
+#[cfg(test)]
 mod operation_tests;
 #[cfg(test)]
 mod parked_task_tests;
@@ -57,6 +61,8 @@ mod tests;
 mod vault_tests;
 #[cfg(test)]
 mod window_tests;
+#[cfg(test)]
+mod worker_cleanup_tests;
 
 pub(super) type SudoStore = Arc<std::sync::Mutex<BTreeMap<String, KernelSudoTurn>>>;
 

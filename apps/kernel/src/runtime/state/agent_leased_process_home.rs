@@ -124,9 +124,13 @@ impl KernelRuntimeState {
         if let (Some(url), Some(token)) = (remote.relay_url.clone(), remote.relay_token.clone()) {
             config.apply_remote_relay_override(url, token);
         }
-        let response = tokio::time::timeout(
-            timeout,
-            crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
+        let timeout = if matches!(action, Action::Start { .. }) {
+            Duration::from_secs(310)
+        } else {
+            Duration::from_secs(5)
+        };
+        let response = tokio::time::timeout(timeout, async {
+            self.enqueue_leased_worker_request(
                 &config,
                 chariox_relay::protocol::ClientTarget {
                     daemon_id: Some(binding.worker_kernel_id.clone()),
@@ -137,8 +141,11 @@ impl KernelRuntimeState {
                     action,
                 },
                 timeout,
-            ),
-        )
+            )
+            .await?
+            .wait()
+            .await
+        })
         .await
         .map_err(|_| ledger::error("leased process receipt query timed out"))??;
         let RelayPeerResponse::LeasedWatchedProcess { receipt } = response else {
@@ -556,3 +563,7 @@ mod tests {
         assert_eq!(asked, 3);
     }
 }
+
+#[cfg(test)]
+#[path = "agent_leased_process_home/route_tests.rs"]
+mod route_tests;

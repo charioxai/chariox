@@ -253,8 +253,8 @@ impl KernelRuntimeState {
         let timeout = Duration::from_millis(relay_config.relay_request_timeout_ms)
             .max(Duration::from_millis(blocking) + Duration::from_secs(20));
         let worker_kernel_id = binding.worker_kernel_id.clone();
-        let response =
-            crate::transport::relay_client::send_peer_request_via_temporary_connection_authorized(
+        let response = self
+            .enqueue_leased_worker_request_authorized(
                 &relay_config,
                 chariox_relay::protocol::ClientTarget {
                     daemon_id: Some(binding.worker_kernel_id),
@@ -268,6 +268,9 @@ impl KernelRuntimeState {
                 timeout,
                 || self.authorize_current_external_command(),
             )
+            .await
+            .map_err(|error| worker_unreachable(&worker_kernel_id, error))?
+            .wait()
             .await
             .map_err(|error| worker_unreachable(&worker_kernel_id, error))?;
         match response {

@@ -358,6 +358,7 @@ struct KernelRuntimeOwnedState {
     task_settlement_revisions: Arc<std::sync::Mutex<BTreeMap<String, u64>>>,
     agent_wakes: Arc<agent_wake_scheduler::AgentWakeMonitor>,
     relay_state: Arc<tokio::sync::RwLock<crate::transport::relay_client::RelayClientState>>,
+    slice_private_relay_connectors: crate::transport::relay_client::SlicePrivateRelayConnectors,
     notification_inventory_projection: crate::runtime::projection::RemoteRelayInventoryProjectionStore,
     remote_prompt_projection_drains:
         remote_prompt_claim_runtime::RemotePromptProjectionDrainClaimStore,
@@ -365,7 +366,6 @@ struct KernelRuntimeOwnedState {
     remote_prompt_recoveries: remote_prompt_claim_runtime::RemotePromptRecoveryClaimStore,
     remote_steer_receipt_reconciliations:
         Arc<std::sync::Mutex<BTreeSet<(String, String, String)>>>,
-    slice_private_relay_connectors: Arc<Mutex<BTreeMap<String, SlicePrivateRelayConnector>>>,
     workflow_publication_runtimes:
         crate::runtime::state::workflow_publication_runtime_lifecycle::WorkflowPublicationRuntimeProcessStore,
     project_environment_placements: project_environment_placement::ProjectEnvironmentPlacements,
@@ -435,13 +435,6 @@ type RemoteWorkspaceLiveSyncInvocationResult = (
     crate::transport::runtime_tools::RuntimeToolResult,
     Vec<crate::transport::relay_peer::RemoteWorkspaceLiveSyncArtifactState>,
 );
-
-struct SlicePrivateRelayConnector {
-    relay_url: String,
-    state: Arc<tokio::sync::RwLock<crate::transport::relay_client::RelayClientState>>,
-    shutdown_tx: tokio::sync::watch::Sender<bool>,
-    task: std::thread::JoinHandle<()>,
-}
 
 mod agent_archive_runtime_state;
 mod agent_config_owned_state;
@@ -535,6 +528,7 @@ mod provider_prompt_failure_runtime;
 mod provider_prompt_settlement_runtime;
 mod provider_substitute_runtime;
 mod relay_peer_runtime_state;
+mod remote_completion_harvest;
 mod remote_native_provider_launch;
 mod remote_prompt_claim_runtime;
 mod remote_prompt_dispatch_execution_runtime;
@@ -549,6 +543,7 @@ mod remote_provider_failure_runtime;
 #[cfg(test)]
 mod remote_queue_advance_tests;
 mod restart_recovery_runtime;
+mod worker_lease_trust;
 pub(crate) use restart_recovery_runtime::is_internal_recovery_prompt_attachment;
 mod agent_batch_runtime_state;
 mod claude_token_checks;
@@ -585,6 +580,8 @@ mod kernel_computer_runtime;
 mod leased_computer_runtime;
 #[cfg(test)]
 mod leased_computer_runtime_tests;
+#[cfg(test)]
+mod leased_worker_route_tests;
 mod notes_runtime;
 mod structured_provider_output_runtime;
 mod terminal_runtime_state;
@@ -767,6 +764,7 @@ impl KernelRuntimeState {
             provider_process_projection,
             provider_launch_failure_retries,
             relay_state,
+            slice_private_relay_connectors,
             notification_inventory_projection,
             legacy_workflow_history,
             agent_runtime_projection,
@@ -789,6 +787,7 @@ impl KernelRuntimeState {
                         app.provider_process_projection_store(),
                         app.provider_launch_failure_retry_store(),
                         app.relay_client_state(),
+                        app.connected_relays().slice_private,
                         app.remote_relay_inventory_projection_store(),
                         app.legacy_workflow_history_store(),
                         app.agent_runtime_projection_store(),
@@ -1137,7 +1136,7 @@ impl KernelRuntimeState {
                 remote_steer_receipt_reconciliations: Arc::new(std::sync::Mutex::new(
                     BTreeSet::new(),
                 )),
-                slice_private_relay_connectors: Arc::new(Mutex::new(BTreeMap::new())),
+                slice_private_relay_connectors,
                 workflow_publication_runtimes:
                     crate::runtime::state::workflow_publication_runtime_lifecycle::WorkflowPublicationRuntimeProcessStore::default(),
                 project_environment_placements: Default::default(),

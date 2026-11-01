@@ -347,35 +347,22 @@ impl KernelRuntimeState {
         if let (Some(url), Some(token)) = (remote.relay_url.clone(), remote.relay_token.clone()) {
             config.apply_remote_relay_override(url, token);
         }
-        let target = chariox_relay::protocol::ClientTarget {
-            daemon_id: Some(remote.worker_kernel_id.clone()),
-            daemon_alias: None,
-        };
+        let response_timeout = Duration::from_millis(config.relay_request_timeout_ms);
         let request = RelayPeerRequest::UpdateLeasedSudo {
             leased_agent_id: remote.leased_agent_id,
             home_prompt_id: home_prompt_id.into(),
             grant,
         };
-        // Slice activation already pins the worker on this relay. Its identity
-        // need not appear in the owner-directory metadata used by a new socket.
-        let response = match self.connected_relay_state_for_config(&config).await {
-            Some(relay_state) => {
-                crate::transport::relay_client::send_peer_request_via_connected_relay(
-                    &config,
-                    &relay_state,
-                    target,
-                    request,
-                )
-                .await?
-            }
-            None => {
-                crate::transport::relay_client::send_peer_request_via_temporary_connection(
-                    &config, target, request,
-                )
-                .await?
-            }
+        let target = chariox_relay::protocol::ClientTarget {
+            daemon_id: Some(remote.worker_kernel_id.clone()),
+            daemon_alias: None,
         };
-        match response {
+        match self
+            .enqueue_leased_worker_request(&config, target, request, response_timeout)
+            .await?
+            .wait()
+            .await?
+        {
             RelayPeerResponse::LeasedSudoUpdated => Ok(()),
             other => Err(error(format!("unexpected leased sudo response: {other:?}"))),
         }

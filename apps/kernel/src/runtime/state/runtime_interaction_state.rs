@@ -45,11 +45,19 @@ impl KernelRuntimeState {
             .leased_interaction_home_target(session_id, agent_id, None)
             .await?
         {
-            let response = crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
-                &config, ClientTarget { daemon_id: Some(home_kernel_id), daemon_alias: None },
-                RelayPeerRequest::UpdateNativeInteraction { context, interaction_id: interaction_id.into(), login },
-                Duration::from_secs(20),
-            ).await?;
+            // Worker to home: the route the interaction itself was created on.
+            let response = self
+                .send_worker_home_runtime_request(
+                    &config,
+                    &home_kernel_id,
+                    RelayPeerRequest::UpdateNativeInteraction {
+                        context,
+                        interaction_id: interaction_id.into(),
+                        login,
+                    },
+                    Duration::from_secs(20),
+                )
+                .await?;
             return match response {
                 crate::transport::relay_peer::RelayPeerResponse::NativeInteractionUpdated {} => {
                     Ok(())
