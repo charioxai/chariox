@@ -483,3 +483,33 @@ test("Ctrl+R cancels a Vault value request and sends no value", () => {
   assert.deepEqual(h.requests, [["s1", "cancel"]])
   assert.equal(h.popup.view().passkey.length, 0)
 })
+
+test("a Vault value longer than a passkey is typed, pasted and sent whole", async () => {
+  const token = "sk-live-".padEnd(1_000, "x")
+  const typedIn = harness()
+  typedIn.popup.apply([secretPrompt("s1")])
+  typedIn.popup.show()
+  type(typedIn, token)
+  assert.equal(typedIn.popup.view().passkey.length, 1_000)
+  assert.equal(typedIn.popup.view().error, null)
+  typedIn.popup.handleKey(key("return"))
+  assert.deepEqual(typedIn.requests, [["s1", "secret", { reply: token }]])
+
+  const pastedIn = harness()
+  pastedIn.popup.apply([secretPrompt("s2")])
+  pastedIn.popup.show()
+  pastedIn.popup.handlePaste(paste(token).event)
+  assert.equal(pastedIn.popup.view().passkey.length, 1_000)
+  assert.equal(pastedIn.popup.view().error, null)
+  pastedIn.popup.handleKey(key("return"))
+  assert.deepEqual(pastedIn.requests, [["s2", "secret", { reply: token }]])
+})
+
+test("a passkey keeps its own shorter limit", () => {
+  const h = harness()
+  h.popup.apply([prompt("p1")])
+  h.popup.show()
+  h.popup.handlePaste(paste("y".repeat(513)).event)
+  assert.equal(h.popup.view().passkey.length, 0)
+  assert.match(h.popup.view().error ?? "", /^Paste not added/)
+})
