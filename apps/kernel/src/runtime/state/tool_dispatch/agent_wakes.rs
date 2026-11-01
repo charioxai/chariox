@@ -317,7 +317,7 @@ mod security_tests {
                     ProviderClientInterface::Chariox
                 });
         request.write_access_mode = ProviderWriteAccessMode::Unrestricted;
-        let run = RuntimeProviderRun::new(
+        let mut run = RuntimeProviderRun::new(
             "security-run",
             &request,
             ProviderLaunchResult {
@@ -346,6 +346,9 @@ mod security_tests {
         else {
             panic!("task required")
         };
+        // Watched processes read the agent's current run from the provider store.
+        run.mark_running();
+        app.providers_mut().insert_run_for_test(run.clone());
         let router = crate::runtime::router::CommandRouter::with_interactive_capacity_from_app(
             Arc::new(tokio::sync::Mutex::new(app)),
             1,
