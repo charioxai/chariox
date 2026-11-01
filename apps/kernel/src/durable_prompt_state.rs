@@ -18,6 +18,8 @@ pub(crate) struct DurablePromptStateEventPayload {
     pub(crate) private_states: Vec<DurablePromptPrivateState>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) last_prompt_sent_at_ms: Option<u64>,
+    #[serde(default)]
+    pub(crate) last_activity_at_ms: u64,
 }
 
 impl DurablePromptStateEventPayload {
@@ -34,6 +36,7 @@ impl DurablePromptStateEventPayload {
             .collect();
         Self {
             session_id: session.id().to_string(),
+            last_activity_at_ms: session.last_activity_at_ms(),
             agent_id: agent_id.to_string(),
             active_prompt,
             queued_prompts,

@@ -15,6 +15,7 @@ public struct RuntimeSession: Identifiable, Equatable, Sendable, Decodable {
     public let agents: [AgentInstance]
     public let workspaceLiveSyncMode: String?
     public let createdAtMs: Int64
+    public let lastActivityAtMs: Int64?
     public let lastUsedAtMs: Int64?
 
     public init(
@@ -32,7 +33,8 @@ public struct RuntimeSession: Identifiable, Equatable, Sendable, Decodable {
         agents: [AgentInstance],
         workspaceLiveSyncMode: String? = nil,
         createdAtMs: Int64,
-        lastUsedAtMs: Int64?
+        lastUsedAtMs: Int64?,
+        lastActivityAtMs: Int64? = nil
     ) {
         self.id = id
         self.alias = alias
@@ -49,6 +51,7 @@ public struct RuntimeSession: Identifiable, Equatable, Sendable, Decodable {
         self.workspaceLiveSyncMode = workspaceLiveSyncMode
         self.createdAtMs = createdAtMs
         self.lastUsedAtMs = lastUsedAtMs
+        self.lastActivityAtMs = lastActivityAtMs
     }
 
     enum CodingKeys: String, CodingKey {
@@ -67,6 +70,7 @@ public struct RuntimeSession: Identifiable, Equatable, Sendable, Decodable {
         case workspaceLiveSyncMode = "workspace_live_sync_mode"
         case createdAtMs = "created_at_ms"
         case lastUsedAtMs = "last_used_at_ms"
+        case lastActivityAtMs = "last_activity_at_ms"
     }
 
     public init(from decoder: Decoder) throws {
@@ -86,6 +90,7 @@ public struct RuntimeSession: Identifiable, Equatable, Sendable, Decodable {
         workspaceLiveSyncMode = try container.decodeIfPresent(String.self, forKey: .workspaceLiveSyncMode)
         createdAtMs = try container.decode(Int64.self, forKey: .createdAtMs)
         lastUsedAtMs = try container.decodeIfPresent(Int64.self, forKey: .lastUsedAtMs)
+        lastActivityAtMs = try container.decodeIfPresent(Int64.self, forKey: .lastActivityAtMs)
     }
 }
 

@@ -128,6 +128,10 @@ pub enum KernelBrowserCommand {
         /// relay registration response; the push pump grants the first frame at registration.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         initial_push: bool,
+        /// MP-08/MP-10/MP-11 allocated 720 (P1): one page display for the Tab's life. Its source and lease
+        /// follow each committed document of the Tab; the viewer parks it while the DOM mirror paints.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        tab_display: bool,
     },
     DisplayNext {
         subscription_id: String,
@@ -144,6 +148,13 @@ pub enum KernelBrowserCommand {
         subscription_id: String,
         generation: u64,
     },
+    /// MP-08/MP-10 allocated 720 (P1): park (no frames, no readback) or unpark a Tab display; the Tab's
+    /// next commit unparks it in the kernel.
+    DisplayPark {
+        subscription_id: String,
+        generation: u64,
+        parked: bool,
+    },
     /// MP-08/MP-10: protocol 491 pushed display. Acknowledges the newest
     /// presented sequence on a relay display subscription (the first ack
     /// starts the kernel push pump); `lost` requests an independent frame.
@@ -156,6 +167,11 @@ pub enum KernelBrowserCommand {
         /// the pump's wire RTT. Absent keeps legacy gate semantics.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         held_ms: Option<u32>,
+        /// Allocated 919: nobody watches this display. The pump stops capturing and sends nothing, not even a
+        /// reprobe, while the acknowledgement renews the delivery lease; only an acknowledgement that asks for
+        /// an independent frame (`lost`) resumes it.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        paused: bool,
     },
     DisplayInput {
         tab_id: String,
@@ -193,6 +209,14 @@ pub enum KernelBrowserCommand {
         tab_id: String,
         generation: u64,
     },
+    /// MP-08/MP-10: protocol 920: the CSS cursor the page shows at this CSS point, for a viewer that shows the page as
+    /// video; answers `{ generation, cursor }` with a cursor keyword.
+    PointerCursor {
+        tab_id: String,
+        generation: u64,
+        x: u32,
+        y: u32,
+    },
     Input {
         tab_id: String,
         generation: u64,
@@ -210,14 +234,6 @@ pub enum KernelBrowserCommand {
     },
     Screenshot {
         tab_id: String,
-        generation: u64,
-    },
-    Subscribe {
-        tab_id: String,
-        generation: u64,
-    },
-    Poll {
-        subscription_id: String,
         generation: u64,
     },
     Unsubscribe {

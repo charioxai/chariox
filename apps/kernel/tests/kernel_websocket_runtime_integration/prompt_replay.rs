@@ -79,6 +79,7 @@ fn kernel_websocket_replayed_prompt_submit_reuses_original_prompt() {
                 variant: None,
                 structured_endpoint: None,
                 provider_session_id: None,
+                native_checkpoint_binding: None,
                 native_tui: false,
             }),
         )

@@ -1,6 +1,6 @@
 {
-  "local": 661,
-  "relayPeer": 256,
+  "local": 923,
+  "relayPeer": 374,
   "requests": [
     {
       "StartManagedContextTransfer": {

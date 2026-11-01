@@ -345,3 +345,23 @@ test("MP-08 / MP-10 / MP-11 /env project shows saved decisions and Adjust opens 
   await handlers.handleEnvCommand({kind: "env", raw: "/env project adjust", args: ["project", "adjust"]})
   assert.deepEqual(requests, [{GetProjectEnvironmentManifest: {projectId: "project-1", agentId: "agent-1"}}, {AdjustProjectEnvironment: {sessionId: "session-1", agentId: "agent-1"}}])
 })
+
+// MP-08 / MP-09 / MP-10 / MP-11 A12: retain sudo and the displayed goal revision.
+test("nested sudo goal controls preserve elevation through the goal submission path", async () => {
+  const session = makeSession()
+  session.agent_tasks = [{ task_id: "work", agent_id: "agent-1", state: "blocked", revision: 4,
+    goal: { id: "goal:work" } }] as unknown as NonNullable<RuntimeSession["agent_tasks"]>
+  const submitted: Array<[string, string]> = []
+  const handlers = createCommandActionHandlers(makeCommandDeps({
+    sessionState: () => session, focusedAgentId: () => "agent-1",
+    submitGoalPrompt: async (raw: string, agent: string) => { submitted.push([raw, agent]) },
+  }))
+  for (const prompt of ["resume", "edit Updated objective", "cancel"]) {
+    await handlers.handleGoalCommand({ kind: "goal", raw: `/sudo /goal ${prompt}`, prompt })
+  }
+  assert.deepEqual(submitted, [
+    ["/sudo /goal resume goal:work 4", "agent-1"],
+    ["/sudo /goal edit goal:work 4 Updated objective", "agent-1"],
+    ["/sudo /goal cancel goal:work 4", "agent-1"],
+  ])
+})

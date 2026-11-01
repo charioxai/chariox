@@ -238,6 +238,7 @@ test("parseSlashCommand parses undo and fork commands with optional refs", () =>
 })
 
 test("shouldClearCommandCenterForSlashCommand only clears selector-backed commands", () => {
+  assert.equal(shouldClearCommandCenterForSlashCommand(parseSlashCommand("/continue")!), true)
   assert.equal(shouldClearCommandCenterForSlashCommand(parseSlashCommand("/model openai/gpt-5")!), true)
   assert.equal(shouldClearCommandCenterForSlashCommand(parseSlashCommand("/undo")!), true)
   assert.equal(shouldClearCommandCenterForSlashCommand(parseSlashCommand("/fork agent-1")!), true)
@@ -439,4 +440,24 @@ test("workflow notification settings use the shared shell path", () => {
   assert.equal(sharedShellCommandForSlashCommand("/workflow notifications"), "workflow notifications")
   assert.equal(sharedShellCommandForSlashCommand("/workflow notifications on retained-source"), "workflow notifications on retained-source")
   assert.equal(sharedShellCommandForSlashCommand("/workflow notifications-other on"), null)
+})
+
+// MP-08 / MP-09 / MP-10 / MP-11 A12: use goal-control confirmations under sudo.
+test("nested sudo goal controls use the goal command route", () => {
+  for (const prompt of ["resume", "edit Updated objective", "cancel", "pause", "interval 5"]) {
+    const raw = `/sudo /goal ${prompt}`
+    assert.deepEqual(parseSlashCommand(raw), { kind: "goal", raw, prompt })
+  }
+  assert.equal(parseSlashCommand("/sudo /goal List session count"), null)
+  assert.equal(parseSlashCommand("/sudo ordinary task"), null)
+})
+
+// MP-08 / MP-09 / MP-10 / MP-11 EA2-80: handled locally, sent through normal submission.
+test("Continue is an exact slash action rather than a provider prompt", async () => {
+  assert.deepEqual(parseSlashCommand("/continue"), { kind: "continue", raw: "/continue" })
+  assert.equal(parseSlashCommand("/continue later"), null)
+  assert.equal(sharedShellCommandForSlashCommand("/continue"), null)
+  let calls = 0
+  await executeSlashCommand("/continue", { onContinue: () => { calls++ } } as Parameters<typeof executeSlashCommand>[1])
+  assert.equal(calls, 1)
 })

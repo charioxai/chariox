@@ -5,7 +5,7 @@ mod sudo_request;
 pub(crate) use sudo_request::SudoRequestFailure;
 /// Routing identity for kernel-wide access popups; never a session or grant scope.
 pub(crate) const ACCESS_INTERACTION_SCOPE: &str = "kernel-access";
-use crate::local::KernelAccessGrant;
+use crate::local::{CoveredProcess, KernelAccessGrant};
 use process::ProcessIdentity;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -37,26 +37,59 @@ impl GrantClock {
 pub(crate) struct Grant {
     pub(crate) summary: KernelAccessGrant,
     pub(crate) holder: ProcessIdentity,
+    /// Background processes the grant covers by name once their parent is gone.
+    pub(crate) covered: Vec<ProcessIdentity>,
     pub(crate) clock: Option<GrantClock>,
 }
 
 impl Grant {
+    /// How far up `chain` (a process and its ancestors) the grant first reaches: the
+    /// holder or a covered process.
+    pub(crate) fn covering(&self, chain: &[ProcessIdentity]) -> Option<usize> {
+        chain
+            .iter()
+            .position(|process| *process == self.holder || self.covered.contains(process))
+    }
+
+    /// The grant as clients list it: its summary with the covered processes that still run.
+    pub(crate) fn listed(&self) -> KernelAccessGrant {
+        KernelAccessGrant {
+            covered: self
+                .covered
+                .iter()
+                .filter(|process| !process.gone())
+                .map(|process| CoveredProcess {
+                    pid: process.pid,
+                    start: process.start,
+                    executable: process.executable.clone(),
+                })
+                .collect(),
+            ..self.summary.clone()
+        }
+    }
+
     /// A grant that lasts until its holder exits has no deadline, so a kernel
     /// restart does not end it while the holder lives.
     pub(crate) fn survives_restart(&self) -> bool {
         self.clock.is_none()
     }
 
+    /// What is left of a timed grant, if it is timed.
+    pub(crate) fn time_left(&self, now: Instant) -> Option<Duration> {
+        time_left(
+            self.clock.as_ref().map(|clock| clock.deadline),
+            self.summary.expires_at_ms,
+            now,
+        )
+    }
+
     /// Why the grant has ended at `now`, if it has: its deadline passed or
-    /// its holder (or a process reusing its identity) is gone.
+    /// its holder (or a process reusing its identity) is confirmed gone. A holder
+    /// the OS could not answer for keeps its grant until a later sweep can.
     pub(crate) fn ended_reason(&self, now: Instant) -> Option<&'static str> {
-        if self
-            .clock
-            .as_ref()
-            .is_some_and(|clock| now >= clock.deadline)
-        {
+        if self.time_left(now) == Some(Duration::ZERO) {
             Some("expiry")
-        } else if !self.holder.alive() {
+        } else if self.holder.gone() {
             Some("process_exit")
         } else {
             None
@@ -64,18 +97,39 @@ impl Grant {
     }
 }
 
+/// What is left until the earlier of a monotonic deadline and the expiry
+/// clients display. The monotonic clock does not count host sleep; the
+/// displayed expiry does, so only the earlier of the two tells the owner the truth.
+pub(crate) fn time_left(
+    deadline: Option<Instant>,
+    expires_at_ms: Option<u64>,
+    now: Instant,
+) -> Option<Duration> {
+    let monotonic = deadline.map(|deadline| deadline.saturating_duration_since(now));
+    let displayed = expires_at_ms.map(|expires_at_ms| {
+        Duration::from_millis(expires_at_ms.saturating_sub(crate::session::unix_epoch_ms()))
+    });
+    match (monotonic, displayed) {
+        (Some(monotonic), Some(displayed)) => Some(monotonic.min(displayed)),
+        (monotonic, displayed) => monotonic.or(displayed),
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct AccessState {
     pub(crate) grants: BTreeMap<String, Grant>,
+    /// Admission wakes the idle pump so it can watch the new holder's exit.
+    pub(crate) holder_changed: Arc<tokio::sync::Notify>,
     pub(crate) pending: BTreeMap<(u32, u64, String), KernelAccessGrant>,
     pub(crate) generation: u64,
     /// The kernel has begun to stop: event waits end their poll.
     pub(crate) stopping: bool,
     pub(crate) last_denial: Option<Instant>,
     pub(crate) suppressed_denials: u64,
-    /// Holders whose grant lapsed or was revoked, so a later request from them
-    /// reads "access ended" rather than "never covered". Bounded, no secrets.
-    pub(crate) ended: Vec<ProcessIdentity>,
+    /// Holders and covered processes whose grant lapsed or was revoked, with why, so a later
+    /// request from them reads "access ended: <reason>" rather than "never covered".
+    /// Bounded, no secrets.
+    pub(crate) ended: Vec<(ProcessIdentity, Refusal)>,
     /// Requesters on other kernels that raised a sudo request here, by the grant id
     /// their sudo entries carry. They live while their origin kernel keeps renewing the
     /// lease and until it says its grant ended; silence ends them here without it.
@@ -89,9 +143,11 @@ pub(crate) struct AccessState {
 #[derive(Debug, Clone)]
 pub(crate) struct OwedEnd {
     pub(crate) grant: KernelAccessGrant,
+    /// Covered identities whose end has not yet reached the audit stream.
+    pub(crate) covered: Vec<ProcessIdentity>,
     pub(crate) outcome: String,
     pub(crate) reason: String,
-    /// The end is already in the audit log; only the event inbox is left open.
+    /// The grant end is in the audit log; its inbox or process ends may remain.
     pub(crate) recorded: bool,
 }
 
@@ -118,15 +174,20 @@ pub(crate) const REMOTE_REQUESTER_LEASE: std::time::Duration = std::time::Durati
 pub(crate) const REMOTE_REQUESTER_RENEW_EVERY: std::time::Duration =
     std::time::Duration::from_secs(10);
 
-const ENDED_HOLDERS: usize = 32;
+const ENDED_PROCESSES: usize = 256;
 
 impl AccessState {
-    pub(crate) fn remember_ended(&mut self, holder: &ProcessIdentity) {
-        self.ended.retain(|known| known != holder && known.alive());
-        self.ended.push(holder.clone());
-        if self.ended.len() > ENDED_HOLDERS {
-            self.ended.remove(0);
+    /// Remembers the holder and the covered processes of a grant that ended for `reason`.
+    pub(crate) fn remember_ended(&mut self, grant: &Grant, reason: &str) {
+        let ended = std::iter::once(&grant.holder).chain(&grant.covered);
+        self.ended.retain(|(known, _)| !known.gone());
+        let refusal = Refusal::ended_by(reason);
+        for process in ended {
+            self.ended.retain(|(known, _)| known != process);
+            self.ended.push((process.clone(), refusal));
         }
+        let excess = self.ended.len().saturating_sub(ENDED_PROCESSES);
+        self.ended.drain(..excess);
     }
 }
 
@@ -148,26 +209,70 @@ pub(crate) enum Refusal {
     HumanOnly,
     /// The peer is not the approved holder or one of its sub-processes.
     NotCovered,
-    /// The grant expired, was revoked, or its holder exited.
+    /// The grant ended for a reason the kernel no longer has.
     Ended,
+    /// The grant's time ran out.
+    EndedExpired,
+    /// The process that held the grant exited.
+    EndedHolderExited,
+    /// The owner, or a policy, revoked the grant.
+    EndedRevoked,
+    /// Changing the passkey ended every grant.
+    EndedPasskeyChanged,
+    /// The kernel stopped, which ends a timed grant.
+    EndedKernelStopped,
+    /// The OS could not confirm who the caller is just now. Nothing ended; retry.
+    Unconfirmed,
     /// The peer's tree already holds an access grant.
     AlreadyGranted,
+    /// A cover request named a process that has exited, or isn't a process.
+    CoverGone,
+    /// A cover request named a pid whose process start time differs from the one given.
+    CoverIdentityChanged,
+    /// A cover request named the kernel or a process the kernel started.
+    CoverKernelProcess,
+    /// A cover request named a process the grant doesn't already reach.
+    CoverOutside,
+    /// The grant already covers as many processes by name as it may.
+    CoverLimit,
 }
 
 impl Refusal {
-    pub(crate) const ALL: [Self; 4] = [
+    pub(crate) const ALL: [Self; 15] = [
         Self::HumanOnly,
         Self::NotCovered,
         Self::Ended,
+        Self::EndedExpired,
+        Self::EndedHolderExited,
+        Self::EndedRevoked,
+        Self::EndedPasskeyChanged,
+        Self::EndedKernelStopped,
+        Self::Unconfirmed,
         Self::AlreadyGranted,
+        Self::CoverGone,
+        Self::CoverIdentityChanged,
+        Self::CoverKernelProcess,
+        Self::CoverOutside,
+        Self::CoverLimit,
     ];
 
     pub(crate) fn code(self) -> &'static str {
         match self {
             Self::HumanOnly => "kernel_access_human_only",
             Self::NotCovered => "kernel_access_not_covered",
-            Self::Ended => "kernel_access_ended",
+            Self::Ended
+            | Self::EndedExpired
+            | Self::EndedHolderExited
+            | Self::EndedRevoked
+            | Self::EndedPasskeyChanged
+            | Self::EndedKernelStopped => "kernel_access_ended",
+            Self::Unconfirmed => "kernel_access_unconfirmed",
             Self::AlreadyGranted => "kernel_access_already_granted",
+            Self::CoverGone => "kernel_access_cover_gone",
+            Self::CoverIdentityChanged => "kernel_access_cover_identity_changed",
+            Self::CoverKernelProcess => "kernel_access_cover_kernel_process",
+            Self::CoverOutside => "kernel_access_cover_outside",
+            Self::CoverLimit => "kernel_access_cover_limit",
         }
     }
 
@@ -176,8 +281,42 @@ impl Refusal {
             Self::HumanOnly => "Only you can do this, in a Chariox terminal. An external agent can't.",
             Self::NotCovered => "This process has no access. Only the agent you approved, and the programs it starts, are covered.",
             Self::Ended => "Access ended. Ask for new access if you still need it.",
+            Self::EndedExpired => "Access ended because its time ran out. Ask for new access to continue.",
+            Self::EndedHolderExited => "Access ended because the program that held it exited. Ask for new access from the program you are running now.",
+            Self::EndedRevoked => "Access was revoked. Ask for new access if you still need it.",
+            Self::EndedPasskeyChanged => "Access ended because the passkey changed. Ask for new access.",
+            Self::EndedKernelStopped => "Access ended because the kernel stopped. Ask for new access.",
+            Self::Unconfirmed => "The kernel could not confirm this process just now; access has not changed. Retry in a few seconds.",
             Self::AlreadyGranted => "This process already has access.",
+            Self::CoverGone => "That process is not running. Only a running process can be covered.",
+            Self::CoverIdentityChanged => "That pid now belongs to a different process than the one you named.",
+            Self::CoverKernelProcess => "The kernel and the programs it starts can't be covered.",
+            Self::CoverOutside => "Only a process your access already reaches can be covered: the agent you approved, the programs it starts, and processes it covered before.",
+            Self::CoverLimit => "Access already covers as many background processes as it may. Stop one first.",
         }
+    }
+
+    /// Why a grant ended, from the reason its end was recorded with.
+    pub(crate) fn ended_by(reason: &str) -> Self {
+        match reason {
+            "expiry" => Self::EndedExpired,
+            "process_exit" => Self::EndedHolderExited,
+            "kernel_shutdown" => Self::EndedKernelStopped,
+            reason if reason.starts_with("passkey_rotation") => Self::EndedPasskeyChanged,
+            _ => Self::EndedRevoked,
+        }
+    }
+
+    pub(crate) fn is_ended(self) -> bool {
+        matches!(
+            self,
+            Self::Ended
+                | Self::EndedExpired
+                | Self::EndedHolderExited
+                | Self::EndedRevoked
+                | Self::EndedPasskeyChanged
+                | Self::EndedKernelStopped
+        )
     }
 
     /// Classifies a policy error. Only the lifecycle constants mean "ended";
@@ -198,7 +337,7 @@ impl Refusal {
     /// The grant was gone when a request that had already been admitted looked it
     /// up: the person reading the error must see "ended", not a retryable failure.
     pub(crate) fn grant_ended(error: &crate::error::DaemonError) -> bool {
-        Self::exact(error) == Some(Self::Ended)
+        Self::exact(error).is_some_and(Self::is_ended)
             || matches!(error, crate::error::DaemonError::LocalTransport { message, .. }
                 if message == "grant revoked or expired")
     }
@@ -218,7 +357,35 @@ impl Refusal {
         crate::transport::kernel_protocol::KernelTransportError {
             code: self.code().into(),
             message: self.message().into(),
-            retryable: false,
+            retryable: self == Self::Unconfirmed,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::local::KernelAccessTerm;
+
+    #[test]
+    fn a_timed_grant_ends_at_its_displayed_expiry_after_host_sleep() {
+        let holder = process::inspect(std::process::id()).unwrap().0;
+        let grant = Grant {
+            summary: KernelAccessGrant {
+                grant_id: "slept".into(),
+                owner_user_id: "local".into(),
+                holder_pid: holder.pid,
+                holder_executable: holder.executable.clone(),
+                holder_harness: None,
+                term: KernelAccessTerm::Minutes(30),
+                // The deadline below is still ahead, as after a suspend.
+                expires_at_ms: Some(crate::session::unix_epoch_ms() - 60_000),
+                covered: Vec::new(),
+            },
+            holder,
+            covered: Vec::new(),
+            clock: Some(GrantClock::new(30, 5)),
+        };
+        assert_eq!(grant.ended_reason(Instant::now()), Some("expiry"));
     }
 }

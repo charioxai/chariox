@@ -1,6 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use base64::Engine as _;
 
@@ -214,7 +213,7 @@ fn committed_path_changes(
     }
     let worktree_path = PathBuf::from(&after.worktree_path);
     let ignore_patterns = ignore_patterns(&worktree_path);
-    let output = Command::new("git")
+    let output = crate::process_spawn::command("git")
         .args([
             "diff",
             "--name-status",
@@ -389,7 +388,7 @@ fn git_blob_snapshot(
     revision: &str,
     path: &str,
 ) -> Option<TrackedContentSnapshot> {
-    let output = Command::new("git")
+    let output = crate::process_spawn::command("git")
         .arg("-C")
         .arg(repo_root)
         .arg("show")

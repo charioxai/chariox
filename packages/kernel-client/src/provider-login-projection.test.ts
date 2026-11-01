@@ -23,6 +23,12 @@ test("MP-08/MP-11 login view numbers the steps and names the failure the provide
   assert.equal(providerLoginProblem(output("\u001b[31mOAuth error: Request failed with status code 400\u001b[0m\nPress Enter to retry.")), "OAuth error: Request failed with status code 400")
   assert.equal(providerLoginProblem(output("Paste code here if prompted >")), null)
   assert.equal(providerLoginProblem(output("Paste code here if prompted >"), true), "Paste code here if prompted >")
+  for (const message of [
+    "The code looks incomplete. Copy the whole code, including # and the part after it.",
+    "That code was not accepted. Open the new sign-in link and copy a new code.",
+  ]) {
+    assert.equal(providerLoginProblem(output(message)), message)
+  }
 })
 
 test("MP-08/MP-11 a provider-response terminal choice is not necessarily an OAuth code", () => {

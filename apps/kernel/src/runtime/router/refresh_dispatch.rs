@@ -72,6 +72,7 @@ impl CommandRouter {
             | LocalDaemonRequest::SetProviderAccountCredential(_)
             | LocalDaemonRequest::GetCredentialVaultStatus(_)
             | LocalDaemonRequest::LockCredentialVault(_)
+            | LocalDaemonRequest::UnlockCredentialVault(_)
             | LocalDaemonRequest::ManageCredentialVault(_)) => boxed_handler(|| async move {
                 execute_user_config_request(
                     &self.config_projection,

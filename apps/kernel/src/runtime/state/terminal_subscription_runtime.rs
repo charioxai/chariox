@@ -84,6 +84,7 @@ fn same_snapshot_data(a: &SessionSnapshotProjection, b: &SessionSnapshotProjecti
     // session data. Preserve version/data changes while avoiding full-snapshot
     // traffic and DOM work on every reconciliation of an unchanged session.
     a.metadata.projection_version == b.metadata.projection_version
+        && a.processes == b.processes
         && a.room_workflows == b.room_workflows
         && a.session == b.session
         && a.provider_run == b.provider_run

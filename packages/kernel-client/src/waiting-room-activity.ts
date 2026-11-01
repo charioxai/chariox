@@ -97,10 +97,7 @@ export function waitingRoomSessionRecencyMs(
     readonly created_at_ms?: number | null | undefined
   },
 ): number {
-  return numberOrZero(session.last_prompt_sent_at_ms)
-    || numberOrZero(session.last_activity_at_ms)
-    || numberOrZero(session.last_used_at_ms)
-    || numberOrZero(session.created_at_ms)
+  return numberOrZero(session.last_activity_at_ms) || numberOrZero(session.created_at_ms)
 }
 
 export function waitingRoomSessionActivityHasWork(

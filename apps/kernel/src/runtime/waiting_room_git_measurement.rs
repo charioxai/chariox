@@ -25,7 +25,7 @@ pub(crate) fn measure(query: Query) -> Result<Value, DaemonError> {
 }
 fn launch(cwd: String) -> Option<WaitingRoomLaunchTarget> {
     let git = |args: &[&str]| {
-        std::process::Command::new("git")
+        crate::process_spawn::command("git")
             .args(args)
             .current_dir(&cwd)
             .output()

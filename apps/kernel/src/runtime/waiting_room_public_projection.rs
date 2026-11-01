@@ -511,7 +511,7 @@ fn build_waiting_room_public_snapshot_from_summaries(
         &terminals,
     )?;
     Ok(WaitingRoomPublicSnapshot {
-        schema_version: 13,
+        schema_version: 14,
         inventory_version,
         structural_version,
         activity_revision,
@@ -629,6 +629,7 @@ fn waiting_room_structural_version(
             };
             session.remove("activity");
             session.remove("last_used_at_ms");
+            session.remove("last_activity_at_ms");
             session.remove("last_prompt_sent_at_ms");
             session.remove("connected_cli_count");
             if let Some(agents) = session
@@ -679,6 +680,7 @@ fn waiting_room_structural_version(
                 "workspace_id": project.workspace_id,
                 "workspace_ids": project.workspace_ids,
                 "pinned": project.pinned,
+                "pinned_at_ms": project.pinned_at_ms,
                 "name": project.name,
                 "kind": project.kind,
                 "status": project.status,
@@ -708,6 +710,7 @@ fn waiting_room_activity_revision(
             serde_json::json!({
                 "id": session.id,
                 "last_used_at_ms": session.last_used_at_ms,
+                "last_activity_at_ms": session.last_activity_at_ms,
                 "last_prompt_sent_at_ms": session.last_prompt_sent_at_ms,
                 "connected_cli_count": session.connected_cli_count,
                 "activity": session.activity,
@@ -832,6 +835,7 @@ fn waiting_room_session_summaries_from_refs<'a>(
                 .clone();
             WaitingRoomPublicSessionSummary {
                 pinned: session.pinned(),
+                pinned_at_ms: session.pinned_at_ms(),
                 repository_state: Some(workspace_repository_state(&workspace_id)),
                 id: session.id().to_string(),
                 project_id: session.project_id().to_string(),
@@ -843,6 +847,7 @@ fn waiting_room_session_summaries_from_refs<'a>(
                 worktree_label,
                 workspace_live_sync_mode: session.workspace_live_sync_mode(),
                 created_at_ms: session.created_at_ms(),
+                last_activity_at_ms: session.last_activity_at_ms(),
                 last_used_at_ms: session.last_used_at_ms(),
                 last_prompt_sent_at_ms: session.last_prompt_sent_at_ms(),
                 status: session.status(),
@@ -1025,6 +1030,7 @@ fn waiting_room_public_project_summaries(
                 workspace_ids: project.workspace_ids().to_vec(),
                 name: project.name().to_string(),
                 pinned: project.pinned(),
+                pinned_at_ms: project.pinned_at_ms(),
                 kind: project.kind(),
                 status: project.status(),
                 created_at_ms: project.created_at_ms(),
@@ -1033,12 +1039,7 @@ fn waiting_room_public_project_summaries(
                 session_count: project_sessions.len(),
                 last_session_activity_at_ms: project_sessions
                     .iter()
-                    .filter_map(|session| {
-                        session
-                            .last_prompt_sent_at_ms()
-                            .or(session.last_used_at_ms())
-                            .or(Some(session.created_at_ms()))
-                    })
+                    .map(|session| session.last_activity_at_ms())
                     .max(),
                 joined_collaborator_count: project_sessions
                     .iter()
@@ -1187,6 +1188,7 @@ mod tests {
     fn used_session(workspace: &str, last_used_at_ms: u64) -> WaitingRoomPublicSessionSummary {
         WaitingRoomPublicSessionSummary {
             pinned: false,
+            pinned_at_ms: None,
             id: format!("session-{last_used_at_ms}"),
             project_id: "project".to_string(),
             alias: None,
@@ -1200,6 +1202,7 @@ mod tests {
             created_at_ms: 1,
             last_used_at_ms: Some(last_used_at_ms),
             last_prompt_sent_at_ms: None,
+            last_activity_at_ms: 0,
             status: SessionStatus::Active,
             connected_cli_count: 0,
             joined_collaborator_count: 0,
@@ -2261,7 +2264,7 @@ mod tests {
         )
         .expect("snapshot builds");
 
-        assert_eq!(snapshot.schema_version, 13);
+        assert_eq!(snapshot.schema_version, 14);
         assert_eq!(snapshot.generated_at_ms, 42);
         assert_eq!(snapshot.sessions.len(), 1);
         assert!(snapshot.external_provider_sessions.is_empty());
@@ -2339,5 +2342,17 @@ mod owner15_projection_tests {
         let after =
             super::waiting_room_structural_version(&[], &projects, &[], false, None, None).unwrap();
         assert_ne!(before, after);
+        projects[0].pinned_at_ms = Some(10);
+        let first =
+            super::waiting_room_structural_version(&[], &projects, &[], false, None, None).unwrap();
+        let activity = super::waiting_room_activity_revision(&[], &projects, &[]).unwrap();
+        projects[0].pinned_at_ms = Some(20);
+        let second =
+            super::waiting_room_structural_version(&[], &projects, &[], false, None, None).unwrap();
+        assert_ne!(first, second, "repinning must publish its new order");
+        assert_eq!(
+            activity,
+            super::waiting_room_activity_revision(&[], &projects, &[]).unwrap()
+        );
     }
 }

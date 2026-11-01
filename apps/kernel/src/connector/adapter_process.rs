@@ -47,7 +47,7 @@ impl ConnectorAdapterProcessPool {
 impl WarmConnectorAdapterProcess {
     async fn spawn(adapter: &CharioxConnectorAdapterDefinition) -> Result<Self, DaemonError> {
         let command = adapter.resolved_command()?;
-        let mut process = tokio::process::Command::new(&command);
+        let mut process = crate::process_spawn::async_command(&command);
         for name in crate::provider::managed_provider_control_env_remove() {
             process.env_remove(name);
         }

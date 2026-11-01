@@ -16,6 +16,8 @@ use super::{CodexClient, CodexNotification, CodexSocket};
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct CodexThreadStartResponse {
+    #[serde(default)]
+    pub cwd: Option<std::path::PathBuf>,
     pub thread: CodexThread,
     pub model: String,
     #[serde(rename = "reasoningEffort", default)]

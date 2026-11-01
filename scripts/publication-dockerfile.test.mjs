@@ -250,3 +250,19 @@ test("publication JS build stage holds every file the protocol pin check reads",
     rmSync(root, { recursive: true, force: true })
   }
 })
+
+// MP-08 / MP-09 / MP-10 / MP-11: every shipped kernel needs the sampler.
+test("kernel runtime images install the mandatory process sampler", async () => {
+  for (const path of ["docker/publication/Dockerfile", "docker/lab/Dockerfile", "apps/kernel/slice-linux-docker/docker/Dockerfile"]) {
+    const source = await readFile(new URL(`../${path}`, import.meta.url), "utf8")
+    const runtime = source.slice(source.lastIndexOf("\nFROM "))
+    assert.ok(/\bprocps\b/.test(runtime), `${path} must install procps in its runtime stage`)
+    assert.ok(runtime.includes("RUN node /usr/local/lib/chariox/check-process-sampler.mjs"), `${path} must check a real launched process in the image`)
+  }
+})
+
+test("the native managed image explicitly installs and checks the sampler", async () => {
+  const source = await readFile(new URL("../deploy/managed-kernel/prepare-hetzner-image.sh", import.meta.url), "utf8")
+  assert.match(source, /\n  procps \\\n/)
+  assert.ok(source.includes("ps -axo pid=,ppid=,rss=,pcpu=,etime=,comm="))
+})

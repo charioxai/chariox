@@ -142,6 +142,7 @@ export type CliWaitingRoomCompositionDeps = {
   setRemoteMachinesState: AnyFn
   remoteKernelsState: AnyFn
   setRemoteKernelsState: AnyFn
+  setProviderAccountCopyOffersState?: AnyFn
   providerAccountsState: AnyFn
   setProviderAccountsState: AnyFn
   terminalsState: AnyFn
@@ -357,8 +358,8 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
 
   const waitingRoomInventoryRefreshController = createWaitingRoomInventoryRefreshController({
     isKernelConnected: deps.kernelConnected,
-    getSessionPage: async cursor => {
-      const response = await deps.client.currentClient().send({ ListWaitingRoomSessions: { cursor, limit: 500 } }) as { WaitingRoomSessionsListed: { page: { sessions: import("./cli-types.js").WaitingRoomPublicSessionSummary[]; next_cursor: string | null } } }
+    getSessionPage: async (cursor, inventoryVersion) => {
+      const response = await deps.client.currentClient().send({ ListWaitingRoomSessions: { cursor, limit: 500, inventory_version: inventoryVersion } }) as { WaitingRoomSessionsListed: { page: { sessions: import("./cli-types.js").WaitingRoomPublicSessionSummary[]; next_cursor: string | null } } }
       return response.WaitingRoomSessionsListed.page
     },
     getInventoryStatus: deps.waitingRoomInventoryStatus,
@@ -380,6 +381,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     setRelayStatus: deps.setRelayStatusState,
     setRemoteMachines: deps.setRemoteMachinesState,
     setRemoteKernels: deps.setRemoteKernelsState,
+    setProviderAccountCopyOffers: offers => deps.setProviderAccountCopyOffersState?.(offers),
     setProviderAccounts: deps.setProviderAccountsState,
     setManagedEnvironmentCatalog: (catalog) => {
       managedEnvironmentCatalog = catalog
@@ -790,6 +792,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
       await waitingRoomWorkspaceController.applyInventory(inventory)
       // MP-08/MP-11: workspace previews retain home account state. Admission
       // after the owner pivot must use the destination's fresh inventory.
+      deps.setProviderAccountCopyOffersState?.(inventory.providerAccountCopyOffers ?? [])
       deps.setProviderAccountsState(inventory.providerAccounts ?? [])
       // Profile IDs are kernel-scoped. Preserve a matching destination choice;
       // otherwise use its normal Waiting Room default before admission.

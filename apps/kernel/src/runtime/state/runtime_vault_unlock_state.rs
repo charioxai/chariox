@@ -398,6 +398,10 @@ impl KernelRuntimeState {
         agent_id: Option<&str>,
         operation: &'static str,
     ) -> Result<VaultUnlockGuard, DaemonError> {
+        if let Some(path) = self.client_single_use_unlock_path()? {
+            // "Ask every time": the owner's client unlocked for this one operation.
+            return Ok(VaultUnlockGuard::unlocked_for_operation(path));
+        }
         let Some((session_id, agent_id)) = self
             .preflight_vault_unlock_for_command_context(command, session_id, agent_id, operation)
             .await?
@@ -406,6 +410,22 @@ impl KernelRuntimeState {
         };
         self.ensure_vault_unlocked_for_agent(&session_id, &agent_id, operation)
             .await
+    }
+
+    /// The Vault's path while the owner's client holds it open on a single-use
+    /// unlock ("ask every time"), which the next operation uses up.
+    fn client_single_use_unlock_path(&self) -> Result<Option<std::path::PathBuf>, DaemonError> {
+        let vault = self
+            .owned
+            .config_projection
+            .snapshot()
+            .user_config
+            .credential_vault;
+        if vault.backend != crate::config::CredentialVaultBackend::CharioxEncrypted {
+            return Ok(None);
+        }
+        let path = expand_vault_path(&vault.path);
+        Ok(crate::secret::chariox_vault_single_use_unlocked(&path)?.then_some(path))
     }
 
     /// Validate where an unlock interaction can be shown without acquiring a
@@ -431,14 +451,12 @@ impl KernelRuntimeState {
         {
             return Ok(None);
         }
+        if self.client_single_use_unlock_path()?.is_some() {
+            return Ok(None);
+        }
         let session_id = session_id
             .or(command.session_id.as_deref())
-            .ok_or_else(|| DaemonError::LocalTransport {
-                operation,
-                message:
-                    "encrypted Chariox vault access requires a session_id so the unlock popup can be shown"
-                        .to_string(),
-            })?;
+            .ok_or_else(super::vault_unlock_request::vault_locked_error)?;
         let agent_id = self
             .vault_prompt_agent(
                 session_id,
@@ -525,24 +543,12 @@ impl KernelRuntimeState {
             return Ok(VaultUnlockGuard::unlocked_until_expiry(vault_path.clone()));
         };
         let passphrase = vault_passphrase_from_resolution(resolution, operation)?;
+        // The passphrase sheet is the only question: a TTL unlock takes the default lease.
         let choice_id = if matches!(
             vault_config.unlock_policy,
             crate::config::CredentialVaultUnlockPolicy::Ttl
         ) {
-            let Some(resolution) = self
-                .await_vault_unlock_interaction(
-                    session_id,
-                    vault_unlock_lease_interaction(session_id, agent_id, &vault_config),
-                    operation,
-                    &vault_path,
-                    &mut unlocks,
-                    !force_prompt,
-                )
-                .await?
-            else {
-                return Ok(VaultUnlockGuard::unlocked_until_expiry(vault_path.clone()));
-            };
-            vault_lease_choice_from_resolution(resolution, operation)?
+            "unlock_default_ttl".to_string()
         } else if matches!(
             vault_config.unlock_policy,
             crate::config::CredentialVaultUnlockPolicy::KernelInit
@@ -559,13 +565,15 @@ impl KernelRuntimeState {
         if !force_prompt && crate::secret::chariox_encrypted_vault_status(&vault_path)?.unlocked {
             return Ok(VaultUnlockGuard::unlocked_until_expiry(vault_path.clone()));
         }
-        let status =
-            crate::secret::unlock_chariox_encrypted_vault(&vault_path, passphrase.as_str(), lease)?;
-        if let Err(error) = self.pin_critical_approval_verifier_after_unlock(&vault_path) {
-            crate::secret::lock_chariox_encrypted_vault(&vault_path)?;
-            crate::secret::clear_vault_secret_process_cache()?;
-            return Err(error);
-        }
+        let owner = self
+            .owned
+            .session_store
+            .get_session(session_id)?
+            .owner_user_id()
+            .to_owned();
+        let status = self
+            .unlock_vault_counted(&owner, &vault_path, passphrase.as_str(), lease, true)
+            .await?;
         crate::logging::info_with_fields(
             "credential_vault",
             "Chariox vault unlocked",
@@ -793,59 +801,6 @@ fn vault_passphrase_interaction(
     )
 }
 
-fn vault_unlock_lease_interaction(
-    session_id: &str,
-    agent_id: &str,
-    config: &crate::config::UserCredentialVaultConfig,
-) -> crate::session::RuntimeInteraction {
-    crate::session::RuntimeInteraction::new(
-        format!("vault-unlock-lease-{}-{}", agent_id, rand::random::<u64>()),
-        agent_id,
-        crate::session::RuntimeInteractionKind::Choice,
-        crate::session::RuntimeInteractionLevel::Critical,
-        Some("Choose Vault Unlock Duration".to_string()),
-        format!("Choose how long to keep the Chariox Vault unlocked for session `{session_id}`."),
-        vec![
-            crate::session::RuntimeInteractionChoice::new(
-                "unlock_operation",
-                "This operation",
-                "operation",
-                Some(crate::session::RuntimeInteractionChoiceStyle::Primary),
-            ),
-            crate::session::RuntimeInteractionChoice::new(
-                "unlock_default_ttl",
-                format!(
-                    "{} minutes",
-                    config.default_ttl_minutes.min(config.max_ttl_minutes)
-                ),
-                "ttl_default",
-                Some(crate::session::RuntimeInteractionChoiceStyle::Primary),
-            ),
-            crate::session::RuntimeInteractionChoice::new(
-                "unlock_60m",
-                "1 hour",
-                "ttl_60",
-                Some(crate::session::RuntimeInteractionChoiceStyle::Secondary),
-            ),
-            crate::session::RuntimeInteractionChoice::new(
-                "unlock_kernel",
-                "Until kernel shutdown",
-                "kernel_shutdown",
-                Some(crate::session::RuntimeInteractionChoiceStyle::Secondary),
-            ),
-            crate::session::RuntimeInteractionChoice::new(
-                "cancel",
-                "Cancel",
-                "cancel",
-                Some(crate::session::RuntimeInteractionChoiceStyle::Danger),
-            ),
-        ],
-        None,
-        Some(60),
-        None,
-    )
-}
-
 fn vault_passphrase_from_resolution(
     resolution: super::PendingInteractionResolution,
     operation: &'static str,
@@ -893,34 +848,6 @@ fn vault_secret_from_resolution(
         Some(_) => Err(DaemonError::LocalTransport {
             operation,
             message: format!("Chariox vault {action} resolved without a passphrase"),
-        }),
-    }
-}
-
-fn vault_lease_choice_from_resolution(
-    resolution: super::PendingInteractionResolution,
-    operation: &'static str,
-) -> Result<String, DaemonError> {
-    if resolution.status == "timed_out" {
-        return Err(DaemonError::LocalTransport {
-            operation,
-            message:
-                "Chariox vault unlock duration selection timed out. Retry to unlock the vault."
-                    .to_string(),
-        });
-    }
-    match resolution.choice_id.as_deref() {
-        None | Some("cancel") => Err(DaemonError::LocalTransport {
-            operation,
-            message: "Chariox vault unlock was cancelled. Retry to unlock the vault.".to_string(),
-        }),
-        Some(
-            choice_id
-            @ ("unlock_operation" | "unlock_default_ttl" | "unlock_60m" | "unlock_kernel"),
-        ) => Ok(choice_id.to_string()),
-        Some(_) => Err(DaemonError::LocalTransport {
-            operation,
-            message: "Chariox vault unlock resolved with an invalid duration".to_string(),
         }),
     }
 }
@@ -1298,38 +1225,16 @@ mod tests {
     }
 
     #[test]
-    fn vault_duration_prompt_is_a_separate_non_secret_interaction() {
+    fn ttl_unlock_takes_the_default_lease_without_a_second_question() {
         let config = crate::config::UserCredentialVaultConfig::default();
-        let interaction = vault_unlock_lease_interaction("session-1", "agent-1", &config);
-
-        assert!(interaction.custom_choice().is_none());
-        assert_eq!(
-            interaction
-                .choices()
-                .iter()
-                .map(|choice| choice.id())
-                .collect::<Vec<_>>(),
-            vec![
-                "unlock_operation",
-                "unlock_default_ttl",
-                "unlock_60m",
-                "unlock_kernel",
-                "cancel",
-            ]
-        );
-        assert_eq!(
-            vault_lease_choice_from_resolution(
-                resolution(Some("unlock_60m"), Some("ttl_60")),
-                "test",
-            )
-            .expect("known duration should resolve"),
-            "unlock_60m"
-        );
-        assert!(vault_lease_choice_from_resolution(
-            resolution(Some("passphrase"), Some("secret")),
-            "test",
-        )
-        .is_err());
+        let (lease, lock_after_operation) =
+            unlock_lease_for_choice("unlock_default_ttl", &config, false);
+        assert!(matches!(
+            lease,
+            crate::secret::VaultUnlockLease::TtlMinutes(minutes)
+                if minutes == config.default_ttl_minutes.min(config.max_ttl_minutes).max(1)
+        ));
+        assert!(!lock_after_operation);
     }
 
     #[tokio::test]
@@ -1578,7 +1483,7 @@ mod mp11_always_tests {
             let refused = refusals.iter().all(|(_, result)| {
                 result
                     .as_ref()
-                    .is_err_and(|error| error.contains("requires a session_id"))
+                    .is_err_and(|error| error == "The Vault is locked. Unlock it, then try again.")
             });
             crate::secret::lock_chariox_encrypted_vault(&vault).unwrap();
             drop(state);

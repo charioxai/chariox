@@ -32,3 +32,4 @@ export * from "./notes.js"
 export * from "./ipc-screenshot-requests.js"
 
 export * from "./project-resolution.js"
+export * from "./provider-account-copy.js"

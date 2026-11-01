@@ -57,9 +57,6 @@ pub(crate) struct KernelBrowserAdmission {
     cancellation: Arc<BrowserCancellation>,
     terminal_lifetime: Option<crate::runtime::command::TerminalLifetime>,
     capability: KernelBrowserCapability,
-    /// MP-08/MP-10/MP-11 A06: a live sudo window, re-evaluated by `cancellation`,
-    /// stands in for focus on sensitive actions within the retained grant.
-    elevated: bool,
 }
 
 /// MP-08/MP-11: exact resource authority retained by an asynchronous App call.
@@ -128,12 +125,6 @@ impl KernelBrowserAdmission {
             self.epoch.clone(),
             move || !previous.requested() && authority(),
         ));
-        self
-    }
-
-    /// Pair only with `with_authority` that checks the same sudo window.
-    pub(crate) fn elevated(mut self) -> Self {
-        self.elevated = true;
         self
     }
 }
@@ -330,7 +321,6 @@ impl KernelBrowserHost {
             epoch: state.access.grant(user, agent)?.epoch.clone(),
             cancellation: state.access.grant(user, agent)?.epoch.clone(),
             terminal_lifetime: None,
-            elevated: false,
         })
     }
     pub(crate) fn admit_terminal(
@@ -346,7 +336,6 @@ impl KernelBrowserHost {
             epoch: epoch.clone(),
             capability: KernelBrowserCapability::Browser,
             terminal_lifetime: Some(lifetime.clone()),
-            elevated: false,
             cancellation: Arc::new(BrowserCancellation::for_authority(epoch, move || {
                 lifetime.is_live()
             })),
@@ -504,12 +493,11 @@ impl KernelBrowserHost {
                         "state"
                             | "snapshot"
                             | "screenshot"
-                            | "subscribe"
-                            | "poll"
                             | "unsubscribe"
                             | "display_subscribe"
                             | "display_attach"
                             | "note_selection"
+                            | "pointer_cursor"
                             | "mirror_subscribe"
                             | "mirror_next"
                             | "mirror_close"
@@ -719,9 +707,13 @@ impl KernelBrowserHost {
         // its live target through this controller. Lease/policy checks remain
         // before dispatch and after readiness, as for other observations.
         let display_subscribe = method == "host.browser" && params["op"] == "display_subscribe";
-        // r55: a selection note on a busy page waits for its renderer; it must not hold the controller lock meanwhile.
-        let note =
-            method == "host.browser" && matches!(params["op"].as_str(), Some("note_selection"));
+        // r55: a selection note or the cursor under the pointer on a busy page waits for its renderer;
+        // neither may hold the controller lock meanwhile.
+        let note = method == "host.browser"
+            && matches!(
+                params["op"].as_str(),
+                Some("note_selection" | "pointer_cursor")
+            );
         let mut result = if display
             || mirror_credit
             || display_subscribe
@@ -843,12 +835,6 @@ impl KernelBrowserHost {
                         state.access.opened_tab(user, agent, id)?;
                     }
                 }
-                if let (Some(id), Some(tab)) = (
-                    payload.get("subscription_id").and_then(Value::as_str),
-                    request_params.get("tab_id").and_then(Value::as_str),
-                ) {
-                    state.access.subscribe(user, agent, id, tab)?;
-                }
                 if state.access.focused(user) != Some(agent) {
                     let grant = state.access.grant(user, agent)?;
                     for field in ["tabs", "dialogs"] {
@@ -878,19 +864,6 @@ impl KernelBrowserHost {
                     .as_str()
                     .map(|tab| UserDomainResource::BrowserTab { tab_id: tab.into() })
                     .or_else(|| {
-                        request_params["subscription_id"].as_str().and_then(|id| {
-                            state
-                                .access
-                                .grant(user, agent)
-                                .ok()?
-                                .subscriptions
-                                .get(id)
-                                .map(|tab| UserDomainResource::BrowserTab {
-                                    tab_id: tab.clone(),
-                                })
-                        })
-                    })
-                    .or_else(|| {
                         state
                             .access
                             .grant(user, agent)
@@ -902,16 +875,6 @@ impl KernelBrowserHost {
                     });
                 if let Some(resource) = resource {
                     state.access.acted(user, agent, resource);
-                }
-                if request_params["op"] == "poll" {
-                    if let Some(id) = request_params["subscription_id"].as_str() {
-                        state.access.subscription_polled(user, agent, id);
-                    }
-                }
-                if request_params["op"] == "unsubscribe" {
-                    if let Some(id) = request_params["subscription_id"].as_str() {
-                        state.access.unsubscribe(user, agent, id);
-                    }
                 }
             }
         }

@@ -6,7 +6,7 @@ pub(super) fn block_undeliverable_waits(
     now: u64,
 ) -> Result<Vec<AgentTaskExecution>, DaemonError> {
     let mut changed = Vec::new();
-    for mut task in tasks(tx)? {
+    for mut task in waiting_tasks(tx)? {
         if task.goal.is_none() || task.state != ExecutionState::Waiting {
             continue;
         }

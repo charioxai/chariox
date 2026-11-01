@@ -223,23 +223,16 @@ fn generate_password(length: usize, symbols: bool) -> String {
     }
 }
 
-/// Login fences on the handle itself. Generated handles stay inside their
-/// session; an elevated (unfocused) fill also needs an explicit site binding.
+/// Login fences on the handle itself: generated handles stay inside their session.
 pub(crate) fn require_login_handle_scope(
     credential: &UserCredentialConfig,
     session: &str,
-    elevated: bool,
 ) -> Result<(), DaemonError> {
     let metadata = credential.metadata.as_ref();
     if metadata.and_then(|m| m.created_by_kind.as_deref()) == Some(GENERATED_KIND)
         && metadata.and_then(|m| m.session_id.as_deref()) != Some(session)
     {
         return Err(error("this credential belongs to another session"));
-    }
-    if elevated && credential.allowed_hosts.is_empty() {
-        return Err(error(
-            "elevated Vault fill requires a credential bound to its site",
-        ));
     }
     Ok(())
 }

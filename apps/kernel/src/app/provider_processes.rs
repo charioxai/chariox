@@ -540,9 +540,7 @@ fn owned_orphan_provider_process_ids(
     tracked_pids: &BTreeSet<u32>,
     orphan_ttl_ms: u64,
 ) -> Vec<u32> {
-    // MP-08 / MP-10 / MP-11: system inventory must not resolve a program through
-    // provider/workspace PATH entries, which may be untrusted or unreachable.
-    let output = match std::process::Command::new("/bin/ps")
+    let output = match crate::process_spawn::command("ps")
         .args(["-axo", "pid=,ppid=,pgid=,etimes=,command="])
         .output()
     {

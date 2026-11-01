@@ -868,10 +868,6 @@ async fn stale_app_writer(room_route: bool) {
         async {
             let decision = pending_app_decision(&room).await;
             let store = room.app.lock().await.durable_state_store();
-            let mut blocker = rusqlite::Connection::open(store.path()).unwrap();
-            let held = blocker
-                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-                .unwrap();
             room.router
                 .runtime_state
                 .resolve_terminal_runtime_interaction(
@@ -882,6 +878,12 @@ async fn stale_app_writer(room_route: bool) {
                     Some("alice"),
                 )
                 .await
+                .unwrap();
+            // Resolution persists session activity before waking acquisition.
+            // Do not yield between that commit and blocking the grant writer.
+            let mut blocker = rusqlite::Connection::open(store.path()).unwrap();
+            let held = blocker
+                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
                 .unwrap();
             tokio::time::timeout(std::time::Duration::from_secs(2), async {
                 while admission.available_permits() == initial_slots {

@@ -250,6 +250,14 @@ impl WatchSet {
         })
     }
 
+    pub(super) fn on_outside_end(&mut self) -> Fired {
+        self.fire(|_| Some(RoomTerminalEventKind::OutsideEnd))
+    }
+
+    pub(super) fn on_memory_limit(&mut self, limit_bytes: u64) -> Fired {
+        self.fire(|_| Some(RoomTerminalEventKind::MemoryLimit { limit_bytes }))
+    }
+
     pub(super) fn on_shell_exit(
         &mut self,
         exit_code: Option<u32>,

@@ -1,5 +1,4 @@
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use crate::agent::GitWorktreePlacement;
 use crate::error::DaemonError;
@@ -443,7 +442,7 @@ pub(crate) fn resolve_existing_worktree(
 }
 
 pub(crate) fn is_git_worktree(base_directory: impl AsRef<Path>) -> bool {
-    Command::new("git")
+    crate::process_spawn::command("git")
         .args(["rev-parse", "--is-inside-work-tree"])
         .current_dir(base_directory.as_ref())
         .output()
@@ -634,7 +633,7 @@ fn git_branch_exists(
 }
 
 fn run_git(cwd: &Path, args: &[&str], operation: &'static str) -> Result<String, DaemonError> {
-    let output = Command::new("git")
+    let output = crate::process_spawn::command("git")
         .args(args)
         .current_dir(cwd)
         .output()
@@ -1313,7 +1312,7 @@ mod tests {
     }
 
     fn run_test_git(directory: &std::path::Path, args: &[&str]) {
-        let output = std::process::Command::new("git")
+        let output = crate::process_spawn::command("git")
             .args(args)
             .current_dir(directory)
             .output()

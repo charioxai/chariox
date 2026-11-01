@@ -1284,6 +1284,64 @@ fn app_side_structured_resume_retries_without_advancing_run_ahead_of_storage() {
     );
 }
 
+// MP-08 / MP-09 / MP-10 / MP-11: every provider poll repeats the resume state; only a
+// real change of the agent's runtime profile is written.
+#[test]
+fn unchanged_agent_runtime_profile_is_not_written_again() {
+    let (app, _worktree, _session_id, _attachment_id, provider_run_id) =
+        structured_provider_test_app();
+    let run = app
+        .providers()
+        .get_run(&provider_run_id)
+        .expect("provider run should remain available");
+    let agent_id = run
+        .agent_instance_id()
+        .expect("provider run should belong to an agent")
+        .to_string();
+    let durable_state_store = app.durable_state_store();
+    let persist = |session: &str| {
+        let resume = crate::provider::ProviderResumeState::from_opencode_session_id(session);
+        app.agents
+            .set_agent_runtime_profile_durably(
+                &durable_state_store,
+                &agent_id,
+                run.provider(),
+                Some(run.model().to_string()),
+                run.variant().map(str::to_string),
+                Some(run.account_profile().to_string()),
+                resume.clone(),
+                Some(run.id()),
+                None,
+            )
+            .expect("runtime profile should persist");
+        app.agents
+            .set_agent_provider_resume_state_durably(
+                &durable_state_store,
+                &agent_id,
+                resume,
+                run.id(),
+            )
+            .expect("resume state should persist");
+    };
+    let rows = || -> i64 {
+        rusqlite::Connection::open(durable_state_store.path())
+            .unwrap()
+            .query_row(
+                "SELECT count(*) FROM durable_state_events WHERE kind='agent.runtime_profile_updated'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap()
+    };
+    let before = rows();
+    persist("opencode-session-a");
+    persist("opencode-session-a");
+    persist("opencode-session-a");
+    assert_eq!(rows() - before, 1, "an unchanged profile was written again");
+    persist("opencode-session-b");
+    assert_eq!(rows() - before, 2);
+}
+
 #[test]
 fn provider_dispatch_marks_new_workflow_prompt_before_draining_stale_completion() {
     let (mut app, _worktree, session_id, attachment_id, provider_run_id) =

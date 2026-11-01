@@ -28,6 +28,10 @@ export function nativeRefusalReason(error,helperStage){
  if(message.includes('native readback unavailable'))return helperStage??'first_frame_timeout';
  return 'other';
 }
+// A followed document that never paints is shown after this bound.
+const PAINT_HOLD_MS=1000;
+// Sparse: Chrome's pre-paint frame is one colour everywhere; any painted document differs within a few hundred pixels.
+function oneColour(pixels){const step=4*61;for(let n=step;n<pixels.length;n+=step)if(pixels[n]!==pixels[0]||pixels[n+1]!==pixels[1]||pixels[n+2]!==pixels[2])return false;return true;}
 // Pixels inside protected regions of the reference capture (null: none).
 const STATUS_BAND_DIP=26;
 // MP-08/MP-10: Chromium's link-status bubble (browser UI under a parked
@@ -45,8 +49,8 @@ export function attestationMask(regions,width,height){
  return mask;
 }
 export class LinuxCapture {
- constructor({size=geometry,pageWindow,display,pid,connection,sessionId,tab,scale,hostScale=1,policy,browser,screenshot,allowed,frames,attestation=null,timing=()=>{}}){
-  Object.assign(this,{size,pageWindow,display,pid,connection,sessionId,tab,scale,hostScale,policy,browser,screenshot,allowed,frames,attestation,timing});this.native=true;this.listeners=new Set();this.closed=false;this.attested=false;this.regionRevision=0;this.changedAt=performance.now();this.motionStreak=0;this.ignoreIdleUntil=-Infinity;
+ constructor({size=geometry,pageWindow,display,pid,connection,sessionId,tab,scale,hostScale=1,policy,browser,screenshot,allowed,frames,attestation=null,followsDocument=false,timing=()=>{}}){
+  Object.assign(this,{size,pageWindow,display,pid,connection,sessionId,tab,scale,hostScale,policy,browser,screenshot,allowed,frames,attestation,followsDocument,timing});this.followers=new Set();this.native=true;this.listeners=new Set();this.closed=false;this.attested=false;this.regionRevision=0;this.changedAt=performance.now();this.motionStreak=0;this.ignoreIdleUntil=-Infinity;
  }
  subscribe(fn){this.listeners.add(fn);return()=>this.listeners.delete(fn)}
  async createRasterPool(){return mkdtemp(path.join(nativeWorkerResource()?.root??this.display.root,'raster-'));}
@@ -54,11 +58,20 @@ export class LinuxCapture {
  rejected(reason){this.nativeWorker?.rejected?.(reason);}
  onCdp(m){
   if(m.method==='Chariox.browserDisconnected'||m.method==='Target.detachedFromTarget'&&m.params?.sessionId===this.sessionId||m.method==='Target.targetDestroyed'&&m.params?.targetId===this.tab?.target_id||m.sessionId===this.sessionId&&m.method==='Inspector.detached'){this.rejected('stale_document');this.fence();return;}
-  if(m.sessionId===this.sessionId&&m.method==='Page.frameNavigated'&&!m.params?.frame?.parentId){if(this.latest||this.pending||this.publishingRaw)this.rejected('stale_document');this.timing('native_fenced frame_navigated '+this.phase,performance.timeOrigin+performance.now());this.fence();}
+  if(m.sessionId===this.sessionId&&m.method==='Page.frameNavigated'&&!m.params?.frame?.parentId){
+   if(this.latest||this.pending||this.publishingRaw)this.rejected('stale_document');
+   const loaderId=m.params?.frame?.loaderId;
+   if(this.followsDocument&&this.attested&&typeof loaderId==='string'&&loaderId)this.followDocument(loaderId);
+   else{this.timing('native_fenced frame_navigated '+this.phase,performance.timeOrigin+performance.now());this.fence();}
+  }
+  if(this.closed)return;
+  if(this.paintHold&&m.sessionId===this.sessionId&&m.method==='Page.lifecycleEvent'&&m.params?.loaderId===this.paintHold.document&&['firstPaint','firstContentfulPaint'].includes(m.params?.name))this.endPaintHold(this.paintHold);
   if(m.method==='Target.targetCreated'&&m.params?.targetInfo?.type==='page'){this.timing('native_fenced target_created '+this.phase,performance.timeOrigin+performance.now());this.fence();}
-  // MP-11: attribute-only protection changes produce no XDamage. Retire even
-  // before attestation, so an empty snapshot cannot outlive marker insertion.
-  if(this.regions&&regionProtectionChanged(m,this.sessionId,this.regions.tracker())){
+  // A DOM inspection refreshes its tree without changing the document. Only
+  // the native tracker's global Vault-target knowledge can skip this mask fence;
+  // the CDP fallback's last empty mask list cannot prove that no target exists.
+  const tracker=this.regions?.tracker();
+  if(tracker&&(tracker.targets||m.method!=='DOM.documentUpdated')&&regionProtectionChanged(m,this.sessionId,tracker)){
    // MP-08/MP-10/MP-11: the owned window/document binding stays intact,
    // also during attestation (pages that mutate continuously still attest).
    // Retire all pixels and queued consumers by revision, refresh only trusted
@@ -95,6 +108,42 @@ export class LinuxCapture {
   if(this.latest||this.pending||this.publishingRaw)this.rejected('region_revision');
   this.regionRevision++;this.regions.retire();this.latest?.raw.release?.();this.pending?.release?.();
   this.latest=null;this.pending=null;this.changedAt=performance.now();this.wake(true);
+ }
+ // MP-08/MP-10/MP-11 (P1): a Tab display keeps this window binding across the Tab's documents, as Selkies keeps one
+ // stream of one surface. Every pixel captured before the commit retires with the projection; the next readback is
+ // published for the new document, under its own Vault projection. Its consumers re-key (new document: independent frame).
+ // Chrome shows white or old tiles until the new document paints (see NavigationHold), so nothing is published before
+ // that paint (bounded): the new document's key then shows the new document.
+ followDocument(documentId){
+  this.tab={...this.tab,document_id:documentId};
+  clearTimeout(this.paintHold?.timer);
+  const hold={document:documentId,at:performance.timeOrigin+performance.now()};hold.timer=setTimeout(()=>this.endPaintHold(hold),PAINT_HOLD_MS);hold.timer.unref?.();this.paintHold=hold;
+  this.retireFrames();
+  this.timing('native_followed frame_navigated',performance.timeOrigin+performance.now());
+  for(const fn of this.followers)fn(documentId);
+ }
+ onDocument(fn){this.followers.add(fn);return()=>this.followers.delete(fn);}
+ endPaintHold(hold){
+  if(this.paintHold!==hold)return;
+  clearTimeout(hold.timer);this.paintHold=null;this.paintedAt=performance.timeOrigin+performance.now();
+  this.timing('native_paint_hold_end',this.paintedAt);this.wake(true);
+ }
+ // The lifecycle paint reaches CDP 40-60 ms after Chrome shows it. The commit's own readback is what Chrome shows until
+ // the new document paints (the old page, or white); a later readback that differs from it and is not one colour is
+ // that paint. (The last readback before the commit is no baseline: an omnibox closing or a link's focus ring changes it.)
+ painted(hold,raw){
+  if(raw.captured_ms<hold.at)return false;
+  if(hold.before===undefined){hold.before=raw.signature;return false;}
+  if(raw.signature===hold.before||oneColour(raw.pixels))return false;
+  clearTimeout(hold.timer);this.paintHold=null;this.paintedAt=raw.captured_ms;
+  this.timing('native_paint_hold_end pixels',performance.timeOrigin+performance.now());
+  return true;
+ }
+ // MP-08/MP-10 (P1): a parked Tab display reads nothing back; unparking reads the current picture at once.
+ park(parked){
+  parked=Boolean(parked);
+  if(parked===Boolean(this.parked)||!this.valid()||!this.child||this.child.stdin.destroyed)return;
+  this.parked=parked;this.control({pause:parked},true);
  }
  async start(){
   if(!this.valid()||!Number.isSafeInteger(this.pid)||this.pid<=1)throw Error('MD-DISPLAY: native surface not owned');
@@ -175,6 +224,8 @@ export class LinuxCapture {
    if(this.connection.presentationFence&&!this.connection.presentationFence.stable(raw.captured_ms,raw.captured_ms+(raw.capture_ms??0))){
     this.timing('native_capture_transient_dropped',raw.captured_ms);raw.release?.();this.publishingRaw=null;resumeAfterCapturePresentation(this,this.connection.presentationFence,()=>this.wake(true));continue;
    }
+   // Only pixels that passed the window checks above judge the new document's paint (Chrome UI over the old page differs too).
+   if(this.paintHold?!this.painted(this.paintHold,raw):raw.captured_ms<this.paintedAt){raw.release?.();this.publishingRaw=null;continue;}
    if(!this.valid())break;
    if(revision!==this.regionRevision){this.rejected('region_revision');raw.release?.();this.publishingRaw=null;continue;}
    // MP-11: a source admitted without pixel proof cannot carry a Vault mask; retire it, the next start attests exactly.
@@ -210,7 +261,8 @@ export class LinuxCapture {
    // Only a raster from the current protection can satisfy delivery/startup.
    if(!this.valid()||revision!==this.regionRevision||raw.captured_ms<this.regions.beforeAt){this.rejected('region_revision');raw.release?.();this.publishingRaw=null;this.wake(true);continue;}
    this.previousRegions=regions;
-   this.motionStreak=performance.now()-this.changedAt<90?this.motionStreak+1:1;this.changedAt=performance.now();
+   // An unchanged readback (the worker refining a coarse picture) is no change: it neither extends motion nor the repair's quiet window.
+   if(raw.identical!==true){this.motionStreak=performance.now()-this.changedAt<90?this.motionStreak+1:1;this.changedAt=performance.now();}
    this.timing('native_xshm_capture',raw.captured_ms); // includes bounded pipe delivery and source fence.
    this.latest?.raw.release?.();
    this.latest={raw,revision,signature:raw.signature,data_base64:raw.signature,width:raw.width,height:raw.height,serial:raw.serial,captured_ms:raw.captured_ms,published_ms:performance.timeOrigin+performance.now(),motion:true,tab_id:this.tab.tab_id,document_id:this.tab.document_id};
@@ -282,7 +334,7 @@ export class LinuxCapture {
   this.child.stdin.write(JSON.stringify(command)+'\n');return true;
  }
  sample(after=-1){return this.valid()&&this.attested&&this.latest?.serial>after?this.latest:null}
- fence(){this.nativeWorker?.retireState();this.closed=true;this.presentationResume?.();this.presentationResume=null;this.attested=false;this.regions?.retire();this.latest?.raw.release?.();this.pending?.release?.();this.latest=null;this.pending=null;this.listeners.clear();if(!this.closing)this.closing=this.cleanup();this.closing.catch(()=>{})}
+ fence(){this.nativeWorker?.retireState();this.closed=true;this.presentationResume?.();this.presentationResume=null;this.attested=false;this.regions?.retire();this.latest?.raw.release?.();this.pending?.release?.();this.latest=null;this.pending=null;this.listeners.clear();this.followers.clear();clearTimeout(this.paintHold?.timer);this.paintHold=null;if(!this.closing)this.closing=this.cleanup();this.closing.catch(()=>{})}
  pause(){} resume(){} // CDP exact reads do not mutate the native display.
  async close(){this.fence();return this.closing}
  async cleanup(){

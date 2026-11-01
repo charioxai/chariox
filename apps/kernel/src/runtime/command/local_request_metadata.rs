@@ -227,6 +227,12 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
                 .optional_session(request.session_id.as_deref())
                 .optional_agent(request.agent_id.as_deref())
         }
+        LocalDaemonRequest::ListProviderAccountCopyOffers(_) => {
+            LocalRequestMetadata::new("provider_account.copy_offers", Normal)
+        }
+        LocalDaemonRequest::CopyProviderAccountFromKernel(_) => {
+            LocalRequestMetadata::new("provider_account.copy_from", Interactive)
+        }
         LocalDaemonRequest::CopyProviderAccountToKernel(_) => {
             LocalRequestMetadata::new("provider_account.copy", Normal)
         }
@@ -240,6 +246,9 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
         }
         LocalDaemonRequest::LockCredentialVault(_) => {
             LocalRequestMetadata::new("credential_vault.lock", Normal)
+        }
+        LocalDaemonRequest::UnlockCredentialVault(_) => {
+            LocalRequestMetadata::new("credential_vault.unlock", Interactive)
         }
         LocalDaemonRequest::ManageCredentialVault(request) => {
             LocalRequestMetadata::new("credential_vault.manage", Interactive)
@@ -623,6 +632,9 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
                 .session(&request.session_id)
                 .workflow_run(&request.workflow_run_ref)
         }
+        LocalDaemonRequest::StopSessionProcesses(request) => {
+            LocalRequestMetadata::new("session_process.stop", Normal).session(&request.session_id)
+        }
         _ => LocalRequestMetadata::new(local_request_command_type(request), Normal),
     }
 }
@@ -633,6 +645,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::AddSshMachine(_) => "machine.ssh.add",
         LocalDaemonRequest::RemoveSshMachine(_) => "machine.ssh.remove",
         LocalDaemonRequest::RequestKernelAccess(_) => "kernel_access.request",
+        LocalDaemonRequest::CoverKernelAccessProcess(_) => "kernel_access.cover",
         LocalDaemonRequest::RequestKernelSudo(_) => "kernel_access.sudo_request",
         LocalDaemonRequest::ExtendKernelSudo(_) => "kernel_access.sudo_extend",
         LocalDaemonRequest::RenewKernelSudoRequester(_) => "kernel_access.sudo_requester_renew",
@@ -890,8 +903,11 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::DeleteCredentialSecret(_) => "credential.secret.delete",
         LocalDaemonRequest::SetProviderAccountCredential(_) => "provider_account.credential.set",
         LocalDaemonRequest::CopyProviderAccountToKernel(_) => "provider_account.copy",
+        LocalDaemonRequest::ListProviderAccountCopyOffers(_) => "provider_account.copy_offers",
+        LocalDaemonRequest::CopyProviderAccountFromKernel(_) => "provider_account.copy_from",
         LocalDaemonRequest::GetCredentialVaultStatus(_) => "credential_vault.status",
         LocalDaemonRequest::LockCredentialVault(_) => "credential_vault.lock",
+        LocalDaemonRequest::UnlockCredentialVault(_) => "credential_vault.unlock",
         LocalDaemonRequest::ManageCredentialVault(_) => "credential_vault.manage",
         LocalDaemonRequest::RegisterCredential(_) => "credential.register",
         LocalDaemonRequest::UpsertCredential(_) => "credential.upsert",
@@ -976,6 +992,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::SendProviderLoginInput(_) => "provider.login.input",
         LocalDaemonRequest::CancelProviderLogin(_) => "provider.login.cancel",
         LocalDaemonRequest::LogoutProvider(_) => "provider.logout",
+        LocalDaemonRequest::StopSessionProcesses(_) => "session_process.stop",
         LocalDaemonRequest::ListProviderProcesses(_) => "provider_process.list",
         LocalDaemonRequest::TeardownProviderProcesses(_) => "provider_process.teardown",
         LocalDaemonRequest::QueryRecall(_) => "recall.query",
@@ -1095,6 +1112,8 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         }
         LocalDaemonRequest::RefreshEventConnection(_) => "event_connection.refresh",
         LocalDaemonRequest::TestEventConnection(_) => "event_connection.test",
+        LocalDaemonRequest::ListEventConnectionEvents(_) => "event_connection.events.list",
+        LocalDaemonRequest::ReplayEventConnectionEvent(_) => "event_connection.events.replay",
         LocalDaemonRequest::ReconnectEventConnection(_) => "event_connection.reconnect",
         LocalDaemonRequest::ListEventConnectionResources(_) => "event_connection.resources.list",
         LocalDaemonRequest::ListEventConnectionDependencies(_) => {

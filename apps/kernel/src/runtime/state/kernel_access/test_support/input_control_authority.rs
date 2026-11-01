@@ -220,6 +220,7 @@ async fn kernel_access_terminal_input_rechecks_local_app_wait() {
     app.update_provider_run_projection(run.clone());
     app.pty_mut()
         .spawn(crate::pty::PtySpawnRequest {
+            agent: None,
             process_key: run.id().into(),
             provider_run_id: run.id().into(),
             program: "/bin/cat".into(),

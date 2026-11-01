@@ -373,6 +373,52 @@ pub use workspace::*;
 /// Protocol 629 also includes protocol 627 attachment byte sizes in shared history.
 /// MP-08/MP-09/MP-10/MP-11: landing union 636 carries 630 (shared browser dialogs), 631 (grant-scoped kernel
 /// health events), 632 (binary Room exec) and 636 (archived-agent discovery); every earlier contract is retained.
-/// Version 660 adds explicit bounded Project Environment reads.
-/// Version 661 adds session-free durable Project resolution.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 661;
+/// Protocol 641 adds `CoverKernelAccessProcess`: a grant covers a named background process by identity.
+/// Allocated 670 lets a user retry (`UpdateQueuedWorkflowPrompt.retry_delivery`) or discard
+/// (`RemoveQueuedWorkflowPrompt`) a workflow notification whose delivery is uncertain, and projects that hold as
+/// `WorkflowQueuedPrompt.delivery_uncertain_until_ms`.
+/// Recipient account offers and kernel-owned copy consent.
+/// MP-08 / MP-09 / MP-10 / MP-11: 780 persists semantic session activity; public snapshot schema 14.
+/// MP-08/MP-10/MP-11: 720 adds the Tab display (display_subscribe tab_display, display_park; P1 of
+/// docs/BROWSER_LATENCY_GAP_PLAN.md).
+/// MP-08/MP-09/MP-10/MP-11: allocated 811 adds structured provider login retry feedback.
+/// MP-08/MP-09/MP-10/MP-11: landing union 642 carries 630 (shared browser dialogs), 631 (grant-scoped kernel
+/// health events), 632 (binary Room exec), 636 (archived-agent discovery), 640 (the typed cause, retryable flag and
+/// reset time of a failed turn on its outside event and history) and 642 (the turn outcome: one typed `kind`, `retryable`
+/// and `reason` for every turn that ends, with the prompt and turn id on the outside event); every earlier contract is retained.
+/// Protocol 643 answers `CancelActivePrompt` for a parked task with `AgentTaskUpdated`; 506 leaves the predecessor list to
+/// keep it within the 32-entry policy.
+/// Allocated 637 adds the optional `native_checkpoint_binding` on provider launch requests (native provider checkpoints).
+/// Allocated 638/240 adds durable agent Move and Return: the `AgentMove` peer carrier, `MoveAgentToLocal` and its
+/// `abort_pending` cancellation, and Project materialization on the target.
+/// Allocated 639/241 composes a Move onto a target kernel with native Project setup: resource receipts, probe gating and
+/// the kernel-held deferred Move published on the agent (`agent_move`).
+/// MP-08/MP-09/MP-10/MP-11: 721 pairs bounded raw binary relay chunks with relay capability 97.
+/// MP-08 / MP-09 / MP-10 / MP-11: 780 persists semantic session activity (public snapshot schema 14).
+/// MP-08/MP-09/MP-10/MP-11: allocated 910 adds the optional `images` data-URL list and `images_omitted` count to the
+/// provider tool payload (Claude tool results), and Codex web search and image view tool calls with their lifecycle status.
+/// Allocated 880 adds owner-scoped listing and replay of the webhooks an integration received
+/// (`ListEventConnectionEvents`, `ReplayEventConnectionEvent`); the predecessor list keeps only the
+/// current release (636) and the one before it (629).
+/// MP-08 / MP-09 / MP-10 / MP-11: 800 adds process limits, Health observations and owned process controls.
+/// Request timing distributions and bounded sampled health diagnostics.
+/// MP-08/MP-09/MP-10/MP-11: landing union 911 carries 910 with 880 (integration received events), 800
+/// (session process samples and controls, `memory_limit` and `outside_end` terminations) and 890 (daemon
+/// health request timings and durable writer queue).
+/// Allocated 913 adds `processes` to the `SessionState` response: the same rows the live
+/// `session_processes_changed` feed shows, readable by a one-shot request.
+/// Version 919 removes the user-side browser frame stream: `KernelBrowserCommand::Subscribe` and `Poll`
+/// (and `KernelBrowserDisplayRequest::Subscribe`) no longer parse, so a client that sends them is refused; `DisplayAck`
+/// gains `paused` (nobody watches: the push pump goes dormant, the acknowledgement still renews the lease).
+/// MP-08/MP-10/MP-11: allocated 920 carries the page's document mode on mirror resets (`document_mode`, the viewer
+/// frame lays out in the page's mode) and adds `KernelBrowser` `pointer_cursor`, the CSS cursor at a point for a
+/// viewer that shows the page as video.
+/// Version 923 adds `UnlockCredentialVault`: the owner's own client unlocks the kernel's
+/// existing Vault with no session or agent (`CredentialVaultUnlocked`).
+/// Landing union 923 carries 913 (`SessionState` `processes`), 917 (direct browser sessions over WebRTC),
+/// 919 (user-side browser frame stream removed, `display_ack` `paused`), 920 (mirror `document_mode`,
+/// `pointer_cursor`) and 923 (session-less Vault unlock).
+/// Version 934 adds explicit bounded Project Environment reads (`GetProjectEnvironment` `view`,
+/// `ProjectEnvironmentView`).
+/// Version 935 adds session-free durable Project resolution (`ResolveProject`, `ProjectResolved`).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 935;

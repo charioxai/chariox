@@ -1,5 +1,4 @@
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -128,7 +127,7 @@ fn try_capture_to(path: &Path) -> Result<bool, String> {
 }
 
 fn run_optional_command(command: &str, args: &[String]) -> Result<bool, String> {
-    match Command::new(command).args(args).output() {
+    match crate::process_spawn::command(command).args(args).output() {
         Ok(output) if output.status.success() => Ok(true),
         Ok(output) => Err(String::from_utf8_lossy(&output.stderr).into_owned()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),

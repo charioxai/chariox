@@ -702,3 +702,89 @@ test("MP-08/MP-10/MP-11 kernel auth rejection retains the addressed alias instea
   assert.equal(h.restoredSnapshots()[0]?.rawPrompt, "@agent-b read README")
   assert.equal(h.footerMessages().at(-1)?.message, "selected codex account b is not authenticated")
 })
+
+// MP-08 / MP-09 / MP-10 / MP-11 EA2-80: Continue uses ordinary submission once.
+function retrySession(kind = "interrupted_by_restart", retryable = true, busy = false): RuntimeSession {
+  return runtimeSession("session-1", null, { agents: [agent("agent-1")], agent_activity: {
+    "agent-1": { status: busy ? "working" : kind === "completed" || kind === "cancelled" ? "idle" : "error",
+      busy, prompt_status: busy ? "running" : "none", unread_idle_output: false,
+      last_completed_turn: { turn_id: "turn-1", outcome: { kind, retryable, reason: "Kernel restarted" } },
+    },
+  } } as unknown as Partial<RuntimeSession>)
+}
+
+for (const [kind, retryable, busy] of [
+  ["completed", true, false], ["cancelled", true, false], ["other", false, false],
+  ["interrupted_by_restart", true, true],
+] as const) test(`Continue refuses ${kind} retryable=${retryable} busy=${busy}`, async () => {
+  const harness = createHarness({ session: retrySession(kind, retryable, busy) })
+  await harness.controller.continueLatest()
+  assert.deepEqual(harness.submissions(), [])
+  assert.match(harness.footerMessages().at(-1)?.message ?? "", /No retryable turn/)
+})
+
+test("Continue without a previous outcome is refused", async () => {
+  const harness = createHarness()
+  await harness.controller.continueLatest()
+  assert.deepEqual(harness.submissions(), [])
+  assert.match(harness.footerMessages().at(-1)?.message ?? "", /No retryable turn/)
+})
+
+test("Continue submits once during acceptance, then refuses the completed turn", async () => {
+  const current = retrySession()
+  let release!: () => void
+  const gate = new Promise<void>(resolve => { release = resolve })
+  const harness = createHarness({ session: current, submitPrompt: async () => {
+    await gate
+    current.agent_activity = retrySession("completed", false).agent_activity!
+    return promptSubmissionResult("session-1", "agent-1", "PromptSubmitted")
+  } })
+  const first = harness.controller.continueLatest()
+  await harness.controller.continueLatest()
+  release()
+  await first
+  assert.deepEqual(harness.submissions(), [{ attachmentId: "attachment-1", targetAgentId: "agent-1", prompt: "Continue\n", attachments: [] }])
+  await harness.controller.continueLatest()
+  assert.equal(harness.submissions().length, 1)
+  assert.match(harness.footerMessages().at(-1)?.message ?? "", /No retryable turn/)
+})
+
+
+test("Continue rechecks the outcome after an asynchronous focus transition", async () => {
+  const current = retrySession()
+  const harness = createHarness({ session: current, waitForPendingAgentFocusTransition: async () => {
+    current.agent_activity = retrySession("interrupted_by_restart", true, true).agent_activity!
+  } })
+  await harness.controller.continueLatest()
+  assert.deepEqual(harness.submissions(), [])
+  assert.match(harness.footerMessages().at(-1)?.message ?? "", /No retryable turn/)
+})
+
+
+test("Continue refuses if another turn settles during attachment preparation", async () => {
+  const current = retrySession()
+  const harness = createHarness({ session: current, preparePromptAttachmentsForSubmit: async () => {
+    current.agent_activity!["agent-1"]!.last_completed_turn!.turn_id = "different-turn"
+    return []
+  } })
+  await harness.controller.continueLatest()
+  assert.deepEqual(harness.submissions(), [])
+  assert.match(harness.footerMessages().at(-1)?.message ?? "", /No retryable turn/)
+  assert.equal(harness.restoredSnapshots().length, 1, "a stale action must restore its consumed draft and attachments")
+  assert.equal(harness.restoredSnapshots()[0]?.rawPrompt, "/continue")
+})
+
+
+test("Continue consumes the command before waiting so the next draft survives", async () => {
+  let release!: () => void
+  let began = false
+  const gate = new Promise<void>(resolve => { release = resolve })
+  const harness = createHarness({ session: retrySession(), waitForPendingAgentFocusTransition: () => gate,
+    beginSubmittedPromptUi: rawPrompt => { began = true; return { rawPrompt, attachments: [], sessionId: "session-1" } },
+  })
+  const pending = harness.controller.continueLatest()
+  assert.equal(began, true, "consume this Enter before any focus wait")
+  release()
+  await pending
+  assert.equal(harness.submissions().length, 1)
+})

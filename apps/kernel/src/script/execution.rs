@@ -1,7 +1,7 @@
 use std::fs;
 use std::io::Write;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use serde_json::Value;
 use wait_timeout::ChildExt;
@@ -195,7 +195,7 @@ pub(super) fn inspect_script(
 ) -> Result<(String, Value), DaemonError> {
     match (runtime, &env.runtime) {
         (CharioxScriptRuntime::Python, CharioxEnvironmentRuntime::Python { python }) => {
-            let output = Command::new(python)
+            let output = crate::process_spawn::command(python)
                 .arg("-c")
                 .arg(PYTHON_INSPECTOR)
                 .arg(source)
@@ -322,7 +322,7 @@ fn run_node_test(
     package_root: Option<&Path>,
     source: &Path,
 ) -> Result<(), DaemonError> {
-    let mut command = Command::new(node);
+    let mut command = crate::process_spawn::command(node);
     if source.extension().and_then(|ext| ext.to_str()) == Some("ts") {
         command.arg("--import").arg("tsx");
     }
@@ -364,7 +364,7 @@ pub(super) fn execute_python_script(
     arguments: Value,
     timeout_sec: u64,
 ) -> Result<ScriptExecutionResult, DaemonError> {
-    let mut command = Command::new(python);
+    let mut command = crate::process_spawn::command(python);
     for name in crate::provider::managed_provider_control_env_remove() {
         command.env_remove(name);
     }
@@ -435,7 +435,7 @@ pub(super) fn execute_node_script(
     arguments: Value,
     timeout_sec: u64,
 ) -> Result<ScriptExecutionResult, DaemonError> {
-    let mut command = Command::new(node);
+    let mut command = crate::process_spawn::command(node);
     if script.extension().and_then(|ext| ext.to_str()) == Some("ts") {
         command.arg("--import").arg("tsx");
     }

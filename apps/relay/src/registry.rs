@@ -161,7 +161,7 @@ impl<V: Clone> ShardedRouteMap<String, V> {
 
 #[derive(Debug, Clone)]
 pub(crate) struct ActiveEventRoute {
-    pub(crate) display: bool,
+    pub(crate) scope: Arc<str>,
     pub(crate) daemon_key: DaemonKey,
     pub(crate) client_sender: RelaySender,
 }
@@ -208,11 +208,17 @@ impl RelayRouteIndex {
         self.subscriptions.get_str(subscription_id)
     }
 
-    /// MP-08/MP-10/MP-11: scheduling hint only for this acknowledged route/socket.
-    /// A foreign sender or an ordinary terminal subscription never gains bypass.
-    pub(crate) fn display_for_sender(&self, subscription_id: &str, sender: &RelaySender) -> bool {
+    /// The scope of this acknowledged route when it belongs to this socket: the writer's
+    /// scheduling hint (display streams) and its byte metering. A foreign sender or an
+    /// ordinary terminal subscription never gains display bypass.
+    pub(crate) fn scope_for_sender(
+        &self,
+        subscription_id: &str,
+        sender: &RelaySender,
+    ) -> Option<Arc<str>> {
         self.subscription(subscription_id)
-            .is_some_and(|route| route.display && route.client_sender.same_channel(sender))
+            .filter(|route| route.client_sender.same_channel(sender))
+            .map(|route| route.scope)
     }
 
     fn subscription_queue_pressure(&self) -> (usize, usize) {
@@ -350,7 +356,7 @@ pub(crate) struct PendingDaemonPeerRequest {
 pub(crate) enum PendingRequestKind {
     Request,
     Subscribe {
-        display: bool,
+        scope: Arc<str>,
         subscription_id: String,
         client_public_key: String,
     },
@@ -933,7 +939,7 @@ mod tests {
         routes.set_subscription(
             "subscription-1".to_string(),
             ActiveEventRoute {
-                display: false,
+                scope: "session".into(),
                 daemon_key: daemon_key.clone(),
                 client_sender,
             },
@@ -964,7 +970,7 @@ mod tests {
         routes.set_subscription(
             "subscription-1".to_string(),
             ActiveEventRoute {
-                display: false,
+                scope: "session".into(),
                 daemon_key,
                 client_sender: client_sender.clone(),
             },
@@ -1054,32 +1060,38 @@ mod tests {
 #[cfg(test)]
 mod display_scheduling_tests {
     use super::*;
+
+    fn display_for_sender(routes: &RelayRouteIndex, id: &str, sender: &RelaySender) -> bool {
+        routes
+            .scope_for_sender(id, sender)
+            .is_some_and(|scope| crate::frame_transport::is_display_scope(Some(&scope)))
+    }
     #[test]
     fn mp08_mp10_mp11_only_own_acknowledged_display_route_can_bypass() {
         let routes = RelayRouteIndex::default();
         let (own, _rx) = tokio::sync::mpsc::channel(8);
         let (foreign, _rx2) = tokio::sync::mpsc::channel(8);
-        assert!(!routes.display_for_sender("display", &own));
+        assert!(!display_for_sender(&routes, "display", &own));
         routes.set_subscription(
             "display".into(),
             ActiveEventRoute {
-                display: false,
+                scope: "session".into(),
                 daemon_key: DaemonKey::new("realm", "kernel"),
                 client_sender: own.clone(),
             },
         );
-        assert!(!routes.display_for_sender("display", &own));
+        assert!(!display_for_sender(&routes, "display", &own));
         routes.set_subscription(
             "display".into(),
             ActiveEventRoute {
-                display: true,
+                scope: crate::frame_transport::DISPLAY_EVENT_SCOPE.into(),
                 daemon_key: DaemonKey::new("realm", "kernel"),
                 client_sender: own.clone(),
             },
         );
-        assert!(routes.display_for_sender("display", &own));
-        assert!(!routes.display_for_sender("display", &foreign));
+        assert!(display_for_sender(&routes, "display", &own));
+        assert!(!display_for_sender(&routes, "display", &foreign));
         routes.remove_subscription("display");
-        assert!(!routes.display_for_sender("display", &own));
+        assert!(!display_for_sender(&routes, "display", &own));
     }
 }

@@ -96,7 +96,7 @@ async function unlockDrillVault() {
   if (!room || !client) return
   const state = await snapshot()
   for (const interaction of state.active_interactions ?? []) {
-    if (interaction.id.startsWith('vault-unlock-') && !interaction.id.startsWith('vault-unlock-lease-')) {
+    if (interaction.id.startsWith('vault-unlock-')) {
       await client.send(api.respondToInteractionRequest(room, interaction.id, 'passphrase', vaultPhrase))
     }
   }

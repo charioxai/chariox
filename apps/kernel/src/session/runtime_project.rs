@@ -51,6 +51,8 @@ pub struct RuntimeProject {
     name: String,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pinned: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pinned_at_ms: Option<u64>,
     kind: RuntimeProjectKind,
     status: RuntimeProjectStatus,
     created_at_ms: u64,
@@ -79,6 +81,7 @@ impl RuntimeProject {
             standalone: false,
             name: name.into(),
             pinned: false,
+            pinned_at_ms: None,
             kind,
             status: RuntimeProjectStatus::Active,
             created_at_ms: now,
@@ -151,8 +154,15 @@ impl RuntimeProject {
         self.pinned
     }
 
+    pub fn pinned_at_ms(&self) -> Option<u64> {
+        self.pinned_at_ms
+    }
+
     pub(crate) fn set_pinned(&mut self, pinned: bool) {
-        self.pinned = pinned;
+        if self.pinned != pinned {
+            self.pinned_at_ms = pinned.then(super::unix_epoch_ms);
+            self.pinned = pinned;
+        }
     }
 
     pub fn created_at_ms(&self) -> u64 {

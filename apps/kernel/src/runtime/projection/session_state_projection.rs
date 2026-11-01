@@ -110,7 +110,10 @@ impl SessionStateProjectionStore {
             .is_some()
     }
 
-    pub(crate) fn update(&self, session: RuntimeSession) {
+    pub(crate) fn update(&self, session: RuntimeSession) -> bool {
+        if session.status() == SessionStatus::Ended {
+            return self.remove(session.id());
+        }
         let session_id = session.id().to_string();
         let session = Arc::new(session);
         let changed = {
@@ -139,14 +142,43 @@ impl SessionStateProjectionStore {
             changed
         };
         if !changed {
-            return;
+            return false;
         }
         self.changes.record_change();
         self.session_change_signal(&session_id).record_change();
+        true
+    }
+
+    /// Patch metadata without re-entering prompt or managed-activity ownership.
+    pub(crate) fn note_session_activity(&self, session_id: &str, timestamp_ms: u64) {
+        {
+            let mut state = self
+                .state
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let Some(current) = state.session_states.get(session_id) else {
+                return;
+            };
+            if timestamp_ms <= current.last_activity_at_ms() {
+                return;
+            }
+            let mut session = current.as_ref().clone();
+            session.note_activity_at(timestamp_ms);
+            let session = Arc::new(session);
+            upsert_session(&mut state.session_list, session.clone());
+            state.session_states.insert(session_id.to_owned(), session);
+            state.projection_revision = state.projection_revision.saturating_add(1);
+        }
+        self.changes.record_change();
+        self.session_change_signal(session_id).record_change();
     }
 
     pub(crate) fn update_list(&self, sessions: Vec<RuntimeSession>) {
-        let sessions = sessions.into_iter().map(Arc::new).collect::<Vec<_>>();
+        let sessions = sessions
+            .into_iter()
+            .filter(|session| session.status() != SessionStatus::Ended)
+            .map(Arc::new)
+            .collect::<Vec<_>>();
         let changed_session_ids = sessions
             .iter()
             .map(|session| session.id().to_string())
@@ -200,13 +232,16 @@ impl SessionStateProjectionStore {
         }
     }
 
-    pub(crate) fn remove(&self, session_id: &str) {
+    pub(crate) fn remove(&self, session_id: &str) -> bool {
         {
             let mut state = self
                 .state
                 .write()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            state.session_states.remove(session_id);
+            let existed = state.session_states.remove(session_id).is_some();
+            if !existed {
+                return false;
+            }
             state
                 .external_observed_activity
                 .retain(|(projected_session_id, _, _), _| projected_session_id != session_id);
@@ -224,6 +259,7 @@ impl SessionStateProjectionStore {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(session_id);
+        true
     }
 
     #[cfg(test)]

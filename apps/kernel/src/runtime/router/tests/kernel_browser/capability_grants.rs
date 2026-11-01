@@ -243,7 +243,7 @@ fn capability_owner_request_grants_only_opened_tabs_until_revoked() {
                 Some(crate::error::UserDomainRefusalReason::NotFocusedAgent),
                 "MP-11: an existing unrelated tab is not covered by the request"
             );
-            assert_eq!(
+            assert_ne!(
                 refusal(
                     tool(
                         router,
@@ -254,7 +254,8 @@ fn capability_owner_request_grants_only_opened_tabs_until_revoked() {
                     .await
                     .unwrap_err()
                 ),
-                Some(crate::error::UserDomainRefusalReason::SensitiveRequiresFocus)
+                Some(crate::error::UserDomainRefusalReason::SensitiveRequiresFocus),
+                "a Vault fill needs the grant, not focus"
             );
             human(
                 router,

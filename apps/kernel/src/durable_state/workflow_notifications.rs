@@ -209,8 +209,7 @@ impl DurableKernelStateStore {
                     response,
                 },
             )))?;
-        receiver
-            .recv()
+        crate::durable_state::await_writer_response(receiver)
             .map_err(|_| error("notification writer unavailable"))?
     }
     #[allow(

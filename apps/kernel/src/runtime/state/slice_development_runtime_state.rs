@@ -1,7 +1,7 @@
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use crate::error::DaemonError;
 use crate::managed_context::development::{
@@ -34,6 +34,16 @@ impl KernelRuntimeState {
         ensure_private_real_directory(&storage_parent)?;
         fs::canonicalize(&storage_parent)
             .map_err(|error| slice_development_io_error("resolve", &storage_parent, error))
+    }
+
+    pub(crate) fn resolve_spawn_slice(
+        &self,
+        reference: &str,
+        caller_agent_id: &str,
+    ) -> Result<crate::slice::SliceRecord, DaemonError> {
+        self.owned
+            .slice_store
+            .resolve_spawn_slice(reference, caller_agent_id)
     }
 
     pub(crate) fn slice_development_selection_for_session(
@@ -415,7 +425,7 @@ fn run_managed_publication_access_helper(
     storage_root: &Path,
     publication: &crate::slice::SliceDevelopmentPublication,
 ) -> Result<(), DaemonError> {
-    let mut child = Command::new(helper)
+    let mut child = crate::process_spawn::command(helper)
         .arg(action)
         .arg(storage_root)
         .arg(&publication.destination_root)
@@ -638,7 +648,7 @@ fn slice_development_error(message: impl Into<String>) -> DaemonError {
 
 #[cfg(test)]
 mod tests {
-    use std::process::Command;
+
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
     use super::*;
@@ -942,7 +952,7 @@ mod tests {
     }
 
     fn git(path: &Path, args: &[&str]) {
-        let output = Command::new("git")
+        let output = crate::process_spawn::command("git")
             .args(args)
             .current_dir(path)
             .output()

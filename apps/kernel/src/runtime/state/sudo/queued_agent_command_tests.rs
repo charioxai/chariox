@@ -1,6 +1,6 @@
 //! MP-08/MP-11: prompt lanes must retain the submitting sudo turn.
-use super::tests::{fixture_with_options, popup, Fixture};
-use super::window_tests::{approve, open, start_continuation};
+use super::tests::{fixture_with_options, Fixture};
+use super::window_tests::{open, start_continuation};
 use super::*;
 use crate::runtime::agent_actor::AgentRuntime;
 use crate::runtime::command::{KernelCaller, KernelCommand, KernelCommandSource};
@@ -85,14 +85,9 @@ async fn assert_queued_prompt(cancel: bool, replace: bool, include_run: bool, co
         request.target_agent_id = Some(target.clone());
         LocalDaemonRequest::SubmitPrompt(request)
     };
-    let confirmation = tokio::spawn({
-        let state = f.state.clone();
-        let window = window.clone();
-        let request = request.clone();
-        async move { state.confirm_sudo_scope(&window, &request).await }
-    });
-    approve(&f, &popup(&f.state).await, None).await.unwrap();
-    confirmation.await.unwrap().unwrap();
+    f.state
+        .authorize_sudo_request(&window.entry_id, &request)
+        .unwrap();
     let runtime = AgentRuntime::new(
         f.state.clone(),
         Default::default(),
@@ -173,9 +168,14 @@ async fn assert_queued_prompt(cancel: bool, replace: bool, include_run: bool, co
             "queued prompt borrowed a different turn: {result:?}"
         );
         let after = f.state.owned.session_snapshot(&window.session_id).unwrap();
+        // Only identity: delivery of the window's own prompt may still advance.
         assert_eq!(
-            after.active_prompt_for_agent(&target),
-            before.active_prompt_for_agent(&target)
+            after
+                .active_prompt_for_agent(&target)
+                .map(|p| p.id().to_owned()),
+            before
+                .active_prompt_for_agent(&target)
+                .map(|p| p.id().to_owned())
         );
         assert_eq!(
             after.queued_prompts_for_agent(&target),
