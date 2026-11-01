@@ -28,6 +28,20 @@ An external agent (Claude Code, Codex, OpenCode) talks only to its local kernel 
 - A person pairs this kernel with a self-hosted kernel with `/kernel add <link>` in a Chariox terminal (`/kernel linked`, `/kernel unlink NAME`); agents cannot.
 - Output is one JSON document on stdout. Errors are `{"error":{"code","message","kernel"}}` on stderr.
 
+### Development standing grants
+
+By default a grant lasts only while the holder's process does: when the agent's process restarts, it asks the owner again. On a development kernel the owner can pre-approve a holder so that restart needs no popup. Edit the user config file by hand (there is no command, popup or API for it, so no agent can enable it for itself):
+
+```toml
+[[kernel_access.standing_holders]]
+harness = "claude"                        # codex, claude or opencode
+executable = "/usr/local/bin/claude"      # the holder's exact executable path, as the kernel shows it in the access popup
+```
+
+A request that asks for `--until-exit`, from a holder with that harness and that executable, is admitted at once, without a popup. It is an ordinary until-exit grant: it ends when the holder exits, comes back after a kernel restart while the holder lives, shows in `chariox access list`, and `chariox access revoke` ends it. The audit record says `granted` with the reason `standing_policy`. Revoking does not stop the holder's next request from being admitted again: remove the entry to stop that. The file is read at each request, so adding or removing an entry needs no restart; a malformed entry is ignored with a log line, and a timed (`--minutes`) request always asks the owner.
+
+Trade-off: any process of that executable and harness under the same user can obtain access, so keep the list empty on shared or production kernels. It is empty by default.
+
 Exit codes and the error codes behind them:
 
 | Exit | Meaning | Codes |

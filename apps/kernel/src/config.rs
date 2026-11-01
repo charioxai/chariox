@@ -39,7 +39,8 @@ pub use identity::prepare_protected_slice_identity;
 #[cfg(test)]
 use identity::{generate_identity_suffix, RuntimeIdentity};
 pub(crate) use identity::{load_or_create_managed_runtime_identity, ManagedRuntimeIdentity};
-pub use kernel_access::UserKernelAccessConfig;
+pub(crate) use kernel_access::read_standing_holders;
+pub use kernel_access::{StandingHolder, UserKernelAccessConfig};
 #[cfg(test)]
 use persisted_daemon::PersistedDaemonConfig;
 #[cfg(test)]

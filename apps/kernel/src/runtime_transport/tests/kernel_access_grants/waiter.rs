@@ -3,7 +3,8 @@
 use super::*;
 
 /// The requester: connects, asks for access for `CHARIOX_ACCESS_TEST_HOLDER` (a pid, or
-/// `parent` for its parent shell), then records its pid and waits for the owner's answer.
+/// `parent` for its parent shell) with the term in `CHARIOX_ACCESS_TEST_TERM` (default
+/// until-exit), then records its pid and waits for the owner's answer.
 #[test]
 #[ignore = "subprocess entry point"]
 fn kernel_access_waiter_child() {
@@ -17,6 +18,9 @@ fn kernel_access_waiter_child() {
         "parent" => unsafe { libc::getppid() as u32 },
         pid => pid.parse().unwrap(),
     };
+    let term: Value = std::env::var("CHARIOX_ACCESS_TEST_TERM")
+        .map(|term| serde_json::from_str(&term).unwrap())
+        .unwrap_or_else(|_| "until_holder_exits".into());
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -34,7 +38,7 @@ fn kernel_access_waiter_child() {
             socket
                 .send(Message::Text(
                     frame(serde_json::json!({"RequestKernelAccess":{
-                        "holder_pid": holder_pid, "term": "until_holder_exits"
+                        "holder_pid": holder_pid, "term": term
                     }}))
                     .to_string()
                     .into(),
@@ -74,7 +78,12 @@ fn kernel_access_waiter_child() {
 /// `sh` is the requester's parent: it runs the waiter in the background and waits for it,
 /// the way a shell runs the detached `chariox access request`. Killing the shell re-parents
 /// the waiter to init, as the CLI's `--no-wait` process exiting does.
-fn shell_with_waiter(root: &Path, holder: &str) -> Child {
+pub(super) fn shell_with_waiter(root: &Path, holder: &str) -> Child {
+    shell_with_waiter_term(root, holder, serde_json::json!("until_holder_exits"))
+}
+
+/// `term` is the request's term, for example `{"minutes":30}`.
+pub(super) fn shell_with_waiter_term(root: &Path, holder: &str, term: Value) -> Child {
     Command::new("sh")
         .args([
             "-c",
@@ -83,6 +92,7 @@ fn shell_with_waiter(root: &Path, holder: &str) -> Child {
         .arg(std::env::current_exe().unwrap())
         .env("CHARIOX_ACCESS_TEST_CLIENT", root)
         .env("CHARIOX_ACCESS_TEST_HOLDER", holder)
+        .env("CHARIOX_ACCESS_TEST_TERM", term.to_string())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::inherit())
@@ -90,7 +100,7 @@ fn shell_with_waiter(root: &Path, holder: &str) -> Child {
         .unwrap()
 }
 
-async fn file_text(path: PathBuf) -> String {
+pub(super) async fn file_text(path: PathBuf) -> String {
     timeout(Duration::from_secs(15), async {
         loop {
             if let Ok(text) = std::fs::read_to_string(&path) {
@@ -125,7 +135,7 @@ async fn orphaned_waiter(kernel: &mut Kernel, shell: &mut Child) -> String {
     id
 }
 
-async fn grants(kernel: &mut Kernel) -> Vec<Value> {
+pub(super) async fn grants(kernel: &mut Kernel) -> Vec<Value> {
     let list = kernel
         .request(serde_json::json!({"ListKernelAccessGrants":{}}))
         .await;
