@@ -298,14 +298,43 @@ async fn offline_worker_ends_the_leased_turn_failed_and_wakes_the_delegator() {
 
 #[test]
 fn mp10_a10s04_worker_that_lost_only_its_relay_is_cancelled_when_it_reconnects() {
-    run_test(worker_that_lost_only_its_relay_is_cancelled_when_it_reconnects);
+    run_test(|| relay_cut_then_reconnect(RelayCut::default()));
+}
+
+#[test]
+fn mp10_a10s04_stop_obligation_survives_a_home_restart_while_the_worker_lives() {
+    run_test(|| {
+        relay_cut_then_reconnect(RelayCut {
+            restart_home: true,
+            ..RelayCut::default()
+        })
+    });
+}
+
+#[test]
+fn mp10_a10s04_general_worker_is_cancelled_after_the_lease_ceiling_has_passed() {
+    run_test(|| {
+        relay_cut_then_reconnect(RelayCut {
+            offline_past_the_lease_ceiling: true,
+            ..RelayCut::default()
+        })
+    });
+}
+
+#[derive(Default, Clone, Copy)]
+struct RelayCut {
+    /// The home restarts after it gave up on the worker and before the worker returns.
+    restart_home: bool,
+    /// The worker stays unreachable for longer than a worker-enforced lease ceiling.
+    offline_past_the_lease_ceiling: bool,
 }
 
 /// The worker's relay link drops past the grace period while its provider keeps
 /// running. The delegator is woken in bounded time, but the loss is not proof
 /// that the worker stopped: when the worker is reachable again the home cancels
 /// that exact run, and a result the run still produces is not taken as live.
-async fn worker_that_lost_only_its_relay_is_cancelled_when_it_reconnects() {
+/// The worker is an ordinary kernel, which enforces no lease ceiling of its own.
+async fn relay_cut_then_reconnect(cut: RelayCut) {
     let _tools = with_room_tools();
     let mut fixture = LiveWorker::start().await;
     let worker = start_agent_worker(&fixture, agent_worker_state(&fixture)).await;
@@ -314,7 +343,7 @@ async fn worker_that_lost_only_its_relay_is_cancelled_when_it_reconnects() {
         spawn_on_agent_worker_with_model(&mut fixture, &room, "controlled-cancel-idle").await;
     let attachment = owner_attachment(&fixture, &room).await;
     run_turn(&fixture, &room, &attachment, &agent, "A10-S04 relay cut").await;
-    let store = store(&fixture).await;
+    let mut store = store(&fixture).await;
     let delegator = local_agent(&fixture, &room, &agent).await;
     delegator_waiting_on(&store, &room, &delegator, &agent);
     let running = eventually("the leased turn runs", || {
@@ -326,7 +355,7 @@ async fn worker_that_lost_only_its_relay_is_cancelled_when_it_reconnects() {
     })
     .await;
     let worker_run = worker.run_for(&fixture, &agent, &running.prompt_id).await;
-    let runtime = fixture.home.runtime_state();
+    let mut runtime = fixture.home.runtime_state();
     let start = crate::session::unix_epoch_ms();
     runtime
         .sweep_agent_lifecycle_at_for_test(start)
@@ -358,6 +387,14 @@ async fn worker_that_lost_only_its_relay_is_cancelled_when_it_reconnects() {
         .into_iter()
         .find(|t| t.task_id == running.task_id)
         .unwrap();
+    let mut resume_at = start + 45_000;
+    if cut.offline_past_the_lease_ceiling {
+        resume_at += 2 * crate::app::REMOTE_EXECUTION_LEASE_MAX_LIFETIME_MS;
+        runtime
+            .sweep_agent_lifecycle_at_for_test(resume_at)
+            .await
+            .unwrap();
+    }
     let worker_run_state = |router: &Arc<CommandRouter>| {
         let router = Arc::clone(router);
         let id = worker_run.id().to_string();
@@ -387,6 +424,11 @@ async fn worker_that_lost_only_its_relay_is_cancelled_when_it_reconnects() {
         }
     };
     let open_while_offline = runtime.unstopped_worker_runs_for_test();
+    if cut.restart_home {
+        restart_home(&mut fixture, store, runtime).await;
+        runtime = fixture.home.runtime_state();
+        store = self::store(&fixture).await;
+    }
 
     let (stop, receiver) = watch::channel(false);
     let relay_state = router.app.lock().await.relay_client_state();
@@ -419,9 +461,9 @@ async fn worker_that_lost_only_its_relay_is_cancelled_when_it_reconnects() {
         stop,
         task,
     };
-    for step in 1..=8 {
+    for step in 1..=12 {
         runtime
-            .sweep_agent_lifecycle_at_for_test(start + 45_000 + step * 30_000)
+            .sweep_agent_lifecycle_at_for_test(resume_at + step * 30_000)
             .await
             .unwrap();
         if runtime.unstopped_worker_runs_for_test() == 0 {
@@ -472,4 +514,37 @@ async fn worker_that_lost_only_its_relay_is_cancelled_when_it_reconnects() {
         "{final_task:?}"
     );
     assert_eq!(woken, 1, "the delegator is woken once");
+}
+
+/// The home dies the way a crash does, then starts again from its durable state
+/// and relay identity while the worker's provider keeps running. The caller's
+/// handles to the dead home are consumed: its state is owned until the last one drops.
+async fn restart_home(
+    fixture: &mut LiveWorker,
+    old_store: crate::durable_state::DurableKernelStateStore,
+    old_runtime: crate::runtime::state::KernelRuntimeState,
+) {
+    old_store.fence_writer().unwrap();
+    let connector = fixture.relay_addresses.len();
+    fixture.tasks[connector].abort();
+    let _ = (&mut fixture.tasks[connector]).await;
+    drop(std::mem::replace(
+        &mut fixture.home,
+        Arc::clone(&fixture.worker),
+    ));
+    drop((old_store, old_runtime));
+    let app = DaemonApp::bootstrap(fixture.home_state.config.clone()).unwrap();
+    let restarted = Arc::new(CommandRouter::with_interactive_capacity(
+        Arc::new(Mutex::new(app)),
+        2,
+    ));
+    let relay_state = restarted.app.lock().await.relay_client_state();
+    fixture.tasks[connector] = tokio::spawn(
+        crate::transport::relay_client::run_daemon_relay_connector_with_router(
+            Arc::clone(&restarted),
+            relay_state,
+            fixture.shutdown.subscribe(),
+        ),
+    );
+    fixture.home = restarted;
 }
