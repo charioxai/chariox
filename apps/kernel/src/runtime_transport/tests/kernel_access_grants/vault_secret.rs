@@ -1,0 +1,216 @@
+//! An outside agent asks for a Vault value: it gets a link and the outcome, the owner's
+//! client takes the value, and nothing on the kernel ever holds it in the clear.
+use super::*;
+use base64::Engine;
+use sha2::{Digest, Sha256};
+
+const CANARY: &str = "canary-8f3a1c52-9d4e-4b7a-a1f0-6e2d3c4b5a69";
+
+fn request(id: &str, overwrite: bool) -> Value {
+    serde_json::json!({"RequestVaultSecret":{"credential_id":id,"label":"Drill key","overwrite":overwrite}})
+}
+
+fn status(interaction_id: &str) -> Value {
+    serde_json::json!({"GetVaultSecretStatus":{"interaction_id":interaction_id}})
+}
+
+fn answer(id: &str, choice: &str, reply: Option<&str>) -> Value {
+    serde_json::json!({"RespondToInteraction":{
+        "session_id":crate::runtime::kernel_access::ACCESS_INTERACTION_SCOPE,
+        "interaction_id":id,"choice_id":choice,"custom_reply":reply,
+    }})
+}
+
+impl Kernel {
+    async fn secret_popup(&mut self, interaction_id: &str) -> Value {
+        timeout(Duration::from_secs(10), async {
+            while let Some(message) = self.popups.next().await {
+                if let Ok(Message::Text(text)) = message {
+                    let frame: Value = serde_json::from_str(&text).unwrap();
+                    let event = &frame["event"];
+                    if event["event"] == "passkey_prompts_changed" {
+                        for prompt in event["prompts"].as_array().into_iter().flatten() {
+                            if prompt["interaction_id"] == interaction_id {
+                                return prompt.clone();
+                            }
+                        }
+                    }
+                }
+            }
+            panic!("popup socket closed");
+        })
+        .await
+        .unwrap()
+    }
+
+    async fn secret_status(&mut self, holder: &mut Client, interaction_id: &str, want: &str) {
+        timeout(Duration::from_secs(10), async {
+            loop {
+                let reported = holder.request(status(interaction_id));
+                assert!(reported["error"].is_null(), "{reported}");
+                if reported["response"]["VaultSecretStatusReported"]["status"] == want {
+                    return;
+                }
+                sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("the request never became {want}"));
+    }
+}
+
+fn files_under(root: &Path, found: &mut Vec<PathBuf>) {
+    for entry in std::fs::read_dir(root).into_iter().flatten().flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            files_under(&path, found);
+        } else {
+            found.push(path);
+        }
+    }
+}
+
+fn assert_value_absent(root: &Path, texts: &[String]) {
+    let forms: [String; 2] = [
+        CANARY.to_owned(),
+        base64::engine::general_purpose::STANDARD.encode(CANARY),
+    ];
+    let utf16: Vec<u8> = CANARY.encode_utf16().flat_map(u16::to_le_bytes).collect();
+    let mut files = Vec::new();
+    files_under(root, &mut files);
+    for file in files {
+        let bytes = std::fs::read(&file).unwrap_or_default();
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(
+            !forms.iter().any(|form| text.contains(form.as_str()))
+                && !bytes.windows(utf16.len()).any(|window| window == utf16),
+            "the value is in {}",
+            file.display()
+        );
+    }
+    for text in texts {
+        assert!(
+            !forms.iter().any(|form| text.contains(form.as_str())),
+            "the value is in a response: {text}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn an_outside_agent_gets_a_link_and_the_owner_types_the_value_in_a_client() {
+    let mut kernel = Kernel::start().await;
+    let mut holder = Client::start(&kernel.root);
+    grant(&mut kernel, &mut holder).await;
+
+    let unavailable = holder.request(request("drill_key", false));
+    assert!(
+        unavailable["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("secret_link_unavailable")),
+        "no page host must fail loudly: {unavailable}"
+    );
+
+    let set = serde_json::json!({"SetUserConfigValue":{"path":"secret_link.page_url","value":"https://page.test"}});
+    assert!(
+        holder.request(set.clone())["error"].is_object(),
+        "an agent must not choose where the link points"
+    );
+    assert!(kernel.request(set).await["error"].is_null());
+
+    let started = holder.request(request("drill_key", false));
+    assert!(started["error"].is_null(), "{started}");
+    let requested = &started["response"]["VaultSecretRequested"];
+    let interaction_id = requested["interaction_id"].as_str().unwrap().to_owned();
+    assert_eq!(requested["credential_id"], "drill_key");
+    assert!(requested["expires_at"].as_u64().unwrap() > crate::session::unix_epoch_ms());
+    let link = requested["link"].as_str().unwrap();
+    assert!(
+        link.starts_with("https://page.test/s/") && link.ends_with(&format!("/{interaction_id}")),
+        "{link}"
+    );
+
+    let popup = kernel.secret_popup(&interaction_id).await;
+    assert_eq!(popup["kind"], "vault_secret");
+    assert_eq!(
+        popup["session_id"],
+        crate::runtime::kernel_access::ACCESS_INTERACTION_SCOPE
+    );
+    kernel
+        .secret_status(&mut holder, &interaction_id, "pending")
+        .await;
+
+    for refused in [
+        answer(&interaction_id, "secret", Some(CANARY)),
+        answer(&interaction_id, "cancel", None),
+    ] {
+        assert!(
+            holder.request(refused)["error"].is_object(),
+            "an agent answered the owner's secret prompt"
+        );
+    }
+    kernel
+        .secret_status(&mut holder, &interaction_id, "pending")
+        .await;
+
+    let answered = kernel
+        .request(answer(&interaction_id, "secret", Some(CANARY)))
+        .await;
+    assert!(answered["error"].is_null(), "{answered}");
+    kernel
+        .secret_status(&mut holder, &interaction_id, "stored")
+        .await;
+
+    kernel.control("vault-secret-sha256:drill_key").await;
+    assert_eq!(
+        std::fs::read_to_string(kernel.root.join("vault-secret-sha256")).unwrap(),
+        format!("{:x}", Sha256::digest(CANARY))
+    );
+
+    let mut texts = vec![answered.to_string()];
+    texts.push(holder.request(status(&interaction_id)).to_string());
+    texts.push(
+        kernel
+            .request(serde_json::json!({"GetSessionState":{"session_id":SESSION}}))
+            .await
+            .to_string(),
+    );
+    assert_value_absent(&kernel.root, &texts);
+}
+
+#[tokio::test]
+async fn the_owner_cancels_and_a_second_request_for_the_same_handle_needs_overwrite() {
+    let mut kernel = Kernel::start().await;
+    let mut holder = Client::start(&kernel.root);
+    grant(&mut kernel, &mut holder).await;
+    let set = serde_json::json!({"SetUserConfigValue":{"path":"secret_link.page_url","value":"https://page.test"}});
+    assert!(kernel.request(set).await["error"].is_null());
+
+    let first = holder.request(request("drill_key", false));
+    let id = first["response"]["VaultSecretRequested"]["interaction_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(kernel.request(answer(&id, "cancel", None)).await["error"].is_null());
+    kernel.secret_status(&mut holder, &id, "cancelled").await;
+
+    let unknown = holder.request(status("secret-unknown"));
+    assert!(unknown["error"].is_object(), "{unknown}");
+
+    let second = holder.request(request("drill_key", false));
+    let id = second["response"]["VaultSecretRequested"]["interaction_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(kernel.request(answer(&id, "secret", Some(CANARY))).await["error"].is_null());
+    kernel.secret_status(&mut holder, &id, "stored").await;
+
+    let third = holder.request(request("drill_key", false));
+    assert!(
+        third["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("overwrite")),
+        "an existing handle needs overwrite: {third}"
+    );
+    let fourth = holder.request(request("drill_key", true));
+    assert!(fourth["error"].is_null(), "{fourth}");
+}
