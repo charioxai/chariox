@@ -1,7 +1,7 @@
 import { kernelUnixClient } from "./kernel-unix-client.js"
 import { spawn } from "node:child_process"
 import { defaultAccessHolder } from "./access-holder.js"
-import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { kernelSocketConfigRoot } from "@chariox/kernel-client/kernel-unix-socket-path"
 import { LocalIpcClient, LocalIpcError } from "@chariox/kernel-client/ipc"
@@ -10,9 +10,11 @@ import { CommandFailure, parseFlags, usageOf } from "./agent-command-table.js"
 import { probeKernel, reportFailure } from "./kernels-command.js"
 
 const WAITER_START_TIMEOUT_MS = 10_000
-// The kernel verifies the holder through the requester's live parent chain, so
-// the parent must outlive the moment the waiter's request reaches the socket.
+// The kernel verifies the holder through the requester's live parent chain when the request
+// arrives, so the parent must outlive the moment the waiter's request reaches the socket.
+// The approval, minutes later, no longer needs the waiter inside the holder.
 const WAITER_REQUEST_GRACE_MS = 250
+const WAITER_ENV = "CHARIOX_ACCESS_WAITER"
 
 function holderPid(flags: Map<string, string | true>, fallback: () => number): number {
   const holder = flags.has("--holder-pid") ? Number(flags.get("--holder-pid")) : fallback()
@@ -36,6 +38,20 @@ export function parseAccessRequest(argv: string[], fallbackHolder: () => number)
 
 function waiterPidFile(holder: number): string {
   return join(process.env.XDG_RUNTIME_DIR || kernelSocketConfigRoot(), `access-waiter-${holder}.pid`)
+}
+
+function waiterOutcomeFile(holder: number): string {
+  return join(process.env.XDG_RUNTIME_DIR || kernelSocketConfigRoot(), `access-waiter-${holder}.outcome`)
+}
+
+/** Why the waiter ended without a grant, so `access status` can say it instead of "not_requested". */
+function waiterOutcome(holder: number): { code: string; message: string } | null {
+  try {
+    const { code, message } = JSON.parse(readFileSync(waiterOutcomeFile(holder), "utf8")) as { code: string; message: string }
+    return typeof code === "string" && typeof message === "string" ? { code, message } : null
+  } catch {
+    return null
+  }
 }
 
 function waiterAlive(holder: number): boolean {
@@ -65,7 +81,8 @@ async function startWaiter(argv: string[], holder: number): Promise<void> {
   const entry = process.argv[1]
   const script = entry && !entry.startsWith("/$bunfs/") && existsSync(entry) ? [entry] : []
   const args = argv.filter(arg => arg !== "--no-wait")
-  const child = spawn(process.execPath, [...script, "access", "request", ...args, ...(args.includes("--holder-pid") ? [] : ["--holder-pid", String(holder)])], { detached: true, stdio: ["ignore", "ignore", "pipe"] })
+  rmSync(waiterOutcomeFile(holder), { force: true })
+  const child = spawn(process.execPath, [...script, "access", "request", ...args, ...(args.includes("--holder-pid") ? [] : ["--holder-pid", String(holder)])], { detached: true, stdio: ["ignore", "ignore", "pipe"], env: { ...process.env, [WAITER_ENV]: "1" } })
   const output = await new Promise<string>((resolve, reject) => {
     const timer = setTimeout(() => reject(new CommandFailure("cli_error", "the access waiter did not start")), WAITER_START_TIMEOUT_MS)
     child.stderr.once("data", chunk => { clearTimeout(timer); resolve(String(chunk)) })
@@ -82,6 +99,13 @@ async function startWaiter(argv: string[], holder: number): Promise<void> {
   child.unref()
 }
 
+function recordWaiterOutcome(holder: number, error: unknown): void {
+  const code = error instanceof LocalIpcError ? error.code : "cli_error"
+  const message = error instanceof Error ? error.message : String(error)
+  mkdirSync(join(waiterOutcomeFile(holder), ".."), { recursive: true, mode: 0o700 })
+  writeFileSync(waiterOutcomeFile(holder), JSON.stringify({ code, message }), { mode: 0o600 })
+}
+
 async function requestAccess(argv: string[]): Promise<void> {
   const { request, socket, noWait } = parseAccessRequest(argv, defaultAccessHolder)
   const holder = request.RequestKernelAccess.holder_pid
@@ -96,6 +120,9 @@ async function requestAccess(argv: string[]): Promise<void> {
     console.error(`Waiting for the kernel's access popup for holder pid ${holder}.`)
     const response = await client.send<KernelAccessGrantedResponse>(request)
     console.log(JSON.stringify(response.KernelAccessGranted.grant))
+  } catch (error) {
+    if (process.env[WAITER_ENV]) recordWaiterOutcome(holder, error)
+    throw error
   } finally { await client.close() }
 }
 
@@ -114,16 +141,22 @@ async function accessStatus(argv: string[]): Promise<void> {
   const flags = parseFlags("access status", argv)
   const holder = holderPid(flags, defaultAccessHolder)
   let status: "granted" | "pending" | "ended" | "not_requested"
+  let reason: { code: string; message: string } | null = null
   try {
     await probeKernel(flags.get("--socket") as string | undefined)
     status = "granted"
   } catch (error) {
     const code = error instanceof LocalIpcError ? error.code : null
     if (code === "kernel_access_ended") status = "ended"
-    else if (code === "kernel_access_not_covered") status = waiterAlive(holder) ? "pending" : "not_requested"
-    else throw error
+    else if (code === "kernel_access_not_covered") {
+      if (waiterAlive(holder)) status = "pending"
+      else {
+        reason = waiterOutcome(holder)
+        status = reason ? "ended" : "not_requested"
+      }
+    } else throw error
   }
-  console.log(JSON.stringify({ status }))
+  console.log(JSON.stringify(reason ? { status, reason: reason.code, message: reason.message } : { status }))
 }
 
 const ACCESS_USAGE = [usageOf("access request"), usageOf("access status"), usageOf("access cover"), "chariox access list", "chariox access revoke <id|--all>"].join(" | ")
