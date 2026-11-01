@@ -60,7 +60,7 @@ impl VerifiedInstallCandidate {
         let manifest = package.manifest();
         let declarations = package.declarations();
         let authority =
-            super::activation::AuthoritySet::of(&manifest.capabilities, &declarations.actions);
+            super::activation::AuthoritySet::of(manifest.capabilities, &declarations.actions);
         // Release fingerprints are persisted and compared when catalogs reopen.
         // Approval normalization has its own authority table; changing this
         // historical fingerprint would make unchanged installed Apps stale.
