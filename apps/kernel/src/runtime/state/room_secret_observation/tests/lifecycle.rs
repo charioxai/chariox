@@ -697,3 +697,61 @@ async fn an_answer_for_a_new_handle_never_replaces_another_handles_vault_slot() 
     );
     assert!(fixture.registry.get("token_slot").unwrap().is_none());
 }
+
+#[tokio::test]
+async fn an_answer_for_a_new_handle_never_replaces_a_stored_value_that_has_no_record() {
+    let fixture = request_fixture("orphan-slot").await;
+    let runtime = &fixture.room.runtime;
+    fixture
+        .service
+        .set_vault_secret("token_slot", "original-value")
+        .unwrap();
+
+    let status = runtime
+        .store_answer(
+            typed("typed-by-the-owner"),
+            requested_credential("token_slot", "token_slot"),
+            false,
+        )
+        .await;
+
+    assert_ne!(status, crate::local::VaultSecretStatus::Stored);
+    let value = fixture
+        .service
+        .vault_secret_for_dictation("token_slot")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        value.as_str(),
+        "original-value",
+        "the stored value was replaced"
+    );
+    assert!(fixture.registry.get("token_slot").unwrap().is_none());
+}
+
+#[tokio::test]
+async fn an_overwrite_answer_replaces_a_stored_value_that_has_no_record() {
+    let fixture = request_fixture("orphan-overwrite").await;
+    let runtime = &fixture.room.runtime;
+    fixture
+        .service
+        .set_vault_secret("token_slot", "original-value")
+        .unwrap();
+
+    let status = runtime
+        .store_answer(
+            typed("typed-by-the-owner"),
+            requested_credential("token_slot", "token_slot"),
+            true,
+        )
+        .await;
+
+    assert_eq!(status, crate::local::VaultSecretStatus::Stored);
+    let value = fixture
+        .service
+        .vault_secret_for_dictation("token_slot")
+        .unwrap()
+        .unwrap();
+    assert_eq!(value.as_str(), "typed-by-the-owner");
+    assert!(fixture.registry.get("token_slot").unwrap().is_some());
+}

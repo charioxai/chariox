@@ -480,6 +480,110 @@ async fn a_new_handle_cannot_take_a_vault_slot_another_handle_uses() {
     );
 }
 
+async fn store_value(kernel: &mut Kernel, key: &str, value: &str) {
+    let stored = kernel
+        .request(serde_json::json!({"SetCredentialSecret":{"session_id":null,"agent_id":null,"key":key,"value":value}}))
+        .await;
+    assert!(stored["error"].is_null(), "{stored}");
+}
+
+fn sha256_hex(value: &str) -> String {
+    format!("{:x}", Sha256::digest(value.as_bytes()))
+}
+
+#[tokio::test]
+async fn a_new_handle_cannot_take_a_vault_slot_that_holds_a_value_without_a_record() {
+    let mut kernel = Kernel::start().await;
+    let mut holder = Client::start(&kernel.root);
+    grant(&mut kernel, &mut holder).await;
+    let set = serde_json::json!({"SetUserConfigValue":{"path":"secret_link.page_url","value":"https://page.test"}});
+    assert!(kernel.request(set).await["error"].is_null());
+    unlock(&mut kernel).await;
+
+    store_value(&mut kernel, "token_slot", "original-value").await;
+
+    let started = holder.request(request("token_slot", false));
+    assert!(
+        started["error"]["code"] == "secret_request_exists",
+        "a new handle was offered a Vault slot that holds a value: {started}"
+    );
+    assert!(
+        started["error"]["message"]
+            .as_str()
+            .is_some_and(|next| next.contains("overwrite")),
+        "the refusal does not say what to do next: {started}"
+    );
+    assert_eq!(
+        kernel.vault_value_sha256("token_slot").await,
+        sha256_hex("original-value"),
+        "the stored value was replaced"
+    );
+}
+
+#[tokio::test]
+async fn overwrite_replaces_the_value_of_a_vault_slot_that_has_no_record() {
+    let mut kernel = Kernel::start().await;
+    let mut holder = Client::start(&kernel.root);
+    grant(&mut kernel, &mut holder).await;
+    let set = serde_json::json!({"SetUserConfigValue":{"path":"secret_link.page_url","value":"https://page.test"}});
+    assert!(kernel.request(set).await["error"].is_null());
+    unlock(&mut kernel).await;
+
+    store_value(&mut kernel, "token_slot", "original-value").await;
+
+    let started = holder.request(request("token_slot", true));
+    let id = started["response"]["VaultSecretRequested"]["interaction_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{started}"))
+        .to_owned();
+    assert_eq!(
+        kernel.vault_value_sha256("token_slot").await,
+        sha256_hex("original-value"),
+        "the value changed before the owner typed anything"
+    );
+    assert!(kernel.request(answer(&id, "secret", Some(CANARY))).await["error"].is_null());
+    kernel.secret_status(&mut holder, &id, "stored").await;
+    assert_eq!(
+        kernel.vault_value_sha256("token_slot").await,
+        sha256_hex(CANARY)
+    );
+    assert_eq!(kernel.credential_allowed_hosts("token_slot").await, [HOST]);
+}
+
+#[tokio::test]
+async fn a_deleted_handle_leaves_its_vault_value_and_a_new_request_treats_it_as_occupied() {
+    let mut kernel = Kernel::start().await;
+    let mut holder = Client::start(&kernel.root);
+    grant(&mut kernel, &mut holder).await;
+    let set = serde_json::json!({"SetUserConfigValue":{"path":"secret_link.page_url","value":"https://page.test"}});
+    assert!(kernel.request(set).await["error"].is_null());
+    unlock(&mut kernel).await;
+
+    let first = holder.request(request("drill_key", false));
+    let id = first["response"]["VaultSecretRequested"]["interaction_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(kernel.request(answer(&id, "secret", Some(CANARY))).await["error"].is_null());
+    kernel.secret_status(&mut holder, &id, "stored").await;
+
+    kernel.control("remove-credential-record:drill_key").await;
+
+    let again = holder.request(request("drill_key", false));
+    assert!(
+        again["error"]["code"] == "secret_request_exists",
+        "the value of a deleted handle was offered for replacement: {again}"
+    );
+    assert_eq!(
+        kernel.vault_value_sha256("drill_key").await,
+        sha256_hex(CANARY),
+        "the value of the deleted handle was lost"
+    );
+
+    let replacing = holder.request(request("drill_key", true));
+    assert!(replacing["error"].is_null(), "{replacing}");
+}
+
 #[tokio::test]
 async fn a_default_port_binding_is_accepted_and_usable_on_that_port_only() {
     let mut kernel = Kernel::start().await;

@@ -126,6 +126,13 @@ impl KernelRuntimeState {
                 .unwrap();
             return;
         }
+        if let Some(handle) = action.strip_prefix("remove-credential-record:") {
+            crate::credential::CharioxCredentialRegistry::user()
+                .unwrap()
+                .remove(handle)
+                .unwrap();
+            return;
+        }
         if let Some(handle) = action.strip_prefix("credential-record:") {
             let credential = crate::credential::load_user_credentials()
                 .unwrap()
