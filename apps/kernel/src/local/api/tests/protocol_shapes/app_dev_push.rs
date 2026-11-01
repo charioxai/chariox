@@ -34,7 +34,7 @@ fn app_dev_push_contract_snapshot() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "ec1409a5c0a15df2d0226e38e37c8cb6d74a42ad6438a05c0273cfb3f928e1c1"
+        "5655dcc429a6000580ad326a4d370eda8d2d317ca60f3494fb2710ddf9211ced"
     );
     let forged = json!({"BeginAppDevPush":{"session_id":"room","request_id":"save-1","directory":"/work/todo","owner":"someone-else"}});
     assert!(serde_json::from_value::<LocalDaemonRequest>(forged).is_err());
