@@ -53,12 +53,18 @@ impl KernelRuntimeOwnedState {
         drop(admission);
         // Prompt admission and provider dispatch must observe only a durably resumed run.
         self.session_snapshot(session_id)?;
+        let session = self.session_store.get_session(session_id)?;
         let resumable = workflow_run
             .node_runs()
             .iter()
             .filter(|node_run| resumable_node_ids.contains(node_run.id()))
             .filter_map(|node_run| {
-                let prompt = node_run.turn_envelope()?.rendered_prompt()?.to_string();
+                let prompt = crate::scheduler::prompt_injection::refresh_recovered_workflow_prompt(
+                    &session,
+                    workflow_run.id(),
+                    node_run.id(),
+                    node_run.turn_envelope()?.rendered_prompt()?,
+                );
                 Some((
                     node_run.id().to_string(),
                     node_run.agent_id().to_string(),

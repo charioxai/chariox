@@ -1,7 +1,7 @@
 //! MP-08 / MP-10 / MP-11 G08: legacy recall and room history tools stay in the
 //! caller room, even under live /sudo. Another room is read only through
-//! `chariox_kernel_request`, which needs the owner's per-operation scope approval.
-use super::tests::{fixture, fixture_with_options, popup, running, PASSKEY};
+//! `chariox_kernel_request`.
+use super::tests::{fixture, fixture_with_options, running};
 use super::*;
 
 #[tokio::test]
@@ -31,7 +31,7 @@ async fn mp11_g08_recall_tools_never_leave_the_caller_room_even_under_sudo() {
             })
         )
     };
-    let turn = running(&f);
+    running(&f);
     for name in ["chariox.search_recall", "chariox.query_recall"] {
         assert!(
             recall(name, &f.request.session_id).await.unwrap().ok,
@@ -46,38 +46,19 @@ async fn mp11_g08_recall_tools_never_leave_the_caller_room_even_under_sudo() {
     }
     assert!(f.state.passkey_prompts_for("local").is_empty());
 
-    // The typed request still reaches another own room with scope approval.
-    let router = f.router.clone();
-    let target = own.id().to_string();
-    let searching = tokio::spawn(async move {
-        router
-            .dispatch_authenticated_runtime_tool_call(
-                "sudo-fixture-bearer",
-                "chariox_kernel_request",
-                serde_json::json!({"request": {"SearchRecall": {"query": "g08-marker", "session_id": target}}}),
-            )
-            .await
-    });
-    let scope_prompt = popup(&f.state).await;
-    assert!(scope_prompt.interaction_id.contains(":scope:"));
-    f.state
-        .answer_terminal_runtime_interaction(
-            &turn.session_id,
-            &scope_prompt.interaction_id,
-            "approve",
-            None,
-            Some("local"),
-            Some(&ApprovalPasskey::new(PASSKEY)),
-            None,
-            Some(KernelConnectionClass::Terminal),
-        )
-        .await
-        .unwrap();
-    let searched = tokio::time::timeout(Duration::from_secs(5), searching)
-        .await
-        .unwrap()
-        .unwrap()
-        .unwrap();
+    // The typed request reaches another own room without a second approval.
+    let searched = tokio::time::timeout(
+        Duration::from_secs(5),
+        f.router.dispatch_authenticated_runtime_tool_call(
+            "sudo-fixture-bearer",
+            "chariox_kernel_request",
+            serde_json::json!({"request": {"SearchRecall": {"query": "g08-marker", "session_id": own.id()}}}),
+        ),
+    )
+    .await
+    .expect("another own room asked for consent again")
+    .unwrap();
+    assert!(f.state.passkey_prompts_for("local").is_empty());
     assert!(searched.payload.get("RecallEvents").is_some());
 }
 

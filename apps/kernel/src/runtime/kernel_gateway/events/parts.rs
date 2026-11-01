@@ -1,5 +1,6 @@
 //! MP-08 / MP-09 / MP-10 / MP-11: reconnect and clean each kernel part independently.
 use super::*;
+use std::future::Future;
 impl KernelGateway {
     pub(crate) fn resume_event_parts(self: &Arc<Self>) {
         match self.runtime_state.outside_store().outside_parts() {
@@ -63,13 +64,7 @@ impl KernelGateway {
                     let keep = gateway
                         .pump_event_part(&origin, &kernel, &mut subscribed)
                         .await;
-                    if !keep {
-                        gateway
-                            .event_parts
-                            .running
-                            .lock()
-                            .expect("event pumps poisoned")
-                            .remove(&key);
+                    if !keep && gateway.finish_event_part(&origin, &kernel, &key) {
                         return;
                     }
                     drop(gateway);
@@ -77,6 +72,35 @@ impl KernelGateway {
                 }
             });
         }
+    }
+    /// Whether the pump of `key` ended. A target followed while the pump was busy found it
+    /// running and started nothing, so the pump looks again, under the lock that starting takes,
+    /// before it leaves; the target is either seen here or starts the next pump.
+    pub(super) fn finish_event_part(
+        &self,
+        origin: &Origin,
+        kernel: &str,
+        key: &(String, String),
+    ) -> bool {
+        let mut running = self
+            .event_parts
+            .running
+            .lock()
+            .expect("event pumps poisoned");
+        // A store that cannot be read says nothing about the targets: keep following.
+        let wanted = self
+            .runtime_state
+            .outside_store()
+            .outside_part(&origin.grant_id)
+            .map_or(true, |part| {
+                part.is_some_and(|part| {
+                    part.ended.is_none() && part.targets.iter().any(|t| t.kernel == kernel)
+                })
+            });
+        if !wanted {
+            running.remove(key);
+        }
+        !wanted
     }
     async fn pump_event_part(
         &self,
@@ -115,26 +139,24 @@ impl KernelGateway {
             .cloned()
             .collect();
         if !removed.is_empty() {
-            let all = part.ended.is_some();
-            let request = LocalDaemonRequest::UnsubscribeEvents(UnsubscribeEventsRequest {
-                targets: if all { vec![] } else { removed.clone() },
-                all,
-            });
-            let command_id = event_command_id();
-            if let Err(error) = self
-                .forward_grant_ended(kernel, origin, &command_id, &request)
-                .await
-            {
+            let cleaned = self
+                .clean_remote_part(
+                    origin,
+                    &removed,
+                    part.ended.is_some(),
+                    |request| async move {
+                        self.forward_grant_ended(
+                            kernel,
+                            origin,
+                            &event_command_id(),
+                            &LocalDaemonRequest::UnsubscribeEvents(request),
+                        )
+                        .await
+                    },
+                )
+                .await;
+            if let Err(error) = cleaned {
                 self.record_event_health(origin, kernel, Err(error));
-                return true;
-            }
-            if store
-                .outside_mutate(Mutation::CleanupAck {
-                    id: origin.grant_id.clone(),
-                    targets: removed.clone(),
-                })
-                .is_err()
-            {
                 return true;
             }
             subscribed.retain(|t| !removed.contains(t));
@@ -154,18 +176,74 @@ impl KernelGateway {
         self.record_event_health(origin, kernel, result);
         true
     }
+    /// Asks the target to drop `removed` (the whole part once `all`), then commits that the
+    /// cleanup is done.
+    pub(super) async fn clean_remote_part<Fut>(
+        &self,
+        origin: &Origin,
+        removed: &[EventTarget],
+        all: bool,
+        unsubscribe: impl Fn(UnsubscribeEventsRequest) -> Fut,
+    ) -> Result<(), GatewayError>
+    where
+        Fut: Future<Output = Result<Value, GatewayError>>,
+    {
+        match unsubscribe(UnsubscribeEventsRequest {
+            targets: if all { vec![] } else { removed.to_vec() },
+            all,
+        })
+        .await
+        {
+            // The target refuses an unsubscribe when it holds no part of this grant, as when
+            // every target it was asked to follow ended before the first install reached it.
+            // There is nothing left to clean, so the debt is settled instead of retried.
+            Err(error) if installing::is_refused_target(&error) => {}
+            other => drop(other?),
+        }
+        self.runtime_state
+            .outside_store()
+            .outside_mutate(Mutation::CleanupAck {
+                id: origin.grant_id.clone(),
+                targets: removed.to_vec(),
+            })
+            .map_err(|_| part_error(&removed[0].kernel, "could not commit the target cleanup"))
+    }
     pub(super) fn event_health(
         &self,
         origin: &Origin,
         kernel: &str,
         status: Result<(), GatewayError>,
     ) -> Result<(), crate::error::DaemonError> {
+        self.event_health_at(origin, kernel, status, Instant::now())
+    }
+    pub(super) fn event_health_at(
+        &self,
+        origin: &Origin,
+        kernel: &str,
+        status: Result<(), GatewayError>,
+        now: Instant,
+    ) -> Result<(), crate::error::DaemonError> {
+        let key = (origin.grant_id.clone(), kernel.to_string());
+        {
+            let mut timing_out = self
+                .event_parts
+                .timing_out_since
+                .lock()
+                .expect("event timeouts poisoned");
+            if matches!(status, Err(GatewayError::RequestTimeout { .. })) {
+                let since = *timing_out.entry(key.clone()).or_insert(now);
+                if now.saturating_duration_since(since) < BUSY_GRACE {
+                    return Ok(());
+                }
+            } else {
+                timing_out.remove(&key);
+            }
+        }
         let mut health = self
             .event_parts
             .health
             .lock()
             .expect("event health poisoned");
-        let key = (origin.grant_id.clone(), kernel.into());
         // Following a kernel again clears its durable baseline. The status cache
         // alone cannot tell whether this subscription still observed it.
         let previous = self
@@ -216,24 +294,32 @@ impl KernelGateway {
         part: &Part,
     ) -> Result<(), GatewayError> {
         if subscribed != targets {
-            self.forward(
-                kernel,
-                origin,
-                &event_command_id(),
-                &LocalDaemonRequest::SubscribeEvents(SubscribeEventsRequest {
-                    targets: targets.to_vec(),
-                }),
-                Duration::from_secs(1),
-            )
-            .await?;
+            self.install_event_targets(origin, kernel, targets).await?;
             *subscribed = targets.to_vec();
         }
+        self.sync_event_cursor(origin, kernel, part, |request| async move {
+            self.forward(kernel, origin, &event_command_id(), &request, PULL_DEADLINE)
+                .await
+        })
+        .await
+    }
+    /// Imports what the target has past the imported cursor, then confirms it to the target.
+    /// The confirmation is owed until the target has answered it, so a lost one is sent again
+    /// by the next pull even when no new event arrived.
+    pub(super) async fn sync_event_cursor<Fut>(
+        &self,
+        origin: &Origin,
+        kernel: &str,
+        part: &Part,
+        remote: impl Fn(LocalDaemonRequest) -> Fut,
+    ) -> Result<(), GatewayError>
+    where
+        Fut: Future<Output = Result<Value, GatewayError>>,
+    {
         let since = part.remote_cursors.get(kernel).copied().unwrap_or(0);
-        let mut response = self.read_event_part(origin, kernel, since).await?;
+        let mut response = read_event_part(kernel, since, &remote).await?;
         if let LocalDaemonResponse::EventsCursorExpired { oldest_cursor } = response {
-            response = self
-                .read_event_part(origin, kernel, oldest_cursor.saturating_sub(1))
-                .await?;
+            response = read_event_part(kernel, oldest_cursor.saturating_sub(1), &remote).await?;
         }
         if let LocalDaemonResponse::EventsListed {
             events,
@@ -241,25 +327,29 @@ impl KernelGateway {
             ..
         } = response
         {
-            self.runtime_state
-                .outside_store()
+            let store = self.runtime_state.outside_store();
+            store
                 .outside_mutate(Mutation::Import {
                     id: origin.grant_id.clone(),
                     kernel: kernel.into(),
                     events,
                 })
                 .map_err(|_| part_error(kernel, "could not commit the merged event inbox"))?;
-            if next_cursor > 0 {
-                self.forward(
-                    kernel,
-                    origin,
-                    &event_command_id(),
-                    &LocalDaemonRequest::AckEvents(AckEventsRequest {
-                        cursor: next_cursor,
-                    }),
-                    Duration::from_secs(1),
-                )
+            // Only an unconfirmed cursor needs saying: an ack is a write on the target.
+            if next_cursor > part.remote_acks.get(kernel).copied().unwrap_or(0) {
+                remote(LocalDaemonRequest::AckEvents(AckEventsRequest {
+                    cursor: next_cursor,
+                }))
                 .await?;
+                store
+                    .outside_mutate(Mutation::RemoteAcked {
+                        id: origin.grant_id.clone(),
+                        kernel: kernel.into(),
+                        cursor: next_cursor,
+                    })
+                    .map_err(|_| {
+                        part_error(kernel, "could not commit the target acknowledgement")
+                    })?;
             }
             return Ok(());
         }
@@ -268,25 +358,21 @@ impl KernelGateway {
             "target event cursor could not be resumed",
         ))
     }
-    async fn read_event_part(
-        &self,
-        origin: &Origin,
-        kernel: &str,
-        since: u64,
-    ) -> Result<LocalDaemonResponse, GatewayError> {
-        let response = self
-            .forward(
-                kernel,
-                origin,
-                &event_command_id(),
-                &LocalDaemonRequest::ListEvents(ListEventsRequest {
-                    since: Some(since),
-                    limit: 1000,
-                }),
-                Duration::from_secs(1),
-            )
-            .await?;
-        serde_json::from_value(response)
-            .map_err(|_| part_error(kernel, "kernel event response is invalid"))
-    }
+}
+
+async fn read_event_part<Fut>(
+    kernel: &str,
+    since: u64,
+    remote: &impl Fn(LocalDaemonRequest) -> Fut,
+) -> Result<LocalDaemonResponse, GatewayError>
+where
+    Fut: Future<Output = Result<Value, GatewayError>>,
+{
+    let response = remote(LocalDaemonRequest::ListEvents(ListEventsRequest {
+        since: Some(since),
+        limit: 1000,
+    }))
+    .await?;
+    serde_json::from_value(response)
+        .map_err(|_| part_error(kernel, "kernel event response is invalid"))
 }

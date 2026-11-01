@@ -262,7 +262,6 @@ impl AgentEndpointAdapter for CodexAdapter {
 mod tests {
     use std::fs;
     use std::path::PathBuf;
-    use std::process::Command;
 
     use super::{LaunchProviderRequest, ProviderRegistry};
 
@@ -623,7 +622,7 @@ mod tests {
 
         let test_binary = std::env::current_exe().expect("test binary path should resolve");
         let outputs = ["codex", "claude"].map(|provider| {
-            let mut command = Command::new(&test_binary);
+            let mut command = crate::process_spawn::command(&test_binary);
             command
                 .arg("ordinary_codex_and_claude_adapters_scrub_path1_supervisor_controls_only")
                 .arg("--nocapture")

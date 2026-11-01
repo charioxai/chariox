@@ -8,6 +8,7 @@ use tokio::sync::RwLock;
 
 use crate::auth::{RelayAuthVerifier, RelayRevocationRegistry};
 use crate::config::RelayConfig;
+use crate::meter::UsageMeter;
 
 mod client_renewal;
 mod connection;
@@ -28,6 +29,7 @@ pub struct RelayServer {
     auth_verifier: RelayAuthVerifier,
     revocations: RelayRevocationRegistry,
     draining: Arc<AtomicBool>,
+    meter: UsageMeter,
 }
 
 impl RelayServer {
@@ -51,6 +53,7 @@ impl RelayServer {
             relay_request_counter: Arc::new(AtomicU64::new(0)),
             revocations,
             draining: Arc::new(AtomicBool::new(false)),
+            meter: UsageMeter::default(),
         }
     }
 
@@ -64,6 +67,11 @@ impl RelayServer {
     #[cfg(test)]
     pub(crate) fn auth_verifier(&self) -> &RelayAuthVerifier {
         &self.auth_verifier
+    }
+
+    /// The byte counters of every realm this server carries.
+    pub fn usage_meter(&self) -> UsageMeter {
+        self.meter.clone()
     }
 
     pub fn config(&self) -> &RelayConfig {
@@ -105,20 +113,26 @@ impl RelayServer {
                 accept = listener.accept() => {
                     let (stream, peer_addr) = accept?;
                     // MP-08 / MP-10: encrypted interactive frames must not wait on Nagle.
-                    stream.set_nodelay(true)?;
+                    // A peer whose socket cannot be configured (for example one that
+                    // already reset) is dropped; it must not stop the relay.
+                    if let Err(error) = stream.set_nodelay(true) {
+                        eprintln!("relay peer TCP policy failed: {error}");
+                        continue;
+                    }
                     let registry = Arc::clone(&self.registry);
                     let auth_verifier = self.auth_verifier.clone();
                     let relay_request_counter = Arc::clone(&self.relay_request_counter);
                     let draining = Arc::clone(&self.draining);
+                    let meter = self.meter.clone();
                     tokio::spawn(async move {
                         if is_health_http_request(&stream).await {
                             let _ = handle_health_connection(stream, registry, draining).await;
                         } else if draining.load(Ordering::Relaxed) {
                             let _ = reject_draining_connection(stream).await;
                         } else if is_display_http_request(&stream).await {
-                            let _ = handle_display_connection(stream, peer_addr, registry, relay_request_counter).await;
+                            let _ = handle_display_connection(stream, peer_addr, registry, relay_request_counter, meter).await;
                         } else {
-                            let _ = handle_connection(stream, peer_addr, registry, auth_verifier, relay_request_counter).await;
+                            let _ = handle_connection(stream, peer_addr, registry, auth_verifier, relay_request_counter, meter).await;
                         }
                     });
                 }

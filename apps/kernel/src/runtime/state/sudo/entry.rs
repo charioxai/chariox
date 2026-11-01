@@ -40,6 +40,11 @@ pub(super) fn not_session_host(session_owner: &str) -> DaemonError {
     }
 }
 
+// MP-08 / MP-10 / MP-11: inject a provider settling after a busy snapshot.
+#[cfg(test)]
+pub(super) static SETTLE_AFTER_BUSY_FOR_TEST: std::sync::Mutex<std::collections::BTreeSet<String>> =
+    std::sync::Mutex::new(std::collections::BTreeSet::new());
+
 impl KernelRuntimeState {
     /// Called only after terminal identity and session ownership are checked by
     /// the router. The waiting future, including the full prompt, is ephemeral.
@@ -127,6 +132,22 @@ impl KernelRuntimeState {
         }
         if prompt.trim().is_empty() {
             return Err(error("usage: /sudo <prompt>"));
+        }
+        // Goal controls refer to existing work, never a new goal objective.
+        // Capture shorthand's revision before the owner answers the popup.
+        let mut goal_request = request.clone();
+        goal_request.prompt = prompt.into();
+        if let Some(control) = self.prepare_goal_control(&goal_request, owner)? {
+            if !control.prompt.starts_with("/goal resume ") {
+                return self
+                    .control_goal_prompt(&control, owner)
+                    .await?
+                    .ok_or_else(|| {
+                        error("goal control unavailable; use /goal on the focused agent")
+                    });
+            }
+            self.validate_sudo_goal_resume(&control)?;
+            request.prompt = control.prompt;
         }
         self.sweep_sudo();
         let entry = KernelSudoTurn {
@@ -274,7 +295,10 @@ impl KernelRuntimeState {
             agent_name: agent.alias().unwrap_or(agent.agent_ref()).into(),
             session_name: session.alias().unwrap_or("Unnamed session").into(),
             task_summary,
-            task: prompt.into(),
+            task: format!(
+                "{prompt}{}",
+                super::approval_attachments::details_text(&request.attachments)
+            ),
             grant_id: entry.requester.as_ref().map(|g| g.grant_id.clone()),
             terminal_id: entry.terminal_id.clone(),
         };
@@ -284,8 +308,11 @@ impl KernelRuntimeState {
             format!("{requester_name} wants to run one sudo task")
         };
         let message = format!(
-            "Agent: {}\nSession: {}\nTask: {}\n\nSudo allows critical approvals across this kernel until this task yields or is revoked.",
-            presentation.agent_name, presentation.session_name, task_description,
+            "Agent: {}\nSession: {}\nTask: {}{}\n\nSudo allows critical approvals across this kernel until this task yields or is revoked.",
+            presentation.agent_name,
+            presentation.session_name,
+            task_description,
+            super::approval_attachments::approval_text(&request.attachments),
         );
         let mut interaction = RuntimeInteraction::for_kernel_operation(
             &entry.entry_id,
@@ -392,6 +419,8 @@ impl KernelRuntimeState {
         let mut catalog_deadline = None;
         let mut vault: Option<super::super::runtime_vault_unlock_state::VaultUnlockGuard> = None;
         loop {
+            // Waiting for ordinary work must not outlive the authorized window.
+            self.live_queued_sudo(entry)?;
             if reload && self.sudo_agent_busy(entry)? {
                 catalog_deadline = None;
                 // Ordinary work must not keep an operation unlock open.
@@ -456,6 +485,20 @@ impl KernelRuntimeState {
                 }
                 relaunch_deadline = None;
             }
+            if request.prompt.starts_with("/goal resume ") {
+                // Resume must never fall through to admitting an ordinary task,
+                // even if the previous turn settles after the busy snapshot.
+                if reload || self.sudo_agent_busy(entry)? {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    continue;
+                }
+                return self
+                    .control_goal_prompt_with_sudo(request, &entry.owner_user_id, Some(entry))
+                    .await?
+                    .ok_or_else(|| {
+                        error("goal resume unavailable; use /goal on the focused agent")
+                    });
+            }
             let submission = self.try_start_sudo(entry, request, prompt, &attachments, !reload)?;
             if let Some(mut submission) = submission {
                 if let Some(dispatch) = submission.remote_dispatch.take() {
@@ -506,7 +549,10 @@ impl KernelRuntimeState {
     }
     /// The current window while its first turn has not started; Extend may
     /// have renewed it since the caller's read.
-    fn live_queued_sudo(&self, entry: &KernelSudoTurn) -> Result<KernelSudoTurn, DaemonError> {
+    pub(super) fn live_queued_sudo(
+        &self,
+        entry: &KernelSudoTurn,
+    ) -> Result<KernelSudoTurn, DaemonError> {
         let current = self
             .owned
             .sudo_turns
@@ -521,12 +567,27 @@ impl KernelRuntimeState {
     }
     fn sudo_agent_busy(&self, entry: &KernelSudoTurn) -> Result<bool, DaemonError> {
         let session = self.owned.session_store.get_session(&entry.session_id)?;
-        Ok(self
+        let busy = self
             .owned
             .prompt_state_owner
             .active_prompt_for_agent(&session, &entry.agent_id)
-            .is_some())
+            .is_some();
+        #[cfg(test)]
+        if busy
+            && SETTLE_AFTER_BUSY_FOR_TEST
+                .lock()
+                .unwrap()
+                .remove(&entry.session_id)
+        {
+            assert!(self
+                .owned
+                .prompt_state_owner
+                .complete_active_prompt_only(&session, &entry.agent_id)
+                .is_some());
+        }
+        Ok(busy)
     }
+
     fn try_start_sudo(
         &self,
         entry: &KernelSudoTurn,

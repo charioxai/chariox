@@ -33,7 +33,7 @@ impl KernelRuntimeState {
         });
     }
 
-    async fn app_validation_pass(&self, now_ms: u64) {
+    pub(super) async fn app_validation_pass(&self, now_ms: u64) {
         let store = self.owned.durable_state_store.clone();
         let Ok(Ok(pending)) = tokio::task::spawn_blocking(move || {
             let _ = store.app_validation(ValidationCommand::Expire { now_ms });

@@ -47,7 +47,11 @@ export type KernelApprovalView = {
 }
 
 export function kernelApprovals(session: RuntimeSession, delegateSudoToPasskeyPopup = false): RuntimeInteraction[] {
-  return (session.active_interactions ?? []).filter((item) =>
+  return kernelApprovalInteractions(session.active_interactions ?? [], delegateSudoToPasskeyPopup)
+}
+
+function kernelApprovalInteractions(interactions: readonly RuntimeInteraction[], delegateSudoToPasskeyPopup = false): RuntimeInteraction[] {
+  return interactions.filter((item) =>
     typeof item.kernel_operation_id === "string" && item.kernel_operation_id.trim().length > 0
     && !Object.hasOwn(item, "agent_id") && item.kind === "permission"
     && item.custom_choice == null && item.default_on_timeout == null
@@ -63,6 +67,9 @@ export function appHostOperationId(interaction: RuntimeInteraction): string | un
 
 export function createKernelApprovalController(deps: {
   getSession(): RuntimeSession
+  detachedInteractions?(): readonly RuntimeInteraction[]
+  detachedBinding?(): number
+  respondDetached?(interactionId: string, choiceId: string): Promise<void>
   /** MP-08 / MP-11: one sudo approval surface, shared with external access. */
   delegateSudoToPasskeyPopup?: boolean
   connected(): boolean
@@ -80,6 +87,7 @@ export function createKernelApprovalController(deps: {
   showPasskeyPrompt(sessionId: string, interactionId: string): boolean
 }) {
   let sessionId = ""
+  let detachedBinding = deps.detachedBinding?.() ?? 0
   let epoch = 0
   let open = false
   let index = 0
@@ -92,7 +100,7 @@ export function createKernelApprovalController(deps: {
   let lastDisplayedHost: { sessionId: string; operation: string; identity: string } | null = null
   let entry: { interactionId: string; value: ReturnType<typeof createHandoffEntry> } | null = null
   const view = (): KernelApprovalView => {
-    const items = kernelApprovals(deps.getSession(), deps.delegateSudoToPasskeyPopup)
+    const items = kernelApprovalInteractions([...(deps.getSession().active_interactions ?? []), ...(deps.detachedInteractions?.() ?? [])], deps.delegateSudoToPasskeyPopup)
     index = Math.min(index, Math.max(0, items.length - 1))
     const interaction = items[index] ?? null
     if (entry && entry.interactionId !== interaction?.id) { entry.value.clear(); entry = null }
@@ -120,7 +128,8 @@ export function createKernelApprovalController(deps: {
   }
   const sync = () => {
     const session = deps.getSession()
-    if (sessionId !== session.id) {
+    if (sessionId !== session.id || detachedBinding !== (deps.detachedBinding?.() ?? 0)) {
+      detachedBinding = deps.detachedBinding?.() ?? 0
       lastDisplayedHost = null
       sessionId = session.id
       epoch += 1
@@ -155,6 +164,11 @@ export function createKernelApprovalController(deps: {
     error = null
     render()
     try {
+      if (deps.detachedInteractions?.().some(item => item.id === interactionId)) {
+        if (!deps.respondDetached) throw new Error("The kernel approval connection is unavailable")
+        await deps.respondDetached(interactionId, choiceId)
+        return
+      }
       const response = await deps.respond(requestSession, interactionId, choiceId)
       if (!disposed && requestEpoch === epoch && deps.getSession().id === requestSession) {
         if (response.id !== requestSession) throw new Error("interaction response session mismatch")

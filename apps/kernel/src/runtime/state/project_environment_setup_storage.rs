@@ -1472,6 +1472,14 @@ impl ProjectEnvironmentSetupStore {
         }
     }
 
+    pub(super) fn execution_is_settled(&self, operation_id: &str, attempt: u32) -> bool {
+        self.entries
+            .lock()
+            .expect("setup state lock should not be poisoned")
+            .get(operation_id)
+            .is_some_and(|entry| entry.status.attempt == attempt && entry.active_executions == 0)
+    }
+
     pub(super) fn begin_execution(
         &self,
         operation_id: &str,
@@ -1914,4 +1922,26 @@ impl ProjectEnvironmentSetupStore {
             );
         }
     }
+}
+
+pub(super) fn ready_move_setup_execution(
+    durable: &DurableKernelStateStore,
+    operation: &str,
+) -> Result<Option<SetupExecution>, DaemonError> {
+    let Some(event) = durable
+        .load_subject_events_by_kind(operation, "project.environment_setup.updated", 1)?
+        .into_iter()
+        .last()
+    else {
+        return Ok(None);
+    };
+    let persisted: PersistedSetupEntry = serde_json::from_value(event.payload).map_err(|_| {
+        setup_error(
+            "Move Project setup state is invalid; restore the setup journal before launching",
+        )
+    })?;
+    if persisted.entry.status.phase != ProjectEnvironmentSetupPhase::Ready {
+        return Ok(None);
+    }
+    Ok(Some(persisted.entry.execution))
 }

@@ -2,6 +2,7 @@
 
 pub mod account_profile;
 pub mod agent;
+pub mod agent_move;
 pub mod app;
 pub mod artifacts;
 pub mod attachment;

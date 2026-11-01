@@ -549,6 +549,7 @@ mod tests {
     fn a_grant_holder_is_named_by_its_harness_before_its_executable() {
         use crate::local::{KernelAccessGrant, KernelAccessProviderHarness, KernelAccessTerm};
         let grant = |executable: &str, harness| KernelAccessGrant {
+            covered: Vec::new(),
             grant_id: "g".into(),
             owner_user_id: "local".into(),
             holder_pid: 1,

@@ -1,6 +1,6 @@
 mod relay_metadata;
 pub(crate) use relay_metadata::{
-    relay_metadata_discovery_config, relay_metadata_discovery_config_for, scoped_metadata_config,
+    relay_metadata_discovery_config, relay_metadata_discovery_config_for,
 };
 use serde::Deserialize;
 

@@ -154,6 +154,7 @@ mod tests {
                 kernel_count: count,
                 available_providers: vec!["codex".into()],
                 provider_accounts: vec![RelayProviderAccountSummary {
+                    copyable: false,
                     provider: "codex".into(),
                     state: "linked".into(),
                     account_id: Some("account".into()),

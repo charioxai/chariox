@@ -126,6 +126,8 @@ impl KernelRuntimeOwnedState {
                 }
             }
         }
+        // Aliases and adoption relationships do not prove live work. Legacy runs
+        // use the same prompt and admitted-task ownership as every other run.
         Ok(targets)
     }
 
@@ -146,7 +148,7 @@ impl KernelRuntimeOwnedState {
                 || task
                     .obligations
                     .iter()
-                    .any(|o| matches!(o.status.as_str(), "open" | "failed" | "settling"))
+                    .any(ledger::AgentObligation::requires_resolution)
                 || self.agent_task_resources_unsettled(&task)?
             {
                 return Ok(true);
@@ -166,7 +168,7 @@ impl KernelRuntimeState {
         if !task
             .obligations
             .iter()
-            .any(|o| o.kind == "delegate" && o.status == "open")
+            .any(|o| o.status == "open" && (o.kind == "delegate" || o.tracks_workflow_run()))
         {
             return Ok(());
         }
@@ -210,7 +212,7 @@ impl KernelRuntimeState {
                     occurrence: format!("workflow-failure-{id}"),
                     success: false,
                     now: crate::session::unix_epoch_ms(),
-                    public_answer: None,
+                    public_answer: Some(workflow_failure_answer(&run)),
                 })?;
         }
         Ok(())
@@ -257,4 +259,19 @@ impl KernelRuntimeState {
         }
         Ok(())
     }
+}
+
+// Failure observers need the same durable diagnosis as the workflow history,
+// including adopted goals which have no new node/provider turn to answer them.
+pub(super) fn workflow_failure_answer(run: &crate::session::WorkflowRun) -> serde_json::Value {
+    let reason = run.failure_events().last().map_or_else(
+        || "Workflow invocation ended before completion".to_string(),
+        |failure| failure.message().chars().take(1024).collect::<String>(),
+    );
+    serde_json::json!({
+        "workflow_run_id": run.id(),
+        "status": run.status(),
+        "reason": reason,
+        "recovery": "Inspect the workflow failure and correct the reported condition, then resume or cancel this goal.",
+    })
 }

@@ -54,7 +54,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 .1
                 .map(|v| decode::<serde_json::Value>(&v))
                 .transpose()?;
-            for mut t in tasks(tx)? {
+            for mut t in source_tasks(tx, &room, &source)? {
                 if t.room_id != room || t.state == ExecutionState::Done {
                     continue;
                 }
@@ -136,7 +136,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             held_work,
         } => {
             let mut changed = vec![];
-            for mut t in tasks(tx)? {
+            for mut t in waiting_tasks(tx)? {
                 if t.state == ExecutionState::Waiting {
                     let regs = match registrations(tx, &t.task_id) {
                         Ok(regs) => regs,
@@ -150,6 +150,12 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                             changed.push(t);
                             continue;
                         }
+                    };
+                    let next_check_in = t.goal.as_ref().and_then(|goal| goal.next_check_in_ms);
+                    let source_deadline = if let Some(wait) = t.wait.as_ref() {
+                        wakes::source_deadline(tx, &t, &wait.registration_ids)?
+                    } else {
+                        None
                     };
                     if let Some(w) = t.wait.as_mut() {
                         if !w.long_wait_notified
@@ -167,21 +173,33 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                             .iter()
                             .any(|id| !regs.iter().any(|r| &r.id == id && r.live));
                         let unread:i64=tx.query_row("SELECT count(*) FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND sequence>?3 AND json_extract(payload,'$.state') NOT IN ('handled','expired','failed') AND json_extract(payload,'$.kind') IN ('source_completed','source_lost') AND (json_extract(payload,'$.payload.task_id')=?4 OR EXISTS(SELECT 1 FROM json_each(json_extract(payload,'$.payload.task_ids')) WHERE value=?4))",params![t.room_id,t.agent_id,sql_integer(w.inbox_cursor)?,t.task_id],|r|r.get(0)).map_err(sql)?;
+                        let check_in = next_check_in.filter(|due| {
+                            *due <= now
+                                && source_deadline.is_none_or(|deadline| deadline > now)
+                                && !dead
+                                && now >= w.started_at_ms
+                                && !clock_rollback
+                        });
                         if (dead && unread == 0)
                             || w.deadline_ms <= now
                             || now < w.started_at_ms
                             || clock_rollback
+                            || check_in.is_some()
                         {
                             let kind = if dead {
                                 "wait_recheck"
                             } else {
                                 "deadline_reached"
                             };
+                            let occurrence_id = check_in.map_or_else(
+                                || format!("wait-{}-{kind}", w.started_at_ms),
+                                |due| format!("{}{due}", super::goals::CHECK_IN_OCCURRENCE_PREFIX),
+                            );
                             let e = occurrence(
                                 &t.room_id,
                                 &t.agent_id,
                                 &t.task_id,
-                                &format!("wait-{}-{kind}", w.started_at_ms),
+                                &occurrence_id,
                                 kind,
                                 serde_json::json!({"task_id":t.task_id,"reason":"re-evaluate"}),
                             );
@@ -191,7 +209,8 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     }
                 }
             }
-            let mut q=tx.prepare("SELECT sequence,room_id,agent_id,source_id,occurrence_id,payload FROM agent_inbox WHERE CASE WHEN json_valid(payload) THEN json_extract(payload,'$.state') NOT IN ('accepted','acknowledged','handled','expired','failed') ELSE 1 END").map_err(sql)?;
+            // Outside recipients (room '') are pulled by their holders, never delivered here.
+            let mut q=tx.prepare("SELECT sequence,room_id,agent_id,source_id,occurrence_id,payload FROM agent_inbox WHERE room_id>'' AND CASE WHEN json_valid(payload) THEN json_extract(payload,'$.state') NOT IN ('accepted','acknowledged','handled','expired','failed') ELSE 1 END ORDER BY sequence").map_err(sql)?;
             let rows = q
                 .query_map([], |r| {
                     Ok((
@@ -297,7 +316,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     // Only the task this delivery belongs to waits on its
                     // reconciliation; unrelated work of the recipient continues.
                     let mut matched = false;
-                    for mut t in tasks(tx)? {
+                    for mut t in live_tasks(tx, &e.room_id, &e.agent_id)? {
                         if t.room_id == e.room_id
                             && t.agent_id == e.agent_id
                             && !matches!(t.state, ExecutionState::Done | ExecutionState::Cancelled)
@@ -383,6 +402,35 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             }
             Ok(Outcome::Task(t))
         }
+        Operation::RetireRestartFailure {
+            task,
+            revision,
+            now,
+        } => {
+            let mut t = load(tx, &task)?;
+            // Admission must not abandon a goal, owned work, or an uncertain receipt.
+            let unresolved: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND CASE WHEN json_valid(payload) THEN json_extract(payload,'$.state') IN ('pending','blocked','submitting','uncertain') ELSE 1 END)",
+                params![t.room_id, t.agent_id], |r| r.get(0),
+            ).map_err(sql)?;
+            if t.state != ExecutionState::Blocked
+                || t.blocked_revision != revision
+                || t.goal.is_some()
+                || !t.obligations.is_empty()
+                || t.wait.is_some()
+                || t.pending_prompt_id.is_some()
+                || unresolved
+                || registrations(tx, &t.task_id)?.iter().any(|r| r.live)
+            {
+                return Ok(Outcome::Task(t));
+            }
+            t.state = ExecutionState::Cancelled;
+            t.reason = "Restart failure superseded by a new owner turn".into();
+            t.last_progress_at_ms = now;
+            t.revision += 1;
+            save(tx, &t)?;
+            Ok(Outcome::Task(t))
+        }
         Operation::OwnerResponse {
             task,
             revision,
@@ -424,6 +472,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     }
                 }
             }
+            let blocked_revision = t.blocked_revision;
             super::goals::clock(&mut t, now);
             t.state = if resume {
                 ExecutionState::Working
@@ -449,6 +498,20 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     t.revision
                 ));
                 t.last_progress_at_ms = now;
+                if let Some(goal) = &t.goal {
+                    migration::audit(
+                        tx,
+                        "goal.owner_resume",
+                        &t.task_id,
+                        serde_json::json!({
+                            "task_id":t.task_id, "goal_id":goal.id,
+                            "objective_revision":goal.objective_revision,
+                            "prompt_id":t.pending_prompt_id, "action":"resume",
+                            "blocked_revision":blocked_revision, "resumed_revision":t.revision,
+                            "at_ms":now,
+                        }),
+                    )?;
+                }
             }
             save(tx, &t)?;
             Ok(Outcome::Task(t))

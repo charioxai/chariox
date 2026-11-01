@@ -18,22 +18,6 @@ const view: PasskeyPopupView = {
 }
 const noActions = { show() {}, approve() {}, refuse() {}, cycleRemember() {} }
 
-test("MP-08/MP-10/MP-11 sudo scope approval names the operation without renewing time", async () => {
-  const harness = await createTestRenderer({ width: 90, height: 30, useThread: false })
-  const box = new BoxRenderable(harness.renderer, { position: "absolute", left: 0, top: 0 })
-  harness.renderer.root.add(box)
-  const surface = createPasskeyPopupRenderer(harness.renderer, noActions)
-  surface.assign(box)
-  try {
-    surface.render({ ...view, prompt: { ...prompt, kind: "sudo", title: "Authorize sudo operation scope", message: "Review this exact operation for the original owner work." } }, { width: 90, height: 30 })
-    await harness.renderOnce()
-    const frame = harness.captureCharFrame()
-    assert.match(frame, /Sudo operation scope/)
-    assert.match(frame, /Operation scope · fresh passkey required/)
-    assert.doesNotMatch(frame, /Tab duration|Tab remember|undefined|maximum/)
-  } finally { harness.renderer.destroy() }
-})
-
 test("the passkey popup is shaped like the hot-keys popup and shows only the kernel's facts", async () => {
   const harness = await createTestRenderer({ width: 90, height: 30, useThread: false })
   const box = new BoxRenderable(harness.renderer, { position: "absolute", left: 0, top: 0 })

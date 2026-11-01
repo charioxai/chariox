@@ -100,6 +100,7 @@ impl crate::app::NativePromptHandoffPolicy for KernelRuntimeOwnedState {
             Some(run_id),
             Some(prompt_id),
             None,
+            crate::provider::TurnOutcome::classify(run.adapter_key(), message),
         )? {
             self.record_provider_failure_output(session_id, run_id, agent_id, message);
             self.record_failed_request(

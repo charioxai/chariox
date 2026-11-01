@@ -7,10 +7,10 @@ const policy={unknown:false,targets:[],values:[]};
 const offer={op:'display_subscribe',observed_by:'room-lease-one',codecs:['avc1.420033'],bitrate:8000000,device_scale_factor:2};
 function fixture(){
  let surface={surface_id:'slice:one',generation:'desktop-one',width:1920,height:1080},sources=0,closes=0,now=Date.now();
- const source={closed:false,sample:()=>null,valid:()=>!source.closed,close:async()=>{source.closed=true;closes++}};
- const display=new RoomSharedDisplay({binding:async()=>surface},{desktop:{createSource:async binding=>{assert.equal(binding,surface);sources++;return source}},sessions:{now:()=>now,clock:()=>now}});
+ const createSource=()=>{const source={closed:false,sample:()=>null,valid:()=>!source.closed,close:async()=>{source.closed=true;closes++}};return source};
+ const display=new RoomSharedDisplay({binding:async()=>surface},{desktop:{createSource:async binding=>{assert.equal(binding,surface);sources++;return createSource()}},sessions:{now:()=>now,clock:()=>now}});
  const request=params=>display.request({...params,policy});
- return {display,request,source,counts:()=>({sources,closes}),replace:()=>{surface={...surface,generation:'desktop-two'}},advance:ms=>now+=ms,syncClock:()=>{now=Date.now()}};
+ return {display,request,counts:()=>({sources,closes}),replace:()=>{surface={...surface,generation:'desktop-two'}},advance:ms=>now+=ms,syncClock:()=>{now=Date.now()}};
 }
 test('MP-08 Room display binds the existing desktop; two leases share its protected source',async()=>{
  const f=fixture();try{
@@ -123,5 +123,30 @@ test('MP-08/MP-10 one viewer idle producer wait never delays another viewer or i
   assert.equal(resumed.resumed,true);
   await within(f.request({op:'display_attach',subscription_id:b.subscription_id,observed_by:'room-lease-two',generation:1}),200,'attach queued behind an idle producer wait');
   await Promise.all([waitingA,waitingB]);
+ }finally{await f.display.close()}
+});
+
+// Review (PR 1219, c#544): a Room display nobody watches must stop the worker's desktop source, keep its binding alive
+// across the 60 s expiry, and show a real frame again once someone watches.
+test('MP-08/MP-10 a parked Room display stops the shared source, renews its binding, and a capture resumes it',async()=>{
+ const f=fixture();let producersClosed=0;
+ f.display.display.createProducer=()=>({feedback(){},invalidate(){},close:async()=>{producersClosed++},waitReady:async()=>{},take:()=>({motion:true,width:1920,height:1080,data_base64:'protected-sample',encoded:{key:true,data_base64:'AAAA'}})});
+ try{
+  const a=await f.request(offer),b=await f.request({...offer,observed_by:'room-lease-two'});
+  const owners=new Map([[a.subscription_id,offer.observed_by],[b.subscription_id,'room-lease-two']]);
+  const capture=(binding,after_sequence)=>f.request({op:'screenshot',subscription_id:binding.subscription_id,observed_by:owners.get(binding.subscription_id),generation:1,after_sequence,push:{reset:true,congested:false}});
+  const park=binding=>f.request({op:'display_park',subscription_id:binding.subscription_id,observed_by:owners.get(binding.subscription_id),generation:1});
+  assert.notEqual((await capture(a,0)).display_frame,null);await capture(b,0);
+  assert.deepEqual(f.counts(),{sources:1,closes:0});
+  assert.equal((await park(a)).parked,true);
+  assert.deepEqual(f.counts(),{sources:1,closes:0},'another lease still watches: the source keeps running');
+  await park(b);
+  assert.deepEqual(f.counts(),{sources:1,closes:1},'the last watching lease stopped the source');assert.equal(producersClosed,2);
+  for(const binding of [a,b])f.display.displays.get(binding.subscription_id).expires=Date.now()+1000;
+  await park(a);await park(b);
+  for(const binding of [a,b])assert.ok(f.display.displays.get(binding.subscription_id).expires>Date.now()+55000,'a park renews the 60 s binding expiry');
+  assert.deepEqual(f.counts(),{sources:1,closes:1},'periodic parks never restart the source');
+  const frame=await capture(a,0);
+  assert.notEqual(frame.display_frame,null,'watching again yields a real frame');assert.deepEqual(f.counts(),{sources:2,closes:1});
  }finally{await f.display.close()}
 });

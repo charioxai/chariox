@@ -18,7 +18,7 @@ fn panes_history_508_range_steering_and_initial_content_snapshot() {
         ),
         (
             include_str!("../../types/history.rs"),
-            "dfb4d570b4ce481f7bd1edaa408f78e4560e00ffa2d3d38d42ff68d4fe65324a",
+            "ce5ab97289fd0f18f662b19121ed1e4a7d134b6bddb0670ccd46daabb368d4d2",
         ),
         (
             include_str!("../../../../terminal/stream/records.rs"),

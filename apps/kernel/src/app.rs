@@ -12,6 +12,7 @@ mod restored_agent_names_tests;
 #[cfg(test)]
 mod room_environment_durability_tests;
 pub(crate) use external_provider_session_discovery::find_external_provider_prompt_recovery_match;
+mod agent_move_backing;
 mod external_provider_sessions;
 mod history_access;
 mod history_event_context;
@@ -187,6 +188,7 @@ pub struct DaemonApp {
     app_control: crate::runtime::app_control::AppControlService,
     worker_prompt_receipts: crate::durable_state::worker_prompt_receipts::WorkerPromptReceiptStore,
     worker_steer_receipts: crate::durable_state::worker_steer_receipts::WorkerSteerReceiptStore,
+    pub(crate) agent_moves: crate::agent_move::AgentMoveStore,
     managed_context_transfers: crate::managed_context::transfer::ManagedContextTransferStore,
     managed_context_outbound:
         crate::managed_context::outbound_service::ManagedContextOutboundOperationStore,
@@ -315,6 +317,8 @@ impl DaemonApp {
                 durable_state.clone(),
             )?;
         let managed_context_root = config.private_runtime_state_root();
+        let agent_moves =
+            crate::agent_move::AgentMoveStore::open(managed_context_root.join("agent-moves"))?;
         // The same parent the transfer bridge publishes development copies under.
         if let Some(state_root) = config.durable_state_path().parent() {
             crate::managed_context::development::register_transfer_workspaces_parent(
@@ -383,7 +387,7 @@ impl DaemonApp {
             pty: PtyManager::new(),
             room_terminals: crate::room_terminal::RoomTerminalService::new(
                 config.private_runtime_state_root().join("room-terminals"),
-            ),
+            )?,
             providers: ProviderProcessServiceStore::new(ProviderProcessService::new()),
             provider_catalog_cache: ProviderCatalogCacheStore::default(),
             provider_process_tracking: ProviderProcessTrackingStore::default(),
@@ -404,8 +408,7 @@ impl DaemonApp {
             prompt_workspace_claims: PromptWorkspaceClaimStore::default(),
             prompt_state_owner: PromptStateOwner::default(),
             sessions: SessionStateStore::new(
-                SessionService::new(&config)
-                    .with_room_environment_durability(durable_state.clone()),
+                SessionService::new(&config).with_durability(durable_state.clone()),
             ),
             history,
             operational_history,
@@ -413,6 +416,7 @@ impl DaemonApp {
             durable_state,
             worker_prompt_receipts,
             worker_steer_receipts,
+            agent_moves,
             managed_context_transfers,
             managed_context_outbound,
             managed_kernel_registration,
@@ -480,10 +484,19 @@ impl DaemonApp {
             .attach_event_config(app.config_projection.clone());
         app.durable_state
             .attach_workflow_history_authority(app.config_projection.clone());
+        app.providers
+            .set_agent_move_admission(app.agent_moves.clone());
+        app.prompt_state_owner
+            .set_agent_move_admission(app.agent_moves.clone());
         let restore_started = Instant::now();
         app.restore_durable_state()?;
+        app.restore_agent_move_backings()?;
         if app.config.kernel_runtime_role == crate::config::KernelRuntimeRole::RemoteLeaseWorker
-            && !app.sessions.list_all_sessions().is_empty()
+            && app
+                .sessions
+                .list_all_sessions()
+                .iter()
+                .any(|session| !app.sessions.is_ephemeral_session(session.id()))
         {
             return Err(DaemonError::KernelRuntimeRoleDenied {
                 role: app.config.kernel_runtime_role.as_str(),

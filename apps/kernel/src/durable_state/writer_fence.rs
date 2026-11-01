@@ -99,6 +99,7 @@ mod tests {
             store
                 .writer
                 .enqueue(DurableWriterRequest::Ordinary(DurableWriteRequest {
+                    observation: None,
                     operation: DurableWriteOperation::Event {
                         event_id: format!("fenced-{index}"),
                         kind: "fence-test".into(),

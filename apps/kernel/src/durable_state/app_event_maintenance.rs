@@ -97,12 +97,12 @@ impl DurableKernelStateStore {
                     response,
                 },
             )))?;
-        receiver
-            .recv()
-            .map_err(|error| DaemonError::LocalTransport {
+        crate::durable_state::await_writer_response(receiver).map_err(|error| {
+            DaemonError::LocalTransport {
                 operation: "app.events.maintenance",
                 message: error.to_string(),
-            })?
+            }
+        })?
     }
     /// Kernel-only discovery; page carries no effect authority. Includes inactive
     /// installations so uninstall/revocation cannot disable expiry or reclamation.

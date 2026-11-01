@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { setTimeout as delay } from 'node:timers/promises';
+import * as browserMemory from './browser-memory.mjs';
 import { BrowserMemory, BrowserMemoryPressureError, requireBrowserMemory } from './browser-memory.mjs';
 import { BrowserCdpClient } from './browser-controller-cdp.mjs';
 import { handleBrowserControllerRequest } from './browser-controller.mjs';
@@ -10,6 +11,49 @@ test('MP-08/MP-10: unknown or exhausted memory refuses allocation; the reserve i
   for (const value of [NaN, -1, 0, 511 * MiB]) assert.throws(() => requireBrowserMemory(value), { code: 'browser_memory_pressure' });
   requireBrowserMemory(512 * MiB);
   requireBrowserMemory(process.availableMemory());
+});
+
+const vmStat = ({ free, inactive, speculative, purgeable }) => `Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                               ${free}.
+Pages active:                           400000.
+Pages inactive:                           ${inactive}.
+Pages speculative:                        ${speculative}.
+Pages throttled:                               0.
+Pages wired down:                         200000.
+Pages purgeable:                          ${purgeable}.
+`;
+
+test('MP-08/MP-10: macOS counts reclaimable pages, so a normally loaded Mac admits the browser', () => {
+  // 2026-10-30 Mac: 3653 strictly free pages (57 MiB), 39 % free, pressure level 1.
+  const normal = vmStat({ free: 3653, inactive: 190000, speculative: 20000, purgeable: 15000 });
+  assert.equal(browserMemory.availableMemory({ platform: 'darwin', vmStat: () => normal }), (3653 + 190000 + 20000) * 16384);
+  requireBrowserMemory(browserMemory.availableMemory({ platform: 'darwin', vmStat: () => normal }));
+  const memory = new BrowserMemory({ availableMemory: () => browserMemory.availableMemory({ platform: 'darwin', vmStat: () => normal }) });
+  return memory.requireHeadroom();
+});
+
+test('MP-08/MP-10: purgeable pages already counted as inactive are not counted twice', () => {
+  // 32 MiB free + 300 MiB inactive (250 MiB of it purgeable) is 332 MiB of distinct pages: below the 512 MiB gate.
+  const pages = (mib) => mib * MiB / 16384;
+  const overlap = vmStat({ free: pages(32), inactive: pages(300), speculative: 0, purgeable: pages(250) });
+  const available = browserMemory.availableMemory({ platform: 'darwin', vmStat: () => overlap });
+  assert.ok(available === 332 * MiB, `counted ${available / MiB} MiB instead of 332 MiB`);
+  assert.throws(() => requireBrowserMemory(available), { code: 'browser_memory_pressure' });
+});
+
+test('MP-08/MP-10: macOS under real pressure still refuses with the typed error', () => {
+  const pressed = vmStat({ free: 800, inactive: 4000, speculative: 100, purgeable: 50 });
+  const available = browserMemory.availableMemory({ platform: 'darwin', vmStat: () => pressed });
+  assert.throws(() => requireBrowserMemory(available), { code: 'browser_memory_pressure' });
+});
+
+test('MP-08/MP-10: an unreadable vm_stat fails with its own reason, not a pressure refusal', () => {
+  assert.throws(() => browserMemory.availableMemory({ platform: 'darwin', vmStat: () => 'garbage' }), /vm_stat did not report a page size/);
+  assert.throws(() => browserMemory.availableMemory({ platform: 'darwin', vmStat: () => 'page size of 16384 bytes\nPages free: 1.' }), /Pages inactive/);
+});
+
+test('MP-08/MP-10: other platforms keep Node availableMemory', () => {
+  assert.equal(browserMemory.availableMemory({ platform: 'linux', vmStat: () => assert.fail('no vm_stat on linux') }), process.availableMemory());
 });
 
 test('MP-08/MP-10: cgroup pressure asks Chromium to reclaim once, escalates, and recovers', async () => {

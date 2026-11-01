@@ -28,7 +28,7 @@ pub(super) async fn provision_and_prepare_worker_discovery(
         ensure_cloud_relay_connection(runtime_state, config_projection).await?;
     }
     let mut config = relay.worker_discovery_config(config_projection.snapshot());
-    if let Some(profile) = config.cloud_relay.as_ref() {
+    if let Some(profile) = crate::runtime::cloud_relay_control::active_cloud_profile(&config) {
         let discovery_token =
             issue_cloud_slice_discovery_token(profile, &config.daemon_id, worker_kernel_ref)
                 .await?;
@@ -177,6 +177,45 @@ mod tests {
             }
         }
         String::from_utf8(request).expect("discovery token request should be UTF-8")
+    }
+
+    #[tokio::test]
+    async fn retained_profile_private_discovery_keeps_operator_transport() {
+        // MP-08 / MP-10 / MP-11: shared slice transport can be a private relay.
+        let root = std::env::temp_dir().join(format!(
+            "chariox-loginux-review-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut owner = crate::config::DaemonConfig::for_tests();
+        owner.user_config.state.path = Some(root.join("state.db").display().to_string());
+        owner.relay_url = Some("ws://operator-relay:49100".into());
+        owner.relay_token = Some("synthetic-private-transport".into());
+        owner.cloud_relay = Some(expired_cloud_profile("http://127.0.0.1:1".into(), &owner));
+        let app = DaemonApp::bootstrap(owner.clone()).unwrap();
+        let projection = app.config_projection_store();
+        let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1);
+        let relay = LocalDockerSliceRelay {
+            relay_url: owner.relay_url.clone().unwrap(),
+            container_relay_url: owner.relay_url.clone(),
+            relay_token: "synthetic-private-transport".into(),
+            owner_public_key: Some(owner.relay_public_key.clone()),
+            cloud_relay_config_json: None,
+            worker_machine_id: None,
+        };
+        let discovery = provision_and_prepare_worker_discovery(
+            &router.runtime_state(),
+            &projection,
+            &relay,
+            "worker-ref",
+            Box::new(|| Ok(())),
+        )
+        .await
+        .unwrap();
+        assert_eq!(discovery.relay_url, owner.relay_url);
+        assert_eq!(discovery.relay_token, owner.relay_token);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[tokio::test]

@@ -42,7 +42,7 @@ pub(crate) async fn relay_metadata_discovery_config_for(
 
 // The returned config carries the issued grant and no Cloud profile, so relay
 // discovery reads it as-is rather than issuing a second grant.
-pub(crate) async fn scoped_metadata_config(
+async fn scoped_metadata_config(
     config: &DaemonConfig,
     issue_cloud_grant: bool,
 ) -> Result<DaemonConfig, DaemonError> {

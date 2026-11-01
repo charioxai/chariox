@@ -20,6 +20,11 @@ fn mp08_mp10_exit_keeps_diagnostic_after_output_was_drained() {
 }
 
 #[test]
+fn process_tool_settlement_survives_pty_output_drain() {
+    app_liveness_diagnostic_fixture(true, false);
+}
+
+#[test]
 fn mp08_mp11_native_exit_before_delivery_keeps_cause_without_prompt_or_secret() {
     app_liveness_diagnostic_fixture(true, true);
 }
@@ -122,6 +127,31 @@ fn app_liveness_diagnostic_fixture(drain_before_reconciliation: bool, native: bo
         .id()
         .to_string();
     assert_eq!(active_prompt_id, prompt_id);
+
+    if !native {
+        crate::transport::flow_control::note_prompt_started(&mut app, run.id());
+        let bytes = serde_json::to_vec(&serde_json::json!({
+            "id": "pending-command", "tool": "commandExecution", "status": "running",
+            "input": {"command": "sleep 30"}, "output": "partial output",
+        }))
+        .unwrap();
+        crate::transport::flow_control::note_prompt_tool_output(
+            &mut app,
+            run.id(),
+            Some("pending-command"),
+            &bytes,
+        );
+        crate::app::provider_output_fanout::ProviderOutputFanout::new(&app).fan_out(
+            session.id(),
+            run.id(),
+            crate::terminal::TerminalOutputKind::ProviderTool,
+            Some("pending-command".into()),
+            vec![attachment.id().into()],
+            &bytes,
+        );
+        app.terminal
+            .drain_output_records(session.id(), attachment.id());
+    }
 
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
     loop {
@@ -241,6 +271,21 @@ fn app_liveness_diagnostic_fixture(drain_before_reconciliation: bool, native: bo
         termination.reason, "provider process exited with status 1",
         "the public liveness projection must retain the exact child exit status"
     );
+
+    if !native {
+        let records = app
+            .terminal
+            .drain_output_records(session.id(), attachment.id());
+        let tool = records
+            .iter()
+            .find(|row| row.kind == crate::terminal::TerminalOutputKind::ProviderTool)
+            .expect("an exited process must send a terminal update for its pending command");
+        assert_eq!(tool.merge_key.as_deref(), Some("pending-command"));
+        let payload: serde_json::Value = serde_json::from_slice(&tool.bytes).unwrap();
+        assert_eq!(payload["status"], "error");
+        assert_eq!(payload["error"], termination.reason);
+        assert_eq!(payload["output"], "partial output");
+    }
 
     let repeated_input_result = app.send_terminal_input(
         session.id(),

@@ -34,6 +34,7 @@ pub struct ClaudeRuntimeState {
     pub(super) last_usage_file_contents: Option<String>,
     pub(super) mcp_config_file: Option<ClaudeMcpConfigFile>,
     pub(super) child: Child,
+    pub(super) resources: Option<crate::runtime::process_resources::ProcessDomain>,
     // Shared with the actor registry while the runtime state is leased for I/O.
     pub(super) process_identity: crate::runtime::kernel_access::process::ProcessIdentitySlot,
     pub(super) stdin: ChildStdin,

@@ -848,7 +848,7 @@ fn materialize_environment(
             if requirements_has_packages(&requirements) {
                 let staged_venv = staged_package_root.join("venv");
                 run_install_command(
-                    Command::new(&system_python)
+                    crate::process_spawn::command(&system_python)
                         .arg("-m")
                         .arg("venv")
                         .arg("--copies")
@@ -858,7 +858,7 @@ fn materialize_environment(
                 )?;
                 let staged_python = python_venv_binary(&staged_venv);
                 run_install_command(
-                    Command::new(&staged_python)
+                    crate::process_spawn::command(&staged_python)
                         .arg("-m")
                         .arg("pip")
                         .arg("install")
@@ -894,7 +894,7 @@ fn materialize_environment(
             let lock = decoded_package_file(files, "package-lock.json")?;
             if node_lock_has_packages(&lock)? {
                 let npm = find_sibling_or_path_runtime(&node, "npm")?;
-                let mut command = Command::new(npm);
+                let mut command = crate::process_spawn::command(npm);
                 command
                     .current_dir(&staged_package_root)
                     .arg("ci")
@@ -1442,7 +1442,7 @@ fn probe_runtime_version(
     let stderr_path = root.join("stderr");
     let stdout = create_private_output_file(&stdout_path)?;
     let stderr = create_private_output_file(&stderr_path)?;
-    let mut command = Command::new(runtime);
+    let mut command = crate::process_spawn::command(runtime);
     command.arg("--version");
     sanitize_child_environment(&mut command, &root)?;
     command
@@ -2140,7 +2140,7 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         let release = root.join("release");
         let pid_file = root.join("child-pid");
-        let mut command = Command::new("/bin/sh");
+        let mut command = crate::process_spawn::command("/bin/sh");
         command.arg("-c").arg(
             "sleep 30 & printf '%s' $! > \"$1\"; while [ ! -f \"$2\" ]; do sleep 0.01; done; exit 0",
         ).arg("mp11-fixture").arg(&pid_file).arg(&release);
@@ -2187,7 +2187,7 @@ mod tests {
         assert!(status.success());
         let stopped = std::time::Instant::now();
         loop {
-            let inspection = Command::new("/bin/ps")
+            let inspection = crate::process_spawn::command("/bin/ps")
                 .args(["-o", "stat=", "-p", &descendant.to_string()])
                 .output()
                 .unwrap();
@@ -2690,7 +2690,7 @@ mod tests {
             return;
         };
         // Debian and Ubuntu ship venv/ensurepip separately (python3-venv).
-        let venv_available = Command::new(&python)
+        let venv_available = crate::process_spawn::command(&python)
             .args(["-c", "import ensurepip, venv"])
             .output()
             .is_ok_and(|output| output.status.success());
@@ -2702,7 +2702,7 @@ mod tests {
         let venv = root.join("user/envs/.portable/python/venv");
         fs::create_dir_all(venv.parent().expect("venv should have parent"))
             .expect("environment root should create");
-        let mut command = Command::new(python);
+        let mut command = crate::process_spawn::command(python);
         command.arg("-m").arg("venv").arg("--copies").arg(&venv);
 
         run_install_command(
@@ -2725,7 +2725,7 @@ mod tests {
         let root = test_root("installer-isolation");
         let previous = std::env::var_os("CHARIOX_INSTALLER_SECRET_CANARY");
         std::env::set_var("CHARIOX_INSTALLER_SECRET_CANARY", "must-not-arrive");
-        let mut command = Command::new("/bin/sh");
+        let mut command = crate::process_spawn::command("/bin/sh");
         command.current_dir(&root).arg("-c").arg(
             "printf '%s' \"${CHARIOX_INSTALLER_SECRET_CANARY-unset}\" > inherited.txt; (sleep 1; printf leaked > descendant.txt) &",
         );

@@ -103,6 +103,7 @@ fn local_daemon_protocol_provider_terminal_login_shape_is_versioned_and_redacted
         account_profile: "work".to_string(),
         login_id: "provider-login-1".to_string(),
         state: ProviderLoginProcessState::Running,
+        message: None,
         interaction: None,
         terminal_output_base64: "c2VjcmV0LW91dHB1dA==".to_string(),
         started_at_ms: 1_000,
@@ -1189,6 +1190,11 @@ fn local_daemon_protocol_completed_turn_action_projection_shape_is_versioned() {
         provider_termination: Some(crate::provider::ProviderRunTermination::process_exit(
             17, 1_234,
         )),
+        outcome: Some(crate::provider::TurnOutcome {
+            kind: crate::provider::TurnOutcomeKind::ProviderCrashed,
+            retryable: true,
+            reason: "provider process exited with status 17".to_string(),
+        }),
         duration_ms: Some(234),
         changed_paths: vec!["src/lib.rs".to_string()],
         undo_available: true,
@@ -1232,13 +1238,21 @@ fn local_daemon_protocol_completed_turn_action_projection_shape_is_versioned() {
         snapshot.pointer("/provider_termination/timestamp_ms"),
         Some(&serde_json::json!(1_234))
     );
+    assert_eq!(
+        snapshot.pointer("/outcome"),
+        Some(&serde_json::json!({
+            "kind": "provider_crashed",
+            "retryable": true,
+            "reason": "provider process exited with status 17",
+        }))
+    );
 
     let serialized =
         serde_json::to_string(&snapshot).expect("completed turn action snapshot should encode");
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "74e31eb1567bab0c617b57f077b73c89b05920e0306aa249b770252239b7d31a"
+        "c84cd51e43bebffa138948ccfe835ed674a171f49dfd908f6b510538dd97dfd6"
     );
 }
 
@@ -1253,6 +1267,7 @@ fn local_daemon_protocol_provider_termination_categories_shape_is_versioned() {
         crate::provider::ProviderRunTermination::process_exit(17, 1_234),
         crate::provider::ProviderRunTermination::signal("SIGTERM", 1_235),
         crate::provider::ProviderRunTermination::explicit_provider_error(
+            "codex",
             "provider rejected request",
             1_236,
         ),
@@ -1274,31 +1289,61 @@ fn local_daemon_protocol_provider_termination_categories_shape_is_versioned() {
                 "category": "process_exit",
                 "reason": "provider process exited with status 17",
                 "timestamp_ms": 1_234,
+                "failure": {
+                    "kind": "provider_crashed",
+                    "retryable": true,
+                    "reason": "provider process exited with status 17",
+                },
             },
             {
                 "category": "signal",
                 "reason": "provider process terminated by signal SIGTERM",
                 "timestamp_ms": 1_235,
+                "failure": {
+                    "kind": "provider_crashed",
+                    "retryable": true,
+                    "reason": "provider process terminated by signal SIGTERM",
+                },
             },
             {
                 "category": "explicit_provider_error",
                 "reason": "provider rejected request",
                 "timestamp_ms": 1_236,
+                "failure": {
+                    "kind": "other",
+                    "retryable": false,
+                    "reason": "provider rejected request",
+                },
             },
             {
                 "category": "runtime_failure",
                 "reason": "runtime unavailable",
                 "timestamp_ms": 1_237,
+                "failure": {
+                    "kind": "other",
+                    "retryable": false,
+                    "reason": "runtime unavailable",
+                },
             },
             {
                 "category": "transport_failure",
                 "reason": "relay closed",
                 "timestamp_ms": 1_238,
+                "failure": {
+                    "kind": "network",
+                    "retryable": true,
+                    "reason": "relay closed",
+                },
             },
             {
                 "category": "unknown",
                 "reason": "provider process exited without an available status",
                 "timestamp_ms": 1_239,
+                "failure": {
+                    "kind": "provider_crashed",
+                    "retryable": true,
+                    "reason": "provider process exited without an available status",
+                },
             },
         ])
         .as_array()
@@ -1311,7 +1356,7 @@ fn local_daemon_protocol_provider_termination_categories_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "84b571651f95b35a08d3a327684899cdeeeb2ef52228cc29613db7acd1ba84df"
+        "1ed25493c88d333dbd4ef83a314681b83ba9f35c0c88fd7b4e6b7806dcdb6b00"
     );
 }
 

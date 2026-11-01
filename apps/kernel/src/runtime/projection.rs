@@ -51,9 +51,9 @@ pub(crate) fn publish_session_runtime_projection(
     session_projection: &SessionStateProjectionStore,
     agent_runtime_projection: &AgentRuntimeProjectionStore,
     session: &RuntimeSession,
-) {
+) -> bool {
     agent_runtime_projection.update_session(session);
-    session_projection.update(session.clone());
+    session_projection.update(session.clone())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

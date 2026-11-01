@@ -73,6 +73,11 @@ export function lockCredentialVaultRequest() {
   return { LockCredentialVault: null }
 }
 
+/** The owner's own client unlocks the kernel's existing Vault; no session, no agent. */
+export function unlockCredentialVaultRequest(passphrase: string) {
+  return { UnlockCredentialVault: { passphrase } }
+}
+
 export function manageCredentialVaultRequest(sessionId: string, agentId?: string | null) {
   return {
     ManageCredentialVault: {

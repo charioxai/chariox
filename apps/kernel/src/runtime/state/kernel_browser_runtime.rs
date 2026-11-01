@@ -2,6 +2,7 @@
 use super::*;
 use crate::local::KernelBrowserCommand;
 use crate::runtime::kernel_browser_features as features;
+use crate::transport::room_shared_display::RoomDisplayCommand;
 use crate::transport::runtime_tools::{RuntimeToolResult, RuntimeToolSpec};
 
 /// MD-3: no serde impl. Display owns the serialized protocol adapter/version.
@@ -15,12 +16,6 @@ pub(crate) enum KernelBrowserDisplayRequest {
         generation: u64,
         frame_width: u32,
         frame_height: u32,
-    },
-    // Keep the protected legacy native stream seam for display adapters.
-    #[allow(dead_code)]
-    Subscribe {
-        tab_id: String,
-        generation: u64,
     },
     Input {
         binding: crate::runtime::kernel_browser_host::KernelBrowserDocumentBinding,
@@ -50,6 +45,7 @@ pub(crate) enum KernelBrowserDisplayRequest {
         bitrate: u32,
         device_scale_factor: u32,
         initial_push: bool,
+        tab_display: bool,
     },
     EncodedCapture {
         subscription_id: String,
@@ -65,6 +61,13 @@ pub(crate) enum KernelBrowserDisplayRequest {
     Suspend {
         subscription_id: String,
         generation: u64,
+    },
+    /// `watch` is the kernel pump's pause of an unwatched display; a client's own park is cleared by the Tab's commit.
+    Park {
+        subscription_id: String,
+        generation: u64,
+        parked: bool,
+        watch: bool,
     },
     Resume {
         subscription_id: String,
@@ -120,6 +123,7 @@ fn browser_tool_params(arguments: serde_json::Value) -> Result<serde_json::Value
             | KernelBrowserCommand::DisplayNext { .. }
             | KernelBrowserCommand::DisplaySuspend { .. }
             | KernelBrowserCommand::DisplayResume { .. }
+            | KernelBrowserCommand::DisplayPark { .. }
             | KernelBrowserCommand::DisplayAck { .. }
             | KernelBrowserCommand::DisplayInput { .. }
             | KernelBrowserCommand::DisplayTakeover { .. }
@@ -129,6 +133,11 @@ fn browser_tool_params(arguments: serde_json::Value) -> Result<serde_json::Value
     ) {
         return Err(host_error(
             "MD-DISPLAY: terminal display adapter required".into(),
+        ));
+    }
+    if matches!(&request.command, KernelBrowserCommand::Unsubscribe { .. }) {
+        return Err(host_error(
+            "MD-3: agents read the browser with state, snapshot and screenshot; a live stream is for a person watching".into(),
         ));
     }
     let input = matches!(&request.command, KernelBrowserCommand::Input { .. });
@@ -149,6 +158,35 @@ fn browser_tool_params(arguments: serde_json::Value) -> Result<serde_json::Value
     }
     params["focused_agent"] = serde_json::json!(true);
     Ok(params)
+}
+
+impl KernelBrowserDisplayRequest {
+    /// The Room display command this request becomes when its subscription is a Room display.
+    fn room_control(&self) -> Option<(&String, u64, RoomDisplayCommand)> {
+        match self {
+            KernelBrowserDisplayRequest::Attach {
+                subscription_id,
+                generation,
+            } => Some((subscription_id, *generation, RoomDisplayCommand::Attach {})),
+            KernelBrowserDisplayRequest::Suspend {
+                subscription_id,
+                generation,
+            } => Some((subscription_id, *generation, RoomDisplayCommand::Suspend {})),
+            KernelBrowserDisplayRequest::Resume {
+                subscription_id,
+                generation,
+            } => Some((subscription_id, *generation, RoomDisplayCommand::Resume {})),
+            // A parked Room display captures nothing: the worker pauses its desktop source and renews the leases and
+            // producer binding that would otherwise expire after 60 s.
+            KernelBrowserDisplayRequest::Park {
+                subscription_id,
+                generation,
+                parked: true,
+                ..
+            } => Some((subscription_id, *generation, RoomDisplayCommand::Park {})),
+            _ => None,
+        }
+    }
 }
 
 impl KernelRuntimeState {
@@ -207,6 +245,7 @@ impl KernelRuntimeState {
                 bitrate,
                 device_scale_factor,
                 initial_push,
+                tab_display,
             } => KernelBrowserDisplayRequest::NegotiatedSubscribe {
                 tab_id,
                 generation,
@@ -215,6 +254,7 @@ impl KernelRuntimeState {
                 bitrate,
                 device_scale_factor,
                 initial_push,
+                tab_display,
             },
             KernelBrowserCommand::DisplayNext {
                 subscription_id,
@@ -239,6 +279,16 @@ impl KernelRuntimeState {
             } => KernelBrowserDisplayRequest::Resume {
                 subscription_id,
                 generation,
+            },
+            KernelBrowserCommand::DisplayPark {
+                subscription_id,
+                generation,
+                parked,
+            } => KernelBrowserDisplayRequest::Park {
+                subscription_id,
+                generation,
+                parked,
+                watch: false,
             },
             // MP-08/MP-10: acknowledgements belong to a relay display
             // subscription's push pump; no other transport owns one.
@@ -508,38 +558,24 @@ impl KernelRuntimeState {
         caller: &crate::runtime::command::KernelCommand,
         request: KernelBrowserDisplayRequest,
     ) -> Result<serde_json::Value, DaemonError> {
-        let room_control = match &request {
-            KernelBrowserDisplayRequest::Attach {
-                subscription_id,
-                generation,
-            } => Some((
-                subscription_id,
-                *generation,
-                crate::transport::room_shared_display::RoomDisplayCommand::Attach {},
-            )),
-            KernelBrowserDisplayRequest::Suspend {
-                subscription_id,
-                generation,
-            } => Some((
-                subscription_id,
-                *generation,
-                crate::transport::room_shared_display::RoomDisplayCommand::Suspend {},
-            )),
-            KernelBrowserDisplayRequest::Resume {
-                subscription_id,
-                generation,
-            } => Some((
-                subscription_id,
-                *generation,
-                crate::transport::room_shared_display::RoomDisplayCommand::Resume {},
-            )),
-            _ => None,
-        };
+        let room_control = request.room_control();
         if let Some((id, generation, command)) = room_control {
             if self.is_room_display(id) {
                 return self
                     .room_display_control(&caller.caller, id, generation, command)
                     .await;
+            }
+        }
+        // Unparking a Room display needs nothing: the next capture goes straight to the producer.
+        if let KernelBrowserDisplayRequest::Park {
+            subscription_id,
+            generation,
+            parked: false,
+            ..
+        } = &request
+        {
+            if self.is_room_display(subscription_id) {
+                return Ok(serde_json::json!({"generation":generation,"parked":false}));
             }
         }
         use crate::session::{EnvironmentActor, EnvironmentActorKind};
@@ -563,8 +599,12 @@ impl KernelRuntimeState {
                 bitrate,
                 device_scale_factor,
                 initial_push,
+                tab_display,
             } => {
                 let mut params = serde_json::json!({"op":"display_subscribe","tab_id":tab_id,"generation":generation,"codecs":codecs,"bitrate":bitrate,"device_scale_factor":device_scale_factor});
+                if tab_display {
+                    params["tab_display"] = true.into();
+                }
                 if let Some(target) = target {
                     params["target"] = serde_json::to_value(target)
                         .map_err(|_| host_error("MP-11: invalid display target".into()))?;
@@ -605,6 +645,14 @@ impl KernelRuntimeState {
             } => {
                 serde_json::json!({"op":"display_resume","subscription_id":subscription_id,"generation":generation})
             }
+            KernelBrowserDisplayRequest::Park {
+                subscription_id,
+                generation,
+                parked,
+                watch,
+            } => {
+                serde_json::json!({"op":"display_park","subscription_id":subscription_id,"generation":generation,"parked":parked,"watch":watch})
+            }
             KernelBrowserDisplayRequest::Capture { tab_id, generation } => {
                 serde_json::json!({"op":"screenshot","tab_id":tab_id,"generation":generation,"bound_frames":true})
             }
@@ -615,9 +663,6 @@ impl KernelRuntimeState {
                 frame_height,
             } => {
                 serde_json::json!({"op":"screenshot","tab_id":tab_id,"generation":generation,"bound_frames":true,"_capture_protection":true,"_capture_viewport":{"width":frame_width,"height":frame_height}})
-            }
-            KernelBrowserDisplayRequest::Subscribe { tab_id, generation } => {
-                serde_json::json!({"op":"subscribe","tab_id":tab_id,"generation":generation,"bound_frames":true})
             }
             KernelBrowserDisplayRequest::Input { binding, input } => {
                 if binding.document_id.is_empty() || binding.document_id.len() > 256 {
@@ -737,7 +782,6 @@ impl KernelRuntimeState {
         &self,
         runs: &[crate::provider::RuntimeProviderRun],
     ) -> Vec<RuntimeToolSpec> {
-        self.refresh_user_domain_grants();
         let [run] = runs else {
             return Vec::new();
         };
@@ -765,7 +809,7 @@ impl KernelRuntimeState {
             }
             tools.push(RuntimeToolSpec { name: BROWSER.into(),
                 description: "MD-3: control the user's kernel browser outside sessions/slices. Read state/snapshot/screenshot to obtain tab IDs, generation and document_id; input requires the observed document_id beside command and accepts click/text/key/scroll; click/scroll x,y are CSS pixels inside the state viewport (screenshot pixels / device_scale_factor). Pending dialogs appear in state.dialogs; answer with dialog using its dialog_id, tab_id, document_id, generation and action accept/dismiss (optional prompt_text, empty allowed). Vault input is separate.".into(),
-                input_schema: serde_json::json!({"type":"object","properties":{"document_id":{"type":"string","minLength":1,"maxLength":256},"command":{"type":"object","properties":{"op":{"type":"string","enum":["start","state","stop","open","close","navigate","snapshot","input","dialog","screenshot","subscribe","poll","unsubscribe"]},"tab_id":{"type":"string"},"generation":{"type":"integer","minimum":1},"url":{"type":"string"},"subscription_id":{"type":"string"},"document_id":{"type":"string","minLength":1,"maxLength":256},"dialog_id":{"type":"string","minLength":1,"maxLength":256},"action":{"type":"string","enum":["accept","dismiss"]},"prompt_text":{"type":"string","maxLength":2048},"input":{"type":"object","properties":{"kind":{"type":"string","enum":["click","text","key","scroll"]},"x":{"type":"integer","minimum":0,"maximum":1279},"y":{"type":"integer","minimum":0,"maximum":799},"text":{"type":"string","maxLength":16384},"key":{"type":"string","minLength":1,"maxLength":16,"description":"Named navigation/editing key or a single printable character; validated by the shared browser input path."},"modifiers":{"type":"integer","minimum":0,"maximum":15,"description":"Optional bounded CDP keyboard bitset: Alt=1, Ctrl=2, Meta=4, Shift=8; omitted means zero."},"delta_x":{"type":"integer","minimum":-10000,"maximum":10000},"delta_y":{"type":"integer","minimum":-10000,"maximum":10000}},"required":["kind"],"additionalProperties":false}},"required":["op"],"additionalProperties":false}},"required":["command"],"additionalProperties":false}), });
+                input_schema: serde_json::json!({"type":"object","properties":{"document_id":{"type":"string","minLength":1,"maxLength":256},"command":{"type":"object","properties":{"op":{"type":"string","enum":["start","state","stop","open","close","navigate","snapshot","input","dialog","screenshot"]},"tab_id":{"type":"string"},"generation":{"type":"integer","minimum":1},"url":{"type":"string"},"subscription_id":{"type":"string"},"document_id":{"type":"string","minLength":1,"maxLength":256},"dialog_id":{"type":"string","minLength":1,"maxLength":256},"action":{"type":"string","enum":["accept","dismiss"]},"prompt_text":{"type":"string","maxLength":2048},"input":{"type":"object","properties":{"kind":{"type":"string","enum":["click","text","key","scroll"]},"x":{"type":"integer","minimum":0,"maximum":1279},"y":{"type":"integer","minimum":0,"maximum":799},"text":{"type":"string","maxLength":16384},"key":{"type":"string","minLength":1,"maxLength":16,"description":"Named navigation/editing key or a single printable character; validated by the shared browser input path."},"modifiers":{"type":"integer","minimum":0,"maximum":15,"description":"Optional bounded CDP keyboard bitset: Alt=1, Ctrl=2, Meta=4, Shift=8; omitted means zero."},"delta_x":{"type":"integer","minimum":-10000,"maximum":10000},"delta_y":{"type":"integer","minimum":-10000,"maximum":10000}},"required":["kind"],"additionalProperties":false}},"required":["op"],"additionalProperties":false}},"required":["command"],"additionalProperties":false}), });
         }
         tools
     }
@@ -819,21 +863,10 @@ impl KernelRuntimeState {
         }
         let agent = self.user_domain_tool_agent(run).await?;
         let user = self.provider_account_authority_owner_user_id(agent.owner_user_id());
-        // MP-08/MP-10/MP-11 A06: retain the exact sudo turn across waits.
-        // Its browser grant permits unfocused input only while that turn is current.
-        let sudo_turn = if name == PASTE && !host.is_focused(&user, agent.id()) {
-            Some(self.sudo_for_auth_token(token).map_err(|_| host_error("MP-11: sensitive_requires_focus: Vault fill requires focus or human approval; ask the user to focus this agent".into()))?)
-        } else {
-            None
-        };
         let authority = self.clone();
         let auth_token = token.to_string();
         let run_id = run.id().to_string();
-        let sensitive = name == PASTE;
-        let authority_turn = sudo_turn.clone();
-        let authority_owner = user.clone();
-        let authority_agent = agent.id().to_string();
-        let mut admission = host
+        let admission = host
             .admit(&user, agent.id())
             .map_err(host_error)?
             .with_agent_label(agent.alias())
@@ -845,20 +878,8 @@ impl KernelRuntimeState {
                 let [current] = runs.as_slice() else {
                     return false;
                 };
-                current.id() == run_id
-                    && authority.kernel_browser_agent(current).is_some()
-                    && (!sensitive
-                        || match &authority_turn {
-                            Some(turn) => authority.sudo_turn_live(turn),
-                            None => authority
-                                .owned
-                                .kernel_browser_host
-                                .is_focused(&authority_owner, &authority_agent),
-                        })
+                current.id() == run_id && authority.kernel_browser_agent(current).is_some()
             });
-        if sudo_turn.is_some() {
-            admission = admission.elevated();
-        }
         if name == SHARE {
             return self.kernel_browser_share(&agent, arguments, &admission);
         }
@@ -872,13 +893,7 @@ impl KernelRuntimeState {
                 &self.provider_account_authority_owner_user_id(agent.owner_user_id()),
             );
             return self
-                .kernel_browser_paste_secret(
-                    run.session_id(),
-                    &agent,
-                    arguments,
-                    admission,
-                    sudo_turn.as_ref(),
-                )
+                .kernel_browser_paste_secret(run.session_id(), &agent, arguments, admission)
                 .await
                 .map_err(|error| {
                     self.owned
@@ -1034,6 +1049,21 @@ pub(super) fn host_error(message: String) -> DaemonError {
 #[cfg(test)]
 mod document_tests {
     use super::*;
+    /// Pausing a Room display must reach the worker as a pause; resuming needs no worker call (the next capture does).
+    #[test]
+    fn mp08_a_parked_room_display_becomes_a_worker_park() {
+        let park = |parked| KernelBrowserDisplayRequest::Park {
+            subscription_id: "room-display".into(),
+            generation: 3,
+            parked,
+            watch: true,
+        };
+        assert_eq!(
+            park(true).room_control(),
+            Some((&"room-display".to_owned(), 3, RoomDisplayCommand::Park {}))
+        );
+        assert!(park(false).room_control().is_none());
+    }
     #[test]
     fn md3_local_terminals_have_distinct_stable_browser_actors() {
         use crate::runtime::command::{KernelCommand, KernelCommandSource};
@@ -1214,8 +1244,22 @@ mod document_tests {
         assert!(serde_json::from_value::<crate::local::KernelBrowserRequest>(serde_json::json!({"command":{"op":"input","tab_id":"host-tab-a","generation":1,"document_id":"caller-cannot-inject-private-fields","input":{"kind":"click","x":1,"y":2}}})).is_err());
     }
     #[test]
+    fn provider_tools_cannot_open_a_live_stream() {
+        // Agents read with state, snapshot and screenshot; a stream is only for a person watching.
+        for command in [
+            serde_json::json!({"op":"subscribe","tab_id":"host-tab-a","generation":1}),
+            serde_json::json!({"op":"poll","subscription_id":"stream","generation":1}),
+            serde_json::json!({"op":"unsubscribe","subscription_id":"stream","generation":1}),
+        ] {
+            assert!(
+                browser_tool_params(serde_json::json!({ "command": command })).is_err(),
+                "an agent opened a live stream: {command}"
+            );
+        }
+    }
+    #[test]
     fn mp11_provider_tools_cannot_suspend_or_resume_human_display_leases() {
-        for op in ["display_suspend", "display_resume"] {
+        for op in ["display_suspend", "display_resume", "display_park"] {
             assert!(browser_tool_params(serde_json::json!({"command":{
                 "op":op,"subscription_id":"human-display","generation":7
             }}))

@@ -56,6 +56,8 @@ export class DesktopDisplay {
     stream.expires=Date.now()+60000;this.host.armDisplayExpiry(stream);
     if(command.op==='display_attach')return {generation:this.host.generation,attached:true};
     if(command.op!=='screenshot'||!stream.acceptsCredit(command.after_sequence))throw new UserDomainRefusal('stale_reference');
+    // A capture means someone watches: the source below must not run for a parked stream.
+    stream.park(false,true);
     const policy=this.host.protection,source=await this.ensureSource(),feed=stream.audience==='owner'?source.ownerFeed():source;
     const lifetimeValid=()=>this.host.protection===policy&&source.valid()&&this.host.displays.get(stream.subscription_id)===stream&&this.host.chromium.desktop?.binding()===binding;
     if(!stream.producer){stream.producer=this.createProducer(feed,stream.encoder,{codec:stream.codec,bitrate:stream.bitrate,independent:!stream.dependencies,stripes:stream.stripes,bootstrapExact:stream.pngBootstrap,valid:lifetimeValid,timing:this.host.timing});}
@@ -100,6 +102,12 @@ export class DesktopDisplay {
     const changedAt=Math.max(source.changedAt??-Infinity,(this.inputAt??-Infinity)+1000-quietNativeMs);
     const exact=stream.refiner.request(binding,changedAt,()=>valid()&&source.sample()===sample);
     return exact&&{...exact,generation:this.host.generation};
+  }
+  // Nobody watching means nothing reads the screen: the shared source stops with its last watched viewer and the
+  // next capture starts it again.
+  async park(stream,parked) {
+    stream.park(parked,true);
+    if(parked&&this.streams().every(other=>other.parked))await this.retireSource();
   }
   async remove(stream) {
     this.host.displays.delete(stream.subscription_id);await stream.close();

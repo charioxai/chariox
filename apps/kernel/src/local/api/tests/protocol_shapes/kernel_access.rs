@@ -253,6 +253,7 @@ fn local_kernel_access_protocol_451_has_no_session_scope_or_bearer() {
         crate::test_support::expected_local_protocol_version()
     );
     let grant = KernelAccessGrant {
+        covered: Vec::new(),
         grant_id: "g".into(),
         owner_user_id: "local".into(),
         holder_pid: 42,
@@ -267,6 +268,7 @@ fn local_kernel_access_protocol_451_has_no_session_scope_or_bearer() {
         "claude"
     );
     assert!(serde_json::to_value(KernelAccessGrant {
+        covered: Vec::new(),
         holder_harness: None,
         ..grant.clone()
     })
@@ -274,6 +276,7 @@ fn local_kernel_access_protocol_451_has_no_session_scope_or_bearer() {
     .get("holder_harness")
     .is_none());
     let until_exit_grant = KernelAccessGrant {
+        covered: Vec::new(),
         grant_id: "g2".into(),
         term: crate::local::KernelAccessTerm::UntilHolderExits,
         expires_at_ms: None,
