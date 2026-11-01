@@ -27,9 +27,20 @@ test("the guide mentions exactly the commands and flags the parser knows", () =>
   const flags = new Set(guide.match(/--[a-z0-9-]+/g))
   for (const flag of flags) assert.ok(knownFlags.has(flag), `guide mentions unknown flag ${flag}`)
   for (const flag of knownFlags) assert.ok(flags.has(flag), `guide omits flag ${flag}`)
-  assert.ok(guide.split("\n").length <= 105)
+  assert.ok(guide.split("\n").length <= 110)
   assert.match(guide, /show it to the user verbatim and wait/)
   assert.match(guide, /exit 0 and a printed grant mean approved: go on to step 2/, "an agent must not mistake the waiting note for a pending approval")
+})
+
+test("the guide tells an agent what to do with a secret link, from the command table", () => {
+  const guide = guideText()
+  const request = COMMANDS.find(spec => spec.name === "secret request")!
+  assert.ok(request.note, "the paragraph lives in the table")
+  assert.ok(guide.includes(request.note), "the guide prints the table's paragraph")
+  assert.match(guide, /Show the link to the user verbatim and do not open it/)
+  assert.match(guide, /Never ask for the value in chat/)
+  assert.equal(exitCodeFor("secret_link_unavailable"), 3)
+  assert.match(usageOf("secret request"), /--label TEXT/)
 })
 
 test("the parser accepts every flag the table lists and refuses anything else", () => {

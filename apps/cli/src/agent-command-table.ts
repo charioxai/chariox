@@ -4,7 +4,7 @@ import {
 } from "./ipc-requests.js"
 
 type Flag = { name: string; value?: string; required?: true }
-type CommandSpec = { name: string; flags: readonly Flag[]; args?: readonly string[]; summary: string }
+type CommandSpec = { name: string; flags: readonly Flag[]; args?: readonly string[]; summary: string; note?: string }
 
 const SOCKET: Flag = { name: "--socket", value: "PATH" }
 const HOLDER: Flag = { name: "--holder-pid", value: "PID" }
@@ -30,6 +30,14 @@ export const COMMANDS: readonly CommandSpec[] = [
     flags: [{ name: "--pid", value: "PID", required: true }, SOCKET],
     summary: "a background process you start (nohup tool &) loses your access when its parent exits: run this with $! right after starting it, or from the process itself; not for a process that forks twice (its pid changes)",
   },
+  {
+    name: "secret request",
+    flags: [{ name: "--label", value: "TEXT", required: true }, OVERWRITE, { name: "--no-wait" }, TIMEOUT, SOCKET],
+    args: ["CREDENTIAL_ID"],
+    summary: "ask the user for a value that goes straight into their Vault under CREDENTIAL_ID; prints the link as its first line, then waits for stored, cancelled or timed_out (--no-wait: exit 6)",
+    note: "Show the link to the user verbatim and do not open it. Never ask for the value in chat and never type it yourself: you do not receive it. Use the stored value only through its credential handle.",
+  },
+  { name: "secret status", flags: [SOCKET], args: ["INTERACTION_ID"], summary: "pending, stored, cancelled or timed_out for a secret request you made" },
   { name: "kernels", flags: [SOCKET], summary: "list the kernels this kernel can reach" },
   {
     name: "request",
@@ -100,7 +108,7 @@ export const REQUEST_EXAMPLES: readonly { body: object; note: string }[] = [
   },
 ]
 
-const REFUSED = ["events_refused", "kernel_sudo_refused", "kernel_sudo_room_owner_local", "kernel_access_human_only", "kernel_access_ended", "kernel_access_not_covered", "kernel_access_already_granted", "kernel_access_cover_gone", "kernel_access_cover_identity_changed", "kernel_access_cover_kernel_process", "kernel_access_cover_outside", "kernel_access_cover_limit", "command_id_required", "duplicate_command_conflict"]
+const REFUSED = ["events_refused", "secret_link_unavailable", "kernel_sudo_refused", "kernel_sudo_room_owner_local", "kernel_access_human_only", "kernel_access_ended", "kernel_access_not_covered", "kernel_access_already_granted", "kernel_access_cover_gone", "kernel_access_cover_identity_changed", "kernel_access_cover_kernel_process", "kernel_access_cover_outside", "kernel_access_cover_limit", "command_id_required", "duplicate_command_conflict"]
 const KERNEL_UNAVAILABLE = ["kernel_unknown", "kernel_ambiguous", "kernel_offline", "kernel_unreachable", "kernel_unpaired", "kernel_incompatible", "kernel_not_available"]
 const TIMEOUT_OR_UNKNOWN = ["kernel_sudo_expired", "kernel_request_timeout", "kernel_connection_lost", "kernel_outcome_unknown", "kernel_access_unconfirmed"]
 
@@ -111,7 +119,7 @@ export const EXIT_CODES: readonly { exit: number; meaning: string; codes: readon
   { exit: 3, meaning: "refused: the user, the grant or the file permissions do not allow it", codes: [...REFUSED, "file_permission_denied", "subscription_ended"] },
   { exit: 4, meaning: "kernel unavailable", codes: KERNEL_UNAVAILABLE },
   { exit: 5, meaning: "timeout or unknown outcome", codes: TIMEOUT_OR_UNKNOWN },
-  { exit: 6, meaning: "approval pending (access request --no-wait)", codes: [] },
+  { exit: 6, meaning: "approval pending (access request --no-wait, secret request --no-wait)", codes: [] },
   { exit: 7, meaning: "event cursor expired: resync followed targets", codes: ["cursor_expired"] },
 ]
 
@@ -164,7 +172,7 @@ export function parseArguments(command: string, argv: readonly string[]): { flag
 }
 
 export function guideText(): string {
-  const commands = COMMANDS.map(spec => `  ${usage(spec).replace("Usage: ", "")}\n      ${spec.summary}`)
+  const commands = COMMANDS.map(spec => `  ${usage(spec).replace("Usage: ", "")}\n      ${spec.summary}${spec.note ? `\n      ${spec.note}` : ""}`)
   const exits = EXIT_CODES.map(entry => `  ${entry.exit} ${entry.meaning}`)
   return [
     "Chariox guide for agents. You talk only to your local kernel; nothing is installed in your harness.",
