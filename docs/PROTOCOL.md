@@ -5112,12 +5112,12 @@ triggers. 931 removes the `/wait` schedule shape: `CreateAgentPromptSchedule`,
 `/wait` schedules from earlier kernels are not migrated. The shape is pinned by
 `local_daemon_protocol_agent_trigger_shape_is_versioned`.
 
-Allocated 932 (relay peer 380) adds the HTTP trigger source `{"kind": "http", "ingress_id", "port"}` (the
+Allocated 932 (relay peer 386) adds the HTTP trigger source `{"kind": "http", "ingress_id", "port"}` (the
 create request sends `{"kind": "http"}` and the kernel picks both), `InvokeAgentTrigger
 {session_id, trigger_id, payload}` answering `AgentTriggerInvoked {invocation}` and
 `ReadAgentTriggerTranscript {session_id, trigger_id, cursor?}` answering `AgentTriggerTranscript`.
 The `schedule`, `http` and `notification` prompt origins also travel in
-`SubmitLeasedPrompt.git_context.prompt_origin`: the home refuses a worker below peer 380 instead of sending one. `local_daemon_protocol_http_agent_trigger_shape_is_versioned` pins the shapes.
+`SubmitLeasedPrompt.git_context.prompt_origin`: the home refuses a worker below peer 386 instead of sending one. `local_daemon_protocol_http_agent_trigger_shape_is_versioned` pins the shapes.
 
 Allocated 931 (relay peer 380) makes every trigger firing a labelled prompt and lets a person
 resend one the provider did not confirm. A firing's transcript prompt carries `prompt_origin`
