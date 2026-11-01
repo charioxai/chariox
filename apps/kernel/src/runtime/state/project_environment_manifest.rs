@@ -354,7 +354,7 @@ mod tests {
         std::fs::write(workspace.join("app.ts"), "process.env.OPTIONAL_INPUT\n").unwrap();
         // MP-08 / MP-11: an uncommitted repository cannot pass Copy history admission;
         // ordinary adjustment never copies history, so it must not run that scan.
-        assert!(std::process::Command::new("git")
+        assert!(crate::process_spawn::command("git")
             .args(["init", "-q"])
             .current_dir(&workspace)
             .status()

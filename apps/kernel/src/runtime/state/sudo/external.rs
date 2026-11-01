@@ -269,6 +269,7 @@ fn remote_requester_id(on_behalf_of: &OnBehalfOf) -> String {
 /// process here, so the holder facts are empty and the id names origin and grant.
 fn remote_requester_grant(on_behalf_of: &OnBehalfOf, owner: &str) -> KernelAccessGrant {
     KernelAccessGrant {
+        covered: Vec::new(),
         grant_id: remote_requester_id(on_behalf_of),
         owner_user_id: owner.into(),
         holder_pid: 0,

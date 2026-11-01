@@ -109,6 +109,9 @@ test("workflow command opens the workflow screen and manages local workflows", a
     refreshSessionState: async () => makeSession(),
     spawnAgent: async () => ({ agent: makeAgent(), session: makeSession() }),
     destroyAgent: async () => makeSession(),
+    moveAgent: async () => ({}) as never,
+    cancelAgentMove: async () => {},
+    pause: async () => {},
     focusAgent: async () => ({ agent: makeAgent(), session: makeSession() }),
     resolveSessionAgent: (reference) => {
       if (
@@ -495,6 +498,9 @@ test("workflow command opens the workflow screen and manages local workflows", a
     refreshSessionState: async () => makeSession(),
     spawnAgent: async () => ({ agent: makeAgent(), session: makeSession() }),
     destroyAgent: async () => makeSession(),
+    moveAgent: async () => ({}) as never,
+    cancelAgentMove: async () => {},
+    pause: async () => {},
     focusAgent: async () => ({ agent: makeAgent(), session: makeSession() }),
     resolveSessionAgent: () => ({ agent: makeAgent() }),
     workflowScreenActive: () => true,  // Screen is already active
@@ -624,6 +630,9 @@ test("workflow command opens the workflow screen and manages local workflows", a
     refreshSessionState: async () => makeSession(),
     spawnAgent: async () => ({ agent: makeAgent(), session: makeSession() }),
     destroyAgent: async () => makeSession(),
+    moveAgent: async () => ({}) as never,
+    cancelAgentMove: async () => {},
+    pause: async () => {},
     focusAgent: async () => ({ agent: makeAgent(), session: makeSession() }),
     resolveSessionAgent: () => ({ agent: makeAgent() }),
     workflowScreenActive: () => true,

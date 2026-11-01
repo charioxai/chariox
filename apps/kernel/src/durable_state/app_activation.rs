@@ -95,9 +95,11 @@ impl DurableKernelStateStore {
                     response,
                 },
             )))?;
-        receiver.recv().map_err(|_| DaemonError::LocalTransport {
-            operation: "durable_state.await_app_activation",
-            message: "App activation confirmation did not complete".into(),
+        crate::durable_state::await_writer_response(receiver).map_err(|_| {
+            DaemonError::LocalTransport {
+                operation: "durable_state.await_app_activation",
+                message: "App activation confirmation did not complete".into(),
+            }
         })?
     }
 }

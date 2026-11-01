@@ -56,7 +56,7 @@ pub(super) async fn start(
     } else {
         None
     };
-    let response = super::provider_auth_control::execute_start_provider_login_with_overwrite(
+    let started = super::provider_auth_control::execute_start_provider_login_with_overwrite(
         runtime_state,
         &owner,
         StartProviderLoginRequest {
@@ -67,12 +67,15 @@ pub(super) async fn start(
         request.overwrite,
     )
     .await?;
-    if let (Some((session_id, agent_id)), LocalDaemonResponse::ProviderLoginStarted { login }) =
-        (target, &response)
+    if let (
+        true,
+        Some((session_id, agent_id)),
+        LocalDaemonResponse::ProviderLoginStarted { login },
+    ) = (started.new_process, target, &started.response)
     {
         runtime_state.spawn_provider_login_workflow(session_id, &agent_id, &owner, login.clone());
     }
-    Ok(response)
+    Ok(started.response)
 }
 
 /// Check the public credential handle before unlock prompts or a billed turn.
@@ -431,10 +434,16 @@ async fn store_token(
             )
         }
         Ok(ClaudeSetupTokenStoreOutcome::VaultUnlockFailed(error)) => {
-            store.append_setup_token_note(
+            crate::logging::warn_with_fields(
+                "daemon.provider_login",
+                "Chariox Vault unlock failed during Claude sign-in",
+                serde_json::json!({ "error": error.to_string() }),
+            );
+            store.await_vault_passphrase(
                 owner_user_id,
                 &record.login_id,
-                &format!("Chariox Vault unlock failed: {error}. Enter the passphrase again."),
+                ClaudeSetupTokenVaultPrompt::Unlock,
+                "That passphrase was not accepted. Enter your Chariox Vault passphrase again.",
                 now_ms,
             )
         }

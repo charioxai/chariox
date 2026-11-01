@@ -351,6 +351,15 @@ pub(super) fn compose_command_router(
         config_projection.clone(),
         remote_relay_inventory_projection.clone(),
     ));
+    // The pumps of a follower's remote targets end an inbox whose grant they
+    // do not find, so the grants that outlive a restart are back before they start.
+    if let Err(error) = runtime_state.restore_kernel_access_grants() {
+        crate::logging::error_with_fields(
+            "kernel.access",
+            "could not restore access grants; holders must request access again",
+            serde_json::json!({ "error": error.to_string() }),
+        );
+    }
     kernel_gateway.resume_event_parts();
     CommandRouter {
         _native_interaction_bridge: native_interaction_bridge,
@@ -388,5 +397,7 @@ pub(super) fn compose_command_router(
         workspace_coordinator,
         provider_launch_pending,
         kernel_gateway,
+        request_metrics: Default::default(),
+        daemon_health_cache: Default::default(),
     }
 }

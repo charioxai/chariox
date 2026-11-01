@@ -123,7 +123,7 @@ async fn sudo_operations_forwarded_worker_permissions_use_projected_home_task() 
             },
         ),
         make(
-            "claude-workspace-trust-forwarded",
+            "claude-selected-workspace-trust-forwarded",
             NativeInteractionOrigin::ProviderStartup {
                 provider_run_id: "worker-run".into(),
             },
@@ -263,10 +263,11 @@ async fn sudo_operations_host_workspace_parameters_reuse_task_consent() {
         compare_ref: None,
         limit: None,
     });
+    // A live window covers the whole kernel, not only the task's workspace.
     assert!(f
         .state
         .authorize_sudo_request(&turn.entry_id, &foreign)
-        .is_err());
+        .is_ok());
 }
 
 #[cfg(target_os = "linux")]
@@ -305,6 +306,66 @@ async fn sudo_operations_required_watched_command_runs() {
     )).await.expect("covered watched command asked again").expect("covered watched command refused");
     assert!(result.ok, "{result:?}");
     f.state.owned.agent_wakes.processes.shutdown();
+}
+
+// PC-07: a process the agent started through its runtime tool is the agent's,
+// listed in Health and counted under its share of the memory ceiling.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_watched_process_is_listed_and_counted_under_its_agent() {
+    use crate::durable_state::agent_lifecycle::{Operation, Outcome};
+    let f = fixture_with_options(None, true);
+    let turn = running(&f);
+    f.state
+        .owned
+        .provider_store
+        .update_run_execution_config(
+            f.run.id(),
+            crate::provider::AgentExecutionMode::Build,
+            crate::provider::AgentPermissionLevel::Required,
+        )
+        .unwrap();
+    let Outcome::Task(task) = f
+        .state
+        .owned
+        .durable_state_store
+        .agent_lifecycle(Operation::Begin {
+            owner: turn.owner_user_id.clone(),
+            room: turn.session_id.clone(),
+            agent: turn.agent_id.clone(),
+            prompt: turn.prompt_id.clone().unwrap(),
+            run: Some(f.run.id().into()),
+            now: crate::session::unix_epoch_ms(),
+        })
+        .unwrap()
+    else {
+        panic!("task missing")
+    };
+    let result = tokio::time::timeout(Duration::from_secs(5), f.router.dispatch_authenticated_runtime_tool_call(
+        "sudo-fixture-bearer", "chariox.events.process", serde_json::json!({"task_id":task.task_id, "origin_prompt_id":turn.prompt_id, "label":"long watched command", "argv":["/bin/sleep","30"]})
+    )).await.expect("watched command asked again").expect("watched command refused");
+    assert!(result.ok, "{result:?}");
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let rows = loop {
+        let rows = f.state.session_processes(&turn.session_id);
+        if rows.iter().any(|row| row.process.command.contains("sleep"))
+            || std::time::Instant::now() > deadline
+        {
+            break rows;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    f.state.owned.agent_wakes.processes.shutdown();
+    let watched = rows
+        .iter()
+        .find(|row| row.process.command.contains("sleep"))
+        .expect("the watched process is missing from the agent's Health rows");
+    assert_eq!(
+        watched.owner,
+        crate::runtime::process_resources::SessionProcessOwner::Agent(
+            f.run.agent_instance_id().unwrap().into()
+        )
+    );
 }
 
 #[tokio::test]
@@ -359,7 +420,7 @@ async fn startup_trust_reuses_approved_workspace_launch(enrolled: bool) {
         "approved startup is not a live tool turn"
     );
     let interaction = RuntimeInteraction::new(
-        "claude-workspace-trust-covered",
+        "claude-selected-workspace-trust-covered",
         &turn.agent_id,
         RuntimeInteractionKind::Permission,
         RuntimeInteractionLevel::Warning,
@@ -489,6 +550,57 @@ async fn sudo_operations_workspace_extension_reuses_task_consent() {
     .expect("covered workspace extension asked again")
     .unwrap();
     assert!(result.is_none());
+}
+
+#[tokio::test]
+async fn sudo_operations_room_app_self_binding_reuses_task_consent() {
+    let f = super::tests::fixture_for_owner(None, true, "dev-stub", "dev-stub", None, "alice");
+    crate::durable_state::app_state::fixture_catalog(&f.state.owned.durable_state_store);
+    let turn = running(&f);
+    let session = f
+        .state
+        .owned
+        .session_store
+        .get_session(&turn.session_id)
+        .unwrap();
+    let prompts = &f.state.owned.prompt_state_owner;
+    let active = prompts
+        .active_prompt_for_agent_snapshot(&session, &turn.agent_id)
+        .unwrap();
+    let attachment = f
+        .state
+        .owned
+        .attachment_store
+        .get_attachment(&f.request.attachment_id)
+        .unwrap();
+    let mut owner_request = active.clone().with_source_attachment(&attachment);
+    owner_request.set_status(crate::session::PromptStatus::Running);
+    assert!(prompts.replace_active_prompt_if_matches(
+        &session,
+        &turn.agent_id,
+        &active,
+        owner_request
+    ));
+    let agent = f.state.owned.agent_store.get_agent(&turn.agent_id).unwrap();
+    assert!(f.state.owner_requested_prompt(&agent).is_some());
+    assert!(
+        f.state
+            .sudo_task_authorizes_agent(&turn.session_id, &turn.agent_id)
+            .await
+    );
+    let permit = tokio::time::timeout(
+        Duration::from_millis(500),
+        f.state.authorize_agent_app_binding(
+            &turn.session_id,
+            &turn.agent_id,
+            &turn.agent_id,
+            "installed",
+        ),
+    )
+    .await
+    .expect("covered Room App self binding asked again")
+    .unwrap();
+    assert!(permit.is_some());
 }
 
 #[cfg(target_os = "linux")]
@@ -682,4 +794,219 @@ async fn sudo_operations_watched_command_refused_without_linux_process_groups() 
         message.contains("Linux process-group ownership"),
         "{message}"
     );
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11: provider output must prove the scope before
+// the actual sudo consent seam can consume the owner's launch authorization.
+#[tokio::test]
+async fn sudo_startup_trust_keeps_selected_workspace_scope() {
+    use crate::app::StartupTrustBridge;
+    let f = fixture();
+    let turn = running(&f);
+    let selected = f.run.working_directory().unwrap().as_path();
+    let own = selected.join("agent-worktree");
+    std::fs::create_dir(&own).unwrap();
+    let home = selected.join("profile-home");
+    std::fs::create_dir(&home).unwrap();
+    let mut failures = Vec::new();
+    for (name, cwd, displayed, worktree, expected) in [
+        ("selected", selected, selected, selected, true),
+        (
+            "ancestor",
+            selected,
+            selected.parent().unwrap(),
+            selected,
+            false,
+        ),
+        (
+            "own_worktree",
+            own.as_path(),
+            own.as_path(),
+            own.as_path(),
+            true,
+        ),
+        ("session_root", selected, selected, own.as_path(), false),
+    ] {
+        let native = selected.join(name);
+        std::fs::create_dir(&native).unwrap();
+        let context = native.join("context.txt");
+        let events = native.join("events.jsonl");
+        std::fs::write(&context, "").unwrap();
+        std::fs::write(&events, "").unwrap();
+        let request = crate::provider::LaunchProviderRequest::new(
+            &turn.session_id,
+            "claude",
+            "claude-headless",
+            "default",
+            "haiku",
+        )
+        .with_agent_id(&turn.agent_id)
+        .with_client_interface(crate::provider::ProviderClientInterface::NativeTui);
+        let mut run = crate::provider::RuntimeProviderRun::new(
+            f.run.id(),
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+                process_label: "scope-test".into(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: vec![],
+                pty_env: std::collections::BTreeMap::from([
+                    ("HOME".into(), home.display().to_string()),
+                    (
+                        "CHARIOX_CLAUDE_NATIVE_CONTEXT".into(),
+                        context.display().to_string(),
+                    ),
+                    (
+                        "CHARIOX_CLAUDE_NATIVE_EVENTS".into(),
+                        events.display().to_string(),
+                    ),
+                ]),
+                pty_env_remove: vec![],
+                working_directory: Some(cwd.to_path_buf()),
+                structured_endpoint: None,
+            },
+        );
+        run.mark_running();
+        let bridge = StartupTrustBridge::default();
+        let native_bridge: std::sync::Arc<dyn crate::provider::ProviderNativeInteractionBridge> =
+            std::sync::Arc::new(bridge.clone());
+        {
+            let mut app = f.app.lock().await;
+            app.agents_mut()
+                .update_agent_config(
+                    &turn.agent_id,
+                    None,
+                    None,
+                    None,
+                    Some(Some(worktree.display().to_string())),
+                )
+                .unwrap();
+            app.providers_mut().insert_run_for_test(run.clone());
+            app.providers()
+                .set_native_interaction_bridge(native_bridge.clone());
+            app.process_claude_native_terminal_output_bridge_for_runtime(
+                &turn.session_id, run.id(), &run,
+                &format!("Accessing workspace:\n{}\nQuick safety check\nDo you trust this folder?\n❯ 1. Yes, I trust this folder\n2. No, exit", displayed.display()),
+            ).unwrap();
+        }
+        let interaction = bridge.wait_for_interaction_with_pump(|| {});
+        bridge.resolve_default_no();
+        let answer =
+            f.state
+                .sudo_native_permission_resolution(&turn.session_id, &interaction, None);
+        if answer.is_some() != expected {
+            failures.push(name);
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "sudo consumed trust outside its selected folder: {failures:?}"
+    );
+}
+
+#[tokio::test]
+async fn sudo_startup_trust_without_selected_folder_proof_asks_the_owner() {
+    let f = fixture();
+    let turn = running(&f);
+    let interaction = RuntimeInteraction::new(
+        "claude-workspace-trust-unvalidated",
+        &turn.agent_id,
+        RuntimeInteractionKind::Permission,
+        RuntimeInteractionLevel::Warning,
+        None,
+        "Trust a folder without a selected-folder proof",
+        vec![RuntimeInteractionChoice::new(
+            "allow_once",
+            "Trust folder",
+            "allow",
+            None,
+        )],
+        None,
+        Some(300),
+        None,
+    )
+    .with_native_origin(Some(NativeInteractionOrigin::ProviderStartup {
+        provider_run_id: f.run.id().into(),
+    }));
+    assert!(
+        f.state
+            .sudo_native_permission_resolution(&turn.session_id, &interaction, None)
+            .is_none(),
+        "an unvalidated worker startup must use the ordinary owner decision"
+    );
+}
+
+#[tokio::test]
+async fn sudo_operations_non_room_app_binding_reuses_task_consent() {
+    let f = super::tests::fixture_for_owner(None, false, "dev-stub", "dev-stub", None, "alice");
+    crate::durable_state::app_state::fixture_catalog(&f.state.owned.durable_state_store);
+    let turn = running(&f);
+    f.state
+        .owned
+        .agent_store
+        .update_agent_config(
+            &turn.agent_id,
+            None,
+            Some(Some(crate::provider::AgentPermissionLevel::Required)),
+            None,
+            None,
+        )
+        .unwrap();
+    let bind = || {
+        tokio::time::timeout(
+            Duration::from_millis(500),
+            f.state.authorize_agent_app_binding(
+                &turn.session_id,
+                &turn.agent_id,
+                &turn.agent_id,
+                "installed",
+            ),
+        )
+    };
+    assert!(bind()
+        .await
+        .expect("covered App binding asked again")
+        .unwrap()
+        .is_some());
+    f.state.owned.sudo_turns.lock().unwrap().clear();
+    assert!(
+        bind().await.is_err(),
+        "without the task the binding still waits for the owner"
+    );
+}
+
+#[tokio::test]
+async fn sudo_operations_app_validation_stays_with_the_owner_decision() {
+    use crate::durable_state::app_validations::{
+        canonical, ValidationCommand, ValidationOperation, ValidationState,
+    };
+    let f = super::tests::fixture_for_owner(None, true, "dev-stub", "dev-stub", None, "alice");
+    let store = f.state.owned.durable_state_store.clone();
+    crate::durable_state::app_state::fixture_catalog(&store);
+    // The caller's agent runs a live /sudo task; protected App actions are still the owner's.
+    let turn = running(&f);
+    let (parameters, digest) = canonical(&serde_json::json!({"to": "acct"}));
+    store
+        .app_validation(ValidationCommand::Create(ValidationOperation {
+            operation_id: "by-sudo-agent".into(),
+            owner: "alice".into(),
+            installation: "installed".into(),
+            generation: 1,
+            action: "send_payment".into(),
+            parameters,
+            digest,
+            state: ValidationState::Pending,
+            expires_ms: crate::session::unix_epoch_ms() + 600_000,
+            callers: serde_json::json!([{"kind": "agent", "id": turn.agent_id}]).to_string(),
+        }))
+        .unwrap();
+    f.state
+        .app_validation_pass(crate::session::unix_epoch_ms())
+        .await;
+    let status = store
+        .app_validation_status("alice", "installed", "by-sudo-agent")
+        .unwrap()
+        .unwrap();
+    assert_eq!(status.state, ValidationState::Pending);
 }

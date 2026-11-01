@@ -139,7 +139,7 @@ impl ProviderRunActivationState {
             app.update_provider_run_projection(outcome.into_run());
         }
 
-        crate::provider::prepare_vaulted_claude_native_onboarding(&request)?;
+        crate::provider::prepare_claude_onboarding_state(&request)?;
         let provider_credential_env = std::mem::take(&mut request.provider_credential_env);
         let outcome = app.providers.start_run_provider_only(request)?;
         app.sessions

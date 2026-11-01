@@ -810,7 +810,7 @@ impl DockerCommand {
     }
 
     fn local_command(&self) -> Command {
-        let mut command = Command::new("docker");
+        let mut command = crate::process_spawn::command("docker");
         command.args(&self.args);
         // MP-08/MP-11: use the same explicit engine as image production.
         if std::env::var_os("DOCKER_HOST").is_some_and(|host| !host.is_empty()) {
@@ -912,7 +912,7 @@ mod tests {
             }
             initialize();
             assert_eq!(unsafe { libc::prctl(libc::PR_GET_DUMPABLE, 0, 0, 0, 0) }, 0);
-            let provider = Command::new("/usr/bin/python3")
+            let provider = crate::process_spawn::command("/usr/bin/python3")
                 .args([
                     "-I",
                     "-S",
@@ -929,7 +929,7 @@ mod tests {
             return;
         }
         for mode in ["ordinary", "broker"] {
-            let result = Command::new(std::env::current_exe().unwrap())
+            let result = crate::process_spawn::command(std::env::current_exe().unwrap())
                 .args(["--exact", "slice::local_docker::broker::tests::mp08_mp11_kernel_control_memory_policy_is_common_and_exec_resets_it", "--test-threads=1"])
                 .env(MODE, mode).output().unwrap();
             assert!(
@@ -962,7 +962,7 @@ mod tests {
 
     #[test]
     fn managed_provider_isolation_probe_survives_broker_filter() {
-        let mut command = Command::new("unused-provisioner");
+        let mut command = crate::process_spawn::command("unused-provisioner");
         command.env("CHARIOX_MANAGED_PROVIDER_ISOLATION_PROBE", "1");
         command.env("CHARIOX_MANAGED_UNKNOWN", "do-not-forward");
         assert_eq!(
@@ -985,7 +985,7 @@ mod tests {
             ("CHARIOX_ROOM_ENVIRONMENT_SESSION_ID", "room-1"),
             ("CHARIOX_ROOM_ENVIRONMENT_SLICE_ID", "slice-1"),
         ];
-        let mut command = Command::new("unused-provisioner");
+        let mut command = crate::process_spawn::command("unused-provisioner");
         command.envs(binding).env("CHARIOX_SLICE_ID", "slice-1");
         command.env("CHARIOX_ROOM_ENVIRONMENT_UNKNOWN", "do-not-forward");
         command.env("UNRELATED_SECRET", "do-not-forward");

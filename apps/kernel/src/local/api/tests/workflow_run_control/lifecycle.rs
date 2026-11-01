@@ -204,6 +204,7 @@ fn local_request_api_invokes_lists_gets_and_cancels_workflow_runs_inner(provider
                 structured_endpoint: None,
                 provider_session_id: None,
                 native_tui: false,
+                native_checkpoint_binding: None,
             },
         ))
         .expect("provider run should launch")
@@ -544,6 +545,7 @@ fn stopping_workflow_dispatches_next_queued_workflow_prompt_inner() {
                 structured_endpoint: None,
                 provider_session_id: None,
                 native_tui: false,
+                native_checkpoint_binding: None,
             },
         ))
         .expect("provider should launch")
@@ -998,6 +1000,7 @@ fn local_request_api_two_workflow_multi_node_collision_drill_inner() {
                 structured_endpoint: None,
                 provider_session_id: None,
                 native_tui: false,
+                native_checkpoint_binding: None,
             },
         ))
         .expect("shared agent provider should launch")
@@ -1339,6 +1342,7 @@ fn local_request_api_serializes_two_workflows_sharing_an_agent_inner() {
                 structured_endpoint: None,
                 provider_session_id: None,
                 native_tui: false,
+                native_checkpoint_binding: None,
             },
         ))
         .expect("provider should launch")

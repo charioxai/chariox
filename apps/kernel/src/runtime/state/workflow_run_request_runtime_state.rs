@@ -483,8 +483,14 @@ impl KernelRuntimeState {
         else {
             return Ok(());
         };
-        self.release_cancelled_local_prompt_after_restart(session_id, agent_id, &prompt, None)
-            .await?;
+        self.release_cancelled_local_prompt_after_restart(
+            session_id,
+            agent_id,
+            &prompt,
+            None,
+            super::prompt_cancellation_owned_state::PromptEnding::Cancelled,
+        )
+        .await?;
         // Without a provider run the release has nothing to advance the queue with.
         self.recover_queue_head_after_restart(session_id, agent_id)
     }

@@ -532,6 +532,10 @@ impl KernelRuntimeOwnedState {
                 None,
             )?;
         }
+        if let Some(session) = session.as_mut() {
+            self.persist_session_activity(session, decision_at.1)?;
+        }
+        self.answer_goal_native_approval(pending.goal_approval.as_ref())?;
         let pending = self
             .pending_interactions
             .write()
@@ -542,7 +546,7 @@ impl KernelRuntimeOwnedState {
         if passkey_verified
             && interaction
                 .kernel_operation_id()
-                .is_some_and(|id| id.starts_with("sudo:") && !id.contains(":scope:"))
+                .is_some_and(|id| id.starts_with("sudo:"))
             && interaction
                 .choice(choice_id)
                 .is_some_and(crate::session::RuntimeInteractionChoice::requires_passkey)
@@ -630,6 +634,28 @@ impl KernelRuntimeOwnedState {
                         std::sync::Arc::ptr_eq(&value.responder, &expected.responder)
                     })
             }) {
+                let orphan = expected.is_none() && !pending.contains_key(interaction_id);
+                drop(pending);
+                if orphan {
+                    let activity_mutation = self.begin_managed_activity_mutation();
+                    let mut sessions = self.session_store.write();
+                    let Ok(mut session) = sessions.get_session(session_id) else {
+                        return Ok(());
+                    };
+                    if !session.active_interactions().iter().any(|interaction| {
+                        interaction.id() == interaction_id
+                            && interaction.kernel_operation_id().is_some()
+                    }) {
+                        return Ok(());
+                    }
+                    session.remove_active_interaction(interaction_id);
+                    sessions.restore_session(session);
+                    activity_mutation.record();
+                    drop(sessions);
+                    self.session_snapshot(session_id)?;
+                    self.terminal_stream
+                        .notify_terminal_projection_change(session_id);
+                }
                 return Ok(());
             }
             pending
@@ -695,6 +721,8 @@ impl KernelRuntimeOwnedState {
             crate::local::EventInteractionState::Resolved,
             None,
         )?;
+        // The provider continues its turn with the timeout reply, so the goal leaves the wait.
+        self.answer_goal_native_approval(pending.goal_approval.as_ref())?;
         consume();
         sessions.restore_session(session);
         activity_mutation.record();

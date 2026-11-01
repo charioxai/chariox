@@ -13,12 +13,12 @@ const SERVER_OVERLOADED: &str =
     "Provider prompt dispatch failed: Codex error [server_overloaded]: \
      Selected model is at capacity. Please try a different model.";
 
-struct FailingTurn {
-    runtime: KernelRuntimeState,
-    session_id: String,
-    agent_id: String,
-    failed_run_id: String,
-    prompt_id: String,
+pub(super) struct FailingTurn {
+    pub(super) runtime: KernelRuntimeState,
+    pub(super) session_id: String,
+    pub(super) agent_id: String,
+    pub(super) failed_run_id: String,
+    pub(super) prompt_id: String,
     worktree: std::path::PathBuf,
 }
 
@@ -29,7 +29,7 @@ impl Drop for FailingTurn {
 }
 
 impl FailingTurn {
-    fn active_prompt(&self) -> Option<crate::session::PromptQueueItem> {
+    pub(super) fn active_prompt(&self) -> Option<crate::session::PromptQueueItem> {
         let session = self
             .runtime
             .owned
@@ -66,7 +66,7 @@ impl FailingTurn {
             .collect()
     }
 
-    async fn fail_run(&self, provider_run_id: &str, message: &str) {
+    pub(super) async fn fail_run(&self, provider_run_id: &str, message: &str) {
         self.runtime
             .fail_owned_provider_prompt(&self.session_id, provider_run_id, message, true)
             .await
@@ -168,7 +168,7 @@ impl FailingTurn {
             .collect()
     }
 
-    fn assert_turn_failed(&self) {
+    pub(super) fn assert_turn_failed(&self) {
         assert!(self.active_prompt().is_none(), "the turn must fail");
         let settlement = self
             .runtime
@@ -187,16 +187,22 @@ impl FailingTurn {
     }
 }
 
-async fn failing_turn(substitutes: &[(&str, &str, Option<&str>)]) -> FailingTurn {
-    failing_turn_with(substitutes, false).await
+pub(super) async fn failing_turn(substitutes: &[(&str, &str, Option<&str>)]) -> FailingTurn {
+    failing_turn_with(substitutes, false, "dev-stub").await
 }
 
-/// A dev-stub agent on `PRIMARY_MODEL` with `substitutes` (provider, model,
-/// account), whose active turn — a workflow node's when `workflow` — runs on a
-/// provider run the test drives by hand.
+/// A turn on a `provider` run the test drives by hand, without a substitute.
+pub(super) async fn failing_turn_on(provider: &str) -> FailingTurn {
+    failing_turn_with(&[], false, provider).await
+}
+
+/// An agent on `provider` and `PRIMARY_MODEL` with `substitutes` (provider,
+/// model, account), whose active turn — a workflow node's when `workflow` —
+/// runs on a provider run the test drives by hand.
 async fn failing_turn_with(
     substitutes: &[(&str, &str, Option<&str>)],
     workflow: bool,
+    provider: &str,
 ) -> FailingTurn {
     let worktree = crate::test_support::test_workspace_root().join(format!(
         "chariox-turn-substitute-{:016x}",
@@ -230,7 +236,7 @@ async fn failing_turn_with(
         .agent_store
         .set_agent_runtime_profile_with_account_profile(
             &agent_id,
-            "dev-stub",
+            provider,
             Some(PRIMARY_MODEL.to_string()),
             None,
             None,
@@ -239,8 +245,8 @@ async fn failing_turn_with(
         .unwrap();
     let request = crate::provider::LaunchProviderRequest::new(
         &session_id,
-        "dev-stub",
-        "dev-stub",
+        provider,
+        provider,
         "default",
         PRIMARY_MODEL,
     )
@@ -456,7 +462,9 @@ async fn without_substitutes_the_turn_fails_as_before() {
     let not_carried_out = crate::agent::failed_request_notice(
         &crate::agent::failed_request_reason("dev-stub", SERVER_OVERLOADED),
     );
-    assert_eq!(errors, vec![SERVER_OVERLOADED.to_string(), not_carried_out]);
+    let failure_notice =
+        crate::provider::TurnOutcome::classify("dev-stub", SERVER_OVERLOADED).notice();
+    assert_eq!(errors, vec![failure_notice, not_carried_out]);
 }
 
 #[tokio::test]
@@ -584,7 +592,7 @@ async fn unavailable_substitute_accounts_are_skipped_in_order() {
 
 #[tokio::test]
 async fn a_failed_workflow_turn_reruns_without_failing_its_workflow_run() {
-    let turn = failing_turn_with(&[("dev-stub", SUBSTITUTE_A, None)], true).await;
+    let turn = failing_turn_with(&[("dev-stub", SUBSTITUTE_A, None)], true, "dev-stub").await;
     let workflow_run_id = turn
         .active_prompt()
         .and_then(|prompt| prompt.workflow_run_id().map(str::to_string))

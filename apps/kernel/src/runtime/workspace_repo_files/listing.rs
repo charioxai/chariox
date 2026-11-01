@@ -185,7 +185,7 @@ fn list_directory_files(
 }
 
 fn workspace_git_tracked_files(worktree_path: &str) -> Result<Vec<String>, DaemonError> {
-    let output = std::process::Command::new("git")
+    let output = crate::process_spawn::command("git")
         .args(["ls-files", "-z", "-c", "-o", "--exclude-standard"])
         .current_dir(worktree_path)
         .output()

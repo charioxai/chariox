@@ -5,6 +5,7 @@ use chariox_event_protocol::{
     AegsProviderActionRequest, AegsProviderActionResponse, AegsProviderResourcePage,
     AegsProviderResourceQuery,
 };
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{AegsStore, ConnectionRecord, SubscriptionClaim};
@@ -15,7 +16,7 @@ pub struct AuthorizationCallback {
     pub return_url: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NormalizedEvent {
     pub occurrence_id: String,
     pub event_type: String,
@@ -37,6 +38,17 @@ pub struct WebhookInput<'a> {
 pub struct WebhookRoute {
     pub connection_id: Option<String>,
     pub scope_prefix: Option<String>,
+}
+
+/// One delivery the provider's own delivery log reports for this AEGS.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderDelivery {
+    /// The identifier the provider puts on the webhook request (see
+    /// [`AegsProvider::webhook_delivery_id`]); the inbox dedupes on it.
+    pub delivery_id: String,
+    /// The identifier the provider's redelivery API needs for this delivery.
+    pub redelivery_ref: String,
+    pub delivered_at_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -166,6 +178,32 @@ pub trait AegsProvider: Send + Sync {
 
     fn allows_direct_emit(&self) -> bool {
         false
+    }
+
+    /// The provider's unique id for one webhook delivery, read from the verified request. The
+    /// durable inbox stores each id once, so a provider redelivery is acknowledged without a
+    /// second publication. `None` means the provider has no delivery ids and every request is
+    /// stored as its own entry.
+    fn webhook_delivery_id(&self, _input: WebhookInput<'_>) -> Option<String> {
+        None
+    }
+
+    /// A short human label for what the event is about inside its connection scope, such as a
+    /// pull request number. Received-event listings show it next to the scope instead of
+    /// returning the whole provider payload.
+    fn event_subject(&self, _event: &NormalizedEvent) -> Option<String> {
+        None
+    }
+
+    /// Lists deliveries the provider logged at or after `since_ms`, so the redelivery sweep can
+    /// find webhooks this AEGS never stored. Providers without a delivery log return nothing.
+    fn recent_deliveries(&self, _since_ms: u64) -> Result<Vec<ProviderDelivery>, String> {
+        Ok(Vec::new())
+    }
+
+    /// Asks the provider to send `delivery` again to this AEGS' webhook endpoint.
+    fn redeliver(&self, _delivery: &ProviderDelivery) -> Result<(), String> {
+        Err("provider redelivery is not supported".to_string())
     }
 }
 

@@ -15,6 +15,7 @@ import {
   registerCredentialRequest,
   removeCredentialRequest,
   setCredentialSecretRequest,
+  unlockCredentialVaultRequest,
   setUserConfigValueRequest,
   unsetUserConfigValueRequest,
   upsertCredentialRequest,
@@ -138,6 +139,19 @@ export async function executeCredentialCommand(
       const status = expectVariant<{ status: Record<string, unknown> }>(response, "CredentialVaultLocked").status
       return { ok: true, message: "vault locked", data: { status }, format: "json" }
     }
+    if (vaultAction === "unlock") {
+      if (!deps.readSecret) {
+        return {
+          ok: false,
+          message: "credential vault unlock requires hidden input support; run it from interactive chariox-shell",
+        }
+      }
+      const passphrase = await deps.readSecret("Vault passphrase: ")
+      if (!passphrase) return { ok: false, message: "the Vault passphrase must not be empty" }
+      const response = await deps.client.send(unlockCredentialVaultRequest(passphrase))
+      const payload = expectVariant<{ action: string; status: Record<string, unknown> }>(response, "CredentialVaultUnlocked")
+      return { ok: true, message: `vault ${payload.action}`, data: payload, format: "json" }
+    }
     if (vaultAction === "manage") {
       if (!context.sessionId) {
         return { ok: false, message: "credential vault manage requires an attached session" }
@@ -146,7 +160,7 @@ export async function executeCredentialCommand(
       const payload = expectVariant<{ action: string; status: Record<string, unknown> }>(response, "CredentialVaultManaged")
       return { ok: true, message: `vault ${payload.action}`, data: payload, format: "json" }
     }
-    return { ok: false, message: "usage: credential vault status|lock|manage" }
+    return { ok: false, message: "usage: credential vault status|lock|unlock|manage" }
   }
   if (!action || action === "list" || action === "ls") {
     const response = await deps.client.send(listCredentialsRequest())

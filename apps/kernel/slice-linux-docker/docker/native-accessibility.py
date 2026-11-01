@@ -141,13 +141,15 @@ def native_frame_scale(bounds, frame, client):
 def capture_snapshot(processes, browser_processes=None, browser_protection=None, values=(), fill=None):
     """MP-08/MP-11: capture only live Vault fill fields; input uses snapshot().
 
-    `fill` is given only by the desktop stream oracle (True while a Vault fill is tracked): there a kernel-browser window whose
-    filled field cannot be placed (no adopted measurement yet, no document pairing) is reported `unplaced` with the whole
-    window as its mask, so a viewer sees a covered window, never a stale picture. Other callers refuse such a capture."""
+    `fill` is given by the desktop stream oracle and the model Computer capture (True while a Vault fill is tracked): there a
+    kernel-browser window whose filled field cannot be placed (no adopted measurement yet, no document pairing) is reported
+    `unplaced` with the whole window as its mask, so the observer sees a covered window, never a stale picture. A measurement
+    that was adopted and holds no visible field region (a password input draws dots) masks nothing. Other callers refuse
+    such a capture."""
     masks = _fills.regions()
     pages = [page for page in (browser_protection or {}).get('pages', []) if page.get('regions')]
     unplaced = False
-    if pages or fill:
+    if pages or (fill and browser_protection is None):
         owned = {item['pid'] for item in browser_processes or () if alive(item)}
         try:
             from Xlib import X, display

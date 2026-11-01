@@ -148,6 +148,8 @@ test("kernel remote-runtime formatter treats session projection invariant drift 
     projection_invariants: {
       checked_sessions: 1,
       checked_agents: 1,
+      mismatch_count: 1,
+      mismatch_counts_by_kind: { agent_record_not_in_session_projection: 1 },
       mismatches: [{
         kind: "agent_record_not_in_session_projection",
         session_id: "session-1",

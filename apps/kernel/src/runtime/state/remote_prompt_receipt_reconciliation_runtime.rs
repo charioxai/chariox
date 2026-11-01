@@ -251,7 +251,10 @@ impl KernelRuntimeState {
                 operation: "resume remote prompt cancellation",
                 message: detail,
             })?;
-        if binding_before.active_worker_provider_run_id.as_deref() != Some(expected_provider_run_id)
+        if binding_before
+            .active_worker_provider_run_id
+            .as_deref()
+            .is_some_and(|run| run != expected_provider_run_id)
         {
             return Err(DaemonError::LocalTransport {
                 operation: "resume remote prompt cancellation",
@@ -281,8 +284,8 @@ impl KernelRuntimeState {
                 message: detail,
             })?;
         if !same_remote_prompt_worker_binding(&binding_before, &binding_after)
-            || binding_after.active_worker_provider_run_id.as_deref()
-                != Some(expected_provider_run_id)
+            || binding_before.active_worker_provider_run_id
+                != binding_after.active_worker_provider_run_id
         {
             return Err(DaemonError::LocalTransport {
                 operation: "resume remote prompt cancellation",
@@ -292,7 +295,9 @@ impl KernelRuntimeState {
         }
         match action {
             RemotePromptReceiptAction::AssociateActiveRun(provider_run_id)
-                if provider_run_id.as_str() == expected_provider_run_id =>
+                if provider_run_id.as_str() == expected_provider_run_id
+                    && binding_after.active_worker_provider_run_id.as_deref()
+                        == Some(expected_provider_run_id) =>
             {
                 self.cancel_remote_agent_prompt_if_remote(
                     &dispatch.session_id,
@@ -307,6 +312,17 @@ impl KernelRuntimeState {
             RemotePromptReceiptAction::DrainCompletedProjection(provider_run_id)
                 if provider_run_id.as_str() == expected_provider_run_id =>
             {
+                // A completed turn clears the worker's active-run pointer. Its exact
+                // receipt still owns the retained projection for this cancellation.
+                if binding_after.active_worker_provider_run_id.is_none() {
+                    self.owned
+                        .agent_store
+                        .set_remote_execution_active_worker_provider_run_id(
+                            &dispatch.agent_id,
+                            Some(expected_provider_run_id.to_string()),
+                        )?;
+                    self.owned.session_snapshot(&dispatch.session_id)?;
+                }
                 self.drain_completed_remote_prompt_receipt_projection(
                     dispatch,
                     expected_provider_run_id,
@@ -334,8 +350,11 @@ impl KernelRuntimeState {
                                 == Some(crate::session::DurablePromptDeliveryPhase::Delivered)
                             && prompt.durable_delivery_provider_run_id()
                                 == Some(expected_provider_run_id)
-                            && binding.active_worker_provider_run_id.as_deref()
-                                == Some(expected_provider_run_id)
+                            && same_remote_prompt_worker_binding(&binding_after, &binding)
+                            && binding
+                                .active_worker_provider_run_id
+                                .as_deref()
+                                .is_none_or(|run| run == expected_provider_run_id)
                     })
                 {
                     self.finalize_remote_prompt_cancellation_and_advance(

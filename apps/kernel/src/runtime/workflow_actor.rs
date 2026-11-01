@@ -267,31 +267,36 @@ async fn run_workflow_command_lane(
             &envelope.request,
             LocalDaemonRequest::CancelWorkflowRun(_) | LocalDaemonRequest::PauseWorkflowRun(_)
         );
-        let result = match command_state.authorize_current_external_command() {
-            Err(error) => Err(error),
-            Ok(()) => {
-                let result = executor
-                    .with_command_state(command_state.clone())
-                    .execute(
-                        envelope.request,
-                        envelope.caller_user_id,
-                        envelope.caller_metaagent_id,
-                    )
-                    .await;
-                // MP-08 / MP-11: the interrupt handler checks authority through
-                // its durable commit. Revocation must not reject successful
-                // settlement of that stop. Keep peer and provider epoch fences;
-                // new work and failed interrupts still require the live grant.
-                let response_state = if stopping && result.is_ok() {
-                    command_state.with_external_command_authority(None)
-                } else {
-                    command_state
-                };
-                response_state
-                    .authorize_current_external_response()
-                    .and(result)
-            }
-        };
+        let result = envelope
+            .telemetry
+            .scope(async {
+                match command_state.authorize_current_external_command() {
+                    Err(error) => Err(error),
+                    Ok(()) => {
+                        let result = executor
+                            .with_command_state(command_state.clone())
+                            .execute(
+                                envelope.request,
+                                envelope.caller_user_id,
+                                envelope.caller_metaagent_id,
+                            )
+                            .await;
+                        // MP-08 / MP-11: the interrupt handler checks authority through
+                        // its durable commit. Revocation must not reject successful
+                        // settlement of that stop. Keep peer and provider epoch fences;
+                        // new work and failed interrupts still require the live grant.
+                        let response_state = if stopping && result.is_ok() {
+                            command_state.with_external_command_authority(None)
+                        } else {
+                            command_state
+                        };
+                        response_state
+                            .authorize_current_external_response()
+                            .and(result)
+                    }
+                }
+            })
+            .await;
         log_lane_completed(
             &envelope.telemetry,
             "workflow",

@@ -75,7 +75,9 @@ impl KernelRuntimeState {
             ),
             None => origin.provider_run_id().to_string(),
         };
-        if interaction.id().starts_with("claude-workspace-trust-")
+        if interaction
+            .id()
+            .starts_with("claude-selected-workspace-trust-")
             && interaction.kind() == RuntimeInteractionKind::Permission
             && interaction
                 .choices()
@@ -184,7 +186,7 @@ impl KernelRuntimeState {
             else {
                 return false;
             };
-            if Path::new(session.worktree_id())
+            if Path::new(agent.worktree_id().unwrap_or_else(|| session.worktree_id()))
                 .canonicalize()
                 .ok()
                 .as_ref()

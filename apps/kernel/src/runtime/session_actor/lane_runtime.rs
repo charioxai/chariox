@@ -330,35 +330,40 @@ async fn run_session_command_lane(
                 envelope.provider_run_id.as_deref(),
             )
         });
-        let result = match authorization {
-            Err(error) => Err(error),
-            Ok(_) => {
-                executor
-                    .with_external_command_authority(
-                        envelope
-                            .external_grant_id
-                            .as_deref()
-                            .map(|id| (id, &envelope.request)),
-                        envelope.sudo_binding,
-                    )
-                    .with_room_provider_origin(
-                        envelope.caller_metaagent_id.as_deref(),
-                        envelope.provider_run_id.as_deref(),
-                    )
-                    .with_room_request_origin(
-                        envelope.caller_metaagent_id.as_deref(),
-                        &envelope.request,
-                    )
-                    .execute(
-                        envelope.request,
-                        envelope.caller_user_id,
-                        envelope.caller_metaagent_id,
-                        envelope.terminal_caller,
-                        envelope.connection_class,
-                    )
-                    .await
-            }
-        };
+        let result = envelope
+            .telemetry
+            .scope(async {
+                match authorization {
+                    Err(error) => Err(error),
+                    Ok(_) => {
+                        executor
+                            .with_external_command_authority(
+                                envelope
+                                    .external_grant_id
+                                    .as_deref()
+                                    .map(|id| (id, &envelope.request)),
+                                envelope.sudo_binding,
+                            )
+                            .with_room_provider_origin(
+                                envelope.caller_metaagent_id.as_deref(),
+                                envelope.provider_run_id.as_deref(),
+                            )
+                            .with_room_request_origin(
+                                envelope.caller_metaagent_id.as_deref(),
+                                &envelope.request,
+                            )
+                            .execute(
+                                envelope.request,
+                                envelope.caller_user_id,
+                                envelope.caller_metaagent_id,
+                                envelope.terminal_caller,
+                                envelope.connection_class,
+                            )
+                            .await
+                    }
+                }
+            })
+            .await;
         log_lane_completed(
             &envelope.telemetry,
             "session",

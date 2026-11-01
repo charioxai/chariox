@@ -895,6 +895,19 @@ impl KernelRuntimeState {
             termination: provider_termination,
             diagnostic: provider_diagnostic,
         } = receipt;
+        let adapter_key = owned
+            .agent_store
+            .get_agent(target_agent_id)?
+            .provider()
+            .to_string();
+        let provider_failure = provider_termination
+            .as_ref()
+            .and_then(|termination| termination.failure.clone())
+            .or_else(|| {
+                provider_diagnostic
+                    .as_deref()
+                    .map(|message| crate::provider::TurnOutcome::classify(&adapter_key, message))
+            });
         // The worker completion is committed; settle its home receipt even after revocation.
         let completion = owned.complete_remote_prompt_owner_for_receipt(
             session_id,
@@ -902,6 +915,7 @@ impl KernelRuntimeState {
             remote_provider_run_id,
             next_queued_prompt,
             provider_termination.clone(),
+            provider_failure.clone(),
             Some((prompt_id, remote_execution)),
         )?;
         // A10: home alone commits the leased task outcome.
@@ -914,6 +928,11 @@ impl KernelRuntimeState {
             provider_termination
                 .as_ref()
                 .map(|termination| termination.reason.as_str())
+                .or_else(|| {
+                    provider_failure
+                        .as_ref()
+                        .map(|failure| failure.reason.as_str())
+                })
                 .or(provider_diagnostic.as_deref()),
         )
         .await;

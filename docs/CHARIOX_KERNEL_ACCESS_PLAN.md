@@ -4,7 +4,7 @@
 
 MP-08 / MP-10 / MP-11 A04 update (protocol 484): the current sudo contract is
 [`KERNEL_SUDO.md`](KERNEL_SUDO.md). Hour-scale windows bind the owner-authorized
-work and fresh-passkey typed operation scopes; sudo cannot answer approvals.
+work and cover the whole kernel with no further passkey; sudo cannot answer approvals.
 The historical D2/D3/D14/D16 one-turn and approval rules below are superseded
 for sudo by that contract. Main's whole-local-kernel external grants and
 structured requester identity remain unchanged.
@@ -253,7 +253,7 @@ Durable events, next to `critical_approval.passkey`, never containing the passke
 - `kernel_access.grant` with outcome `requested`, `granted`, `refused`, `extended`, `expired` or `revoked`, plus the grant id, holder, authorizing terminal and revocation reason.
 - `kernel_access.sudo` with outcome `requested`, `entered`, `refused`, `ended` or `interrupted`, plus the agent, run and turn, and the requester for an external request.
 - Receipts of critical approvals answered by a sudo turn name the turn and the `/sudo` entry that authorized it (D16).
-- Each refusal on the Unix socket carries its own reason code (`kernel_access_human_only`, `kernel_access_not_covered`, `kernel_access_ended`, `kernel_access_already_granted`) and one plain sentence, never a PID; see `docs/PROTOCOL.md`. The kernel keeps a bounded list of holders whose grant ended so a returning holder is told "access ended", not "never covered" (EXT-UX-05).
+- Each refusal on the Unix socket carries its own reason code (`kernel_access_human_only`, `kernel_access_not_covered`, `kernel_access_ended`, `kernel_access_already_granted`, and for covering a background process `kernel_access_cover_gone`, `kernel_access_cover_identity_changed`, `kernel_access_cover_kernel_process`, `kernel_access_cover_outside`, `kernel_access_cover_limit`) and one plain sentence, never a PID; see `docs/PROTOCOL.md`. The kernel keeps a bounded list of holders whose grant ended so a returning holder is told "access ended", not "never covered" (EXT-UX-05).
 - `kernel_access.denied` for each request refused for scope. These are sampled and aggregated so a looping agent cannot flood the log.
 
 Chariox terminals and local grant holders may list the live grants and running sudo turns and revoke them. Minting and extension still require the user’s terminal passkey.
@@ -271,7 +271,9 @@ The kernel identifies the connecting process through the OS, which works only on
 
 MP-08 / MP-10 / MP-11: default Claude attribution also recognizes a still-running native version in the same configured `claude/versions` installation after the launch symlink moves to a newer version. Version names and canonical installation paths are checked; unrelated installations, arbitrary basenames and symlinks escaping that directory do not qualify. This only selects and labels an OS ancestor. It neither grants access nor replaces human passkey confirmation.
 
-**Limits.** PID ancestry is fragile: daemonized helpers reparent to `launchd` or `init` and lose the grant, and sandbox wrappers or containers change the picture. A same-user process can still inject into the holder on many systems. Windows needs a different mechanism (named pipes and `GetNamedPipeClientProcessId`, open question 5).
+**Covering a background process (protocol 641).** A process the grant covers can name a background process it started (`chariox access cover --pid PID`, right after starting it or from the process itself). The kernel records the process's identity (pid, start time, executable) with the grant, and the process and the programs it starts stay covered after their parent exits, until the process exits or the grant ends. This keeps D9: no token, nothing to copy, and the cover adds no authority, because only a process the grant already reaches can be named. The kernel, the programs it starts, other users' processes and processes outside the grant are refused; a grant covers at most 16 named processes. A process that forks twice (a double fork) gets a new pid before it can be named, so it stays uncovered.
+
+**Limits.** PID ancestry is fragile: daemonized helpers reparent to `launchd` or `init` and lose the grant unless they were covered by name, and sandbox wrappers or containers change the picture. A same-user process can still inject into the holder on many systems. Windows needs a different mechanism (named pipes and `GetNamedPipeClientProcessId`, open question 5).
 
 ### 6.2 Local-kernel authority (MP-08 / MP-10 / MP-11)
 

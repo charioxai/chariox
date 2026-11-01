@@ -134,11 +134,10 @@ BrowserAppViewRequest)` is the kernel-internal App seam and uses the SAME
 per-user controller, including App calls and responses; appviews retains installation trust, CSP and bridge authority.
 App views must not use a synthetic Room or independently launch Chromium.
 
-The display seam is a tab frame source plus input sink: screenshot, subscribe,
-poll latest bounded frame, unsubscribe, and typed pointer/key/text input. CDP
-screencast is an initial source adapter. Subscriptions carry user, tab and browser
-generation, expire when idle, and retain at most the latest frame; transport may
-replace this source without replacing tab or input authority. No Selkies/noVNC,
+The display seam is a tab frame source plus input sink: screenshot, display subscribe
+and typed pointer/key/text input. Subscriptions carry user, tab and browser generation
+and expire when idle; transport may replace the source without replacing tab or input
+authority. No Selkies/noVNC,
 encoder, relay authority, Cloud proxy, or client rendering choice is added.
 
 ## MD-4: validation and open questions
@@ -280,16 +279,14 @@ These Rust types have no serde implementation. The coordinator/display lane
 owns the new serialized public adapter and protocol allocation; this lane must
 not take an unallocated version. The existing protocol-417 screenshot/stream
 adapter keeps its original shape and caller-scoped human observation receipts.
-The App seam and ordinary screenshot/subscribe/poll/input methods stay stable.
+The App seam and ordinary screenshot/input methods stay stable. Provider agents read with
+state, snapshot and screenshot and never open a live stream (display and mirror commands are refused
+to them): a stream runs only while a person watches. The earlier user-side `subscribe`/`poll` CDP
+screencast stream is gone; the client has no PNG-polling view either, and a kernel with the display off
+shows the view as unavailable.
 
-A bound capture checks the document before and after capture. Raw asynchronous
-CDP screencast pixels cannot prove document identity, so a bound subscription
-uses those events only to trigger the existing protected screenshot source,
-with one capture in flight, latest-frame storage, and the existing 5 Hz bound.
-This is a verification source, not a final display transport. The display lane
-may replace it while retaining Vault masking, source document binding, the
-capture/input barrier and kernel actor authority. After navigation, clients
-refresh state and subscribe to the new document; old frame input is rejected.
+A bound capture checks the document before and after capture. After navigation, clients refresh
+state and subscribe to the new document; old frame input is rejected.
 Its public adapter must also preserve caller-scoped retry deduplication and
 recheck terminal admission before serving cached responses.
 

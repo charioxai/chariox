@@ -7,6 +7,7 @@ import {DisplaySessions} from './kernel-display-resumption.mjs';
 import {UserDomainRefusal} from './kernel-browser-refusal.mjs';
 // MP-10/MP-11: 52 ciphertext-style bits join an opaque public stream hint;
 // never export the hint, lease, observer, caller, key or protected policy.
+const OPS=['display_subscribe','display_attach','screenshot','unsubscribe','display_suspend','display_resume','display_resume_attach','display_park'];
 const streamJoin=id=>Number(createHash('sha256').update(id).digest().readBigUInt64BE(0)>>12n);
 export class RoomSharedDisplay {
  constructor(desktop,{desktop:options,sessions,timing=()=>{}}={}) {
@@ -27,14 +28,14 @@ export class RoomSharedDisplay {
   let release;const held=new Promise(resolve=>{release=resolve});
   const result=this.pending.then(()=>{
    this.timing.event?.('room_display_queue',{at:queued,viewer:stream?.timingViewer??0,delivery:stream?.timingDelivery??0,
-    operation:['display_subscribe','display_attach','screenshot','unsubscribe','display_suspend','display_resume','display_resume_attach'].indexOf(command?.op)});
+    operation:OPS.indexOf(command?.op)});
    const started=timestamp();
    return this.run(command,options,release).finally(()=>{release();this.timing.event?.('room_display_operation',{at:started,viewer:stream?.timingViewer??0,delivery:stream?.timingDelivery??0,
-    operation:['display_subscribe','display_attach','screenshot','unsubscribe','display_suspend','display_resume','display_resume_attach'].indexOf(command?.op)})});
+    operation:OPS.indexOf(command?.op)})});
   });this.pending=held;return result;
  }
  async run(command,{signal}={},release=()=>{}) {
-  if(!['display_subscribe','display_attach','screenshot','unsubscribe','display_suspend','display_resume','display_resume_attach'].includes(command?.op)
+  if(!OPS.includes(command?.op)
    ||typeof command.observed_by!=='string'||!command.observed_by||command.observed_by.length>256
    ||command.policy?.unknown!==false||!Array.isArray(command.policy.targets)||!Array.isArray(command.policy.values))throw new UserDomainRefusal('not_granted');
   const started=timestamp(),surface=await this.desktop.binding(command.viewport),policy=JSON.stringify(command.policy);
@@ -67,6 +68,13 @@ export class RoomSharedDisplay {
    }
    if(command.op==='display_resume_attach')await this.display.request({...command,op:'display_attach',subscription_id:result.subscription_id,generation:result.generation},this.displays.get(result.subscription_id).observed_by,{signal});
    return result;
+  }
+  // An unwatched Room display: renew its binding (a keepalive), then stop the shared source once no viewer watches.
+  // The next screenshot unparks it and starts the source again.
+  if(command.op==='display_park'){
+   const attached=await this.display.request({...command,op:'display_attach'},command.observed_by,{signal});
+   await this.display.park(this.displays.get(id),true);
+   return {...attached,parked:true};
   }
   if(command.op==='unsubscribe'){
    const stream=this.sessions.require(id,command.observed_by,command.generation);await this.removeDisplay(stream);return {generation:this.generation,unsubscribed:true};

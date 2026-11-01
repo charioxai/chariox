@@ -1,0 +1,61 @@
+{
+  "durable_writer": {
+    "committed_batches": 120,
+    "committed_records": 480,
+    "max_batch_records": 9,
+    "queued": 3
+  },
+  "projection_invariants": {
+    "checked_agents": 10000,
+    "checked_sessions": 5000,
+    "mismatch_count": 8000,
+    "mismatch_counts_by_kind": {
+      "missing_agent_runtime_projection": 8000
+    },
+    "mismatches": [
+      {
+        "agent_id": "agent-a",
+        "details": "runtime projection is missing",
+        "kind": "missing_agent_runtime_projection",
+        "session_id": "session-a"
+      }
+    ]
+  },
+  "request": {
+    "GetDaemonHealth": null
+  },
+  "request_timing": {
+    "durable_commit_us": {
+      "max": 5,
+      "p50": 1,
+      "p95": 3
+    },
+    "durable_wait_us": {
+      "max": 5,
+      "p50": 1,
+      "p95": 3
+    },
+    "fsync_us": {
+      "max": 5,
+      "p50": 1,
+      "p95": 3
+    },
+    "handler_us": {
+      "max": 5,
+      "p50": 1,
+      "p95": 3
+    },
+    "kind": "session.create",
+    "queue_us": {
+      "max": 5,
+      "p50": 1,
+      "p95": 3
+    },
+    "response_bytes": {
+      "max": 5,
+      "p50": 1,
+      "p95": 3
+    },
+    "samples": 128
+  }
+}

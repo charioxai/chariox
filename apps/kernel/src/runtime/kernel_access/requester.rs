@@ -202,7 +202,6 @@ mod tests {
 #[cfg(all(test, target_os = "linux", target_arch = "x86_64"))]
 mod launcher_tests {
     use super::*;
-    use std::process::Command;
 
     struct Install(PathBuf);
     impl Install {
@@ -259,7 +258,7 @@ mod launcher_tests {
         let launcher = install.file("lib/node_modules/@openai/codex/bin/codex.js");
         let native = install.native("lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex");
         for shell in ["\"$@\"; exit $?", "node -e 'const r=require(\"child_process\").spawnSync(process.argv[1],process.argv.slice(2),{stdio:\"inherit\"});process.exitCode=r.status??1' /bin/sh -c '\"$@\"; exit $?' tool \"$@\"; exit $?"] {
-            let status = Command::new("node").args(["-e", SPAWN]).arg(&native)
+            let status = crate::process_spawn::command("node").args(["-e", SPAWN]).arg(&native)
                 .args(["-c", shell, "provider"]).arg(std::env::current_exe().unwrap())
                 .args(["--exact", PROBE, "--ignored", "--nocapture"])
                 .env("CHARIOX_CODEX_BIN", &launcher).env("KA_EXPECT_EXECUTABLE", &native)
@@ -277,7 +276,7 @@ mod launcher_tests {
             ("opencode", "CHARIOX_OPENCODE_BIN"),
         ] {
             let native = install.native(&format!("bin/{provider}"));
-            let status = Command::new("node")
+            let status = crate::process_spawn::command("node")
                 .args(["-e", SPAWN])
                 .arg(&native)
                 .args(["-c", "\"$@\"; exit $?", "provider"])
@@ -304,7 +303,7 @@ mod launcher_tests {
         let launcher = install.0.join("bin/claude");
         std::fs::create_dir_all(launcher.parent().unwrap()).unwrap();
         std::os::unix::fs::symlink(&current, &launcher).unwrap();
-        let status = Command::new("node")
+        let status = crate::process_spawn::command("node")
             .args(["-e", SPAWN])
             .arg(&previous)
             .args(["-c", "\"$@\"; exit $?", "provider"])
@@ -352,11 +351,11 @@ mod launcher_tests {
         crate::test_support::isolated_env_test!();
         let install = Install::new();
         let native = install.native("bin/codex");
-        let mut sibling = Command::new(&native)
+        let mut sibling = crate::process_spawn::command(&native)
             .args(["-c", "sleep 2; exit 0"])
             .spawn()
             .unwrap();
-        let status = Command::new("/bin/bash")
+        let status = crate::process_spawn::command("/bin/bash")
             .args(["-c", "\"$@\"; exit $?", "unknown"])
             .arg(std::env::current_exe().unwrap())
             .args(["--exact", PROBE, "--ignored", "--nocapture"])

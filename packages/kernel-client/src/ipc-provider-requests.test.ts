@@ -73,3 +73,33 @@ test("MP-08 / MP-10 conditional catalogs carry known revisions and the ordinary 
   assert.deepEqual(getClientCatalogSnapshotRequest(scope, known), {GetClientCatalogSnapshot: {scope: getProviderCatalogRequest(scope).GetProviderCatalog, known}})
   assert.equal(getClientCatalogSnapshotRequest().GetClientCatalogSnapshot.known, null)
 })
+
+test("recipient account copy carries metadata and an exact operation only", async () => {
+  const { listProviderAccountCopyOffersRequest, copyProviderAccountFromKernelRequest } = await import("./provider-account-copy.js")
+  assert.deepEqual(listProviderAccountCopyOffersRequest(), { ListProviderAccountCopyOffers: {} })
+  assert.deepEqual(copyProviderAccountFromKernelRequest({ source_kernel_id: "a", source_machine_id: "ma", source_label: "A", source_key_thumbprint: "pin", target_kernel_id: "b", provider: "claude", account_profile: "work", label: "Work" }, "op"), {
+    CopyProviderAccountFromKernel: { provider: "claude", account_profile: "work", source_kernel_id: "a", source_key_thumbprint: "pin", operation_id: "op", replace: false },
+  })
+})
+
+test("native checkpoint launch preserves its required-resume binding", () => {
+  const binding: providerRequests.NativeProviderCheckpointBinding = {
+    provider: "codex",
+    session_id: "native-session",
+    account_sha256: "a".repeat(64),
+    model: "gpt-6-luna",
+    variant: "low",
+    cli_version: "codex-cli 0.159.3",
+    source_os: "linux",
+    artifact_sha256: "b".repeat(64),
+  }
+  const request = providerRequests.launchProviderRunRequest(
+    "session", "codex", "profile", "gpt-6-luna", "low", "agent",
+    { providerSessionId: binding.session_id, checkpointBinding: binding },
+  )
+  assert.deepEqual(request.LaunchProviderRun.native_checkpoint_binding, binding)
+  const ordinary = providerRequests.launchProviderRunRequest(
+    "session", "codex", "profile", "gpt-6-luna", "low",
+  )
+  assert.equal("native_checkpoint_binding" in ordinary.LaunchProviderRun, false)
+})

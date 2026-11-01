@@ -3,8 +3,8 @@ use super::*;
 use crate::local::AgentDeadlineState;
 
 #[test]
-fn lane_deadline_survives_restart_and_retains_reached_without_a_stop_receipt() {
-    let root = crate::test_support::TestWorktree::new("lane-deadline-restart");
+fn agent_deadline_survives_restart_and_retains_reached_without_a_stop_receipt() {
+    let root = crate::test_support::TestWorktree::new("agent-deadline-restart");
     {
         let store = DurableKernelStateStore::open_owned(root.path().join("state.sqlite")).unwrap();
         store
@@ -42,7 +42,7 @@ fn lane_deadline_survives_restart_and_retains_reached_without_a_stop_receipt() {
 }
 
 #[test]
-fn lane_deadline_cannot_be_extended_or_fired_early() {
+fn agent_deadline_cannot_be_extended_or_fired_early() {
     let fixture = tests::Fixture::new();
     fixture.apply(Operation::SetDeadline {
         room: "room".into(),

@@ -116,6 +116,7 @@ pub(crate) mod owned_process_signals;
 pub(crate) mod pairing_invite_executor;
 pub(crate) mod perf_timing;
 pub mod process_health;
+pub(crate) mod process_resources;
 pub(crate) mod project_environment_setup_utility;
 pub mod projection;
 pub(crate) mod prompt_settings_executor;
@@ -126,6 +127,8 @@ pub(crate) mod provider_auth_control;
 pub(crate) mod provider_capability_import;
 pub(crate) mod provider_catalog_control;
 pub mod provider_launch_executor;
+mod provider_login_input;
+mod provider_login_terminal;
 pub(crate) mod provider_process_control;
 pub(crate) mod provider_run_control;
 pub(crate) mod relay_config_control;
@@ -184,3 +187,5 @@ pub(crate) mod room_dispatch_registration;
 mod user_app_views;
 
 pub(crate) mod ssh_machine_control;
+
+pub mod request_metrics;

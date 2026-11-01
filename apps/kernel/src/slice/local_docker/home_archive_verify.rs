@@ -1,6 +1,6 @@
 use std::fs::OpenOptions;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use crate::error::DaemonError;
 
@@ -27,7 +27,7 @@ pub(super) fn digest(path: &Path, operation: &'static str) -> Result<(u64, Strin
         ));
     }
     let guard = super::linux_docker_slice_script()?.with_file_name("slice-command-guard.py");
-    let output = Command::new("python3")
+    let output = crate::process_spawn::command("python3")
         .arg(guard)
         .arg("digest-stdin")
         .stdin(Stdio::from(file.try_clone().map_err(|e| {
