@@ -517,6 +517,19 @@ async fn trigger_origins_cross_only_the_versioned_peer_boundary() {
     }
 }
 
+// MP-08/MP-10/MP-11: peer 380 predates the `http` prompt origin; a worker there cannot read it.
+const PEER_BEFORE_HTTP_ORIGIN: u32 = 380;
+
+#[tokio::test]
+async fn http_origin_is_refused_for_a_worker_before_the_http_peer_boundary() {
+    trigger_origin_peer_submission(
+        crate::session::PromptOrigin::Http,
+        PEER_BEFORE_HTTP_ORIGIN,
+        false,
+    )
+    .await;
+}
+
 async fn trigger_origin_peer_submission(
     origin: crate::session::PromptOrigin,
     version: u32,
