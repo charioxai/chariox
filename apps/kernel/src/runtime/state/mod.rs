@@ -217,6 +217,11 @@ pub(crate) struct KernelRuntimeState {
     owned: KernelRuntimeOwnedState,
 }
 
+/// (task, worker kernel, lease) of a leased task whose worker did not answer.
+type UncertainLeasedTasks = Arc<
+    std::sync::Mutex<BTreeMap<(String, String, String), leased_task_connectivity::Uncertainty>>,
+>;
+
 #[derive(Clone)]
 struct KernelRuntimeOwnedState {
     app_control: crate::runtime::app_control::AppControlService,
@@ -264,7 +269,9 @@ struct KernelRuntimeOwnedState {
         crate::runtime::browser_controller_process::BrowserControllerProcessStore,
     browser_import_admission: crate::runtime::browser_import_admission::BrowserImportAdmission,
     human_control_task_waits: Arc<std::sync::Mutex<BTreeMap<String, u64>>>,
-    uncertain_leased_tasks: Arc<std::sync::Mutex<BTreeSet<(String, String, String)>>>,
+    uncertain_leased_tasks: UncertainLeasedTasks,
+    /// Running provider runs whose working directory the sweep has seen as a git worktree.
+    git_workspaces_seen: Arc<std::sync::Mutex<BTreeSet<String>>>,
     room_computer_revoked: Arc<std::sync::Mutex<BTreeSet<String>>>,
     room_display_leases: room_shared_display::RoomDisplayLeases,
     room_secret_observations: room_secret_observation::RoomSecretObservations,
@@ -1039,6 +1046,7 @@ impl KernelRuntimeState {
                 environment_execution_gates: Default::default(),
                 human_control_task_waits: Default::default(),
                 uncertain_leased_tasks: Default::default(),
+                git_workspaces_seen: Default::default(),
                 room_computer_revoked,
                 room_secret_observations,
                 room_display_leases: Default::default(),
@@ -1470,7 +1478,9 @@ mod agent_turn_task_tests;
 mod agent_wake_cancellation;
 mod agent_wake_scheduler;
 mod agent_workflow_tasks;
+mod agent_workspace_loss;
 mod leased_task_connectivity;
+mod leased_worker_stop_obligation;
 mod room_dispatch_obligation;
 mod terminal_wake;
 mod terminal_wake_worker;

@@ -284,14 +284,17 @@ impl KernelRuntimeOwnedState {
         agent: &str,
         prompt: &crate::session::PromptQueueItem,
         run: &str,
-        reason: &str,
+        outcome: &crate::provider::TurnOutcome,
     ) -> Result<Option<(AgentTaskExecution, bool)>, DaemonError> {
         self.end_failed_agent_task_with_reason(
             room,
             agent,
             prompt,
             run,
-            &format!("Provider run failed: {reason}. Owner must reconcile and resume or cancel"),
+            &format!(
+                "Provider run failed: {}. Owner must reconcile and resume or cancel",
+                outcome.reason
+            ),
         )
     }
 
@@ -688,6 +691,16 @@ impl KernelRuntimeState {
         settlement: Option<(AgentTaskExecution, bool)>,
         source: &crate::session::PromptQueueItem,
     ) -> Result<(), DaemonError> {
+        self.finish_failed_agent_task_settlement(settlement, source, None)
+            .await
+    }
+    /// `failure` is why the turn behind a task that ends cancelled failed.
+    pub(super) async fn finish_failed_agent_task_settlement(
+        &self,
+        settlement: Option<(AgentTaskExecution, bool)>,
+        source: &crate::session::PromptQueueItem,
+        failure: Option<&crate::provider::TurnOutcome>,
+    ) -> Result<(), DaemonError> {
         let Some((task, correction)) = settlement else {
             return Ok(());
         };
@@ -707,9 +720,10 @@ impl KernelRuntimeState {
                 message,
             );
         }
-        let public_answer = self.owned.public_agent_task_answer(&task)?;
+        let public_answer = self.owned.public_agent_task_answer_after(&task, failure)?;
         if task.state == ExecutionState::Cancelled {
-            Box::pin(self.cancel_agent_task_resources(&task)).await?;
+            Box::pin(self.cancel_agent_task_resources_answering(&task, public_answer.clone()))
+                .await?;
         }
         let resources_unsettled = self.owned.agent_task_resources_unsettled(&task)?;
         if correction {
@@ -913,10 +927,14 @@ impl KernelRuntimeState {
         Ok(())
     }
     pub(super) async fn sweep_agent_lifecycle(&self) -> Result<(), DaemonError> {
+        self.sweep_agent_lifecycle_at(crate::session::unix_epoch_ms())
+            .await
+    }
+    async fn sweep_agent_lifecycle_at(&self, now: u64) -> Result<(), DaemonError> {
+        Box::pin(self.end_turns_on_lost_workspace()).await;
         if !self.owned.config_projection.snapshot().room_agent_tools {
             return Ok(());
         }
-        let now = crate::session::unix_epoch_ms();
         if let Err(error) = self.offer_legacy_goal_adoption() {
             tracing::warn!(%error, "MP-08/MP-09/MP-10/MP-11 A12: legacy adoption offer unavailable; other goals continue");
         }
@@ -954,7 +972,8 @@ impl KernelRuntimeState {
             }
         }
         let tasks = self.owned.durable_state_store.agent_tasks(None, None)?;
-        self.check_leased_task_connections(&tasks).await?;
+        Box::pin(self.check_leased_task_connections(&tasks, now)).await?;
+        self.discharge_worker_stop_obligations(now).await?;
         let now = crate::session::unix_epoch_ms();
         let mut blocked = Vec::new();
         for task in self.owned.durable_state_store.agent_tasks(None, None)? {
@@ -1324,5 +1343,12 @@ impl KernelRuntimeState {
 impl KernelRuntimeState {
     pub(crate) async fn sweep_agent_lifecycle_for_test(&self) -> Result<(), DaemonError> {
         self.sweep_agent_lifecycle().await
+    }
+
+    pub(crate) async fn sweep_agent_lifecycle_at_for_test(
+        &self,
+        now: u64,
+    ) -> Result<(), DaemonError> {
+        self.sweep_agent_lifecycle_at(now).await
     }
 }

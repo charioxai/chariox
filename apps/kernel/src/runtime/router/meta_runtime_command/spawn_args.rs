@@ -267,6 +267,15 @@ pub(super) fn parse_meta_agent_spawn_args(
             crate::runtime::metaagent_command_registry::AGENT_SPAWN_USAGE
         )));
     }
+    if let Some(token) = positional
+        .get(1)
+        .filter(|token| !token.chars().any(char::is_alphanumeric))
+    {
+        return Err(meta_command_error(format!(
+            "`{token}` is not a model name; the command ends after the alias and its options; usage: {}",
+            crate::runtime::metaagent_command_registry::AGENT_SPAWN_USAGE
+        )));
+    }
     if positional.get(1).is_some() && explicit_model.is_some() {
         return Err(meta_command_error(
             "usage: agent spawn accepts either positional [model] or --model <model>, not both",

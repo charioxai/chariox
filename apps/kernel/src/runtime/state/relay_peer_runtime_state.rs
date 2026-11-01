@@ -1488,7 +1488,7 @@ impl KernelRuntimeState {
         for intent in outcome.remote_dispatches {
             self.spawn_remote_prompt_dispatch(intent.dispatch);
         }
-        if outcome.provider_failed {
+        if outcome.failure.is_some() {
             self.finish_remote_provider_failure(&session_id, &outcome.completions)?;
         }
         let leased_agent_id = self
@@ -1506,9 +1506,7 @@ impl KernelRuntimeState {
                     &completion.completed,
                     leased_agent_id,
                     &worker_provider_run_id,
-                    outcome
-                        .provider_failed
-                        .then_some("the provider run ended unexpectedly"),
+                    outcome.failure.as_ref(),
                 )
                 .await;
             }

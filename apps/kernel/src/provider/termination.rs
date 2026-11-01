@@ -102,6 +102,17 @@ impl ProviderRunTermination {
         )
     }
 
+    /// The machine, slice or kernel hosting the provider is gone, and the
+    /// provider run with it.
+    pub fn host_lost(reason: &str, timestamp_ms: u64) -> Self {
+        let reason = sanitize_provider_diagnostic(reason);
+        Self::crashed(
+            ProviderRunTerminationCategory::RuntimeFailure,
+            reason,
+            timestamp_ms,
+        )
+    }
+
     pub fn transport_failure(reason: &str, timestamp_ms: u64) -> Self {
         Self::bounded(
             ProviderRunTerminationCategory::TransportFailure,

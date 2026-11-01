@@ -516,6 +516,12 @@ impl RuntimeProviderRun {
         self.metadata_only_discovery
     }
 
+    #[cfg(test)]
+    pub(crate) fn with_working_directory_for_test(mut self, directory: PathBuf) -> Self {
+        self.working_directory = Some(directory);
+        self
+    }
+
     /// MP-08: Ephemeral utility clone only; never persist or mutate the ordinary run.
     pub(crate) fn set_metadata_only_discovery(&mut self, directory: PathBuf) {
         self.metadata_only_discovery = true;

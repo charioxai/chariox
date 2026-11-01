@@ -41,6 +41,24 @@ impl KernelRuntimeState {
         .map(|_| ())
     }
 
+    #[cfg(test)]
+    pub(crate) async fn fail_provider_run_for_test(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        termination: crate::provider::ProviderRunTermination,
+    ) -> Result<(), DaemonError> {
+        let message = termination.reason.clone();
+        self.fail_owned_provider_prompt_with_termination(
+            session_id,
+            provider_run_id,
+            &message,
+            true,
+            Some(termination),
+        )
+        .await
+    }
+
     #[expect(
         clippy::too_many_arguments,
         reason = "Keep native failure evidence separate from termination and recovery diagnostics"
@@ -305,13 +323,18 @@ impl KernelRuntimeState {
                 Some(provider_run_id),
                 Some(active_prompt.id()),
                 provider_termination,
-                failure,
+                failure.clone(),
             )?
         };
         if completion.is_none() {
             return Ok(false);
         }
-        Box::pin(self.finish_agent_task_settlement(task_settlement, &active_prompt)).await?;
+        Box::pin(self.finish_failed_agent_task_settlement(
+            task_settlement,
+            &active_prompt,
+            Some(&failure),
+        ))
+        .await?;
         // Recorded before any queued prompt or substitute is started, so the
         // agent's next turn carries the note.
         owned.record_failed_request(

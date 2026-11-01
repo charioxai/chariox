@@ -541,6 +541,10 @@ impl KernelRuntimeState {
                     agent_id,
                     stale_binding,
                     stale_provider_run_id,
+                    &format!(
+                        "Worker kernel `{}` lost this turn after accepting it (it restarted or dropped the lease)",
+                        stale_binding.worker_kernel_id
+                    ),
                     trigger_error,
                 )
                 .await;
@@ -923,16 +927,17 @@ impl KernelRuntimeState {
         Ok(())
     }
 
-    /// The worker accepted this turn and then lost it (it restarted or dropped
-    /// the lease), so the turn may have partly run. Replaying it would repeat a
-    /// non-idempotent instruction: the turn ends failed and its task waits for
-    /// the owner to resume or cancel it.
-    async fn settle_lost_remote_prompt_run(
+    /// The worker accepted this turn and then lost it (`lost` says how), so the
+    /// turn may have partly run. Replaying it would repeat a non-idempotent
+    /// instruction: the turn ends failed with a typed provider-crash outcome, its
+    /// task resolves, and whoever waits on it wakes with that failure.
+    pub(super) async fn settle_lost_remote_prompt_run(
         &self,
         session_id: &str,
         agent_id: &str,
         stale_binding: &crate::agent::RemoteAgentBinding,
         stale_provider_run_id: &str,
+        lost: &str,
         trigger_error: &str,
     ) -> Result<(), DaemonError> {
         let agent = self.owned.agent_store.get_agent(agent_id)?;
@@ -950,10 +955,8 @@ impl KernelRuntimeState {
         else {
             return Ok(());
         };
-        let diagnostic = format!(
-            "Worker kernel `{}` lost this turn after accepting it (it restarted or dropped the lease). The turn may have partly run; Chariox did not run it again",
-            binding.worker_kernel_id,
-        );
+        let diagnostic =
+            format!("{lost}. The turn may have partly run; Chariox did not run it again");
         crate::logging::warn_with_fields(
             "daemon.remote_prompt_dispatch",
             "worker lost an accepted remote prompt; ending it for the owner without replay",
@@ -972,13 +975,6 @@ impl KernelRuntimeState {
             &binding.leased_agent_id,
             stale_provider_run_id,
         );
-        self.owned.block_failed_prompt_task(
-            session_id,
-            agent_id,
-            prompt.id(),
-            Some(&projected_run_id),
-            &diagnostic,
-        )?;
         self.end_lost_leased_provider_run(session_id, &projected_run_id)?;
         self.settle_remote_prompt_receipt(
             session_id,
@@ -987,7 +983,7 @@ impl KernelRuntimeState {
                 prompt_id: prompt.id(),
                 binding,
                 provider_run_id: stale_provider_run_id,
-                termination: Some(crate::provider::ProviderRunTermination::runtime_failure(
+                termination: Some(crate::provider::ProviderRunTermination::host_lost(
                     &diagnostic,
                     crate::session::unix_epoch_ms(),
                 )),
