@@ -343,6 +343,7 @@ export function createCliResponseShellComposition(deps: CliResponseShellComposit
     getWorkspaceLiveSyncStatus: deps.workspaceLiveSyncStatus,
     getHotkeyToggleLabel: () => HOTKEY_TOGGLE_LABEL,
     getTerminalWidth: deps.terminalWidth,
+    getFooterSummaryColumn: (box) => (box as { x?: number } | undefined)?.x ?? 0,
     getConnectionLabel: deps.connectionLabel,
     getFooterFlash: deps.footerFlash,
     getPromptMetaParts: deps.promptMetaParts,

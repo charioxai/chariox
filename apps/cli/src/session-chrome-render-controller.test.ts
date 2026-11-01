@@ -124,6 +124,17 @@ function createDeps(overrides: {
   }
 }
 
+// The summary box starts after the status indicator: the summary is shortened to the room that is left, not to the whole terminal.
+test("the footer summary is shortened to the width left after the status indicator", () => {
+  const calls: string[] = []
+  const deps = createDeps({ calls, attached: false, terminalWidth: 100 })
+  const controller = createSessionChromeRenderController({ ...deps, getFooterSummaryColumn: (box) => box === "footer-box" ? 17 : 0 })
+  controller.assignFooterSummaryBox("footer-box")
+  controller.apply()
+  const summary = calls.find(call => call.startsWith("summary:"))!.split(":")[5]!
+  assert.ok(summary.length <= 100 - 17, `${summary.length}: ${summary}`)
+})
+
 function session(): RuntimeSession {
   return {
     id: "session-1",
