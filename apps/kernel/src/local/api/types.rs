@@ -419,4 +419,6 @@ pub use workspace::*;
 /// 919 (user-side browser frame stream removed, `display_ack` `paused`), 920 (mirror `document_mode`,
 /// `pointer_cursor`) and 923 (session-less Vault unlock).
 /// MP-08/MP-10/MP-11: provisional 950 (renumbered at the landing) acknowledges the leased projection drain (peer 390).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 950;
+/// MP-08/MP-10/MP-11: provisional 951 (renumbered at the landing) binds the leased prompt completion to its exact
+/// prompt and worker run (peer 391).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 951;

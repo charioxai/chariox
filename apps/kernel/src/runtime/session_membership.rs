@@ -43,9 +43,6 @@ pub(crate) async fn authorize_session_membership(
             message: "hosted service identity is not authorized for this request".to_string(),
         });
     }
-    if is_implicit_local_session_caller(command) {
-        return Ok(DEFAULT_LOCAL_USER_ID.to_string());
-    }
     if matches!(
         request,
         LocalDaemonRequest::CreateSession(_) | LocalDaemonRequest::JoinSessionInvite(_)
@@ -60,92 +57,28 @@ pub(crate) async fn authorize_session_membership(
             command_session_user_id(command).unwrap_or_else(|| DEFAULT_LOCAL_USER_ID.to_string())
         );
     };
-    let user_id = command_session_user_id(command).ok_or_else(|| {
-        DaemonError::MissingSessionCallerIdentity {
-            operation: command.command_type.clone(),
-        }
-    })?;
+    // A local terminal without a user skips room membership, never the backing-session policy.
+    let implicit_local = is_implicit_local_session_caller(command);
+    let user_id = if implicit_local {
+        DEFAULT_LOCAL_USER_ID.to_string()
+    } else {
+        command_session_user_id(command).ok_or_else(|| {
+            DaemonError::MissingSessionCallerIdentity {
+                operation: command.command_type.clone(),
+            }
+        })?
+    };
 
-    match scope {
-        SessionMembershipScope::AllSessions => Ok(user_id),
-        SessionMembershipScope::SessionId(session_id) => {
-            ensure_session_member(
-                runtime_state,
-                session_projection,
-                command,
-                &session_id,
-                &user_id,
-            )
-            .await?;
-            Ok(user_id)
-        }
-        SessionMembershipScope::SessionIds(session_ids) => {
-            for session_id in session_ids {
-                ensure_session_member(
-                    runtime_state,
-                    session_projection,
-                    command,
-                    &session_id,
-                    &user_id,
-                )
-                .await?;
-            }
-            Ok(user_id)
-        }
-        SessionMembershipScope::SessionRef {
-            session_ref,
-            workspace_id,
-        } => {
-            let session = resolve_session_for_membership(
-                runtime_state,
-                session_projection,
-                &session_ref,
-                workspace_id.as_deref(),
-            )
-            .await?;
-            if !is_member(runtime_state, command, &session, &user_id) {
-                return Err(DaemonError::SessionAccessDenied {
-                    session_id: session.id().to_string(),
-                    user_id,
-                });
-            }
-            Ok(user_id)
-        }
-        SessionMembershipScope::DeleteSessionRef {
-            session_ref,
-            workspace_id,
-        } => {
-            let session_id = runtime_state
-                .resolve_session_ref_id_for_delete(&session_ref, workspace_id.as_deref())
-                .await?;
-            let session = runtime_state.session_snapshot(&session_id).await?;
-            if !is_member(runtime_state, command, &session, &user_id) {
-                return Err(DaemonError::SessionAccessDenied {
-                    session_id,
-                    user_id,
-                });
-            }
-            Ok(user_id)
-        }
-        SessionMembershipScope::AttachmentId(attachment_id) => {
-            let session_id = if let Some(session_id) =
-                session_projection.session_id_for_attachment(&attachment_id)
-            {
-                session_id
-            } else {
-                runtime_state.attachment_session_id(&attachment_id).await?
-            };
-            ensure_session_member(
-                runtime_state,
-                session_projection,
-                command,
-                &session_id,
-                &user_id,
-            )
-            .await?;
-            Ok(user_id)
+    for session in scope_sessions(runtime_state, session_projection, scope).await? {
+        ensure_not_leased_backing(runtime_state, &session).await?;
+        if !implicit_local && !is_member(runtime_state, command, &session, &user_id) {
+            return Err(DaemonError::SessionAccessDenied {
+                session_id: session.id().to_string(),
+                user_id,
+            });
         }
     }
+    Ok(user_id)
 }
 
 /// The identity the addressed room stores for an admitted caller, for the projections that
@@ -220,31 +153,88 @@ fn is_member(
     }
 }
 
-async fn ensure_session_member(
+/// The home kernel is the session authority for a leased agent, so clients never reach its
+/// backing session on the worker. The same hidden flag that keeps the session out of lists marks it.
+async fn ensure_not_leased_backing(
+    runtime_state: &KernelRuntimeState,
+    session: &crate::session::RuntimeSession,
+) -> Result<(), DaemonError> {
+    if !session.is_hidden() {
+        return Ok(());
+    }
+    let session_id = session.id().to_string();
+    let backing_session_id = session_id.clone();
+    let home_session_id = runtime_state
+        .with_app_side_effect(move |app| {
+            crate::app::RemoteLeaseRuntime::new(app)
+                .leased_backing_home_session(&backing_session_id)
+        })
+        .await;
+    match home_session_id {
+        Some(home_session_id) => Err(DaemonError::LeasedBackingSessionRefused {
+            session_id,
+            home_session_id,
+        }),
+        None => Ok(()),
+    }
+}
+
+async fn session_by_id(
     runtime_state: &KernelRuntimeState,
     session_projection: &SessionStateProjectionStore,
-    command: &KernelCommand,
     session_id: &str,
-    user_id: &str,
-) -> Result<(), DaemonError> {
-    if let Some(session) = session_projection.get(session_id) {
-        if is_member(runtime_state, command, &session, user_id) {
-            return Ok(());
+) -> Result<crate::session::RuntimeSession, DaemonError> {
+    match session_projection.get(session_id) {
+        Some(session) => Ok(session),
+        None => runtime_state.session_snapshot(session_id).await,
+    }
+}
+
+/// The sessions a request addresses, in the order the caller named them.
+async fn scope_sessions(
+    runtime_state: &KernelRuntimeState,
+    session_projection: &SessionStateProjectionStore,
+    scope: SessionMembershipScope,
+) -> Result<Vec<crate::session::RuntimeSession>, DaemonError> {
+    let session_ids = match scope {
+        SessionMembershipScope::AllSessions => Vec::new(),
+        SessionMembershipScope::SessionId(session_id) => vec![session_id],
+        SessionMembershipScope::SessionIds(session_ids) => session_ids,
+        SessionMembershipScope::SessionRef {
+            session_ref,
+            workspace_id,
+        } => {
+            return Ok(vec![
+                resolve_session_for_membership(
+                    runtime_state,
+                    session_projection,
+                    &session_ref,
+                    workspace_id.as_deref(),
+                )
+                .await?,
+            ]);
         }
-        return Err(DaemonError::SessionAccessDenied {
-            session_id: session.id().to_string(),
-            user_id: user_id.to_string(),
-        });
+        SessionMembershipScope::DeleteSessionRef {
+            session_ref,
+            workspace_id,
+        } => vec![
+            runtime_state
+                .resolve_session_ref_id_for_delete(&session_ref, workspace_id.as_deref())
+                .await?,
+        ],
+        SessionMembershipScope::AttachmentId(attachment_id) => vec![if let Some(session_id) =
+            session_projection.session_id_for_attachment(&attachment_id)
+        {
+            session_id
+        } else {
+            runtime_state.attachment_session_id(&attachment_id).await?
+        }],
+    };
+    let mut sessions = Vec::with_capacity(session_ids.len());
+    for session_id in session_ids {
+        sessions.push(session_by_id(runtime_state, session_projection, &session_id).await?);
     }
-    let session = runtime_state.session_snapshot(session_id).await?;
-    if is_member(runtime_state, command, &session, user_id) {
-        Ok(())
-    } else {
-        Err(DaemonError::SessionAccessDenied {
-            session_id: session.id().to_string(),
-            user_id: user_id.to_string(),
-        })
-    }
+    Ok(sessions)
 }
 
 async fn resolve_session_for_membership(

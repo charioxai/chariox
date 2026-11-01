@@ -359,9 +359,11 @@ pub(crate) async fn check_relay_remote_mcp_availability(
 pub(crate) async fn complete_relay_leased_prompt(
     runtime_state: &KernelRuntimeState,
     leased_agent_id: &str,
+    home_prompt_id: &str,
+    worker_provider_run_id: &str,
 ) -> Result<PromptCompletion, DaemonError> {
     runtime_state
-        .complete_relay_leased_prompt(leased_agent_id)
+        .complete_relay_leased_prompt(leased_agent_id, home_prompt_id, worker_provider_run_id)
         .await
 }
 
