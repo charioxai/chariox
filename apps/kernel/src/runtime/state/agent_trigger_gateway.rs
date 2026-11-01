@@ -126,8 +126,25 @@ async fn launch_gateway(
     ingress: &str,
     port: u16,
 ) -> Result<Child, DaemonError> {
-    let mut command =
-        Command::new(super::workflow_publication_runtime_lifecycle::resolve_chariox_cli_bin()?);
+    let cli = super::workflow_publication_runtime_lifecycle::resolve_chariox_cli_bin()?;
+    // A cold checkout may need a build. Finish it before the HTTP readiness
+    // budget starts, rather than killing its launcher while pnpm is still running.
+    let prepared = Command::new(&cli)
+        .arg("serve")
+        .arg("prepare")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .status()
+        .await
+        .map_err(|e| http_error(format!("cannot prepare local HTTP gateway: {e}")))?;
+    if !prepared.success() {
+        return Err(http_error(format!(
+            "local HTTP gateway build failed ({prepared}); run chariox-cli serve prepare and retry"
+        )));
+    }
+    let mut command = Command::new(cli);
     command
         .arg("serve")
         .arg("agent-trigger")

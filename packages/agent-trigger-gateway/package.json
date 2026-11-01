@@ -1,0 +1,27 @@
+{
+  "name": "@chariox/agent-trigger-gateway",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./dist/agent-trigger-client.js",
+    "./server": "./dist/agent-trigger-server.js",
+    "./page": "./dist/agent-trigger-page.js",
+    "./raw-body-parsers": "./dist/publication-raw-body-parsers.js",
+    "./types": "./dist/types.js",
+    "./live": "./dist/agent-trigger-live.js",
+    "./unconfirmed": "./dist/agent-trigger-unconfirmed.js",
+    "./origin-guard": "./dist/agent-trigger-origin-guard.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node scripts/build-view.mjs",
+    "lint": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@chariox/transcript-view": "workspace:*",
+    "fastify": "^5.1.0"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.0"
+  }
+}

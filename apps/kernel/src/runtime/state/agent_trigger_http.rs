@@ -142,7 +142,7 @@ impl KernelRuntimeState {
             "invoke agent trigger",
         )?;
         let response = |invocation| LocalDaemonResponse::AgentTriggerInvoked { invocation };
-        if request.payload.to_string().len() > 65_536 {
+        if !http_invocation_payload_fits(&request.payload) {
             return Ok(response(AgentTriggerInvocation::PayloadTooLarge));
         }
         let session = self.owned.session_store.get_session(&request.session_id)?;
@@ -246,6 +246,42 @@ impl KernelRuntimeState {
             .persist_agent_trigger_session(&request.session_id, "agent_trigger_invoked")?;
         Ok(response(invocation))
     }
+}
+
+// The HTTP byte-preservation copy has its own decoded-body budget; it must not
+// reduce the application payload budget that existing callers already had.
+fn http_invocation_payload_fits(payload: &serde_json::Value) -> bool {
+    use base64::Engine;
+    let Some(http) = payload.get("http") else {
+        return payload.to_string().len() <= 65_536;
+    };
+    let Some(fields) = http.as_object() else {
+        return false;
+    };
+    if fields.len() != 2 {
+        return false;
+    }
+    let Some(encoded) = http.get("body_base64").and_then(serde_json::Value::as_str) else {
+        return false;
+    };
+    let Some(content_type) = http.get("content_type").and_then(serde_json::Value::as_str) else {
+        return false;
+    };
+    if encoded.len() > 87_384 || content_type.is_empty() || content_type.len() > 1_024 {
+        return false;
+    }
+    if !base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .is_ok_and(|body| body.len() <= 65_536)
+    {
+        return false;
+    }
+    let mut application = payload.clone();
+    application
+        .as_object_mut()
+        .expect("HTTP metadata belongs to an object")
+        .remove("http");
+    application.to_string().len() <= 65_536
 }
 
 pub(super) fn http_error(message: impl Into<String>) -> DaemonError {
@@ -353,6 +389,98 @@ mod tests {
             .invoke_agent_trigger(request, "someone-else")
             .await
             .is_err());
+    }
+
+    #[tokio::test]
+    async fn http_trigger_raw_bytes_preserve_the_original_application_payload_budget() {
+        use base64::Engine;
+        let (_root, runtime, session_id, agent_id, _, _, _) = runtime_with_active_prompt().await;
+        let trigger = runtime
+            .owned
+            .session_store
+            .write()
+            .create_agent_http_trigger(
+                &session_id,
+                &agent_id,
+                "local",
+                std::num::NonZeroU16::new(32125).unwrap(),
+                AgentTriggerBusyPolicy::Queue,
+                None,
+            )
+            .unwrap();
+        let encoded = |raw: &[u8]| serde_json::json!({"body_base64": base64::engine::general_purpose::STANDARD.encode(raw), "content_type": "application/json"});
+        for body in [
+            serde_json::json!({"value": "x".repeat(30_000)}),
+            serde_json::json!({"value": "x".repeat(65_000)}),
+        ] {
+            let raw = body.to_string();
+            let original = serde_json::json!({"body": body, "query": {}});
+            assert!(original.to_string().len() <= 65_536);
+            let mut payload = original;
+            payload["http"] = encoded(raw.as_bytes());
+            assert!(payload.to_string().len() > 65_536);
+            let response = runtime
+                .invoke_agent_trigger(
+                    crate::local::InvokeAgentTriggerRequest {
+                        session_id: session_id.clone(),
+                        trigger_id: trigger.id().into(),
+                        payload,
+                    },
+                    "local",
+                )
+                .await
+                .unwrap();
+            assert!(
+                matches!(
+                    response,
+                    LocalDaemonResponse::AgentTriggerInvoked {
+                        invocation: AgentTriggerInvocation::Accepted { .. }
+                    }
+                ),
+                "{response:?}"
+            );
+        }
+        let text = "p".repeat(30_000);
+        let payload = serde_json::json!({"prompt": text, "body": text, "query": {}, "http": encoded(text.as_bytes())});
+        assert!(matches!(
+            runtime
+                .invoke_agent_trigger(
+                    crate::local::InvokeAgentTriggerRequest {
+                        session_id: session_id.clone(),
+                        trigger_id: trigger.id().into(),
+                        payload,
+                    },
+                    "local"
+                )
+                .await
+                .unwrap(),
+            LocalDaemonResponse::AgentTriggerInvoked {
+                invocation: AgentTriggerInvocation::Accepted { .. }
+            }
+        ));
+        for payload in [
+            serde_json::json!({"body": "x".repeat(65_536), "http": encoded(b"small")}),
+            serde_json::json!({"body": {}, "http": encoded(&vec![b'x'; 65_537])}),
+            serde_json::json!({"http": {"body_base64": "not base64", "content_type": "text/plain"}}),
+            serde_json::json!({"http": {"body_base64": "", "content_type": "text/plain", "extra": "unbounded"}}),
+        ] {
+            assert!(matches!(
+                runtime
+                    .invoke_agent_trigger(
+                        crate::local::InvokeAgentTriggerRequest {
+                            session_id: session_id.clone(),
+                            trigger_id: trigger.id().into(),
+                            payload,
+                        },
+                        "local"
+                    )
+                    .await
+                    .unwrap(),
+                LocalDaemonResponse::AgentTriggerInvoked {
+                    invocation: AgentTriggerInvocation::PayloadTooLarge
+                }
+            ));
+        }
     }
 
     #[tokio::test]
