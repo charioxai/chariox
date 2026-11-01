@@ -421,7 +421,9 @@ async fn overwriting_a_handle_keeps_its_record_and_changes_only_the_value() {
     assert!(kernel.request(set).await["error"].is_null());
     unlock(&mut kernel).await;
 
-    kernel.control("seed-credential:owner_key|owner-vault-slot").await;
+    kernel
+        .control("seed-credential:owner_key|owner-vault-slot")
+        .await;
     let before = kernel.credential_record("owner_key").await;
     assert_eq!(before["injection"]["name"], "x-api-key");
     let seeded = kernel.vault_value_sha256("owner-vault-slot").await;
@@ -440,7 +442,10 @@ async fn overwriting_a_handle_keeps_its_record_and_changes_only_the_value() {
         "the overwrite replaced the handle's record"
     );
     let after = kernel.vault_value_sha256("owner-vault-slot").await;
-    assert_ne!(after, seeded, "the value at the handle's own Vault key did not change");
+    assert_ne!(
+        after, seeded,
+        "the value at the handle's own Vault key did not change"
+    );
     assert_eq!(
         after,
         format!("{:x}", Sha256::digest(CANARY.as_bytes())),
@@ -475,7 +480,11 @@ async fn a_default_port_binding_is_accepted_and_usable_on_that_port_only() {
         "http://localhost/v1",
         "http://localhost:8080/v1",
     ] {
-        assert_eq!(kernel.credential_policy("drill_key", url).await, "ok", "{url}");
+        assert_eq!(
+            kernel.credential_policy("drill_key", url).await,
+            "ok",
+            "{url}"
+        );
     }
     for url in [
         "https://api.example.com:8443/v1",

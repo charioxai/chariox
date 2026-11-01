@@ -57,20 +57,7 @@ impl KernelRuntimeState {
         self.require_unlocked_vault()?;
         let credential = vault_credential(&request.credential_id, &label, hosts, &grant)?;
         let registry = crate::credential::CharioxCredentialRegistry::user()?;
-        if let Some(existing) = registry.get(&credential.id)? {
-            if !request.overwrite {
-                return Err(refusal("secret_request_exists"));
-            }
-            // Replacing the value must not send the old handle's key to new hosts.
-            let bound = |hosts: &[String]| {
-                let mut hosts = hosts.to_vec();
-                hosts.sort();
-                hosts
-            };
-            if bound(&existing.allowed_hosts) != bound(&credential.allowed_hosts) {
-                return Err(refusal("secret_request_invalid"));
-            }
-        }
+        let credential = replacing_or_new(&registry, credential, request.overwrite)?;
 
         let interaction_id = format!("secret-request-{:016x}", rand::random::<u64>());
         let who = super::super::kernel_access::requester::harness_name(grant.holder_harness)
@@ -172,10 +159,12 @@ impl KernelRuntimeState {
                 &user_config.credential_vault,
             )?;
             let registry = crate::credential::CharioxCredentialRegistry::user()?;
+            // The handle may have changed while the owner typed; store against what it is now.
+            let credential = replacing_or_new(&registry, credential.clone(), overwrite)?;
             self.upsert_observed_vault_credential(
                 &service,
                 &registry,
-                credential.clone(),
+                credential,
                 value.as_str(),
                 overwrite,
             )
@@ -268,17 +257,29 @@ fn clean_hosts(hosts: &[String]) -> Result<Vec<String>, DaemonError> {
 }
 
 fn host_is_bindable(entry: &str) -> bool {
-    let Ok(url) = url::Url::parse(&format!("http://{entry}")) else {
+    // The port is split off first: the URL parser would drop a scheme's default port
+    // (`:80`), and an entry that names it is valid.
+    let (name, port) = match entry.rsplit_once(':') {
+        Some((name, port))
+            if !port.is_empty() && port.bytes().all(|byte| byte.is_ascii_digit()) =>
+        {
+            (name, Some(port))
+        }
+        _ => (entry, None),
+    };
+    if port.is_some_and(|port| {
+        port.parse::<u16>()
+            .map_or(true, |number| number == 0 || number.to_string() != port)
+    }) {
+        return false;
+    }
+    let Ok(url) = url::Url::parse(&format!("http://{name}")) else {
         return false;
     };
-    // Rebuilding the entry from the parsed parts rejects a scheme, path, credentials,
+    // Rebuilding the name from the parsed host rejects a scheme, path, credentials,
     // uppercase, wildcard and any spelling the matcher would not see as written.
     let Some(host) = url.host_str() else {
         return false;
-    };
-    let rebuilt = match url.port() {
-        Some(port) => format!("{host}:{port}"),
-        None => host.to_owned(),
     };
     let literal_ok = match url.host() {
         Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
@@ -286,7 +287,7 @@ fn host_is_bindable(entry: &str) -> bool {
         Some(url::Host::Domain(_)) => true,
         None => false,
     };
-    rebuilt == entry && literal_ok && !entry.contains('*')
+    host == name && url.port().is_none() && literal_ok && !entry.contains('*')
 }
 
 /// The page that serves the link: the configured one, else the enrolled Cloud's web app.
@@ -304,8 +305,37 @@ fn secret_page(snapshot: &crate::config::DaemonConfig) -> Result<String, DaemonE
         .ok_or_else(|| refusal("secret_link_unavailable"))
 }
 
-/// A new handle takes the plain Authorization header, bound to the hosts the agent named;
-/// an existing handle keeps its record when the owner replaces the value.
+/// The record a request stores its value under: a new handle as built, or, on `overwrite`,
+/// the existing record untouched (its Vault key, injection and uses stay), provided the
+/// request names exactly the hosts it is already bound to.
+fn replacing_or_new(
+    registry: &crate::credential::CharioxCredentialRegistry,
+    requested: crate::config::UserCredentialConfig,
+    overwrite: bool,
+) -> Result<crate::config::UserCredentialConfig, DaemonError> {
+    let Some(existing) = registry.get(&requested.id)? else {
+        return Ok(requested);
+    };
+    if !overwrite {
+        return Err(refusal("secret_request_exists"));
+    }
+    let bound = |hosts: &[String]| {
+        let mut hosts = hosts.to_vec();
+        hosts.sort();
+        hosts
+    };
+    // Replacing the value must not send the old handle's key to new hosts.
+    if !matches!(
+        existing.source,
+        crate::config::UserCredentialSourceConfig::Vault { .. }
+    ) || bound(&existing.allowed_hosts) != bound(&requested.allowed_hosts)
+    {
+        return Err(refusal("secret_request_invalid"));
+    }
+    Ok(existing)
+}
+
+/// A new handle takes the plain Authorization header, bound to the hosts the agent named.
 fn vault_credential(
     id: &str,
     label: &str,

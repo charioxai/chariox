@@ -1250,16 +1250,34 @@ fn a_host_port_entry_matches_the_scheme_default_port_and_only_that_port() {
             .is_ok()
     };
     // The URL parser drops a scheme's default port; the entry may still name it.
-    assert!(allowed(&["api.example.com:443"], "https://api.example.com/v1"));
-    assert!(allowed(&["api.example.com:443"], "https://api.example.com:443/v1"));
+    assert!(allowed(
+        &["api.example.com:443"],
+        "https://api.example.com/v1"
+    ));
+    assert!(allowed(
+        &["api.example.com:443"],
+        "https://api.example.com:443/v1"
+    ));
     assert!(allowed(&["localhost:80"], "http://localhost/v1"));
     assert!(allowed(&["localhost:8080"], "http://localhost:8080/v1"));
     assert!(allowed(&["api.example.com"], "https://api.example.com/v1"));
-    assert!(allowed(&["api.example.com"], "https://api.example.com:8443/v1"));
+    assert!(allowed(
+        &["api.example.com"],
+        "https://api.example.com:8443/v1"
+    ));
     // The named port is a restriction, not a spelling.
-    assert!(!allowed(&["api.example.com:443"], "https://api.example.com:8443/v1"));
-    assert!(!allowed(&["api.example.com:443"], "http://api.example.com/v1"));
+    assert!(!allowed(
+        &["api.example.com:443"],
+        "https://api.example.com:8443/v1"
+    ));
+    assert!(!allowed(
+        &["api.example.com:443"],
+        "http://api.example.com/v1"
+    ));
     assert!(!allowed(&["localhost:80"], "http://localhost:8080/v1"));
     assert!(!allowed(&["localhost:8080"], "http://localhost/v1"));
-    assert!(!allowed(&["api.example.com:443"], "https://evil.example.net/v1"));
+    assert!(!allowed(
+        &["api.example.com:443"],
+        "https://evil.example.net/v1"
+    ));
 }
