@@ -713,8 +713,12 @@ fn browser_dialog_protocol630_snapshot() {
 // MP-08/MP-10: coordinator-allocated portable Browser header, including no-band clients.
 #[test]
 fn mp08_mp10_browser_header_955_shape_and_hash() {
-    assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 955);
-    assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 395);
+    const {
+        assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 955);
+    }
+    const {
+        assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 395);
+    }
     let bytes = include_bytes!("browser-header-955.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
