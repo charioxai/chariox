@@ -162,6 +162,13 @@ impl KernelRuntimeState {
     }
 }
 
+/// How a task's worker connection stands while it is not answering.
+#[derive(Default)]
+pub(super) struct Uncertainty {
+    /// The relay reported the worker offline in every probe since this time.
+    offline_since_ms: Option<u64>,
+}
+
 type TaskKey = (String, String, String);
 
 #[derive(Debug, PartialEq, Eq)]
@@ -177,7 +184,7 @@ enum Verdict {
 /// settles a task; only the relay's own report that the worker is gone, held
 /// for the grace period, does.
 fn observe(
-    uncertain: &mut BTreeMap<TaskKey, u64>,
+    uncertain: &mut BTreeMap<TaskKey, Uncertainty>,
     key: &TaskKey,
     probe: Probe,
     now: u64,
@@ -190,20 +197,26 @@ fn observe(
         };
     }
     let newly_uncertain = !uncertain.contains_key(key);
-    let first_failed = *uncertain.entry(key.clone()).or_insert(now);
-    let offline_ms = now.saturating_sub(first_failed);
-    if probe == Probe::WorkerOffline && offline_ms >= WORKER_LOSS_GRACE_MS {
-        Verdict::Lost { offline_ms }
-    } else if newly_uncertain {
-        Verdict::BecameUncertain
-    } else {
-        Verdict::Unchanged
+    let entry = uncertain.entry(key.clone()).or_default();
+    // Only the relay's own offline reports count towards the grace period: an
+    // earlier stretch of unanswered probes says nothing about the worker.
+    entry.offline_since_ms = match probe {
+        Probe::WorkerOffline => Some(entry.offline_since_ms.unwrap_or(now)),
+        _ => None,
+    };
+    match entry
+        .offline_since_ms
+        .map(|since| now.saturating_sub(since))
+    {
+        Some(offline_ms) if offline_ms >= WORKER_LOSS_GRACE_MS => Verdict::Lost { offline_ms },
+        _ if newly_uncertain => Verdict::BecameUncertain,
+        _ => Verdict::Unchanged,
     }
 }
 
 /// What a ping tells about the worker. A home-managed slice carries its own
-/// relay, so there an unreachable relay is the slice that is gone; on a shared
-/// relay only the relay's own report that the worker is not connected counts.
+/// relay, so there a connection that relay refuses is the slice that is gone; on
+/// a shared relay only the relay's own report that the worker is not connected counts.
 fn classify_probe(
     reply: &Result<Result<RelayPeerResponse, DaemonError>, tokio::time::error::Elapsed>,
     slice_hosted: bool,
@@ -218,13 +231,15 @@ fn classify_probe(
         {
             Probe::WorkerOffline
         }
+        // A refusal comes from the slice's own host: nothing listens there any more.
+        // DNS, TLS and malformed metadata failures say nothing about the slice.
         Ok(Err(DaemonError::LocalTransport { operation, message }))
             if slice_hosted
-                && (matches!(
+                && matches!(
                     *operation,
                     "connect relay metadata socket" | "connect temporary relay peer socket"
-                ) || (*operation == "send relay peer request"
-                    && message == "relay is not connected")) =>
+                )
+                && message.contains("Connection refused") =>
         {
             Probe::WorkerOffline
         }
