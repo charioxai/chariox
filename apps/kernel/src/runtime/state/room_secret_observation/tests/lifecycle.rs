@@ -882,3 +882,78 @@ async fn the_owners_hand_off_save_never_takes_the_slot_of_another_handle() {
         .unwrap();
     assert_eq!(value.as_str(), "other-value");
 }
+
+#[tokio::test]
+async fn the_owners_hand_off_save_never_replaces_an_existing_credential_record() {
+    let fixture = request_fixture("handoff-existing-record").await;
+    let runtime = &fixture.room.runtime;
+    let mut existing = owner_credential("owner-slot");
+    existing.id = "site_login".into();
+    fixture
+        .service
+        .upsert_vault_backed_credential_with_secret(
+            &fixture.registry,
+            existing.clone(),
+            "service-token",
+            false,
+        )
+        .unwrap();
+    let record_path = fixture.registry.path_for("site_login").unwrap();
+    let record_before = std::fs::read(&record_path).unwrap();
+
+    let saved = runtime
+        .save_handoff_secret(
+            &handoff_on("https://example.com"),
+            "site_login",
+            "typed-by-the-owner",
+        )
+        .await;
+
+    assert!(saved.is_err(), "an incompatible record was replaced");
+    assert_eq!(std::fs::read(&record_path).unwrap(), record_before);
+    assert_eq!(fixture.registry.get("site_login").unwrap(), Some(existing));
+    let kept = fixture
+        .service
+        .vault_secret_for_dictation("owner-slot")
+        .unwrap()
+        .unwrap();
+    assert_eq!(kept.as_str(), "service-token");
+    assert!(fixture
+        .service
+        .vault_secret_for_dictation("site_login")
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
+async fn the_owners_hand_off_save_keeps_a_browser_record_of_another_site() {
+    let fixture = request_fixture("handoff-other-site").await;
+    let runtime = &fixture.room.runtime;
+    runtime
+        .save_handoff_secret(
+            &handoff_on("https://example.com"),
+            "site_login",
+            "first-value",
+        )
+        .await
+        .unwrap();
+    let record_path = fixture.registry.path_for("site_login").unwrap();
+    let record_before = std::fs::read(&record_path).unwrap();
+
+    let saved = runtime
+        .save_handoff_secret(
+            &handoff_on("https://other.example.org"),
+            "site_login",
+            "second-value",
+        )
+        .await;
+
+    assert!(saved.is_err(), "the record of another site was replaced");
+    assert_eq!(std::fs::read(&record_path).unwrap(), record_before);
+    let kept = fixture
+        .service
+        .vault_secret_for_dictation("site_login")
+        .unwrap()
+        .unwrap();
+    assert_eq!(kept.as_str(), "first-value");
+}
