@@ -23,6 +23,7 @@ export function hardwareVideoDecode(environment, fs = { accessSync, readdirSync 
 export function videoDecodeArguments(environment, fs) {
   return hardwareVideoDecode(environment, fs) ? ["--enable-features=AcceleratedVideoDecodeLinuxGL"] : [];
 }
+export const headless = environment => environment.CHARIOX_KERNEL_BROWSER_HEADLESS === "1";
 export function launchEnvironment(environment, uid = process.getuid?.()) {
   if (uid === 0) throw new Error("MD-2: run the kernel browser as a normal Unix user; root Chromium is unsupported");
   return environment;

@@ -2221,7 +2221,7 @@ test('MP-08/MP-10 a parked wait starts no browser and never queues behind the ho
 }));
 
 
-test('MP-08/MP-10 browser death automatically restores stable tabs, active tab and groups', {timeout: 10000}, () => using(async ({host,chromium,handlers,sent,connection}) => {
+test('MP-08/MP-10 the first read after browser death restores stable tabs, active tab and groups', {timeout: 10000}, () => using(async ({host,chromium,handlers,sent,connection}) => {
   const a=await host.request({op:'open',url:'https://www.wikipedia.org/'});
   const b=await host.request({op:'open',url:'https://github.com/charioxai/chariox'});
   host.activeTarget=host.tabs.get(a.tab_id).target_id;
@@ -2230,9 +2230,8 @@ test('MP-08/MP-10 browser death automatically restores stable tabs, active tab a
   const generation=host.generation;
   chromium.child.signalCode='SIGSEGV';
   for(const handler of [...handlers])handler({method:'Chariox.browserDisconnected',params:{code:'browser_cdp_disconnected'}});
-  for(let n=0;n<150&&host.generation===generation;n++)await new Promise(r=>setTimeout(r,10));
-  await host.starting;
-  assert.equal(host.generation,generation+1,'the loss signal restarts without a user request');
+  await new Promise(r=>setTimeout(r,300));await host.start({allowStart:false}); // what the first read after the short wait does
+  assert.equal(host.generation,generation+1,'the first read after the short wait restarts it');
   assert.deepEqual([...host.tabs.keys()],[a.tab_id,b.tab_id]);
   assert.equal(host.activeTarget,host.tabs.get(a.tab_id).target_id);
   assert.deepEqual(host.savedGroups,[{tab_id:b.tab_id,label:'Mara'}]);
@@ -2256,8 +2255,7 @@ test('MP-08/MP-10 interrupted old-browser actions settle without replay or stopp
   await began.promise;
   chromium.child.signalCode='SIGSEGV';
   for(const handler of [...handlers])handler({method:'Chariox.browserDisconnected',params:{code:'browser_cdp_disconnected'}});
-  for(let n=0;n<150&&host.generation===opened.generation;n++)await new Promise(r=>setTimeout(r,10));
-  await host.starting;ended.resolve();
+  await askAfterBackoff(host);ended.resolve();
   const reply=await action;
   assert.equal(reply.ok,false);assert.equal(reply.error.code,'browser_unavailable');assert.match(reply.error.message,/disconnected.*not replayed/);
   assert.equal(host.generation,opened.generation+1);assert(host.browser);assert.equal(chromium.child.signalCode,null);
@@ -2272,6 +2270,26 @@ test('MP-08/MP-10 concurrent recovery reads launch one browser and explicit stop
   assert(states.every(state=>state.tabs.length===1&&state.tabs[0].tab_id===opened.tab_id));
   await host.stop();await new Promise(r=>setTimeout(r,300));assert.equal(starts,2);assert.equal(host.recovery.enabled,false);
   await assert.rejects(host.request({op:'state'}),{code:'browser_unavailable'});
+}));
+
+// A lost browser comes back when a request asks for it, after the short wait the recovery sets; a read inside the wait is refused.
+async function askAfterBackoff(host){
+  await new Promise(r=>setTimeout(r,300));
+  return host.request({op:'state'});
+}
+// 2026-10-31: closing the kernel browser's window brought it back at once, with nobody looking.
+test('MP-08/MP-10 a lost browser is not relaunched while nothing asks for it; the next request starts it', {timeout:10000}, () => using(async ({host,chromium,handlers}) => {
+  const opened=await host.request({op:'open',url:'https://www.wikipedia.org/'});
+  let starts=0;const start=chromium.start;chromium.start=async()=>{starts++;return start();};
+  chromium.child.signalCode='SIGSEGV';
+  for(const handler of [...handlers])handler({method:'Chariox.browserDisconnected',params:{code:'browser_cdp_disconnected'}});
+  await assert.rejects(host.request({op:'state'}),{code:'browser_unavailable'},'a read inside the wait is refused');
+  await new Promise(r=>setTimeout(r,700));
+  assert.equal(starts,0,'nobody is asking: no relaunch');
+  assert.equal(host.recovery.enabled,true);
+  const state=await host.request({op:'state'});
+  assert.equal(starts,1,'a request is demand');
+  assert.equal(state.generation,opened.generation+1);assert(state.tabs.some(tab=>tab.tab_id===opened.tab_id),'its tabs come back');
 }));
 
 test('MP-08/MP-10 a cancelled viewer does not cancel shared browser recovery', () => using(async ({host,chromium}) => {
@@ -2307,10 +2325,10 @@ for(const late of [false,true])test(`MP-08/MP-10 a disconnected page input never
  const action=host.handle({id:'page-input',method:'host.browser',params:{op:'input',_agent_input:true,tab_id:opened.tab_id,generation:opened.generation,document_id:tab.document_id,input:{kind:'scroll',x:20,y:20,delta_x:0,delta_y:120}}});
  await began.promise;chromium.child.signalCode='SIGSEGV';live=false;
  for(const handler of [...handlers])handler({method:'Chariox.browserDisconnected',params:{code:'browser_cdp_disconnected'}});
- if(late){for(let n=0;n<150&&host.generation===opened.generation;n++)await new Promise(r=>setTimeout(r,10));await host.starting;}
+ if(late)await askAfterBackoff(host);
  gate.resolve();const reply=await action;
  assert.equal(reply.ok,false);assert.equal(reply.error.code,'browser_unavailable');assert.match(reply.error.message,/not replayed/);
- for(let n=0;n<150&&host.generation===opened.generation;n++)await new Promise(r=>setTimeout(r,10));await host.starting;
+ await askAfterBackoff(host);
  assert.equal(host.generation,opened.generation+1);assert(host.browser);assert.equal(host.recovery.enabled,true);assert(host.tabs.has(opened.tab_id));assert.equal(presses,1,'the old input is never replayed');
 }));
 
