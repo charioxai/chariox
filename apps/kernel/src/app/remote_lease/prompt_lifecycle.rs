@@ -1859,7 +1859,7 @@ mod receipt_tests {
         let (leased, session, agent, home_prompt, run) =
             submit_cancellable_prompt(&mut app, "cancel-after-projection");
         RemoteLeaseRuntime::new(&mut app)
-            .complete_leased_prompt(&leased)
+            .complete_leased_prompt(&leased, &home_prompt, &run)
             .unwrap();
         let projection = RemoteLeaseRuntime::new(&mut app)
             .drain_leased_runtime_projection_with_recovery(&leased, &run, false, true)
