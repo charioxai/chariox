@@ -2336,12 +2336,19 @@ pub(in crate::runtime::state) mod tests {
                     .with_account_profile(profile.profile_id.clone()),
             )
             .expect("workflow Claude agent should create");
+        // The default Argon2id cost takes seconds in a debug build on a small CI
+        // runner, and the unlock after the interaction runs it inside the launch.
+        crate::secret::create_chariox_encrypted_vault_for_test(
+            &vault_path,
+            "correct horse battery staple",
+        )
+        .expect("vault should create");
         crate::secret::unlock_chariox_encrypted_vault(
             &vault_path,
             "correct horse battery staple",
             crate::secret::VaultUnlockLease::KernelShutdown,
         )
-        .expect("vault should initialize");
+        .expect("vault should unlock");
         crate::provider::store_provider_account_credential(
             &config,
             crate::session::DEFAULT_LOCAL_USER_ID,
@@ -2372,7 +2379,7 @@ pub(in crate::runtime::state) mod tests {
         runtime.spawn_workflow_prompt_dispatches(dispatches);
 
         let passphrase_interaction =
-            tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            tokio::time::timeout(std::time::Duration::from_secs(60), async {
                 loop {
                     if let Some(interaction) = runtime
                         .owned
@@ -2407,7 +2414,7 @@ pub(in crate::runtime::state) mod tests {
             )
             .await
             .expect("vault passphrase interaction should resolve");
-        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        tokio::time::timeout(std::time::Duration::from_secs(60), async {
             loop {
                 if !runtime
                     .detached_workflow_provider_launches
@@ -2509,12 +2516,19 @@ pub(in crate::runtime::state) mod tests {
                 crate::attachment::ClientCapabilityLevel::FullTerminal,
             ))
             .expect("test client should attach");
+        // The default Argon2id cost takes seconds in a debug build on a small CI
+        // runner, and the unlock after the interaction runs it inside the launch.
+        crate::secret::create_chariox_encrypted_vault_for_test(
+            &vault_path,
+            "correct horse battery staple",
+        )
+        .expect("vault should create");
         crate::secret::unlock_chariox_encrypted_vault(
             &vault_path,
             "correct horse battery staple",
             crate::secret::VaultUnlockLease::KernelShutdown,
         )
-        .expect("vault should initialize");
+        .expect("vault should unlock");
         crate::provider::store_provider_account_credential(
             &config,
             crate::session::DEFAULT_LOCAL_USER_ID,
@@ -2588,7 +2602,7 @@ pub(in crate::runtime::state) mod tests {
             )
             .await
             .expect("vault passphrase interaction should resolve");
-        let submission = tokio::time::timeout(std::time::Duration::from_secs(10), submit)
+        let submission = tokio::time::timeout(std::time::Duration::from_secs(60), submit)
             .await
             .expect("the prompt must finish after the unlock")
             .unwrap()
