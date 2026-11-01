@@ -30,12 +30,15 @@ pub struct ProviderRunTermination {
 }
 
 impl ProviderRunTermination {
+    /// A person stopped the provider's process tree from Health: the turn ends
+    /// cancelled, not as a provider error.
     pub fn outside_end(timestamp_ms: u64) -> Self {
-        Self::ended_by_kernel(
-            ProviderRunTerminationCategory::OutsideEnd,
-            "provider process tree stopped by a session controller".into(),
+        Self {
+            category: ProviderRunTerminationCategory::OutsideEnd,
+            reason: "Stopped from Health.".into(),
             timestamp_ms,
-        )
+            failure: Some(TurnOutcome::cancelled()),
+        }
     }
 
     pub fn memory_limit(limit_bytes: u64, timestamp_ms: u64) -> Self {
@@ -123,9 +126,9 @@ impl ProviderRunTermination {
         )
     }
 
-    /// The kernel itself ended the tree (resource limit or a controller stop):
-    /// the turn fails with that exact reason, and sending it again unchanged
-    /// would end the same way.
+    /// The kernel itself ended the tree over a resource limit: the turn fails
+    /// with that exact reason, and sending it again unchanged would end the
+    /// same way.
     fn ended_by_kernel(
         category: ProviderRunTerminationCategory,
         reason: String,

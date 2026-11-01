@@ -91,7 +91,10 @@ impl<'a> KernelAgentService<'a> {
             agent_id,
             provider_run_id,
             None,
-            crate::git_observer::CompletedTurnSettlementStatus::Failed,
+            failure.as_ref().map_or(
+                crate::git_observer::CompletedTurnSettlementStatus::Failed,
+                crate::provider::TurnOutcome::settlement_status,
+            ),
             provider_termination,
             failure,
         )

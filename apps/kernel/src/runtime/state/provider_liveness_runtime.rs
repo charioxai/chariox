@@ -243,7 +243,13 @@ impl KernelRuntimeState {
                 terminal_diagnostic.as_deref(),
             )
             .await?;
-        if !session_outcome.had_active_prompt || session_outcome.cancelled_prompt {
+        // A stop from Health already told the person; the turn ended cancelled.
+        let stopped_from_health =
+            termination.category == crate::provider::ProviderRunTerminationCategory::OutsideEnd;
+        if !session_outcome.had_active_prompt
+            || session_outcome.cancelled_prompt
+            || stopped_from_health
+        {
             return Ok(true);
         }
         let recipients = owned
@@ -306,7 +312,7 @@ impl KernelRuntimeState {
         .await
     }
 
-    async fn settle_unexpected_provider_run_exit_with_diagnostic(
+    pub(super) async fn settle_unexpected_provider_run_exit_with_diagnostic(
         &self,
         session_id: &str,
         provider_run_id: &str,
@@ -319,7 +325,10 @@ impl KernelRuntimeState {
         // provider's own terminal output has to be part of it.
         if let (Some(diagnostic), Some(failure)) = (
             terminal_diagnostic.filter(|diagnostic| !diagnostic.trim().is_empty()),
-            termination.failure.as_mut(),
+            termination
+                .failure
+                .as_mut()
+                .filter(|failure| failure.is_error()),
         ) {
             *failure = crate::provider::TurnOutcome::new(
                 failure.kind,
