@@ -470,6 +470,40 @@ fn process_rows() -> Result<Vec<Row>, String> {
     cache.1.clone()
 }
 
+/// The process groups of what `root` started and still runs, read now rather
+/// than from the sampler's last table.
+pub(super) fn live_groups(root: u32) -> Vec<u32> {
+    let rows = match read_process_rows() {
+        Ok(rows) => rows,
+        Err(error) => {
+            crate::logging::error_with_fields(
+                "process_resources.monitor",
+                "the processes of a terminal could not be read when its submitter changed",
+                serde_json::json!({"pid": root, "error": error}),
+            );
+            return Vec::new();
+        }
+    };
+    let mut below = std::collections::BTreeSet::from([root]);
+    let mut grown = true;
+    while grown {
+        grown = false;
+        for row in &rows {
+            grown |= below.contains(&row.parent) && below.insert(row.pid);
+        }
+    }
+    let own = super::process_group(root);
+    let mut groups = below
+        .into_iter()
+        .filter(|pid| *pid != root)
+        .filter_map(super::process_group)
+        .filter(|group| Some(*group) != own)
+        .collect::<Vec<_>>();
+    groups.sort_unstable();
+    groups.dedup();
+    groups
+}
+
 pub(super) fn ensure_available() -> std::io::Result<()> {
     process_rows().map(|_| ()).map_err(std::io::Error::other)
 }

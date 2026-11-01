@@ -376,7 +376,7 @@ fn submit(member: &Arc<Mutex<Observation>>, holdable: bool) {
         .lock()
         .unwrap()
         .submissions
-        .submit(holdable, std::time::Instant::now());
+        .submit(holdable, std::time::Instant::now(), &[]);
 }
 
 /// The shell reads the next accepted line, runs it and returns to the prompt;
@@ -385,7 +385,7 @@ fn run_line(member: &Arc<Mutex<Observation>>, jobs: &[u32]) {
     let mut member = member.lock().unwrap();
     let now = std::time::Instant::now();
     member.submissions.line_started(now);
-    member.submissions.line_finished(jobs);
+    member.submissions.line_finished(jobs, now);
 }
 
 /// An older heavy command of another owner: never the one paused.

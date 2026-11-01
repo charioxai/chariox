@@ -188,6 +188,7 @@ impl PreparedDomain {
             unit: self.unit.clone(),
             cap: self.cap,
             in_cgroup,
+            root: pid,
             submissions: submissions::Submissions::new(true),
             ..Observation::default()
         }));
@@ -465,6 +466,8 @@ struct Observation {
     unit: String,
     cap: Option<u64>,
     in_cgroup: bool,
+    /// The workload's own process.
+    root: u32,
     /// Whether each command may wait for room follows who submitted the line
     /// that started it: a person's own terminal command never does.
     submissions: submissions::Submissions,
@@ -613,13 +616,16 @@ pub(crate) fn samples_for_key(key: &str) -> Vec<ProcessSample> {
         .collect()
 }
 
-fn with_submissions_for_key(key: &str, update: impl FnOnce(&mut submissions::Submissions)) {
-    let state = registry()
+fn observation_for_key(key: &str) -> Option<Arc<Mutex<Observation>>> {
+    registry()
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .get(key)
-        .and_then(std::sync::Weak::upgrade);
-    if let Some(state) = state {
+        .and_then(std::sync::Weak::upgrade)
+}
+
+fn with_submissions_for_key(key: &str, update: impl FnOnce(&mut submissions::Submissions)) {
+    if let Some(state) = observation_for_key(key) {
         update(&mut state.lock().unwrap_or_else(|e| e.into_inner()).submissions);
     }
 }
@@ -633,9 +639,23 @@ pub(crate) fn bind_terminal_for_key(key: &str, reports_lines: bool) {
 /// An Enter was accepted at the prompt of the terminal bound to `key`: the
 /// command its line starts may wait for room unless a person submitted it.
 pub(crate) fn submit_line_for_key(key: &str, holdable: bool) {
-    with_submissions_for_key(key, |lines| {
-        lines.submit(holdable, std::time::Instant::now())
-    });
+    let Some(state) = observation_for_key(key) else {
+        return;
+    };
+    let root = {
+        let observation = state.lock().unwrap_or_else(|e| e.into_inner());
+        observation
+            .submissions
+            .takes_over(holdable)
+            .then_some(observation.root)
+    };
+    // Read outside the lock: the sampler waits for it.
+    let alive = root.map(sampling::live_groups).unwrap_or_default();
+    state
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .submissions
+        .submit(holdable, std::time::Instant::now(), &alive);
 }
 
 /// The shell of the terminal bound to `key` started the next accepted line.
@@ -646,7 +666,9 @@ pub(crate) fn line_started_for_key(key: &str) {
 /// The shell is back at its prompt; `jobs` are the process groups of its job
 /// table.
 pub(crate) fn line_finished_for_key(key: &str, jobs: &[u32]) {
-    with_submissions_for_key(key, |lines| lines.line_finished(jobs));
+    with_submissions_for_key(key, |lines| {
+        lines.line_finished(jobs, std::time::Instant::now())
+    });
 }
 
 fn process_group(pid: u32) -> Option<u32> {
