@@ -467,7 +467,7 @@ export class LocalIpcClient {
     let admittedSocket: WebSocket | undefined
     await requireKernelControlCapability(async query => {
       admittedSocket = await this.ensureWebSocket("control")
-      return this.sendWebSocket(query, "control", admittedSocket)
+      return this.sendWebSocket(query, "control", admittedSocket, { kernel: this.requestRoute.kernel })
     }, request)
     if (admittedSocket) return this.sendWebSocket<TResponse>(request, "control", admittedSocket)
     return this.catalogReads.run(request, this.socketPath, () => this.sendUnchecked<TResponse>(request))
@@ -713,7 +713,7 @@ export class LocalIpcClient {
     this.rejectPending(pendingMessage)
   }
 
-  private async sendWebSocket<TResponse>(request: unknown, lane: KernelSocketLane = "control", admittedSocket?: WebSocket): Promise<TResponse> {
+  private async sendWebSocket<TResponse>(request: unknown, lane: KernelSocketLane = "control", admittedSocket?: WebSocket, route: KernelRequestRoute = this.requestRoute): Promise<TResponse> {
     const lifetime = this.requestLifetime.capture()
     let requestId = randomUUID()
     const waitsForAuthorization = waitsForKernelAuthorization(request)
@@ -774,7 +774,7 @@ export class LocalIpcClient {
         }
         const payload = relayRequest
           ? relayRequest.frame
-          : normalizeWebSocketRequest(requestId, request, this.requestRoute)
+          : normalizeWebSocketRequest(requestId, request, route)
         socket.send(JSON.stringify(payload))
         this.countRequest(request)
       } catch (error) {

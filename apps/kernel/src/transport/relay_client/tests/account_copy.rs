@@ -96,14 +96,29 @@ async fn source_request(
     router: &CommandRouter,
     request: serde_json::Value,
 ) -> Result<serde_json::Value, DaemonError> {
+    request_as(router, request, |_| {}).await
+}
+/// The same request from a caller other than the owner's own client.
+async fn request_as(
+    router: &CommandRouter,
+    request: serde_json::Value,
+    shape: impl FnOnce(&mut crate::runtime::command::KernelCaller),
+) -> Result<serde_json::Value, DaemonError> {
     let request: LocalDaemonRequest =
         serde_json::from_value(request).expect("public account copy must parse");
-    let command = KernelCommand::from_local_request(
+    let mut command = KernelCommand::from_local_request(
         format!("account-copy-test-{}", rand::random::<u64>()),
         None,
         None,
         &request,
     );
+    command.caller = router
+        .local_terminal_caller(
+            crate::runtime::command::KernelCommandSource::LocalIpc,
+            "account-copy-test",
+        )
+        .await;
+    shape(&mut command.caller);
     router
         .dispatch(command, request)
         .await
@@ -164,8 +179,15 @@ fn account_copy_bidirectional_encrypted_installs_do_not_hold_source_vaults() {
     run_account_copy_drill(CopyScenario::Bidirectional);
 }
 
+#[test]
+fn account_copy_recipient_consent_and_independent_removal() {
+    crate::test_support::isolated_env_test!();
+    run_account_copy_drill(CopyScenario::Recipient);
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum CopyScenario {
+    Recipient,
     Serial,
     RegistryAccess,
     ChangedProfile,
@@ -268,6 +290,10 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns
         });
         source.relay_url = Some(url.clone());
         target.relay_url = Some(url.clone());
+        if scenario == CopyScenario::Recipient {
+            target.user_config.credential_vault.unlock_policy =
+                crate::config::CredentialVaultUnlockPolicy::Always;
+        }
         let source_app = Arc::new(Mutex::new(DaemonApp::bootstrap(source.clone()).unwrap()));
         let target_app = Arc::new(Mutex::new(DaemonApp::bootstrap(target.clone()).unwrap()));
         let source_state = source_app.lock().await.relay_client_state();
@@ -398,6 +424,281 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns
             "provider":"claude", "account_profile":profile.profile_id, "operation_id":"copy-1",
             "target_kernel_id":target.daemon_id, "target_key_thumbprint":crate::runtime::terminal_pairings::public_key_thumbprint(&target.relay_public_key),"replace":false
         }});
+        if scenario == CopyScenario::Recipient {
+            // The connector republishes the new login by itself; nothing here
+            // sends a registration.
+            let registration = source_router.relay_registration().await;
+            assert!(registration.provider_accounts.iter().any(|account| account
+                .account_id
+                .as_deref()
+                == Some(profile.profile_id.as_str())
+                && account.copyable));
+            let offers = tokio::time::timeout(Duration::from_secs(10), async {
+                loop {
+                    let response = source_request(
+                        &target_router,
+                        serde_json::json!({"ListProviderAccountCopyOffers":{}}),
+                    )
+                    .await
+                    .unwrap();
+                    let offers = response["ProviderAccountCopyOffers"]["offers"]
+                        .as_array()
+                        .unwrap()
+                        .clone();
+                    if !offers.is_empty() {
+                        break offers;
+                    }
+                    sleep(Duration::from_millis(25)).await;
+                }
+            })
+            .await
+            .expect("authenticated source metadata must become visible");
+            assert!(!serde_json::to_string(&offers).unwrap().contains(canary));
+            assert!(offers
+                .iter()
+                .all(|offer| offer["target_kernel_id"] == target.daemon_id
+                    && offer["source_kernel_id"] == source.daemon_id));
+            for kind in [RelaySubjectKind::Kernel, RelaySubjectKind::Machine] {
+                for case in [
+                    "owner",
+                    "realm",
+                    "target-key",
+                    "target-id",
+                    "unbound",
+                    "expired",
+                    "unenrolled",
+                ] {
+                    let mut request = crate::local::CopyProviderAccountToKernelRequest {
+                        provider: "claude".into(),
+                        account_profile: profile.profile_id.clone(),
+                        operation_id: "invalid-recipient".into(),
+                        target_kernel_id: target.daemon_id.clone(),
+                        target_key_thumbprint:
+                            crate::runtime::terminal_pairings::public_key_thumbprint(
+                                &target.relay_public_key,
+                            ),
+                        replace: false,
+                    };
+                    let mut identity = chariox_relay::protocol::RelayCallerIdentity {
+                        realm_id: "copy-realm".into(),
+                        subject: target.daemon_id.clone(),
+                        subject_kind: kind,
+                        expires_at_ms: crate::session::unix_epoch_ms() + 3_600_000,
+                        token_id: Some("fixture".into()),
+                        user_id: Some("copy-owner".into()),
+                        public_key_thumbprint: Some(request.target_key_thumbprint.clone()),
+                    };
+                    match case {
+                        "owner" => identity.user_id = Some("another-owner".into()),
+                        "realm" => identity.realm_id = "another-realm".into(),
+                        "target-key" => request.target_key_thumbprint = "c".repeat(64),
+                        "target-id" => request.target_kernel_id = "another-target".into(),
+                        "unbound" => identity.public_key_thumbprint = None,
+                        "expired" => identity.expires_at_ms = 1,
+                        "unenrolled" => {
+                            omit_target.store(true, std::sync::atomic::Ordering::SeqCst)
+                        }
+                        _ => unreachable!(),
+                    }
+                    let (outgoing, _priority, _events) = RelayOutgoingSender::channel(8);
+                    let result = crate::transport::relay_client::peer_requests::send_authenticated_peer_request_for_test(
+                        &source_router, &Arc::new(RwLock::new(RelayClientState::default())), &outgoing,
+                        &target.daemon_id, identity, &target.relay_private_key, &source.relay_public_key,
+                        RelayPeerRequest::RequestProviderAccountCopy { request },
+                    ).await;
+                    omit_target.store(false, std::sync::atomic::Ordering::SeqCst);
+                    let public = match result {
+                        Ok(response) => serde_json::to_value(response).unwrap(),
+                        Err(error) => serde_json::to_value(error).unwrap(),
+                    };
+                    assert!(
+                        public.to_string().contains("unauthorized"),
+                        "{kind:?} {case}: {public}"
+                    );
+                    assert!(!public.to_string().contains(canary));
+                    assert!(target_profiles
+                        .list("local", Some("claude"))
+                        .unwrap()
+                        .iter()
+                        .all(|p| !p.profile_id.starts_with("copy-")));
+                }
+            }
+            // The owner's own client choosing the offer is the consent; any
+            // other caller still gets the kernel decision.
+            #[derive(Clone, Copy, PartialEq, Eq)]
+            enum Asker {
+                KernelAgent,
+                Metaagent,
+                OwnerClient,
+            }
+            for (round, (asker, accept)) in [
+                (Asker::KernelAgent, false),
+                (Asker::Metaagent, true),
+                (Asker::OwnerClient, true),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                crate::secret::unlock_chariox_encrypted_vault(
+                    &target_vault,
+                    "fixture-pass",
+                    crate::secret::VaultUnlockLease::KernelShutdown,
+                )
+                .unwrap();
+                let receive = serde_json::json!({"CopyProviderAccountFromKernel":{
+                    "provider":"claude", "account_profile":profile.profile_id, "operation_id":format!("receive-{round}"),
+                    "source_kernel_id":source.daemon_id,
+                    "source_key_thumbprint":crate::runtime::terminal_pairings::public_key_thumbprint(&source.relay_public_key),
+                    "replace":false
+                }});
+                let router = target_router.clone();
+                let request = receive.clone();
+                let pending = tokio::spawn(async move {
+                    request_as(&router, request, |caller| match asker {
+                        Asker::KernelAgent => {
+                            caller.connection_class =
+                                Some(crate::local::KernelConnectionClass::KernelAgent)
+                        }
+                        Asker::Metaagent => {
+                            caller.metaagent_id = Some("copy-test-metaagent".into())
+                        }
+                        Asker::OwnerClient => {}
+                    })
+                    .await
+                });
+                let decisions = async {
+                    loop {
+                        let response = source_request(
+                            &target_router,
+                            serde_json::json!({"SubscribeUserAppViews":{"wait_ms":0}}),
+                        )
+                        .await
+                        .unwrap();
+                        if let Some(interaction) = response["UserAppViewsChanged"]["interactions"]
+                            .as_array()
+                            .unwrap()
+                            .first()
+                        {
+                            break interaction.clone();
+                        }
+                        sleep(Duration::from_millis(10)).await;
+                    }
+                };
+                let result = if asker == Asker::OwnerClient {
+                    tokio::select! {
+                        interaction = decisions => panic!("the owner's own copy raised a decision: {interaction}"),
+                        result = tokio::time::timeout(Duration::from_secs(10), pending) => {
+                            result.expect("the owner's copy waits for no decision").unwrap()
+                        }
+                    }
+                } else {
+                    let interaction = tokio::time::timeout(Duration::from_secs(5), decisions)
+                        .await
+                        .expect("a copy asked by an agent needs the kernel-owned consent");
+                    assert!(!interaction.to_string().contains(canary));
+                    assert!(target_profiles
+                        .list("local", Some("claude"))
+                        .unwrap()
+                        .iter()
+                        .all(|p| !p.profile_id.starts_with("copy-")));
+                    let answer = serde_json::json!({"AnswerUserDomainInteraction":{
+                        "interaction_id":interaction["id"], "choice_id":if accept {"copy"} else {"cancel"}
+                    }});
+                    source_request(&target_router, answer).await.unwrap();
+                    tokio::time::timeout(Duration::from_secs(10), pending)
+                        .await
+                        .unwrap()
+                        .unwrap()
+                };
+                if !accept {
+                    assert_code(result, "provider_account_copy_cancelled", canary);
+                    assert!(target_profiles
+                        .list("local", Some("claude"))
+                        .unwrap()
+                        .iter()
+                        .all(|p| !p.profile_id.starts_with("copy-")));
+                } else {
+                    let copied = result.unwrap();
+                    // "Ask every time": the install used the owner's unlock once.
+                    assert!(
+                        !crate::secret::chariox_encrypted_vault_status(&target_vault)
+                            .unwrap()
+                            .unlocked,
+                        "the Vault is locked again after the copy"
+                    );
+                    let installed = copied["ProviderAccountCopied"]["receipt"]["account_profile"]
+                        .as_str()
+                        .unwrap();
+                    assert_eq!(
+                        target_profiles
+                            .get("local", "claude", installed)
+                            .unwrap()
+                            .auth_state,
+                        crate::account_profile::ProviderAccountAuthState::Authenticated
+                    );
+                    let remaining = source_request(
+                        &target_router,
+                        serde_json::json!({"ListProviderAccountCopyOffers":{}}),
+                    )
+                    .await
+                    .unwrap();
+                    assert!(remaining["ProviderAccountCopyOffers"]["offers"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .all(|offer| offer["account_profile"] != profile.profile_id));
+                    source_request(
+                        &target_router,
+                        serde_json::json!({"RemoveProviderAccountProfile":{
+                            "provider":"claude", "account_profile":installed
+                        }}),
+                    )
+                    .await
+                    .unwrap();
+                    assert!(target_profiles.get("local", "claude", installed).is_err());
+                    let available = source_request(
+                        &target_router,
+                        serde_json::json!({"ListProviderAccountCopyOffers":{}}),
+                    )
+                    .await
+                    .unwrap();
+                    assert!(available["ProviderAccountCopyOffers"]["offers"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|offer| offer["account_profile"] == profile.profile_id));
+                    assert_eq!(
+                        std::fs::read(source.account_profile_registry_path()).unwrap(),
+                        source_before
+                    );
+                    assert!(crate::provider::resolve_provider_account_credentials(
+                        &source,
+                        "local",
+                        "claude",
+                        &profile.profile_id
+                    )
+                    .is_ok());
+                    assert_native_files_clean(&root.join("native-home"), canary);
+                }
+            }
+            let _ = stop_target.send(true);
+            let _ = stop_source.send(true);
+            tokio::time::timeout(Duration::from_secs(5), target_task)
+                .await
+                .unwrap()
+                .unwrap();
+            tokio::time::timeout(Duration::from_secs(5), source_task)
+                .await
+                .unwrap()
+                .unwrap();
+            let _ = stop_cloud.send(true);
+            cloud_task.await.unwrap();
+            let _ = stop_relay.send(());
+            relay_task.await.unwrap();
+            crate::secret::lock_chariox_encrypted_vault(&source_vault).unwrap();
+            crate::secret::lock_chariox_encrypted_vault(&target_vault).unwrap();
+            return;
+        }
         if matches!(
             scenario,
             CopyScenario::RegistryAccess | CopyScenario::ChangedProfile
@@ -938,5 +1239,91 @@ fn account_copy_encrypted_target_entry_point_requires_same_owner() {
             public["code"], "provider_account_copy_unauthorized",
             "MP-11 account copy must reach its same-owner encrypted admission boundary"
         );
+    });
+}
+
+/// A login made after the kernel connected is offered to the owner's other
+/// kernels with no reconnect: the connector republishes its registration
+/// when the profile registry changes.
+#[test]
+fn a_login_added_after_connect_is_published_to_the_relay() {
+    run_async_with_large_test_stack("account-late-login", move || async move {
+        let _relay = relay_client_test_guard().await;
+        let _home = RelayTestHome::new();
+        let root = PathBuf::from(std::env::var_os("CHARIOX_HOME").unwrap());
+        let mut source = config(&root, "late-source");
+        let verifier = ScopedTokenVerifier::new(
+            BTreeMap::from([(source.relay_token.clone().unwrap(), claim(&source))]),
+            BTreeMap::new(),
+            None,
+        );
+        let relay = RelayServer::with_auth_verifier(
+            RelayConfig {
+                host: "127.0.0.1".into(),
+                port: 0,
+                shared_token: None,
+            },
+            RelayAuthVerifier::ScopedToken(verifier),
+        );
+        let listener = relay.bind_listener().await.unwrap();
+        let url = format!("ws://{}", listener.local_addr().unwrap());
+        let registry = relay.registry();
+        let (stop_relay, stopped_relay) = oneshot::channel();
+        let relay_task = tokio::spawn(async move {
+            relay
+                .run_listener_until(listener, async {
+                    let _ = stopped_relay.await;
+                })
+                .await
+                .unwrap();
+        });
+        source.relay_url = Some(url.clone());
+        let app = Arc::new(Mutex::new(DaemonApp::bootstrap(source.clone()).unwrap()));
+        let state = app.lock().await.relay_client_state();
+        let profiles = app.lock().await.provider_account_profile_registry().clone();
+        let router = Arc::new(CommandRouter::with_interactive_capacity_from_app(app, 16));
+        let (stop, stopped) = watch::channel(false);
+        let task = tokio::spawn(run_daemon_relay_connector_with_router_and_static_relay(
+            router,
+            state,
+            stopped,
+            url,
+            source.relay_token.clone().unwrap(),
+        ));
+        wait_for_copy_peer(registry.clone(), &source.daemon_id).await;
+        let published = |registry: Arc<RwLock<chariox_relay::server::RelayRegistry>>| {
+            let daemon_id = source.daemon_id.clone();
+            async move {
+                registry
+                    .read()
+                    .await
+                    .daemon_in_realm("copy-realm", &daemon_id)
+                    .map(|registration| {
+                        registration
+                            .provider_accounts
+                            .iter()
+                            .any(|account| account.alias.as_deref() == Some("Added later"))
+                    })
+                    .unwrap()
+            }
+        };
+        assert!(!published(registry.clone()).await);
+        profiles
+            .create_managed("local", "claude", "Added later")
+            .unwrap();
+        let seen = tokio::time::timeout(Duration::from_secs(5), async {
+            while !published(registry.clone()).await {
+                sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await;
+        assert!(
+            seen.is_ok(),
+            "the login created after the kernel connected must reach the relay without a reconnect"
+        );
+        let _ = stop.send(true);
+        let _ = task.await;
+        let _ = stop_relay.send(());
+        let _ = relay_task.await;
     });
 }

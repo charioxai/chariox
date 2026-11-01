@@ -210,3 +210,41 @@ test('MP-08/MP-11 only a kernel-named owner reads the unmasked feed; every other
   await assert.rejects(display.subscribe({...command,audience:'masked-by-me'},'x'),{code:'user_domain_not_granted'});
  }finally{await display.close()}
 });
+// Review (PR 1219): an unwatched desktop must not keep reading the screen; its last watched viewer stops the shared source.
+test('MP-08/MP-10 an unwatched desktop display pauses the shared source and a capture resumes it',async()=>{
+ const {KernelBrowserHost}=await import('./kernel-browser-host.mjs');const {DisplaySessions}=await import('./kernel-display-resumption.mjs');
+ const previous=process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;process.env.CHARIOX_KERNEL_BROWSER_DISPLAY='1';
+ try{
+  const {host}=fixture();let sources=0,closed=0,producersClosed=0;
+  const display=new DesktopDisplay(host,{createSource:async()=>{sources++;const source={closed:false,sample:()=>null,valid:()=>!source.closed,close:async()=>{closed++;source.closed=true}};return source},
+   createProducer:()=>({waitReady:async()=>{},take:()=>null,feedback(){},invalidate(){},close:async()=>{producersClosed++}})});
+  const real=Object.create(KernelBrowserHost.prototype);
+  Object.assign(real,{generation:1,protection:host.protection,streams:new Map(),displays:host.displays,armDisplayExpiry(){},start:async()=>{},desktopDisplay:display});
+  real.displaySessions=new DisplaySessions(real);
+  const first=await display.subscribe(command,'a'),second=await display.subscribe(command,'b');
+  const capture=(subscription,scope)=>display.request({op:'screenshot',display_subscription_id:subscription.subscription_id,generation:1,after_sequence:0,push:{reset:true,congested:false}},scope);
+  await capture(first,'a');await capture(second,'b');assert.equal(sources,1);
+  const park=(subscription,scope,parked)=>real.requestNow({op:'display_park',watch:true,subscription_id:subscription.subscription_id,generation:1,observed_by:scope,parked});
+  assert.deepEqual(await park(first,'a',true),{generation:1,parked:true});
+  assert.equal(closed,0,'another viewer still watches: the source keeps running');
+  assert.deepEqual(await park(second,'b',true),{generation:1,parked:true});
+  assert.equal(closed,1,'the last watched viewer stopped the source');assert.equal(producersClosed,2);
+  assert.deepEqual(await park(second,'b',true),{generation:1,parked:true});assert.equal(closed,1,'a periodic park keeps it stopped');assert.equal(sources,1);
+  await display.request({op:'display_attach',subscription_id:first.subscription_id,generation:1},'a');
+  assert.equal(sources,1,'a keepalive attach starts no source');
+  await park(first,'a',false);assert.equal(sources,1,'unparking alone reads nothing');
+  await capture(first,'a');assert.equal(sources,2,'the independent frame starts the source again');
+  assert.equal(host.displays.get(first.subscription_id).parked,false);
+  await display.close();
+ }finally{if(previous===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY=previous;}
+});
+test('MP-08/MP-10 a sole unwatched desktop viewer stops the source and stays dormant',async()=>{
+ const {host}=fixture();let sources=0,closed=0;
+ const display=new DesktopDisplay(host,{createSource:async()=>{sources++;const source={closed:false,sample:()=>null,valid:()=>!source.closed,close:async()=>{closed++;source.closed=true}};return source},
+  createProducer:()=>({waitReady:async()=>{},take:()=>null,feedback(){},invalidate(){},close:async()=>{}})});
+ const only=await display.subscribe(command,'a');
+ await display.park(host.displays.get(only.subscription_id),true);
+ assert.equal(closed,1);assert.equal(display.source,null);
+ await display.park(host.displays.get(only.subscription_id),true);assert.equal(sources,1,'repeated parks never restart it');
+ await display.close();
+});

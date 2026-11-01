@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "
 import { join } from "node:path"
 import { kernelSocketConfigRoot } from "@chariox/kernel-client/kernel-unix-socket-path"
 import { LocalIpcClient, LocalIpcError } from "@chariox/kernel-client/ipc"
-import type { KernelAccessGrantedResponse, KernelAccessGrantsListedResponse, KernelAccessRevokedResponse } from "@chariox/kernel-client/kernel-types"
+import type { KernelAccessCoveredResponse, KernelAccessGrantedResponse, KernelAccessGrantsListedResponse, KernelAccessRevokedResponse } from "@chariox/kernel-client/kernel-types"
 import { CommandFailure, parseFlags, usageOf } from "./agent-command-table.js"
 import { probeKernel, reportFailure } from "./kernels-command.js"
 
@@ -99,6 +99,17 @@ async function requestAccess(argv: string[]): Promise<void> {
   } finally { await client.close() }
 }
 
+async function coverProcess(argv: string[]): Promise<void> {
+  const flags = parseFlags("access cover", argv)
+  const pid = Number(flags.get("--pid"))
+  if (!Number.isSafeInteger(pid) || pid <= 1) throw new CommandFailure("usage", "Cover requires a positive integer --pid")
+  const client = kernelUnixClient(flags.get("--socket") as string | undefined)
+  try {
+    const response = await client.send<KernelAccessCoveredResponse>({ CoverKernelAccessProcess: { pid } })
+    console.log(JSON.stringify(response.KernelAccessCovered))
+  } finally { await client.close() }
+}
+
 async function accessStatus(argv: string[]): Promise<void> {
   const flags = parseFlags("access status", argv)
   const holder = holderPid(flags, defaultAccessHolder)
@@ -115,13 +126,14 @@ async function accessStatus(argv: string[]): Promise<void> {
   console.log(JSON.stringify({ status }))
 }
 
-const ACCESS_USAGE = [usageOf("access request"), usageOf("access status"), "chariox access list", "chariox access revoke <id|--all>"].join(" | ")
+const ACCESS_USAGE = [usageOf("access request"), usageOf("access status"), usageOf("access cover"), "chariox access list", "chariox access revoke <id|--all>"].join(" | ")
 
 export async function runAccessCommand(argv: string[]): Promise<boolean> {
   if (argv[0] !== "access") return false
-  if (argv[1] === "request" || argv[1] === "status") {
+  const direct = { request: requestAccess, status: accessStatus, cover: coverProcess }[argv[1] ?? ""]
+  if (direct) {
     try {
-      await (argv[1] === "request" ? requestAccess : accessStatus)(argv.slice(2))
+      await direct(argv.slice(2))
     } catch (error) { reportFailure(error) }
     return true
   }

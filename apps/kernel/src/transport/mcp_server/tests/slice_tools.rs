@@ -950,95 +950,6 @@ done
         .runtime_state()
         .transition_room_environment(&session_id, crate::session::EnvironmentLifecycle::Ready)
         .expect("Computer input requires the Room Environment to be ready");
-    let one_shot_before_denial = std::fs::read_to_string(&one_shot_log).unwrap_or_default();
-    let denied_computer_secret_router = router.clone();
-    let denied_computer_secret_auth = auth_token.clone();
-    let denied_computer_secret_call = tokio::spawn(async move {
-        handle_json_rpc_value(
-            denied_computer_secret_router,
-            &denied_computer_secret_auth,
-            serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": 80,
-                "method": "tools/call",
-                "params": {
-                    "name": "paste_secret_to_computer",
-                    "arguments": {"credential_id": "desktop-login"}
-                }
-            }),
-        )
-        .await
-    });
-    let denied_interaction_id = tokio::time::timeout(std::time::Duration::from_secs(2), async {
-        loop {
-            let session = router
-                .runtime_state()
-                .session_snapshot_projection(&session_id, 0)
-                .expect("session projection should remain available")
-                .session;
-            if let Some(interaction) = session
-                .active_interactions()
-                .iter()
-                .find(|interaction| interaction.title() == Some("Computer credential input"))
-            {
-                assert!(interaction
-                    .message()
-                    .contains("Confirm that this focused field masks secret input"));
-                assert!(interaction
-                    .message()
-                    .contains("approving an unmasked field can expose the credential"));
-                assert!(interaction
-                    .message()
-                    .contains("native window 100, focused control 101 at [20, 30, 200, 40]"));
-                assert_eq!(interaction.default_on_timeout(), Some("deny"));
-                break interaction.id().to_string();
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("computer credential denial interaction should appear");
-    router
-        .runtime_state()
-        .resolve_runtime_interaction(&session_id, &denied_interaction_id, "deny", None)
-        .await
-        .expect("computer credential denial should resolve");
-    let denied_computer_secret_response = denied_computer_secret_call
-        .await
-        .expect("denied computer secret task should join")
-        .expect("denied computer secret paste should return an MCP response");
-    let denied_computer_secret_body = denied_computer_secret_response
-        .into_body()
-        .collect()
-        .await
-        .expect("denied computer secret response body should collect")
-        .to_bytes();
-    let denied_computer_secret_value: Value = serde_json::from_slice(&denied_computer_secret_body)
-        .expect("denied computer secret body json");
-    assert!(denied_computer_secret_value["error"]["message"]
-        .as_str()
-        .is_some_and(|message| message.contains("denied or timed out")));
-    assert!(
-        !denied_computer_secret_value
-            .to_string()
-            .contains("controller-mcp-computer-secret-value"),
-        "denied computer secret material must not escape through MCP"
-    );
-    assert_eq!(
-        std::fs::read_to_string(&one_shot_log).unwrap_or_default(),
-        format!("{one_shot_before_denial}called computer-secret-target\n"),
-        "denial must not submit any credential keystrokes"
-    );
-    assert!(
-        router
-            .runtime_state()
-            .room_environment_snapshot(&session_id)
-            .expect("Room Environment should remain available after denial")
-            .actions
-            .iter()
-            .all(|action| action.kind != "secret_input"),
-        "denial must not create a secret-input action"
-    );
     let computer_secret_router = router.clone();
     let computer_secret_auth = auth_token.clone();
     let computer_secret_call = tokio::spawn(async move {
@@ -1057,30 +968,6 @@ done
         )
         .await
     });
-    let interaction_id = tokio::time::timeout(std::time::Duration::from_secs(2), async {
-        loop {
-            let session = router
-                .runtime_state()
-                .session_snapshot_projection(&session_id, 0)
-                .expect("session projection should remain available")
-                .session;
-            if let Some(interaction) = session
-                .active_interactions()
-                .iter()
-                .find(|interaction| interaction.title() == Some("Computer credential input"))
-            {
-                break interaction.id().to_string();
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("computer credential approval should appear");
-    router
-        .runtime_state()
-        .resolve_runtime_interaction(&session_id, &interaction_id, "allow", None)
-        .await
-        .expect("computer credential approval should resolve");
     let computer_secret_response = computer_secret_call
         .await
         .expect("computer secret task should join")

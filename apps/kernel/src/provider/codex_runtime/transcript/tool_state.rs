@@ -68,15 +68,36 @@ pub(in crate::provider::codex_runtime) fn decode_codex_output_delta_chunk(chunk:
         .unwrap_or_else(|_| chunk.as_bytes().to_vec())
 }
 
+/// The event an item arrived with. Web searches and image views carry no status of their own, so this decides it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::provider::codex_runtime) enum CodexItemLifecycle {
+    Started,
+    /// Also the lifecycle of items read back from a finished turn.
+    Completed,
+}
+
 pub(in crate::provider::codex_runtime) fn sync_tool_item_with_manifest(
     tool_items: &mut BTreeMap<String, CodexToolTranscriptState>,
     item: &Value,
+    lifecycle: CodexItemLifecycle,
     remote_extension_manifest: &RemoteExtensionManifest,
 ) -> Option<CodexOutputChunk> {
     if !is_codex_tool_item(item) {
         return None;
     }
     let item_id = item.get("id").and_then(Value::as_str)?.to_string();
+    let mut item = item.clone();
+    if matches!(
+        item.get("type").and_then(Value::as_str),
+        Some("webSearch" | "imageView")
+    ) && item.get("status").is_none()
+    {
+        item["status"] = json!(match lifecycle {
+            CodexItemLifecycle::Started => "inProgress",
+            CodexItemLifecycle::Completed => "completed",
+        });
+    }
+    let item = &item;
     let entry = tool_items
         .entry(item_id.clone())
         .or_insert_with(|| CodexToolTranscriptState {
@@ -88,6 +109,11 @@ pub(in crate::provider::codex_runtime) fn sync_tool_item_with_manifest(
             last_emitted: None,
         });
     entry.item = item.clone();
+    for field in ["aggregatedOutput", "aggregated_output", "output", "stderr"] {
+        if let Some(serde_json::Value::String(text)) = entry.item.get_mut(field) {
+            super::output_window::trim(text);
+        }
+    }
     if matches!(
         item.get("status").and_then(Value::as_str),
         Some("completed" | "failed" | "cancelled" | "canceled" | "interrupted")
@@ -98,6 +124,7 @@ pub(in crate::provider::codex_runtime) fn sync_tool_item_with_manifest(
             .push_str(&String::from_utf8_lossy(&entry.pending_output_bytes));
         entry.pending_output_bytes.clear();
     }
+    super::output_window::trim(&mut entry.streamed_output);
     render_tool_chunk_if_changed(&item_id, entry, remote_extension_manifest)
 }
 
@@ -188,6 +215,10 @@ fn append_output_delta_from_stream(
         }
     }
     entry.pending_output_bytes.drain(..consumed);
+    if entry.pending_output_bytes.capacity() > super::output_window::MAX_OUTPUT_BYTES * 2 {
+        entry.pending_output_bytes.shrink_to_fit();
+    }
+    super::output_window::trim(&mut entry.streamed_output);
     render_tool_chunk_if_changed(item_id, entry, &RemoteExtensionManifest::default())
 }
 
@@ -312,5 +343,50 @@ mod output_stream_tests {
             append_tool_output_delta(&mut state, "call", "commandExecution", "second").unwrap();
         let second: Value = serde_json::from_slice(&second.bytes).unwrap();
         assert_eq!(second["output"], "first second");
+    }
+}
+
+#[cfg(test)]
+mod output_window_tests {
+    use super::*;
+
+    #[test]
+    fn streamed_and_completed_tool_output_keep_a_bounded_utf8_tail() {
+        let mut tools = BTreeMap::new();
+        for _ in 0..100 {
+            let delta = "λ".repeat(10_000);
+            append_tool_output_delta(&mut tools, "flood", "commandExecution", &delta);
+        }
+        let chunk = append_tool_output_delta(&mut tools, "flood", "commandExecution", "FINAL_TAIL")
+            .unwrap();
+        let rendered: Value = serde_json::from_slice(&chunk.bytes).unwrap();
+        let output = rendered["output"].as_str().unwrap();
+        assert!(output.len() <= super::super::output_window::MAX_OUTPUT_BYTES);
+        assert!(output.starts_with("[earlier tool output omitted]"));
+        assert!(output.ends_with("FINAL_TAIL"));
+        assert!(
+            tools["flood"].streamed_output.capacity()
+                <= super::super::output_window::MAX_OUTPUT_BYTES * 2
+        );
+        let completed = json!({"id":"flood", "type":"commandExecution", "status":"completed", "aggregatedOutput":format!("{}COMPLETE_TAIL", "x".repeat(2_000_000))});
+        let chunk = sync_tool_item_with_manifest(
+            &mut tools,
+            &completed,
+            CodexItemLifecycle::Completed,
+            &RemoteExtensionManifest::default(),
+        )
+        .unwrap();
+        let rendered: Value = serde_json::from_slice(&chunk.bytes).unwrap();
+        let output = rendered["output"].as_str().unwrap();
+        assert!(output.len() <= super::super::output_window::MAX_OUTPUT_BYTES);
+        assert!(output.starts_with("[earlier tool output omitted]"));
+        assert!(output.ends_with("COMPLETE_TAIL"));
+        assert!(
+            tools["flood"].item["aggregatedOutput"]
+                .as_str()
+                .unwrap()
+                .len()
+                <= super::super::output_window::MAX_OUTPUT_BYTES
+        );
     }
 }

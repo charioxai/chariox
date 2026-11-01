@@ -95,7 +95,27 @@ static int minimal_groups(void) {
 static int failure(void) { close(7); return DOMAIN_FAILURE; }
 
 int main(int argc, char** argv) {
-  if (prctl(PR_SET_DUMPABLE, 0, 0, 0, 0)) return failure();
+  /* The kernel may be protected; a constrained App must remain killable. */
+  /* A non-dumpable process (an execute-only binary) has root-owned /proc/self
+   * files, so an ordinary user may only open this one for writing when the
+   * policy really needs lowering; a refused lowering never fails admission. */
+  int score = open("/proc/self/oom_score_adj", O_RDONLY | O_CLOEXEC);
+  if (score < 0) return failure();
+  char adjustment[16];
+  ssize_t count;
+  do { count = read(score, adjustment, sizeof(adjustment)); } while (count < 0 && errno == EINTR);
+  if (count <= 0) { close(score); return failure(); }
+  /* A positive launcher policy may be the unprivileged minimum: preserve it. */
+  if (adjustment[0] == '-') {
+    int lower = open("/proc/self/oom_score_adj", O_WRONLY | O_CLOEXEC);
+    if (lower >= 0) {
+      ssize_t reset;
+      do { reset = write(lower, "0\n", 2); } while (reset < 0 && errno == EINTR);
+      close(lower);
+    }
+  }
+  int closed = close(score);
+  if (closed || prctl(PR_SET_DUMPABLE, 0, 0, 0, 0)) return failure();
   struct stat cgroup, binary;
   struct statfs filesystem;
   if (argc < 2 || argc > 128 || fstat(5, &cgroup) || fstatfs(5, &filesystem) ||

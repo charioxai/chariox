@@ -54,6 +54,28 @@ impl ProviderOutputFanout {
         }
     }
 
+    pub(crate) fn fail_pending_tools(
+        &self,
+        activity: &crate::app::PromptActivityStore,
+        session_id: &str,
+        provider_run_id: &str,
+        termination: &crate::provider::ProviderRunTermination,
+    ) {
+        let recipients = self
+            .attachment_store
+            .list_session_attachment_ids(session_id);
+        for chunk in activity.take_failed_provider_tools(provider_run_id, &termination.reason) {
+            self.fan_out(
+                session_id,
+                provider_run_id,
+                chunk.kind,
+                chunk.merge_key,
+                recipients.clone(),
+                &chunk.bytes,
+            );
+        }
+    }
+
     pub(crate) fn fan_out(
         &self,
         session_id: &str,

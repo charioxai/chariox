@@ -4,12 +4,22 @@ use crate::durable_state::agent_lifecycle::outside::{Mutation, Part};
 use crate::local::*;
 use std::collections::HashSet;
 use std::sync::Mutex as StdMutex;
+use std::time::Instant;
+
+/// A kernel that is slow to answer is still serving. Its health turns offline only when
+/// requests keep timing out for this long; every other failure is reported at once.
+const BUSY_GRACE: Duration = Duration::from_secs(15);
+/// What one pull request to a followed kernel may take. A busy kernel needs more than a second.
+const PULL_DEADLINE: Duration = Duration::from_secs(5);
 
 #[derive(Default)]
 pub(super) struct EventParts {
     running: StdMutex<HashSet<(String, String)>>,
     health: StdMutex<HashMap<(String, String), Result<(), GatewayError>>>,
+    /// Since when each followed kernel's requests have timed out without an answer between.
+    timing_out_since: StdMutex<HashMap<(String, String), Instant>>,
 }
+mod installing;
 mod parts;
 #[cfg(test)]
 mod tests;

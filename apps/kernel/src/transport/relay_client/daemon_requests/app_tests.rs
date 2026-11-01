@@ -1455,3 +1455,57 @@ async fn oversized_request_is_refused_before_crypto_decode() {
     assert!(error.message.contains("12 MiB"));
     assert!(!error.retryable);
 }
+
+// MP-08 / MP-09 / MP-10 / MP-11: a fast successful relay request writes no log line;
+// a failed one writes one.
+#[tokio::test]
+async fn relay_requests_log_only_failures_and_slow_successes() {
+    let root = TestRoot::new();
+    let app = crate::DaemonApp::bootstrap(root.config()).unwrap();
+    let router =
+        CommandRouter::with_interactive_capacity(Arc::new(tokio::sync::Mutex::new(app)), 8);
+    let receiver =
+        relay_crypto::public_key_from_private_key_base64(&router.relay_private_key()).unwrap();
+    let sender = relay_crypto::generate_private_key_base64();
+    let capture = crate::logging::capture::start();
+    let sequence = AtomicU64::new(1);
+    let cache = Arc::new(CommandResultCache::default());
+    let subscriptions = Default::default();
+    let send = |request: LocalDaemonRequest| {
+        let plaintext = serde_json::to_vec(&request).unwrap();
+        let encrypted =
+            relay_crypto::encrypt_payload_for_peer(&sender, &receiver, &plaintext).unwrap();
+        handle_daemon_request(
+            &router,
+            &sequence,
+            Some(caller("alice")),
+            encrypted,
+            &cache,
+            &subscriptions,
+            None,
+        )
+    };
+    let relay_lines = || {
+        capture
+            .records()
+            .into_iter()
+            .filter(|record| record.contains("relay daemon"))
+            .collect::<Vec<_>>()
+    };
+    for _ in 0..3 {
+        let status = send(LocalDaemonRequest::RelayStatus(
+            crate::local::RelayStatusRequest,
+        ))
+        .await;
+        assert!(status.encrypted_response.is_some());
+    }
+    assert_eq!(relay_lines(), Vec::<String>::new());
+    let missing = send(LocalDaemonRequest::GetSessionState(
+        crate::local::GetSessionStateRequest {
+            session_id: "missing-session".into(),
+        },
+    ))
+    .await;
+    assert!(missing.error.is_some());
+    assert_eq!(relay_lines().len(), 1);
+}

@@ -9,13 +9,7 @@ pub(super) fn room_protector(
     protection: super::room_secret_observation::RoomSecretObservations,
     room: String,
 ) -> Arc<dyn Fn(String) -> Option<String> + Send + Sync> {
-    Arc::new(move |text| {
-        if protection.protects_bytes(&room) {
-            None
-        } else {
-            protection.scrub(&room, text).ok()
-        }
-    })
+    Arc::new(move |text| protection.scrub(&room, text).ok())
 }
 
 /// Strips terminal escapes/control bytes and redacts secrets before any
@@ -81,7 +75,7 @@ impl Output {
         self.stopped
             .store(true, std::sync::atomic::Ordering::Release);
     }
-    fn push(&self, line: String) {
+    pub(super) fn push(&self, line: String) {
         let Ok(mut tail) = self.tail.lock() else {
             return;
         };

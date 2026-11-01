@@ -302,3 +302,23 @@ test("MP-08/MP-11 sudo delegates to the one passkey popup without hiding routine
   assert.deepEqual(kernelApprovals(session("session-1",[sudo,approvalFixture]),true).map(i=>i.id),[approvalFixture.id])
   assert.equal(kernelApprovals(session("session-1",[sudo])).length,1,"fallback stays available")
 })
+
+test("detached copy consent uses the same approval panel without a session mutation", async () => {
+  let detached: RuntimeInteraction[] = [{ ...approvalFixture, id: "copy", kernel_operation_id: "provider-account-copy:op" }]
+  const answers: string[][] = []
+  const controller = createKernelApprovalController({
+    getSession: () => session("", []), detachedInteractions: () => detached, connected: () => true,
+    onView() {}, onOpen() {}, onClose() {}, scroll() {}, notify() {},
+    respond: async () => { throw new Error("detached consent must not use a session") },
+    respondDetached: async (id, choice) => { answers.push([id, choice]); detached = [] },
+    respondHandoff: async () => { throw new Error("unexpected hand-off") },
+    applySession() { assert.fail("detached consent must not manufacture a session") }, showPasskeyPrompt: () => false,
+  })
+  controller.show()
+  assert.equal(controller.view().count, 1)
+  assert.equal(controller.view().selected, null)
+  await controller.choose("copy", "deny")
+  assert.deepEqual(answers, [["copy", "deny"]])
+  assert.equal(controller.view().count, 0)
+  controller.dispose()
+})

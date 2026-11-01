@@ -43,6 +43,32 @@ impl CommandResultCache {
         retention.contains(command_id) || self.results.lock().await.contains_key(command_id)
     }
 
+    /// Whether `response` fits the one record its receipt is stored in; otherwise the most
+    /// bytes a response of this request may have, so the caller can say why it was refused.
+    pub(crate) fn receipt_room(
+        command_id: &str,
+        fingerprint: &CommandFingerprint,
+        response: &Value,
+    ) -> Result<(), u64> {
+        let record = PersistentCommandResult {
+            command_id: command_id.to_string(),
+            completed_at_ms: crate::session::unix_epoch_ms(),
+            result: CachedCommandResult {
+                response: serialized_response(&Some(response.clone())),
+                error: None,
+                fingerprint: fingerprint.clone(),
+                completed_at_ms: crate::session::unix_epoch_ms(),
+            },
+        };
+        let bytes = persistent_result_jsonl_bytes(&record).unwrap_or(u64::MAX);
+        if bytes <= COMMAND_RESULT_CACHE_MAX_PERSISTED_RECORD_BYTES {
+            return Ok(());
+        }
+        let own = serde_json::to_vec(response).map_or(0, |bytes| bytes.len() as u64);
+        let overhead = bytes.saturating_sub(own);
+        Err(COMMAND_RESULT_CACHE_MAX_PERSISTED_RECORD_BYTES.saturating_sub(overhead))
+    }
+
     /// No result is visible until its final receipt has been appended and synced.
     pub(crate) async fn complete_at_most_once(
         &self,

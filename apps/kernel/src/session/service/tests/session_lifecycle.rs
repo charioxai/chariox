@@ -235,7 +235,7 @@ fn restoring_hidden_session_detaches_it_from_legacy_project() {
         .is_empty());
 
     assert_eq!(
-        restored.remove_projects_without_visible_sessions(),
+        restored.remove_projects_without_visible_sessions().unwrap(),
         vec![project]
     );
     assert!(restored
@@ -1917,7 +1917,7 @@ fn default_project_workspace_migration_merges_a_linked_worktree_project() {
     assert_eq!(migrated.worktree_id(), linked.worktree_id());
     assert_eq!(migrated.project_id(), main.project_id());
     assert_eq!(migrated.alias(), Some("event-first-wave-live"));
-    let removed = service.remove_projects_without_visible_sessions();
+    let removed = service.remove_projects_without_visible_sessions().unwrap();
     assert_eq!(removed.len(), 1);
     assert_eq!(removed[0].id(), linked.project_id());
     assert_eq!(service.durable_projects().len(), 1);

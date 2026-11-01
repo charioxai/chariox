@@ -4,6 +4,8 @@ mod catalog;
 mod defaults;
 mod event_subscription;
 mod events;
+#[cfg(test)]
+pub(crate) mod fake_server;
 mod health;
 mod http;
 mod mcp;

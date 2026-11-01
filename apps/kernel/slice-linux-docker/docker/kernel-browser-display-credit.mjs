@@ -15,6 +15,13 @@ import { DisplayDocumentPending } from './kernel-browser-display-document.mjs';
 import { UserDomainRefusal } from './kernel-browser-refusal.mjs';
 
 const frameKinds={video:1,stripes:2,tiles:3,png:4};
+// MP-08/MP-10: a lossless patch retires the video in hand for a key (~100 KB at 1920). While a page settles after
+// its key, small damage continues that chain instead and the exact repair settles it. Only then: on a page that
+// never stops changing (an animation) video is always in hand, and the canvas would never become exact again.
+const SETTLING_MS=1000;
+export function nativePatchable(stream,sample,producer=stream.producer,now=performance.now()){
+ return !(producer?.holdsVideo&&now-(stream.keyAt??-Infinity)<SETTLING_MS)&&stream.canPatchNative(sample);
+}
 export async function displayCredit(host, stream, command, signal) {
   const geometry=host.pageSize?.(stream.tab_id)??canonicalGeometry;
   const leased=stream.adoptLease?.(command.after_sequence);
@@ -81,7 +88,7 @@ export async function displayCredit(host, stream, command, signal) {
     // local canvas bookkeeping until a fresh capture decides whether its
     // masks/base are identical; pending codecs/refinements always retire.
     if(nativeRegionPending(stream,compositor,tab.document_id,host.protection)){
-      stream.producer?.retireUnsent();stream.refiner?.invalidate();
+      stream.producer?.retireUnsent(undefined,'region_pending');stream.refiner?.invalidate();
       compositor?.rejected?.('region_revision');
       return {generation:host.generation,frame_sent:false,display_frame:null};
     }
@@ -89,7 +96,7 @@ export async function displayCredit(host, stream, command, signal) {
     // post-fence capture proves the same masks and an exact source base.
     // Unsent old frames still retire; unknown/new geometry takes a key.
     const stable=nativeRegionBaseCurrent(stream,compositor,tab.document_id,host.protection);
-    if(stable){stream.producer.retireUnsent();stream.refiner?.invalidate();}else stream.invalidate();
+    if(stable){stream.producer.retireUnsent(undefined,'region_stable');stream.refiner?.invalidate();}else stream.invalidate(true,'region_revision');
     stream.compositorRegionRevision=regionRevision;
   }
   const sample=compositor?.sample();
@@ -100,11 +107,11 @@ export async function displayCredit(host, stream, command, signal) {
   if(compositor&&sample&&stream.codec!=='png'){
     // Serials are source-local. Retiring a source also retires its exact
     // base, even when a newly navigated document starts at the same serial.
-    if(stream.producer?.source!==compositor){stream.invalidate();stream.document_id=null;await stream.producer?.close();stream.producer=new MotionEncoder(compositor,stream.encoder,{bitrate:stream.bitrate,codec:stream.codec,independent:!stream.dependencies,stripes:stream.stripes,latest:['browser_chrome','browser_auxiliary'].includes(stream.regionTarget?.kind),shouldEncode:sample=>{const encode=!stream.canPatchNative(sample)&&!stream.shiftCandidate(sample)&&!(stream.exact&&identicalToDelivered(stream,sample));if(encode&&stream.exact)host.timing('shift_skipped_exact',timestamp());return encode;},valid:()=>!compositor.closed&&compositor.allowed(compositor.policy),timing:host.timing});}
+    if(stream.producer?.source!==compositor){stream.invalidate(true,'source');stream.document_id=null;await stream.producer?.close();stream.producer=new MotionEncoder(compositor,stream.encoder,{bitrate:stream.bitrate,codec:stream.codec,independent:!stream.dependencies,stripes:stream.stripes,latest:['browser_chrome','browser_auxiliary'].includes(stream.regionTarget?.kind),shouldEncode:(sample,producer)=>{const encode=!nativePatchable(stream,sample,producer)&&!stream.shiftCandidate(sample)&&!(stream.exact&&identicalToDelivered(stream,sample));if(encode&&stream.exact)host.timing('shift_skipped_exact',timestamp());return encode;},valid:()=>!compositor.closed&&compositor.allowed(compositor.policy),timing:host.timing});}
     // Admit recovery before selecting a native patch or taking an encoded
     // packet. A lost canvas base also reoffers any skipped patchable source.
     // Once retired, empty credits must let the pending recovery key finish.
-    if(stream.previous&&(stream.document_id!==tab.document_id||!stream.acceptsCredit(command.after_sequence)))stream.invalidate();
+    if(stream.previous&&(stream.document_id!==tab.document_id||!stream.acceptsCredit(command.after_sequence)))stream.invalidate(true,stream.document_id!==tab.document_id?'document':'credit_lag');
     if(!stream.refiner||stream.refinerDocument!==tab.document_id){await stream.refiner?.close();stream.refiner=new NativeRefiner(binding=>binding.native?binding.sample:host.displayScreenshot(tab,null,false),{now:()=>performance.now(),prepareTiles:true,timing:host.timing});stream.refinerDocument=tab.document_id;}
     const policy=host.protection;
     const binding={source:compositor,document:tab.document_id,policy,epoch,serial:sample.serial,scale:stream.device_scale_factor,native:compositor.attested===true&&Boolean(sample.raw),sample,repairLimit:exactPatchLimit(stream.bitrate),encoder:stream.encoder.nativeSession,nativeDelivered:stream.encoder.nativeDeliveredRevision};
@@ -120,12 +127,12 @@ export async function displayCredit(host, stream, command, signal) {
       stream.compositorSerial=sample.serial;
       return {generation:host.generation,frame_sent:false,display_frame:null};
     }
-    const patchable=stream.canPatchNative(sample);
+    const patchable=nativePatchable(stream,sample);
     const shift=patchable?null:stream.shiftKind(sample);
     const encoded=patchable||shift ? null : stream.producer.take();
     if(shift){
       // MP-08/MP-10: lossless scroll frame: proved moves plus WebP residuals.
-      stream.producer.retireUnsent();
+      stream.producer.retireUnsent(undefined,'shift');
       const reply=await sample.raw.nativeExact({encoder:stream.encoder.nativeSession,regions:[],patch:true,shift,effort:stream.shiftEffort(),...(shift==='overlay'?{base:stream.compositorCommittedSerial??stream.compositorSerial}:{})});
       if(reply.shift_refused===true){
         host.timing(`shift_refused_${shift} ${/^MP-1[01]: [a-z ]{1,40}$/.test(reply.reason)?reply.reason:''}`,timestamp());
@@ -139,7 +146,7 @@ export async function displayCredit(host, stream, command, signal) {
       if(!Array.isArray(reply.native_tiles)||!Array.isArray(reply.moves)||reply.moves.length>64||reply.native_tiles.length>64||!(reply.moves.length||reply.native_tiles.length)){stream.encoder.discard?.({packet:reply.native_packet});throw Error('MP-11: native shift reply');}
       source={...sample,...reply,...(reply.moves.length?{}:{moves:undefined}),motion:false,generation:host.generation};
     }else if(patchable){
-      stream.producer.retireUnsent();
+      stream.producer.retireUnsent(undefined,'patch');
       const adjacent=sample.serial===(stream.exact?(stream.compositorCommittedSerial??stream.compositorSerial):stream.compositorSerial)+1&&stream.compositorMasks===JSON.stringify(sample.raw[displayMaskRegions]??[])&&nativeDamageTiles(sample.raw,true,true)!==null;
       const patch=sample.raw.nativeExact?await sample.raw.nativeExact({encoder:stream.encoder.nativeSession,regions:sample.raw[displayMaskRegions]??[],patch:true,adjacent}):{native_tiles:nativeDamageTiles(sample.raw)};
       source={...sample,...patch,motion:false,generation:host.generation};
@@ -174,7 +181,10 @@ export async function displayCredit(host, stream, command, signal) {
     return !compositor?.closed&&compositor?.regionRevision===regionRevision&&(source.motion || ((host.inputEpochs.get(tab.tab_id) ?? 0) === epoch&&((source.refinement_serial===undefined||compositor?.sample()?.serial===source.refinement_serial)&&nativeRevisionCurrent(source,stream.encoder))));
   },()=>(region?region.isAlive()&&stream.regionWindow.isCurrent():!native||host.displayDocuments.current(tab))&&!compositor?.closed&&compositor?.regionRevision===regionRevision&&host.protection===capturePolicy&&(source.motion||((host.inputEpochs.get(tab.tab_id)??0)===epoch&&((source.refinement_serial===undefined||compositor?.sample()?.serial===source.refinement_serial)&&nativeRevisionCurrent(source,stream.encoder)))));
   if(frame)host.timing.event?.('frame_out',{at:source.captured_ms,source_kind:{browser_chrome:1,region:2,browser_auxiliary:3,visible_page:4,browser_window:5}[stream.regionTarget?.kind]??0,width:stream.css_width*stream.device_scale_factor,height:stream.css_height*stream.device_scale_factor,sequence:frame.sequence,kind:frameKinds[frame.kind]??0,input_triggered:source.input_triggered?1:0,input_epoch:epoch,
-    damage_ready_ms:source.raw?.damage_ready_ms,input_wake_ms:source.raw?.input_wake_ms,published_ms:source.published_ms,encode_offered_ms:Number.isFinite(source.offeredAt)?performance.timeOrigin+source.offeredAt:undefined,encode_started_ms:source.encode_started_ms,encoded_ms:source.encoded_ms,native_serial:source.raw?.serial,get payload_bytes(){return egressBytes(frame,stream.relay_binary)}});
+    damage_ready_ms:source.raw?.damage_ready_ms,input_wake_ms:source.raw?.input_wake_ms,published_ms:source.published_ms,encode_offered_ms:Number.isFinite(source.offeredAt)?performance.timeOrigin+source.offeredAt:undefined,encode_started_ms:source.encode_started_ms,encoded_ms:source.encoded_ms,native_serial:source.raw?.serial,key:frame.key?1:0,get payload_bytes(){return egressBytes(frame,stream.relay_binary)}});
+  // Diagnostics (labels only): what forced this key.
+  if(frame?.key)stream.keyAt=performance.now();
+  if(frame?.key){host.timing?.(`display_key ${stream.keyReason??stream.encoder?.keyCause??stream.producer?.keyCause??'encoder'}`,timestamp());stream.keyReason=undefined;if(stream.producer)stream.producer.keyCause=undefined;if(stream.encoder)stream.encoder.keyCause=undefined;}
   if(frame){stream.compositorMasks=JSON.stringify(source.raw?.[displayMaskRegions]??[]);stream.compositorSerial=source.refinement_serial ?? source.serial;if(source.input_triggered)stream.deliveredInputEpoch=epoch;if(stream.exact&&source.raw?.nativeCommit){source.raw.nativeCommit(stream.encoder.nativeSession,!source.moves);stream.compositorCommittedSerial=stream.compositorSerial;}}
   compositor?.plans?.(stream.exact&&!stream.shiftHold&&stream.compositorMasks==='[]');
   return { generation: host.generation, frame_sent: frame !== null, display_frame: frame };
@@ -185,6 +195,15 @@ export async function displayCredit(host, stream, command, signal) {
 export async function displayPushCredit(host, stream, command, signal, { budgetMs = 100, now = () => performance.now() } = {}) {
   if (command.push.reset) stream.resetForDelivery();
   const deadline = now() + budgetMs;
+  // P1: a parked Tab display holds the pump's credit until the Tab's next commit unparks it (or the budget ends).
+  // A retired binding still ends the pump at once, so the viewer learns it before its next navigation.
+  if (stream.parked) {
+    await stream.waitUnparked(budgetMs);
+    const region = stream.regionLease;
+    if (region && !(command.generation === host.generation && stream.regionSource.valid() && region.isAlive() && stream.regionWindow.isCurrent()))
+      throw new UserDomainRefusal('stale_reference', 'region_retired');
+    if (stream.parked) return { generation: host.generation, frame_sent: false, display_frame: null };
+  }
   for (;;) {
     const reply = await displayCredit(host, stream, command, signal);
     if (reply.frame_sent) {

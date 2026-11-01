@@ -19,6 +19,12 @@ use super::types::{
     ProviderRunState,
 };
 
+#[derive(Clone, PartialEq, Eq)]
+enum NativeCheckpointImport {
+    Pending(std::sync::Arc<super::ProviderNativeCheckpoint>),
+    Imported(std::sync::Arc<super::ProviderNativeCheckpoint>),
+}
+
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeProviderRun {
     id: String,
@@ -118,6 +124,9 @@ pub struct RuntimeProviderRun {
     control_capabilities: Vec<ControlCapability>,
     #[serde(default, skip_serializing_if = "ProviderResumeState::is_empty")]
     resume_state: ProviderResumeState,
+    // Keep the artifact through verified startup until the first native turn is accepted.
+    #[serde(skip)]
+    native_checkpoint: Option<NativeCheckpointImport>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     external_provider_import: Option<ExternalProviderImportMetadata>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -204,6 +213,10 @@ impl RuntimeProviderRun {
                 request.runtime_mcp_binding.is_some(),
             ),
             resume_state: request.resume_state.clone().unwrap_or_default(),
+            native_checkpoint: request
+                .native_checkpoint
+                .clone()
+                .map(|checkpoint| NativeCheckpointImport::Pending(std::sync::Arc::new(checkpoint))),
             external_provider_import: request.external_provider_import.clone(),
             provider_session_id: request
                 .resume_state
@@ -276,6 +289,7 @@ impl RuntimeProviderRun {
                 inferred_has_runtime_mcp_binding,
             ),
             resume_state: ProviderResumeState::default(),
+            native_checkpoint: None,
             external_provider_import: None,
             provider_session_id: None,
             terminal_diagnostic: None,
@@ -637,11 +651,41 @@ impl RuntimeProviderRun {
         self.write_access_mode.uses_workspace_live_sync()
     }
 
+    pub(crate) fn native_checkpoint(&self) -> Option<&super::ProviderNativeCheckpoint> {
+        match self.native_checkpoint.as_ref()? {
+            NativeCheckpointImport::Pending(checkpoint)
+            | NativeCheckpointImport::Imported(checkpoint) => Some(checkpoint.as_ref()),
+        }
+    }
+
+    pub(crate) fn native_checkpoint_needs_import(&self) -> bool {
+        matches!(
+            self.native_checkpoint.as_ref(),
+            Some(NativeCheckpointImport::Pending(_))
+        )
+    }
+
+    pub(crate) fn mark_native_checkpoint_imported(&mut self) {
+        if let Some(NativeCheckpointImport::Pending(checkpoint)) = self.native_checkpoint.as_ref() {
+            let checkpoint = std::sync::Arc::clone(checkpoint);
+            self.native_checkpoint = Some(NativeCheckpointImport::Imported(checkpoint));
+        }
+    }
+
+    pub(crate) fn clear_native_checkpoint(&mut self) {
+        self.native_checkpoint = None;
+    }
+
     pub fn resume_state(&self) -> &ProviderResumeState {
         &self.resume_state
     }
 
     pub fn set_resume_state(&mut self, resume_state: ProviderResumeState) {
+        if self.resume_state.required_native_session().is_some()
+            && resume_state.required_native_session().is_none()
+        {
+            self.clear_native_checkpoint();
+        }
         self.resume_state = resume_state;
     }
 
@@ -736,6 +780,7 @@ impl RuntimeProviderRun {
     }
 
     pub fn mark_ended(&mut self) {
+        self.clear_native_checkpoint();
         self.state = ProviderRunState::Ended;
     }
 

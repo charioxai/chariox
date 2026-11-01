@@ -282,6 +282,7 @@ apt-get install -y --no-install-recommends \
   lsof \
   nodejs \
   npm \
+  procps \
   psmisc \
   pkg-config \
   protobuf-compiler \
@@ -298,6 +299,10 @@ apt-get install -y --no-install-recommends \
   util-linux \
   xfsprogs \
   zstd
+
+# MP-08 / MP-09 / MP-10 / MP-11: provider launches require this sampler.
+ps -axo pid=,ppid=,rss=,pcpu=,etime=,comm= >/dev/null \
+  || fail "process resource sampler is unavailable"
 
 # MP-08/MP-10/MP-11: match ordinary Setup's system-interpreter verification.
 /usr/bin/python3 -I -B -c 'from Xlib import X, display; from Xlib.ext import xtest; from PIL import Image' \

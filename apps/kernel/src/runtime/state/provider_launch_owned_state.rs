@@ -31,6 +31,9 @@ impl KernelRuntimeOwnedState {
                 launch_request = launch_request.with_resume_state(resume_state);
             }
         }
+        if let Some(binding) = request.native_checkpoint_binding {
+            launch_request = launch_request.with_native_checkpoint_binding(binding);
+        }
         let config = self.config_projection.snapshot();
         let session = self.session_store.get_session(&request.session_id).ok();
         let workspace_live_sync_mode =
@@ -180,7 +183,13 @@ impl KernelRuntimeOwnedState {
                     agent_id: agent.id().to_string(),
                 });
             }
-            if agent.remote_execution().is_some() {
+            // Return must probe its native session before committing the local
+            // route. Only its durable preparation may cross this account guard.
+            if agent.remote_execution().is_some_and(|source| {
+                !self
+                    .agent_moves
+                    .prepares_return(&request, source, &config.daemon_id)
+            }) {
                 return Err(DaemonError::LocalTransport {
                     operation: "launch provider run",
                     message: format!(
@@ -239,6 +248,12 @@ impl KernelRuntimeOwnedState {
             crate::provider::adapter_key_for_provider(&request.adapter_key).to_string();
         request = self.prepare_provider_launch_account(request)?;
         let session = self.session_store.get_session(&request.session_id)?;
+        let session = request
+            .agent_id
+            .as_deref()
+            .map(|agent| self.agent_moves.execution_session(&session, agent))
+            .transpose()?
+            .unwrap_or(session);
         let config = self.config_projection.snapshot();
         let agent = request
             .agent_id
@@ -252,8 +267,38 @@ impl KernelRuntimeOwnedState {
         if request.permission_level.is_none() {
             request = request.with_permission_level(effective_config.permission_level);
         }
-        if request.resume_state.is_none() {
+        if request.resume_state.is_none()
+            || agent.as_ref().is_some_and(|agent| {
+                agent
+                    .provider_resume_state()
+                    .required_native_session()
+                    .is_some()
+                    && request
+                        .resume_state
+                        .as_ref()
+                        .is_none_or(|state| state.required_native_session().is_none())
+            })
+        {
             if let Some(agent) = agent.as_ref() {
+                if agent
+                    .provider_resume_state()
+                    .required_native_session()
+                    .is_some()
+                    && request
+                        .resume_state
+                        .as_ref()
+                        .and_then(|state| state.provider_session_id(&request.adapter_key))
+                        .is_some_and(|id| {
+                            Some(id)
+                                != agent
+                                    .provider_resume_state()
+                                    .provider_session_id(&request.adapter_key)
+                        })
+                {
+                    return Err(crate::provider::NativeCheckpointFailure::SessionChanged
+                        .into_daemon_error());
+                }
+
                 let resume_state = crate::app::sanitize_resume_state_for_launch(&request, agent);
                 if !resume_state.is_empty() {
                     request = request.with_resume_state(resume_state);
@@ -333,6 +378,15 @@ impl KernelRuntimeOwnedState {
             mcp_servers,
         )?);
         request = crate::app::apply_metaagent_launch_policy(request, agent.as_ref());
+        request = super::restore_agent_move_preparation_environment(
+            &config,
+            &self.durable_state_store,
+            &self.agent_moves,
+            request,
+        )?;
+        if let Some(checkpoint) = self.agent_moves.checkpoint_for_launch(&request)? {
+            request = request.with_native_checkpoint(checkpoint);
+        }
         Ok(request)
     }
 
@@ -341,6 +395,12 @@ impl KernelRuntimeOwnedState {
         request: crate::provider::LaunchProviderRequest,
     ) -> Result<crate::provider::LaunchProviderRequest, DaemonError> {
         let session = self.session_store.get_session(&request.session_id)?;
+        let session = request
+            .agent_id
+            .as_deref()
+            .map(|agent| self.agent_moves.execution_session(&session, agent))
+            .transpose()?
+            .unwrap_or(session);
         let agent = request
             .agent_id
             .as_deref()
@@ -447,6 +507,81 @@ impl KernelRuntimeOwnedState {
             request.client_interface,
         )
     }
+}
+
+#[cfg(test)]
+pub(super) async fn owned_runtime_state(
+    app: &Arc<Mutex<crate::app::DaemonApp>>,
+) -> KernelRuntimeState {
+    let (
+        config_projection,
+        session_store,
+        agent_store,
+        attachment_store,
+        provider_store,
+        provider_process_tracking,
+        slice_store,
+        session_projection,
+        provider_run_projection,
+        operational_history_store,
+        durable_state_store,
+        prompt_state_owner,
+        active_turns,
+        prompt_activity,
+        prompt_workspace_claims,
+        structured_output_records,
+        terminal_stream,
+        workflow_design_events,
+        metaagent_events,
+        workspace_coordinator,
+    ) = {
+        let app = app.lock().await;
+        (
+            app.config_projection_store(),
+            app.session_state_store(),
+            app.agents().clone(),
+            app.attachments().clone(),
+            app.providers().clone(),
+            app.provider_process_tracking_store(),
+            app.slices(),
+            app.session_state_projection_store(),
+            app.provider_run_projection_store(),
+            app.operational_history_store(),
+            app.durable_state_store(),
+            app.prompt_state_owner(),
+            app.active_turn_store(),
+            app.prompt_activity_store(),
+            app.prompt_workspace_claim_store(),
+            app.structured_output_record_store(),
+            app.terminal_stream_store(),
+            app.workflow_design_event_store(),
+            app.metaagent_event_store(),
+            app.workspace_coordinator(),
+        )
+    };
+    KernelRuntimeState::new_with_owned_state(
+        Arc::clone(app),
+        config_projection,
+        session_store,
+        agent_store,
+        attachment_store,
+        provider_store,
+        provider_process_tracking,
+        slice_store,
+        session_projection,
+        provider_run_projection,
+        operational_history_store,
+        durable_state_store,
+        prompt_state_owner,
+        active_turns,
+        prompt_activity,
+        prompt_workspace_claims,
+        structured_output_records,
+        terminal_stream,
+        workflow_design_events,
+        metaagent_events,
+        workspace_coordinator,
+    )
 }
 
 #[cfg(test)]
@@ -2168,77 +2303,6 @@ mod tests {
 
     mod leased_account_authority_tests;
 
-    async fn owned_runtime_state(app: &Arc<Mutex<crate::app::DaemonApp>>) -> KernelRuntimeState {
-        let (
-            config_projection,
-            session_store,
-            agent_store,
-            attachment_store,
-            provider_store,
-            provider_process_tracking,
-            slice_store,
-            session_projection,
-            provider_run_projection,
-            operational_history_store,
-            durable_state_store,
-            prompt_state_owner,
-            active_turns,
-            prompt_activity,
-            prompt_workspace_claims,
-            structured_output_records,
-            terminal_stream,
-            workflow_design_events,
-            metaagent_events,
-            workspace_coordinator,
-        ) = {
-            let app = app.lock().await;
-            (
-                app.config_projection_store(),
-                app.session_state_store(),
-                app.agents().clone(),
-                app.attachments().clone(),
-                app.providers().clone(),
-                app.provider_process_tracking_store(),
-                app.slices(),
-                app.session_state_projection_store(),
-                app.provider_run_projection_store(),
-                app.operational_history_store(),
-                app.durable_state_store(),
-                app.prompt_state_owner(),
-                app.active_turn_store(),
-                app.prompt_activity_store(),
-                app.prompt_workspace_claim_store(),
-                app.structured_output_record_store(),
-                app.terminal_stream_store(),
-                app.workflow_design_event_store(),
-                app.metaagent_event_store(),
-                app.workspace_coordinator(),
-            )
-        };
-        KernelRuntimeState::new_with_owned_state(
-            Arc::clone(app),
-            config_projection,
-            session_store,
-            agent_store,
-            attachment_store,
-            provider_store,
-            provider_process_tracking,
-            slice_store,
-            session_projection,
-            provider_run_projection,
-            operational_history_store,
-            durable_state_store,
-            prompt_state_owner,
-            active_turns,
-            prompt_activity,
-            prompt_workspace_claims,
-            structured_output_records,
-            terminal_stream,
-            workflow_design_events,
-            metaagent_events,
-            workspace_coordinator,
-        )
-    }
     #[tokio::test]
     async fn leased_launch_keeps_the_home_replica_namespace_on_a_same_owner_worker() {
         crate::test_support::isolated_env_test!();

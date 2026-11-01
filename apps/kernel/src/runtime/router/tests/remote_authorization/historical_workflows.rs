@@ -18,7 +18,10 @@ fn mp11_amfix_external_history_captured_stop_denied() {
 }
 
 // Web and remote TUI users reach the kernel as relay terminals.
-fn terminal_command(request: &LocalDaemonRequest, user_id: Option<&str>) -> KernelCommand {
+pub(super) fn terminal_command(
+    request: &LocalDaemonRequest,
+    user_id: Option<&str>,
+) -> KernelCommand {
     let mut command = remote_command_for_request(request, user_id);
     command.caller.connection_class = Some(crate::local::KernelConnectionClass::Terminal);
     command

@@ -40,22 +40,26 @@ impl OpenCodeClient {
         })
     }
 
-    pub(super) fn send_no_content_request(
+    /// A prompt submission that OpenCode answers with its own error text is
+    /// the provider's refusal; any other failure stays a protocol fault.
+    pub(super) fn send_prompt_request(
         &self,
-        method: &'static str,
         path: &str,
-        body: Option<&serde_json::Value>,
+        body: &serde_json::Value,
     ) -> Result<(), DaemonError> {
-        let (status_code, response_body) = self.send_request(method, path, body)?;
+        let (status_code, response_body) = self.send_request("POST", path, Some(body))?;
         if status_code >= 400 {
+            if let Some(message) = provider_error_message(&response_body) {
+                return Err(DaemonError::ProviderRefusal { message });
+            }
             return Err(self.protocol_error(
-                method_to_operation(method, path),
+                method_to_operation("POST", path),
                 format!("OpenCode returned HTTP {status_code}"),
             ));
         }
         if !response_body.is_empty() {
             return Err(self.protocol_error(
-                method_to_operation(method, path),
+                method_to_operation("POST", path),
                 format!(
                     "expected empty response body; got {}",
                     preview_response_body(&response_body)
@@ -353,6 +357,18 @@ fn method_to_operation(method: &str, path: &str) -> &'static str {
 
 fn is_mcp_connect_path(path: &str) -> bool {
     path.starts_with("/mcp/") && path.ends_with("/connect")
+}
+
+/// The message OpenCode itself wrote in an error response body
+/// (`{"name": ..., "data": {"message": ...}}`).
+fn provider_error_message(body: &[u8]) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_slice(body).ok()?;
+    let message = value
+        .pointer("/data/message")
+        .or_else(|| value.get("message"))?
+        .as_str()?
+        .trim();
+    (!message.is_empty()).then(|| message.to_string())
 }
 
 pub(super) fn preview_response_body(body: &[u8]) -> String {

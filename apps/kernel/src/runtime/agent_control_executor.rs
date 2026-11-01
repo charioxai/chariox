@@ -137,6 +137,12 @@ pub(crate) async fn execute_move_agent_to_local_request(
     caller_user_id: &str,
     request: MoveAgentToLocalRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
+    if request.abort_pending {
+        let agent = runtime_state
+            .abort_agent_move(&request.session_id, &request.agent_ref, caller_user_id)
+            .await?;
+        return Ok(LocalDaemonResponse::AgentMoveAborted { agent });
+    }
     let agent = runtime_state
         .move_agent_to_local(&request.session_id, &request.agent_ref, caller_user_id)
         .await?;

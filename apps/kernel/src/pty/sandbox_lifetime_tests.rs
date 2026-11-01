@@ -12,6 +12,7 @@ fn sandboxed_pty_dies_with_owning_process() {
         let mut manager = PtyManager::new();
         manager
             .spawn(PtySpawnRequest {
+                agent: None,
                 process_key: TEST.into(),
                 provider_run_id: TEST.into(),
                 program: "/usr/bin/bwrap".into(),

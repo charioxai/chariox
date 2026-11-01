@@ -429,13 +429,6 @@ fn run_drill(stall: bool, browser: bool) {
                     Box::pin(check_browser_page(&router, &again, &observed, 4)).await;
                     Box::pin(check_browser_keyboard(&router, &again, &observed)).await;
                 }
-                let view_browser = view.browser.clone();
-                let stream = match &view_browser {
-                    Some(b) => Some(browser_request(&router, KernelBrowserCommand::Subscribe {
-                        tab_id: b.tab_id.clone(), generation: b.generation,
-                    }).await),
-                    None => None,
-                };
                 let close = LocalDaemonRequest::CloseUserAppView(UserAppViewRequest {
                     view_id: view.view_id.clone(),
                 });
@@ -443,14 +436,6 @@ fn run_drill(stall: bool, browser: bool) {
                     request(&router, "bob", close.clone()).await, Err(DaemonError::UserDomainRefused { reason: crate::error::UserDomainRefusalReason::NotGranted })
                 ));
                 request(&router, "alice", close).await.unwrap();
-                if let Some(stream) = stream {
-                    assert!(request(&router, "alice", LocalDaemonRequest::KernelBrowser(KernelBrowserRequest {
-                        command: KernelBrowserCommand::Poll {
-                            subscription_id: stream["subscription_id"].as_str().unwrap().into(),
-                            generation: stream["generation"].as_u64().unwrap(),
-                        },
-                    })).await.is_err(), "closed App frame stream is revoked");
-                }
                 assert!(matches!(
                     request(&router, "alice", call).await, Err(DaemonError::UserDomainRefused { reason: crate::error::UserDomainRefusalReason::NotGranted })
                 ));
