@@ -68,6 +68,7 @@ impl KernelRuntimeState {
     /// restart reconstructs any missing process ends from this same stream.
     fn end_grant(&self, mut owed: OwedEnd) -> Result<(), DaemonError> {
         let id = owed.grant.grant_id.clone();
+        self.withdraw_secret_requests(&id);
         self.owned
             .kernel_access
             .lock()

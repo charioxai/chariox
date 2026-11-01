@@ -227,12 +227,6 @@ impl KernelRuntimeState {
                 })
             }
             crate::transport::runtime_tools::HTTP_REQUEST_WITH_CREDENTIAL_TOOL => {
-                let _vault_unlock = self
-                    .ensure_vault_unlocked_for_provider_run(
-                        provider_run,
-                        "runtime_tool_http_request_with_credential",
-                    )
-                    .await?;
                 let args = serde_json::from_value::<
                     crate::transport::runtime_tools::HttpRequestWithCredentialArgs,
                 >(arguments)
@@ -240,6 +234,13 @@ impl KernelRuntimeState {
                     operation: "runtime_tool_http_request_with_credential",
                     message: format!("invalid tool arguments: {error}"),
                 })?;
+                service.validate_http_request_target(&args.credential_id, &args.url)?;
+                let _vault_unlock = self
+                    .ensure_vault_unlocked_for_provider_run(
+                        provider_run,
+                        "runtime_tool_http_request_with_credential",
+                    )
+                    .await?;
                 let request = crate::secret::CredentialHttpRequest {
                     credential_id: args.credential_id,
                     method: args.method,
@@ -269,12 +270,6 @@ impl KernelRuntimeState {
                 })
             }
             crate::transport::runtime_tools::SEND_SECRET_TO_TERMINAL_TOOL => {
-                let _vault_unlock = self
-                    .ensure_vault_unlocked_for_provider_run(
-                        provider_run,
-                        "runtime_tool_send_secret_to_terminal",
-                    )
-                    .await?;
                 let args = serde_json::from_value::<
                     crate::transport::runtime_tools::SendSecretToTerminalArgs,
                 >(arguments)
@@ -282,6 +277,13 @@ impl KernelRuntimeState {
                     operation: "runtime_tool_send_secret_to_terminal",
                     message: format!("invalid tool arguments: {error}"),
                 })?;
+                service.validate_terminal_secret_input(&args.credential_id)?;
+                let _vault_unlock = self
+                    .ensure_vault_unlocked_for_provider_run(
+                        provider_run,
+                        "runtime_tool_send_secret_to_terminal",
+                    )
+                    .await?;
                 let mut input = service.terminal_secret_input(&args.credential_id)?;
                 if args.append_newline {
                     input.push('\n');
