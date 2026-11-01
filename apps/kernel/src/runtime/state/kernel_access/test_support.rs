@@ -78,6 +78,46 @@ impl KernelRuntimeState {
             .unwrap();
             return;
         }
+        if let Some(handle) = action.strip_prefix("credential-hosts:") {
+            let credential = crate::credential::load_user_credentials()
+                .unwrap()
+                .into_iter()
+                .find(|credential| credential.id == handle)
+                .unwrap();
+            std::fs::write(
+                vault.parent().unwrap().join("credential-hosts"),
+                credential.allowed_hosts.join("\n"),
+            )
+            .unwrap();
+            return;
+        }
+        if let Some(check) = action.strip_prefix("credential-policy:") {
+            let (handle, url) = check.split_once('|').unwrap();
+            let user_config = self.owned.config_projection.snapshot().user_config;
+            let service = crate::secret::RuntimeSecretService::with_vault_config(
+                crate::credential::load_user_credentials().unwrap(),
+                &user_config.credential_vault,
+            )
+            .unwrap();
+            let verdict = match service.prepare_http_request_with_credential(
+                crate::secret::CredentialHttpRequest {
+                    credential_id: handle.into(),
+                    method: "GET".into(),
+                    url: url.into(),
+                    headers: Default::default(),
+                    body_text: None,
+                    body_json: None,
+                    timeout_ms: 1_000,
+                    max_response_bytes: 1_024,
+                },
+            ) {
+                Ok(_) => "ok".to_owned(),
+                Err(DaemonError::LocalTransport { operation, .. }) => operation.to_owned(),
+                Err(other) => other.to_string(),
+            };
+            std::fs::write(vault.parent().unwrap().join("credential-policy"), verdict).unwrap();
+            return;
+        }
         if self.control_credential_access_for_test(action, vault).await {
             return;
         }
