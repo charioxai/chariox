@@ -437,4 +437,7 @@ pub use workspace::*;
 /// Allocated 930 adds agent triggers; `/wait-in` and `/wait-every` become schedule triggers.
 /// Allocated 931 adds trigger deliveries the person can resend and removes the `/wait` schedule shape.
 /// Allocated 932 adds the HTTP trigger source and `InvokeAgentTrigger`/`ReadAgentTriggerTranscript`.
+/// Landing union 932 carries 924 (opaque reimage `providerId`), 925 (hot reload `kernel_reload`), 926 (direct
+/// data channel liveness), 927 (process admission), 928 (outside interaction `question`/`resolution`), 929 (Vault
+/// secret requests) and 930 to 932 (agent triggers).
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 932;
