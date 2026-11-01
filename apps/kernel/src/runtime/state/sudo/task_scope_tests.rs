@@ -1,9 +1,9 @@
-//! MP-08 / MP-10 / MP-11 S02: task consent covers its session, not another one.
+//! MP-08 / MP-10 / MP-11 S02: the task consent covers the kernel; no second passkey.
 use super::tests::{fixture_with_options, popup, PASSKEY};
 use super::*;
 
 #[tokio::test]
-async fn sudo_task_consent_covers_three_operations_but_not_another_session() {
+async fn sudo_task_consent_covers_three_operations_and_another_session_without_another_passkey() {
     let f = fixture_with_options(None, true);
     let state = f.state.clone();
     let request = f.request.clone();
@@ -72,12 +72,6 @@ async fn sudo_task_consent_covers_three_operations_but_not_another_session() {
             session_id: window.session_id.clone(),
         }),
     ] {
-        assert!(
-            f.state
-                .require_sudo_scope(&window.entry_id, &request)
-                .is_err(),
-            "focus must not be advertised as covered task scope"
-        );
         let rejected = tokio::time::timeout(
             Duration::from_millis(500),
             f.router.dispatch_authenticated_runtime_tool_call(
@@ -92,32 +86,22 @@ async fn sudo_task_consent_covers_three_operations_but_not_another_session() {
         assert!(rejected.to_string().contains("focus"), "{rejected}");
         assert!(f.state.passkey_prompts_for("local").is_empty());
     }
+    // A live window covers the whole kernel, so another session needs no
+    // second passkey either.
     let other = crate::session::RuntimeSession::new("outside-task", None, "w", "wt", "m", "k");
     f.state.owned.session_store.write().restore_session(other);
-    let router = f.router.clone();
-    let outside = tokio::spawn(async move {
-        router.dispatch_authenticated_runtime_tool_call(
-            "sudo-fixture-bearer", "chariox_kernel_request",
+    let outside = tokio::time::timeout(
+        Duration::from_millis(500),
+        f.router.dispatch_authenticated_runtime_tool_call(
+            "sudo-fixture-bearer",
+            "chariox_kernel_request",
             serde_json::json!({"request":{"AliasSession":{"session_id":"outside-task","alias":"new-scope"}}}),
-        ).await
-    });
-    let added_scope = popup(&f.state).await;
-    assert!(added_scope.interaction_id.contains(":scope:"));
-    assert!(!outside.is_finished());
-    f.state
-        .answer_terminal_runtime_interaction(
-            &added_scope.session_id,
-            &added_scope.interaction_id,
-            "refuse",
-            None,
-            Some("local"),
-            None,
-            None,
-            Some(KernelConnectionClass::Terminal),
-        )
-        .await
-        .unwrap();
-    assert!(outside.await.unwrap().is_err());
+        ),
+    )
+    .await
+    .expect("another session asked for consent again")
+    .unwrap();
+    assert!(outside.ok, "{outside:?}");
     assert_eq!(
         f.state
             .owned
@@ -125,8 +109,9 @@ async fn sudo_task_consent_covers_three_operations_but_not_another_session() {
             .get_session("outside-task")
             .unwrap()
             .alias(),
-        None
+        Some("new-scope")
     );
+    assert!(f.state.passkey_prompts_for("local").is_empty());
     f.state
         .revoke_sudo(Some("local"), Some(&window.entry_id), "test_complete")
         .unwrap();
@@ -206,43 +191,6 @@ async fn sudo_task_creates_a_same_workspace_session_without_another_passkey() {
         "new session must not inherit elevation"
     );
 
-    for change in [
-        "workspace",
-        "worktree",
-        "owner",
-        "hidden",
-        "metaagent",
-        "worker",
-        "slice",
-        "account",
-    ] {
-        let mut outside = request.clone();
-        match change {
-            "workspace" => outside.workspace_id = "unrelated-workspace".into(),
-            "worktree" => outside.worktree_id = "unrelated-worktree".into(),
-            "owner" => outside.owner_user_id = "another-owner".into(),
-            "hidden" => outside.hidden = true,
-            "metaagent" => outside.metaagent = true,
-            "worker" => outside.kernel_ref = Some("unrelated-worker".into()),
-            "slice" => outside.slice_ref = Some("new".into()),
-            "account" => {
-                outside.agent_defaults = Some(
-                    crate::session::SessionAgentDefaults::new("codex")
-                        .with_account_profile("unrelated-profile"),
-                )
-            }
-            _ => unreachable!(),
-        }
-        assert!(
-            f.state
-                .require_sudo_scope(
-                    &window.entry_id,
-                    &LocalDaemonRequest::CreateSession(outside)
-                )
-                .is_err(),
-            "new resource {change} must not borrow this workspace scope"
-        );
-    }
     f.state
         .revoke_sudo(Some("local"), Some(&window.entry_id), "explicit_revoke")
         .unwrap();
@@ -370,4 +318,47 @@ async fn sudo_request_with_an_empty_session_id_is_rejected_without_an_owner_prom
     let error = reply.unwrap_err().to_string();
     assert!(error.contains("empty session_id"), "{error}");
     assert!(f.state.passkey_prompts_for("local").is_empty());
+}
+
+// MP-08 / MP-10 / MP-11: "/sudo or an existing grant means zero prompts". A
+// live window answers a harmless kernel request without a second passkey.
+#[tokio::test]
+async fn sudo_window_answers_a_read_only_kernel_request_without_another_passkey() {
+    let f = fixture_with_options(None, true);
+    let state = f.state.clone();
+    let request = f.request.clone();
+    let starting = tokio::spawn(async move {
+        state
+            .submit_sudo_prompt(request, "local", "sudo-terminal")
+            .await
+    });
+    let consent = popup(&f.state).await;
+    f.state
+        .answer_terminal_runtime_interaction(
+            &consent.session_id,
+            &consent.interaction_id,
+            "approve",
+            None,
+            Some("local"),
+            Some(&ApprovalPasskey::new(PASSKEY)),
+            None,
+            Some(KernelConnectionClass::Terminal),
+        )
+        .await
+        .unwrap();
+    starting.await.unwrap().unwrap();
+    let reply = tokio::time::timeout(
+        Duration::from_secs(2),
+        f.router.dispatch_authenticated_runtime_tool_call(
+            "sudo-fixture-bearer",
+            "chariox_kernel_request",
+            serde_json::json!({"request":{"GetDaemonHealth":null}}),
+        ),
+    )
+    .await;
+    assert!(
+        f.state.passkey_prompts_for("local").is_empty(),
+        "a live sudo window asked the owner for another passkey"
+    );
+    assert!(reply.is_ok(), "the request waited for an owner approval");
 }

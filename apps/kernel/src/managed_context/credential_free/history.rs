@@ -40,7 +40,7 @@ pub(crate) fn scan_repository(root: &Path) -> Result<Vec<VaultItem>, DaemonError
             }
         }
     }
-    let mut child = Command::new("git")
+    let mut child = crate::process_spawn::command("git")
         .args(["cat-file", "--batch"])
         .current_dir(root)
         .env_clear()

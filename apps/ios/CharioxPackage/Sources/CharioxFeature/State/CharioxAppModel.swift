@@ -109,7 +109,11 @@ public final class CharioxAppModel {
         throw KernelClientError.unexpectedResponse(String(describing: response))
       }
       sessions = nextSessions.sorted { lhs, rhs in
-        (lhs.lastUsedAtMs ?? lhs.createdAtMs) > (rhs.lastUsedAtMs ?? rhs.createdAtMs)
+        let left = lhs.lastActivityAtMs ?? lhs.createdAtMs
+        let right = rhs.lastActivityAtMs ?? rhs.createdAtMs
+        if left != right { return left > right }
+        if lhs.createdAtMs != rhs.createdAtMs { return lhs.createdAtMs < rhs.createdAtMs }
+        return lhs.id < rhs.id
       }
       if let selectedSessionID, sessions.contains(where: { $0.id == selectedSessionID }) {
         return "Loaded \(sessions.count) session\(sessions.count == 1 ? "" : "s")."
@@ -390,10 +394,14 @@ public final class CharioxAppModel {
         .cancelActivePrompt(sessionID: session.id, attachmentID: attachment.id),
         to: try endpointURL()
       )
-      guard case .promptCancelled = response else {
+      switch response {
+      case .promptCancelled:
+        return "Cancellation requested."
+      case .agentTaskUpdated(let taskID):
+        return "Cancelled task \(taskID)."
+      default:
         throw KernelClientError.unexpectedResponse(String(describing: response))
       }
-      return "Cancellation requested."
     }
   }
 

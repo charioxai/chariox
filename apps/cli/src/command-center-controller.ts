@@ -36,6 +36,7 @@ type CommandCenterControllerOptions<TBox = unknown> = {
   getProviderCatalog: () => ProviderCatalog
   getProviderCommandCatalogs: () => ProviderCommandCatalogs
   getCurrentProvider: () => BackendProviderId
+  getProviderAccountCopyOffers?: () => readonly import("@chariox/kernel-client").ProviderAccountCopyOffer[]
   getProviderAccounts?: () => readonly ProviderAccountProfile[]
   getCurrentAccount?: () => string
   getFocusedProvider: () => BackendProviderId | null
@@ -98,6 +99,7 @@ export function createCommandCenterController<TBox = unknown>(
       commandTree: options.getCommandTree(),
       providerCommandCatalogs: options.getProviderCommandCatalogs(),
       currentProvider: options.getCurrentProvider(),
+      providerAccountCopyOffers: options.getProviderAccountCopyOffers?.() ?? [],
       providerAccounts: options.getProviderAccounts?.() ?? [],
       currentAccount: options.getCurrentAccount?.() ?? "default",
       focusedProvider: options.getFocusedProvider(),

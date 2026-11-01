@@ -158,3 +158,86 @@ async fn mp10_resource_inventory_reaches_peer_without_waiting_for_active_input()
     }
     drop(route);
 }
+
+/// A paused Room display captures nothing, yet its home lease, worker lease and producer binding expire after 60 s:
+/// each park must reach the worker.
+#[tokio::test]
+async fn mp08_a_parked_room_display_renews_its_leases_through_the_worker() {
+    let (room, slice, sink) = fixture().await;
+    let runtime = &room.runtime;
+    let attachment = crate::app::KernelSessionService::new(&mut *runtime.app.lock().await)
+        .attach(crate::attachment::AttachRequest::new(
+            &room.session_id,
+            "park-viewer",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .unwrap()
+        .id()
+        .to_owned();
+    let viewer = runtime.owned.config_projection.snapshot().relay_public_key;
+    let caller = KernelCaller::default();
+    let binding = RoomDisplayBinding {
+        generation: 1,
+        subscription_id: "park-admission".into(),
+        codec: "h264".into(),
+        bitrate: 8_000_000,
+        device_scale_factor: 1,
+        source: crate::slice::RoomDisplaySource {
+            kind: "desktop".into(),
+            surface_id: "surface".into(),
+            generation: "source-1".into(),
+            width: 1280,
+            height: 800,
+        },
+        resumed: false,
+    };
+    runtime
+        .owned
+        .room_display_leases
+        .home
+        .lock()
+        .unwrap()
+        .insert(
+            binding.subscription_id.clone(),
+            Arc::new(Mutex::new(RoomDisplayLease {
+                caller: caller.clone(),
+                session_id: room.session_id.clone(),
+                attachment_id: attachment,
+                slice_id: slice,
+                viewer_public_key: viewer.clone(),
+                binding,
+                worker_public_key: viewer,
+                used: Instant::now(),
+            })),
+        );
+    let command = crate::runtime::command::KernelCommand::from_local_request_with_caller(
+        "park-room-display",
+        crate::runtime::command::KernelCommandSource::LocalCli,
+        caller,
+        None,
+        None,
+        &crate::local::LocalDaemonRequest::ListPromptSettings(
+            crate::local::ListPromptSettingsRequest,
+        ),
+    );
+    let park = |parked| {
+        runtime.kernel_browser_display_request(
+            &command,
+            crate::runtime::state::kernel_browser_runtime::KernelBrowserDisplayRequest::Park {
+                subscription_id: "park-admission".into(),
+                generation: 1,
+                parked,
+                watch: true,
+            },
+        )
+    };
+    let unparked = park(false).await.unwrap();
+    assert_eq!(unparked["parked"], false, "unparking needs no worker call");
+    let parking = park(true);
+    tokio::pin!(parking);
+    tokio::select! {
+        result = sink.accept() => {drop(result.unwrap());},
+        result = &mut parking => panic!("MP-08: a parked Room display must reach the worker, got {result:?}"),
+        _ = tokio::time::sleep(Duration::from_millis(500)) => panic!("MP-08: a parked Room display never reached the worker"),
+    }
+}

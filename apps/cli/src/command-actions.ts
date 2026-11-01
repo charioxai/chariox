@@ -9,12 +9,10 @@ import type {
   TranscriptEntry,
 } from "./cli-types.js"
 import {
-  agentTriggersMinimumProtocolVersion,
   createAgentScheduleTriggerRequest,
   deleteAgentTriggerRequest,
   updateAgentTriggerRequest,
   resendTriggerDeliveryRequest,
-  triggerDeliveryMinimumProtocolVersion,
 } from "@chariox/kernel-client/ipc-requests"
 import { agentTriggersForAgent, triggerPromptOriginLabel, unconfirmedTriggerDeliveriesForAgent } from "@chariox/kernel-client/agent-trigger-state"
 import { TRIGGER_USAGE, type ParsedSlashCommand } from "./commands.js"
@@ -150,8 +148,6 @@ type CommandActionDeps =
   currentProviderId: () => string
   submitGoalPrompt?: (text: string, targetAgentId: string) => Promise<void>
   focusedAgentId: () => string | null
-  supportsAgentTriggers?: () => Promise<boolean>
-  supportsTriggerDeliveryResend?: () => Promise<boolean>
   /** Sends a trigger change and returns the session it answers with. */
   sendAgentTriggerRequest?: (request: Record<string, unknown>) => Promise<{ session: RuntimeSession }>
   runWorkflowRegistryEntry?: (
@@ -502,7 +498,8 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     if (control && !control[2]?.startsWith("goal:")) {
       const task = deps.sessionState().agent_tasks?.find((t) => t.agent_id === agent.id && t.goal && !["done", "cancelled"].includes(t.state))
       if (!task?.goal) { deps.flashFooter("no active goal on the focused agent", "error"); return }
-      raw = `/goal ${control[1]} ${task.goal.id} ${task.revision}${control[2] ? ` ${control[2]}` : ""}`
+      const prefix = /^\/sudo\s+\/goal\s/u.test(command.raw) ? "/sudo /goal" : "/goal"
+      raw = `${prefix} ${control[1]} ${task.goal.id} ${task.revision}${control[2] ? ` ${control[2]}` : ""}`
     }
     await deps.submitGoalPrompt(raw, agent.id)
   }
@@ -525,14 +522,6 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
       return
     }
     const sessionId = deps.sessionState().id
-    if (!(await deps.supportsAgentTriggers?.() ?? false)) {
-      deps.flashFooter(`kernel too old for agent triggers (requires protocol ${agentTriggersMinimumProtocolVersion}); upgrade the kernel`, "error")
-      return
-    }
-    if (action.type === "resend" && !(await deps.supportsTriggerDeliveryResend?.() ?? false)) {
-      deps.flashFooter(`kernel too old for trigger resend (requires protocol ${triggerDeliveryMinimumProtocolVersion}); upgrade the kernel`, "error")
-      return
-    }
     if (action.type === "list") {
       const deliveries = unconfirmedTriggerDeliveriesForAgent(deps.sessionState(), agentId)
       const triggers = agentTriggersForAgent(deps.sessionState(), agentId)

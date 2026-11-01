@@ -280,6 +280,7 @@ fn local_daemon_protocol_turn_undo_and_agent_fork_shape_is_versioned() {
     ))
     .expect("session snapshot should encode");
     session_value["created_at_ms"] = serde_json::json!(1_000);
+    session_value["last_activity_at_ms"] = serde_json::json!(1_000);
     session_value["last_used_at_ms"] = serde_json::json!(1_000);
     let fork_response = LocalDaemonResponse::AgentForked {
         source_agent_id: "agent-1".to_string(),
@@ -311,7 +312,7 @@ fn local_daemon_protocol_turn_undo_and_agent_fork_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "de74e3acd80c5c7547c8450874c1728015ba6253603c11c5adb38f916be860b3"
+        "c1141e1223e56c72ff6b64b7eff22515adb8bb536bf2298746f4c5e10cee23f6"
     );
 }
 

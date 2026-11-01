@@ -444,10 +444,9 @@ async fn catalog_row(
                 crate::secret::clear_vault_secret_process_cache().unwrap();
             }
             AnswerVault => {
-                for (title, choice, reply) in [
-                    ("Unlock Chariox Vault", "passphrase", Some(PASSKEY)),
-                    ("Choose Vault Unlock Duration", "unlock_operation", None),
-                ] {
+                for (title, choice, reply) in
+                    [("Unlock Chariox Vault", "passphrase", Some(PASSKEY))]
+                {
                     let open = vault_popup(&f, &agent).await;
                     assert_eq!(open.title(), Some(title), "{name}");
                     f.state
@@ -567,10 +566,6 @@ async fn catalog_row(
             assert!(snapshot.sudo_windows().is_empty(), "{name}");
             assert!(
                 f.state.owned.sudo_timers.lock().unwrap().is_empty(),
-                "{name}"
-            );
-            assert!(
-                f.state.owned.sudo_scopes.lock().unwrap().is_empty(),
                 "{name}"
             );
         }

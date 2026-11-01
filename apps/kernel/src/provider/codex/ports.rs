@@ -63,6 +63,26 @@ fn reserve_unused_port_from_range(
     env_name: &'static str,
     operation: &'static str,
 ) -> Result<Option<u16>, DaemonError> {
+    let Some((start, end)) = configured_port_range(env_name)? else {
+        return Ok(None);
+    };
+    for port in start..=end {
+        if TcpListener::bind(("127.0.0.1", port)).is_ok() {
+            return Ok(Some(port));
+        }
+    }
+    Err(DaemonError::LocalTransport {
+        operation,
+        message: format!("no available port in {env_name}={start}-{end}"),
+    })
+}
+
+pub(crate) fn configured_session_capacity() -> Result<Option<usize>, DaemonError> {
+    Ok(configured_port_range(CODEX_PORT_RANGE_OVERRIDE)?
+        .map(|(start, end)| usize::from(end) - usize::from(start) + 1))
+}
+
+fn configured_port_range(env_name: &'static str) -> Result<Option<(u16, u16)>, DaemonError> {
     let Some(value) = env::var_os(env_name) else {
         return Ok(None);
     };
@@ -89,13 +109,5 @@ fn reserve_unused_port_from_range(
             message: "range start must be less than or equal to range end",
         });
     }
-    for port in start..=end {
-        if TcpListener::bind(("127.0.0.1", port)).is_ok() {
-            return Ok(Some(port));
-        }
-    }
-    Err(DaemonError::LocalTransport {
-        operation,
-        message: format!("no available port in {env_name}={value}"),
-    })
+    Ok(Some((start, end)))
 }

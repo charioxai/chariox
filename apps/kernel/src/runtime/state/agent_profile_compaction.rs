@@ -122,6 +122,10 @@ impl KernelRuntimeState {
                             run.id(),
                             "failed_window_downshift_compaction",
                         )?;
+                    if matches!(outcome, crate::agent::ProviderResumeClearOutcome::Required) {
+                        return Err(crate::provider::NativeCheckpointFailure::ResumeFailed
+                            .into_daemon_error());
+                    }
                     if matches!(
                         outcome,
                         crate::agent::ProviderResumeClearOutcome::Superseded { .. }

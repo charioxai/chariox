@@ -34,7 +34,6 @@ test("/trigger creates, changes, removes and lists the focused agent's triggers"
   const triggerSession = makeSession({ agent_triggers: [trigger] })
   const handlers = createCommandActionHandlers(makeCommandDeps({
     sessionState: () => triggerSession,
-    supportsAgentTriggers: async () => true,
     sendAgentTriggerRequest: async (request: Record<string, unknown>) => {
       calls.push(JSON.stringify(request))
       return { session: triggerSession }
@@ -78,7 +77,7 @@ test("/trigger list retains unconfirmed firings after their once trigger retired
     { ...delivery, prompt_id: "other-agent", agent_id: "agent-2" },
   ] })
   const handlers = createCommandActionHandlers(makeCommandDeps({
-    sessionState: () => session, supportsAgentTriggers: async () => true,
+    sessionState: () => session,
     appendNotice: (message: string) => notices.push(message),
   }))
   const command = parseSlashCommand("/trigger list")!
@@ -86,28 +85,6 @@ test("/trigger list retains unconfirmed firings after their once trigger retired
   await handlers.handleTriggerCommand(command as Extract<typeof command, { kind: "trigger" }>)
   assert.match(notices.join("\n"), /Schedule.*Not confirmed.*steer.*\/trigger resend firing-1/)
   assert.doesNotMatch(notices.join("\n"), /already-resent|other-agent|No triggers/)
-})
-
-test("kernels without agent triggers refuse /wait and /trigger with an upgrade notice", async () => {
-  const calls: Record<string, unknown>[] = []
-  const errors: string[] = []
-  const handlers = createCommandActionHandlers(makeCommandDeps({
-    supportsAgentTriggers: async () => false,
-    sendAgentTriggerRequest: async (request: Record<string, unknown>) => {
-      calls.push(request)
-      return { session: makeSession() }
-    },
-    flashFooter: (message: string, tone: string) => { if (tone === "error") errors.push(message) },
-  }))
-  const commands = ["/wait-in 1 Ping", "/wait-every 0.5 Check", "/trigger", "/trigger every 1 Ping", "/trigger in 1 --steer Ping", "/trigger off t1", "/trigger remove t1"]
-  for (const raw of commands) {
-    const command = parseSlashCommand(raw)
-    assert.equal(command?.kind, "trigger")
-    await handlers.handleTriggerCommand(command as Extract<typeof command, { kind: "trigger" }>)
-  }
-  assert.equal(calls.length, 0, "no request reaches a kernel without agent triggers")
-  assert.equal(errors.length, commands.length)
-  assert.ok(errors.every((message) => /kernel.*900.*upgrade/i.test(message)))
 })
 
 test("formatAgentListSummary renders aliases and pluralization", () => {
@@ -392,4 +369,24 @@ test("MP-08 / MP-10 / MP-11 /env project shows saved decisions and Adjust opens 
   assert.match(notices[0]!, /Bring notes.md — Project notes/)
   await handlers.handleEnvCommand({kind: "env", raw: "/env project adjust", args: ["project", "adjust"]})
   assert.deepEqual(requests, [{GetProjectEnvironmentManifest: {projectId: "project-1", agentId: "agent-1"}}, {AdjustProjectEnvironment: {sessionId: "session-1", agentId: "agent-1"}}])
+})
+
+// MP-08 / MP-09 / MP-10 / MP-11 A12: retain sudo and the displayed goal revision.
+test("nested sudo goal controls preserve elevation through the goal submission path", async () => {
+  const session = makeSession()
+  session.agent_tasks = [{ task_id: "work", agent_id: "agent-1", state: "blocked", revision: 4,
+    goal: { id: "goal:work" } }] as unknown as NonNullable<RuntimeSession["agent_tasks"]>
+  const submitted: Array<[string, string]> = []
+  const handlers = createCommandActionHandlers(makeCommandDeps({
+    sessionState: () => session, focusedAgentId: () => "agent-1",
+    submitGoalPrompt: async (raw: string, agent: string) => { submitted.push([raw, agent]) },
+  }))
+  for (const prompt of ["resume", "edit Updated objective", "cancel"]) {
+    await handlers.handleGoalCommand({ kind: "goal", raw: `/sudo /goal ${prompt}`, prompt })
+  }
+  assert.deepEqual(submitted, [
+    ["/sudo /goal resume goal:work 4", "agent-1"],
+    ["/sudo /goal edit goal:work 4 Updated objective", "agent-1"],
+    ["/sudo /goal cancel goal:work 4", "agent-1"],
+  ])
 })

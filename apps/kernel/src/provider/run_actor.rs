@@ -14,6 +14,8 @@ mod finished_jobs;
 mod in_flight;
 mod native_interaction;
 mod operation_lanes;
+#[cfg(test)]
+mod refusal_tests;
 mod runtime_slots;
 mod worker;
 use finished_jobs::push_finished_output_poll;

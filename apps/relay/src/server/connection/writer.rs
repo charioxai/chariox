@@ -1,13 +1,19 @@
 //! MP-08 / MP-10 / MP-11: bounded opaque multiplexing (532 / peer 140).
 use crate::frame_transport::{
-    TransportFrame, CHUNK_BYTES, MAX_ASSEMBLY_BYTES, MAX_MESSAGE_BYTES, MAX_TRANSFERS,
-    PEER_RECEIPT_FRAMES, SMALL_RESERVE_BYTES, WINDOW_BYTES,
+    binary_chunk, TransportFrame, BINARY_CHUNK_PAYLOAD_BYTES, CHUNK_BYTES, MAX_ASSEMBLY_BYTES,
+    MAX_MESSAGE_BYTES, MAX_TRANSFERS, PEER_RECEIPT_FRAMES, SMALL_RESERVE_BYTES, WINDOW_BYTES,
 };
+use crate::meter::{ConnectionMeter, Direction, CONTROL_SCOPE, DISPLAY_TUNNEL_SCOPE};
 use futures_util::{Sink, SinkExt};
 use std::collections::VecDeque;
+use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
 
+enum Stream {
+    Subscription(String),
+    DisplayTunnel,
+}
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Lane {
     Reply,
@@ -17,35 +23,66 @@ enum Lane {
 }
 /// Display events keep one FIFO per subscription (the stream), not one for all
 /// streams, so a small band frame is never queued behind another stream's bulk.
-fn lane(message: &Message, display_route: &impl Fn(&str) -> bool) -> (Lane, Option<String>) {
+/// The lane, the per-stream queue key (display events only) and the
+/// stream a frame belongs to (any scope, for byte metering).
+fn lane(message: &Message, usage: &WriterUsage) -> (Lane, Option<String>, Option<Stream>) {
     if let Message::Binary(bytes) = message {
+        if matches!(
+            crate::binary_response::decode(bytes),
+            Ok((
+                crate::binary_response::ResponseHeader::ClientResponse { .. },
+                _
+            ))
+        ) {
+            return (Lane::Reply, None, None);
+        }
         return match crate::binary_event::decode(bytes) {
-            Ok((header, _))
-                if header.kind == "client_event" && display_route(&header.subscription_id) =>
-            {
-                (Lane::Event, Some(header.subscription_id))
+            Ok((header, _)) if header.kind == "client_event" => {
+                let id = header.subscription_id;
+                let key = usage.is_display(&id).then(|| id.clone());
+                (
+                    if key.is_some() {
+                        Lane::Event
+                    } else {
+                        Lane::Ordered
+                    },
+                    key,
+                    Some(Stream::Subscription(id)),
+                )
             }
-            _ => (Lane::Ordered, None),
+            _ => (Lane::Ordered, None, None),
         };
     }
     let Message::Text(text) = message else {
-        return (Lane::Ordered, None);
+        return (Lane::Ordered, None, None);
     };
     let value: serde_json::Value = match serde_json::from_str(text) {
         Ok(v) => v,
-        Err(_) => return (Lane::Ordered, None),
+        Err(_) => return (Lane::Ordered, None, None),
     };
     match value.get("kind").and_then(|v| v.as_str()).unwrap_or("") {
         "client_response"
         | "client_metadata_response"
         | "daemon_peer_response"
-        | "client_connected" => (Lane::Reply, None),
+        | "client_connected" => (Lane::Reply, None, None),
         "client_event" => match value.get("subscription_id").and_then(|v| v.as_str()) {
-            Some(id) if display_route(id) => (Lane::Event, Some(id.to_string())),
-            _ => (Lane::Ordered, None),
+            Some(id) if usage.is_display(id) => (
+                Lane::Event,
+                Some(id.to_string()),
+                Some(Stream::Subscription(id.to_string())),
+            ),
+            Some(id) => (
+                Lane::Ordered,
+                None,
+                Some(Stream::Subscription(id.to_string())),
+            ),
+            None => (Lane::Ordered, None, None),
         },
-        kind if kind.ends_with("request") => (Lane::Request, None),
-        _ => (Lane::Ordered, None),
+        kind if crate::meter::is_display_tunnel_data_kind(kind) => {
+            (Lane::Ordered, None, Some(Stream::DisplayTunnel))
+        }
+        kind if kind.ends_with("request") => (Lane::Request, None, None),
+        _ => (Lane::Ordered, None, None),
     }
 }
 fn control(message: &Message) -> bool {
@@ -57,6 +94,7 @@ fn control(message: &Message) -> bool {
 }
 struct Transfer {
     id: u32,
+    scope: Arc<str>,
     key: Option<String>,
     small: bool,
     text: String,
@@ -67,7 +105,25 @@ struct Transfer {
 }
 impl Transfer {
     fn next_chunk(&self) -> Option<(Message, usize)> {
-        if self.binary.is_some() {
+        if let Some(Message::Binary(binary)) = &self.binary {
+            if binary.len() > CHUNK_BYTES {
+                if self.offset == binary.len() {
+                    return None;
+                }
+                let end = (self.offset + BINARY_CHUNK_PAYLOAD_BYTES).min(binary.len());
+                return Some((
+                    Message::Binary(
+                        binary_chunk(
+                            self.id,
+                            self.offset,
+                            binary.len(),
+                            &binary[self.offset..end],
+                        )
+                        .into(),
+                    ),
+                    end,
+                ));
+            }
             let checkpoint = serde_json::to_string(&TransportFrame::TransportChunk {
                 transfer_id: self.id,
                 offset: 0,
@@ -102,7 +158,10 @@ impl Transfer {
         // MP-08/MP-10/MP-11: assembly/lane occupancy ends when all bytes are
         // written in FIFO order, not a WAN receipt later. WireCredit retains
         // every unacknowledged byte independently, including binary checkpoints.
-        self.binary.is_none() && self.offset == self.text.len()
+        match &self.binary {
+            Some(binary) => binary.len() > CHUNK_BYTES && self.offset == binary.len(),
+            None => self.offset == self.text.len(),
+        }
     }
 }
 // Receipts follow wire order, including across transfer IDs. A later transfer's
@@ -163,11 +222,27 @@ async fn upgrade<S: Sink<Message> + Unpin>(writer: &mut S) {
     .await;
 }
 fn receiver_message(message: Message, binary_events: bool) -> Option<Message> {
-    // Large binary events use the existing encrypted JSON envelope so every wire
-    // frame is bounded without another binary codec. Small binary stays binary.
+    if binary_events {
+        if let Message::Text(text) = &message {
+            if text.starts_with("{\"kind\":\"client_response\"") {
+                if let Ok(envelope) = serde_json::from_str::<crate::protocol::RelayEnvelope>(text) {
+                    if let Ok(Some(bytes)) = crate::binary_response::from_envelope(&envelope) {
+                        return Some(Message::Binary(bytes.into()));
+                    }
+                }
+            }
+        }
+    }
+
+    // Negotiated events keep their ciphertext opaque at every size. The bounded
+    // transfer chunks them below; only non-binary clients need the JSON envelope.
     if let Message::Binary(bytes) = &message {
-        if !binary_events || bytes.len() > CHUNK_BYTES {
-            let envelope = crate::binary_event::legacy_client_envelope(bytes).ok()?;
+        if !binary_events {
+            let envelope = if bytes.starts_with(b"CXR2") {
+                crate::binary_response::into_envelope(bytes).ok()?
+            } else {
+                crate::binary_event::legacy_client_envelope(bytes).ok()?
+            };
             return serde_json::to_string(&envelope)
                 .ok()
                 .map(|s| Message::Text(s.into()));
@@ -175,15 +250,67 @@ fn receiver_message(message: Message, binary_events: bool) -> Option<Message> {
     }
     Some(message)
 }
+/// Counts what the writer puts on the socket, by the scope of the stream the
+/// frame belongs to (control when it belongs to none). Chunk frames count as
+/// sent, so the totals are the payload bytes the peer receives.
+type ScopeOf = Box<dyn Fn(&str) -> Option<Arc<str>> + Send>;
+pub(super) struct WriterUsage {
+    meter: ConnectionMeter,
+    /// The scope of this socket's own subscription, if the id is one.
+    scope_of: ScopeOf,
+}
+impl WriterUsage {
+    pub(super) fn new(
+        meter: ConnectionMeter,
+        scope_of: impl Fn(&str) -> Option<Arc<str>> + Send + 'static,
+    ) -> Self {
+        Self {
+            meter,
+            scope_of: Box::new(scope_of),
+        }
+    }
+    /// Display subscriptions keep their own queue per stream.
+    fn is_display(&self, subscription_id: &str) -> bool {
+        (self.scope_of)(subscription_id)
+            .is_some_and(|scope| crate::frame_transport::is_display_scope(Some(&scope)))
+    }
+    /// A writer without a meter whose every subscription is (or is not) a display one.
+    #[cfg(test)]
+    fn fixture(display: bool) -> Self {
+        Self::new(ConnectionMeter::detached(), move |_| {
+            display.then(|| Arc::from(crate::frame_transport::DISPLAY_EVENT_SCOPE))
+        })
+    }
+    fn scope(&self, stream: Option<&Stream>) -> Arc<str> {
+        match stream {
+            Some(Stream::Subscription(id)) => (self.scope_of)(id),
+            Some(Stream::DisplayTunnel) => Some(Arc::from(DISPLAY_TUNNEL_SCOPE)),
+            None => None,
+        }
+        .unwrap_or_else(|| Arc::from(CONTROL_SCOPE))
+    }
+    fn sent(&self, scope: &str, message: &Message) {
+        if matches!(message, Message::Text(_) | Message::Binary(_)) {
+            self.meter.record(Direction::Out, scope, message.len());
+        }
+    }
+}
 struct Queued {
     message: Message,
     lane: Lane,
     key: Option<String>,
+    scope: Arc<str>,
 }
 impl Queued {
-    fn new(message: Message, display_route: &impl Fn(&str) -> bool) -> Self {
-        let (lane, key) = lane(&message, display_route);
-        Self { message, lane, key }
+    fn new(message: Message, usage: &WriterUsage) -> Self {
+        let (lane, key, stream) = lane(&message, usage);
+        let scope = usage.scope(stream.as_ref());
+        Self {
+            message,
+            lane,
+            key,
+            scope,
+        }
     }
     // A single-chunk message: interactive frames, never bulk.
     fn small(&self) -> bool {
@@ -222,18 +349,17 @@ fn leaves_control_slots(lane: Lane, active: &VecDeque<Transfer>) -> bool {
 }
 // Consecutive small sends allowed while a bulk transfer waits for its turn.
 const SMALL_STREAK: usize = 4;
-pub(super) async fn run_writer<S, F>(
+pub(super) async fn run_writer<S>(
     mut writer: S,
     mut outgoing: mpsc::Receiver<Message>,
     chunks: bool,
     binary_events: bool,
     mut receipts: mpsc::Receiver<(u32, u32)>,
     mut controls: mpsc::Receiver<Message>,
-    display_route: F,
+    usage: WriterUsage,
 ) -> &'static str
 where
     S: Sink<Message> + Unpin,
-    F: Fn(&str) -> bool,
 {
     let capacity = outgoing.max_capacity();
     let mut pending = VecDeque::new();
@@ -260,7 +386,7 @@ where
         while pending.len() < capacity {
             match outgoing.try_recv() {
                 Ok(message) => match receiver_message(message, binary_events) {
-                    Some(m) => pending.push_back(Queued::new(m, &display_route)),
+                    Some(m) => pending.push_back(Queued::new(m, &usage)),
                     None => return "bad_outgoing_message",
                 },
                 Err(mpsc::error::TryRecvError::Disconnected) => {
@@ -285,13 +411,17 @@ where
                     upgrade(&mut writer).await;
                     return "unchunked_oversize";
                 }
+                usage.sent(&queued.scope, &message);
                 if !write(&mut writer, message).await {
                     return "write_failed";
                 }
                 continue;
             }
         } else if active.len() < MAX_TRANSFERS {
-            let reserved: usize = active.iter().map(|t| t.text.len()).sum();
+            let reserved: usize = active
+                .iter()
+                .map(|t| t.binary.as_ref().map_or(t.text.len(), Message::len))
+                .sum();
             // Start small messages first, otherwise in enqueue order; replies and
             // the event/request lanes can pass blocked transfers but never
             // reorder members of their FIFO. A barrier ends the small-first scan.
@@ -311,6 +441,7 @@ where
                 let queued = pending.remove(index).unwrap();
                 let class = queued.lane;
                 let key = queued.key.clone();
+                let scope = queued.scope.clone();
                 let small = queued.small();
                 let message = queued.message;
                 if message.len() > MAX_MESSAGE_BYTES {
@@ -330,6 +461,7 @@ where
                 };
                 let transfer = Transfer {
                     id,
+                    scope,
                     key,
                     small,
                     text,
@@ -365,7 +497,16 @@ where
                     transfer.id = id;
                 }
                 if let Some((message, end)) = transfer.next_chunk() {
-                    let bytes = message.len() + transfer.binary.as_ref().map_or(0, Message::len);
+                    let small_binary = transfer
+                        .binary
+                        .as_ref()
+                        .is_some_and(|b| b.len() <= CHUNK_BYTES);
+                    let bytes = message.len()
+                        + if small_binary {
+                            transfer.binary.as_ref().map_or(0, Message::len)
+                        } else {
+                            0
+                        };
                     // While bulk is active, small traffic may hold only its reserve,
                     // so it can never keep the window above what a bulk chunk needs.
                     let fits = credit.pending.len() < PEER_RECEIPT_FRAMES
@@ -390,13 +531,20 @@ where
                         small_streak = if transfer.small { small_streak + 1 } else { 0 };
                         transfer.offset = end;
                         transfer.waiting += 1;
-                        let binary = transfer.binary.take();
+                        let binary = if small_binary {
+                            transfer.binary.take()
+                        } else {
+                            None
+                        };
+                        let scope = transfer.scope.clone();
                         active.push_back(transfer);
                         if let Some(binary) = binary {
+                            usage.sent(&scope, &binary);
                             if !write(&mut writer, binary).await {
                                 return "write_failed";
                             }
                         }
+                        usage.sent(&scope, &message);
                         if !write(&mut writer, message).await {
                             return "write_failed";
                         }
@@ -433,7 +581,7 @@ where
                 if !credit.receipt(id,offset,&mut active){return "bad_receipt";}
             }
             message=outgoing.recv(),if open && pending.len()<capacity=>{
-                match message {Some(message)=>match receiver_message(message,binary_events){Some(m)=>pending.push_back(Queued::new(m, &display_route)),None=>return "bad_outgoing_message"},None=>open=false}
+                match message {Some(message)=>match receiver_message(message,binary_events){Some(m)=>pending.push_back(Queued::new(m, &usage)),None=>return "bad_outgoing_message"},None=>open=false}
             }
         }
     }
@@ -473,7 +621,15 @@ mod tests {
         let (_ct, cr) = mpsc::channel(8);
         let catalog=serde_json::json!({"kind":"client_response","request_id":"catalog","payload":"x".repeat(3_000_000)}).to_string();
         tx.send(Message::Text(catalog.into())).await.unwrap();
-        let task = tokio::spawn(run_writer(socket, rx, true, true, ack_rx, cr, |_| true));
+        let task = tokio::spawn(run_writer(
+            socket,
+            rx,
+            true,
+            true,
+            ack_rx,
+            cr,
+            WriterUsage::fixture(true),
+        ));
         let first = client.next().await.unwrap().unwrap();
         let medium=serde_json::json!({"kind":"client_response","request_id":"mirror","payload":"y".repeat(200_000)}).to_string();
         let event = |id, payload| {
@@ -551,6 +707,7 @@ mod tests {
         let mut active = VecDeque::from([
             Transfer {
                 id: 1,
+                scope: CONTROL_SCOPE.into(),
                 key: None,
                 small: true,
                 text: "x".into(),
@@ -561,6 +718,7 @@ mod tests {
             },
             Transfer {
                 id: 2,
+                scope: CONTROL_SCOPE.into(),
                 key: None,
                 small: true,
                 text: "y".into(),
@@ -602,7 +760,15 @@ mod tests {
             let bytes = crate::binary_event::encode(&header, &[7; 4096]).unwrap();
             tx.send(Message::Binary(bytes.into())).await.unwrap();
         }
-        let task = tokio::spawn(run_writer(socket, rx, true, true, ack_rx, cr, |_| true));
+        let task = tokio::spawn(run_writer(
+            socket,
+            rx,
+            true,
+            true,
+            ack_rx,
+            cr,
+            WriterUsage::fixture(true),
+        ));
         let mut wire = 0;
         let mut ids = Vec::new();
         let mut receiver = crate::frame_transport::FrameReceiver::default();
@@ -649,7 +815,15 @@ mod tests {
         for _ in 0..4000 {
             tx.send(Message::Text("{}".into())).await.unwrap();
         }
-        let task = tokio::spawn(run_writer(socket, rx, true, false, ack_rx, cr, |_| true));
+        let task = tokio::spawn(run_writer(
+            socket,
+            rx,
+            true,
+            false,
+            ack_rx,
+            cr,
+            WriterUsage::fixture(true),
+        ));
         let mut frames = 0;
         while let Ok(Some(Ok(_))) =
             tokio::time::timeout(Duration::from_millis(300), client.next()).await
@@ -681,7 +855,15 @@ mod tests {
         let (_ct, cr) = mpsc::channel(8);
         let reply = serde_json::json!({"kind":"client_response","request_id":"mirror","payload":"y".repeat(480_000)}).to_string();
         tx.send(Message::Text(reply.clone().into())).await.unwrap();
-        let task = tokio::spawn(run_writer(sink, rx, true, true, ack_rx, cr, |_| true));
+        let task = tokio::spawn(run_writer(
+            sink,
+            rx,
+            true,
+            true,
+            ack_rx,
+            cr,
+            WriterUsage::fixture(true),
+        ));
         let mut receiver = crate::frame_transport::FrameReceiver::default();
         let (mut flights, mut done) = (0, None);
         loop {
@@ -731,7 +913,15 @@ mod tests {
                 .await
                 .unwrap();
         }
-        let task = tokio::spawn(run_writer(socket, rx, true, true, ack_rx, cr, |_| true));
+        let task = tokio::spawn(run_writer(
+            socket,
+            rx,
+            true,
+            true,
+            ack_rx,
+            cr,
+            WriterUsage::fixture(true),
+        ));
         let mut receiver = crate::frame_transport::FrameReceiver::default();
         let mut ids = Vec::new();
         while let Ok(Some(Ok(Message::Text(text)))) =
@@ -791,7 +981,15 @@ mod tests {
             .await
             .unwrap();
         drop(tx);
-        let task = tokio::spawn(run_writer(socket, rx, true, true, ar, cr, |_| true));
+        let task = tokio::spawn(run_writer(
+            socket,
+            rx,
+            true,
+            true,
+            ar,
+            cr,
+            WriterUsage::fixture(true),
+        ));
         let mut total = 0;
         let mut receipts = Vec::new();
         let mut receiver = crate::frame_transport::FrameReceiver::default();
@@ -858,7 +1056,15 @@ mod tests {
         tx.send(Message::Text("x".repeat(CHUNK_BYTES + 1).into()))
             .await
             .unwrap();
-        let task = tokio::spawn(run_writer(socket, rx, false, false, ar, cr, |_| false));
+        let task = tokio::spawn(run_writer(
+            socket,
+            rx,
+            false,
+            false,
+            ar,
+            cr,
+            WriterUsage::fixture(false),
+        ));
         assert!(
             matches!(client.next().await.unwrap().unwrap(),Message::Text(t) if t.contains("requires an updated client"))
         );
@@ -876,7 +1082,15 @@ mod tests {
         let (at, ar) = mpsc::channel(8);
         let (_ct, cr) = mpsc::channel(8);
         tx.send(Message::Text(serde_json::json!({"kind":"client_response","request_id":"snapshot","payload":"x".repeat(200000)}).to_string().into())).await.unwrap();
-        let task = tokio::spawn(run_writer(socket, rx, true, false, ar, cr, |_| false));
+        let task = tokio::spawn(run_writer(
+            socket,
+            rx,
+            true,
+            false,
+            ar,
+            cr,
+            WriterUsage::fixture(false),
+        ));
         let mut message = client.next().await.unwrap().unwrap();
         tx.send(Message::Text(
             r#"{"kind":"client_event","subscription_id":"terminal","event_id":1,"payload":"tail"}"#
@@ -945,7 +1159,15 @@ mod tests {
             .await
             .unwrap();
         drop(tx);
-        let task = tokio::spawn(run_writer(socket, rx, true, false, ar, cr, |_| true));
+        let task = tokio::spawn(run_writer(
+            socket,
+            rx,
+            true,
+            false,
+            ar,
+            cr,
+            WriterUsage::fixture(true),
+        ));
         let mut receiver = crate::frame_transport::FrameReceiver::default();
         let mut done = Vec::new();
         while done.len() < 4 {
@@ -999,7 +1221,15 @@ mod tests {
         tx.send(display_event("page", 1, "p".repeat(400_000)))
             .await
             .unwrap();
-        let task = tokio::spawn(run_writer(socket, rx, true, false, ar, cr, |_| true));
+        let task = tokio::spawn(run_writer(
+            socket,
+            rx,
+            true,
+            false,
+            ar,
+            cr,
+            WriterUsage::fixture(true),
+        ));
         let mut wire = 0;
         while let Ok(Some(Ok(message))) =
             tokio::time::timeout(Duration::from_millis(150), client.next()).await
@@ -1043,7 +1273,15 @@ mod tests {
         tx.send(Message::Text(reply.to_string().into()))
             .await
             .unwrap();
-        let task = tokio::spawn(run_writer(socket, rx, true, false, ar, cr, |_| true));
+        let task = tokio::spawn(run_writer(
+            socket,
+            rx,
+            true,
+            false,
+            ar,
+            cr,
+            WriterUsage::fixture(true),
+        ));
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let flag = stop.clone();
         let producer = tokio::spawn(async move {
@@ -1118,7 +1356,15 @@ mod tests {
                 .await
                 .unwrap();
         }
-        let task = tokio::spawn(run_writer(socket, rx, true, false, ar, cr, |_| true));
+        let task = tokio::spawn(run_writer(
+            socket,
+            rx,
+            true,
+            false,
+            ar,
+            cr,
+            WriterUsage::fixture(true),
+        ));
         while let Ok(Some(Ok(_))) =
             tokio::time::timeout(Duration::from_millis(200), client.next()).await
         {}
@@ -1154,5 +1400,136 @@ mod tests {
         }
         task.abort();
         let _ = task.await;
+    }
+    #[test]
+    fn mp08_mp09_mp10_mp11_large_negotiated_events_stay_binary() {
+        let header = crate::binary_event::EventHeader {
+            kind: "client_event".into(),
+            subscription_id: "display".into(),
+            event_id: 1,
+            sender_public_key: "opaque".into(),
+            nonce: "abcdefghijklmnop".into(),
+        };
+        let binary = crate::binary_event::encode(&header, &[7; 100 * 1024]).unwrap();
+        assert!(
+            matches!(
+                receiver_message(Message::Binary(binary.into()), true),
+                Some(Message::Binary(_))
+            ),
+            "negotiated binary events must not add a base64 JSON envelope above the chunk boundary"
+        );
+    }
+
+    #[tokio::test]
+    async fn mp08_mp09_mp10_mp11_large_binary_wire_chunks_preserve_ciphertext() {
+        let header = crate::binary_event::EventHeader {
+            kind: "client_event".into(),
+            subscription_id: "display".into(),
+            event_id: 1,
+            sender_public_key: "opaque".into(),
+            nonce: "abcdefghijklmnop".into(),
+        };
+        let event = crate::binary_event::encode(&header, &[0xfe; 100 * 1024]).unwrap();
+        let response = crate::binary_response::encode(
+            &crate::binary_response::ResponseHeader::ClientResponse {
+                request_id: "mirror".into(),
+                sender_public_key: "opaque".into(),
+                nonce: "abcdefghijklmnop".into(),
+            },
+            &[0xfe; 100 * 1024],
+        )
+        .unwrap();
+        // Both opaque kinds use the same bounded, receipt-driven wire path.
+        for original in [event, response] {
+            let (socket, mut client) = sockets().await;
+            let (tx, rx) = mpsc::channel(8);
+            let (at, ar) = mpsc::channel(64);
+            let (_ct, cr) = mpsc::channel(8);
+            tx.send(Message::Binary(original.clone().into()))
+                .await
+                .unwrap();
+            drop(tx);
+            let task = tokio::spawn(run_writer(
+                socket,
+                rx,
+                true,
+                true,
+                ar,
+                cr,
+                WriterUsage::fixture(true),
+            ));
+            let mut receiver = crate::frame_transport::FrameReceiver::default();
+            let mut bytes = 0;
+            let mut chunks = 0;
+            loop {
+                let message = tokio::time::timeout(Duration::from_secs(2), client.next())
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .unwrap();
+                let Message::Binary(wire) = message else {
+                    panic!("opaque ciphertext must not become a JSON envelope");
+                };
+                assert!(wire.len() <= CHUNK_BYTES);
+                bytes += wire.len();
+                chunks += 1;
+                let (complete, ack) = receiver.receive_binary(&wire).unwrap();
+                let TransportFrame::TransportAck {
+                    transfer_id,
+                    offset,
+                } = serde_json::from_str(&ack.unwrap()).unwrap()
+                else {
+                    panic!("receipt");
+                };
+                at.send((transfer_id, offset)).await.unwrap();
+                if let Some(complete) = complete {
+                    assert_eq!(complete, original);
+                    break;
+                }
+            }
+            assert!(chunks > 1);
+            assert_eq!(
+                bytes,
+                original.len() + chunks * crate::frame_transport::BINARY_CHUNK_HEADER_BYTES
+            );
+            assert_eq!(
+                tokio::time::timeout(Duration::from_secs(2), task)
+                    .await
+                    .unwrap()
+                    .unwrap(),
+                "drained"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod binary_reply_regression {
+    use super::*;
+    #[test]
+    fn mp08_mp09_mp10_mp11_successful_large_replies_keep_raw_ciphertext() {
+        use base64::{engine::general_purpose::STANDARD, Engine};
+        let text = serde_json::to_string(&crate::protocol::RelayEnvelope::ClientResponse {
+            request_id: "mirror-request".into(),
+            encrypted_response: Some(crate::protocol::EncryptedRelayPayload {
+                sender_public_key: "opaque-key".into(),
+                nonce: "abcdefghijklmnop".into(),
+                ciphertext: STANDARD.encode(vec![0xfe; 100 * 1024]),
+            }),
+            error: None,
+        })
+        .unwrap();
+        let binary = receiver_message(Message::Text(text.into()), true).unwrap();
+        assert!(
+            matches!(binary, Message::Binary(_)),
+            "negotiated successful replies must not base64 ciphertext"
+        );
+        assert!(
+            matches!(
+                lane(&binary, &WriterUsage::fixture(true)),
+                (Lane::Reply, None, None)
+            ),
+            "response correlation keeps the reply lane"
+        );
     }
 }

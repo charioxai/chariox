@@ -21,7 +21,7 @@ export type WorkflowQueueCommandDeps = {
   listQueuedWorkflowPrompts?: () => Promise<WorkflowQueuedPrompt[]>
   updateQueuedWorkflowPrompt?: (
     queueItemRef: string,
-    patch: { prompt?: string | null; queueRef?: string | null },
+    patch: { prompt?: string | null; queueRef?: string | null; retryDelivery?: boolean },
   ) => Promise<{ queued_prompt: WorkflowQueuedPrompt; session: RuntimeSession }>
   removeQueuedWorkflowPrompt?: (queueItemRef: string) => Promise<{ queued_prompt: WorkflowQueuedPrompt; session: RuntimeSession }>
   clearWorkflowPromptQueue?: (workflowRef: string | null, queueRef: string) => Promise<{ queued_prompts: WorkflowQueuedPrompt[]; session: RuntimeSession }>
@@ -33,7 +33,7 @@ export async function handleWorkflowQueueCommand(
 ): Promise<void> {
   const parsed = parseWorkflowQueueArgs(args)
   if (parsed.error) {
-    deps.flashFooter("usage: /workflow queue [--workflow <workflow-ref>] [list|create|rename|priority|enable|disable|delete|edit|move|remove|clear|flush]", "error")
+    deps.flashFooter("usage: /workflow queue [--workflow <workflow-ref>] [list|create|rename|priority|enable|disable|delete|edit|move|retry|remove|clear|flush]", "error")
     return
   }
   const workflowRef = parsed.workflowRef ?? currentWorkflowRef(deps)
@@ -135,6 +135,21 @@ export async function handleWorkflowQueueCommand(
     deps.flashFooter(`removed queued workflow prompt ${payload.queued_prompt.id}`, "info")
     return
   }
+  if (action === "retry") {
+    const queueItemRef = parsed.args[2]
+    if (!queueItemRef) {
+      deps.flashFooter("usage: /workflow queue retry [--workflow <workflow-ref>] <queue-item-ref>", "error")
+      return
+    }
+    if (!deps.updateQueuedWorkflowPrompt) {
+      deps.flashFooter("workflow queue commands unavailable", "error")
+      return
+    }
+    const payload = await deps.updateQueuedWorkflowPrompt(queueItemRef, { retryDelivery: true })
+    deps.applySessionState(payload.session)
+    deps.flashFooter(`retrying held notification ${payload.queued_prompt.id}`, "info")
+    return
+  }
   if (action === "edit") {
     const queueItemRef = parsed.args[2]
     const prompt = parsed.args.slice(3).join(" ").trim()
@@ -183,7 +198,7 @@ export async function handleWorkflowQueueCommand(
     )
     return
   }
-  deps.flashFooter("usage: /workflow queue [list|create|rename|priority|enable|disable|delete|edit|move|remove|clear|flush]", "error")
+  deps.flashFooter("usage: /workflow queue [list|create|rename|priority|enable|disable|delete|edit|move|retry|remove|clear|flush]", "error")
 }
 
 async function listQueuesAndPrompts(deps: WorkflowQueueCommandDeps, workflowRef: string | null): Promise<void> {
@@ -221,7 +236,10 @@ export function formatWorkflowQueuedPrompt(prompt: WorkflowQueuedPrompt): string
   const text = prompt.prompt && prompt.prompt.trim() !== ""
     ? ` prompt=${JSON.stringify(prompt.prompt.length > 50 ? `${prompt.prompt.slice(0, 50)}...` : prompt.prompt)}`
     : ""
-  return `${prompt.id} [${prompt.source}] workflow=${prompt.workflow_id} queue=${prompt.queue_id} endpoint=${prompt.endpoint_id} status=${prompt.status}${text}`
+  const held = prompt.delivery_uncertain_until_ms
+    ? ` DELIVERY UNCERTAIN, held until ${new Date(prompt.delivery_uncertain_until_ms).toISOString().slice(0, 16).replace("T", " ")} UTC (retry: /workflow queue retry ${prompt.id}, discard: /workflow queue remove ${prompt.id})`
+    : ""
+  return `${prompt.id} [${prompt.source}] workflow=${prompt.workflow_id} queue=${prompt.queue_id} endpoint=${prompt.endpoint_id} status=${prompt.status}${held}${text}`
 }
 
 function parseWorkflowQueueArgs(args: readonly string[]): { args: string[]; workflowRef?: string; error?: boolean } {

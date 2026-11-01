@@ -11,6 +11,7 @@ use tokio::sync::{mpsc, RwLock};
 use tokio_tungstenite::{accept_hdr_async, tungstenite::Message};
 
 use crate::auth::{RelayAction, RelayAuthVerifier, VerifiedRelayIdentity};
+use crate::meter::{ConnectionMeter, Direction, UsageMeter, CONTROL_SCOPE, DISPLAY_TUNNEL_SCOPE};
 use crate::protocol::{RelayConnectionRole, RelayEnvelope, RelayError, RelayMetadataQuery};
 use crate::registry::{
     ActiveEventRoute, ActiveSubscription, DaemonKey, DisplayStreamEvent, PeerHandle,
@@ -31,6 +32,7 @@ const RELAY_FIRST_MESSAGE_TIMEOUT: Duration = Duration::from_secs(10);
 const RELAY_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 const RELAY_CONNECTION_CHECK_INTERVAL: Duration = Duration::from_secs(5);
 const RELAY_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
+const REALM_CHANGED: &str = "this relay connection belongs to another realm";
 const RELAY_PONG_TIMEOUT: Duration = Duration::from_secs(15);
 const RELAY_WEBSOCKET_CLOSE_TIMEOUT: Duration = Duration::from_millis(250);
 
@@ -106,6 +108,7 @@ pub(crate) async fn handle_connection(
     registry: Arc<RwLock<RelayRegistry>>,
     auth_verifier: RelayAuthVerifier,
     relay_request_counter: Arc<AtomicU64>,
+    meter: UsageMeter,
 ) -> Result<(), std::io::Error> {
     stream.set_nodelay(true)?;
     let mut chunks = false;
@@ -143,7 +146,7 @@ pub(crate) async fn handle_connection(
                 || request
                     .headers()
                     .get(crate::binary_event::VERSION_HEADER)
-                    .is_some_and(|version| version == "96");
+                    .is_some_and(|version| version == "98");
             if initial_resume_negotiated {
                 response.headers_mut().insert(
                     "sec-websocket-protocol",
@@ -160,7 +163,7 @@ pub(crate) async fn handle_connection(
             if binary_events {
                 response
                     .headers_mut()
-                    .insert(crate::binary_event::VERSION_HEADER, "96".parse().unwrap());
+                    .insert(crate::binary_event::VERSION_HEADER, "98".parse().unwrap());
             }
             Ok(response)
         },
@@ -187,8 +190,9 @@ pub(crate) async fn handle_connection(
     let routes = registry.read().await.route_index();
     let (receipt_tx, receipt_rx) = mpsc::channel(crate::frame_transport::MAX_UNACKED_FRAMES);
     let (control_tx, control_rx) = mpsc::channel(8);
-    let writer_routes = routes.clone();
-    let writer_sender = outgoing_tx.downgrade();
+    let usage_routes = routes.clone();
+    let usage_sender = outgoing_tx.downgrade();
+    let connection_meter = ConnectionMeter::new(meter);
     let mut writer_task = Some(tokio::spawn(writer::run_writer(
         writer,
         outgoing_rx,
@@ -196,11 +200,11 @@ pub(crate) async fn handle_connection(
         binary_events,
         receipt_rx,
         control_rx,
-        move |subscription_id: &str| {
-            writer_sender
+        writer::WriterUsage::new(connection_meter.clone(), move |subscription_id: &str| {
+            usage_sender
                 .upgrade()
-                .is_some_and(|sender| writer_routes.display_for_sender(subscription_id, &sender))
-        },
+                .and_then(|sender| usage_routes.scope_for_sender(subscription_id, &sender))
+        }),
     )));
     let mut registered_daemon_key: Option<DaemonKey> = None;
     let mut verified_identity: Option<VerifiedRelayIdentity> = None;
@@ -312,12 +316,31 @@ pub(crate) async fn handle_connection(
             let message = message.map_err(|error| std::io::Error::other(error.to_string()))?;
             crate::transport_timing::record("relay_read", crate::transport_timing::message_signature(&message));
             last_read_at = Instant::now();
+            // Binary replies enter exactly the same authenticated pending-route ledger as JSON replies.
+            let mut counted = false;
+            let message = match message {
+                Message::Binary(bytes) if bytes.starts_with(b"CXR2") => {
+                    connection_meter.record(Direction::In, CONTROL_SCOPE, bytes.len());
+                    counted = true;
+                    if !binary_events || registered_daemon_key.is_none() {
+                        send_close(&outgoing_tx,"binary responses require a negotiated daemon connection".into());
+                        break;
+                    }
+                    let envelope = crate::binary_response::into_envelope(&bytes)?;
+                    if !matches!(envelope, RelayEnvelope::DaemonResponse { .. }) {
+                        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData,"invalid daemon response route"));
+                    }
+                    Message::Text(serde_json::to_string(&envelope).map_err(std::io::Error::other)?.into())
+                }
+                other => other,
+            };
             match message {
                 Message::Text(text) => {
                     if chunks && serde_json::from_str::<serde_json::Value>(&text).ok()
                         .is_some_and(|value| value.get("kind").and_then(|kind| kind.as_str()) == Some("transport_ack")) {
                         match serde_json::from_str::<crate::frame_transport::TransportFrame>(&text) {
                             Ok(crate::frame_transport::TransportFrame::TransportAck { transfer_id, offset }) => {
+                                connection_meter.record(Direction::In, CONTROL_SCOPE, text.len());
                                 if receipt_tx.try_send((transfer_id, offset)).is_err() { end_reason = "receipt_queue_full"; break; }
                                 continue;
                             }
@@ -328,6 +351,24 @@ pub(crate) async fn handle_connection(
                     let envelope: RelayEnvelope = serde_json::from_str(&text).map_err(|error| {
                         std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string())
                     })?;
+                    let scope = match &envelope {
+                        RelayEnvelope::DaemonEvent { subscription_id, .. } => routes
+                            .subscription(subscription_id)
+                            .map(|route| route.scope),
+                        RelayEnvelope::DaemonDisplayTunnelResponseStart { .. }
+                        | RelayEnvelope::DaemonDisplayTunnelChunk { .. }
+                        | RelayEnvelope::DaemonDisplayTunnelClose { .. } => {
+                            Some(Arc::from(DISPLAY_TUNNEL_SCOPE))
+                        }
+                        _ => None,
+                    };
+                    if !counted {
+                        connection_meter.record(
+                            Direction::In,
+                            scope.as_deref().unwrap_or(CONTROL_SCOPE),
+                            text.len(),
+                        );
+                    }
                     match envelope {
                         RelayEnvelope::DaemonRegister { registration } => {
                             let identity = verify_relay_token(
@@ -341,6 +382,13 @@ pub(crate) async fn handle_connection(
                                 &registration,
                             ) {
                                 send_close(&outgoing_tx, reason.to_string());
+                                break;
+                            }
+                            // Before any authority or registry state changes: this
+                            // socket's traffic is already counted for its first realm.
+                            if !connection_meter.bind_realm(&identity.realm_id) {
+                                send_close(&outgoing_tx, REALM_CHANGED.to_string());
+                                end_reason = "realm_changed";
                                 break;
                             }
                             auth_expiry_deadline = relay_auth_expiry_deadline(
@@ -447,6 +495,13 @@ pub(crate) async fn handle_connection(
                                 let allowed_targets = identity.allowed_targets.clone();
                                 verified_identity = Some(identity.clone());
                                 let mut guard = registry.write().await;
+                                // A socket the daemon's reconnect replaced is already
+                                // being closed; its heartbeat must not take the registry back.
+                                if guard.daemon_peers.get(&current_daemon_key) != Some(&peer_addr) {
+                                    drop(guard);
+                                    send_close(&outgoing_tx, "daemon reconnected".to_string());
+                                    break;
+                                }
                                 if let Some(peer) = guard.peers.get_mut(&peer_addr) {
                                     peer.realm_id = Some(identity.realm_id.clone());
                                     peer.identity = Some(identity.into());
@@ -461,7 +516,7 @@ pub(crate) async fn handle_connection(
                             if !client_connect::admit(envelope,client_connect::ClientConnectContext {
                                 registry:&registry,routes:&routes,auth_verifier:&auth_verifier,peer_addr,
                                 outgoing_tx:&outgoing_tx,relay_request_counter:&relay_request_counter,
-                                verified_identity:&mut verified_identity,auth_expiry_deadline:&mut auth_expiry_deadline,initial_resume_negotiated,
+                                connection_meter:&connection_meter,verified_identity:&mut verified_identity,auth_expiry_deadline:&mut auth_expiry_deadline,initial_resume_negotiated,
                             }).await? { break; }
                         }
                         RelayEnvelope::ClientMetadataRequest {
@@ -475,6 +530,13 @@ pub(crate) async fn handle_connection(
                                 RelayAction::ClientMetadataRead,
                                 None,
                             )?;
+                            // The request's own token proves the realm, so the
+                            // request and its answer count for it too.
+                            if !connection_meter.bind_realm(&identity.realm_id) {
+                                send_close(&outgoing_tx, REALM_CHANGED.to_string());
+                                end_reason = "realm_changed";
+                                break;
+                            }
                             let guard = registry.read().await;
                             let (machines, kernels, kernel) = match query {
                                 RelayMetadataQuery::ListLiveMachines => (
@@ -713,7 +775,7 @@ pub(crate) async fn handle_connection(
                                     if error.is_none() {
                                         match &pending.kind {
                                             PendingRequestKind::Subscribe {
-                                                display,
+                                                scope,
                                                 subscription_id,
                                                 client_public_key,
                                             } => {
@@ -733,7 +795,7 @@ pub(crate) async fn handle_connection(
                                                         routes.set_subscription(
                                                             subscription_id.clone(),
                                                             ActiveEventRoute {
-                                                                display: *display,
+                                                                scope: scope.clone(),
                                                                 daemon_key: pending.daemon_key.clone(),
                                                                 client_sender,
                                                             },
@@ -990,7 +1052,7 @@ pub(crate) async fn handle_connection(
                         send_close(&outgoing_tx, "binary events require a negotiated daemon connection".into());
                         break;
                     };
-                    route_daemon_binary_event(&registry, &routes, current_daemon_key, &relay_request_counter, &bytes).await?;
+                    route_daemon_binary_event(&registry, &routes, current_daemon_key, &relay_request_counter, &connection_meter, &bytes).await?;
                 }
                 Message::Ping(payload) => {
                     if control_tx.try_send(Message::Pong(payload)).is_err() {

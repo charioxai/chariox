@@ -358,6 +358,7 @@ fn unknown_commit_stops_writer_and_rejects_already_queued_and_future_ordinary_wr
     store
         .writer
         .enqueue(DurableWriterRequest::Ordinary(DurableWriteRequest {
+            observation: None,
             operation: operation(),
             response,
         }))

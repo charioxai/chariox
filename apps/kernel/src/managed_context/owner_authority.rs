@@ -286,18 +286,9 @@ pub(crate) async fn authorize_account_copy_peer(
 ) -> Result<ManagedContextTransferTarget, DaemonError> {
     let denied = || crate::provider_account_copy::failure("provider_account_copy_unauthorized");
     let profile = config.cloud_relay.as_ref().ok_or_else(denied)?;
-    let source = source_peer(config).map_err(|_| denied())?;
-    let directory: Directory =
-        kernel_cloud_request(profile, "/v1/owner-managed-context-tickets/peers", None)
-            .await
-            .map_err(|_| denied())?;
-    if !directory.peers.iter().any(|peer| peer.peer == source) {
-        return Err(denied());
-    }
-    directory
-        .peers
+    let peers = account_copy_peers(config).await?;
+    peers
         .into_iter()
-        .map(|peer| peer.peer)
         .find(|peer| {
             peer.kernel_id == binding.target_kernel_id
                 && peer.relay_realm_id == profile.realm_id
@@ -306,4 +297,21 @@ pub(crate) async fn authorize_account_copy_peer(
                     == binding.target_key_thumbprint
         })
         .ok_or_else(denied)
+}
+
+/// The enrolled directory, including this kernel, must be authorized by Cloud.
+pub(crate) async fn account_copy_peers(
+    config: &DaemonConfig,
+) -> Result<Vec<ManagedContextTransferTarget>, DaemonError> {
+    let denied = || crate::provider_account_copy::failure("provider_account_copy_unauthorized");
+    let profile = config.cloud_relay.as_ref().ok_or_else(denied)?;
+    let source = source_peer(config).map_err(|_| denied())?;
+    let directory: Directory =
+        kernel_cloud_request(profile, "/v1/owner-managed-context-tickets/peers", None)
+            .await
+            .map_err(|_| denied())?;
+    if !directory.peers.iter().any(|peer| peer.peer == source) {
+        return Err(denied());
+    }
+    Ok(directory.peers.into_iter().map(|peer| peer.peer).collect())
 }

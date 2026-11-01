@@ -154,7 +154,15 @@ export function health(overrides: Partial<DaemonHealthProjection> = {}): DaemonH
         issues: [],
       },
     },
-    projection_invariants: { checked_sessions: 1, checked_agents: 1, mismatches: [] },
+    projection_invariants: {
+      checked_sessions: 1,
+      checked_agents: 1,
+      mismatch_count: 0,
+      mismatch_counts_by_kind: {},
+      mismatches: [],
+    },
+    request_timings: [],
+    sample_counts: {},
     ...overrides,
   }
 }

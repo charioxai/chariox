@@ -4,6 +4,7 @@ mod daemon;
 mod display;
 mod display_resume_connect;
 mod metadata;
+mod metering;
 mod peer;
 mod registry;
 mod renewal;

@@ -35,15 +35,18 @@ test('MP-08/MP-10/MP-11 opted-in first DOM does not wait for font bytes; the nex
  }finally{gate.resolve();await pending.catch(()=>{});}
 });
 
-test('MP-08/MP-10/MP-11 a continuing DOM stream does not starve the opted-in viewer of font bytes',async()=>{
+for(const typing of [false,true])test(`MP-08/MP-10/MP-11 a continuing DOM stream does not starve the opted-in viewer of font bytes${typing?' during input':''}`,async()=>{
  const {mirror,stream,state,command}=page(true),calls=[],font={key:'r1',resource_id:'b'.repeat(64),mime_type:'font/woff2',data_base64:'AAAA'};
  mirror.materialize=async(_world,_stream,kind)=>{calls.push(kind);return [font]};
  const first=await mirror.packet(stream,command,'scope');
  assert.equal(first.reset,true);assert.equal(first.resources,undefined);
  // The rest of a huge document keeps every later credit non-empty: its fonts still travel with the DOM chunks.
  state.ops=[{op:'text',id:'n4',text:'more'}];state.changed=['n4'];
+ if(typing)stream.inputAt=Date.now();
  const next=await mirror.packet(stream,{...command,after_sequence:1},'scope',undefined,Date.now());
- assert.equal(next.sequence,2);assert.deepEqual(next.ops.map(op=>op.op),['text']);assert.deepEqual(next.resources,[font]);assert.deepEqual(calls,['font']);
+ assert.equal(next.sequence,2);assert.deepEqual(next.ops.map(op=>op.op),['text']);assert.deepEqual(next.resources,[font]);
+ // P9: without recent input every due resource rides the DOM packet; an input's echo carries only the fonts.
+ assert.deepEqual(calls,[typing?'font':null]);
 });
 
 test('MP-08/MP-10/MP-11 a legacy viewer still receives first-packet fonts',async()=>{

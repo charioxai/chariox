@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::session::{AgentTriggerBusyPolicy, AgentTriggerRepeat};
 
-/// Protocol 900: what fires a new agent trigger.
+/// Protocol 930: what fires a new agent trigger.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum AgentTriggerSourceRequest {

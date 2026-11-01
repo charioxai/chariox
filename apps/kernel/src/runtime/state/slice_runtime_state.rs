@@ -408,6 +408,7 @@ impl KernelRuntimeState {
                 structured_endpoint: manifest.structured_endpoint.clone(),
                 provider_session_id: manifest.provider_session_id.clone(),
                 native_tui: true,
+                native_checkpoint_binding: None,
             };
             let response = self
                 .launch_remote_native_provider_run(&request, &manifest.owner_user_id)
@@ -1804,13 +1805,13 @@ mod tests {
     async fn empty_slice_development_has_a_broker_safe_workspace_and_preserves_edits() {
         use std::fs;
         use std::io::Write;
-        use std::process::{Command, Stdio};
+        use std::process::Stdio;
 
         const ISOLATED: &str = "CHARIOX_TEST_EMPTY_SLICE_ISOLATED";
         if std::env::var_os(ISOLATED).is_none() {
             // Managed provider children inherit a slice root that takes precedence over
             // config. Isolate this test without mutating the parallel test process.
-            let result = Command::new(std::env::current_exe().unwrap())
+            let result = crate::process_spawn::command(std::env::current_exe().unwrap())
                 .args([
                     "--exact",
                     "runtime::state::slice_runtime_state::tests::empty_slice_development_has_a_broker_safe_workspace_and_preserves_edits",
@@ -1900,7 +1901,7 @@ mod tests {
                 "CHARIOX_SLICE_WORKSPACE": workspace,
             }
         });
-        let mut broker = Command::new("node")
+        let mut broker = crate::process_spawn::command("node")
             .arg(concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/slice-linux-docker/managed-docker-broker.mjs"
@@ -2038,14 +2039,14 @@ mod tests {
         let supporting = root.join("supporting");
         for repository in [&primary, &supporting] {
             std::fs::create_dir_all(repository).unwrap();
-            let status = std::process::Command::new("git")
+            let status = crate::process_spawn::command("git")
                 .args(["init", "-q"])
                 .current_dir(repository)
                 .status()
                 .unwrap();
             assert!(status.success());
             // Source-project selection requires a registered, committed worktree.
-            let status = std::process::Command::new("git")
+            let status = crate::process_spawn::command("git")
                 .args([
                     "-c",
                     "user.name=MP fixture",

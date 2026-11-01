@@ -51,9 +51,8 @@ test("MP-08/MP-10/MP-11: HTTP trigger client contracts preserve payload and hist
   })
 })
 
-test("protocol 901 resends a trigger firing the provider did not confirm", async () => {
+test("resends a trigger firing the provider did not confirm", async () => {
   const r = await import("./ipc-terminal-runtime-requests.js")
-  assert.equal(r.triggerDeliveryMinimumProtocolVersion, 901)
   assert.deepEqual(r.resendTriggerDeliveryRequest("s", "prompt-7"), {
     ResendTriggerDelivery: { session_id: "s", prompt_id: "prompt-7" },
   })

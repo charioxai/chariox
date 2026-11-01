@@ -105,7 +105,13 @@ impl KernelRuntimeOwnedState {
                         workflow_node_run_id: node_run.id().to_string(),
                         agent_id: node_run.agent_id().to_string(),
                         node_id: node_run.node_id().to_string(),
-                        prompt_text,
+                        prompt_text:
+                            crate::scheduler::prompt_injection::refresh_recovered_workflow_prompt(
+                                session,
+                                workflow_run.id(),
+                                node_run.id(),
+                                &prompt_text,
+                            ),
                     });
                 }
             }

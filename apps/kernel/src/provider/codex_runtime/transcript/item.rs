@@ -26,6 +26,8 @@ pub(in crate::provider::codex_runtime) fn is_codex_tool_item(item: &Value) -> bo
                 | "mcpToolCall"
                 | "dynamicToolCall"
                 | "collabAgentToolCall"
+                | "webSearch"
+                | "imageView"
         )
     )
 }

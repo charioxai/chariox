@@ -1,7 +1,7 @@
 //! MP-08/MP-10/MP-11: post-admission waits cannot borrow a later sudo turn.
 use super::queued_agent_command_tests::replace_turn;
-use super::tests::{fixture_with_options, popup};
-use super::window_tests::{approve, open};
+use super::tests::fixture_with_options;
+use super::window_tests::open;
 use super::*;
 use crate::runtime::agent_actor::AgentRuntime;
 use crate::runtime::command::{KernelCaller, KernelCommand, KernelCommandSource};
@@ -67,14 +67,9 @@ async fn assert_remote_wait(replace: bool) {
     let request = LocalDaemonRequest::CompletePrompt(CompletePromptRequest {
         session_id: session.id().into(),
     });
-    let confirmation = tokio::spawn({
-        let state = f.state.clone();
-        let window = window.clone();
-        let request = request.clone();
-        async move { state.confirm_sudo_scope(&window, &request).await }
-    });
-    approve(&f, &popup(&f.state).await, None).await.unwrap();
-    confirmation.await.unwrap().unwrap();
+    f.state
+        .authorize_sudo_request(&window.entry_id, &request)
+        .unwrap();
     let probe = Arc::new(tokio::sync::Notify::new());
     f.state.observe_app_lock_wait_for_test(probe.clone());
     let runtime = AgentRuntime::new(

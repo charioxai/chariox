@@ -303,8 +303,8 @@ async fn assert_home_handoff_scenario(
         );
         assert_eq!(
             hidden_system_context.contains("assistant proposal: preserve named decisions"),
-            !protect && !recovered,
-            "current Room policy withholds old provider observations when protection begins",
+            !recovered,
+            "old provider output stays in the replay, scrubbed by value; only recovered history is withheld",
         );
         assert!(hidden_system_context.len() <= 24_000);
         assert_eq!(

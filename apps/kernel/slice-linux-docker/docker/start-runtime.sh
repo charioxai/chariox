@@ -138,16 +138,13 @@ if [[ ! -s "$PROVIDER_BRIDGE_READY_FILE" ]]; then
 fi
 
 if [[ -z "${CHARIOX_SLICE_RELAY_URL:-}" ]]; then
-  screen -dmS chariox-slice-relay env CHARIOX_RELAY_HOST=0.0.0.0 CHARIOX_RELAY_PORT="$RELAY_PORT" CHARIOX_RELAY_TOKEN="$RELAY_TOKEN" "$ROOT/bin/chariox-relay"
+  (
+    # screen retains its launch arguments; credentials belong in inherited env.
+    export CHARIOX_RELAY_TOKEN="$RELAY_TOKEN"
+    screen -dmS chariox-slice-relay env CHARIOX_RELAY_HOST=0.0.0.0 CHARIOX_RELAY_PORT="$RELAY_PORT" "$ROOT/bin/chariox-relay"
+  )
   sleep 1
   wait_for_screen_session chariox-slice-relay relay
-fi
-
-kernel_relay_env=()
-if [[ -n "$CLOUD_RELAY_CONFIG_JSON" ]]; then
-  kernel_relay_env=()
-else
-  kernel_relay_env=(CHARIOX_RELAY_URL="$RELAY_URL" CHARIOX_RELAY_TOKEN="$RELAY_TOKEN")
 fi
 
 KERNEL_LOCAL_AUTH_FILE="$PRIVATE_RUNTIME_ROOT/kernel-local-auth.token"
@@ -175,38 +172,42 @@ start_slice_kernel() {
   KERNEL_LOCAL_AUTH_TOKEN="$(cat "$KERNEL_LOCAL_AUTH_FILE")"
   : >"$LOGS/kernel.log"
   chmod 600 "$LOGS/kernel.log"
-  screen -L -Logfile "$LOGS/kernel.log" -dmS chariox-slice-kernel env \
-    SHELL=/bin/bash \
-    "${default_provider_env[@]}" \
-    CHARIOX_KERNEL_PORT="$KERNEL_PORT" \
-    CHARIOX_MCP_PORT="$MCP_PORT" \
-    CHARIOX_CODEX_PORT_RANGE="$CODEX_PORT_RANGE" \
-    CHARIOX_CODEX_BIND_HOST="$PROVIDER_BIND_HOST" \
-    CHARIOX_OPENCODE_PORT_RANGE="$OPENCODE_PORT_RANGE" \
-    CHARIOX_OPENCODE_BIND_HOST="$PROVIDER_BIND_HOST" \
-    CHARIOX_DAEMON_ID="$DAEMON_ID" \
-    CHARIOX_DAEMON_ALIAS="$DAEMON_ALIAS" \
-    CHARIOX_MACHINE_ID="$MACHINE_ID" \
-    CHARIOX_MACHINE_ALIAS="$MACHINE_ALIAS" \
-    CHARIOX_SLICE_ID="$SLICE_ID" \
-    CHARIOX_SLICE_OWNER_KERNEL_ID="$SLICE_OWNER_KERNEL_ID" \
-    CHARIOX_SLICE_OWNER_MACHINE_ID="$SLICE_OWNER_MACHINE_ID" \
-    CHARIOX_MANAGED_SLICE_RELAY_OWNER_PUBLIC_KEY="$SLICE_OWNER_PUBLIC_KEY" \
-    CHARIOX_CAPABILITY_ISOLATION_ROOT="$CAPABILITY_ISOLATION_ROOT" \
-    CHARIOX_BROWSER_CONTROLLER_SCRIPT="$ROOT/browser-controller.mjs" \
-    CHARIOX_BROWSER_IMPORT_MODULE="$ROOT/browser-session-import/production-destination.mjs" \
-    CHARIOX_BROWSER_DOWNLOAD_DIR="$BROWSER_DOWNLOAD_DIR" \
-    CHARIOX_BROWSER_UPLOAD_ROOTS="$BROWSER_UPLOAD_ROOTS" \
-    CHARIOX_MANAGED_PROVIDER_ISOLATION=1 \
-    CHARIOX_MANAGED_PROVIDER_HOME="$PROVIDER_HOME" \
-    CHARIOX_MANAGED_PROVIDER_BWRAP="/usr/local/libexec/chariox/managed-provider-bwrap" \
-    CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE="$KERNEL_LOCAL_AUTH_FILE" \
-    CHARIOX_ALLOW_VOLATILE_PROCESS_MEMORY_VAULT=1 \
-    CHARIOX_OS_NAME="Linux slice" \
-    "${kernel_relay_env[@]}" \
-    CHARIOX_ACCEPT_REMOTE_LEASES=1 \
-    "$@" \
-    python3 "$ROOT/runtime-process-owner.py" run --record "$PRIVATE_RUNTIME_ROOT/kernel-owner.json" -- "$ROOT/bin/chariox-kernel"
+  (
+    if [[ -z "$CLOUD_RELAY_CONFIG_JSON" ]]; then
+      export CHARIOX_RELAY_URL="$RELAY_URL" CHARIOX_RELAY_TOKEN="$RELAY_TOKEN"
+    fi
+    screen -L -Logfile "$LOGS/kernel.log" -dmS chariox-slice-kernel env \
+      SHELL=/bin/bash \
+      "${default_provider_env[@]}" \
+      CHARIOX_KERNEL_PORT="$KERNEL_PORT" \
+      CHARIOX_MCP_PORT="$MCP_PORT" \
+      CHARIOX_CODEX_PORT_RANGE="$CODEX_PORT_RANGE" \
+      CHARIOX_CODEX_BIND_HOST="$PROVIDER_BIND_HOST" \
+      CHARIOX_OPENCODE_PORT_RANGE="$OPENCODE_PORT_RANGE" \
+      CHARIOX_OPENCODE_BIND_HOST="$PROVIDER_BIND_HOST" \
+      CHARIOX_DAEMON_ID="$DAEMON_ID" \
+      CHARIOX_DAEMON_ALIAS="$DAEMON_ALIAS" \
+      CHARIOX_MACHINE_ID="$MACHINE_ID" \
+      CHARIOX_MACHINE_ALIAS="$MACHINE_ALIAS" \
+      CHARIOX_SLICE_ID="$SLICE_ID" \
+      CHARIOX_SLICE_OWNER_KERNEL_ID="$SLICE_OWNER_KERNEL_ID" \
+      CHARIOX_SLICE_OWNER_MACHINE_ID="$SLICE_OWNER_MACHINE_ID" \
+      CHARIOX_MANAGED_SLICE_RELAY_OWNER_PUBLIC_KEY="$SLICE_OWNER_PUBLIC_KEY" \
+      CHARIOX_CAPABILITY_ISOLATION_ROOT="$CAPABILITY_ISOLATION_ROOT" \
+      CHARIOX_BROWSER_CONTROLLER_SCRIPT="$ROOT/browser-controller.mjs" \
+      CHARIOX_BROWSER_IMPORT_MODULE="$ROOT/browser-session-import/production-destination.mjs" \
+      CHARIOX_BROWSER_DOWNLOAD_DIR="$BROWSER_DOWNLOAD_DIR" \
+      CHARIOX_BROWSER_UPLOAD_ROOTS="$BROWSER_UPLOAD_ROOTS" \
+      CHARIOX_MANAGED_PROVIDER_ISOLATION=1 \
+      CHARIOX_MANAGED_PROVIDER_HOME="$PROVIDER_HOME" \
+      CHARIOX_MANAGED_PROVIDER_BWRAP="/usr/local/libexec/chariox/managed-provider-bwrap" \
+      CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE="$KERNEL_LOCAL_AUTH_FILE" \
+      CHARIOX_ALLOW_VOLATILE_PROCESS_MEMORY_VAULT=1 \
+      CHARIOX_OS_NAME="Linux slice" \
+      CHARIOX_ACCEPT_REMOTE_LEASES=1 \
+      "$@" \
+      python3 "$ROOT/runtime-process-owner.py" run --record "$PRIVATE_RUNTIME_ROOT/kernel-owner.json" -- "$ROOT/bin/chariox-kernel"
+  )
   sleep 1
   wait_for_screen_session chariox-slice-kernel kernel
   wait_for_kernel_auth_consumption

@@ -172,3 +172,15 @@ function withCodexCommand(): ProviderCommandCatalogs {
   }
   return catalogs
 }
+
+test("account choices keep remote copies distinct from local signed-in profiles", () => {
+  const items = buildAccountItems("/account ", {
+    providerCatalog: {} as never, currentProvider: "claude-headless", currentModel: "default", currentVariant: "",
+    providerAccounts: [], providerAccountCopyOffers: [{ source_kernel_id: "a", source_machine_id: "ma", source_label: "A", source_key_thumbprint: "pin", target_kernel_id: "b", provider: "claude", account_profile: "work", label: "Work" }],
+  })
+  assert.equal(items.length, 1)
+  assert.equal(items[0]?.kind, "command")
+  assert.equal(items[0]?.label, "Copy login to this machine")
+  assert.equal(items[0]?.description, "Work · on A")
+  assert.equal(items[0]?.value, "/provider accounts copy a work")
+})
