@@ -48,7 +48,7 @@ that archive); `CHARIOX_NATIVE_DISPLAY_INCLUDE` and `CHARIOX_NATIVE_DISPLAY_LIB`
 are build-only search paths.
 
 A kernel whose latency, bytes or idle traffic is measured is built with the
-repository's pinned Rust toolchain (`rustc 1.99.0`) and with both search paths set:
+repository's pinned Rust toolchain (`rustc 1.99.1`) and with both search paths set:
 `CHARIOX_NATIVE_DISPLAY_INCLUDE` to the FFmpeg 60 headers plus the sysroot headers
 and `CHARIOX_NATIVE_DISPLAY_LIB` to the sysroot holding the static libyuv, libwebp
 and SharpYUV archives. A plain `cargo build --features native-display` on a host
