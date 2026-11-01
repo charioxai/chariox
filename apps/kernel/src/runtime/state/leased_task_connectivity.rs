@@ -290,6 +290,27 @@ mod tests {
     }
 
     #[test]
+    fn only_a_refused_connection_to_the_slices_own_relay_is_evidence_it_is_gone() {
+        for (operation, message) in [
+            (
+                "connect relay metadata socket",
+                "failed to lookup address information: Name or service not known",
+            ),
+            (
+                "connect temporary relay peer socket",
+                "invalid peer certificate: UnknownIssuer",
+            ),
+            ("connect relay metadata socket", "metadata response was not JSON"),
+            ("send relay peer request", "relay is not connected"),
+        ] {
+            assert!(
+                classify_probe(&failed_with(operation, message), true) == Probe::Unreachable,
+                "{operation}: {message} says nothing about the slice"
+            );
+        }
+    }
+
+    #[test]
     fn offline_is_counted_from_the_first_offline_report_not_from_earlier_uncertainty() {
         let key = ("task".to_string(), "worker".to_string(), "lease".to_string());
         let mut uncertain = BTreeMap::new();
