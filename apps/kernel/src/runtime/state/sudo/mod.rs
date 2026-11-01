@@ -32,9 +32,9 @@ pub(crate) use window::SUDO_WINDOW_LENGTH_FOR_TEST;
 #[cfg(test)]
 mod catalog_tests;
 #[cfg(test)]
-mod goal_tests;
-#[cfg(test)]
 mod forgotten_machine_tests;
+#[cfg(test)]
+mod goal_tests;
 #[cfg(test)]
 mod leased_route_tests;
 #[cfg(test)]
