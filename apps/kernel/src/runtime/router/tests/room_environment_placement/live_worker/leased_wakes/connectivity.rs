@@ -321,12 +321,40 @@ fn mp10_a10s04_general_worker_is_cancelled_after_the_lease_ceiling_has_passed() 
     });
 }
 
+#[test]
+fn mp10_a10s04_worker_is_cancelled_after_its_home_room_was_ended() {
+    run_test(|| {
+        relay_cut_then_reconnect(RelayCut {
+            room_removal: Some(RoomRemoval::End),
+            ..RelayCut::default()
+        })
+    });
+}
+
+#[test]
+fn mp10_a10s04_worker_is_cancelled_after_its_home_room_was_deleted() {
+    run_test(|| {
+        relay_cut_then_reconnect(RelayCut {
+            room_removal: Some(RoomRemoval::Delete),
+            ..RelayCut::default()
+        })
+    });
+}
+
+#[derive(Clone, Copy)]
+enum RoomRemoval {
+    End,
+    Delete,
+}
+
 #[derive(Default, Clone, Copy)]
 struct RelayCut {
     /// The home restarts after it gave up on the worker and before the worker returns.
     restart_home: bool,
     /// The worker stays unreachable for longer than a worker-enforced lease ceiling.
     offline_past_the_lease_ceiling: bool,
+    /// The home Room is ended or deleted while the worker is still unreachable.
+    room_removal: Option<RoomRemoval>,
 }
 
 /// The worker's relay link drops past the grace period while its provider keeps
@@ -423,6 +451,23 @@ async fn relay_cut_then_reconnect(cut: RelayCut) {
                 .map(|prompt| prompt.status())
         }
     };
+    match cut.room_removal {
+        Some(RoomRemoval::End) => {
+            runtime.end_session(&room).await.unwrap();
+        }
+        Some(RoomRemoval::Delete) => {
+            runtime.delete_session_id(&room).await.unwrap();
+        }
+        None => {}
+    }
+    if cut.room_removal.is_some() {
+        // A due attempt that fails while the Room is gone must not end the obligation.
+        resume_at += 120_000;
+        runtime
+            .sweep_agent_lifecycle_at_for_test(resume_at)
+            .await
+            .unwrap();
+    }
     let open_while_offline = runtime.unstopped_worker_runs_for_test();
     if cut.restart_home {
         restart_home(&mut fixture, store, runtime).await;
@@ -483,18 +528,22 @@ async fn relay_cut_then_reconnect(cut: RelayCut) {
     )
     .await;
     let open_after = runtime.unstopped_worker_runs_for_test();
-    let final_task = store
-        .agent_tasks(Some(&room), Some(&agent))
-        .unwrap()
-        .into_iter()
-        .find(|t| t.task_id == running.task_id)
-        .unwrap();
-    let woken = store
-        .agent_inbox(&room, &delegator, 0)
-        .unwrap()
-        .into_iter()
-        .filter(|event| event.source_id == agent)
-        .count();
+    // A removed Room has no task rows or inbox left to read.
+    let delegation = cut.room_removal.is_none().then(|| {
+        let final_task = store
+            .agent_tasks(Some(&room), Some(&agent))
+            .unwrap()
+            .into_iter()
+            .find(|t| t.task_id == running.task_id)
+            .unwrap();
+        let woken = store
+            .agent_inbox(&room, &delegator, 0)
+            .unwrap()
+            .into_iter()
+            .filter(|event| event.source_id == agent)
+            .count();
+        (final_task, woken)
+    });
     worker.stop().await;
     fixture.stop().await;
 
@@ -508,12 +557,14 @@ async fn relay_cut_then_reconnect(cut: RelayCut) {
         (1, 0),
         "the unconfirmed run is an open obligation until the worker is told to stop it"
     );
-    assert_eq!(
-        final_task.state,
-        ledger::ExecutionState::Cancelled,
-        "{final_task:?}"
-    );
-    assert_eq!(woken, 1, "the delegator is woken once");
+    if let Some((final_task, woken)) = delegation {
+        assert_eq!(
+            final_task.state,
+            ledger::ExecutionState::Cancelled,
+            "{final_task:?}"
+        );
+        assert_eq!(woken, 1, "the delegator is woken once");
+    }
 }
 
 /// The home dies the way a crash does, then starts again from its durable state
