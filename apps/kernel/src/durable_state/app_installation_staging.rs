@@ -16,6 +16,7 @@ use rusqlite::Connection;
 #[cfg(test)]
 use super::DurableWriterRequest;
 use super::{apps::AppRegistryOutcome, DurableKernelStateStore};
+#[cfg(test)]
 use crate::error::DaemonError;
 
 #[cfg(test)]
