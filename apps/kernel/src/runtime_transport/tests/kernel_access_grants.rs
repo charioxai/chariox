@@ -182,7 +182,9 @@ fn kernel_access_child_server() {
                     }
                 }
             });
-            std::fs::write(root.join("ready"), addr.to_string()).unwrap();
+            // Renamed into place: a client reading a half-written address got an empty URI.
+            std::fs::write(root.join("ready.tmp"), addr.to_string()).unwrap();
+            std::fs::rename(root.join("ready.tmp"), root.join("ready")).unwrap();
             run_kernel_websocket_server_with_bound_listeners(
                 router,
                 adopt_std_listener(tcp, "tcp").unwrap(),
