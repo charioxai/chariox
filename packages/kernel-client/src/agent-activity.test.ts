@@ -642,6 +642,7 @@ test("agent activity projection exposes completed turn action metadata", () => {
 test("agent activity projection accepts every provider termination category", () => {
   const categories = [
     "process_exit",
+    "memory_limit",
     "signal",
     "explicit_provider_error",
     "runtime_failure",

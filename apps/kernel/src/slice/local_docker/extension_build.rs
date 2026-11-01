@@ -169,7 +169,7 @@ mod linux {
     }
 
     fn helper_command(helper: &Path) -> Command {
-        let mut command = Command::new("/usr/bin/sudo");
+        let mut command = crate::process_spawn::command("/usr/bin/sudo");
         command
             .args(["-n", "--", "/usr/bin/python3", "-I", "-S", "-B"])
             .arg(helper)

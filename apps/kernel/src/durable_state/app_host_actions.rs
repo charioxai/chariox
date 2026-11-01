@@ -113,7 +113,7 @@ impl DurableKernelStateStore {
                 },
             )))
             .map_err(|_| "STORAGE_UNAVAILABLE")?;
-        receiver.recv().map_err(|_| "STORAGE_UNAVAILABLE")?
+        crate::durable_state::await_writer_response(receiver).map_err(|_| "STORAGE_UNAVAILABLE")?
     }
 
     pub(crate) fn pending_app_host_actions(

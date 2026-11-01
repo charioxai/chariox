@@ -105,25 +105,7 @@ impl KernelRuntimeOwnedState {
 
 /// Finished tasks a snapshot still carries; a long room must not grow every
 /// snapshot by one task per turn.
-const VISIBLE_FINISHED_TASKS: usize = 32;
-
-/// Every unfinished task plus the most recent finished ones, in ledger order.
-pub(super) fn visible_tasks(tasks: Vec<AgentTaskExecution>) -> Vec<AgentTaskExecution> {
-    let mut finished = 0;
-    let mut visible: Vec<_> = tasks
-        .into_iter()
-        .rev()
-        .filter(|task| {
-            if !matches!(task.state, ExecutionState::Done | ExecutionState::Cancelled) {
-                return true;
-            }
-            finished += 1;
-            finished <= VISIBLE_FINISHED_TASKS
-        })
-        .collect();
-    visible.reverse();
-    visible
-}
+pub(super) const VISIBLE_FINISHED_TASKS: usize = 32;
 
 pub(super) fn task_status_notice(task: &AgentTaskExecution, name: &str) -> String {
     let state = match task.state {
@@ -186,7 +168,7 @@ pub(super) fn task_correction_text(task: &AgentTaskExecution) -> String {
     let with = |status: &str| {
         task.obligations
             .iter()
-            .filter(|o| o.status == status)
+            .filter(|o| o.status == status && o.requires_resolution())
             .collect::<Vec<_>>()
     };
     let (settling, running, failed) = (with("settling"), with("open"), with("failed"));
@@ -213,6 +195,17 @@ pub(super) fn task_public_outputs<'a>(
     prompt: &str,
     run: Option<&str>,
 ) -> Vec<&'a str> {
+    task_public_output_entries(entries, prompt, run)
+        .into_iter()
+        .map(|entry| entry.text.as_str())
+        .collect()
+}
+
+pub(super) fn task_public_output_entries<'a>(
+    entries: &'a [crate::history::SessionHistoryEntry],
+    prompt: &str,
+    run: Option<&str>,
+) -> Vec<&'a crate::history::SessionHistoryEntry> {
     use crate::history::SessionHistoryEntryKind as Kind;
     let key = format!("prompt:{prompt}");
     let Some(start) = entries
@@ -252,8 +245,50 @@ pub(super) fn task_public_outputs<'a>(
                     .and_then(crate::history::parse_external_provider_observed_id)
                     .is_none_or(|id| !managed_items.contains(id.provider_turn_id.as_str()))
         })
-        .map(|e| e.text.as_str())
         .collect()
+}
+
+/// The same bounded message projection is used for current and prior goal work.
+pub(super) struct PublicTaskAnswer {
+    pub messages: Vec<String>,
+    pub shown_chars: usize,
+    pub total_chars: usize,
+}
+
+pub(super) fn task_public_answer(
+    entries: &[crate::history::SessionHistoryEntry],
+    prompt: &str,
+    run: Option<&str>,
+    limit: usize,
+) -> PublicTaskAnswer {
+    let output = task_public_output_entries(entries, prompt, task_answer_history_run(run));
+    let total_chars = output.iter().map(|e| e.text.chars().count()).sum();
+    let mut remaining = limit;
+    let mut messages: Vec<(Option<&str>, String)> = Vec::new();
+    // IDs distinguish commentary from a later answer. Without an ID, keep
+    // adjacent deltas together instead of inventing message boundaries.
+    for entry in output.into_iter().rev() {
+        if remaining == 0 {
+            break;
+        }
+        let count = entry.text.chars().count();
+        let shown = count.min(remaining);
+        if shown == 0 {
+            continue;
+        }
+        let tail = entry.text.chars().skip(count - shown).collect::<String>();
+        let key = entry.merge_key.as_deref();
+        match messages.last_mut() {
+            Some((last_key, text)) if *last_key == key => text.insert_str(0, &tail),
+            _ => messages.push((key, tail)),
+        }
+        remaining -= shown;
+    }
+    PublicTaskAnswer {
+        messages: messages.into_iter().rev().map(|(_, text)| text).collect(),
+        shown_chars: limit - remaining,
+        total_chars,
+    }
 }
 
 #[cfg(test)]
@@ -266,27 +301,6 @@ mod tests {
             .map(|(i, status)| serde_json::json!({"id":format!("ob-{i}"),"kind":"delegate","resource_id":format!("agent-{i}"),"status":status,"dispatch_state":"accepted"}))
             .collect::<Vec<_>>();
         serde_json::from_value(serde_json::json!({"task_id":"t","room_id":"r","agent_id":"a","prompt_id":"t","provider_run_id":"run","revision":1,"state":"working","reason":"","obligations":obligations,"wait":null,"last_progress_at_ms":1,"progress_sequence":0,"no_progress_wakes":0,"correction_used":true,"pending_prompt_id":"task-correction-t"})).unwrap()
-    }
-    #[test]
-    fn snapshot_keeps_every_unfinished_task_and_only_recent_finished_ones() {
-        let mut tasks = Vec::new();
-        for index in 0..40 {
-            let mut task = correction_task(&[]);
-            task.task_id = format!("t{index}");
-            task.state = if index == 0 {
-                ExecutionState::Waiting
-            } else {
-                ExecutionState::Done
-            };
-            tasks.push(task);
-        }
-        let ids: Vec<_> = visible_tasks(tasks)
-            .into_iter()
-            .map(|t| t.task_id)
-            .collect();
-        assert_eq!(ids.len(), 33);
-        assert_eq!((ids[0].as_str(), ids[1].as_str()), ("t0", "t8"));
-        assert_eq!(ids[32], "t39");
     }
     #[test]
     fn r16_task_notice_uses_the_agent_name_without_protocol_details() {

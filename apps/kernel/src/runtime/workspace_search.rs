@@ -644,7 +644,7 @@ mod tests {
         create_test_dir(nested.clone());
         let repository = home.join("projects").join("post-enrollment-repository");
         create_test_dir(repository.clone());
-        let output = std::process::Command::new("git")
+        let output = crate::process_spawn::command("git")
             .args(["init", "-b", "main"])
             .current_dir(&repository)
             .output()

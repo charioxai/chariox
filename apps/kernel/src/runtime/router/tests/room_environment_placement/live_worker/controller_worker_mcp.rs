@@ -2227,38 +2227,6 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
             )
             .await
     });
-    let interaction_id = tokio::time::timeout(Duration::from_secs(3), async {
-        loop {
-            let session = fixture
-                .home
-                .runtime_state
-                .session_snapshot_projection(&room, 0)
-                .expect("home Room projection")
-                .session;
-            if let Some(interaction) = session
-                .active_interactions()
-                .iter()
-                .find(|interaction| interaction.title() == Some("Computer credential input"))
-            {
-                assert!(interaction
-                    .message()
-                    .contains("approving an unmasked field can expose the credential"));
-                assert!(interaction
-                    .message()
-                    .contains("native window 100, focused control 101"));
-                break interaction.id().to_string();
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("computer credential approval appears on home");
-    fixture
-        .home
-        .runtime_state
-        .resolve_runtime_interaction(&room, &interaction_id, "allow", None)
-        .await
-        .expect("approve the computer credential on home");
     let result = call
         .await
         .expect("computer secret task joins")

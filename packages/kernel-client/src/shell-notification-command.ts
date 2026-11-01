@@ -3,6 +3,8 @@ import type {
   EventConnectionAuthorization,
   EventConnectionPage,
   EventConnectionTestResult,
+  ReceivedEvent,
+  ReceivedEventPage,
   EventGeneratorCatalogDetail,
   EventGeneratorCatalogPage,
   EventGeneratorResourcePage,
@@ -15,11 +17,13 @@ import {
   getEventGeneratorDetailRequest,
   installEventConnectionRequest,
   listEventConnectionDependenciesRequest,
+  listEventConnectionEventsRequest,
   listEventConnectionResourcesRequest,
   listEventConnectionsRequest,
   observeEventConnectionAuthorizationRequest,
   reconnectEventConnectionRequest,
   refreshEventConnectionRequest,
+  replayEventConnectionEventRequest,
   removeEventConnectionRequest,
   searchEventGeneratorCatalogRequest,
   testEventConnectionRequest,
@@ -136,7 +140,7 @@ async function executeConnectionAction(
 ): Promise<ShellCommandResult> {
   const [action, connectionId, ...rest] = args
   if (!action || !connectionId) {
-    return failure("usage: notifications connection show|resources|refresh|test|reconnect|dependencies|remove <connection-id>")
+    return failure("usage: notifications connection show|resources|refresh|test|events|replay|reconnect|dependencies|remove <connection-id>")
   }
   if (action === "show") {
     const connection = expectField<EventConnection>(
@@ -171,6 +175,30 @@ async function executeConnectionAction(
       message: result.accepted
         ? `test event accepted as ${result.occurrence_id}`
         : (result.message ?? "test event did not match an active App inbox route"),
+      data: result,
+    }
+  }
+  if (action === "events") {
+    const page = expectField<ReceivedEventPage>(
+      await client.send(listEventConnectionEventsRequest(connectionId)),
+      "EventConnectionEvents", "page",
+    )
+    return {
+      ok: true,
+      message: page.events.map(formatReceivedEvent).join("\n") || "this integration has not received any events",
+      data: page,
+    }
+  }
+  if (action === "replay") {
+    const [deliveryId] = rest
+    if (!deliveryId) return failure("usage: notifications connection replay <connection-id> <delivery-id>")
+    const result = expectField<{ event: ReceivedEvent }>(
+      await client.send(replayEventConnectionEventRequest(connectionId, deliveryId)),
+      "EventConnectionEventReplayed", "result",
+    )
+    return {
+      ok: result.event.status !== "pending" && result.event.status !== "failed",
+      message: `replayed\n${formatReceivedEvent(result.event)}`,
       data: result,
     }
   }
@@ -276,6 +304,14 @@ function formatAuthorization(authorization: EventConnectionAuthorization): strin
     authorization.authorization_url ? `open: ${authorization.authorization_url}` : null,
     authorization.user_code ? `code: ${authorization.user_code}` : null,
   ].filter(Boolean).join("\n")
+}
+
+function formatReceivedEvent(event: ReceivedEvent): string {
+  const target = ` ${event.connection_scope}${event.subject ?? ""}`
+  const published = event.published_at_ms ? ` published=${new Date(event.published_at_ms).toISOString()}` : ""
+  const problem = event.last_error ? ` error=${event.last_error}` : ""
+  return `${event.delivery_id}  ${event.event_type}${target}  ${event.status}`
+    + `  received=${new Date(event.received_at_ms).toISOString()}${published}${problem}`
 }
 
 function formatDependencies(items: EventConnectionDependency[]): string {

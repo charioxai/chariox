@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use crate::error::DaemonError;
 
 pub(crate) fn git_command_output(path: &str, args: &[&str]) -> Option<String> {
-    let output = std::process::Command::new("git")
+    let output = crate::process_spawn::command("git")
         .args(args)
         .current_dir(path)
         .output()
@@ -20,7 +20,7 @@ pub(crate) fn run_workspace_git_command(
     args: &[&str],
     operation: &'static str,
 ) -> Result<(), DaemonError> {
-    let output = std::process::Command::new("git")
+    let output = crate::process_spawn::command("git")
         .args(args)
         .current_dir(worktree_path)
         .output()
@@ -48,7 +48,7 @@ pub(crate) fn run_workspace_git_command(
 }
 
 pub(crate) fn run_git(repo_root: &Path, args: &[&str]) -> Result<(), DaemonError> {
-    let output = std::process::Command::new("git")
+    let output = crate::process_spawn::command("git")
         .args(args)
         .current_dir(repo_root)
         .output()
@@ -84,7 +84,7 @@ pub(crate) fn find_repo_root(workspace_path: &str) -> Result<Option<PathBuf>, Da
         }
         Ok(_) => {}
     }
-    let output = std::process::Command::new("git")
+    let output = crate::process_spawn::command("git")
         .env("LC_ALL", "C")
         .args(["rev-parse", "--show-toplevel"])
         .current_dir(workspace_path)
@@ -109,7 +109,7 @@ pub(crate) fn find_repo_root(workspace_path: &str) -> Result<Option<PathBuf>, Da
 }
 
 pub(crate) fn git_ref_exists(repo_root: &Path, reference: &str) -> Result<bool, DaemonError> {
-    let output = std::process::Command::new("git")
+    let output = crate::process_spawn::command("git")
         .args(["rev-parse", "--verify", "--quiet", reference])
         .current_dir(repo_root)
         .output()
@@ -121,7 +121,7 @@ pub(crate) fn git_ref_exists(repo_root: &Path, reference: &str) -> Result<bool, 
 }
 
 pub(crate) fn git_reference_resolves(repo_root: &str, reference: &str) -> bool {
-    std::process::Command::new("git")
+    crate::process_spawn::command("git")
         .args(["rev-parse", "--verify", "--quiet", reference])
         .current_dir(repo_root)
         .status()
@@ -220,7 +220,7 @@ pub(crate) fn same_fs_path(left: &str, right: &str) -> bool {
 }
 
 pub(crate) fn detect_git_branch(path: &str) -> Result<String, DaemonError> {
-    let output = std::process::Command::new("git")
+    let output = crate::process_spawn::command("git")
         .args(["rev-parse", "--abbrev-ref", "HEAD"])
         .current_dir(path)
         .output()
@@ -340,7 +340,7 @@ mod tests {
     }
 
     fn run_git(cwd: &Path, args: &[&str]) {
-        let output = std::process::Command::new("git")
+        let output = crate::process_spawn::command("git")
             .args(args)
             .current_dir(cwd)
             .output()
@@ -441,7 +441,7 @@ mod owner14_tests {
             super::workspace_display_label(root.path().to_str().unwrap()),
             None
         );
-        assert!(std::process::Command::new("git")
+        assert!(crate::process_spawn::command("git")
             .args(["init", "-q"])
             .arg(root.path())
             .status()
@@ -451,7 +451,7 @@ mod owner14_tests {
             super::workspace_display_label(root.path().to_str().unwrap()),
             None
         );
-        assert!(std::process::Command::new("git")
+        assert!(crate::process_spawn::command("git")
             .arg("-C")
             .arg(root.path())
             .args([

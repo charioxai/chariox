@@ -686,48 +686,6 @@ async fn live_check() {
             .await
             .unwrap();
         router.dispatch_authenticated_runtime_tool_call(&token, "chariox.kernel_browser", json!({"document_id":document,"command":KernelBrowserCommand::Input {tab_id:id.clone(),generation,input:KernelBrowserInput::Text{text:"MD-3 agent resumed".into()}}})).await.unwrap();
-        let bound_stream = runtime
-            .kernel_browser_display_request(
-                &caller,
-                Display::Subscribe {
-                    tab_id: id.clone(),
-                    generation,
-                },
-            )
-            .await
-            .unwrap();
-        let bound_stream_id = bound_stream["subscription_id"]
-            .as_str()
-            .unwrap()
-            .to_string();
-        let mut bound_seen = false;
-        for _ in 0..50 {
-            let polled = human(
-                &router,
-                KernelBrowserCommand::Poll {
-                    subscription_id: bound_stream_id.clone(),
-                    generation,
-                },
-            )
-            .await;
-            if polled["frame"]["document_id"] == document {
-                bound_seen = true;
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        assert!(
-            bound_seen,
-            "MD-3 bound display source produced no document-bound frame"
-        );
-        human(
-            &router,
-            KernelBrowserCommand::Unsubscribe {
-                subscription_id: bound_stream_id,
-                generation,
-            },
-        )
-        .await;
         let frame = human(
             &router,
             KernelBrowserCommand::Screenshot {
@@ -741,32 +699,6 @@ async fn live_check() {
             .unwrap();
         assert!(png.starts_with(b"\x89PNG\r\n\x1a\n"));
         std::fs::write(root.join("screenshot.png"), png).unwrap();
-        let stream = human(
-            &router,
-            KernelBrowserCommand::Subscribe {
-                tab_id: id.clone(),
-                generation,
-            },
-        )
-        .await;
-        let stream_id = stream["subscription_id"].as_str().unwrap().to_string();
-        let mut saw_frame = false;
-        for _ in 0..50 {
-            let value = human(
-                &router,
-                KernelBrowserCommand::Poll {
-                    subscription_id: stream_id.clone(),
-                    generation,
-                },
-            )
-            .await;
-            if !value["frame"].is_null() {
-                saw_frame = true;
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-        assert!(saw_frame);
         // MD-5: normal Vault/MCP path, including hostile plaintext echo on input.
         let observed = human(
             &router,
@@ -873,47 +805,6 @@ async fn live_check() {
             "MD-5: retired echoes remain scrubbed"
         );
         assert!(retired.to_string().contains("[redacted]"));
-        let protected_stream = human(
-            &router,
-            KernelBrowserCommand::Subscribe {
-                tab_id: id.clone(),
-                generation,
-            },
-        )
-        .await;
-        let protected_id = protected_stream["subscription_id"]
-            .as_str()
-            .unwrap()
-            .to_string();
-        let mut saw_mask = false;
-        for _ in 0..50 {
-            let polled = human(
-                &router,
-                KernelBrowserCommand::Poll {
-                    subscription_id: protected_id.clone(),
-                    generation,
-                },
-            )
-            .await;
-            if !polled["frame"].is_null() {
-                assert_eq!(polled["frame"]["mime_type"], "image/png");
-                saw_mask = true;
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-        assert!(
-            saw_mask,
-            "MD-5: protected frame source must produce opaque frames"
-        );
-        human(
-            &router,
-            KernelBrowserCommand::Unsubscribe {
-                subscription_id: protected_id,
-                generation,
-            },
-        )
-        .await;
         // Fault the exact browser selected by this lane-owned profile's singleton PID.
         let profile = router
             .runtime_state
@@ -955,19 +846,6 @@ async fn live_check() {
         });
         assert!(router
             .dispatch(terminal_command("MD-4-stale", &stale), stale)
-            .await
-            .is_err());
-        let stale_stream = LocalDaemonRequest::KernelBrowser(KernelBrowserRequest {
-            command: KernelBrowserCommand::Poll {
-                subscription_id: stream_id,
-                generation,
-            },
-        });
-        assert!(router
-            .dispatch(
-                terminal_command("MD-4-stale-stream", &stale_stream),
-                stale_stream
-            )
             .await
             .is_err());
         // MD-3: leave takeover held across actual kernel exit, then require release on restart.

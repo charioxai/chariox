@@ -751,7 +751,7 @@ mod tests {
     #[test]
     fn stdio_proxy_reuses_backing_process_and_caches_initialize() {
         crate::test_support::isolated_env_test!();
-        if std::process::Command::new("node")
+        if crate::process_spawn::command("node")
             .arg("--version")
             .output()
             .is_err()

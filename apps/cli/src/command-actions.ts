@@ -496,7 +496,8 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     if (control && !control[2]?.startsWith("goal:")) {
       const task = deps.sessionState().agent_tasks?.find((t) => t.agent_id === agent.id && t.goal && !["done", "cancelled"].includes(t.state))
       if (!task?.goal) { deps.flashFooter("no active goal on the focused agent", "error"); return }
-      raw = `/goal ${control[1]} ${task.goal.id} ${task.revision}${control[2] ? ` ${control[2]}` : ""}`
+      const prefix = /^\/sudo\s+\/goal\s/u.test(command.raw) ? "/sudo /goal" : "/goal"
+      raw = `${prefix} ${control[1]} ${task.goal.id} ${task.revision}${control[2] ? ` ${control[2]}` : ""}`
     }
     await deps.submitGoalPrompt(raw, agent.id)
   }

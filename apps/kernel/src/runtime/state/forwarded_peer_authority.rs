@@ -190,6 +190,23 @@ impl KernelRuntimeState {
     ) -> Result<(), DaemonError> {
         // Binding mutation and admission use the same app mutation lane.
         match request {
+            RelayPeerRequest::AgentMove { request } => {
+                let identity = request.identity();
+                let peer = self.relay_peer_authority.as_ref().ok_or_else(|| {
+                    crate::agent_move::error("Move preparation has no authenticated peer")
+                })?;
+                if peer.kernel_id != identity.home_kernel_id
+                    || crate::runtime::terminal_pairings::public_key_thumbprint(&peer.public_key)
+                        != identity.home_key_thumbprint
+                {
+                    return Err(crate::agent_move::error(
+                        "Move preparation does not match its authenticated home kernel",
+                    ));
+                }
+                // Scoped owner/realm and lease admission have already run at the
+                // encrypted peer boundary, including legacy shared-token leases.
+                Ok(())
+            }
             RelayPeerRequest::ForwardWorkspaceLiveSyncRuntimeTool { context, .. }
             | RelayPeerRequest::FinalizeWorkspaceLiveSyncRuntimeTool { context, .. }
             | RelayPeerRequest::ForwardCapabilityRuntimeTool { context, .. }

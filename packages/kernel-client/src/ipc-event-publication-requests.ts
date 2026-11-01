@@ -133,6 +133,18 @@ export function testEventConnectionRequest(connectionId: string, eventType?: str
   }
 }
 
+export const integrationReceivedEventsMinimumProtocolVersion = 911
+
+export function listEventConnectionEventsRequest(connectionId: string, limit = 50) {
+  return { ListEventConnectionEvents: { connection_id: connectionId, limit } }
+}
+
+export function replayEventConnectionEventRequest(connectionId: string, deliveryId: string) {
+  return {
+    ReplayEventConnectionEvent: { connection_id: connectionId, delivery_id: deliveryId },
+  }
+}
+
 export function reconnectEventConnectionRequest(connectionId: string, returnUrl?: string | null) {
   return {
     ReconnectEventConnection: {

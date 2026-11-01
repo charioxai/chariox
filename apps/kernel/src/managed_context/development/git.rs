@@ -336,7 +336,7 @@ fn create_git_bundle_to_writer(
     writer: &mut impl Write,
     maximum_bytes: u64,
 ) -> Result<(), DaemonError> {
-    let mut child = Command::new("git")
+    let mut child = crate::process_spawn::command("git")
         .args([OsStr::new("bundle"), OsStr::new("create"), OsStr::new("-")])
         .arg("HEAD")
         .current_dir(worktree)
@@ -641,7 +641,7 @@ fn run_git_output_bounded(
     maximum_stdout_bytes: usize,
     isolated: bool,
 ) -> Result<Output, DaemonError> {
-    let mut command = Command::new("git");
+    let mut command = crate::process_spawn::command("git");
     command.args(args).current_dir(worktree);
     if isolated {
         configure_isolated_git_environment(&mut command);
@@ -765,7 +765,7 @@ fn stream_git_nul_records_with_environment<F>(
 where
     F: FnMut(String) -> Result<(), DaemonError>,
 {
-    let mut command = Command::new("git");
+    let mut command = crate::process_spawn::command("git");
     command.args(args).current_dir(worktree);
     if isolated {
         configure_isolated_git_environment(&mut command);
@@ -966,7 +966,7 @@ mod interruption_tests {
     // the upload completes. That must retain the import for a fresh retry.
     #[test]
     fn terminated_git_command_remains_retryable_for_copy_recovery() {
-        let output = Command::new("sh")
+        let output = crate::process_spawn::command("sh")
             .args([
                 "-c",
                 "if [ \"$$\" -gt 1 ]; then kill -TERM \"$$\"; else exit 1; fi",
@@ -985,7 +985,7 @@ mod interruption_tests {
             }
         ));
 
-        let output = Command::new("sh")
+        let output = crate::process_spawn::command("sh")
             .args(["-c", "exit 1"])
             .output()
             .expect("run ordinary command failure probe");

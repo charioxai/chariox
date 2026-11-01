@@ -125,8 +125,8 @@ export function WorkspaceLayout(props: WorkspaceLayoutProps) {
             <box
               ref={props.onResponsePrimaryFooterBoxRef}
               flexShrink={0}
-              flexDirection="row"
-              gap={0}
+              flexDirection="column"
+              gap={1}
               overflow="hidden"
             />
           </box>
@@ -183,8 +183,8 @@ export function WorkspaceLayout(props: WorkspaceLayoutProps) {
                 props.onResponseAuxiliaryFooterBoxRef(paneIndex - 1, value)
               }}
               flexShrink={0}
-              flexDirection="row"
-              gap={0}
+              flexDirection="column"
+              gap={1}
               overflow="hidden"
             />
           </box>

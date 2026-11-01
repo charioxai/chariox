@@ -469,7 +469,7 @@ mod tests {
 
         let outside_launch =
             fenced_shell_launch(&protected_root, &outside_root, "printf ok > outside.txt");
-        let outside = std::process::Command::new(outside_launch.pty_program.as_deref().unwrap())
+        let outside = crate::process_spawn::command(outside_launch.pty_program.as_deref().unwrap())
             .args(&outside_launch.pty_args)
             .current_dir(&outside_root)
             .envs(&outside_launch.pty_env)
@@ -485,7 +485,7 @@ mod tests {
             ),
         );
         let protected =
-            std::process::Command::new(protected_launch.pty_program.as_deref().unwrap())
+            crate::process_spawn::command(protected_launch.pty_program.as_deref().unwrap())
                 .args(&protected_launch.pty_args)
                 .current_dir(&outside_root)
                 .envs(&protected_launch.pty_env)
@@ -522,7 +522,7 @@ mod tests {
             &nested_repo,
             "printf ok > nested-write.txt",
         );
-        let nested = std::process::Command::new(outside_launch.pty_program.as_deref().unwrap())
+        let nested = crate::process_spawn::command(outside_launch.pty_program.as_deref().unwrap())
             .args(&outside_launch.pty_args)
             .current_dir(&nested_repo)
             .envs(&outside_launch.pty_env)
@@ -538,7 +538,7 @@ mod tests {
             ),
         );
         let protected =
-            std::process::Command::new(protected_launch.pty_program.as_deref().unwrap())
+            crate::process_spawn::command(protected_launch.pty_program.as_deref().unwrap())
                 .args(&protected_launch.pty_args)
                 .current_dir(&nested_repo)
                 .envs(&protected_launch.pty_env)
@@ -585,7 +585,7 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     fn run_git_init(path: &std::path::Path) {
-        let status = std::process::Command::new("git")
+        let status = crate::process_spawn::command("git")
             .arg("-C")
             .arg(path)
             .arg("init")

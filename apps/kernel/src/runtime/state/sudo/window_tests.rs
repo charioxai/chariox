@@ -163,6 +163,28 @@ async fn sudo_window_projection_keeps_deadline_and_warning_after_mutation() {
 }
 
 #[tokio::test]
+async fn sudo_window_ends_at_its_displayed_expiry_after_host_sleep() {
+    let f = fixture_with_options(None, true);
+    let mut window = running(&f);
+    assert!(f.state.sudo_live(&window));
+    // The monotonic clock does not count suspend on Linux or macOS: after the
+    // host sleeps past the expiry every client shows, the deadline is still
+    // ahead while the wall clock is not.
+    window.expires_at_ms = Some(crate::session::unix_epoch_ms() - 60_000);
+    f.state
+        .owned
+        .sudo_turns
+        .lock()
+        .unwrap()
+        .insert(window.entry_id.clone(), window.clone());
+    assert_eq!(
+        f.state.owned.sudo_end_reason(&window),
+        Some("expired"),
+        "a sudo window must not keep authority past the expiry the owner was shown"
+    );
+}
+
+#[tokio::test]
 async fn sudo_windows_are_projected_only_to_their_owner() {
     let f = fixture_with_options(None, true);
     let window = running(&f);
@@ -1112,84 +1134,7 @@ async fn sudo_warning_is_retried_when_its_durable_receipt_fails() {
         .unwrap();
 }
 
-#[tokio::test]
-async fn sudo_scope_cannot_be_widened_by_results_or_extension() {
-    let f = fixture_with_options(None, true);
-    let window = open(&f, None).await;
-    let request = LocalDaemonRequest::SetUserConfigValue(SetUserConfigValueRequest {
-        path: "workflow.session_default_max_agents".into(),
-        value: "16".into(),
-    });
-    assert!(f
-        .state
-        .authorize_sudo_request(&window.entry_id, &request)
-        .is_err());
-    let state = f.state.clone();
-    let initial = window.clone();
-    let operation = request.clone();
-    let confirmation =
-        tokio::spawn(async move { state.confirm_sudo_scope(&initial, &operation).await });
-    let prompt = popup(&f.state).await;
-    assert!(prompt.interaction_id.contains(":scope:"));
-    assert_eq!(prompt.lifetime_minutes, None);
-    assert!(f
-        .state
-        .answer_terminal_runtime_interaction(
-            &window.session_id,
-            &prompt.interaction_id,
-            "approve",
-            None,
-            Some("local"),
-            None,
-            Some(5),
-            Some(KernelConnectionClass::Terminal)
-        )
-        .await
-        .is_err());
-    approve(&f, &prompt, None).await.unwrap();
-    tokio::time::timeout(Duration::from_secs(5), confirmation)
-        .await
-        .unwrap()
-        .unwrap()
-        .unwrap();
-    assert!(f
-        .state
-        .authorize_sudo_request(&window.entry_id, &request)
-        .is_ok());
-    let changed = LocalDaemonRequest::SetUserConfigValue(SetUserConfigValueRequest {
-        path: "workflow.session_default_max_agents".into(),
-        value: "17".into(),
-    });
-    assert!(f
-        .state
-        .authorize_sudo_request(&window.entry_id, &changed)
-        .is_err());
-    // A time-only extension retains exactly the original approved scope.
-    super::window::open_window(
-        f.state
-            .owned
-            .sudo_turns
-            .lock()
-            .unwrap()
-            .get_mut(&window.entry_id)
-            .unwrap(),
-        120,
-    );
-    assert!(f
-        .state
-        .authorize_sudo_request(&window.entry_id, &request)
-        .is_ok());
-    assert!(f
-        .state
-        .authorize_sudo_request(&window.entry_id, &changed)
-        .is_err());
-    f.state
-        .revoke_sudo(Some("local"), Some(&window.entry_id), "fixture_cleanup")
-        .unwrap();
-    assert!(f.state.owned.sudo_scopes.lock().unwrap().is_empty());
-}
-
-// MP-08/MP-10/MP-11: scope approval is not authority to finish an effect
+// MP-08/MP-10/MP-11: admission is not authority to finish an effect
 // after revocation while waiting for the app mutex.
 #[tokio::test]
 async fn sudo_config_effect_rechecks_authority_after_app_lock_wait() {
@@ -1208,15 +1153,9 @@ async fn config_effect_after_app_lock_wait(expired: bool) {
         path: "workflow.session_default_max_agents".into(),
         value: "16".into(),
     });
-    let confirmation = tokio::spawn({
-        let state = f.state.clone();
-        let window = window.clone();
-        let request = request.clone();
-        async move { state.confirm_sudo_scope(&window, &request).await }
-    });
-    let prompt = popup(&f.state).await;
-    approve(&f, &prompt, None).await.unwrap();
-    confirmation.await.unwrap().unwrap();
+    f.state
+        .authorize_sudo_request(&window.entry_id, &request)
+        .unwrap();
     let probe = Arc::new(tokio::sync::Notify::new());
     let mut admitted = f
         .state
@@ -1651,6 +1590,90 @@ async fn sudo_extension_retry_has_a_fresh_interaction_without_changing_the_windo
     };
     assert_eq!(turn.revision, window.revision + 1);
     assert_eq!(turn.duration_minutes, 120);
+    f.state
+        .revoke_sudo(Some("local"), Some(&window.entry_id), "fixture_cleanup")
+        .unwrap();
+}
+
+/// The host slept: the monotonic deadline is still about an hour away while
+/// the expiry every client shows is `minutes` away.
+fn sleep_until_minutes_before_expiry(f: &Fixture, window: &KernelSudoTurn, minutes: u64) {
+    f.state
+        .owned
+        .sudo_turns
+        .lock()
+        .unwrap()
+        .get_mut(&window.entry_id)
+        .unwrap()
+        .expires_at_ms = Some(crate::session::unix_epoch_ms() + minutes * 60_000);
+}
+
+fn expiry_warnings(f: &Fixture) -> Vec<String> {
+    f.state
+        .owned
+        .operational_history_store
+        .load_session_history_entries(&f.request.session_id, None)
+        .unwrap()
+        .iter()
+        .map(|entry| format!("{entry:?}"))
+        .filter(|entry| entry.contains(" expires in "))
+        .collect()
+}
+
+#[tokio::test]
+async fn sudo_warns_before_the_displayed_expiry_after_host_sleep() {
+    let f = fixture_with_options(None, true);
+    let window = open(&f, None).await;
+    sleep_until_minutes_before_expiry(&f, &window, 9);
+    f.state.pump_sudo_windows(None);
+    f.state.pump_sudo_windows(None);
+    assert_eq!(
+        outcomes(&f, &window.entry_id)
+            .iter()
+            .filter(|o| *o == "warning")
+            .count(),
+        1,
+        "the ten-minute warning must follow the earlier of both clocks"
+    );
+    let notices = expiry_warnings(&f);
+    assert!(
+        notices.len() == 1 && notices[0].contains("expires in 9 minutes"),
+        "{notices:?}"
+    );
+    f.state
+        .revoke_sudo(Some("local"), Some(&window.entry_id), "fixture_cleanup")
+        .unwrap();
+}
+
+#[tokio::test]
+async fn the_sudo_timer_wakes_for_the_displayed_expiry_after_host_sleep() {
+    let f = fixture_with_options(None, true);
+    let window = open(&f, None).await;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while f
+            .state
+            .owned
+            .sudo_timers
+            .lock()
+            .unwrap()
+            .get(&window.entry_id)
+            != Some(&(1, 0))
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    sleep_until_minutes_before_expiry(&f, &window, 9);
+    f.state.owned.sudo_timer_changes.record_change();
+    // No pump: the armed timer alone must schedule the warning.
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !f.state.list_sudo_turns("local")[0].warning_sent {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the timer kept sleeping towards the monotonic deadline");
     f.state
         .revoke_sudo(Some("local"), Some(&window.entry_id), "fixture_cleanup")
         .unwrap();

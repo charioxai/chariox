@@ -341,6 +341,9 @@ pub(crate) fn launch_provider_request_from_local(
             launch_request = launch_request.with_resume_state(resume_state);
         }
     }
+    if let Some(binding) = request.native_checkpoint_binding {
+        launch_request = launch_request.with_native_checkpoint_binding(binding);
+    }
     let session = app.sessions().get_session(&request.session_id).ok();
     let focused_agent_id = session
         .as_ref()
@@ -407,6 +410,7 @@ mod tests {
                 structured_endpoint: None,
                 provider_session_id: None,
                 native_tui: false,
+                native_checkpoint_binding: None,
             },
         );
 

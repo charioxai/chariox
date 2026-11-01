@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, types::Value as SqlValue, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 use crate::error::DaemonError;
@@ -53,8 +53,10 @@ pub(crate) mod apps;
 mod apps_tests;
 pub(crate) mod browser_import;
 mod owner;
+mod retired_sessions;
 pub(crate) mod room_environment;
 pub(crate) mod storage_full;
+mod sync_timing;
 pub(crate) mod worker_prompt_receipts;
 pub(crate) mod worker_steer_receipts;
 pub(crate) mod workflow_invocation_provenance;
@@ -81,6 +83,7 @@ pub struct DurableKernelStateStore {
     appended_events: tokio::sync::broadcast::Sender<DurableStateEvent>,
     _owner: Option<Arc<owner::OwnerLease>>,
     workflow_history_authority: workflow_invocation_provenance::WorkflowHistoryAuthority,
+    outside_followed: Arc<agent_lifecycle::outside::Followed>,
 }
 
 const DURABLE_WRITE_QUEUE_CAPACITY: usize = 4_096;
@@ -144,13 +147,18 @@ struct DurableWriterHealth {
     committed_batches: AtomicU64,
     committed_records: AtomicU64,
     max_batch_records: AtomicU64,
+    enqueued: AtomicU64,
+    received: AtomicU64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct DurableWriterHealthSnapshot {
-    pub(crate) committed_batches: u64,
-    pub(crate) committed_records: u64,
-    pub(crate) max_batch_records: u64,
+/// The durable writer's queue depth and its commit counters since the kernel started.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct DurableWriterHealthSnapshot {
+    /// Requests waiting for the writer.
+    pub queued: u64,
+    pub committed_batches: u64,
+    pub committed_records: u64,
+    pub max_batch_records: u64,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -176,6 +184,7 @@ pub(crate) struct DurableIncrementalReclaimOutcome {
 
 #[derive(Debug)]
 struct DurableWriteRequest {
+    observation: Option<crate::runtime::request_metrics::RequestObservation>,
     operation: DurableWriteOperation,
     response: mpsc::Sender<Result<u64, String>>,
 }
@@ -186,6 +195,10 @@ struct DurableWriteRequest {
     reason = "Preserve the existing DurableWriterRequest typed actor payload layout"
 )]
 enum DurableWriterRequest {
+    Observed {
+        request: Box<DurableWriterRequest>,
+        observation: crate::runtime::request_metrics::RequestObservation,
+    },
     Ordinary(DurableWriteRequest),
     App(Box<apps::AppRegistryRequest>),
     #[allow(
@@ -233,6 +246,11 @@ enum DurableWriterRequest {
 enum DurableWriteOperation {
     RoomEnvironment(room_environment::RoomEnvironmentWrite),
     BrowserImport(browser_import::ImportStateWrite),
+    RetiredSessionBackfill {
+        owner_id: String,
+        records: Vec<(String, String, String)>,
+        sequence: u64,
+    },
     Event {
         event_id: String,
         kind: String,
@@ -409,6 +427,10 @@ impl DurableKernelStateStore {
         app_automations::initialize(&mut connection)?;
         workflow_notifications::initialize(&mut connection)?;
         agent_lifecycle::initialize(&mut connection)?;
+        retired_sessions::initialize(&connection).map_err(|error| DaemonError::LocalTransport {
+            operation: "durable_state.retired_sessions",
+            message: error.to_string(),
+        })?;
         app_inbox::initialize(&connection)?;
         app_worker_lifecycle::initialize(&connection)?;
         app_validations::initialize(&connection).map_err(|_| DaemonError::LocalTransport {
@@ -435,7 +457,8 @@ impl DurableKernelStateStore {
                 message: error.to_string(),
             }
         })?;
-        let writer = DurableStateWriter::start(&path)?;
+        let outside_followed = Arc::new(agent_lifecycle::outside::Followed::default());
+        let writer = DurableStateWriter::start(&path, Arc::clone(&outside_followed))?;
         connection
             .pragma_update(None, "query_only", true)
             .map_err(|error| DaemonError::LocalTransport {
@@ -451,6 +474,7 @@ impl DurableKernelStateStore {
             appended_events: tokio::sync::broadcast::channel(APPENDED_EVENT_BACKLOG).0,
             _owner: None,
             workflow_history_authority: Default::default(),
+            outside_followed,
         })
     }
 
@@ -487,6 +511,35 @@ impl DurableKernelStateStore {
             let _ = self.appended_events.send(event.clone());
         }
         Ok(event)
+    }
+
+    /// Queues an event nobody waits for; it commits with the writer's next batch and is
+    /// not announced to live subscribers.
+    pub(crate) fn append_event_detached(
+        &self,
+        kind: impl Into<String>,
+        subject_id: Option<String>,
+        payload: serde_json::Value,
+    ) -> Result<(), DaemonError> {
+        let timestamp_ms = unix_epoch_ms();
+        let payload_json =
+            serde_json::to_string(&payload).map_err(|error| DaemonError::LocalTransport {
+                operation: "durable_state.encode_event",
+                message: error.to_string(),
+            })?;
+        let (response, _) = mpsc::channel();
+        self.writer
+            .enqueue(DurableWriterRequest::Ordinary(DurableWriteRequest {
+                observation: None,
+                operation: DurableWriteOperation::Event {
+                    event_id: format!("state_evt_{timestamp_ms}_{}", rand_suffix()),
+                    kind: kind.into(),
+                    subject_id,
+                    timestamp_ms,
+                    payload_json,
+                },
+                response,
+            }))
     }
 
     /// Every event appended through `append_event` from now on, for live subscribers.
@@ -756,53 +809,12 @@ impl DurableKernelStateStore {
         subject_id: &str,
         limit: usize,
     ) -> Result<Vec<DurableStateEvent>, DaemonError> {
-        let limit = limit.clamp(1, 200);
-        let connection = self.lock_connection("durable_state.load_subject_events")?;
-        let mut statement = connection
-            .prepare(
-                "SELECT sequence, event_id, kind, subject_id, timestamp_ms, payload_json
-                 FROM durable_state_events
-                 WHERE subject_id = ?1
-                 ORDER BY sequence DESC
-                 LIMIT ?2",
-            )
-            .map_err(|error| DaemonError::LocalTransport {
-                operation: "durable_state.load_subject_events",
-                message: error.to_string(),
-            })?;
-        let mut rows = statement
-            .query(params![subject_id, limit as i64])
-            .map_err(|error| DaemonError::LocalTransport {
-                operation: "durable_state.load_subject_events",
-                message: error.to_string(),
-            })?;
-        let mut events = Vec::new();
-        while let Some(row) = rows.next().map_err(|error| DaemonError::LocalTransport {
-            operation: "durable_state.load_subject_events",
-            message: error.to_string(),
-        })? {
-            let payload_json =
-                row.get::<_, String>(5)
-                    .map_err(|error| DaemonError::LocalTransport {
-                        operation: "durable_state.load_subject_events",
-                        message: error.to_string(),
-                    })?;
-            events.push(DurableStateEvent {
-                sequence: row.get::<_, i64>(0).unwrap_or_default().max(0) as u64,
-                event_id: row.get::<_, String>(1).unwrap_or_default(),
-                kind: row.get::<_, String>(2).unwrap_or_default(),
-                subject_id: row.get::<_, Option<String>>(3).unwrap_or_default(),
-                timestamp_ms: row.get::<_, i64>(4).unwrap_or_default().max(0) as u64,
-                payload: serde_json::from_str(&payload_json).map_err(|error| {
-                    DaemonError::LocalTransport {
-                        operation: "durable_state.decode_event",
-                        message: error.to_string(),
-                    }
-                })?,
-            });
-        }
-        events.reverse();
-        Ok(events)
+        self.query_subject_events(
+            "durable_state.load_subject_events",
+            "WHERE subject_id = ?1",
+            vec![SqlValue::from(subject_id.to_string())],
+            limit,
+        )
     }
 
     pub fn load_subject_events_by_kind(
@@ -811,37 +823,72 @@ impl DurableKernelStateStore {
         kind: &str,
         limit: usize,
     ) -> Result<Vec<DurableStateEvent>, DaemonError> {
+        self.query_subject_events(
+            "durable_state.load_subject_events_by_kind",
+            "WHERE subject_id = ?1 AND kind = ?2",
+            vec![
+                SqlValue::from(subject_id.to_string()),
+                SqlValue::from(kind.to_string()),
+            ],
+            limit,
+        )
+    }
+
+    /// The newest `limit` events of a subject whose kind starts with one of `prefixes`, oldest
+    /// first. The kinds are chosen before the limit, so other events never push them out.
+    pub fn load_subject_events_by_kind_prefixes(
+        &self,
+        subject_id: &str,
+        prefixes: &[&str],
+        limit: usize,
+    ) -> Result<Vec<DurableStateEvent>, DaemonError> {
+        if prefixes.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut parameters = vec![SqlValue::from(subject_id.to_string())];
+        let mut matches = Vec::new();
+        for (index, prefix) in prefixes.iter().enumerate() {
+            let number = index + 2;
+            matches.push(format!("substr(kind, 1, length(?{number})) = ?{number}"));
+            parameters.push(SqlValue::from((*prefix).to_string()));
+        }
+        self.query_subject_events(
+            "durable_state.load_subject_events_by_kind_prefixes",
+            &format!("WHERE subject_id = ?1 AND ({})", matches.join(" OR ")),
+            parameters,
+            limit,
+        )
+    }
+
+    /// Runs `WHERE ...` over one subject's events, newest first up to `limit` (1 to 200), and
+    /// returns them oldest first. `parameters` fill `?1`, `?2`, ... of the clause.
+    fn query_subject_events(
+        &self,
+        operation: &'static str,
+        filter: &str,
+        parameters: Vec<SqlValue>,
+        limit: usize,
+    ) -> Result<Vec<DurableStateEvent>, DaemonError> {
+        let transport = |message: String| DaemonError::LocalTransport { operation, message };
         let limit = limit.clamp(1, 200);
-        let connection = self.lock_connection("durable_state.load_subject_events_by_kind")?;
+        let connection = self.lock_connection(operation)?;
         let mut statement = connection
-            .prepare(
+            .prepare(&format!(
                 "SELECT sequence, event_id, kind, subject_id, timestamp_ms, payload_json
                  FROM durable_state_events
-                 WHERE subject_id = ?1 AND kind = ?2
+                 {filter}
                  ORDER BY sequence DESC
-                 LIMIT ?3",
-            )
-            .map_err(|error| DaemonError::LocalTransport {
-                operation: "durable_state.load_subject_events_by_kind",
-                message: error.to_string(),
-            })?;
+                 LIMIT {limit}"
+            ))
+            .map_err(|error| transport(error.to_string()))?;
         let mut rows = statement
-            .query(params![subject_id, kind, limit as i64])
-            .map_err(|error| DaemonError::LocalTransport {
-                operation: "durable_state.load_subject_events_by_kind",
-                message: error.to_string(),
-            })?;
+            .query(rusqlite::params_from_iter(parameters))
+            .map_err(|error| transport(error.to_string()))?;
         let mut events = Vec::new();
-        while let Some(row) = rows.next().map_err(|error| DaemonError::LocalTransport {
-            operation: "durable_state.load_subject_events_by_kind",
-            message: error.to_string(),
-        })? {
-            let payload_json =
-                row.get::<_, String>(5)
-                    .map_err(|error| DaemonError::LocalTransport {
-                        operation: "durable_state.load_subject_events_by_kind",
-                        message: error.to_string(),
-                    })?;
+        while let Some(row) = rows.next().map_err(|error| transport(error.to_string()))? {
+            let payload_json = row
+                .get::<_, String>(5)
+                .map_err(|error| transport(error.to_string()))?;
             events.push(DurableStateEvent {
                 sequence: row.get::<_, i64>(0).unwrap_or_default().max(0) as u64,
                 event_id: row.get::<_, String>(1).unwrap_or_default(),
@@ -1364,6 +1411,12 @@ impl DurableKernelStateStore {
         self.writer.health_snapshot()
     }
 
+    /// Requests the writer has taken since the kernel started.
+    #[cfg(test)]
+    pub(crate) fn writer_requests_received(&self) -> u64 {
+        self.writer.health.received.load(Ordering::Acquire)
+    }
+
     fn lock_connection(
         &self,
         operation: &'static str,
@@ -1385,8 +1438,11 @@ impl DurableStateWriter {
             Ok(())
         }
     }
-    fn start(path: &Path) -> Result<Self, DaemonError> {
-        let connection = Connection::open(path).map_err(|error| DaemonError::LocalTransport {
+    fn start(
+        path: &Path,
+        outside_followed: Arc<agent_lifecycle::outside::Followed>,
+    ) -> Result<Self, DaemonError> {
+        let connection = sync_timing::open(path).map_err(|error| DaemonError::LocalTransport {
             operation: "durable_state.open_writer",
             message: error.to_string(),
         })?;
@@ -1405,7 +1461,13 @@ impl DurableStateWriter {
             .name("chariox-durable-writer".to_string())
             .stack_size(512 * 1024)
             .spawn(move || {
-                run_durable_writer_with(connection, receiver, worker_health, agent_faults)
+                run_durable_writer_with(
+                    connection,
+                    receiver,
+                    worker_health,
+                    agent_faults,
+                    outside_followed,
+                )
             })
             .map_err(|error| DaemonError::LocalTransport {
                 operation: "durable_state.spawn_writer",
@@ -1420,20 +1482,15 @@ impl DurableStateWriter {
 
     fn execute(&self, operation: DurableWriteOperation) -> Result<u64, DaemonError> {
         let (response_tx, response_rx) = mpsc::channel();
+        let observation = crate::runtime::request_metrics::RequestObservation::current();
         self.enqueue(DurableWriterRequest::Ordinary(DurableWriteRequest {
+            observation: observation.clone(),
             operation,
             response: response_tx,
         }))?;
         // The commit includes an fsync. Hand this Tokio worker's queue to another
         // thread while waiting so a slow disk cannot stall unrelated tasks.
-        let await_commit = || response_rx.recv();
-        let reply = if tokio::runtime::Handle::try_current().is_ok_and(|handle| {
-            handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread
-        }) {
-            tokio::task::block_in_place(await_commit)
-        } else {
-            await_commit()
-        };
+        let reply = await_writer_response(response_rx);
         reply
             .map_err(|error| DaemonError::LocalTransport {
                 operation: "durable_state.await_write",
@@ -1447,6 +1504,16 @@ impl DurableStateWriter {
 
     fn enqueue(&self, request: DurableWriterRequest) -> Result<(), DaemonError> {
         self.require_healthy()?;
+        let request = match (
+            request,
+            crate::runtime::request_metrics::RequestObservation::current(),
+        ) {
+            (request @ DurableWriterRequest::Ordinary(_), _) | (request, None) => request,
+            (request, Some(observation)) => DurableWriterRequest::Observed {
+                request: Box::new(request),
+                observation,
+            },
+        };
         let sender = self
             .sender
             .lock()
@@ -1460,16 +1527,23 @@ impl DurableStateWriter {
                 operation: "durable_state.enqueue_write",
                 message: "durable writer is shutting down".to_string(),
             })?;
-        sender
-            .send(request)
-            .map_err(|error| DaemonError::LocalTransport {
+        self.health.enqueued.fetch_add(1, Ordering::AcqRel);
+        sender.try_send(request).map_err(|error| {
+            self.health.enqueued.fetch_sub(1, Ordering::AcqRel);
+            DaemonError::LocalTransport {
                 operation: "durable_state.enqueue_write",
                 message: error.to_string(),
-            })
+            }
+        })
     }
 
     fn health_snapshot(&self) -> DurableWriterHealthSnapshot {
         DurableWriterHealthSnapshot {
+            queued: self
+                .health
+                .enqueued
+                .load(Ordering::Acquire)
+                .saturating_sub(self.health.received.load(Ordering::Acquire)),
             committed_batches: self.health.committed_batches.load(Ordering::Acquire),
             committed_records: self.health.committed_records.load(Ordering::Acquire),
             max_batch_records: self.health.max_batch_records.load(Ordering::Acquire),
@@ -1516,6 +1590,7 @@ fn run_durable_writer(
         receiver,
         health,
         agent_lifecycle::faults::AgentFaults::default(),
+        Default::default(),
     )
 }
 
@@ -1524,6 +1599,7 @@ fn run_durable_writer_with(
     receiver: Receiver<DurableWriterRequest>,
     health: Arc<DurableWriterHealth>,
     agent_faults: agent_lifecycle::faults::AgentFaults,
+    outside_followed: Arc<agent_lifecycle::outside::Followed>,
 ) {
     struct MarkStopped(Arc<DurableWriterHealth>);
     impl Drop for MarkStopped {
@@ -1536,16 +1612,29 @@ fn run_durable_writer_with(
     let mut pending = None;
     loop {
         storage.after_request(&health);
-        let Some(first) = pending
-            .take()
-            .or_else(|| storage.next_request(&receiver, &mut connection, &health))
-        else {
+        let Some(first) = pending.take().or_else(|| {
+            let request = storage.next_request(&receiver, &mut connection, &health);
+            health
+                .received
+                .fetch_add(u64::from(request.is_some()), Ordering::AcqRel);
+            request
+        }) else {
             break;
         };
         if health.fatal.load(Ordering::Acquire) {
             break;
         }
+        let (first, _timing) = match first {
+            DurableWriterRequest::Observed {
+                request,
+                observation,
+            } => (*request, Some(DurableRequestTiming::new(observation))),
+            request => (request, None),
+        };
         let first = match first {
+            DurableWriterRequest::Observed { .. } => {
+                unreachable!("writer observation is attached once")
+            }
             DurableWriterRequest::Ordinary(request) => request,
             DurableWriterRequest::App(request) => {
                 apps::execute(&mut connection, *request);
@@ -1618,7 +1707,12 @@ fn run_durable_writer_with(
                 continue;
             }
             DurableWriterRequest::AgentLifecycle(request) => {
-                if agent_lifecycle::execute(&mut connection, *request, &agent_faults) {
+                if agent_lifecycle::execute(
+                    &mut connection,
+                    *request,
+                    &agent_faults,
+                    &outside_followed,
+                ) {
                     health.fatal.store(true, Ordering::Release);
                     health.stopped_uncertain.store(true, Ordering::Release);
                     break;
@@ -1706,7 +1800,11 @@ fn run_durable_writer_with(
             if health.fatal.load(Ordering::Acquire) {
                 return None;
             }
-            match receiver.try_recv() {
+            let received = receiver.try_recv();
+            health
+                .received
+                .fetch_add(u64::from(received.is_ok()), Ordering::AcqRel);
+            match received {
                 Ok(DurableWriterRequest::Ordinary(request)) => Some(request),
                 Ok(request) => {
                     pending = Some(request);
@@ -1749,6 +1847,7 @@ fn commit_durable_write_batch(
         send_durable_batch_error(batch, "durable writer requires recovery".into());
         return;
     }
+    let sync_started = sync_timing::sync_us();
     let transaction = match connection.transaction() {
         Ok(transaction) => transaction,
         Err(error) => {
@@ -1765,6 +1864,11 @@ fn commit_durable_write_batch(
             break;
         }
         let result = match &request.operation {
+            DurableWriteOperation::RetiredSessionBackfill {
+                owner_id,
+                records,
+                sequence,
+            } => retired_sessions::commit_backfill(&transaction, owner_id, records, *sequence),
             DurableWriteOperation::RoomEnvironment(write) => {
                 room_environment::apply(&transaction, write)
             }
@@ -1792,6 +1896,7 @@ fn commit_durable_write_batch(
                 )
                 .and_then(|_| {
                     let sequence = transaction.last_insert_rowid().max(0) as u64;
+                    retired_sessions::apply_event(&transaction, kind, payload_json)?;
                     if kind == crate::durable_prompt_state::DURABLE_PROMPT_STATE_EVENT_KIND {
                         workflow_dispatch_intents::record_prompt_state_in(
                             &transaction,
@@ -1931,6 +2036,7 @@ fn commit_durable_write_batch(
         send_durable_batch_error(batch, message);
         return;
     }
+    let commit_started = Instant::now();
     if let Err(error) = transaction.commit() {
         storage_full::observe(&error);
         send_durable_batch_error(batch, error.to_string());
@@ -1945,6 +2051,10 @@ fn commit_durable_write_batch(
         .max_batch_records
         .fetch_max(batch_len, Ordering::AcqRel);
     for (request, sequence) in batch.into_iter().zip(results) {
+        if let Some(observation) = &request.observation {
+            observation.record_durable_commit(commit_started.elapsed());
+            observation.record_fsync(sync_timing::sync_us().saturating_sub(sync_started));
+        }
         let _ = request.response.send(Ok(sequence));
     }
 }
@@ -2017,7 +2127,8 @@ fn write_entity_checkpoint(
            AND kind IN (
                'session.updated',
                'workflow.runtime.updated',
-               'session.prompt_state.updated'
+               'session.prompt_state.updated',
+               'session.activity.updated'
            )
            AND (
                (
@@ -3109,5 +3220,47 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(path.with_extension("db-wal"));
         let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    }
+}
+
+/// Synchronous storage APIs can be called by an actor on Tokio. Yield its worker
+/// for the whole durable wait rather than occupying the async executor.
+pub(crate) fn await_writer_response<T>(receiver: Receiver<T>) -> Result<T, mpsc::RecvError> {
+    let observation = crate::runtime::request_metrics::RequestObservation::current();
+    let started = Instant::now();
+    let receive = || receiver.recv();
+    let result = if tokio::runtime::Handle::try_current()
+        .is_ok_and(|handle| handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread)
+    {
+        tokio::task::block_in_place(receive)
+    } else {
+        receive()
+    };
+    if let Some(observation) = observation {
+        observation.record_durable_wait(started.elapsed());
+    }
+    result
+}
+
+struct DurableRequestTiming {
+    observation: crate::runtime::request_metrics::RequestObservation,
+    started: Instant,
+    sync_started: u64,
+}
+impl DurableRequestTiming {
+    fn new(observation: crate::runtime::request_metrics::RequestObservation) -> Self {
+        Self {
+            observation,
+            started: Instant::now(),
+            sync_started: sync_timing::sync_us(),
+        }
+    }
+}
+impl Drop for DurableRequestTiming {
+    fn drop(&mut self) {
+        self.observation
+            .record_durable_commit(self.started.elapsed());
+        self.observation
+            .record_fsync(sync_timing::sync_us().saturating_sub(self.sync_started));
     }
 }

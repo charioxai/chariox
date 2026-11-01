@@ -300,6 +300,7 @@ async fn kernel_access_targeted_revocation_preserves_other_owners_pending_reques
     )
     .runtime_state();
     let pending = |owner: &str, id: &str| KernelAccessGrant {
+        covered: Vec::new(),
         grant_id: id.into(),
         owner_user_id: owner.into(),
         holder_pid: 1,

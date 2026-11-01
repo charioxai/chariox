@@ -609,9 +609,17 @@ impl KernelRuntimeState {
     }
 
     pub(crate) fn agent_notices_for_test(&self, room: &str, agent: &str) -> Vec<String> {
+        self.notices_for_test(room, Some(agent))
+    }
+
+    pub(crate) fn session_notices_for_test(&self, room: &str) -> Vec<String> {
+        self.notices_for_test(room, None)
+    }
+
+    fn notices_for_test(&self, room: &str, agent: Option<&str>) -> Vec<String> {
         self.owned
             .operational_history_store
-            .load_session_history_entries(room, Some(agent))
+            .load_session_history_entries(room, agent)
             .unwrap()
             .into_iter()
             .filter(|entry| entry.kind == crate::history::SessionHistoryEntryKind::Notice)

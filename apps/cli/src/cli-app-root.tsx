@@ -203,7 +203,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     providerCatalogState, setProviderCatalogState, providerCommandCatalogState, setProviderCommandCatalogState,
     terminalCommandCatalogState, setTerminalCommandCatalogState, themeRegistryState, relayStatusState,
     setRelayStatusState, remoteMachinesState, setRemoteMachinesState, remoteKernelsState,
-    setRemoteKernelsState, providerAccountsState, setProviderAccountsState, slicesState, setSlicesState, terminalsState,
+    setRemoteKernelsState, providerAccountCopyOffersState, setProviderAccountCopyOffersState, providerAccountsState, setProviderAccountsState, slicesState, setSlicesState, terminalsState,
     setTerminalsState, externalProviderSessionsState, setExternalProviderSessionsState, externalProviderSessionsPageState,
     setExternalProviderSessionsPageState, waitingRoomInventoryStatus, setWaitingRoomInventoryStatus, waitingRoomHiddenKernelController,
     waitingRoomCloudNotice, setWaitingRoomCloudNotice, terminalPairingOpen, setTerminalPairingOpen,
@@ -417,6 +417,13 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     getActivePrompt: () => sessionActivePromptForAgent(sessionState(), focusedAgentId() ?? sessionState().focused_agent_id ?? ""),
     getSessionId: () => sessionState().id,
     getFallbackStreamingAgentId: () => focusedAgentId() ?? streamingAgentId(),
+    getCancellableTaskAgentId: () => {
+      const agent = focusedAgentId() ?? sessionState().focused_agent_id
+      return sessionState().agent_tasks?.some((task) => task.agent_id === agent
+        && (!["done", "cancelled"].includes(task.state)
+          || task.obligations.some((obligation) => obligation.status === "open"))) ? agent ?? null : null
+    },
+    onNothingToCancel: () => setStatusLine("No active prompt or unfinished task on the focused agent."),
     cancelActivePrompt: (sessionId, attachmentId, targetAgentId) => cancelActivePrompt(client, sessionId, attachmentId, targetAgentId),
     onCancellationRequested: (targetAgentId) => {
       appLogger?.info("requested active prompt cancellation")
@@ -461,7 +468,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     providerCommandCatalogState, setProviderCommandCatalogState, themeRegistryState, waitingRoomCloudNotice,
     waitingRoomInventoryStatus, setWaitingRoomInventoryStatus, waitingRoomHiddenKernelController, relayStatusState,
     setRelayStatusState, remoteMachinesState, setRemoteMachinesState, remoteKernelsState,
-    setRemoteKernelsState, providerAccountsState, setProviderAccountsState, terminalsState, setTerminalsState, externalProviderSessionsState,
+    setRemoteKernelsState, setProviderAccountCopyOffersState, providerAccountsState, setProviderAccountsState, terminalsState, setTerminalsState, externalProviderSessionsState,
     setExternalProviderSessionsState, externalProviderSessionsPageState, setExternalProviderSessionsPageState, slicesState,
     setSlicesState, pendingWorkspaceTarget, setPendingWorkspaceTarget, pendingWorktreeTarget, setPendingWorktreeTarget, preferencesState,
     setPreferencesState, setThemeRevision,
@@ -508,6 +515,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     getProviderCatalog: providerCatalogState,
     getProviderCommandCatalogs: providerCommandCatalogState,
     getCurrentProvider: () => normalizeBackendProviderId(currentProviderSelection().provider),
+    getProviderAccountCopyOffers: providerAccountCopyOffersState,
     getProviderAccounts: () => providerAccountsState() ?? [],
     getCurrentAccount: () => currentProviderSelection().accountProfile,
     getFocusedProvider: focusedBackendProvider,
@@ -584,7 +592,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     assignDialogOverlayBox, closeActiveDialogOverlay, closeHotkeys, closeSessionBrowserDialog,
     closeTerminalPairingDialog, copyPromptSelection, dialogOverlayOpen, handleHotkeysToggleShortcut,
     handleManagedMachineDialogKey, handlePromptSelectionSurfaceMouseUp, handleSessionBrowserKey,
-    openProjectEnvironment, handleProjectEnvironmentKey,
+    openProjectEnvironment, handleProjectEnvironmentKey, openSessionProcesses, handleSessionProcessesKey, confirmProcessStop,
     openHotkeys, openManagedMachineDialog, openSessionBrowserDialog,
     openTerminalPairingDialog, renderHotkeysOverlay,
   } = createCliOverlayInteractionComposition({
@@ -592,7 +600,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     formatError,
     debugLogsEnabled: DEBUG_LOGS_ENABLED,
     loadSessions: loadWaitingRoomSessionHistory,
-    isAttached, availableSessions, waitingRoomProjects, sessionBrowserIndex, setSessionBrowserIndex,
+    sessionState, isAttached, availableSessions, waitingRoomProjects, sessionBrowserIndex, setSessionBrowserIndex,
     currentFocusedRenderable, promptInputRefController, describeRenderableDebug,
     scheduleTimer: startTimeout,
     hotkeysOpen, setHotkeysOpen, terminalPairingOpen, setTerminalPairingOpen,
@@ -1117,7 +1125,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     themeRegistryState, reconcileWaitingRoom, setWaitingRoomState, applyWaitingRoomSessionLifecycleAction,
     restoreWaitingRoomProject, renameWaitingRoomProject,
     activateWaitingRoom, reimageManagedEnvironment, startSessionFromWaitingRoomDefaults, handleSessionBrowserKey,
-    openProjectEnvironment, handleProjectEnvironmentKey,
+    openProjectEnvironment, handleProjectEnvironmentKey, openSessionProcesses, handleSessionProcessesKey, confirmProcessStop,
     handleManagedMachineDialogKey, openManagedMachineDialog,
     toggleWorkspaceScreen: workflowActions.toggleWorkspaceScreen,
     toggleTranscriptDetails: () => toggleFocusedTranscriptDetails({

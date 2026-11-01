@@ -1,7 +1,7 @@
 // MP-08/MP-11: unchanged-capture fence regression.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {ProtectionGate,activeBrowserPage,measureBrowserProtection,awaitPresented} from './browser-protection-regions.mjs';
+import {ProtectionGate,activeBrowserPage,measureBrowserProtection,awaitPresented,fenceBrowserCapture} from './browser-protection-regions.mjs';
 
 for (const result of [true,false,'failure']) {
   test(`MP-08/MP-11: presentation session settles on ${result}`, async () => {
@@ -114,4 +114,12 @@ test('MP-11 a visible in-window browser WebUI (omnibox list) over the active Tab
   assert.equal((await activeBrowserPage(uiBrowser(uiConnection({a:'hidden'},{fail:true})))).overlay,true);
   const broken=uiConnection({});const send=broken.send;broken.send=async(method,...rest)=>{if(method==='Target.getTargets')throw new Error('x');return send(method,...rest)};
   assert.equal((await activeBrowserPage(uiBrowser(broken))).overlay,true);
+});
+
+test('MP-11 a fill that cannot be measured runs the capture unmeasured so the caller covers the window, never refuses',async()=>{
+  const browser={fillTargets:new Map([['k',{target_id:'t',node_ref:'n',document_id:'d'}]]),ensureConnection:async()=>{throw Error('closed')}};
+  const policy={unknown:false,values:[],targets:[{kind:'browser',target_id:'t',value_hash:'h'}]};
+  const seen=[];
+  assert.equal(await fenceBrowserCapture(browser,policy,async measurement=>{seen.push(measurement);return 'covered';}),'covered');
+  assert.deepEqual(seen,[null]);
 });

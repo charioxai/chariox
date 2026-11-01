@@ -1071,7 +1071,7 @@ mod tests {
         assert_eq!(state.active_user_message_id, None);
         assert_eq!(
             result.terminal_failure.as_deref(),
-            Some("Provider finish_reason: network_error")
+            Some("OpenCode error [other]: Provider finish_reason: network_error")
         );
         assert_eq!(
             result
@@ -1112,7 +1112,7 @@ mod tests {
 
         assert_eq!(
             opencode_messages_active_prompt_failure(&state, &messages, Some("msg_user")).as_deref(),
-            Some("Provider finish_reason: network_error")
+            Some("OpenCode error [other]: Provider finish_reason: network_error")
         );
     }
 
@@ -1144,7 +1144,7 @@ mod tests {
 
         assert_eq!(
             opencode_messages_active_prompt_failure(&state, &messages, Some("msg_user")).as_deref(),
-            Some("Provider finish_reason: network_error")
+            Some("OpenCode error [other]: Provider finish_reason: network_error")
         );
     }
 
@@ -1210,7 +1210,7 @@ mod tests {
 
         assert_eq!(
             result.terminal_failure.as_deref(),
-            Some("Provider finish_reason: network_error")
+            Some("OpenCode error [other]: Provider finish_reason: network_error")
         );
         assert!(result.completions.is_empty());
         assert!(result.prompt_completed);

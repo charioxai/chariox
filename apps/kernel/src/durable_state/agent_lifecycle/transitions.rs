@@ -60,6 +60,15 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             lease,
             now,
         } => super::goals::retry_check(tx, task, prompt, lease, now),
+        Operation::BeginGoalApproval { task, prompt, now } => {
+            super::goals::native_approval::begin(tx, task, prompt, now)
+        }
+        Operation::AnswerGoalApproval {
+            task,
+            prompt,
+            revision,
+            now,
+        } => super::goals::native_approval::answer(tx, task, prompt, revision, now),
         Operation::BeginOwnerWait { task, prompt, now } => {
             super::goals::begin_owner_wait(tx, task, prompt, now)
         }
@@ -116,11 +125,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 task.revision += 1;
                 task
             } else {
-                let resumed = tasks(tx)?.into_iter().find(|t| {
-                    t.room_id == room
-                        && t.agent_id == agent
-                        && t.pending_prompt_id.as_deref() == Some(&prompt)
-                });
+                let resumed = pending_continuation(tx, &room, &agent, &prompt)?;
                 if let Some(mut t) = resumed {
                     if t.state != ExecutionState::Working {
                         return Err(error(
@@ -213,7 +218,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             room,
             run,
         } => {
-            for mut task in tasks(tx)?.into_iter().filter(|t| t.room_id == room) {
+            for mut task in room_tasks(tx, &room, None)? {
                 if super::workflow_tasks::settle_unstarted_delegates(
                     tx, &mut task, &owner_id, &run,
                 )? {
@@ -413,11 +418,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             if t.wait.is_some() {
                 return Err(error("Wait already accepted. End this provider turn now without more tools; the kernel delivers the next source or deadline turn."));
             }
-            if ids.is_empty()
-                && t.obligations
-                    .iter()
-                    .all(|o| !matches!(o.status.as_str(), "open" | "settling" | "failed"))
-            {
+            if ids.is_empty() && t.obligations.iter().all(|o| !o.requires_resolution()) {
                 return Err(error(
                     "nothing to wait on: every tracked obligation is resolved; reply with the final answer",
                 ));
@@ -442,9 +443,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             if selected.len() != ids.len()
                 || t.obligations
                     .iter()
-                    .filter(|o| {
-                        o.status == "open" || o.status == "failed" || o.status == "settling"
-                    })
+                    .filter(|o| o.requires_resolution())
                     .any(|o| {
                         !selected
                             .iter()
@@ -453,13 +452,8 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             {
                 return Err(error(yield_refusal(tx, &t, &ids, &regs)?));
             }
-            // A goal checks in at its owner's interval. Any other admitted
-            // deadline is honoured: shortening it would spend no-progress
-            // wakes before a long timer is due, and the sweep still checks
-            // source liveness.
-            let deadline = t.goal.as_ref().map_or(deadline, |g| {
-                deadline.min(now.saturating_add(g.check_in_minutes as u64 * 60_000))
-            });
+            // Goal check-ins have a separate clock. Preserve the admitted wait
+            // deadline so an early check-in cannot turn a live source into a timeout.
             t.wait = Some(AgentWait {
                 registration_ids: ids,
                 deadline_ms: deadline,
@@ -503,6 +497,21 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             t.state = ExecutionState::Blocked;
             t.reason = reason;
             t.revision += 1;
+            if let Some(goal) = &t.goal {
+                migration::audit(
+                    tx,
+                    "goal.blocked",
+                    &t.task_id,
+                    serde_json::json!({
+                        "task_id":t.task_id, "goal_id":goal.id,
+                        "objective_revision":goal.objective_revision,
+                        "work_prompt_id":t.prompt_id, "work_provider_run_id":t.provider_run_id,
+                        "blocked_revision":t.blocked_revision,
+                        "reason":t.reason.chars().take(1024).collect::<String>(),
+                        "reason_complete":t.reason.chars().count()<=1024,
+                    }),
+                )?;
+            }
             save(tx, &t)?;
             Ok(Outcome::Task(t))
         }
@@ -552,9 +561,36 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     correction: false,
                 });
             }
+            let valid_wait = if let Some(w) = t
+                .wait
+                .as_ref()
+                .filter(|_| !cancelled && t.state != ExecutionState::Blocked)
+            {
+                let regs = registrations(tx, &t.task_id)?;
+                let pending:i64 = tx.query_row("SELECT count(*) FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND sequence>?3 AND json_extract(payload,'$.state') NOT IN ('handled','expired','failed') AND json_extract(payload,'$.kind') IN ('source_completed','source_lost') AND (json_extract(payload,'$.payload.task_id')=?4 OR EXISTS(SELECT 1 FROM json_each(json_extract(payload,'$.payload.task_ids')) WHERE value=?4))",params![t.room_id,t.agent_id,sql_integer(w.inbox_cursor)?,t.task_id],|r|r.get(0)).map_err(sql)?;
+                // MP-08/MP-09/MP-10/MP-11 F03: the deadline was checked
+                // at admission. A late native boundary commits that same
+                // wait; the normal sweep delivers its elapsed deadline.
+                w.deadline_ms > w.started_at_ms
+                    && !w.registration_ids.is_empty()
+                    && w.registration_ids
+                        .iter()
+                        .all(|id| regs.iter().any(|r| &r.id == id && (r.live || pending > 0)))
+                    && t.obligations
+                        .iter()
+                        .filter(|o| o.requires_resolution())
+                        .all(|o| {
+                            regs.iter().any(|r| {
+                                w.registration_ids.contains(&r.id)
+                                    && r.obligation_id.as_deref() == Some(&o.id)
+                            })
+                        })
+            } else {
+                false
+            };
             if !cancelled && t.state == ExecutionState::Working && t.goal.is_some() {
                 t.provider_run_id = Some(run);
-                let correction = super::goals::work_end(&mut t, has_answer, now);
+                let correction = super::goals::work_end(&mut t, has_answer, valid_wait, now);
                 t.revision += 1;
                 save(tx, &t)?;
                 return Ok(Outcome::Settled {
@@ -578,30 +614,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 let open = t
                     .obligations
                     .iter()
-                    .any(|o| matches!(o.status.as_str(), "open" | "settling" | "failed"));
-                let valid_wait = if let Some(w) = &t.wait {
-                    let regs = registrations(tx, &t.task_id)?;
-                    let pending:i64 = tx.query_row("SELECT count(*) FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND sequence>?3 AND json_extract(payload,'$.state') NOT IN ('handled','expired','failed') AND json_extract(payload,'$.kind') IN ('source_completed','source_lost') AND (json_extract(payload,'$.payload.task_id')=?4 OR EXISTS(SELECT 1 FROM json_each(json_extract(payload,'$.payload.task_ids')) WHERE value=?4))",params![t.room_id,t.agent_id,sql_integer(w.inbox_cursor)?,t.task_id],|r|r.get(0)).map_err(sql)?;
-                    // MP-08/MP-09/MP-10/MP-11 F03: the deadline was checked
-                    // at admission. A late native boundary commits that same
-                    // wait; the normal sweep delivers its elapsed deadline.
-                    w.deadline_ms > w.started_at_ms
-                        && !w.registration_ids.is_empty()
-                        && w.registration_ids
-                            .iter()
-                            .all(|id| regs.iter().any(|r| &r.id == id && (r.live || pending > 0)))
-                        && t.obligations
-                            .iter()
-                            .filter(|o| matches!(o.status.as_str(), "open" | "settling" | "failed"))
-                            .all(|o| {
-                                regs.iter().any(|r| {
-                                    w.registration_ids.contains(&r.id)
-                                        && r.obligation_id.as_deref() == Some(&o.id)
-                                })
-                            })
-                } else {
-                    false
-                };
+                    .any(AgentObligation::requires_resolution);
                 if is_plain(tx, &t)? || (!open && has_answer && t.wait.is_none()) {
                     t.state = ExecutionState::Done;
                     t.reason.clear();
@@ -649,6 +662,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
         | Operation::Sweep { .. }
         | Operation::ArchiveTask { .. }
         | Operation::CancelTask { .. }
+        | Operation::RetireRestartFailure { .. }
         | Operation::OwnerResponse { .. }) => super::supervision::apply(tx, op),
         op @ (Operation::CreateWake { .. }
         | Operation::ArmWake { .. }
@@ -730,14 +744,17 @@ fn yield_refusal(
     let unresolved = t
         .obligations
         .iter()
-        .any(|o| matches!(o.status.as_str(), "open" | "settling" | "failed"));
+        .any(AgentObligation::requires_resolution);
     if !foreign.is_empty() && !unresolved {
-        for other in tasks(tx)?.into_iter().filter(|o| {
-            o.task_id != t.task_id
-                && o.room_id == t.room_id
-                && o.agent_id == t.agent_id
-                && o.state == ExecutionState::Waiting
-        }) {
+        for other in live_tasks(tx, &t.room_id, &t.agent_id)?
+            .into_iter()
+            .filter(|o| {
+                o.task_id != t.task_id
+                    && o.room_id == t.room_id
+                    && o.agent_id == t.agent_id
+                    && o.state == ExecutionState::Waiting
+            })
+        {
             let theirs = registrations(tx, &other.task_id)?;
             if foreign.iter().all(|id| theirs.iter().any(|r| &r.id == *id)) {
                 return Ok("Your earlier task is still waiting on these registrations; this turn has nothing of its own to wait on. Do not yield: finish this turn now (an answer is optional) and the earlier wait continues.".into());

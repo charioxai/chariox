@@ -105,6 +105,11 @@ impl WorkerSpy {
                                 let _ = socket.close(None).await;
                                 return;
                             }
+                            if matches!(&request, RelayPeerRequest::AgentMove { .. }) {
+                                send(&mut socket, RelayEnvelope::DaemonPeerResponse { request_id, from_daemon_id: worker_id.clone(), encrypted_response: None, error: Some(chariox_relay::protocol::RelayError { code: "agent_move_refused".into(), message: "fixture worker refuses Move".into(), retryable: false }) }).await;
+                                let _ = socket.close(None).await;
+                                return;
+                            }
                             let response = match request {
                                 RelayPeerRequest::DrainLeasedRuntimeProjection { .. } => RelayPeerResponse::LeasedRuntimeProjectionDrained { event: None },
                                 RelayPeerRequest::DestroyLeasedAgent { leased_agent_id } => RelayPeerResponse::LeasedAgentDestroyed { leased_agent_id },

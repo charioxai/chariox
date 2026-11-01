@@ -41,6 +41,7 @@ type KernelEventDispatchControllerDeps = {
     session: RuntimeSession,
     providerRun: RuntimeProviderRun | null,
   ) => Promise<void> | void
+  applySessionProcesses?: (sessionId: string, processes: import("@chariox/kernel-client/kernel-events").SessionProcess[]) => Promise<void> | void
   applyAgentTaskUpdated?: (sessionId: string, task: Extract<KernelEvent, { event: "agent_task_updated" }>["task"]) => Promise<void> | void
   applyAgentActivityChanged: (
     sessionId: string,
@@ -136,6 +137,9 @@ export function createKernelEventDispatchController(
       case "agent_turn_changed":
       case "home_extension_audit_appended":
       case "home_extension_audit_lagged":
+        return
+      case "session_processes_changed":
+        await deps.applySessionProcesses?.(event.session_id, event.processes)
         return
       case "session_snapshot":
         await applySessionSnapshot(event)

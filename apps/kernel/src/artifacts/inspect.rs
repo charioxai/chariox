@@ -1,11 +1,11 @@
 //! MP-08/MP-10/MP-11: bounded PDF extraction from an admitted operational blob.
 use std::io::{Read, Write};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::Duration;
 use wait_timeout::ChildExt;
 
 pub(crate) fn pdf_text(input: &[u8]) -> Result<String, String> {
-    let mut command = Command::new("pdftotext");
+    let mut command = crate::process_spawn::command("pdftotext");
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;

@@ -126,6 +126,83 @@ fn a12_achieved_requires_zero_open_and_evidence_and_never_recurses() {
     assert_eq!(check(&f, claim).state, ExecutionState::Blocked);
 }
 
+// MP-08 / MP-09 / MP-10 / MP-11 A12-S04: a rejected attempt leaves no admitted work.
+#[test]
+fn a12_rejected_dispatch_can_complete_a_refusal_goal() {
+    let f = Fixture::new();
+    goal(&f, 10);
+    f.register();
+    f.apply(Operation::DispatchReceipt {
+        id: "obligation".into(),
+        accepted: false,
+        resource: None,
+    });
+    f.settle("p", true);
+    let t = check(
+        &f,
+        serde_json::json!({
+            "status":"achieved", "final_answer":"The requested dispatch was refused: account not authenticated",
+            "evidence":["history:refusal"]
+        }),
+    );
+    assert_eq!(
+        t.state,
+        ExecutionState::Done,
+        "a rejected dispatch must not force owner intervention"
+    );
+    assert_eq!(t.obligations[0].dispatch_state, "rejected");
+    assert_eq!(
+        t.obligations[0].status, "failed",
+        "completion must preserve the refusal receipt"
+    );
+    assert_eq!(
+        f.task(),
+        t,
+        "a settled refusal must survive ledger decoding"
+    );
+    let reopened = DurableKernelStateStore::open(f.root.join("state.sqlite")).unwrap();
+    assert_eq!(
+        reopened.agent_tasks(Some("room"), Some("parent")).unwrap()[0],
+        t,
+        "reopening must preserve the completed goal and rejected receipt"
+    );
+}
+
+#[test]
+fn a12_rejected_dispatch_exception_does_not_hide_admitted_failure() {
+    let f = Fixture::new();
+    goal(&f, 10);
+    f.register();
+    f.apply(Operation::DispatchReceipt {
+        id: "obligation".into(),
+        accepted: true,
+        resource: Some("child".into()),
+    });
+    f.apply(Operation::SourceOutcome {
+        room: "room".into(),
+        source: "child".into(),
+        occurrence: "failed-child".into(),
+        success: false,
+        public_answer: None,
+        now: 2,
+    });
+    assert_eq!(f.task().obligations[0].status, "failed");
+    f.settle("p", true);
+    let t = check(
+        &f,
+        serde_json::json!({
+            "status":"achieved", "final_answer":"Everything succeeded", "evidence":["history:claim"]
+        }),
+    );
+    assert_ne!(
+        t.state,
+        ExecutionState::Done,
+        "admitted work failure still needs resolution"
+    );
+    assert_eq!(t.obligations[0].dispatch_state, "accepted");
+    assert_eq!(t.obligations[0].status, "failed");
+}
+
 #[test]
 fn a12_continue_keeps_live_sources_and_wait_checks_coverage_and_interval() {
     let f = Fixture::new();
@@ -144,7 +221,8 @@ fn a12_continue_keeps_live_sources_and_wait_checks_coverage_and_interval() {
         serde_json::json!({"status":"waiting","reason":"depends on delegate","registration_ids":["reg"],"deadline_ms":9_000_000}),
     );
     assert_eq!(t.state, ExecutionState::Waiting);
-    assert_eq!(t.wait.unwrap().deadline_ms, 60_004);
+    assert_eq!(t.wait.as_ref().unwrap().deadline_ms, 9_000_000);
+    assert_eq!(t.goal.unwrap().next_check_in_ms, Some(60_004));
     let f = Fixture::new();
     goal(&f, 60);
     f.register();
@@ -432,7 +510,11 @@ fn a12_wait_deadlines_default_max_and_owner_interval_remain_finite() {
             &f,
             serde_json::json!({"status":"waiting","reason":"source required","registration_ids":["reg"],"deadline_ms":9_000_000}),
         );
-        assert_eq!(t.wait.as_ref().unwrap().deadline_ms, 4 + interval);
+        assert_eq!(t.wait.as_ref().unwrap().deadline_ms, 9_000_000);
+        assert_eq!(
+            t.goal.as_ref().unwrap().next_check_in_ms,
+            Some(4 + interval)
+        );
         f.apply(Operation::ControlGoal {
             task: "p".into(),
             owner: "owner".into(),
@@ -441,7 +523,8 @@ fn a12_wait_deadlines_default_max_and_owner_interval_remain_finite() {
             value: Some("1".into()),
             now: 10,
         });
-        assert_eq!(f.task().wait.unwrap().deadline_ms, 60_010);
+        assert_eq!(f.task().wait.as_ref().unwrap().deadline_ms, 9_000_000);
+        assert_eq!(f.task().goal.unwrap().next_check_in_ms, Some(60_010));
     }
 }
 
@@ -855,7 +938,11 @@ fn a12_unadmitted_checkin_ack_cannot_consume_a_waiting_goal_deadline() {
         now: 60009,
     });
     assert_eq!(f.task().state, ExecutionState::Working);
-    assert_eq!(f.task().no_progress_wakes, waiting.no_progress_wakes + 1);
+    assert_eq!(
+        f.task().no_progress_wakes,
+        waiting.no_progress_wakes,
+        "an admitted check-in on a live source does not spend the guard"
+    );
 }
 
 #[test]
@@ -865,6 +952,11 @@ fn a12_handled_paused_goal_outcome_preserves_nonzero_guard() {
     f.register();
     f.subscribe();
     f.settle("p", true);
+    let continued = check(&f, assessment("continue"));
+    assert_eq!(continued.no_progress_wakes, 1);
+    let work = continued.pending_prompt_id.unwrap();
+    f.begin(&work);
+    f.settle(&work, true);
     check(
         &f,
         serde_json::json!({"status":"waiting","reason":"peer required","registration_ids":["reg"],"deadline_ms":60004}),
@@ -1152,7 +1244,6 @@ fn a12_repeated_continue_keeps_the_agents_covered_wait() {
             now,
         });
     };
-    yield_on("p", 2);
     f.settle("p", true);
     let first = check(&f, assessment("continue"));
     assert_eq!(first.state, ExecutionState::Working);
@@ -1165,12 +1256,33 @@ fn a12_repeated_continue_keeps_the_agents_covered_wait() {
     assert_eq!(t.no_progress_wakes, first.no_progress_wakes);
     let wait = t.wait.clone().unwrap();
     assert_eq!(wait.registration_ids, vec!["reg".to_string()]);
-    assert_eq!(
-        t.goal.as_ref().unwrap().next_check_in_ms,
-        Some(wait.deadline_ms)
-    );
-    assert!(wait.deadline_ms <= 3 + 60_000);
+    assert_eq!(t.goal.as_ref().unwrap().next_check_in_ms, Some(4 + 60_000));
+    assert_eq!(wait.deadline_ms, 9_000_000);
     assert_eq!(f.task(), t);
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11: a covered initial wait needs no extra work turn.
+#[test]
+fn a12_first_continue_honours_an_already_accepted_live_wait() {
+    let f = Fixture::new();
+    goal(&f, 1);
+    f.register();
+    f.subscribe();
+    f.apply(Operation::Yield {
+        task: "p".into(),
+        prompt: "p".into(),
+        registrations: vec!["reg".into()],
+        cursor: 0,
+        deadline: 9_000_000,
+        reason: "required build remains live".into(),
+        now: 2,
+    });
+    f.settle("p", true);
+    let t = check(&f, assessment("continue"));
+    assert_eq!(t.state, ExecutionState::Waiting);
+    assert_eq!(t.no_progress_wakes, 0);
+    assert!(t.pending_prompt_id.is_none());
+    assert_eq!(t.goal.as_ref().unwrap().next_check_in_ms, Some(60_004));
 }
 
 // The kept wait never bypasses the guard: at the limit a covered wait still blocks.
@@ -1317,5 +1429,64 @@ fn a12_check_is_not_retried_unless_the_same_worker_came_back_after_the_bound() {
             Outcome::Saved
         ),
         "a check that never ran on a leased worker keeps the plain bound"
+    );
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11 A12-S04: an owner's native approval wait is not service time of
+// the completion check that asked for it.
+#[test]
+fn a12_native_approval_wait_does_not_spend_the_completion_check_bound() {
+    let f = Fixture::new();
+    goal(&f, 1);
+    f.settle("p", true);
+    let pending = f.task();
+    let check = completion::evaluation(&pending).unwrap().clone();
+    f.begin(&check.prompt_id);
+    let task = f.task();
+    f.apply(Operation::BeginGoalApproval {
+        task: "p".into(),
+        prompt: check.prompt_id.clone(),
+        now: check.started_at_ms + 5_000,
+    });
+    let blocked = f.task();
+    assert_eq!(blocked.state, ExecutionState::Blocked);
+    let answered_at = check.deadline_ms + 300_000;
+    f.apply(Operation::AnswerGoalApproval {
+        task: "p".into(),
+        prompt: check.prompt_id.clone(),
+        revision: blocked.blocked_revision,
+        now: answered_at,
+    });
+    let resumed = f.task();
+    assert_eq!(resumed.state, ExecutionState::Working);
+    let after = completion::evaluation(&resumed).unwrap();
+    assert_eq!(after.paused_at_ms, None);
+    assert_eq!(
+        after.deadline_ms,
+        answered_at + goals::CHECK_BOUND_MS - 5_000,
+        "the remaining check budget survives the approval wait"
+    );
+    f.apply(Operation::TimeoutGoal {
+        task: "p".into(),
+        prompt: check.prompt_id.clone(),
+        now: check.deadline_ms + 1,
+    });
+    assert_eq!(
+        f.task().state,
+        ExecutionState::Working,
+        "the original deadline no longer applies"
+    );
+    let Outcome::Settled { task: settled, .. } = f.apply(Operation::EvaluateGoal {
+        task: task.task_id,
+        prompt: check.prompt_id,
+        result: assessment("continue").to_string(),
+        now: answered_at + 1_000,
+    }) else {
+        panic!()
+    };
+    assert!(
+        completion::evaluation(&settled).is_none_or(|e| e.result.is_some()
+            && e.result.as_ref().unwrap()["status"] != "blocked"),
+        "an approval answered after the original deadline still finishes its check"
     );
 }

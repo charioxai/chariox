@@ -126,7 +126,7 @@ pub(in crate::runtime::state) async fn workspace_identity_for_root_off_thread(
 }
 
 fn git_output(workspace_root: &Path, args: &[&str]) -> Option<String> {
-    let output = std::process::Command::new("git")
+    let output = crate::process_spawn::command("git")
         .arg("-C")
         .arg(workspace_root)
         .args(args)

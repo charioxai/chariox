@@ -179,7 +179,7 @@ impl KernelRuntimeState {
                 cols,
                 rows,
             } => RoomTerminalResult::Resized {
-                terminal: service.resize(session_id, &terminal_id, &actor, cols, rows)?,
+                terminal: service.resize(session_id, &terminal_id, cols, rows)?,
             },
             RoomTerminalOperation::ReadOutput {
                 terminal_id,
@@ -301,6 +301,7 @@ impl KernelRuntimeState {
     pub(crate) fn end_room_terminals(&self, session_id: &str) {
         self.owned.room_execs.end_session(session_id);
         self.owned.room_terminals.end_session(session_id);
+        crate::runtime::process_resources::end_owner(Some(session_id), None);
     }
 
     fn authorize_room_terminal(
@@ -426,6 +427,8 @@ mod tests {
         let DaemonError::MachineRequest { code, message } = failure else {
             panic!("a public terminal refusal");
         };
+        // Clients tell a worker that is away from a lost connection by this code; a transport code would make them repeat a cached refusal.
+        assert_eq!(code, "terminal_refused");
         assert!(crate::room_terminal::is_public_code(&code));
         assert!(message.contains("could not be reached"));
         assert!(!message.contains("slice:m:1") && !message.contains("relay"));

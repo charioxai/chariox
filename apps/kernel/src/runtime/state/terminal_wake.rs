@@ -300,6 +300,12 @@ impl KernelRuntimeState {
 fn describe(event: &RoomTerminalEvent) -> (&'static str, String, serde_json::Value) {
     let terminal = &event.terminal_id;
     match &event.kind {
+        RoomTerminalEventKind::OutsideEnd => ("outside_end", format!("Terminal {terminal}: stopped by a session controller"), serde_json::json!({"event": "outside_end"})),
+        RoomTerminalEventKind::MemoryLimit { limit_bytes } => (
+            "memory_limit",
+            format!("Terminal {terminal}: process tree exceeded its memory limit of {limit_bytes} bytes"),
+            serde_json::json!({"event": "memory_limit", "limit_bytes": limit_bytes}),
+        ),
         RoomTerminalEventKind::Finished { exit_code, signal } => {
             let outcome = match (exit_code, signal) {
                 (Some(code), _) => format!("exit code {code}"),

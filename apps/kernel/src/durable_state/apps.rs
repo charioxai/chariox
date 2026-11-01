@@ -149,12 +149,12 @@ impl DurableKernelStateStore {
                 mutation,
                 response,
             })))?;
-        let result = receiver
-            .recv()
-            .map_err(|error| DaemonError::LocalTransport {
+        let result = crate::durable_state::await_writer_response(receiver).map_err(|error| {
+            DaemonError::LocalTransport {
                 operation: "durable_state.await_write",
                 message: error.to_string(),
-            })?;
+            }
+        })?;
         Ok(result?)
     }
 

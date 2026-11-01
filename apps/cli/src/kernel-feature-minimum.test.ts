@@ -76,6 +76,22 @@ test("MP-08/MP-11 owner context copy requires its allocated C5 protocol 520", ()
   assert.doesNotThrow(() => requireKernelFeatureProtocol(request, 520))
 })
 
+test("MP-08/MP-10/MP-11 retrying a held notification delivery requires protocol 670", () => {
+  const request = { UpdateQueuedWorkflowPrompt: { session_id: "s", queue_item_ref: "q", prompt: null, queue_ref: null, retry_delivery: true } }
+  assert.throws(() => requireKernelFeatureProtocol(request, 669), /Held notification retry needs protocol ≥670/)
+  assert.doesNotThrow(() => requireKernelFeatureProtocol(request, 670))
+  const edit = { UpdateQueuedWorkflowPrompt: { session_id: "s", queue_item_ref: "q", prompt: "x", queue_ref: null } }
+  assert.doesNotThrow(() => requireKernelFeatureProtocol(edit, 435))
+})
+
+test("integration received-event listing and replay require protocol 911", () => {
+  for (const request of [{ ListEventConnectionEvents: { connection_id: "c", limit: 50 } },
+    { ReplayEventConnectionEvent: { connection_id: "c", delivery_id: "d" } }]) {
+    assert.throws(() => requireKernelFeatureProtocol(request, 910), /Integration received events needs protocol ≥911/)
+    assert.doesNotThrow(() => requireKernelFeatureProtocol(request, 911))
+  }
+})
+
 // MP-08 / MP-10: VERSION(P01).
 test("standalone and reserved Project Environment operations require protocol 487", () => {
   for (const kind of ["GetProjectEnvironment", "ApplyProjectEnvironment", "PreviewEnvironmentImport", "CommitEnvironmentImport"]) {
@@ -141,13 +157,12 @@ test("MP-07 / MP-08 / MP-11 SSH machine operations refuse older kernels before t
   }
 })
 
-test("MP-08 / MP-10 / MP-11 kernel-wide access decisions require allocated protocol 470", () => {
-  for (const request of [{ RequestKernelAccess: { holder_pid: 42 } },
-    { RespondToInteraction: { session_id: "kernel-access", interaction_id: "grant", choice_id: "approve" } }]) {
-    assert.throws(() => requireKernelFeatureProtocol(request, 435), /Local-kernel access needs protocol ≥470/)
-    assert.throws(() => requireKernelFeatureProtocol(request, 451), /protocol ≥470/)
-    assert.doesNotThrow(() => requireKernelFeatureProtocol(request, 470))
+// An older kernel ignores `abort_pending` and would Return the agent instead of cancelling its Move.
+test("MP-08 MP-10 cancelling a Move is refused by kernels older than protocol 638, while a Return is not", () => {
+  const cancel = { MoveAgentToLocal: { session_id: "room", agent_ref: "agent", abort_pending: true } }
+  for (const version of [undefined, 0, 637]) {
+    assert.throws(() => requireKernelFeatureProtocol(cancel, version), /Move cancellation needs protocol ≥638/)
   }
-  assert.doesNotThrow(() => requireKernelFeatureProtocol({ RespondToInteraction: { session_id: "ordinary" } }, 435))
-  assert.doesNotThrow(() => requireKernelFeatureProtocol({ RespondToInteraction: { session_id: "kernel-access", choice_id: "refuse" } }, 451))
+  assert.doesNotThrow(() => requireKernelFeatureProtocol(cancel, 638))
+  assert.doesNotThrow(() => requireKernelFeatureProtocol({ MoveAgentToLocal: { session_id: "room", agent_ref: "agent" } }, 600))
 })
