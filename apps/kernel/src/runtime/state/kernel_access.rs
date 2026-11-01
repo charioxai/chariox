@@ -600,7 +600,11 @@ impl KernelRuntimeState {
             .remove(&key)
             .is_some_and(|pending| pending.grant_id == summary.grant_id);
         let term = result?;
-        if !admitted || state.generation != generation || !holder.contains(&peer) {
+        // The requester sat inside the holder when the request arrived (checked above), and
+        // the grant binds to the holder identity the owner saw, not to the requester. A
+        // `--no-wait` waiter is re-parented once its shell exits, minutes before the owner
+        // decides, so only the holder and the (still waiting) requester have to be there.
+        if !admitted || state.generation != generation || !holder.alive() || !peer.alive() {
             // Ending the request also locks the access store to track owed audit work.
             drop(state);
             self.audit_access(&summary, "revoked", Some("authorization_invalidated"))?;

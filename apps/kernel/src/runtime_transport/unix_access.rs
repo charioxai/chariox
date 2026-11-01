@@ -179,15 +179,21 @@ pub(super) async fn admit_frame(
         };
         tokio::spawn(async move {
             let _permit = permit;
-            let response = runtime_state.request_kernel_access(peer, request).await;
+            let response = runtime_state
+                .request_kernel_access(peer.clone(), request)
+                .await;
             let (response, error) = match response {
                 Ok(grant) => {
                     // A socket never changes authority after its first admission.
                     // Existing subscriptions and queued deliveries retain that grant.
-                    bound_grant
-                        .lock()
-                        .expect("bound grant poisoned")
-                        .get_or_insert_with(|| grant.grant_id.clone());
+                    // A `--no-wait` waiter that left its holder's tree is only told the
+                    // outcome: its socket gets no authority, or delivery would close it.
+                    if runtime_state.access_grant_live(&grant.grant_id, &peer) {
+                        bound_grant
+                            .lock()
+                            .expect("bound grant poisoned")
+                            .get_or_insert_with(|| grant.grant_id.clone());
+                    }
                     (
                         Some(
                             serde_json::to_value(

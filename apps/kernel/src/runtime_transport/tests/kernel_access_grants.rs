@@ -12,6 +12,7 @@ const SESSION: &str = "access-session";
 mod cover;
 mod credential_authority;
 mod outbound_credentials;
+mod waiter;
 
 #[test]
 #[ignore = "subprocess entry point"]
