@@ -15,7 +15,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json && node scripts/build-view.mjs",
-    "lint": "tsc -p tsconfig.json --noEmit"
+    "lint": "pnpm --filter @chariox/transcript-view run build && tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
     "@chariox/transcript-view": "workspace:*",
