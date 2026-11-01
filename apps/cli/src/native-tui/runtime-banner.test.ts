@@ -428,8 +428,9 @@ function slice(overrides: Partial<SliceRecord> = {}): SliceRecord {
 }
 
 
-test("MP-08 native TUI projects a local-only carrier indicator outside provider output", () => {
-  const input = { surface: "codex native-tui", session: session({}), agent: agent({}), worktree: "/repo", connectionLabel: "Local connection" }
-  assert.match(formatNativeTuiRuntimeBanner(input), /connection:     Local connection/)
-  assert.doesNotMatch(formatNativeTuiRuntimeBanner({ ...input, connectionLabel: null }), /connection:/)
+test("directfirst r11 the native TUI banner never names how the connection is established", () => {
+  for (const connectionLabel of ["Local connection", "Relay connection", null]) {
+    const input = { surface: "codex native-tui", session: session({}), agent: agent({}), worktree: "/repo", connectionLabel }
+    assert.doesNotMatch(formatNativeTuiRuntimeBanner(input), /connection:|Local connection|Relay connection/)
+  }
 })

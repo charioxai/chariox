@@ -1,4 +1,3 @@
-import { localKernelConnectionLabel } from "../local-connection-indicator.js"
 import { appendFileSync, renameSync, writeFileSync } from "node:fs"
 import path from "node:path"
 import process from "node:process"
@@ -285,7 +284,6 @@ async function runClaudeRemoteRendered(
       ? await loadNativeTuiSliceInventory(client)
       : { slices: [], error: null }
     const banner = formatNativeTuiRuntimeBanner({
-      connectionLabel: localKernelConnectionLabel(client, session.host_daemon_id),
       surface: "claude native-tui",
       session,
       agent,

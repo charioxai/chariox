@@ -15,7 +15,7 @@ conditions and the required duration.
 | LD-03 / MP-08 | Select a remote, managed or slice kernel without same-machine discovery/proof. No Local/Relay indicator or local offer. |
 | LD-04 / MP-08 / MP-11 | Block local sockets before they open for an online, previously proven local kernel. Relay remains usable; one notice outside agent content suggests Chrome or Firefox. Reload does not repeat the notice. Keep Chromium's pending permission request pending rather than reporting an error. |
 | LD-05 / MP-11 | Replace the loopback listener. No runtime request reaches it unless it proves the pinned kernel key and redeems the bound-client grant. Failed proof blocks local attempts. |
-| LD-06 / MP-08 / MP-11 | Real detached and native-provider TUIs automatically admit direct for a fresh, id-addressed local target at protocol 520 after kernel-key proof and a short terminal grant; renew through the same terminal contract. Show the carrier indicator only for a fresh local discovery match. Older, alias-only and undiscovered targets keep the relay. Never select discovered TCP solely on its public kernel id. |
+| LD-06 / MP-08 / MP-11 | Real detached and native-provider TUIs automatically admit direct for a fresh, id-addressed local target at protocol 520 after kernel-key proof and a short terminal grant; renew through the same terminal contract. The user sees no label, notice or setting for the path; the proof is counters and kernel admission logs. Older, alias-only and undiscovered targets keep the relay. Never select discovered TCP solely on its public kernel id. |
 
 MP-10 evidence records exact source identities, built clients/kernel/relay,
 per-step screenshots and allowlisted event metadata, resource samples, and
