@@ -1146,6 +1146,10 @@ mod tests {
         }
 
         fn user(&self, sequence: u64, prompt: &str) {
+            self.user_at(sequence, prompt, None);
+        }
+
+        fn user_at(&self, sequence: u64, prompt: &str, timestamp_ms: Option<u64>) {
             self.append(
                 sequence,
                 crate::history::SessionHistoryEntry::user_prompt(
@@ -1158,7 +1162,7 @@ mod tests {
                     prompt_id: Some(format!("prompt-{sequence}")),
                     ..crate::history::HistoryEventTurnContext::default()
                 },
-                None,
+                timestamp_ms,
             );
         }
 

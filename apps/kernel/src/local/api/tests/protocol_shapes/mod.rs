@@ -5,6 +5,7 @@ use crate::local::{
     TerminalCommandCatalogNodeKind, TerminalCommandCatalogSurface,
 };
 
+mod agent_deadline;
 mod agent_lifecycle;
 mod agent_workflow;
 mod aggregate_agent_model;
@@ -21,6 +22,7 @@ mod cloud_relay;
 mod computer_hold;
 mod core;
 mod credential_enrollment;
+mod dictation;
 mod display_resumption;
 mod disposable_worker;
 mod event_publication;
@@ -30,6 +32,7 @@ mod handoff_config;
 mod kernel_access;
 mod kernel_browser;
 mod kernel_computer;
+mod kernel_gateway;
 mod kernel_operation_interactions;
 mod managed_activity;
 mod managed_context;
@@ -51,7 +54,9 @@ mod resource_telemetry;
 mod room_controller;
 mod room_environment;
 mod room_environment_placement;
+mod room_exec;
 mod room_terminal;
+mod session_feed_596;
 mod session_view;
 mod slice_disk_quota;
 mod slice_display;
@@ -108,3 +113,6 @@ mod room_workflows;
 mod screenshot;
 mod ssh_machine;
 mod waiting_room_workspace;
+
+mod room_pin;
+mod usage_snapshot;

@@ -185,6 +185,10 @@ export function moveAgentToLocalRequest(sessionId: string, agentRef: string) {
   }
 }
 
+export function archiveAgentRequest(sessionId: string, agentId: string, archived: boolean) {
+  return { ArchiveAgent: { session_id: sessionId, agent_id: agentId, archived } }
+}
+
 export function destroyAgentRequest(sessionId: string, agentId: string) {
   return {
     DestroyAgent: {
@@ -217,4 +221,22 @@ export function listAgentsRequest(sessionId: string) {
       session_id: sessionId,
     },
   }
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11: arm on the executing kernel, before submission.
+export function setAgentDeadlineRequest(sessionId: string, agentId: string, deadlineMs: number) {
+  return { SetAgentDeadline: { session_id: sessionId, agent_id: agentId, deadline_ms: deadlineMs } }
+}
+export function getAgentDeadlineRequest(sessionId: string, agentId: string) {
+  return { GetAgentDeadline: { session_id: sessionId, agent_id: agentId } }
+}
+
+export const AGENT_ARCHIVE_MINIMUM_PROTOCOL_VERSION = 636
+
+export function supportsReversibleAgentArchive(protocolVersion: number | null | undefined): boolean {
+  return typeof protocolVersion === "number" && protocolVersion >= AGENT_ARCHIVE_MINIMUM_PROTOCOL_VERSION
+}
+
+export function listArchivedAgentsRequest(sessionId: string) {
+  return { ListArchivedAgents: { session_id: sessionId } }
 }

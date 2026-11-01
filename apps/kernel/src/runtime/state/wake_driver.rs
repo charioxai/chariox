@@ -187,6 +187,7 @@ impl WakeSink {
         #[cfg(test)]
         if self
             .reject_next
+            // fetch_update: CI pins Rust 1.88, where try_update is unstable.
             .fetch_update(
                 std::sync::atomic::Ordering::SeqCst,
                 std::sync::atomic::Ordering::SeqCst,

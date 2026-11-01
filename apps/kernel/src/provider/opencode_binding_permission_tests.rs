@@ -154,3 +154,85 @@ fn native_prompt_is_not_submitted_when_permission_update_fails() {
     );
     assert!(!requests.iter().any(|(line, _)| line.starts_with("POST ")));
 }
+
+// MP-08/MP-10: use the state replayed by ArchiveAgent in a fresh native runtime.
+pub(crate) fn assert_archived_opencode_resume_contract(
+    resume: crate::provider::ProviderResumeState,
+) {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    let received = thread::spawn(move || {
+        let mut requests = Vec::new();
+        loop {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut bytes = Vec::new();
+            loop {
+                let mut buffer = [0; 4096];
+                let n = stream.read(&mut buffer).unwrap();
+                assert_ne!(n, 0);
+                bytes.extend_from_slice(&buffer[..n]);
+                let text = String::from_utf8_lossy(&bytes);
+                if let Some((headers, body)) = text.split_once("\r\n\r\n") {
+                    let length = headers
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().unwrap())
+                        })
+                        .unwrap_or(0);
+                    if body.len() >= length {
+                        break;
+                    }
+                }
+            }
+            let text = String::from_utf8(bytes).unwrap();
+            let request = text.lines().next().unwrap().to_string();
+            let path = request.split_whitespace().nth(1).unwrap();
+            let payload = match path {
+                "/global/health" => r#"{"healthy":true}"#,
+                "/agent" => "[]",
+                path if path.ends_with("/prompt_async") => "",
+                path if path.ends_with("/message") => "[]",
+                "/config/providers" => r#"{"providers":[],"default":{}}"#,
+                _ => "{}",
+            };
+            let content_type = if path == "/event" {
+                "text/event-stream"
+            } else {
+                "application/json"
+            };
+            write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}", payload.len()).unwrap();
+            let done = path.ends_with("/prompt_async");
+            requests.push(request);
+            if done {
+                return requests;
+            }
+        }
+    });
+    let saved = resume.opencode_session_id().unwrap().to_string();
+    let run = test_run_with_endpoint(
+        LaunchProviderRequest::new("archive-room", "opencode", "opencode", "default", "default")
+            .with_resume_state(resume),
+        false,
+        &endpoint,
+    );
+    let mut binding = super::initialize_opencode_runtime(&run).unwrap();
+    assert_eq!(binding.state.session_id(), saved);
+    submit_opencode_prompt(&run, &mut binding.state, &envelope()).unwrap();
+    binding.state.stop();
+    let requests = received.join().unwrap();
+    assert!(!requests
+        .iter()
+        .any(|request| request.starts_with("POST /session ")));
+    assert!(requests
+        .iter()
+        .any(|request| request.starts_with(&format!("GET /session/{saved}/message "))));
+    assert!(requests
+        .last()
+        .unwrap()
+        .starts_with(&format!("POST /session/{saved}/prompt_async ")));
+}

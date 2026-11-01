@@ -66,6 +66,9 @@ pub enum CodexNotification {
         item_id: String,
         message: String,
     },
+    AccountRateLimitsUpdated {
+        rate_limits: Value,
+    },
     TokenUsageUpdated {
         thread_id: String,
         turn_id: String,
@@ -98,6 +101,9 @@ pub(super) fn parse_notification(message: JsonRpcMessage) -> Option<CodexNotific
     let method = message.method?;
     let params = message.params.unwrap_or(Value::Null);
     let notification = match method.as_str() {
+        "account/rateLimits/updated" => Some(CodexNotification::AccountRateLimitsUpdated {
+            rate_limits: params.get("rateLimits").cloned()?,
+        }),
         "item/agentMessage/delta" => Some(CodexNotification::AgentMessageDelta {
             item_id: params
                 .get("itemId")
@@ -354,7 +360,8 @@ pub(super) fn parse_notification(message: JsonRpcMessage) -> Option<CodexNotific
             CodexNotification::TurnStarted { .. }
             | CodexNotification::TurnCompleted { .. }
             | CodexNotification::TaskComplete { .. }
-            | CodexNotification::TokenUsageUpdated { .. },
+            | CodexNotification::TokenUsageUpdated { .. }
+            | CodexNotification::AccountRateLimitsUpdated { .. },
             _,
         )
         | (_, None) => notification,

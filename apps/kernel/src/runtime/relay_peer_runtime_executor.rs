@@ -21,14 +21,12 @@ pub(crate) async fn ensure_relay_subscription_attachment(
     session_id: &str,
     attachment_id: &str,
 ) -> Result<(), DaemonError> {
-    if let Some(session) = session_projection.get(session_id) {
-        if session.has_attachment(attachment_id) {
-            return Ok(());
-        }
-        return Err(DaemonError::AttachmentNotInSession {
-            session_id: session_id.to_string(),
-            attachment_id: attachment_id.to_string(),
-        });
+    // The projection trails the kernel by an event or two; a miss there is not a refusal.
+    if session_projection
+        .get(session_id)
+        .is_some_and(|session| session.has_attachment(attachment_id))
+    {
+        return Ok(());
     }
     runtime_state
         .ensure_attachment_in_session(session_id, attachment_id)
@@ -244,6 +242,7 @@ pub(crate) async fn submit_relay_leased_prompt(
     runtime_state: &KernelRuntimeState,
     leased_agent_id: &str,
     expected_profile: crate::transport::relay_peer::RelayAgentExecutionProfile,
+    provider_resume_state: Option<crate::provider::ProviderResumeState>,
     prompt: &str,
     hidden_system_context: &str,
     attachments: Vec<RelayPromptAttachment>,
@@ -260,6 +259,7 @@ pub(crate) async fn submit_relay_leased_prompt(
         .submit_relay_leased_prompt(
             leased_agent_id,
             expected_profile,
+            provider_resume_state,
             prompt,
             hidden_system_context,
             attachments,

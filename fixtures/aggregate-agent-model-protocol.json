@@ -1,6 +1,6 @@
 {
-  "local": 590,
-  "relayPeer": 196,
+  "local": 636,
+  "relayPeer": 239,
   "requests": [
     {
       "StartManagedContextTransfer": {
@@ -149,6 +149,23 @@
         "correction_used": false,
         "pending_prompt_id": null
       }
+    }
+  ],
+  "replyOutcomes": [
+    {
+      "kind": "delegate_gone",
+      "delegate_id": "helper",
+      "reason": "deleted"
+    },
+    {
+      "kind": "delegate_gone",
+      "delegate_id": "helper",
+      "reason": "failed_start"
+    },
+    {
+      "kind": "delegate_gone",
+      "delegate_id": "helper",
+      "reason": "source_lost"
     }
   ]
 }

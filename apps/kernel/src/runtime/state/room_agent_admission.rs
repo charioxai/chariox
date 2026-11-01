@@ -36,6 +36,9 @@ impl KernelRuntimeState {
         }
         if let (Some(actor), Some(run)) = (actor, run) {
             let agent = self.owned.agent_store.get_agent(actor)?;
+            if agent.archived() {
+                return Err(denied("unarchive this agent before using Room tools"));
+            }
             // MP-08 / MP-10 / MP-11 A10-S02: a home-owned remote agent has
             // a projected worker epoch, not a local provider-store run. The
             // forwarding seam already checks the authenticated current lease.
@@ -69,10 +72,16 @@ impl KernelRuntimeState {
         actor_id: &str,
         request: &LocalDaemonRequest,
     ) -> Result<(), DaemonError> {
+        if matches!(request, LocalDaemonRequest::ArchiveAgent(_)) {
+            return Err(denied("only the owner can archive or unarchive agents"));
+        }
         if !self.room_agent_tools_enabled() {
             return Ok(());
         }
         let actor = self.owned.agent_store.get_agent(actor_id)?;
+        if actor.archived() {
+            return Err(denied("unarchive this agent before using Room tools"));
+        }
         if let Some(crate::runtime::session_membership::scope::SessionMembershipScope::SessionId(
             room,
         )) = crate::runtime::session_membership::scope::request_session_scope(request)
@@ -95,7 +104,12 @@ impl KernelRuntimeState {
             return Err(denied("registry request is outside the caller room"));
         }
         let (room, target_id, deleting) = match request {
+            LocalDaemonRequest::SetAgentDeadline(r) => (&r.session_id, &r.agent_id, false),
+            LocalDaemonRequest::GetAgentDeadline(r) => (&r.session_id, &r.agent_id, false),
             LocalDaemonRequest::AliasAgent(r) => (&r.session_id, &r.agent_id, false),
+            LocalDaemonRequest::ArchiveAgent(_) => {
+                return Err(denied("only the owner can archive or unarchive agents"))
+            }
             LocalDaemonRequest::DestroyAgent(r) => (&r.session_id, &r.agent_id, true),
             LocalDaemonRequest::UpdateAgentConfig(r) => (&r.session_id, &r.agent_id, false),
             LocalDaemonRequest::UpdateAgentProfile(r) => (&r.session_id, &r.agent_id, false),
@@ -143,13 +157,13 @@ impl KernelRuntimeState {
             // MP-08/MP-11 A05: App bindings only for self or an immutable direct
             // child; the binding path checks request causation and the subset.
             LocalDaemonRequest::GrantAgentExtension(r) => {
-                return self.authorize_room_extension_target(&actor, &r.agent_ref)
+                return self.authorize_room_extension_target(&actor, &r.agent_ref);
             }
             LocalDaemonRequest::RevokeAgentExtension(r) => {
-                return self.authorize_room_extension_target(&actor, &r.agent_ref)
+                return self.authorize_room_extension_target(&actor, &r.agent_ref);
             }
             LocalDaemonRequest::FocusAgent(_) | LocalDaemonRequest::CycleAgentFocus(_) => {
-                return Err(denied("agents cannot change user focus"))
+                return Err(denied("agents cannot change user focus"));
             }
             LocalDaemonRequest::SpawnAgent(r) => {
                 if r.session_id != actor.session_id() {

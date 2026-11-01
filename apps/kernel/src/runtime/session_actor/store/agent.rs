@@ -358,11 +358,12 @@ impl SessionRuntimeStore {
                         .await;
                 }
                 match self.reconcile_room_environment_actors_if_started(&session_id) {
-                    Ok(()) => self
-                        .state
-                        .session_snapshot(&session_id)
-                        .await
-                        .map(|_| LocalDaemonResponse::AgentSpawned { agent }),
+                    Ok(()) => self.state.session_snapshot(&session_id).await.map(|_| {
+                        LocalDaemonResponse::AgentSpawned {
+                            agent,
+                            event_subscription_error: None,
+                        }
+                    }),
                     Err(error) => Err(error),
                 }
             }
@@ -403,7 +404,10 @@ impl SessionRuntimeStore {
                 .ok()
                 .map(SessionProjectionAction::Update);
             return (
-                Ok(LocalDaemonResponse::AgentsSpawned { agents: Vec::new() }),
+                Ok(LocalDaemonResponse::AgentsSpawned {
+                    agents: Vec::new(),
+                    event_subscription_error: None,
+                }),
                 projection_action,
             );
         }
@@ -606,6 +610,7 @@ impl SessionRuntimeStore {
         }
         self.with_session_projection_action_result(Ok(LocalDaemonResponse::AgentsSpawned {
             agents,
+            event_subscription_error: None,
         }))
         .await
     }
@@ -643,6 +648,34 @@ impl SessionRuntimeStore {
                         provider_run: provider_run.into(),
                         session,
                     }),
+                    Err(error) => Err(error),
+                }
+            }
+            Err(error) => Err(error),
+        };
+        self.with_session_projection_action_result(result).await
+    }
+
+    pub(in crate::runtime::session_actor) async fn archive_agent(
+        &self,
+        request: crate::local::ArchiveAgentRequest,
+        caller_user_id: String,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<SessionProjectionAction>,
+    ) {
+        let result = match self
+            .state
+            .archive_agent_in_session(&request, &caller_user_id)
+            .await
+        {
+            Ok(agent) => {
+                match self.reconcile_room_environment_actors_if_started(&request.session_id) {
+                    Ok(()) => self
+                        .state
+                        .session_snapshot(&request.session_id)
+                        .await
+                        .map(|session| LocalDaemonResponse::AgentArchived { session, agent }),
                     Err(error) => Err(error),
                 }
             }

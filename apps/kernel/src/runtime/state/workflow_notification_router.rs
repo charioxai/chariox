@@ -822,7 +822,7 @@ mod tests {
                     let mut access = kernel.owned.kernel_access.lock().unwrap();
                     let live = access.grants.get_mut(&grant).unwrap();
                     if end == "expiry" {
-                        live.deadline =
+                        live.clock.as_mut().unwrap().deadline =
                             std::time::Instant::now() - std::time::Duration::from_millis(1);
                     } else {
                         live.holder.start = live.holder.start.wrapping_add(1);

@@ -135,7 +135,7 @@ test("agent spawn refreshes session state after launching the provider run", asy
   assert.deepEqual(appliedProviderRunIds, [null, "provider-run-2"])
   assert.deepEqual(refreshedPaneProviderRunIds, [null, "provider-run-2"])
   assert.equal(splitPaneRefreshCount, 1)
-  assert.equal(flashedMessage, "spawned agent agent-2 (review) · local · worktree worktree-1")
+  assert.equal(flashedMessage, "spawned review · local · worktree worktree-1")
 })
 
 test("agent inspect renders diagnostics as a notice with concise footer", async () => {

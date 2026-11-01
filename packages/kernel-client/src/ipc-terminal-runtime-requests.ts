@@ -328,7 +328,8 @@ export function getTerminalCommandCatalogRequest() {
 export type InteractionPasskeyProof = {
   passkey: string
   rememberMinutes?: number | null
-  accessLifetimeMinutes?: number | null
+  /** Minutes, or `until_exit` for an access grant that ends with its agent. */
+  accessLifetime?: number | "until_exit" | null
 }
 
 export function respondToInteractionRequest(
@@ -343,7 +344,7 @@ export function respondToInteractionRequest(
       session_id: sessionId,
       interaction_id: interactionId,
       choice_id: choiceId,
-      custom_reply: proof?.accessLifetimeMinutes ? String(proof.accessLifetimeMinutes) : customReply ?? null,
+      custom_reply: proof?.accessLifetime ? String(proof.accessLifetime) : customReply ?? null,
       ...(proof ? {
         passkey: proof.passkey,
         ...(proof.rememberMinutes ? { passkey_remember_minutes: proof.rememberMinutes } : {}),

@@ -8,6 +8,8 @@ mod daemon_lifecycle;
 mod durable_runtime_state;
 mod external_provider_session_discovery;
 #[cfg(test)]
+mod restored_agent_names_tests;
+#[cfg(test)]
 mod room_environment_durability_tests;
 pub(crate) use external_provider_session_discovery::find_external_provider_prompt_recovery_match;
 mod external_provider_sessions;
@@ -54,6 +56,7 @@ mod terminal_fanout;
 pub(crate) mod terminal_input;
 mod turn_substitute;
 mod workflow_design_events;
+pub(crate) mod workflow_output_follow_up;
 pub(crate) mod workflow_runtime;
 mod workflow_workspace_claims;
 
@@ -139,7 +142,8 @@ pub(crate) use provider_liveness::{
     clear_active_provider_run_session_pointer, ProviderRunExitSessionSummary,
 };
 pub(crate) use provider_processes::{
-    ProviderLaunchProcessRuntime, ProviderProcessReapSummary, ProviderProcessTracker,
+    stop_processes_left_by_dead_kernels, ProviderLaunchProcessRuntime, ProviderProcessReapSummary,
+    ProviderProcessTracker,
 };
 pub(crate) use provider_run_read::ProviderRunReadService;
 pub(crate) use remote_lease::{
@@ -172,6 +176,7 @@ pub struct DaemonApp {
     pub(crate) runtime_tool_call_activity: crate::runtime::state::RuntimeToolCallActivity,
     // MP-08 / MP-10 / MP-11: one authority across independently built runtime actors.
     pub(crate) kernel_browser_host: crate::runtime::kernel_browser_host::KernelBrowserHost,
+    pub(crate) dictation: Arc<crate::dictation::DictationService>,
     pub(crate) private_assessment_dispatch:
         Option<crate::runtime::state::PrivateAssessmentDispatch>,
     pub(crate) room_computer_revoked: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
@@ -395,6 +400,9 @@ impl DaemonApp {
             runtime_tool_call_activity: crate::runtime::state::RuntimeToolCallActivity::default(),
             kernel_browser_host: crate::runtime::kernel_browser_host::KernelBrowserHost::new(
                 config.private_runtime_state_root(),
+            ),
+            dictation: crate::dictation::DictationService::new(
+                config.private_runtime_state_root().join("dictation"),
             ),
             room_computer_revoked: Default::default(),
             private_assessment_dispatch: None,

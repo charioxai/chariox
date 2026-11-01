@@ -122,7 +122,10 @@ pub(crate) async fn issue_cloud_terminal_client_token(
     Ok((client_id, issued))
 }
 
-fn kernel_client_subject(kernel_id: &str, original_client_id: &str) -> Result<String, DaemonError> {
+pub(super) fn kernel_client_subject(
+    kernel_id: &str,
+    original_client_id: &str,
+) -> Result<String, DaemonError> {
     let prefix = format!("kernel-client:{:x}:", Sha256::digest(kernel_id.as_bytes()));
     if original_client_id.starts_with("kernel-client:") {
         let valid = original_client_id

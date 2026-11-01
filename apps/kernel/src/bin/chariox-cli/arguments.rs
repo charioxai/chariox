@@ -1,7 +1,7 @@
 //! Validate launcher syntax before a build, logger or runtime can be started.
 
 pub const USAGE: &str = "usage: chariox-cli [options]
-       chariox-cli access|sudo|app|context|logs|codex|claude|opencode|publication|deployments|deployed|cloud [args]
+       chariox-cli access|sudo|guide|kernels|request|events|watch|files|terminal|exec|app|context|logs|codex|claude|opencode|publication|deployments|deployed|cloud [args]
        chariox-cli serve <package> <port> [options]
 
 Options:
@@ -37,6 +37,14 @@ pub fn help_requested(args: &[String]) -> Result<bool, String> {
             arg.as_str(),
             "access"
                 | "sudo"
+                | "guide"
+                | "kernels"
+                | "request"
+                | "events"
+                | "watch"
+                | "files"
+                | "terminal"
+                | "exec"
                 | "app"
                 | "context"
                 | "logs"
@@ -95,9 +103,17 @@ pub fn help_requested(args: &[String]) -> Result<bool, String> {
     Ok(help)
 }
 
+/// `access request` and `access status` name the same holder: the nearest
+/// provider harness, unless the caller passes `--holder-pid`.
+pub fn needs_access_holder(args: &[String]) -> bool {
+    args.first().map(String::as_str) == Some("access")
+        && matches!(args.get(1).map(String::as_str), Some("request" | "status"))
+        && !args.iter().any(|arg| arg == "--holder-pid")
+}
+
 #[cfg(test)]
 mod tests {
-    use super::help_requested;
+    use super::{help_requested, needs_access_holder};
 
     // MP-08 / MP-11: Cloud commands use the ordinary TypeScript parser.
     #[test]
@@ -111,5 +127,108 @@ mod tests {
             let args = args.into_iter().map(str::to_owned).collect::<Vec<_>>();
             assert_eq!(help_requested(&args), Ok(false));
         }
+    }
+
+    // EA2-26: the event commands of `chariox guide` use the TypeScript parser.
+    #[test]
+    fn event_commands_reach_their_own_parser() {
+        for args in [
+            vec!["events", "subscription"],
+            vec!["events", "subscribe", "--kernel", "k", "--session", "s"],
+            vec!["events", "unsubscribe", "--all"],
+            vec!["events", "list", "--since", "3", "--limit", "10"],
+            vec!["events", "wait", "--since", "3", "--timeout", "5"],
+            vec!["events", "ack", "7"],
+        ] {
+            let args = args.into_iter().map(str::to_owned).collect::<Vec<_>>();
+            assert_eq!(help_requested(&args), Ok(false), "{args:?}");
+        }
+    }
+
+    // EA2-04/05/19: the agent commands of `chariox guide` use the TypeScript parser.
+    #[test]
+    fn agent_commands_reach_their_own_parser() {
+        for args in [
+            vec!["guide"],
+            vec!["kernels", "--socket", "/tmp/kernel.sock"],
+            vec!["request", "--kernel", "b3", "--command-id", "c-1"],
+            vec![
+                "watch",
+                "--kernel",
+                "b3",
+                "--session",
+                "s",
+                "--attachment",
+                "a",
+            ],
+            vec!["files", "put", "--kernel", "b3", "./a.bin", "/tmp/a.bin"],
+            vec![
+                "terminal",
+                "send",
+                "--kernel",
+                "b3",
+                "--session",
+                "s",
+                "--terminal",
+                "t",
+                "--no-enter",
+                "ls",
+            ],
+            vec![
+                "files",
+                "get",
+                "--kernel",
+                "b3",
+                "--overwrite",
+                "/tmp/a.bin",
+                "./a.bin",
+            ],
+            vec!["access", "status"],
+        ] {
+            let args = args.into_iter().map(str::to_owned).collect::<Vec<_>>();
+            assert_eq!(help_requested(&args), Ok(false), "{args:?}");
+        }
+    }
+
+    // The public usage names exactly the subcommands the launcher forwards.
+    #[test]
+    fn usage_names_every_forwarded_subcommand_and_no_removed_one() {
+        let line = super::USAGE.lines().nth(1).expect("subcommand usage line");
+        let listed: Vec<_> = line
+            .trim()
+            .strip_prefix("chariox-cli ")
+            .and_then(|rest| rest.strip_suffix(" [args]"))
+            .expect("subcommand list")
+            .split('|')
+            .collect();
+        for name in &listed {
+            assert_eq!(
+                help_requested(&[(*name).to_owned()]),
+                Ok(false),
+                "{name} is listed but not forwarded"
+            );
+        }
+        for name in ["kernels", "terminal", "events"] {
+            assert!(listed.contains(&name), "usage omits {name}");
+        }
+        assert!(!listed.contains(&"machines"));
+    }
+
+    #[test]
+    fn access_status_names_the_same_holder_as_access_request() {
+        let args = |list: &[&str]| list.iter().map(|arg| arg.to_string()).collect::<Vec<_>>();
+        assert!(needs_access_holder(&args(&[
+            "access",
+            "request",
+            "--no-wait"
+        ])));
+        assert!(needs_access_holder(&args(&["access", "status"])));
+        assert!(!needs_access_holder(&args(&[
+            "access",
+            "status",
+            "--holder-pid",
+            "7"
+        ])));
+        assert!(!needs_access_holder(&args(&["access", "list"])));
     }
 }

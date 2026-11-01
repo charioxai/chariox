@@ -9,11 +9,10 @@ static void track_redirect(Display *d,Window w,int mode){
     if(mode==CompositeRedirectManual)manual++;else automatic++;
     XCompositeRedirectWindow(d,w,mode);
 }
-#define XCompositeRedirectWindow track_redirect
 #include CAPTURE_SOURCE
-#undef XCompositeRedirectWindow
 int main(void) {
     Display *d=XOpenDisplay(NULL);assert(d);
+    cx_XCompositeRedirectWindow=track_redirect;
     Window w=XCreateSimpleWindow(d,DefaultRootWindow(d),0,0,128,128,0,0,0xffffff);
     unsigned long pid=getpid();XChangeProperty(d,w,XInternAtom(d,"_NET_WM_PID",False),XA_CARDINAL,32,PropModeReplace,(unsigned char*)&pid,1);
     XMapWindow(d,w);XSync(d,False);

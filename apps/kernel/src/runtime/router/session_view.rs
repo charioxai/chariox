@@ -9,6 +9,13 @@ use crate::runtime::command::KernelCommand;
 use super::CommandRouter;
 
 const INITIAL_PANE_COUNT: usize = 6;
+/// The most turns per agent an initial view may ask for; a pane needs a screenful, not the history.
+const MAX_INITIAL_VIEW_PROMPTS: u32 = 20;
+
+/// A view that does not ask gets the latest turn; one that does gets what its pane needs, capped.
+fn initial_view_prompt_count(requested: Option<u32>) -> usize {
+    usize::try_from(requested.unwrap_or(1).clamp(1, MAX_INITIAL_VIEW_PROMPTS)).unwrap_or(1)
+}
 
 impl CommandRouter {
     pub(super) async fn attach_session_view(
@@ -75,7 +82,9 @@ impl CommandRouter {
                 LocalDaemonRequest::GetSessionHistoryOutline(GetSessionHistoryOutlineRequest {
                     session_id: request.session_id,
                     agent_ids: Some(agent_ids),
-                    latest_prompt_count: Some(1),
+                    latest_prompt_count: Some(initial_view_prompt_count(
+                        request.latest_prompt_count,
+                    )),
                     cursor: None,
                     include_prefetched_content: false,
                 }),
@@ -174,5 +183,18 @@ fn unexpected_response() -> DaemonError {
     DaemonError::LocalTransport {
         operation: "attach initial session view",
         message: "unexpected component response".into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn initial_view_prompt_count_defaults_to_one_and_is_capped() {
+        assert_eq!(initial_view_prompt_count(None), 1);
+        assert_eq!(initial_view_prompt_count(Some(0)), 1);
+        assert_eq!(initial_view_prompt_count(Some(8)), 8);
+        assert_eq!(initial_view_prompt_count(Some(500)), 20);
     }
 }

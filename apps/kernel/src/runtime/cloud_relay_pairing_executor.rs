@@ -86,7 +86,7 @@ async fn machine_runtime_profile_payload(
         account_profiles,
     )
     .await;
-    let launch_target = infer_waiting_room_launch_target();
+    let launch_target = infer_waiting_room_launch_target(&[]);
     serde_json::json!({
         "profileVersion": 1,
         "providerCatalog": provider_catalog,

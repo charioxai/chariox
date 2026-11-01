@@ -216,3 +216,17 @@ test("relay subscription frames require a target", () => {
     resumeFromEventId: null,
   }), /relay target daemon id or alias is required/)
 })
+
+test("relay subscribe frames carry the requested heartbeat interval only when asked", () => {
+  const input = {
+    requestId: "request-1",
+    subscriptionId: "subscription-1",
+    target: { daemon_id: "daemon-1", daemon_alias: null },
+    sessionId: "session-1",
+    attachmentId: "attachment-1",
+    clientPublicKey: "client-key",
+    resumeFromEventId: null,
+  }
+  assert.equal("heartbeat_interval_ms" in buildRelaySubscribeFrame(input), false)
+  assert.equal(buildRelaySubscribeFrame({ ...input, heartbeatIntervalMs: 1000 }).heartbeat_interval_ms, 1000)
+})

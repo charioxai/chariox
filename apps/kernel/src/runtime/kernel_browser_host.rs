@@ -406,11 +406,13 @@ impl KernelBrowserHost {
         // MP-08/MP-10/MP-11: mutations keep their existing serial admission,
         // but never hold the shared controller lock during input/CDP waits.
         // Takeover/cancellation use the actor model and remain independent.
+        // A dialog answer releases a page action that may still own this lane.
+        // Admit it independently of page input, retaining scope and takeover checks.
         let mutation = method == "host.secret"
             || (method == "host.browser"
                 && matches!(
                     params["op"].as_str(),
-                    Some("open" | "close" | "navigate" | "input" | "stop")
+                    Some("open" | "close" | "navigate" | "resize" | "input" | "stop")
                 ));
         let mutation_lane = if mutation {
             Some(
@@ -610,8 +612,21 @@ impl KernelBrowserHost {
             || (method == "host.browser"
                 && matches!(
                     params["op"].as_str(),
-                    Some("open" | "close" | "navigate" | "input")
+                    Some("open" | "close" | "navigate" | "resize" | "input")
                 ));
+        if method == "host.browser" && params["op"] == "dialog" {
+            let ledger = model.lock().map_err(|_| "MD-3: actor lock poisoned")?;
+            if admission.is_some_and(|admission| admission.revoked_in_actor_lock()) {
+                return Err("MP-11: not_granted: browser authority revoked".into());
+            }
+            if admission.is_some_and(|admission| admission.agent.is_some()) {
+                ledger.check_dialog_takeover(
+                    params["tab_id"]
+                        .as_str()
+                        .ok_or("MD-3: browser dialog tab required")?,
+                )?;
+            }
+        }
         let action = if mutation {
             // Reconcile the SAME supervised browser before ledger admission. Takeover
             // uses only the model lock, so it can cancel while CDP holds the backend.
@@ -626,7 +641,7 @@ impl KernelBrowserHost {
                     "host.browser",
                     match params["op"].as_str() {
                         Some("open") => serde_json::json!({"op":"start"}),
-                        Some("navigate") => target_state(&params),
+                        Some("navigate" | "resize") => target_state(&params),
                         _ => serde_json::json!({"op":"state"}),
                     },
                     admission.map(|a| a.cancellation.clone()),
@@ -716,7 +731,8 @@ impl KernelBrowserHost {
             || (method == "host.browser" && params["op"] == "input")
             // MP-08/MP-10: a navigation waits for the page's load; mirror credits and
             // state reads keep flowing meanwhile (mutations stay serial on the lane).
-            || (method == "host.browser" && params["op"] == "navigate")
+            || (method == "host.browser"
+                && matches!(params["op"].as_str(), Some("navigate" | "resize" | "dialog")))
         {
             let signal = cancellation
                 .clone()
@@ -769,6 +785,11 @@ impl KernelBrowserHost {
         if let Ok(state) = &mut result {
             let mut ledger = model.lock().map_err(|_| "MD-3: actor lock poisoned")?;
             ledger.reconcile_inventory(state, &tab_creation_actions)?;
+            if method == "host.browser" && request_params["op"] == "dialog" {
+                if let Some(tab) = request_params["tab_id"].as_str() {
+                    ledger.dialog_answered(&browser_actor(admission, &request_params), tab);
+                }
+            }
             // The observation order is controller-internal; replies keep their shape
             // (a Notes selection's own `observation` result passes through).
             if let Some(state) = state.as_object_mut() {
@@ -830,14 +851,16 @@ impl KernelBrowserHost {
                 }
                 if state.access.focused(user) != Some(agent) {
                     let grant = state.access.grant(user, agent)?;
-                    if let Some(tabs) = payload.get_mut("tabs").and_then(Value::as_array_mut) {
-                        tabs.retain(|tab| {
-                            tab["tab_id"].as_str().is_some_and(|id| {
-                                grant
-                                    .resources
-                                    .contains(&UserDomainResource::BrowserTab { tab_id: id.into() })
-                            })
-                        });
+                    for field in ["tabs", "dialogs"] {
+                        if let Some(tabs) = payload.get_mut(field).and_then(Value::as_array_mut) {
+                            tabs.retain(|tab| {
+                                tab["tab_id"].as_str().is_some_and(|id| {
+                                    grant.resources.contains(&UserDomainResource::BrowserTab {
+                                        tab_id: id.into(),
+                                    })
+                                })
+                            });
+                        }
                     }
                 }
                 if let Some(tab) = payload["agent_activity"]["tab_id"].as_str() {
@@ -1457,6 +1480,8 @@ mod tests {
 
 #[cfg(test)]
 mod actor_tests;
+#[cfg(test)]
+mod dialog_tests;
 
 #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 mod native_input_tests;

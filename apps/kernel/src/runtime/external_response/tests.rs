@@ -6,6 +6,58 @@ use crate::local::{KernelConnectionClass, LocalDaemonRequest};
 
 const CANARY: &str = "MP-11-generated-test-only-secret";
 
+#[test]
+fn lane_refusals_have_safe_actionable_codes_through_external_projection() {
+    use crate::transport::kernel_protocol::map_kernel_error;
+    let cases = [
+        (
+            DaemonError::AgentNotInSession {
+                session_id: CANARY.into(),
+                agent_id: CANARY.into(),
+            },
+            "agent_not_in_session",
+            "ListAgents",
+        ),
+        (
+            DaemonError::AgentNotFound {
+                agent_id: CANARY.into(),
+            },
+            "agent_not_found",
+            "ListAgents",
+        ),
+        (
+            DaemonError::AttachmentNotFound {
+                attachment_id: CANARY.into(),
+            },
+            "attachment_not_found",
+            "AttachToSession",
+        ),
+        (
+            DaemonError::AttachmentNotInSession {
+                session_id: CANARY.into(),
+                attachment_id: CANARY.into(),
+            },
+            "attachment_not_in_session",
+            "AttachToSession",
+        ),
+        (
+            DaemonError::NoActivePrompt {
+                session_id: CANARY.into(),
+            },
+            "no_active_prompt",
+            "GetSessionState",
+        ),
+    ];
+    for (error, code, action) in cases {
+        let projected = protect_error(error);
+        let mapped = map_kernel_error(&projected);
+        assert_eq!(mapped.code, code);
+        assert!(!mapped.retryable);
+        assert!(mapped.message.contains(action), "{}", mapped.message);
+        assert!(!mapped.message.contains(CANARY));
+    }
+}
+
 // MP-08 / MP-10 / MP-11: notification metadata remains usable through both
 // the typed executor and cached wire boundary for grants and sudo callers.
 #[test]
@@ -223,7 +275,7 @@ fn secret_responses() -> Vec<LocalDaemonResponse> {
         http_headers.insert("Authorization".into(), CANARY.into());
     }
     vec![
-        LocalDaemonResponse::AgentSpawned { agent },
+        LocalDaemonResponse::AgentSpawned { agent, event_subscription_error: None},
         LocalDaemonResponse::McpServer { mcp: http },
         LocalDaemonResponse::CredentialRegistered {
             credential: credential.clone(),
@@ -390,6 +442,77 @@ fn external_response_preserves_notification_metadata_and_sudo_extension() {
         let mut raw = expected.clone();
         project_response_value(&mut raw).unwrap();
         assert_eq!(raw, expected);
+    }
+}
+
+// A grant holder that picks a taken session alias learns which session holds it.
+#[test]
+fn external_response_tells_a_grant_holder_which_session_holds_an_alias() {
+    let caller = command(KernelConnectionClass::ExternalAgent);
+    let told = finish_response(
+        &caller,
+        Err(DaemonError::SessionAliasConflict {
+            workspace_id: "w1".into(),
+            alias: "main".into(),
+            session_id: "s-7".into(),
+        }),
+    )
+    .unwrap_err();
+    assert!(told.to_string().contains("`s-7`"), "{told}");
+    assert_eq!(
+        crate::transport::kernel_protocol::map_kernel_error(&told).code,
+        "session_alias_conflict"
+    );
+}
+
+#[test]
+fn external_response_tells_a_grant_holder_what_is_wrong_with_its_terminal() {
+    let caller = command(KernelConnectionClass::ExternalAgent);
+    let said = "this Room has no terminal `t-1`";
+    // The terminal service's refusal, here or on a worker (which answers through the relay).
+    for error in [
+        crate::room_terminal::refused_for_test(said),
+        DaemonError::RelayTransport {
+            operation: "relay request",
+            code: crate::room_terminal::REFUSED_CODE.into(),
+            message: said.into(),
+            retryable: false,
+        },
+    ] {
+        let told = finish_response(&caller, Err(error)).unwrap_err();
+        assert!(told.to_string().contains(said), "{told}");
+        assert_eq!(
+            crate::transport::kernel_protocol::map_kernel_error(&told).code,
+            crate::room_terminal::REFUSED_CODE
+        );
+    }
+    // The machine that relays a worker's refusal passes it on with its code and words.
+    let relayed =
+        crate::transport::kernel_protocol::map_kernel_error(&DaemonError::RelayTransport {
+            operation: "relay request",
+            code: crate::room_terminal::REFUSED_CODE.into(),
+            message: said.into(),
+            retryable: false,
+        });
+    assert_eq!(
+        (relayed.code.as_str(), relayed.message.as_str()),
+        (crate::room_terminal::REFUSED_CODE, said)
+    );
+    // Any other failure keeps its details in the host terminal.
+    for other in [
+        DaemonError::LocalTransport {
+            operation: "list sessions",
+            message: format!("{said} {CANARY}"),
+        },
+        DaemonError::RelayTransport {
+            operation: "relay request",
+            code: "transport_error".into(),
+            message: format!("{said} {CANARY}"),
+            retryable: false,
+        },
+    ] {
+        let hidden = finish_response(&caller, Err(other)).unwrap_err();
+        assert!(!hidden.to_string().contains(CANARY));
     }
 }
 

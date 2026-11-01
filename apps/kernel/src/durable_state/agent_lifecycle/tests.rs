@@ -1,5 +1,38 @@
 //! MP-08 / MP-09 / MP-10 / MP-11 A02 supplementary single-writer fault tests.
 use super::*;
+
+#[test]
+fn workflow_output_follow_up_keeps_the_task_and_helper_obligations() {
+    let f = Fixture::new();
+    f.begin("p");
+    f.register();
+    let original = f.task();
+    let next = format!(
+        "{}p",
+        crate::app::workflow_output_follow_up::FOLLOW_UP_PREFIX
+    );
+    let Outcome::Task(task) = f.apply(Operation::Begin {
+        owner: "owner".into(),
+        room: "room".into(),
+        agent: "parent".into(),
+        prompt: next.clone(),
+        run: Some("run".into()),
+        now: 3,
+    }) else {
+        panic!()
+    };
+    assert_eq!(task.task_id, original.task_id);
+    assert_eq!(task.obligations, original.obligations);
+    assert_eq!(task.prompt_id, next);
+    assert_eq!(task.state, ExecutionState::Working);
+    assert_eq!(
+        f.store
+            .agent_tasks(Some("room"), Some("parent"))
+            .unwrap()
+            .len(),
+        1
+    );
+}
 pub(super) struct Fixture {
     pub(super) root: std::path::PathBuf,
     pub(super) store: DurableKernelStateStore,
@@ -3481,4 +3514,40 @@ fn a02_message_turn_yielding_on_the_earlier_wait_is_told_to_finish() {
         ExecutionState::Waiting,
         "the earlier wait is untouched"
     );
+}
+
+// MP-08 / MP-10 / MP-11: dispatch failure before receiver admission must not strand the sender.
+#[test]
+fn deleted_child_settles_reply_without_an_admitted_receiver_task() {
+    let f = Fixture::new();
+    f.begin("p");
+    let mut message = occurrence(
+        "room",
+        "child",
+        "parent",
+        "reply-before-launch",
+        "message",
+        serde_json::json!({"message":"review"}),
+    );
+    message.reply_requested = true;
+    let Outcome::Event(event) = f.apply(Operation::Send {
+        task: "p".into(),
+        prompt: "p".into(),
+        event: message,
+    }) else {
+        panic!("message not admitted")
+    };
+    assert_eq!(f.task().obligations[0].status, "open");
+    f.apply(Operation::RetireWakes {
+        room: "room".into(),
+        agent: Some("child".into()),
+        now: 10,
+    });
+    assert_eq!(
+        f.task().obligations[0].status,
+        "failed",
+        "the deleted recipient cannot ever answer reply-{}",
+        event.sequence
+    );
+    assert!(!f.store.agent_registrations("p").unwrap()[0].live);
 }

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict"
 import test from "node:test"
+import { LocalIpcError } from "@chariox/kernel-client/ipc"
 
 import { attachRoomTerminal, TERMINAL_DETACH_BYTE } from "./room-terminal-attach.js"
 import { FakeTerminalIo, FakeTerminalKernel, until } from "./room-terminal-fake-kernel.test-fixture.js"
@@ -7,6 +8,62 @@ import { FakeTerminalIo, FakeTerminalKernel, until } from "./room-terminal-fake-
 function attach(kernel: FakeTerminalKernel, io: FakeTerminalIo) {
   return attachRoomTerminal({
     send: kernel.send, target: { sessionId: "room" }, terminal: kernel.summary(), input: io, output: io,
+  })
+}
+
+for (const stage of ["resize", "snapshot"]) {
+  for (const failure of ["pending", "rejected"]) {
+    test(`Ctrl-] interrupts ${failure} initial ${stage} and restores the terminal`, async () => {
+      const kernel = new FakeTerminalKernel(), io = new FakeTerminalIo()
+      const abort = new AbortController()
+      let entered = false, release: () => void = () => {}
+      const blocked = new Promise<void>(resolve => { release = resolve })
+      const done = attachRoomTerminal({
+        target: { sessionId: "room" }, terminal: kernel.summary(), input: io, output: io, signal: abort.signal,
+        send: async request => {
+          if ((request as { RoomTerminal: { operation: { operation: string } } }).RoomTerminal.operation.operation === stage) {
+            entered = true
+            if (failure === "rejected") throw new LocalIpcError("write kernel request", "connection lost", "connection_closed", true)
+            await blocked
+          }
+          return kernel.send(request)
+        },
+      })
+      await until(() => entered, "initial setup request")
+      io.type(Buffer.from([TERMINAL_DETACH_BYTE]))
+      try {
+        const result = await Promise.race([done, new Promise(resolve => setTimeout(() => resolve("stuck"), 150))])
+        assert.deepEqual(result, { reason: "detached" })
+        assert.deepEqual(io.rawModes, [true, false])
+        assert.ok(io.paused)
+        const restored = io.text
+        release()
+        await new Promise(resolve => setTimeout(resolve, 10))
+        assert.equal(io.text, restored, "late setup output must not repaint the restored shell")
+      } finally { release(); abort.abort(); await done }
+    })
+  }
+}
+
+for (const stage of ["resize", "read_output", "input"]) {
+  test(`a real IPC refusal during ${stage} ends the attach without retrying`, async () => {
+    const kernel = new FakeTerminalKernel(), io = new FakeTerminalIo(), abort = new AbortController()
+    let refused = 0
+    const failure = new LocalIpcError("handle kernel response", "this terminal was closed by another client", "terminal_refused", false)
+    const done = attachRoomTerminal({
+      target: { sessionId: "room" }, terminal: kernel.summary(), input: io, output: io, signal: abort.signal,
+      send: async request => {
+        if ((request as { RoomTerminal: { operation: { operation: string } } }).RoomTerminal.operation.operation === stage) { refused++; throw failure }
+        return kernel.send(request)
+      },
+    })
+    if (stage === "input") { await until(() => io.text.includes("PROMPT$ "), "screen"); io.type("x") }
+    try {
+      const result = await Promise.race([done, new Promise(resolve => setTimeout(() => resolve("stuck"), 150))])
+      assert.deepEqual(result, { reason: "ended", description: failure.message })
+      assert.equal(refused, 1)
+      assert.deepEqual(io.rawModes, [true, false])
+    } finally { abort.abort(); await done }
   })
 }
 

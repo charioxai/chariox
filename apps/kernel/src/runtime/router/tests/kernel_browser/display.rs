@@ -122,6 +122,21 @@ async fn live_display() {
         Arc::new(Mutex::new(app)),
         4,
     ));
+    // MP-08/MP-10: the viewer joins through normal terminal pairing before relay commands.
+    let pair_request: LocalDaemonRequest = serde_json::from_value(json!({
+        "CreateTerminalPairingLink": {"terminal_type": "web", "alias": "display drill"}
+    }))
+    .unwrap();
+    let LocalDaemonResponse::TerminalPairingLinkCreated { pairing } = router
+        .dispatch(
+            terminal_command("display-drill-pair", &pair_request),
+            pair_request,
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("MP-10: display drill pairing link unavailable");
+    };
     let (connector_stop_tx, connector_stop_rx) = tokio::sync::watch::channel(false);
     let connector_task = tokio::spawn(
         crate::transport::relay_client::run_daemon_relay_connector_with_router_and_static_relay(
@@ -145,7 +160,7 @@ async fn live_display() {
             use std::os::unix::fs::OpenOptionsExt;
             use std::io::Write;
             let mut bootstrap = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(root.join("relay-bootstrap.private.json")).unwrap();
-            bootstrap.write_all(&serde_json::to_vec(&json!({"relay_url":relay_url,"daemon_id":daemon_id,"client_token":client_token})).unwrap()).unwrap();
+            bootstrap.write_all(&serde_json::to_vec(&json!({"relay_url":relay_url,"daemon_id":daemon_id,"client_token":client_token,"pairing_link":pairing.pairing_link})).unwrap()).unwrap();
         }
         std::fs::write(root.join("ready.json"), serde_json::to_vec(&json!({"endpoint":endpoint,"tab_id":opened["tab_id"],"generation":opened["generation"],"protocol":crate::local::LOCAL_DAEMON_PROTOCOL_VERSION,"opened_by":"focused-runtime-MCP/dev-stub"})).unwrap()).unwrap();
         let stop = root.join("STOP");

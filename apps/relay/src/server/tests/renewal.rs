@@ -135,6 +135,7 @@ async fn renewal_drill(reduce_permissions: bool) {
             client_public_key: "fixture-terminal-key".into(),
             subscription_scope: None,
             resume_from_event_id: None,
+            heartbeat_interval_ms: None,
         },
     )
     .await;

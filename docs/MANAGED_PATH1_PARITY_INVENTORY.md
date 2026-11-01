@@ -1,5 +1,76 @@
 # Managed Path-1 parity inventory (MP-11)
 
+## MP-08 / MP-09 / MP-10 / MP-11 binary Room exec (2026-10-27)
+
+`RoomTerminal` binary exec operations enter the same owner/Room-agent checks in
+`runtime/state/room_terminal_runtime_state.rs` and the same worker-lease bridge
+as terminal open. `room_exec/` owns argv, stdin offsets, bounded stdout/stderr
+pages, cancellation and reaping identically on ordinary and managed kernels.
+The relay adds no execution authority or payload inspection. Byte pages bypass
+transport caches and the gateway ledger; command open retains its existing
+at-most-once receipt. The shared file-transfer chunk bound applies.
+
+The existing `room_terminal/managed_work.rs` admission fence also gates exec;
+`runtime/state/managed_activity_runtime_state.rs` counts running exec work until
+process reaping and pipe settlement. Room end and kernel shutdown cancel that
+work. Room-scoped `exec_list` exposes IDs, state, age and retained bytes for
+recovery. Five minutes without an output read expires any record and cancels
+its process tree; listing and stdin writes do not renew it. Expiry releases
+managed work only after reaping and pipe settlement. The CLI handles SIGHUP
+alongside SIGINT/SIGTERM. Canceled, unfinished pipes report an incomplete stream,
+distinguishing cancellation, lease expiry and actual pipe read errors. While
+local output writes are pending, the CLI renews the lease at its last consumed
+cursor; SIGKILL still abandons the reader and permits expiry. Transport loss
+retains normalized failure codes and resume cursors. This is the existing mandatory-shutdown exception: no new placement rule,
+provider adapter, history format, credential path or Cloud stop policy is added.
+The wire contract is local 632 / peer 235, advertised by `room_exec_v1`.
+See `docs/PROTOCOL.md` (Binary Room exec) and the executable scenarios in
+`scripts/e2e-stack/room-exec/README.md`; they do not close the whole MP matrix.
+
+## MP-08 / MP-10 / MP-11 bounded display registration recovery (2026-10-27)
+
+The shared display presenter keeps its eight-frame / 8 MiB registration window
+when an authenticated relay registration flushes a burst. If the burst loses its
+decode base, it drops the incomplete chain and uses the running stream's existing
+independent-frame recovery and lost acknowledgement instead of failing the
+attachment. Dependent frames cannot paint until an independent frame arrives.
+The binding, geometry, payload and observation checks are unchanged, as are the
+ordinary and managed paths. Focused regressions cover both count and byte pressure
+and recovery on the same subscription. This changes no serialized shape or
+managed shutdown policy; source regressions do not establish live acceptance.
+
+
+
+## MP-08 / MP-09 / MP-10 / MP-11 bounded prompt attachments (2026-10-26)
+
+The shared relay request preparation admits prompt submissions, batches and active
+steering with attachments up to 12 MiB of encrypted data, including the AES-GCM
+tag. An inline 5 MiB file uses about 6.7 MiB after base64; this bound leaves room
+for prompt text and metadata while staying below the relay's 64 MiB message cap.
+All other request kinds retain their 768 KiB bound. Because the request kind is
+encrypted, the kernel checks the hard outer bound before base64 decoding or
+cryptography and checks the smaller kind-specific bound after decryption.
+
+A 64 MiB aggregate budget for retained encoded ciphertext is reserved before
+decoding and held through asynchronous dispatch across all connections. A new
+connection cannot bypass it. Oversized requests receive a clear non-retryable
+`request_too_large`; budget exhaustion receives retryable `request_busy`.
+The same-machine browser carrier shares the relay's 64 MiB message and frame cap,
+re-exported through `request_limits`, so a realistic oversized request reaches the
+common length-only refusal. A 4.8 MB inline attachment reaches shared dispatch
+directly; a 14.7 MB attachment receives `request_too_large` without closing the
+carrier, and a following request succeeds on the same socket. Authentication
+retains its 16 KiB handshake bound. Abusive declared frame lengths are rejected
+before reading their body. This changes no serialized shape.
+The relay remains an opaque transport. Existing 256 KiB machine file chunks and
+512 KiB App package chunks (128 MiB archives) keep their existing protocols.
+
+Protocol 627 / peer 230 adds optional `size_bytes` to shared prompt attachment
+history. The kernel derives it from inline bytes or a local file's metadata;
+ordinary and managed placement use the same history path. The Web consumes this
+metadata instead of setting every historical attachment size to zero. Existing
+history without this field remains readable. No managed shutdown policy changes.
+
 ## MP-08 / MP-10 / MP-11 owned preloaded observation world (2026-10-16)
 
 The real WHATWG navigation timed out repeatedly creating a world that Chromium

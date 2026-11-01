@@ -433,6 +433,103 @@ async fn a02_r3_taskless_rejection_timeout_projects_owner_action() {
     );
 }
 
+// Archive cancels the blocked goal and withdraws its decision; unarchive starts no work.
+#[tokio::test]
+async fn archive_cancels_blocked_task_without_reoffering_resume_on_unarchive() {
+    use crate::durable_state::agent_lifecycle::{ExecutionState, Operation, Outcome};
+    let worktree = crate::test_support::TestWorktree::new("owner-resume-archived");
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let owner = session.owner_user_id().to_string();
+    let run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "claude-code",
+                "default",
+                "sonnet",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .unwrap();
+    app.update_provider_run_projection(run);
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let store = &runtime.owned.durable_state_store;
+    store
+        .agent_lifecycle(Operation::Begin {
+            owner: owner.clone(),
+            room: session.id().into(),
+            agent: agent.id().into(),
+            prompt: "archived-task".into(),
+            run: None,
+            now: 1,
+        })
+        .unwrap();
+    let Outcome::Task(blocked) = store
+        .agent_lifecycle(Operation::Block {
+            task: "archived-task".into(),
+            prompt: "archived-task".into(),
+            reason: "Owner clarification required".into(),
+        })
+        .unwrap()
+    else {
+        panic!()
+    };
+    let interaction = format!(
+        "task-blocked-{}-{}",
+        blocked.task_id, blocked.blocked_revision
+    );
+    runtime
+        .ensure_task_owner_interaction(blocked.clone())
+        .await
+        .unwrap();
+    let archive = |archived| crate::local::ArchiveAgentRequest {
+        session_id: session.id().into(),
+        agent_id: agent.id().into(),
+        archived,
+    };
+    runtime
+        .archive_agent_in_session(&archive(true), &owner)
+        .await
+        .unwrap();
+
+    let task = store
+        .agent_tasks(Some(session.id()), Some(agent.id()))
+        .unwrap()
+        .remove(0);
+    assert_eq!(task.state, ExecutionState::Cancelled);
+    assert_eq!(task.pending_prompt_id, None);
+    assert_eq!(
+        task.reason.as_str(),
+        "Agent archived; its running and queued work was cancelled"
+    );
+    runtime
+        .archive_agent_in_session(&archive(false), &owner)
+        .await
+        .unwrap();
+    runtime.sweep_agent_lifecycle().await.unwrap();
+    let session = runtime
+        .owned
+        .session_store
+        .get_session(session.id())
+        .unwrap();
+    assert!(!session
+        .active_interactions()
+        .iter()
+        .any(|i| i.id() == interaction));
+    assert!(runtime
+        .owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&session, agent.id())
+        .is_none());
+}
+
 #[tokio::test]
 async fn managed_activity_reaches_zero_only_after_prompt_settlement_is_durable() {
     let worktree = crate::test_support::TestWorktree::new("output-settlement-managed");
@@ -667,6 +764,9 @@ async fn assert_workflow_completion_failure_is_retryable(
         .sessions_mut()
         .add_workflow_node(session.id(), workflow.id(), agent.id())
         .expect("workflow node should be added");
+    app.sessions_mut()
+        .set_workflow_node_can_complete_run(session.id(), workflow.id(), node.id(), true)
+        .expect("durability fixture should have a final output");
     let endpoint = app
         .sessions_mut()
         .create_workflow_endpoint(
@@ -700,6 +800,19 @@ async fn assert_workflow_completion_failure_is_retryable(
     app.sessions_mut()
         .start_workflow_node_run(session.id(), workflow_run.id(), &node_run_id)
         .expect("workflow node should start");
+    // Keep this drill about completion persistence; missing output now takes
+    // the independent bounded-reminder path before completion is attempted.
+    app.sessions_mut()
+        .submit_workflow_run_final_output(
+            session.id(),
+            workflow_run.id(),
+            &node_run_id,
+            crate::session::WorkflowOutputPayload::new("{}", Vec::new()),
+            true,
+            None,
+        )
+        .expect("final output should be staged before the append failure");
+
     let prompt = crate::session::PromptQueueItem::new(
         app.sessions_mut().reserve_prompt_id(),
         crate::scheduler::runtime::workflow_prompt_source_attachment_id(workflow_run.id()),

@@ -49,8 +49,23 @@ pub(crate) async fn execute_pairing_request(
                 .await
         }
         LocalDaemonRequest::JoinTerminalPairingLink(request) => {
-            execute_join_terminal_pairing_link_request(runtime_state, config_projection, request)
-                .await
+            let key_thumbprint = request.public_key_thumbprint.clone();
+            let joined = execute_join_terminal_pairing_link_request(
+                runtime_state,
+                config_projection,
+                request,
+            )
+            .await?;
+            // A key the owner revoked as a gateway is paired again by a link they just made.
+            if let (Some(thumbprint), LocalDaemonResponse::TerminalPairingLinkJoined { .. }) =
+                (key_thumbprint, &joined)
+            {
+                let path = super::kernel_gateway::origins::path_in(
+                    &config_projection.snapshot().private_runtime_state_root(),
+                );
+                super::kernel_gateway::origins::reinstate(&path, &thumbprint)?;
+            }
+            Ok(joined)
         }
         LocalDaemonRequest::ListTerminals(_)
             if super::self_host_terminal_grants::required(&config_projection.snapshot()) =>
@@ -68,14 +83,62 @@ pub(crate) async fn execute_pairing_request(
         LocalDaemonRequest::ListPairedClients(_)
             if super::self_host_terminal_grants::required(&config_projection.snapshot()) =>
         {
-            Ok(LocalDaemonResponse::PairedClientsListed {
-                clients: super::self_host_terminal_grants::entries(&config_projection.snapshot())?
+            let mut clients: Vec<_> =
+                super::self_host_terminal_grants::entries(&config_projection.snapshot())?
                     .into_iter()
                     .map(super::terminal_pairings::paired_client_record)
-                    .collect(),
+                    .collect();
+            clients.extend(gateway_clients(config_projection)?);
+            Ok(LocalDaemonResponse::PairedClientsListed { clients })
+        }
+        LocalDaemonRequest::ListPairedClients(_) => {
+            let LocalDaemonResponse::PairedClientsListed { mut clients } =
+                execute_list_paired_clients_request()?
+            else {
+                unreachable!("listing paired clients answers PairedClientsListed")
+            };
+            clients.extend(gateway_clients(config_projection)?);
+            Ok(LocalDaemonResponse::PairedClientsListed { clients })
+        }
+        LocalDaemonRequest::RevokePairedClient(request)
+            if request
+                .client_id
+                .starts_with(super::kernel_gateway::origins::CLIENT_PREFIX) =>
+        {
+            let path = super::kernel_gateway::origins::path_in(
+                &config_projection.snapshot().private_runtime_state_root(),
+            );
+            let revoked = super::kernel_gateway::origins::revoke(&path, &request.client_id)?
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "revoke paired client",
+                    message: format!("no gateway {} reached this machine", request.client_id),
+                })?;
+            Ok(LocalDaemonResponse::PairedClientRevoked {
+                client: gateway_client_record(revoked),
             })
         }
-        LocalDaemonRequest::ListPairedClients(_) => execute_list_paired_clients_request(),
+        // The owner lets a revoked gateway back in: the same list that revoked it records it again.
+        LocalDaemonRequest::RecordPairedClient(request)
+            if request
+                .client_id
+                .starts_with(super::kernel_gateway::origins::CLIENT_PREFIX) =>
+        {
+            let thumbprint =
+                &request.client_id[super::kernel_gateway::origins::CLIENT_PREFIX.len()..];
+            let path = super::kernel_gateway::origins::path_in(
+                &config_projection.snapshot().private_runtime_state_root(),
+            );
+            let origin =
+                super::kernel_gateway::origins::reinstate(&path, thumbprint)?.ok_or_else(|| {
+                    DaemonError::LocalTransport {
+                        operation: "record paired client",
+                        message: format!("no revoked gateway {} to pair again", request.client_id),
+                    }
+                })?;
+            Ok(LocalDaemonResponse::PairedClientRecorded {
+                client: gateway_client_record(origin),
+            })
+        }
         LocalDaemonRequest::RecordPairedClient(request) => {
             execute_record_paired_client_request(request, unix_epoch_ms)
         }
@@ -99,6 +162,32 @@ pub(crate) async fn execute_pairing_request(
             message: "unsupported pairing request".to_string(),
         }),
     }
+}
+
+fn gateway_client_record(
+    origin: super::kernel_gateway::origins::GatewayOrigin,
+) -> crate::local::PairedClientRecord {
+    crate::local::PairedClientRecord {
+        client_id: origin.client_id(),
+        alias: Some(format!("Agent gateway of {}", origin.display_name())),
+        terminal_type: Some(TerminalType::Cli),
+        public_key_thumbprint: origin.key_thumbprint,
+        paired_at_ms: origin.first_seen_ms,
+        revoked: origin.revoked,
+    }
+}
+
+/// The other kernels' gateways that reached this kernel, listed beside its paired clients.
+fn gateway_clients(
+    config_projection: &DaemonConfigProjectionStore,
+) -> Result<Vec<crate::local::PairedClientRecord>, DaemonError> {
+    let path = super::kernel_gateway::origins::path_in(
+        &config_projection.snapshot().private_runtime_state_root(),
+    );
+    Ok(super::kernel_gateway::origins::entries(&path)?
+        .into_iter()
+        .map(gateway_client_record)
+        .collect())
 }
 
 pub(crate) async fn execute_create_pairing_invite_request(

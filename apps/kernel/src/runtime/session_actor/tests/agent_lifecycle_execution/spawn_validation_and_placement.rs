@@ -30,6 +30,7 @@ async fn mixed_spawn_agents_preserves_response_order_and_final_focus() {
     );
 
     let request = LocalDaemonRequest::SpawnAgents(crate::local::SpawnAgentsRequest {
+        no_subscribe: false,
         session_id: session_id.clone(),
         agents: vec![
             crate::local::SpawnAgentsRequestItem {
@@ -68,7 +69,7 @@ async fn mixed_spawn_agents_preserves_response_order_and_final_focus() {
         .await
         .expect("mixed agent batch spawn should succeed");
 
-    let LocalDaemonResponse::AgentsSpawned { agents } = response else {
+    let LocalDaemonResponse::AgentsSpawned { agents, .. } = response else {
         panic!("unexpected response");
     };
     assert_eq!(agents.len(), 2);
@@ -118,6 +119,7 @@ async fn local_spawn_agents_batch_rejects_duplicate_aliases_without_partial_crea
     );
 
     let request = LocalDaemonRequest::SpawnAgents(crate::local::SpawnAgentsRequest {
+        no_subscribe: false,
         session_id: session_id.clone(),
         agents: vec![
             crate::local::SpawnAgentsRequestItem {
@@ -197,6 +199,7 @@ async fn local_spawn_agents_batch_recalculates_layout_and_focus_once() {
     );
 
     let request = LocalDaemonRequest::SpawnAgents(crate::local::SpawnAgentsRequest {
+        no_subscribe: false,
         session_id: session_id.clone(),
         agents: (0..50)
             .map(|index| crate::local::SpawnAgentsRequestItem {
@@ -220,7 +223,7 @@ async fn local_spawn_agents_batch_recalculates_layout_and_focus_once() {
         .dispatch_session_command(command, request)
         .await
         .expect("agent batch spawn should succeed");
-    let LocalDaemonResponse::AgentsSpawned { agents } = response else {
+    let LocalDaemonResponse::AgentsSpawned { agents, .. } = response else {
         panic!("unexpected response");
     };
     let focused_agent = agents.last().expect("batch should create agents");
@@ -269,6 +272,7 @@ async fn local_spawn_agent_creates_requested_git_worktree_in_kernel() {
     );
 
     let request = LocalDaemonRequest::SpawnAgent(crate::local::SpawnAgentRequest {
+        no_subscribe: false,
         account_profile: None,
         session_id: session_id.clone(),
         alias: Some("feature-worker".to_string()),
@@ -293,7 +297,7 @@ async fn local_spawn_agent_creates_requested_git_worktree_in_kernel() {
         .await
         .expect("agent spawn should succeed");
 
-    let LocalDaemonResponse::AgentSpawned { agent } = response else {
+    let LocalDaemonResponse::AgentSpawned { agent, .. } = response else {
         panic!("unexpected response");
     };
     assert_eq!(agent.session_id(), session_id);
@@ -340,6 +344,7 @@ async fn local_spawn_agent_inherits_session_agent_defaults_when_omitted() {
     );
 
     let request = LocalDaemonRequest::SpawnAgent(crate::local::SpawnAgentRequest {
+        no_subscribe: false,
         account_profile: None,
         session_id: session_id.clone(),
         alias: Some("inherited-agent".to_string()),
@@ -361,7 +366,7 @@ async fn local_spawn_agent_inherits_session_agent_defaults_when_omitted() {
         .await
         .expect("agent spawn should succeed");
 
-    let LocalDaemonResponse::AgentSpawned { agent } = response else {
+    let LocalDaemonResponse::AgentSpawned { agent, .. } = response else {
         panic!("unexpected response");
     };
     assert_eq!(agent.session_id(), session_id);
@@ -401,6 +406,7 @@ async fn local_spawn_agent_rejects_deprecated_metaagent_creation() {
     );
 
     let request = LocalDaemonRequest::SpawnAgent(crate::local::SpawnAgentRequest {
+        no_subscribe: false,
         account_profile: None,
         session_id: session_id.clone(),
         alias: Some("meta".to_string()),

@@ -9,10 +9,10 @@ import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
 const script = resolve(dirname(fileURLToPath(import.meta.url)), '../deploy/local-linux/install-browser-dependencies.sh')
-const sonames = ['libasound.so.2', 'libatk-1.0.so.0', 'libatk-bridge-2.0.so.0', 'libatspi.so.0', 'libcups.so.2', 'libgbm.so.1', 'libnspr4.so', 'libnss3.so', 'libxkbcommon.so.0', 'libXcomposite.so.1', 'libXdamage.so.1', 'libXrandr.so.2']
+const sonames = ['libasound.so.2', 'libatk-1.0.so.0', 'libatk-bridge-2.0.so.0', 'libatspi.so.0', 'libcups.so.2', 'libgbm.so.1', 'libnspr4.so', 'libnss3.so', 'libxkbcommon.so.0', 'libXcomposite.so.1', 'libXdamage.so.1', 'libXrandr.so.2', 'libX11.so.6', 'libXext.so.6', 'libXtst.so.6']
 const t64 = ['libasound2', 'libatk-bridge2.0-0', 'libatk1.0-0', 'libatspi2.0-0', 'libcups2', 'libglib2.0-0']
 
-async function fixture({ desktop, libraries }) {
+async function fixture({ desktop, libraries, missing }) {
   const root = await mkdtemp(join(tmpdir(), 'chariox-browser-deps-'))
   const bin = join(root, 'usr/bin')
   await mkdir(bin, { recursive: true })
@@ -31,7 +31,7 @@ if [ "$1" = install ]; then
   : > '${state}'
 fi
 `)
-  await put(join(root, 'ldconfig'), `#!/bin/sh\n[ -e '${state}' ] && printf '%s\\n' ${sonames.map(name => `'\t${name} (libc6,x86-64) => /usr/lib/${name}'`).join(' ')}\nexit 0\n`)
+  await put(join(root, 'ldconfig'), `#!/bin/sh\n[ -e '${state}' ] && printf '%s\\n' ${sonames.filter(name => name !== missing).map(name => `'\t${name} (libc6,x86-64) => /usr/lib/${name}'`).join(' ')}\nexit 0\n`)
   return { root, calls, ldconfig: join(root, 'ldconfig') }
 }
 const run = f => spawnSync('bash', [script], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin', CHARIOX_LOCAL_INSTALL_ROOT: f.root, CHARIOX_LOCAL_INSTALL_LDCONFIG: f.ldconfig } })
@@ -43,7 +43,7 @@ test('a fresh server image with the desktop tools but no Chromium libraries and 
     assert.equal(result.status, 0, result.stderr)
     assert(existsSync(f.calls), 'apt was never invoked although Chromium cannot load its libraries')
     const install = (await readFile(f.calls, 'utf8')).split('\n').find(line => line.startsWith('install'))
-    for (const name of ['libasound2t64', 'libatk-bridge2.0-0t64', 'libatk1.0-0t64', 'libatspi2.0-0t64', 'libcups2t64', 'libglib2.0-0t64', 'libxcomposite1', 'libxdamage1', 'libnss3']) assert(install.split(' ').includes(name), name)
+    for (const name of ['libasound2t64', 'libatk-bridge2.0-0t64', 'libatk1.0-0t64', 'libatspi2.0-0t64', 'libcups2t64', 'libglib2.0-0t64', 'libxcomposite1', 'libxdamage1', 'libnss3', 'libxtst6', 'python3-gi', 'python3-pyatspi']) assert(install.split(' ').includes(name), name)
   } finally { await rm(f.root, { recursive: true, force: true }) }
 })
 
@@ -64,5 +64,19 @@ test('a bare image installs both the desktop tools and the libraries', async () 
     assert.equal(result.status, 0, result.stderr)
     const install = (await readFile(f.calls, 'utf8')).split('\n').find(line => line.startsWith('install'))
     assert(install.includes('xvfb') && install.includes('libasound2t64'))
+  } finally { await rm(f.root, { recursive: true, force: true }) }
+})
+
+// MP-08/MP-10: old installations can have every Chromium dependency except Xtst.
+test('an existing Chromium installation without libXtst installs the native display libraries', async () => {
+  const f = await fixture({ desktop: true, libraries: true, missing: 'libXtst.so.6' })
+  try {
+    const result = run(f)
+    assert(existsSync(f.calls), 'the missing native display dependency must trigger installation')
+    const calls = await readFile(f.calls, 'utf8')
+    assert.match(calls, /libxtst6/)
+    // This stub deliberately keeps the library missing after apt completes.
+    assert.equal(result.status, 1)
+    assert.match(result.stderr, /dependencies still missing/)
   } finally { await rm(f.root, { recursive: true, force: true }) }
 })

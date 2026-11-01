@@ -2,6 +2,37 @@
 use super::*;
 const CANARY: &str = "MP-11-outbound-test-only-secret";
 
+#[test]
+fn lane_refusals_rebuild_remediation_at_the_final_socket_boundary() {
+    for (code, action) in [
+        (
+            "provider_profile_unverified",
+            "RefreshProviderAccountProfile",
+        ),
+        (
+            "provider_profile_unauthenticated",
+            "RefreshProviderAccountProfile",
+        ),
+        (
+            "provider_profile_unavailable",
+            "ListProviderAccountProfiles",
+        ),
+        (
+            "provider_profile_usage_exhausted",
+            "RefreshProviderAccountProfile",
+        ),
+        ("agent_not_in_session", "ListAgents"),
+        ("attachment_not_found", "AttachToSession"),
+    ] {
+        let error =
+            project_error(&serde_json::json!({"code":code,"message":CANARY,"retryable":false}));
+        assert_eq!(error.code, code);
+        assert!(!error.retryable);
+        assert!(error.message.contains(action), "{}", error.message);
+        assert!(!error.message.contains(CANARY));
+    }
+}
+
 fn enum_names(source: &str, declaration: &str) -> Vec<String> {
     source
         .split_once(declaration)
@@ -240,6 +271,84 @@ fn outbound_preserves_kernel_error_codes_and_retries_without_error_payloads() {
     assert_eq!(project_payload(frame.clone()).unwrap(), frame);
 }
 
+// EA2-19: only the decoder's own message about the agent's request is readable.
+#[test]
+fn outbound_lets_a_grant_holder_read_why_its_request_did_not_parse_and_nothing_else() {
+    let error = serde_json::from_str::<crate::local::LocalDaemonRequest>(r#"{"CreateSessoin":{}}"#)
+        .unwrap_err();
+    let decode = crate::transport::request_decode_error::message(
+        crate::transport::request_decode_error::DECODE_PREFIX,
+        &error,
+    );
+    let frame = |message: &str| {
+        serde_json::json!({"type":"response","request_id":"r","response":null,
+        "error":{"code":"invalid_request","message":message,"retryable":false}})
+    };
+    assert_eq!(
+        project_payload(frame(&decode)).unwrap()["error"]["message"],
+        decode
+    );
+    assert!(decode.contains("CreateSessoin"));
+    for other in [
+        CANARY.to_string(),
+        format!("provider said: {CANARY}"),
+        format!("invalid request payload {CANARY}"),
+    ] {
+        let projected = project_payload(frame(&other)).unwrap();
+        assert!(!projected.to_string().contains(CANARY), "{other}");
+    }
+}
+
+// A duplicate session alias names the session that holds it; other text on those codes stays private.
+#[test]
+fn outbound_lets_a_grant_holder_read_which_session_holds_an_alias() {
+    let error = crate::error::DaemonError::SessionAliasConflict {
+        workspace_id: "w1".into(),
+        alias: "main".into(),
+        session_id: "s-7".into(),
+    };
+    let mapped = crate::transport::kernel_protocol::map_kernel_error(&error);
+    assert_eq!(mapped.code, "session_alias_conflict");
+    let frame = |message: &str| {
+        serde_json::json!({"type":"response","request_id":"r","response":null,
+        "error":{"code":mapped.code,"message":message,"retryable":false}})
+    };
+    let projected = project_payload(frame(&mapped.message)).unwrap();
+    assert_eq!(projected["error"]["code"], "session_alias_conflict");
+    assert!(projected["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("`s-7`"));
+    let hidden = project_payload(frame(CANARY)).unwrap();
+    assert!(!hidden.to_string().contains(CANARY));
+}
+
+// A grant holder learns the id of a steer that was delivered without its event; other text on that code stays private.
+#[test]
+fn outbound_lets_a_grant_holder_read_which_steer_was_delivered_unrecorded() {
+    let error = crate::error::DaemonError::SteerDeliveredEventUnrecorded {
+        steer_id: "prompt-1792860971700".into(),
+    };
+    let mapped = crate::transport::kernel_protocol::map_kernel_error(&error);
+    assert_eq!(mapped.code, "prompt_steer_event_unrecorded");
+    let frame = |message: &str| {
+        serde_json::json!({"type":"response","request_id":"r","response":null,
+        "error":{"code":mapped.code,"message":message,"retryable":false}})
+    };
+    let projected = project_payload(frame(&mapped.message)).unwrap();
+    assert_eq!(projected["error"]["code"], "prompt_steer_event_unrecorded");
+    let told = projected["error"]["message"].as_str().unwrap();
+    assert!(told.contains("`prompt-1792860971700`"), "{told}");
+    assert!(told.contains("do not send it again"), "{told}");
+    for hidden in [
+        CANARY.to_string(),
+        format!("steer `{CANARY} {CANARY}` was delivered but its event was not recorded; do not send it again"),
+    ] {
+        let hidden = project_payload(frame(&hidden)).unwrap();
+        assert!(!hidden.to_string().contains(CANARY));
+    }
+}
+
 // MP-08 / MP-11: cached and socket errors retain the same safe lookup reason.
 #[test]
 fn mp11_missing_session_socket_reason_is_public_without_private_details() {
@@ -253,4 +362,44 @@ fn mp11_missing_session_socket_reason_is_public_without_private_details() {
         projected.message
     );
     assert!(!projected.message.contains(CANARY));
+}
+
+// EA2-12: a forwarded stream starts with events an external peer may not see (the
+// target's pending passkey prompts). Offering one to the writer stops it for good,
+// so the forwarder asks first.
+#[test]
+fn a_forwarded_stream_offers_the_writer_only_events_an_external_peer_may_see() {
+    assert!(is_public_event(&KernelEvent::Heartbeat {
+        session_id: "s".into()
+    }));
+    assert!(!is_public_event(&KernelEvent::PasskeyPromptsChanged {
+        prompts: Vec::new(),
+        kernel_now_ms: 0,
+        closed: Vec::new(),
+    }));
+}
+
+#[test]
+fn account_copy_refusals_are_constant_at_public_error_boundary() {
+    for code in [
+        "provider_account_copy_unauthorized",
+        "provider_account_copy_profile",
+        "provider_account_copy_unavailable",
+        "provider_account_copy_unsupported",
+        "provider_account_copy_vault_locked",
+        "provider_account_copy_conflict",
+        "provider_account_copy_rejected",
+        "provider_account_copy_verification_failed",
+        "provider_account_copy_install_failed",
+    ] {
+        let error =
+            project_error(&serde_json::json!({"code":code,"message":CANARY,"retryable":true}));
+        assert_eq!(error.code, code);
+        assert_eq!(
+            error.message,
+            crate::provider_account_copy::failure_message(code)
+        );
+        assert!(error.retryable);
+        assert!(!error.message.contains(CANARY));
+    }
 }

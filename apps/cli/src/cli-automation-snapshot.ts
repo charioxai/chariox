@@ -127,7 +127,7 @@ export function buildCliAutomationSnapshot(deps: CliAutomationSnapshotDeps): Cli
             activeWorkerProviderRunId:
               agent.remote_execution.active_worker_provider_run_id ?? null,
           } : null,
-          visibleInFreeform: agent.visible_in_freeform ?? true,
+          visibleInFreeform: !agent.archived && (agent.visible_in_freeform ?? true),
           state: agentRuntimeDisplayStates[agent.id],
           isProcessing: agentRuntimeDisplayStates[agent.id] === "Working",
           badge,

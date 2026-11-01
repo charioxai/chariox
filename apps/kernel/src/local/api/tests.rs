@@ -78,6 +78,7 @@ use super::{
     WorkspaceRepoFileEntry, WorkspaceRepoFileListing, LOCAL_DAEMON_PROTOCOL_VERSION,
 };
 
+mod agent_deadline_dispatch;
 mod cloud_kernel_ownership;
 mod protocol_shapes;
 mod provider_prompt_runtime;
@@ -91,3 +92,7 @@ mod waiting_room_projection;
 mod workflow_definition_control;
 mod workflow_run_control;
 mod workspace_capabilities;
+
+mod usage_snapshot;
+
+mod agent_archive;

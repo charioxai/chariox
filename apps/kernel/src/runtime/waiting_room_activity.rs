@@ -57,21 +57,31 @@ pub(crate) fn waiting_room_session_activity_summary(
     session: &RuntimeSession,
     caller_user_id: &str,
 ) -> WaitingRoomSessionActivitySummary {
+    let archived_agent_ids: HashSet<&str> = session
+        .agents()
+        .iter()
+        .filter(|agent| agent.archived())
+        .map(|agent| agent.id())
+        .collect();
     let active_prompt_agent_ids: HashSet<&str> = session
         .prompt_states()
         .iter()
-        .filter(|(_, state)| state.active_prompt().is_some())
+        .filter(|(agent_id, state)| {
+            !archived_agent_ids.contains(agent_id.as_str()) && state.active_prompt().is_some()
+        })
         .map(|(agent_id, _)| agent_id.as_str())
         .collect();
     let active_prompt_count = active_prompt_agent_ids.len();
     let queued_prompt_count = session
         .prompt_states()
-        .values()
-        .map(|state| state.queued_prompts().len())
+        .iter()
+        .filter(|(agent_id, _)| !archived_agent_ids.contains(agent_id.as_str()))
+        .map(|(_, state)| state.queued_prompts().len())
         .sum();
     let mut working_agent_count = session
         .agents()
         .iter()
+        .filter(|agent| !agent.archived())
         .filter(|agent| waiting_room_agent_has_active_work(agent, &active_prompt_agent_ids))
         .count();
     if working_agent_count == 0 && active_prompt_count > 0 {
@@ -80,11 +90,13 @@ pub(crate) fn waiting_room_session_activity_summary(
     let remote_agent_count = session
         .agents()
         .iter()
+        .filter(|agent| !agent.archived())
         .filter(|agent| agent.remote_execution().is_some())
         .count();
     let missing_worker_provider_run_count = session
         .agents()
         .iter()
+        .filter(|agent| !agent.archived())
         .filter(|agent| {
             let Some(remote) = agent.remote_execution() else {
                 return false;
@@ -102,17 +114,23 @@ pub(crate) fn waiting_room_session_activity_summary(
     let home_proxy_extension_agents = session
         .agents()
         .iter()
+        .filter(|agent| !agent.archived())
         .filter(|agent| agent.remote_execution().is_some())
         .filter_map(home_proxy_extension_activity);
     WaitingRoomSessionActivitySummary {
         pending_interaction_count: session.active_interactions().len(),
-        agent_count: session.agents().len(),
+        agent_count: session
+            .agents()
+            .iter()
+            .filter(|agent| !agent.archived())
+            .count(),
         working_agent_count,
         active_prompt_count,
         queued_prompt_count,
         error_agent_count: session
             .agents()
             .iter()
+            .filter(|agent| !agent.archived())
             .filter(|agent| agent.state() == AgentState::Error)
             .count(),
         remote_agent_count,
@@ -128,6 +146,7 @@ pub(crate) fn waiting_room_session_activity_summary(
         unread_idle_agent_count: session
             .agents()
             .iter()
+            .filter(|agent| !agent.archived())
             .filter(|agent| {
                 !active_prompt_agent_ids.contains(agent.id())
                     && session.agent_has_unread_output(caller_user_id, agent.id())

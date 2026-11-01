@@ -357,6 +357,10 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
 
   const waitingRoomInventoryRefreshController = createWaitingRoomInventoryRefreshController({
     isKernelConnected: deps.kernelConnected,
+    getSessionPage: async cursor => {
+      const response = await deps.client.currentClient().send({ ListWaitingRoomSessions: { cursor, limit: 500 } }) as { WaitingRoomSessionsListed: { page: { sessions: import("./cli-types.js").WaitingRoomPublicSessionSummary[]; next_cursor: string | null } } }
+      return response.WaitingRoomSessionsListed.page
+    },
     getInventoryStatus: deps.waitingRoomInventoryStatus,
     setInventoryStatus: deps.setWaitingRoomInventoryStatus,
     getWaitingRoomState: deps.waitingRoomState,
@@ -1107,6 +1111,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     reconcileWaitingRoomProjection,
     projectEnvironmentSetupProjection,
     refreshWaitingRoomData,
+    loadWaitingRoomSessionHistory: waitingRoomInventoryRefreshController.loadSessionHistory,
     refreshWaitingRoomDataNow,
     editWaitingRoomWorkspace: async (path: string) => {
       await waitingRoomWorkspaceController.editWorkspace(path)

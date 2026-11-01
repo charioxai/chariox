@@ -142,7 +142,7 @@ fn read_sse_json_rpc_response(
 }
 
 fn streamable_http_agent(url: &str, timeout: Duration) -> Result<ureq::Agent, DaemonError> {
-    let mut builder = ureq::AgentBuilder::new().timeout(timeout);
+    let mut builder = crate::outbound_dial::agent_builder().timeout(timeout);
     if let Some(proxy) = configured_proxy_for_url(url)? {
         builder = builder.proxy(proxy);
     }

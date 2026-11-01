@@ -37,6 +37,7 @@ export type SessionHistoryPromptAttachment = {
   mime: string
   filename?: string | null
   preview_url?: string | null
+  size_bytes?: number | null
 }
 
 export type SessionHistoryOutline = {

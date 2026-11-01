@@ -100,6 +100,7 @@ impl KernelRuntimeState {
                             "stop"
                                 | "close"
                                 | "navigate"
+                                | "resize"
                                 | "input"
                                 | "mirror_input"
                                 | "display_input"

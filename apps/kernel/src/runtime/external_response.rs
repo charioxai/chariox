@@ -15,11 +15,36 @@ pub(crate) fn finish_response(
     }
     // Parser/provider diagnostics can echo stored values. Preserve the shared
     // mapper's public code/retryability before discarding those diagnostics.
-    let response = result.map_err(|error| protect_error(command, error))?;
+    let response = result.map_err(protect_error)?;
     project(response)
 }
 
-fn protect_error(command: &KernelCommand, error: DaemonError) -> DaemonError {
+fn protect_error(error: DaemonError) -> DaemonError {
+    // A kernel file error says what to do next in words the kernel wrote from the
+    // agent's own path; it carries no provider or parser text.
+    if matches!(&error, DaemonError::MachineRequest { .. }) {
+        return error;
+    }
+    // A terminal on a worker answers in the same words, arriving through the relay.
+    if let DaemonError::RelayTransport { code, message, .. } = &error {
+        if crate::room_terminal::is_public_code(code) {
+            return DaemonError::MachineRequest {
+                code: code.clone(),
+                message: message.clone(),
+            };
+        }
+    }
+    // A terminal error ("this Room has no terminal `t`", "terminal `t` has ended; open a
+    // new terminal") is the kernel's own sentence about an id the agent sent.
+    if matches!(
+        &error,
+        DaemonError::LocalTransport {
+            operation: "room terminal",
+            ..
+        }
+    ) {
+        return error;
+    }
     // These exact lifecycle messages are kernel constants, never provider or
     // parser output. Preserve refusal/revocation so callers can react correctly.
     if matches!(&error, DaemonError::LocalTransport { operation: "kernel access", message }
@@ -27,18 +52,19 @@ fn protect_error(command: &KernelCommand, error: DaemonError) -> DaemonError {
     {
         return error;
     }
+    // The kernel's own sentence about a steer it already delivered: only its id rides along.
+    if matches!(&error, DaemonError::SteerDeliveredEventUnrecorded { .. }) {
+        return error;
+    }
+    // A session alias the agent chose, and the session that holds it: the kernel's own
+    // sentence about names the agent sent, so the agent can pick another alias.
+    if matches!(
+        &error,
+        DaemonError::SessionAliasConflict { .. } | DaemonError::InvalidSessionAlias { .. }
+    ) {
+        return error;
+    }
     let mapped = crate::transport::kernel_protocol::map_kernel_error(&error);
-    // The caller only learns the code; the host log keeps the cause the reply
-    // points to ("details are available only in the host terminal").
-    crate::logging::warn_with_fields(
-        "daemon.external_response",
-        "external request failed",
-        serde_json::json!({
-            "command_type": command.command_type,
-            "code": mapped.code,
-            "error": error.to_string(),
-        }),
-    );
     DaemonError::ExternalRequestFailed {
         code: mapped.code,
         retryable: mapped.retryable,
@@ -159,10 +185,15 @@ response_policies! {
         // window and App content; external grant holders use the host terminal.
         KernelBrowser,
         Notes,
+        Dictation,
         VisibleRegionCaptured,
         UserDomainInteractionAnswered,
     ],
     Public => [
+        EventSubscription,
+        EventsListed,
+        EventsAcknowledged,
+        EventsCursorExpired,
         // MP-07/MP-08/MP-11: receipt metadata only; SSH admission stays owner-scoped.
         SshMachine,
         WorkflowNotificationSourceRegistered,
@@ -179,6 +210,15 @@ response_policies! {
         KernelAccessGranted,
         KernelAccessGrantsListed,
         KernelAccessRevoked,
+        KernelSudoRequesterRenewed,
+        GatewayKernelsListed,
+        AttachmentsHeartbeated,
+        GatewayKernelJoined,
+        GatewayKernelForgotten,
+        KernelFileStat,
+        KernelDirectoryListed,
+        KernelFileChunk,
+        KernelFileWritten,
         RoomBrowserArtifact,
         RoomTerminal,
         AppPublisherEnrollmentStatus,
@@ -224,6 +264,7 @@ response_policies! {
         ProviderRunsLaunchAccepted,
         ProjectsListed,
         ProjectPinned,
+        RoomPinned,
         ProjectRenamed,
         ProjectWorkspacesUpdated,
         ProjectArchived,
@@ -343,6 +384,7 @@ response_policies! {
         RemoteMachineKernelsListed,
         FreshRemoteMachineKernelsObserved,
         WaitingRoomInventory,
+        WaitingRoomSessionsListed,
         WaitingRoomPublicSnapshot,
         ExternalProviderSessionsListed,
         ExternalProviderSessionsRefreshed,
@@ -371,11 +413,14 @@ response_policies! {
         ProviderAuthStatus,
         ProviderLoginInputSent,
         ProviderLoggedOut,
+        ProviderUsageSnapshot,
+        AgentUsageSnapshot,
         ProviderAccountProfilesListed,
         ProviderAccountProfile,
         ProviderAccountProfileRemoved,
         ProviderAccountProfileDataDeleted,
         ProviderAccountCredentialStored,
+        ProviderAccountCopied,
         ProviderAccountPortabilityPreflightPassed,
         ProviderProcessesListed,
         ProviderProcessesTornDown,
@@ -421,6 +466,7 @@ response_policies! {
         SessionAliased,
         AgentAliased,
         AgentProfileUpdated,
+        AgentDeadline,
         AgentSpawned,
         AgentsSpawned,
         TurnUndone,
@@ -430,6 +476,7 @@ response_policies! {
         RemoteExtensionManifestSynced,
         HomeExtensionAuditListed,
         SliceAuditListed,
+        AgentArchived,
         AgentDestroyed,
         AgentFocused,
         AgentOutputSeenAcknowledged,

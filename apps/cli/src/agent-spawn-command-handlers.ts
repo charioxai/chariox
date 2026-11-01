@@ -16,6 +16,8 @@ import {
   remoteKernelReadinessForProvider,
 } from "@chariox/kernel-client/shell-remote-format"
 
+import { formatAgentLabel } from "./agent-label.js"
+
 type FooterTone = "info" | "error"
 
 type AgentSpawnPayload = {
@@ -34,7 +36,6 @@ export type AgentSpawnCommandHandlerDeps = {
   currentModelId: () => string
   currentVariantId: () => string
   currentProviderId: () => string
-  currentAccountProfileId?: () => string
   flashFooter: (message: string, tone: FooterTone) => void
   formatError: (error: unknown) => string
   createSlice?: (options: {
@@ -125,13 +126,13 @@ export async function handleAgentSpawnCommand(
       deps.setProviderRunState(payload.providerRun ?? null)
       deps.rebuildTranscript()
       deps.refreshSplitPaneFocusRepaint()
-      deps.flashFooter(`attached agent ${parsed.externalSessionId} as ${payload.agent.agent_ref}`, "info")
+      deps.flashFooter(`attached agent ${parsed.externalSessionId} as ${formatAgentLabel(payload.agent)}`, "info")
       return
     }
     if (count !== null && parsed.positional.length === 1) {
       if (!deps.spawnAgents || !deps.launchAgentProviderRuns) {
         for (let index = 0; index < count; index += 1) {
-          await spawnAndLaunchAgent(deps, {})
+          await spawnAndLaunchAgent(deps, { accountProfile: parsed.accountProfile })
         }
         deps.flashFooter(
           `spawned ${count} agent${count === 1 ? "" : "s"} from session defaults`,
@@ -140,19 +141,20 @@ export async function handleAgentSpawnCommand(
         return
       }
       const payload = await deps.spawnAgents(Array.from({ length: count }, () => ({
-        accountProfile: currentAccountProfileId(deps),
+        ...(parsed.accountProfile ? { accountProfile: parsed.accountProfile } : {}),
       })))
       deps.applySessionState(payload.session)
       await deps.refreshAgentPanes(payload.session)
-      const provider = deps.currentProviderId()
-      const model = deps.currentModelId()
-      const variant = deps.currentVariantId()
+      const spawnedAgent = payload.agents[0]
+      const provider = spawnedAgent?.provider || deps.currentProviderId()
+      const model = spawnedAgent?.model || deps.currentModelId()
+      const variant = spawnedAgent?.effort || deps.currentVariantId()
       const launched = await deps.launchAgentProviderRuns(
         provider,
         model,
         variant,
         payload.agents.map((agent) => agent.id),
-        currentAccountProfileId(deps),
+        spawnedAgent?.account_profile ?? undefined,
       )
       deps.setProviderRunState(launched.runs.at(-1) ?? null)
       const refreshedSession = await deps.refreshSessionState(payload.session.id)
@@ -197,7 +199,7 @@ export async function handleAgentSpawnCommand(
     const sliceRef = await prepareSliceForSpawn(deps, parsed.sliceRef, parsed.sliceDisplayMode, worktreeId, remoteRef)
     const payload = await spawnAndLaunchAgent(deps, {
       provider,
-      accountProfile: parsed.accountProfile ?? currentAccountProfileId(deps),
+      accountProfile: parsed.accountProfile,
       alias,
       model: model ?? null,
       effort,
@@ -386,7 +388,7 @@ function formatSpawnedAgentFooter(
       : "local"
   const worktree = options.resolvedWorktreeId || agent.worktree_id || null
   const parts = [
-    `spawned ${agent.meta_mode ? "meta-mode agent" : "agent"} ${agent.agent_ref}${alias ? ` (${alias})` : ""}`,
+    `spawned ${formatAgentLabel({ ...agent, alias })}`,
     placement,
     worktree ? `worktree ${worktree}` : null,
     options.sliceRef && worker ? `worker ${worker}` : null,
@@ -398,7 +400,7 @@ async function spawnAndLaunchAgent(
   deps: AgentSpawnCommandHandlerDeps,
   options: {
     provider?: string | null
-    accountProfile?: string | null
+    accountProfile?: string | null | undefined
     alias?: string | undefined
     model?: string | null
     effort?: string | null
@@ -436,7 +438,7 @@ async function spawnAndLaunchAgent(
   const launchProvider = payload.agent.provider || options.provider || deps.currentProviderId()
   const launchModel = payload.agent.model || options.model || deps.currentModelId()
   const launchEffort = payload.agent.effort || options.effort || deps.currentVariantId()
-  const launchAccountProfile = payload.agent.account_profile || options.accountProfile || currentAccountProfileId(deps)
+  const launchAccountProfile = payload.agent.account_profile || options.accountProfile || undefined
   const run = await deps.launchAgentProviderRun(
     launchProvider,
     launchModel,
@@ -454,8 +456,4 @@ async function spawnAndLaunchAgent(
     agent: payload.agent,
     session: refreshedSession,
   }
-}
-
-function currentAccountProfileId(deps: AgentSpawnCommandHandlerDeps): string {
-  return deps.currentAccountProfileId?.() || "default"
 }

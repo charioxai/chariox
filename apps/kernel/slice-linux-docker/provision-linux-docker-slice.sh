@@ -550,6 +550,8 @@ refresh_slice_support_files() {
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-input.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-input.mjs" "Browser Controller actions module"
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-cdp.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-cdp.mjs" "Browser Controller CDP module"
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-response-bodies.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-response-bodies.mjs" "Browser Controller runtime dependency"
+  copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-memory.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-memory.mjs" "Browser memory policy"
+  copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-renderer-recovery.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-renderer-recovery.mjs" "Browser renderer recovery"
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-observation-regions.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-observation-regions.mjs" "Browser Controller runtime dependency"
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-capture-presentation.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-capture-presentation.mjs" "Browser Controller runtime dependency"
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-focus-world.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-focus-world.mjs" "Browser Controller focus world dependency"

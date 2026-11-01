@@ -21,6 +21,8 @@ test("waiting-room slash policy lets detached-safe commands use normal slash han
   assert.equal(await harness.handle("/mode plan"), false)
   assert.equal(await harness.handle("/permissions required"), false)
   assert.equal(await harness.handle("/view split"), false)
+  assert.equal(await harness.handle("/machine add chariox-terminal-pair-v1.fixture"), false)
+  assert.equal(await harness.handle("/machine linked"), false)
 
   assert.deepEqual(harness.flashes, [])
   assert.equal(harness.clearedPrompts, 0)

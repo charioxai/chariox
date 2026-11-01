@@ -1,7 +1,12 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import { joinTerminalPairingLinkRequest } from "./ipc-remote-connection-requests.js"
+import {
+  forgetGatewayKernelRequest,
+  joinKernelLinkRequest,
+  joinTerminalPairingLinkRequest,
+  listGatewayKernelsRequest,
+} from "./ipc-remote-connection-requests.js"
 
 test("terminal pairing join sends the receiving CLI public thumbprint", () => {
   assert.deepEqual(joinTerminalPairingLinkRequest(
@@ -30,4 +35,15 @@ test("legacy terminal join omits a public thumbprint and receives no viewer auth
       alias: null,
     },
   })
+})
+
+test("machine link requests carry the relay token only when one is given", () => {
+  assert.deepEqual(joinKernelLinkRequest("chariox-terminal-pair-v1.fixture"), {
+    JoinKernelLink: { link: "chariox-terminal-pair-v1.fixture" },
+  })
+  assert.deepEqual(joinKernelLinkRequest("chariox-terminal-pair-v1.fixture", "client-token"), {
+    JoinKernelLink: { link: "chariox-terminal-pair-v1.fixture", relay_token: "client-token" },
+  })
+  assert.deepEqual(forgetGatewayKernelRequest("builder"), { ForgetGatewayKernel: { name: "builder" } })
+  assert.deepEqual(listGatewayKernelsRequest(), { ListGatewayKernels: {} })
 })

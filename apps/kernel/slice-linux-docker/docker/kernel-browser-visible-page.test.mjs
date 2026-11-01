@@ -93,7 +93,9 @@ test('MP-08/MP-10/MP-11 visible page crops browser scrollbars out of the source,
 test('A-L13 visible-page capture is served at the Tab scale inside the kernel viewport, without a stream or mirror',async()=>{
  const {captureVisiblePage}=await import('./kernel-browser-page-display.mjs');
  const tab={tab_id:'t',target_id:'target',document_id:'d'};let captured=0,clip;const scales=new Map([['t',1]]);
+ let page={width:1280,height:800};
  const host={generation:1,protection:{unknown:false},displays:new Map(),mirror:{streams:new Map()},tabs:new Map([['t',tab]]),scales,browser:{resolvePageTarget:async()=>assert.fail('no page read before the shot')},
+  pageSize:id=>{assert.equal(id,'t');return page;},
   displayScreenshot:async(t,c)=>{captured++;clip=c;assert.equal(t,tab);const s=scales.get('t');return{width:c.width*s,height:c.height*s,[displayMaskRegions]:[{x:12,y:6,width:20,height:10}]};}};
  // The viewer's frame may be any size up to the viewport (a mirror viewport is the page area, scrollbar column included).
  for(const [scale,width,height] of [[1,1264,712],[1,1272,708],[2,2528,1424],[2,2544,1416]]){
@@ -104,6 +106,12 @@ test('A-L13 visible-page capture is served at the Tab scale inside the kernel vi
  for(const frame of [{width:2562,height:1416},{width:2544,height:1602},{width:2543,height:1416},{width:0,height:0},undefined])
   await assert.rejects(captureVisiblePage(host,tab,frame),{code:'capture_view_resized',message:/select the region again/});
  assert.equal(captured,5,'a refused capture never takes the shot');
+ // #1073 P1: a live-resized Tab is captured inside its own viewport, not the canonical one.
+ page={width:1440,height:900};
+ for(const [scale,width,height] of [[1,1424,884],[2,2848,1768]]){
+  scales.set('t',scale);assert.equal((await captureVisiblePage(host,tab,{width,height})).protected_regions.length,1,`resized DPR${scale}`);
+ }
+ await assert.rejects(captureVisiblePage(host,tab,{width:2882,height:1768}),{code:'capture_view_resized'},'still bounded by the resized viewport');
  host.displayScreenshot=async()=>({width:1,height:1,[displayMaskRegions]:[]});
  await assert.rejects(captureVisiblePage(host,tab,{width:2544,height:1416}),{code:'capture_view_resized'},'a shot that is not the frame size is refused');
 });

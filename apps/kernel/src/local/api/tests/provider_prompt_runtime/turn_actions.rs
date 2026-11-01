@@ -1,4 +1,5 @@
 use super::*;
+use crate::local::{EventTarget, OutsideEventValue, SubscribeEventsRequest};
 
 // MP-08 / MP-10: Native display IDs must be translated to a home prompt
 // before this single admission. A stale control must never become a new turn.
@@ -14,7 +15,7 @@ fn mp08_mp10_active_steering_is_bound_to_an_exact_home_prompt() {
         ))
         .unwrap()
     {
-        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        LocalDaemonResponse::SessionCreated { session, agent, .. } => (session, agent),
         other => panic!("unexpected response: {other:?}"),
     };
     harness.launch_workflow_test_provider(session.id(), agent.id());
@@ -85,6 +86,37 @@ fn mp08_mp10_active_steering_is_bound_to_an_exact_home_prompt() {
         }))
         .expect("a steering request may carry a note attachment")
     };
+    // MP-08 / MP-09 / MP-10 / MP-11: an outside subscriber sees only the steer that landed.
+    let kernel = harness.with_app(|app| app.config().daemon_id.clone());
+    let runtime = harness.runtime_state();
+    runtime
+        .outside_part_request(
+            "outside-coordinator",
+            true,
+            Some(crate::session::DEFAULT_LOCAL_USER_ID),
+            &LocalDaemonRequest::SubscribeEvents(SubscribeEventsRequest {
+                targets: vec![EventTarget {
+                    kernel,
+                    session_id: session.id().into(),
+                    agent_id: Some(agent.id().into()),
+                }],
+            }),
+        )
+        .unwrap();
+    let steer_events = || {
+        runtime
+            .outside_store()
+            .outside_list("outside-coordinator", None, 100)
+            .unwrap()
+            .unwrap()
+            .events
+            .into_iter()
+            .filter_map(|event| match event.value {
+                OutsideEventValue::Steer { steer_id } => Some((event.agent_id, steer_id)),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
     let error = harness.dispatch(steer_note("not json")).unwrap_err();
     assert!(
         error.to_string().contains("validate prompt note"),
@@ -96,6 +128,11 @@ fn mp08_mp10_active_steering_is_bound_to_an_exact_home_prompt() {
     {
         LocalDaemonResponse::ActivePromptSteered { prompt } => {
             assert_eq!(prompt.prompt(), "Please read the attached notes.");
+            assert_eq!(
+                steer_events(),
+                vec![(Some(agent.id().to_string()), prompt.id().to_string())],
+                "the rejected steer published nothing and the accepted one names its id"
+            );
         }
         other => panic!("unexpected response: {other:?}"),
     }
@@ -121,6 +158,7 @@ fn mp08_mp10_active_steering_is_bound_to_an_exact_home_prompt() {
         harness.dispatch(request(active.id())).is_err(),
         "settled steering must fail instead of starting work"
     );
+    assert_eq!(steer_events().len(), 1, "a refused steer publishes nothing");
     harness.with_app_mut(|app| {
         assert!(app
             .prompt_owner_active_prompt_for_agent_snapshot(session.id(), agent.id())
@@ -131,6 +169,121 @@ fn mp08_mp10_active_steering_is_bound_to_an_exact_home_prompt() {
             .unwrap()
             .is_none());
     });
+}
+
+// MP-08 / MP-10 / MP-11 R1080-5: a grant holder whose steer reached the provider but whose
+// event could not be recorded learns the steer id and that it must not send it again.
+#[test]
+fn outside_caller_learns_a_delivered_steer_whose_event_was_not_recorded() {
+    let faults =
+        std::env::temp_dir().join(format!("steer-event-fault-{:016x}", rand::random::<u64>()));
+    std::fs::create_dir(&faults).unwrap();
+    let _faults = crate::durable_state::agent_lifecycle::faults::TestFaultDir::set(&faults);
+    let worktree = crate::test_support::TestWorktree::new("steer-event-unrecorded");
+    let harness = LocalRouterTestHarness::new();
+    let (session, agent) = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            worktree
+                .session_request()
+                .with_agent_defaults(crate::session::SessionAgentDefaults::new("dev-stub")),
+        ))
+        .unwrap()
+    {
+        LocalDaemonResponse::SessionCreated { session, agent, .. } => (session, agent),
+        other => panic!("unexpected response: {other:?}"),
+    };
+    harness.launch_workflow_test_provider(session.id(), agent.id());
+    let attachment = match harness
+        .dispatch(LocalDaemonRequest::AttachToSession(
+            AttachToSessionRequest {
+                session_id: session.id().into(),
+                client_id: "steering".into(),
+                capability_level: ClientCapabilityLevel::FullTerminal,
+            },
+        ))
+        .unwrap()
+    {
+        LocalDaemonResponse::SessionAttached { attachment } => attachment,
+        other => panic!("unexpected response: {other:?}"),
+    };
+    let active = match harness
+        .dispatch(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+            session_id: session.id().into(),
+            attachment_id: attachment.id().into(),
+            target_agent_id: Some(agent.id().into()),
+            prompt: "original work".into(),
+            attachments: vec![],
+        }))
+        .unwrap()
+    {
+        LocalDaemonResponse::PromptSubmitted {
+            outcome: PromptSubmissionOutcome::Started { prompt },
+            ..
+        } => prompt,
+        other => panic!("unexpected response: {other:?}"),
+    };
+    let kernel = harness.with_app(|app| app.config().daemon_id.clone());
+    // The kernel asks a subscriber to retry while the prompt it just started is settling.
+    let subscribe = LocalDaemonRequest::SubscribeEvents(SubscribeEventsRequest {
+        targets: vec![EventTarget {
+            kernel,
+            session_id: session.id().into(),
+            agent_id: Some(agent.id().into()),
+        }],
+    });
+    let runtime = harness.runtime_state();
+    let mut subscribed = false;
+    for _ in 0..50 {
+        let attempt = runtime.outside_part_request(
+            "outside-coordinator",
+            true,
+            Some(crate::session::DEFAULT_LOCAL_USER_ID),
+            &subscribe,
+        );
+        if attempt.is_ok() {
+            subscribed = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    assert!(
+        subscribed,
+        "the subscription is accepted once the prompt settles"
+    );
+    std::fs::write(faults.join("writer-fail"), "").unwrap();
+    let steer = serde_json::from_value::<LocalDaemonRequest>(serde_json::json!({
+        "SteerActivePrompt": {
+            "session_id": session.id(), "attachment_id": attachment.id(),
+            "target_agent_id": agent.id(), "expected_active_prompt_id": active.id(),
+            "prompt": "change direction", "attachments": []
+        }
+    }))
+    .unwrap();
+    let failure = harness.dispatch(steer.clone()).unwrap_err();
+    let mut caller = crate::runtime::command::KernelCommand::from_local_request(
+        "steer-event-unrecorded",
+        None,
+        None,
+        &steer,
+    );
+    caller.caller.connection_class = Some(crate::local::KernelConnectionClass::ExternalAgent);
+    caller.caller.caller_id = "grant:test".into();
+    let told =
+        crate::runtime::external_response::finish_response(&caller, Err(failure)).unwrap_err();
+    let mapped = crate::transport::kernel_protocol::map_kernel_error(&told);
+    assert_eq!(mapped.code, "prompt_steer_event_unrecorded", "{mapped:?}");
+    assert!(!mapped.retryable);
+    assert!(
+        mapped.message.contains("do not send it again"),
+        "{}",
+        mapped.message
+    );
+    assert!(mapped.message.contains("steer `"), "{}", mapped.message);
+    assert!(
+        !mapped.message.contains("writer-fail"),
+        "{}",
+        mapped.message
+    );
 }
 
 #[test]
@@ -149,7 +302,7 @@ fn public_session_state_preserves_failed_settlement_termination_after_late_compl
         ))
         .expect("session create should succeed")
     {
-        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        LocalDaemonResponse::SessionCreated { session, agent, .. } => (session, agent),
         other => panic!("unexpected local response: {other:?}"),
     };
     // Launch the provider up front so the admitted prompt starts deterministically.
@@ -252,7 +405,7 @@ fn completed_native_tui_turn_projects_undo_action_for_tracked_session() {
         ))
         .expect("session create should succeed")
     {
-        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        LocalDaemonResponse::SessionCreated { session, agent, .. } => (session, agent),
         other => panic!("unexpected local response: {other:?}"),
     };
     let attachment = match harness
@@ -377,7 +530,7 @@ fn queued_native_tui_turn_projects_undo_action_after_provider_launch_inner() {
         ))
         .expect("session create should succeed")
     {
-        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        LocalDaemonResponse::SessionCreated { session, agent, .. } => (session, agent),
         other => panic!("unexpected local response: {other:?}"),
     };
     let attachment = match harness
@@ -523,7 +676,7 @@ fn undo_turn_request_restores_workspace_states_and_preserves_head_inner() {
         ))
         .expect("session create should succeed")
     {
-        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        LocalDaemonResponse::SessionCreated { session, agent, .. } => (session, agent),
         other => panic!("unexpected local response: {other:?}"),
     };
     let before = crate::git_observer::capture_turn_snapshot(crate::git_observer::GitTurnContext {
@@ -671,7 +824,7 @@ fn undo_turn_request_allows_noop_turns_without_workspace_changes_inner() {
         ))
         .expect("session create should succeed")
     {
-        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        LocalDaemonResponse::SessionCreated { session, agent, .. } => (session, agent),
         other => panic!("unexpected local response: {other:?}"),
     };
     let before = crate::git_observer::capture_turn_snapshot(crate::git_observer::GitTurnContext {
@@ -813,7 +966,7 @@ fn undo_turn_request_conflict_fails_without_partial_writes_inner() {
         ))
         .expect("session create should succeed")
     {
-        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        LocalDaemonResponse::SessionCreated { session, agent, .. } => (session, agent),
         other => panic!("unexpected local response: {other:?}"),
     };
     let attachment = match harness
@@ -933,7 +1086,7 @@ fn turn_actions_without_agent_ref_require_focused_agent() {
         ))
         .expect("session create should succeed")
     {
-        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        LocalDaemonResponse::SessionCreated { session, agent, .. } => (session, agent),
         other => panic!("unexpected local response: {other:?}"),
     };
     harness.with_app_mut(|app| {
@@ -985,11 +1138,12 @@ fn fork_agent_clones_config_and_launches_provider_inner() {
         ))
         .expect("session create should succeed")
     {
-        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        LocalDaemonResponse::SessionCreated { session, agent, .. } => (session, agent),
         other => panic!("unexpected local response: {other:?}"),
     };
     let source = match harness
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            no_subscribe: false,
             account_profile: None,
             session_id: session.id().to_string(),
             alias: Some("source".to_string()),
@@ -1006,7 +1160,7 @@ fn fork_agent_clones_config_and_launches_provider_inner() {
         }))
         .expect("source agent should spawn")
     {
-        LocalDaemonResponse::AgentSpawned { agent } => agent,
+        LocalDaemonResponse::AgentSpawned { agent, .. } => agent,
         other => panic!("unexpected spawn response: {other:?}"),
     };
     let attachment = match harness
@@ -1130,7 +1284,7 @@ fn editing_a_queued_note_prompt_to_empty_text_keeps_the_note_request() {
         ))
         .unwrap()
     {
-        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        LocalDaemonResponse::SessionCreated { session, agent, .. } => (session, agent),
         other => panic!("unexpected response: {other:?}"),
     };
     harness.launch_workflow_test_provider(session.id(), agent.id());

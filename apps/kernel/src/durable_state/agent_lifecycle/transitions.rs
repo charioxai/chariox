@@ -2,6 +2,18 @@
 use super::*;
 pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, DaemonError> {
     match op {
+        Operation::Outside(mutation) => super::outside::apply(tx, mutation),
+        Operation::SetDeadline {
+            room,
+            agent,
+            deadline,
+        } => super::deadlines::set(tx, room, agent, deadline),
+        Operation::ReachDeadline {
+            room,
+            agent,
+            now,
+            stopped,
+        } => super::deadlines::reached(tx, room, agent, now, stopped),
         Operation::LeasedProcess(mutation) => super::leased_processes::apply(tx, mutation),
         Operation::CreateLeasedWake {
             task,
@@ -88,6 +100,21 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
         } => {
             let mut task = if let Some(existing) = for_turn(tx, &room, &agent, &prompt)? {
                 existing
+            } else if let Some(source) =
+                prompt.strip_prefix(crate::session::WORKFLOW_OUTPUT_FOLLOW_UP_PREFIX)
+            {
+                // The output reminder continues the admitted workflow task, including
+                // its helper obligations. Recovery uses the same durable identity.
+                let mut task = for_turn(tx, &room, &agent, source)?
+                    .ok_or_else(|| error("workflow output follow-up has no source task"))?;
+                if task.state != ExecutionState::Working || task.pending_prompt_id.is_some() {
+                    return Err(error(
+                        "workflow output follow-up cannot resume a retained task",
+                    ));
+                }
+                task.prompt_id = prompt;
+                task.revision += 1;
+                task
             } else {
                 let resumed = tasks(tx)?.into_iter().find(|t| {
                     t.room_id == room
@@ -453,16 +480,28 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             reason,
         } => {
             let mut t = load(tx, &task)?;
-            if t.prompt_id != prompt || t.state != ExecutionState::Working {
-                return Err(error("stale blocked intent"));
+            if t.prompt_id != prompt {
+                return Err(error(
+                    "stale blocked intent: use the current task and prompt",
+                ));
+            }
+            if !matches!(t.state, ExecutionState::Working | ExecutionState::Blocked) {
+                return Err(error("blocked intent requires a working or blocked turn; submit a new prompt for a closed task"));
             }
             if reason.trim().is_empty() {
                 return Err(error("blocked requires an owner action"));
             }
+            let reason = crate::secret_redaction::redact_secrets(&reason).into_owned();
+            if t.state == ExecutionState::Blocked && t.reason == reason {
+                return Ok(Outcome::Task(t));
+            }
             super::goals::clock(&mut t, crate::session::unix_epoch_ms());
+            // Refreshing the reason must keep the existing owner Resume/Cancel valid.
+            if t.state == ExecutionState::Working {
+                t.blocked_revision = t.revision + 1;
+            }
             t.state = ExecutionState::Blocked;
-            t.blocked_revision = t.revision + 1;
-            t.reason = crate::secret_redaction::redact_secrets(&reason).into_owned();
+            t.reason = reason;
             t.revision += 1;
             save(tx, &t)?;
             Ok(Outcome::Task(t))
@@ -615,7 +654,9 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
         | Operation::Ack { .. }) => super::delivery::apply(tx, op),
         op @ (Operation::Progress { .. }
         | Operation::SourceOutcome { .. }
+        | Operation::DelegateUnavailable { .. }
         | Operation::Sweep { .. }
+        | Operation::ArchiveTask { .. }
         | Operation::CancelTask { .. }
         | Operation::OwnerResponse { .. }) => super::supervision::apply(tx, op),
         op @ (Operation::CreateWake { .. }

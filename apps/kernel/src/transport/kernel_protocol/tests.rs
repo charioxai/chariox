@@ -113,6 +113,7 @@ fn session_snapshot_frame_redacts_remote_relay_credentials() {
     }));
     projection.session.set_agents(vec![agent]);
     let frame = KernelOutgoingFrame::Event {
+        kernel: None,
         event_id: 1,
         event: Box::new(KernelEvent::SessionSnapshot {
             room_workflows: projection.room_workflows,
@@ -749,6 +750,8 @@ fn waiting_room_snapshot(
         structural_version: format!("structural-{inventory_version}"),
         activity_revision: format!("activity-{inventory_version}"),
         generated_at_ms: 100,
+        sessions_total: sessions.len(),
+        sessions_next_cursor: None,
         sessions,
         projects: Vec::new(),
         external_provider_sessions: Vec::new(),
@@ -801,6 +804,7 @@ fn provider_account_profile() -> crate::account_profile::ProviderAccountProfile 
 
 fn session_summary(id: &str, last_used_at_ms: u64) -> WaitingRoomPublicSessionSummary {
     WaitingRoomPublicSessionSummary {
+        pinned: false,
         repository_state: None,
         id: id.to_string(),
         project_id: "project-a".to_string(),
@@ -1104,7 +1108,7 @@ fn missing_account_resolution_is_definitive_on_kernel_transport() {
         message: "account is absent on this kernel; copy login or sign in".into(),
     };
     let mapped = map_kernel_error(&error);
-    assert_eq!(mapped.code, "local_transport_error");
+    assert_eq!(mapped.code, "provider_profile_unavailable");
     assert!(!mapped.retryable);
     assert_eq!(mapped.message, error.to_string());
     let transient = DaemonError::LocalTransport {
@@ -1134,6 +1138,47 @@ fn env_ux01_unrelated_transport_failures_remain_retryable() {
         message: "connection interrupted".into(),
     };
     assert!(super::map_kernel_error(&error).retryable);
+}
+
+#[test]
+fn dictation_command_errors_keep_the_speech_service_code() {
+    for code in [
+        "dictation_bad_key",
+        "dictation_vault_locked",
+        "dictation_no_key",
+        "dictation_quota",
+        "dictation_network",
+        "dictation_service_changed",
+    ] {
+        let error = DaemonError::RelayTransport {
+            operation: "dictation",
+            code: code.into(),
+            message: "Safe speech-service recovery advice".into(),
+            retryable: false,
+        };
+        let mapped = map_kernel_error(&error);
+        assert_eq!(mapped.code, code);
+        assert!(!mapped.retryable);
+    }
+}
+
+// MP-08 / MP-10 / MP-11: paging metadata changes without a visible-row change.
+#[test]
+fn waiting_room_row_updates_keep_the_full_catalog_count_and_cursor_current() {
+    let initial = waiting_room_snapshot("inventory-a", vec![session_summary("session-a", 1)]);
+    let mut wire = serde_json::to_value(initial).unwrap();
+    wire["sessions_total"] = serde_json::json!(10_100);
+    wire["sessions_next_cursor"] = serde_json::json!("page-a");
+    let previous = serde_json::from_value(wire.clone()).unwrap();
+    wire["inventory_version"] = serde_json::json!("inventory-b");
+    wire["sessions_total"] = serde_json::json!(10_101);
+    wire["sessions_next_cursor"] = serde_json::json!("page-b");
+    let current = serde_json::from_value(wire).unwrap();
+    let event = waiting_room_rows_changed_event(current, Some(&previous))
+        .expect("catalog metadata must be pushed even when the recent rows stay the same");
+    let wire = serde_json::to_value(event).unwrap();
+    assert_eq!(wire["sessions_total"], 10_101);
+    assert_eq!(wire["sessions_next_cursor"], "page-b");
 }
 
 fn ledger_task(

@@ -27,6 +27,7 @@ type CliDialogOverlayControllerDeps<TFocus extends CliDialogFocusTarget, TBox = 
   onManagedMachineClosed?: () => void
   setTerminalPairing: (pairing: TerminalPairingLinkView | null) => void
   setTerminalPairingQrLines: (lines: string[]) => void
+  loadSessions?: () => Promise<void>
   getSessionCount: () => number
   getWaitingRoomSessionIndex: () => number
   setSessionBrowserIndex: (index: number) => void
@@ -202,21 +203,27 @@ export function createCliDialogOverlayController<TFocus extends CliDialogFocusTa
       }
     },
     openSessionBrowser() {
-      if (deps.getOpenState().sessionBrowserOpen) {
-        return
+      const show = () => {
+        if (deps.getOpenState().sessionBrowserOpen) {
+          return
+        }
+        const sessionCount = deps.getSessionCount()
+        if (sessionCount === 0) {
+          deps.flashFooter("no sessions available to join", "error")
+          return
+        }
+        captureFocus()
+        deps.setHotkeysOpen(false)
+        deps.setTerminalPairingOpen(false)
+        deps.setSessionBrowserIndex(deps.clampSessionBrowserIndex(deps.getWaitingRoomSessionIndex(), sessionCount))
+        deps.setSessionBrowserOpen(true)
+        controller.render()
+        deps.flashFooter("select a session to open, archive, or delete", "info")
       }
-      const sessionCount = deps.getSessionCount()
-      if (sessionCount === 0) {
-        deps.flashFooter("no sessions available to join", "error")
-        return
-      }
-      captureFocus()
-      deps.setHotkeysOpen(false)
-      deps.setTerminalPairingOpen(false)
-      deps.setSessionBrowserIndex(deps.clampSessionBrowserIndex(deps.getWaitingRoomSessionIndex(), sessionCount))
-      deps.setSessionBrowserOpen(true)
-      controller.render()
-      deps.flashFooter("select a session to open, archive, or delete", "info")
+      if (deps.loadSessions) {
+        deps.flashFooter("loading sessions…", "info")
+        void deps.loadSessions().then(show, error => deps.flashFooter(formatError(error), "error"))
+      } else show()
     },
     openManagedMachine() {
       if (deps.getOpenState().managedMachineOpen) {

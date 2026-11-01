@@ -33,6 +33,7 @@ export type CliOverlayInteractionCompositionDeps = {
   formatError: AnyFn
   debugLogsEnabled: boolean
   isAttached: AnyFn
+  loadSessions: () => Promise<void>
   availableSessions: AnyFn
   waitingRoomProjects: AnyFn
   sessionBrowserIndex: AnyFn
@@ -125,6 +126,7 @@ export function createCliOverlayInteractionComposition(deps: CliOverlayInteracti
     },
     setTerminalPairing: deps.setTerminalPairingState,
     setTerminalPairingQrLines: deps.setTerminalPairingQrLines,
+    loadSessions: deps.loadSessions,
     getSessionCount: () => sessionBrowserSessions().length,
     getWaitingRoomSessionIndex: () => deps.waitingRoomState().sessionIndex,
     setSessionBrowserIndex: deps.setSessionBrowserIndex,

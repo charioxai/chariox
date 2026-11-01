@@ -4,7 +4,8 @@ import { theme } from "./theme.js"
 
 export type ProviderAccountRecoveryTarget = {sessionId: string; agentId: string}
 
-const quotaRefusal = /has exhausted its allowance|cannot start new work because its usage (?:allowance and credits are|is) exhausted/i
+// Footer errors arrive as text; retain old peers alongside current admission messages.
+const quotaRefusal = /provider profile usage is exhausted|has exhausted its allowance|cannot start new work because its usage (?:allowance and credits are|is) exhausted/i
 
 type RecoveryAction = { label: string; run(): void }
 
@@ -87,9 +88,9 @@ export function createProviderAccountRecoveryController(options: {
       render()
     },
     show(messageText: string, rejectedTarget?: ProviderAccountRecoveryTarget) {
-      if (!/selected \S+ account .*not authenticated|needs sign-in\.|sign-in not checked\./i.test(messageText) && !quotaRefusal.test(messageText)) return
+      if (!/provider profile (?:is not authenticated|has not been verified|is not registered for this owner on this kernel)|selected \S+ account .*not authenticated|needs sign-in\.|sign-in not checked\./i.test(messageText) && !quotaRefusal.test(messageText)) return
       customActions = null
-    customTitle = null
+      customTitle = null
       target = rejectedTarget
       message = messageText
       selected = 0

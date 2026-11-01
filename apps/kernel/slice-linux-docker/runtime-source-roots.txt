@@ -1,5 +1,6 @@
 Cargo.toml
 Cargo.lock
+patches/ureq
 adapters/rust
 apps/aegs-dummy
 apps/kernel

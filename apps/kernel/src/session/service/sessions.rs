@@ -654,14 +654,13 @@ impl SessionService {
         workspace_id: &str,
         alias: &str,
     ) -> Result<(), DaemonError> {
-        if self
-            .store
-            .visible_non_ended_sessions()
-            .any(|session| session.workspace_id() == workspace_id && session.alias() == Some(alias))
-        {
+        if let Some(holder) = self.store.visible_non_ended_sessions().find(|session| {
+            session.workspace_id() == workspace_id && session.alias() == Some(alias)
+        }) {
             return Err(DaemonError::SessionAliasConflict {
                 workspace_id: workspace_id.to_string(),
                 alias: alias.to_string(),
+                session_id: holder.id().to_string(),
             });
         }
         Ok(())
@@ -712,7 +711,7 @@ impl SessionService {
         session_id: &str,
         alias: &str,
     ) -> Result<(), DaemonError> {
-        if self.store.visible_non_ended_sessions().any(|session| {
+        if let Some(holder) = self.store.visible_non_ended_sessions().find(|session| {
             session.id() != session_id
                 && session.workspace_id() == workspace_id
                 && session.alias() == Some(alias)
@@ -720,6 +719,7 @@ impl SessionService {
             return Err(DaemonError::SessionAliasConflict {
                 workspace_id: workspace_id.to_string(),
                 alias: alias.to_string(),
+                session_id: holder.id().to_string(),
             });
         }
         Ok(())

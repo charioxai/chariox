@@ -259,6 +259,7 @@ async fn handle_client_frame(
             client_public_key,
             subscription_scope,
             resume_from_event_id,
+            heartbeat_interval_ms,
         } => {
             if let Some(error) = invalid_request(direct, &request_id, &target, 0)
                 .or_else(|| empty_identifier("subscription_id", &subscription_id))
@@ -281,6 +282,7 @@ async fn handle_client_frame(
                 client_public_key,
                 subscription_scope,
                 resume_from_event_id,
+                heartbeat_interval_ms,
             )
             .await
             .map_err(|_| "local browser outgoing queue overloaded")

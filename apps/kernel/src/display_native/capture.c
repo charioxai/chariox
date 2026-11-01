@@ -22,6 +22,8 @@ static double capture_cpu(void) {struct timespec t;clock_gettime(CLOCK_THREAD_CP
 #include <X11/XKBlib.h>
 #include <X11/keysym.h>
 
+#include "x11-runtime.h"
+
 struct Capture {
     Display *display;
     Window window;

@@ -28,6 +28,7 @@ async fn notes_cached_response_cannot_cross_owner_or_client() {
             command.command_id.clone(),
             fingerprint.clone(),
             &KernelOutgoingFrame::Response {
+                kernel: None,
                 request_id: command.command_id.clone(),
                 response: Box::new(Some(response.clone())),
                 error: None,

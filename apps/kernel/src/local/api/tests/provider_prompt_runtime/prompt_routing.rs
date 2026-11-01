@@ -10,7 +10,7 @@ fn local_request_api_rejects_config_updates_for_native_tui_provider_agents() {
         ))
         .expect("session create should succeed")
     {
-        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        LocalDaemonResponse::SessionCreated { session, agent, .. } => (session, agent),
         _ => panic!("unexpected local response"),
     };
 
@@ -148,7 +148,7 @@ fn focusing_another_agent_during_a_prompt_keeps_the_working_run_active() {
         ))
         .expect("session should be created")
     {
-        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        LocalDaemonResponse::SessionCreated { session, agent, .. } => (session, agent),
         _ => panic!("unexpected local response"),
     };
     let attachment = match harness
@@ -188,6 +188,7 @@ fn focusing_another_agent_during_a_prompt_keeps_the_working_run_active() {
 
     let spawned = match harness
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            no_subscribe: false,
             account_profile: None,
             session_id: session.id().to_string(),
             alias: Some("reviewer".to_string()),
@@ -204,7 +205,7 @@ fn focusing_another_agent_during_a_prompt_keeps_the_working_run_active() {
         }))
         .expect("spawn should succeed")
     {
-        LocalDaemonResponse::AgentSpawned { agent } => agent,
+        LocalDaemonResponse::AgentSpawned { agent, .. } => agent,
         _ => panic!("unexpected local response"),
     };
 
@@ -333,7 +334,7 @@ fn spawning_agent_during_active_prompt_keeps_snapshot_on_working_run() {
         ))
         .expect("session should be created")
     {
-        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        LocalDaemonResponse::SessionCreated { session, agent, .. } => (session, agent),
         _ => panic!("unexpected local response"),
     };
     let attachment = match harness
@@ -376,6 +377,7 @@ fn spawning_agent_during_active_prompt_keeps_snapshot_on_working_run() {
         .expect("prompt should start");
     let spawned = match harness
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            no_subscribe: false,
             account_profile: None,
             session_id: session.id().to_string(),
             alias: Some("observer".to_string()),
@@ -392,7 +394,7 @@ fn spawning_agent_during_active_prompt_keeps_snapshot_on_working_run() {
         }))
         .expect("spawn should succeed")
     {
-        LocalDaemonResponse::AgentSpawned { agent } => agent,
+        LocalDaemonResponse::AgentSpawned { agent, .. } => agent,
         _ => panic!("unexpected local response"),
     };
 
@@ -426,7 +428,7 @@ fn local_request_api_auto_launches_provider_run_for_prompt() {
         ))
         .expect("session create should succeed")
     {
-        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        LocalDaemonResponse::SessionCreated { session, agent, .. } => (session, agent),
         _ => panic!("unexpected local response"),
     };
     let prompt_agent = harness.spawn_workflow_test_agent(session.id(), "prompt-agent");
@@ -478,21 +480,34 @@ fn local_request_api_rejects_prompt_for_unavailable_provider_account() {
         ))
         .expect("session create should succeed")
     {
-        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        LocalDaemonResponse::SessionCreated { session, agent, .. } => (session, agent),
         _ => panic!("unexpected local response"),
     };
     let unavailable_account = harness.with_app(|app| {
-        app.provider_account_profile_registry()
+        let registry = app.provider_account_profile_registry();
+        let profile = registry
             .create_managed(
                 crate::session::DEFAULT_LOCAL_USER_ID,
                 "codex",
                 "Unavailable account",
             )
-            .expect("unavailable account profile should register")
+            .expect("unavailable account profile should register");
+        registry
+            .update_observation(
+                crate::session::DEFAULT_LOCAL_USER_ID,
+                "codex",
+                &profile.profile_id,
+                crate::account_profile::ProviderAccountAuthState::NotConfigured,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("known unavailable account should be recorded")
     });
     assert_eq!(
         unavailable_account.auth_state,
-        crate::account_profile::ProviderAccountAuthState::Unknown
+        crate::account_profile::ProviderAccountAuthState::NotConfigured
     );
 
     harness
@@ -569,7 +584,7 @@ fn local_request_api_rejects_prompt_for_fresh_exhausted_provider_account() {
         ))
         .expect("session create should succeed")
     {
-        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        LocalDaemonResponse::SessionCreated { session, agent, .. } => (session, agent),
         _ => panic!("unexpected local response"),
     };
     let exhausted_account = harness.with_app(|app| {
@@ -704,7 +719,7 @@ fn local_request_api_rejects_new_prompt_when_busy_agent_account_becomes_unavaila
         ))
         .expect("session create should succeed")
     {
-        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        LocalDaemonResponse::SessionCreated { session, agent, .. } => (session, agent),
         _ => panic!("unexpected local response"),
     };
     let account = harness.with_app(|app| {
@@ -886,7 +901,7 @@ fn direct_prompt_completion_resolves_unfocused_single_active_agent() {
         ))
         .expect("session create should succeed")
     {
-        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        LocalDaemonResponse::SessionCreated { session, agent, .. } => (session, agent),
         _ => panic!("unexpected local response"),
     };
     let prompt_agent = harness.spawn_workflow_test_agent(session.id(), "prompt-agent");
@@ -963,7 +978,7 @@ fn direct_prompt_cancel_resolves_unfocused_single_active_agent() {
         ))
         .expect("session create should succeed")
     {
-        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        LocalDaemonResponse::SessionCreated { session, agent, .. } => (session, agent),
         _ => panic!("unexpected local response"),
     };
     let prompt_agent = harness.spawn_workflow_test_agent(session.id(), "prompt-agent");
@@ -1048,7 +1063,7 @@ fn direct_prompt_cancel_uses_explicit_target_agent_when_multiple_agents_are_acti
         ))
         .expect("session create should succeed")
     {
-        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        LocalDaemonResponse::SessionCreated { session, agent, .. } => (session, agent),
         _ => panic!("unexpected local response"),
     };
     let prompt_agent = harness.spawn_workflow_test_agent(session.id(), "prompt-agent");
@@ -1171,7 +1186,7 @@ fn local_request_api_rejects_invalid_provider_adapter_inner() {
         ))
         .expect("session create should succeed")
     {
-        LocalDaemonResponse::SessionCreated { session, agent: _ } => session,
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
         _ => panic!("unexpected local response"),
     };
 

@@ -34,6 +34,17 @@ pub(crate) fn cloud_relay_token_refresh_due(config: &DaemonConfig, now_ms: u64) 
             .is_none_or(|expires_at| expires_at <= now_ms + CLOUD_RELAY_TOKEN_REFRESH_WINDOW_MS)
 }
 
+/// A token past its expiry that the kernel could renew with its credentials;
+/// the relay refuses it, so connecting with it only loops.
+pub(crate) fn cloud_relay_token_is_expired(config: &DaemonConfig, now_ms: u64) -> bool {
+    config.cloud_relay.as_ref().is_some_and(|profile| {
+        cloud_relay_profile_has_runtime_credentials(profile)
+            && profile
+                .token_expires_at_ms
+                .is_some_and(|expires_at| expires_at <= now_ms)
+    })
+}
+
 pub(crate) fn cloud_relay_runtime_token_is_fresh(
     config: &DaemonConfig,
     profile: &PersistedCloudRelayProfile,

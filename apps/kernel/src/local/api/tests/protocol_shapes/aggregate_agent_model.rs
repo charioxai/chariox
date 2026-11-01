@@ -23,7 +23,7 @@ fn mp08_mp10_mp11_aggregate_agent_model_protocol_snapshot_and_hash() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "bd05f3e23c7e3d11d25e0adc5465eee7fec4cd3a1be23a6298d757900214cb9e"
+        "a180bc42a139107f4b142ee1b10daf520762f0f2305578938f275c651e7e2694"
     );
     for wire in snapshot["requests"].as_array().unwrap() {
         let typed: LocalDaemonRequest = serde_json::from_value(wire.clone()).unwrap();
@@ -40,6 +40,11 @@ fn mp08_mp10_mp11_aggregate_agent_model_protocol_snapshot_and_hash() {
     }
     for wire in snapshot["events"].as_array().unwrap() {
         let typed: crate::transport::kernel_protocol::KernelEvent =
+            serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(serde_json::to_value(typed).unwrap(), *wire);
+    }
+    for wire in snapshot["replyOutcomes"].as_array().unwrap() {
+        let typed: crate::durable_state::agent_lifecycle::ReplyOutcome =
             serde_json::from_value(wire.clone()).unwrap();
         assert_eq!(serde_json::to_value(typed).unwrap(), *wire);
     }

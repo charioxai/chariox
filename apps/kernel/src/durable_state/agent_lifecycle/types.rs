@@ -39,7 +39,11 @@ impl AgentTaskExecution {
     /// The owner stopped this turn; the agent stays stopped until prompted again.
     pub(crate) fn stopped_by_owner(&self) -> bool {
         self.state == ExecutionState::Cancelled
-            && self.reason == super::supervision::OWNER_CANCELLED_REASON
+            && matches!(
+                self.reason.as_str(),
+                super::supervision::OWNER_CANCELLED_REASON
+                    | super::supervision::AGENT_ARCHIVED_REASON
+            )
     }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -155,6 +159,18 @@ pub(crate) enum WakeEnd {
 }
 #[derive(Clone)]
 pub(crate) enum Operation {
+    Outside(super::outside::Mutation),
+    SetDeadline {
+        room: String,
+        agent: String,
+        deadline: u64,
+    },
+    ReachDeadline {
+        room: String,
+        agent: String,
+        now: u64,
+        stopped: bool,
+    },
     LeasedProcess(super::LeasedProcessMutation),
     CreateLeasedWake {
         task: String,
@@ -366,6 +382,12 @@ pub(crate) enum Operation {
         receipt: String,
         now: u64,
     },
+    DelegateUnavailable {
+        room: String,
+        agent: String,
+        reason: DelegateGoneReason,
+        now: u64,
+    },
     SourceOutcome {
         public_answer: Option<serde_json::Value>,
         room: String,
@@ -380,6 +402,11 @@ pub(crate) enum Operation {
         /// A04: (room, agent, task) of sudo-held recipients; their unrelated
         /// events wait for the window to end like busy refusals.
         held_work: Vec<(String, String, String)>,
+    },
+    ArchiveTask {
+        task: String,
+        owner: String,
+        revision: u64,
     },
     CancelTask {
         task: String,
@@ -489,6 +516,7 @@ pub(crate) enum Operation {
 }
 #[derive(Debug)]
 pub(crate) enum Outcome {
+    Deadline(crate::local::AgentDeadline),
     LeasedProcess(Option<super::LeasedProcessReceipt>),
     Task(AgentTaskExecution),
     Event(InboxEvent),
@@ -523,4 +551,30 @@ pub(crate) fn unresolved_source_outcome(task: &AgentTaskExecution, event: &Inbox
             obligation.completion_source() == Some(event.source_id.as_str())
                 && matches!(obligation.status.as_str(), "settling" | "failed")
         })
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11: a requested reply has an explicit terminal cause.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum ReplyOutcome {
+    DelegateGone {
+        delegate_id: String,
+        reason: DelegateGoneReason,
+    },
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum DelegateGoneReason {
+    Deleted,
+    FailedStart,
+    SourceLost,
+}
+impl DelegateGoneReason {
+    pub(crate) fn answer(self, delegate: &str) -> serde_json::Value {
+        serde_json::to_value(ReplyOutcome::DelegateGone {
+            delegate_id: delegate.into(),
+            reason: self,
+        })
+        .expect("reply outcome is serializable")
+    }
 }

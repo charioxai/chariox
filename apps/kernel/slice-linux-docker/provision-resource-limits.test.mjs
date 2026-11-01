@@ -149,7 +149,7 @@ test("protected default provider accounts stay in the private root, outside the 
   assert.match(runtimeSource, /DEFAULT_PROVIDER_ROOT="\$CHARIOX_SLICE_PRIVATE_ROOT\/provider-default"/)
   assert.match(runtimeSource, /CODEX_HOME="\$DEFAULT_PROVIDER_ROOT\/codex" CLAUDE_CONFIG_DIR="\$DEFAULT_PROVIDER_ROOT\/claude"/)
   assert.doesNotMatch(runtimeSource, /(?:CODEX_HOME|CLAUDE_CONFIG_DIR)="\$PROVIDER_HOME/)
-  assert.match(runtimeSource, /screen -L -Logfile "\$LOGS\/kernel\.log" -dmS chariox-slice-kernel env \\\n\s+"\$\{default_provider_env\[@\]\}"/)
+  assert.match(runtimeSource, /screen -L -Logfile "\$LOGS\/kernel\.log" -dmS chariox-slice-kernel env \\\n(?:\s+[A-Z_]+=\S+ \\\n)*\s+"\$\{default_provider_env\[@\]\}"/)
 })
 
 test("the isolation probe runs on its own kernel and the slice kernel starts without probe env", async () => {

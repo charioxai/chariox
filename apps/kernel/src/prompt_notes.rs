@@ -375,6 +375,7 @@ mod tests {
                 mime: mime.into(),
                 filename: None,
                 preview_url: None,
+                size_bytes: None,
                 contents_base64: contents
                     .map(|json| base64::engine::general_purpose::STANDARD.encode(json)),
             };

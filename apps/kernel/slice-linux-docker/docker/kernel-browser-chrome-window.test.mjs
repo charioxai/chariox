@@ -1141,3 +1141,22 @@ test('MP-08/MP-10 owner omnibox keys survive a home-document commit after admiss
  await arbiter.input({stream,command:command({kind:'key',key:'Enter'})});
  assert.equal(String.fromCharCode(...sent.slice(0,-1)),'https://www.wikipedia.org/');assert.equal(sent.at(-1),0xff0d);
 });
+
+test('MP-08/MP-10 resized odd native bands crop inward for the codec',()=>{
+ const windows=new ChromeWindows({}),binding={xid:42,bounds:{width:1151,height:637},content_top:87,isCurrent:()=>true};
+ const args=windows.band(binding);assert.deepEqual(args.rect,{left:0,top:0,width:1150,height:86});
+ assert.equal(args.contentHeight,550);assert.equal(args.window.width,1151,'never expand the native window to make an even frame');
+});
+
+// Review #1073 P2: Chrome's own UI has only X11 notches; a 100-pixel wheel step and fine trackpad deltas still scroll it.
+test("MP-08/MP-10 Chrome UI wheel turns 100-pixel steps and accumulated trackpad deltas into notches", async () => {
+  const connection = { send: async (method) => method === "Page.getFrameTree" ? { frameTree: { frame: { id: "f", loaderId: "db" } } }
+    : method === "Runtime.evaluate" ? { result: { value: false } } : {} };
+  const host = { generation: 3, tabs: new Map([["host-tab-b", { tab_id: "host-tab-b", target_id: "tb", document_id: "db" }]]), tabGroups: { active: async () => "tb" },
+    browser: { inputCapture:{physicalFocus:async(_connection,_session,read)=>read()}, resolvePageTarget: async () => ({ connection, sessionId: "s" }), ensureFocusWorld: async () => ({ contextId: 77 }) } };
+  const arbiter = new InputArbiter(host, {}), wheels = [];
+  const source = { surface: "browser_auxiliary", isCurrent: () => true, wheel: async (_x, _y, nx, ny) => (wheels.push([nx, ny]), true) };
+  const scroll = (delta_x, delta_y) => arbiter.input({ stream: { regionSource: source }, command: { tab_id: "host-tab-b", document_id: "db", generation: 3, input: { kind: "scroll", x: 30, y: 40, delta_x, delta_y } } });
+  for (const delta of [100, -100, 120, 40, 40, 40, 50, -30, -90, -100]) assert.deepEqual(await scroll(0, delta), { dispatched: true });
+  assert.deepEqual(wheels, [[0, 1], [0, -1], [0, 1], [0, 1], [0, -1], [0, -1]]);
+});

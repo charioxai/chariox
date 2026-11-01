@@ -554,6 +554,7 @@ async fn launch_remote_room_provider(
         RelayPeerRequest::SubmitLeasedPrompt {
             leased_agent_id,
             expected_profile,
+            provider_resume_state: None,
             prompt: prompt.to_string(),
             hidden_system_context: String::new(),
             attachments: Vec::new(),

@@ -59,7 +59,7 @@ if (!raw) process.exit(0)
 
 try {
   const input = JSON.parse(raw)
-  if (!input.rate_limits) process.exit(0)
+  if (!input.rate_limits && !input.context_window) process.exit(0)
   const target = process.env.CHARIOX_CLAUDE_USAGE_FILE
   if (!target) process.exit(0)
   const temporary = `${target}.${process.pid}.tmp`
@@ -71,6 +71,36 @@ try {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn provusage_claude_status_line_captures_context_without_rate_limits() {
+        use std::io::Write;
+        let worktree = crate::test_support::TestWorktree::new("claude-context-capture");
+        let handler = worktree.path().join("capture.mjs");
+        let output = worktree.path().join("usage.json");
+        fs::write(&handler, CLAUDE_USAGE_HANDLER).unwrap();
+        let mut child = std::process::Command::new("node")
+            .arg(&handler)
+            .env("CHARIOX_CLAUDE_USAGE_FILE", &output)
+            .env("NODE_OPTIONS", "--max-old-space-size=4096")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let payload = serde_json::json!({ "context_window": { "context_window_size": 200000, "current_usage": { "input_tokens": 500, "cache_read_input_tokens": 1500 } } });
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(payload.to_string().as_bytes())
+            .unwrap();
+        assert!(child.wait().unwrap().success());
+        assert!(output.exists(), "the official status-line context must be captured even when the provider omits account limits");
+        let captured: serde_json::Value =
+            serde_json::from_slice(&fs::read(&output).unwrap()).unwrap();
+        assert_eq!(captured, payload);
+    }
 
     #[test]
     fn status_line_paths_are_single_quoted_for_the_shell() {

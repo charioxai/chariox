@@ -879,10 +879,61 @@ async fn workflow_prompt_with_completed_tool_advances_when_output_pump_consumed_
 }
 
 #[tokio::test]
-async fn workflow_prompt_without_structured_output_fails_without_automatic_retry() {
+async fn workflow_missing_output_gets_one_follow_up_before_failure() {
+    assert_workflow_output_follow_up(false, false, false, HelperWait::None, false).await;
+}
+
+#[tokio::test]
+async fn workflow_missing_output_follow_up_can_complete_run() {
+    assert_workflow_output_follow_up(false, true, false, HelperWait::None, false).await;
+}
+
+#[tokio::test]
+async fn workflow_valid_first_output_sends_no_follow_up() {
+    assert_workflow_output_follow_up(true, false, false, HelperWait::None, false).await;
+}
+
+#[tokio::test]
+async fn workflow_missing_output_with_helpers_still_fails_after_one_follow_up() {
+    assert_workflow_output_follow_up(false, false, true, HelperWait::None, false).await;
+}
+
+#[tokio::test]
+async fn workflow_yield_wait_preserves_supervision_until_helper_completes() {
+    assert_workflow_output_follow_up(false, true, true, HelperWait::FirstTurn, false).await;
+}
+
+#[tokio::test]
+async fn workflow_retried_exhausted_reminder_completion_still_fails_node() {
+    assert_workflow_output_follow_up(false, false, true, HelperWait::None, true).await;
+}
+
+#[tokio::test]
+async fn workflow_yield_during_reminder_keeps_supervision_until_helper_completes() {
+    assert_workflow_output_follow_up(false, true, true, HelperWait::Reminder, false).await;
+}
+
+/// Which turn of the node Yields on the live helper.
+#[derive(Clone, Copy, PartialEq)]
+enum HelperWait {
+    None,
+    FirstTurn,
+    Reminder,
+}
+
+async fn assert_workflow_output_follow_up(
+    valid_first: bool,
+    valid_follow_up: bool,
+    helpers: bool,
+    wait: HelperWait,
+    fail_reminder_completion_once: bool,
+) {
+    let wait_for_helper = wait == HelperWait::FirstTurn;
+    let yield_in_reminder = wait == HelperWait::Reminder;
     let worktree = crate::test_support::TestWorktree::new("quiet-drain-workflow-no-output");
-    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
-        .expect("daemon bootstrap should succeed");
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.room_agent_tools = helpers;
+    let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(worktree.session_request())
         .expect("session should be created");
@@ -971,6 +1022,49 @@ async fn workflow_prompt_without_structured_output_fails_without_automatic_retry
 
     let app = Arc::new(Mutex::new(app));
     let runtime = owned_runtime_state(&app).await;
+    if helpers {
+        runtime
+            .owned
+            .ensure_agent_task(session.id(), agent.id(), &prompt, Some(run.id()))
+            .unwrap();
+        runtime
+            .owned
+            .durable_state_store
+            .agent_lifecycle(
+                crate::durable_state::agent_lifecycle::Operation::RegisterObligation {
+                    owner: session.owner_user_id().into(),
+                    room: session.id().into(),
+                    agent: agent.id().into(),
+                    prompt: prompt.id().into(),
+                    run: Some(run.id().into()),
+                    id: "helper".into(),
+                    kind: "delegate".into(),
+                    resource: Some("helper-agent".into()),
+                    now: crate::session::unix_epoch_ms(),
+                },
+            )
+            .unwrap();
+    }
+
+    if wait_for_helper {
+        yield_on_helper(&runtime, session.id(), agent.id(), prompt.id(), prompt.id());
+    }
+
+    if valid_first {
+        runtime
+            .owned
+            .session_store
+            .write()
+            .submit_workflow_run_final_output(
+                session.id(),
+                workflow_run.id(),
+                &first_node_run_id,
+                crate::session::WorkflowOutputPayload::new("{}", Vec::new()),
+                true,
+                None,
+            )
+            .unwrap();
+    }
     runtime
         .apply_owned_structured_output_batch(
             session.id(),
@@ -1006,6 +1100,179 @@ async fn workflow_prompt_without_structured_output_fails_without_automatic_retry
         .await
         .expect("quiet drain should settle into a visible failure");
 
+    if wait_for_helper {
+        assert_yield_waits_then_helper_completes(
+            &runtime,
+            session.id(),
+            agent.id(),
+            workflow_run.id(),
+            0,
+        )
+        .await;
+    }
+
+    if !valid_first {
+        let waiting = runtime.owned.session_snapshot(session.id()).unwrap();
+        let follow_up = waiting
+            .active_prompt_for_agent(agent.id())
+            .expect("first missing output must receive a follow-up");
+        assert_ne!(follow_up.id(), prompt.id());
+        assert_eq!(
+            follow_up.workflow_node_run_id(),
+            Some(first_node_run_id.as_str())
+        );
+        assert_eq!(
+            follow_up
+                .hidden_system_context()
+                .contains("Your turn ended without"),
+            !wait_for_helper
+        );
+        assert!(
+            !follow_up.prompt().trim().is_empty()
+                && crate::session::is_internal_prompt_echo_id(follow_up.id()),
+            "the provider cue must be nonempty and its echo internal"
+        );
+        assert_eq!(
+            waiting.workflow_run(workflow_run.id()).unwrap().status(),
+            crate::session::WorkflowRunStatus::Running
+        );
+        assert_eq!(
+            runtime
+                .owned
+                .provider_store
+                .get_run(run.id())
+                .unwrap()
+                .state(),
+            crate::provider::ProviderRunState::Running
+        );
+        wait_for_delivered_prompt(&runtime, session.id(), agent.id()).await;
+        if yield_in_reminder {
+            yield_on_helper(
+                &runtime,
+                session.id(),
+                agent.id(),
+                prompt.id(),
+                follow_up.id(),
+            );
+            runtime
+                .apply_owned_structured_output_batch(
+                    session.id(),
+                    run.id(),
+                    Vec::new(),
+                    crate::provider::ProviderPromptSignalBatch {
+                        prompt_completed: true,
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(
+                crate::app::provider_output::STRUCTURED_OUTPUT_EMPTY_POLL_BACKOFF_MS + 75,
+            ))
+            .await;
+            runtime
+                .apply_owned_structured_output_batch(
+                    session.id(),
+                    run.id(),
+                    Vec::new(),
+                    Default::default(),
+                )
+                .await
+                .unwrap();
+            assert_yield_waits_then_helper_completes(
+                &runtime,
+                session.id(),
+                agent.id(),
+                workflow_run.id(),
+                1,
+            )
+            .await;
+            wait_for_delivered_prompt(&runtime, session.id(), agent.id()).await;
+        }
+        if valid_follow_up {
+            runtime
+                .owned
+                .session_store
+                .write()
+                .submit_workflow_run_final_output(
+                    session.id(),
+                    workflow_run.id(),
+                    &first_node_run_id,
+                    crate::session::WorkflowOutputPayload::new("{}", Vec::new()),
+                    true,
+                    None,
+                )
+                .unwrap();
+        }
+        if fail_reminder_completion_once {
+            fail_exhausted_reminder_completion_once(
+                &runtime,
+                session.id(),
+                agent.id(),
+                run.id(),
+                workflow_run.id(),
+                follow_up.id(),
+            )
+            .await;
+        }
+        runtime
+            .apply_owned_structured_output_batch(
+                session.id(),
+                run.id(),
+                Vec::new(),
+                crate::provider::ProviderPromptSignalBatch {
+                    chunks: if wait != HelperWait::None {
+                        vec![crate::provider::ProviderPromptChunk {
+                            kind: crate::terminal::TerminalOutputKind::ProviderOutput,
+                            merge_key: Some("helper-result".into()),
+                            bytes: b"Helper finished; final workflow output submitted.".to_vec(),
+                        }]
+                    } else {
+                        Vec::new()
+                    },
+                    prompt_completed: true,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(
+            crate::app::provider_output::STRUCTURED_OUTPUT_EMPTY_POLL_BACKOFF_MS + 75,
+        ))
+        .await;
+        runtime
+            .apply_owned_structured_output_batch(
+                session.id(),
+                run.id(),
+                Vec::new(),
+                Default::default(),
+            )
+            .await
+            .unwrap();
+    }
+    let follow_ups = runtime
+        .owned
+        .durable_state_store
+        .load_events_by_kind("workflow.runtime.updated")
+        .unwrap()
+        .iter()
+        .filter(|event| event.payload["reason"] == "workflow_output_follow_up")
+        .count();
+    assert_eq!(follow_ups, usize::from(!valid_first && !wait_for_helper));
+    if wait != HelperWait::None {
+        let task = runtime
+            .owned
+            .durable_state_store
+            .agent_tasks(Some(session.id()), Some(agent.id()))
+            .unwrap()
+            .remove(0);
+        assert_eq!(
+            task.state,
+            crate::durable_state::agent_lifecycle::ExecutionState::Done,
+            "helper completion must settle the task: {}",
+            task.reason
+        );
+    }
     let session_state = runtime
         .owned
         .session_snapshot(session.id())
@@ -1029,18 +1296,228 @@ async fn workflow_prompt_without_structured_output_fails_without_automatic_retry
         .expect("workflow settlement should persist the run");
     assert_eq!(
         durable_run.status(),
-        crate::session::WorkflowRunStatus::Failed
+        if valid_first || valid_follow_up {
+            crate::session::WorkflowRunStatus::Completed
+        } else {
+            crate::session::WorkflowRunStatus::Failed
+        }
     );
     assert_eq!(durable_run.node_runs().len(), 1);
     assert_eq!(
         durable_run.node_runs()[0].status(),
-        crate::session::WorkflowNodeRunStatus::Failed
+        if valid_first || valid_follow_up {
+            crate::session::WorkflowNodeRunStatus::Completed
+        } else {
+            crate::session::WorkflowNodeRunStatus::Failed
+        }
     );
-    assert!(durable_run.final_output().is_none());
-    assert!(durable_run.failure_events().iter().any(|event| {
-        event.kind() == crate::session::WorkflowFailureKind::MissingStructuredOutput
-            && event.source_node_run_id() == first_node_run_id
-    }));
+    assert_eq!(
+        durable_run.final_output().is_some(),
+        valid_first || valid_follow_up
+    );
+    assert_eq!(
+        durable_run.failure_events().iter().any(|event| {
+            event.kind() == crate::session::WorkflowFailureKind::MissingStructuredOutput
+                && event.source_node_run_id() == first_node_run_id
+                && event.message()
+                    == "provider completed workflow turn without a validated workflow output"
+        }),
+        !valid_first && !valid_follow_up
+    );
+}
+
+/// The reminder turn ends without output or a wait while its helper
+/// obligation is live, and the first durable completion write fails. The retry
+/// must still end the node, although the first attempt already moved the task
+/// ledger to Blocked.
+async fn fail_exhausted_reminder_completion_once(
+    runtime: &KernelRuntimeState,
+    session_id: &str,
+    agent_id: &str,
+    run_id: &str,
+    workflow_run_id: &str,
+    reminder_id: &str,
+) {
+    let connection = rusqlite::Connection::open(runtime.owned.durable_state_store.path())
+        .expect("durable database should open for failure injection");
+    connection
+        .execute_batch(
+            "CREATE TRIGGER fail_exhausted_reminder_completion
+             BEFORE INSERT ON durable_state_events
+             WHEN NEW.kind = 'workflow.runtime.updated'
+             BEGIN
+               SELECT RAISE(FAIL, 'injected reminder completion failure');
+             END;",
+        )
+        .expect("completion failure trigger should install");
+    let error = runtime
+        .settle_owned_provider_prompt(session_id, run_id, true, false, true)
+        .await
+        .expect_err("the failed durable write must reject the reminder settlement");
+    assert!(
+        error
+            .to_string()
+            .contains("injected reminder completion failure"),
+        "{error}"
+    );
+    let task = runtime
+        .owned
+        .durable_state_store
+        .agent_tasks(Some(session_id), Some(agent_id))
+        .unwrap()
+        .into_iter()
+        .find(|task| task.prompt_id == reminder_id)
+        .expect("the reminder turn keeps its task");
+    assert_eq!(
+        task.state,
+        crate::durable_state::agent_lifecycle::ExecutionState::Blocked,
+        "the first attempt must leave the exhausted task blocked: {}",
+        task.reason
+    );
+    assert!(
+        runtime
+            .owned
+            .session_snapshot(session_id)
+            .unwrap()
+            .workflow_run(workflow_run_id)
+            .is_some(),
+        "the failed write must leave the run for the retry"
+    );
+    connection
+        .execute_batch("DROP TRIGGER fail_exhausted_reminder_completion;")
+        .expect("completion failure trigger should clear");
+}
+
+/// A turn that Yielded on a live helper settles to Waiting; the helper's
+/// completion wakes the task through its inbox.
+async fn assert_yield_waits_then_helper_completes(
+    runtime: &KernelRuntimeState,
+    session: &str,
+    agent: &str,
+    workflow_run: &str,
+    follow_ups: usize,
+) {
+    use crate::durable_state::agent_lifecycle::{ExecutionState, Operation};
+    let store = &runtime.owned.durable_state_store;
+    let waiting = runtime.owned.session_snapshot(session).unwrap();
+    assert!(
+        waiting.active_prompt_for_agent(agent).is_none(),
+        "a yielded workflow turn must settle without admitting another reminder"
+    );
+    let task = store
+        .agent_tasks(Some(session), Some(agent))
+        .unwrap()
+        .remove(0);
+    assert_eq!(task.state, ExecutionState::Waiting);
+    assert!(task.wait.is_some());
+    assert!(waiting
+        .workflow_run(workflow_run)
+        .unwrap()
+        .failure_events()
+        .is_empty());
+    assert!(store
+        .load_events_by_kind("workflow.runtime.updated")
+        .unwrap()
+        .iter()
+        .any(|event| event.payload["reason"] == "workflow_task_waiting"));
+    assert_eq!(
+        store
+            .load_events_by_kind("workflow.runtime.updated")
+            .unwrap()
+            .iter()
+            .filter(|event| event.payload["reason"] == "workflow_output_follow_up")
+            .count(),
+        follow_ups
+    );
+    store
+        .agent_lifecycle(Operation::SourceOutcome {
+            room: session.into(),
+            source: "helper-agent".into(),
+            occurrence: "completed".into(),
+            success: true,
+            public_answer: Some(serde_json::json!({"excerpt":"helper finished"})),
+            now: crate::session::unix_epoch_ms(),
+        })
+        .unwrap();
+    Box::pin(runtime.deliver_agent_inbox(session, agent))
+        .await
+        .unwrap();
+    let event = store.agent_inbox(session, agent, 0).unwrap().remove(0);
+    assert_eq!(event.state, "accepted");
+    store
+        .agent_lifecycle(Operation::Ack {
+            room: session.into(),
+            agent: agent.into(),
+            sequence: event.sequence,
+            handled: true,
+            now: crate::session::unix_epoch_ms(),
+        })
+        .unwrap();
+}
+
+/// Subscribe and Yield on the live helper from the turn of `prompt_id`, which
+/// belongs to the task `task_id` (they differ in a reminder turn).
+fn yield_on_helper(
+    runtime: &KernelRuntimeState,
+    session: &str,
+    agent: &str,
+    task_id: &str,
+    prompt_id: &str,
+) {
+    use crate::durable_state::agent_lifecycle::{ExecutionState, Operation, Registration};
+    let store = &runtime.owned.durable_state_store;
+    store
+        .agent_lifecycle(Operation::Subscribe {
+            task: task_id.into(),
+            prompt: prompt_id.into(),
+            registration: Registration {
+                id: "helper-wait".into(),
+                task_id: task_id.into(),
+                source_id: "helper-agent".into(),
+                obligation_id: Some("helper".into()),
+                source_cursor: 0,
+                live: true,
+            },
+        })
+        .unwrap();
+    let now = crate::session::unix_epoch_ms();
+    store
+        .agent_lifecycle(Operation::Yield {
+            task: task_id.into(),
+            prompt: prompt_id.into(),
+            registrations: vec!["helper-wait".into()],
+            cursor: 0,
+            deadline: now + 60_000,
+            reason: "Wait for helper result".into(),
+            now,
+        })
+        .unwrap();
+    let task = store
+        .agent_tasks(Some(session), Some(agent))
+        .unwrap()
+        .remove(0);
+    assert_eq!(task.state, ExecutionState::Working);
+    assert!(
+        task.wait.is_some(),
+        "Yield is recorded before native settlement"
+    );
+}
+
+async fn wait_for_delivered_prompt(runtime: &KernelRuntimeState, session: &str, agent: &str) {
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let state = runtime.owned.session_snapshot(session).unwrap();
+            if state.active_prompt_for_agent(agent).is_some_and(|p| {
+                p.durable_delivery_phase()
+                    == Some(crate::session::DurablePromptDeliveryPhase::Delivered)
+            }) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("normal prompt path must deliver the prompt");
 }
 
 #[tokio::test]

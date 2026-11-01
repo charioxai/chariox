@@ -24,7 +24,7 @@ fn local_request_api_rejects_conflicting_workspace_write_claims_inner() {
         ))
         .expect("session create should succeed")
     {
-        LocalDaemonResponse::SessionCreated { session, agent: _ } => session,
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
         _ => panic!("unexpected local response"),
     };
     let attachment = match harness
@@ -113,7 +113,7 @@ fn local_request_api_returns_structured_screenshot_unavailable_result_inner() {
         ))
         .expect("session create should succeed")
     {
-        LocalDaemonResponse::SessionCreated { session, agent: _ } => session,
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
         _ => panic!("unexpected local response"),
     };
     let attachment = match harness
@@ -176,7 +176,7 @@ fn local_request_api_stores_transferred_file_under_session_artifacts_inner() {
         ))
         .expect("session create should succeed")
     {
-        LocalDaemonResponse::SessionCreated { session, agent: _ } => session,
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
         _ => panic!("unexpected local response"),
     };
     let attachment = match harness

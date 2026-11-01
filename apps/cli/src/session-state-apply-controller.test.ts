@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import type { AgentInstance, PromptQueueItem, RuntimeSession } from "./cli-types.js"
+import { normalizeRuntimeSession, normalizeRuntimeSessions, normalizeRuntimeSessionWithAgentActivity } from "./cli-types.js"
 import { createSessionStateApplyController } from "./session-state-apply-controller.js"
 
 test("session state apply controller applies runtime transition and refreshes split focus", () => {
@@ -457,3 +458,12 @@ function configState(layout: "individual" | "split" | null): RuntimeSession["con
     updated_by_attachment_id: null,
   }
 }
+
+
+test("archive snapshots hide panes on initial load, activity refresh and reconnect", () => {
+  const incoming = session({ agents: [agent("active"), agent("archived", { archived: true })] })
+  for (const value of [normalizeRuntimeSession(incoming), normalizeRuntimeSessions([incoming])[0]!, normalizeRuntimeSessionWithAgentActivity({ session: incoming })]) {
+    assert.deepEqual(value.agents.map(agent => agent.id), ["active"])
+  }
+  assert.equal(incoming.agents.length, 2, "wire snapshot remains available to history readers")
+})

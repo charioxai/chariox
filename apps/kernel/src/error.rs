@@ -1,5 +1,9 @@
 use thiserror::Error;
+mod actionable_refusals;
+mod provider_profile_refusal;
 mod user_domain_refusal;
+pub(crate) use actionable_refusals::message as actionable_refusal_message;
+pub use provider_profile_refusal::ProviderProfileRefusal;
 pub(crate) use user_domain_refusal::HostFailure;
 pub use user_domain_refusal::UserDomainRefusalReason;
 
@@ -9,14 +13,49 @@ use crate::session::SessionStatus;
 // MP-08 / MP-11: code-based explanations contain no provider/parser values.
 // Keep executor, MCP and final socket/cache projections consistent.
 pub(crate) fn external_request_failure_message(code: &str) -> &'static str {
+    if let Some(message) = actionable_refusal_message(code) {
+        return message;
+    }
     match code {
         "session_not_found" => "session not found; check its name or list available sessions",
         _ => "external request failed; details are available only in the host terminal",
     }
 }
 
+/// A session alias the caller chose that cannot be used: the kernel's own sentence names
+/// only what the caller sent and the session that holds the alias. Only that exact shape
+/// qualifies, so no other text can ride on these codes.
+pub(crate) fn is_session_alias_refusal(code: &str, message: &str) -> bool {
+    matches!(code, "session_alias_conflict" | "invalid_session_alias")
+        && message.starts_with("session alias `")
+}
+
+const STEER_UNRECORDED_SUFFIX: &str =
+    "` was delivered but its event was not recorded; do not send it again";
+
+/// The steer a provider holds whose event was not recorded: the kernel's own sentence
+/// names only the steer id it generated. Only that exact shape qualifies.
+pub(crate) fn is_steer_unrecorded_refusal(code: &str, message: &str) -> bool {
+    code == "prompt_steer_event_unrecorded"
+        && message
+            .strip_prefix("steer `")
+            .and_then(|rest| rest.strip_suffix(STEER_UNRECORDED_SUFFIX))
+            .is_some_and(|id| {
+                !id.is_empty()
+                    && id
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+            })
+}
+
 #[derive(Debug, Error)]
 pub enum DaemonError {
+    #[error("{provider} account `{account_name}`: {}", .reason.local_message())]
+    ProviderProfileRefused {
+        reason: ProviderProfileRefusal,
+        provider: String,
+        account_name: String,
+    },
     #[error("User-domain request refused")]
     UserDomainRefused { reason: UserDomainRefusalReason },
     #[error("invalid daemon configuration for `{field}`: {message}")]
@@ -26,6 +65,13 @@ pub enum DaemonError {
     },
     #[error("failed while waiting for daemon shutdown signal: {0}")]
     ShutdownSignal(std::io::Error),
+    /// A machine file, pairing or gateway request that cannot be done; `message` already
+    /// says what to do next and `code` is the typed outcome the caller sees.
+    #[error("{message}")]
+    MachineRequest { code: String, message: String },
+    /// The owner revoked a gateway's key on this kernel; it gets no request and no stream.
+    #[error("this kernel's owner revoked that gateway (unpaired or revoked)")]
+    GatewayKeyRevoked,
     #[error("local transport `{operation}` failed: {message}")]
     LocalTransport {
         operation: &'static str,
@@ -81,6 +127,12 @@ pub enum DaemonError {
         #[source]
         source: Box<DaemonError>,
     },
+    #[error("provider account copy failed: {message}")]
+    ProviderAccountCopy {
+        code: &'static str,
+        message: &'static str,
+        retryable: bool,
+    },
     #[error("managed context `{operation}` failed: {message}")]
     ManagedContext {
         code: &'static str,
@@ -95,8 +147,14 @@ pub enum DaemonError {
         alias: String,
         message: &'static str,
     },
-    #[error("session alias `{alias}` is already in use for workspace `{workspace_id}`")]
-    SessionAliasConflict { workspace_id: String, alias: String },
+    #[error(
+        "session alias `{alias}` is already in use by session `{session_id}` in workspace `{workspace_id}`; choose another alias or use that session"
+    )]
+    SessionAliasConflict {
+        workspace_id: String,
+        alias: String,
+        session_id: String,
+    },
     #[error("session reference `{session_ref}` is ambiguous: {matches:?}")]
     AmbiguousSessionRef {
         session_ref: String,
@@ -320,6 +378,12 @@ pub enum DaemonError {
         #[source]
         source: Box<DaemonError>,
     },
+    /// The provider holds the steer, but the outside event for it was not recorded.
+    /// The caller must not send it again; the message carries only the kernel's own id.
+    #[error(
+        "steer `{steer_id}` was delivered but its event was not recorded; do not send it again"
+    )]
+    SteerDeliveredEventUnrecorded { steer_id: String },
     #[error("provider protocol `{operation}` failed for run `{provider_run_id}`: {message}")]
     ProviderProtocol {
         provider_run_id: String,
@@ -442,11 +506,12 @@ impl DaemonError {
     }
 
     /// True when a worker reports that the prompt it was asked to settle is no
-    /// longer active. Relay peers carry that error as text, so the relay
-    /// transport message is matched as well as the local variants.
+    /// longer active. Prefer the stable relay code; retain text compatibility
+    /// for older peers that did not project a typed refusal.
     pub(crate) fn is_no_active_prompt(&self) -> bool {
         match self {
             Self::NoActivePrompt { .. } => true,
+            Self::RelayTransport { code, .. } if code == "no_active_prompt" => true,
             Self::LocalTransport { message, .. } | Self::RelayTransport { message, .. } => {
                 message.contains("no active prompt")
                     || message.contains("NoActivePrompt")

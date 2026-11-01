@@ -1,0 +1,277 @@
+{
+  "status_request": {
+    "Dictation": {
+      "command": {
+        "op": "status"
+      }
+    }
+  },
+  "download_request": {
+    "Dictation": {
+      "command": {
+        "op": "download_model"
+      }
+    }
+  },
+  "language_request": {
+    "Dictation": {
+      "command": {
+        "op": "set_language",
+        "language": "es"
+      }
+    }
+  },
+  "append_request": {
+    "Dictation": {
+      "command": {
+        "op": "append_audio",
+        "upload_id": "rec-1",
+        "offset": 0,
+        "pcm_base64": "AQAB"
+      }
+    }
+  },
+  "transcribe_request": {
+    "Dictation": {
+      "command": {
+        "op": "transcribe",
+        "upload_id": "rec-1"
+      }
+    }
+  },
+  "status_not_downloaded": {
+    "Dictation": {
+      "result": {
+        "event": "status",
+        "status": {
+          "model_id": "whisper-base-q5_1",
+          "model_size_bytes": 59707625,
+          "model": {
+            "state": "not_downloaded"
+          },
+          "language": null,
+          "service": "local",
+          "vault_key": null,
+          "configured": false,
+          "key_state": "not_required"
+        }
+      }
+    }
+  },
+  "status_downloading": {
+    "Dictation": {
+      "result": {
+        "event": "status",
+        "status": {
+          "model_id": "whisper-base-q5_1",
+          "model_size_bytes": 59707625,
+          "model": {
+            "state": "downloading",
+            "received_bytes": 1048576,
+            "total_bytes": 59707625
+          },
+          "language": "es",
+          "service": "local",
+          "vault_key": null,
+          "configured": false,
+          "key_state": "not_required"
+        }
+      }
+    }
+  },
+  "status_failed": {
+    "Dictation": {
+      "result": {
+        "event": "status",
+        "status": {
+          "model_id": "whisper-base-q5_1",
+          "model_size_bytes": 59707625,
+          "model": {
+            "state": "failed",
+            "reason": "The model download failed."
+          },
+          "language": null,
+          "service": "local",
+          "vault_key": null,
+          "configured": false,
+          "key_state": "not_required"
+        }
+      }
+    }
+  },
+  "audio_accepted": {
+    "Dictation": {
+      "result": {
+        "event": "audio_accepted",
+        "upload_id": "rec-1",
+        "received_bytes": 2
+      }
+    }
+  },
+  "transcript": {
+    "Dictation": {
+      "result": {
+        "event": "transcript",
+        "text": "hola mundo",
+        "language": "es"
+      }
+    }
+  },
+  "service_local_request": {
+    "Dictation": {
+      "command": {
+        "op": "set_service",
+        "service": "local"
+      }
+    }
+  },
+  "status_local": {
+    "Dictation": {
+      "result": {
+        "event": "status",
+        "status": {
+          "model_id": "whisper-base-q5_1",
+          "model_size_bytes": 59707625,
+          "model": {
+            "state": "not_downloaded"
+          },
+          "language": null,
+          "service": "local",
+          "vault_key": null,
+          "configured": false,
+          "key_state": "not_required"
+        }
+      }
+    }
+  },
+  "service_openai_request": {
+    "Dictation": {
+      "command": {
+        "op": "set_service",
+        "service": "openai"
+      }
+    }
+  },
+  "status_openai": {
+    "Dictation": {
+      "result": {
+        "event": "status",
+        "status": {
+          "model_id": "whisper-base-q5_1",
+          "model_size_bytes": 59707625,
+          "model": {
+            "state": "not_downloaded"
+          },
+          "language": null,
+          "service": "openai",
+          "vault_key": "dictation-owner-openai",
+          "configured": true,
+          "key_state": "saved"
+        }
+      }
+    }
+  },
+  "service_elevenlabs_request": {
+    "Dictation": {
+      "command": {
+        "op": "set_service",
+        "service": "elevenlabs"
+      }
+    }
+  },
+  "status_elevenlabs": {
+    "Dictation": {
+      "result": {
+        "event": "status",
+        "status": {
+          "model_id": "whisper-base-q5_1",
+          "model_size_bytes": 59707625,
+          "model": {
+            "state": "not_downloaded"
+          },
+          "language": null,
+          "service": "elevenlabs",
+          "vault_key": "dictation-owner-elevenlabs",
+          "configured": true,
+          "key_state": "saved"
+        }
+      }
+    }
+  },
+  "transcribe_context_request": {
+    "Dictation": {
+      "command": {
+        "op": "transcribe",
+        "upload_id": "rec-1",
+        "context": {
+          "session_id": "room-1",
+          "agent_id": "agent-1"
+        }
+      }
+    }
+  },
+  "clear_service_request": {
+    "Dictation": {
+      "command": {
+        "op": "clear_service"
+      }
+    }
+  },
+  "status_not_configured": {
+    "Dictation": {
+      "result": {
+        "event": "status",
+        "status": {
+          "model_id": "whisper-base-q5_1",
+          "model_size_bytes": 59707625,
+          "model": {
+            "state": "not_downloaded"
+          },
+          "language": null,
+          "service": "local",
+          "vault_key": null,
+          "configured": false,
+          "key_state": "not_required"
+        }
+      }
+    }
+  },
+  "status_vault_locked": {
+    "Dictation": {
+      "result": {
+        "event": "status",
+        "status": {
+          "model_id": "whisper-base-q5_1",
+          "model_size_bytes": 59707625,
+          "model": {
+            "state": "not_downloaded"
+          },
+          "language": null,
+          "service": "openai",
+          "vault_key": "dictation-owner-openai",
+          "configured": true,
+          "key_state": "locked"
+        }
+      }
+    }
+  },
+  "status_key_missing": {
+    "Dictation": {
+      "result": {
+        "event": "status",
+        "status": {
+          "model_id": "whisper-base-q5_1",
+          "model_size_bytes": 59707625,
+          "model": {
+            "state": "not_downloaded"
+          },
+          "language": null,
+          "service": "openai",
+          "vault_key": "dictation-owner-openai",
+          "configured": true,
+          "key_state": "missing"
+        }
+      }
+    }
+  }
+}

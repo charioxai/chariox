@@ -81,6 +81,7 @@ fn local_daemon_protocol_kernel_targeted_spawn_shape_is_versioned() {
     );
 
     let request = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+        no_subscribe: false,
         account_profile: None,
         session_id: "session-1".to_string(),
         alias: Some("worker".to_string()),
@@ -118,6 +119,7 @@ fn local_daemon_protocol_slice_targeted_spawn_shape_is_versioned() {
     );
 
     let request = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+        no_subscribe: false,
         account_profile: None,
         session_id: "session-1".to_string(),
         alias: Some("worker".to_string()),
@@ -158,6 +160,7 @@ fn local_daemon_protocol_batch_spawn_shape_is_versioned() {
     );
 
     let request = LocalDaemonRequest::SpawnAgents(SpawnAgentsRequest {
+        no_subscribe: false,
         session_id: "session-1".to_string(),
         agents: vec![SpawnAgentsRequestItem {
             account_profile: None,
@@ -303,11 +306,12 @@ fn local_daemon_protocol_turn_undo_and_agent_fork_shape_is_versioned() {
         snapshot.pointer("/3/AgentForked/provider_run/pty_env"),
         None
     );
+    assert_eq!(snapshot[3]["AgentForked"]["agent"]["archived"], false);
     let serialized = serde_json::to_string(&snapshot).expect("turn action snapshot should encode");
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "3ae4a6662952561e71558786fecdd029cb52da933fca33e0933445a27fe3ba90"
+        "de74e3acd80c5c7547c8450874c1728015ba6253603c11c5adb38f916be860b3"
     );
 }
 

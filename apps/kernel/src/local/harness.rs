@@ -65,7 +65,7 @@ pub fn run_local_harness(app: DaemonApp) -> Result<LocalHarnessReport, DaemonErr
     let session = match client.send(LocalDaemonRequest::CreateSession(
         CreateSessionRequest::new(worktree.path(), worktree.path()),
     ))? {
-        LocalDaemonResponse::SessionCreated { session, agent: _ } => session,
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
         _ => unreachable!("create-session must return SessionCreated"),
     };
 

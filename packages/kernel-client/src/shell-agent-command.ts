@@ -474,7 +474,8 @@ async function getShellSessionState(
   sessionId: string,
 ): Promise<RuntimeSession> {
   const response = await deps.client.send(getSessionStateRequest(sessionId))
-  return expectVariant<{ session: RuntimeSession }>(response, "SessionState").session
+  const session = expectVariant<{ session: RuntimeSession }>(response, "SessionState").session
+  return { ...session, agents: session.agents.filter(agent => !agent.archived) }
 }
 
 async function activeProviderRunContext(

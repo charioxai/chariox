@@ -24,7 +24,7 @@ export type KernelBrowserCommand =
   // Protocol 556: `state` that waits (<= 2000 ms) until it differs from the `revision` the caller holds ("" reads at once).
   | { op: "state_wait"; after: string; wait_ms: number }
   | { op: "revoke_grants"; agent_id: string | null }
-  | { op: "mirror_subscribe"; tab_id: string; generation: number; device_scale_factor: 1 | 2; wire?: 2; navigation_preview?: true; font_requirements?: true; font_absent?: true; layout_width?: number; layout_height?: number }
+  | { op: "mirror_subscribe"; tab_id: string; generation: number; device_scale_factor: 1 | 2; wire?: 2; navigation_preview?: true; viewport_first?: true; visited_links?: true; font_requirements?: true; font_absent?: true; layout_width?: number; layout_height?: number }
   | { op: "mirror_next"; subscription_id: string; generation: number; after_sequence: number; drift_nodes: string[]; known_sheets?: string[]; wait_ms?: number; resend?: true; flush?: true }
   | { op: "mirror_close"; subscription_id: string; generation: number }
   | { op: "mirror_input"; tab_id: string; generation: number; document_id: string; subscription_id: string; sequence: number; action: KernelBrowserMirrorAction }
@@ -40,8 +40,10 @@ export type KernelBrowserCommand =
   | { op: "start" | "state" | "stop" }
   | { op: "open"; url: string }
   | { op: "close" | "snapshot" | "screenshot" | "subscribe"; tab_id: string; generation: number }
+  | { op: "resize"; tab_id: string; generation: number; width: number; height: number }
   | { op: "navigate"; tab_id: string; generation: number; url: string }
   | { op: "input"; tab_id: string; generation: number; input: KernelBrowserInput }
+  | { op: "dialog"; tab_id: string; generation: number; document_id: string; dialog_id: string; action: "accept" | "dismiss"; prompt_text?: string }
   | { op: "poll" | "unsubscribe"; subscription_id: string; generation: number }
 export type KernelBrowserRequest = { KernelBrowser: { command: KernelBrowserCommand } }
 export type KernelBrowserFrame = {
@@ -74,6 +76,10 @@ export function userDomainWindowBadge(access: UserDomainWindowAccess): string | 
 export type KernelBrowserTabActor = { actor_id: string; kind: "agent" | "human"; display_label: string }
 export type KernelBrowserAgentActivity = { sequence: number; tab_id: string; actor: KernelBrowserTabActor }
 export type KernelBrowserTab = { tab_id: string; document_id: string; url: string; title: string; opened_by?: KernelBrowserTabActor | null }
+export type KernelBrowserDialog = {
+  dialog_id: string; tab_id: string; generation: number; document_id: string;
+  kind: "alert" | "confirm" | "prompt" | "beforeunload"; message: string; origin: string; default_prompt?: string
+}
 export type KernelBrowserResult = {
   generation?: number; state?: "ready" | "stopped"; tabs?: KernelBrowserTab[]; agent_activity?: KernelBrowserAgentActivity | null;
   tab_id?: string; subscription_id?: string; frame?: KernelBrowserFrame | null;
@@ -82,6 +88,8 @@ export type KernelBrowserResult = {
   reachable_by_focused_agent?: boolean;
   // Protocol 556: a `state_wait` reply's opaque revision, echoed back as the next `after`.
   revision?: string
+  // Protocol 630/233: absent on older kernels.
+  dialogs?: KernelBrowserDialog[]
 } | KernelBrowserFrame | UserDomainGrantEvent
 
 // MP-08 / MP-11: local446; same typed surface for MCP and terminal transports.

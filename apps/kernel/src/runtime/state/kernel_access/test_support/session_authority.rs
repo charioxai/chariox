@@ -167,6 +167,7 @@ async fn revoked_remote_operation(spawn: bool, discovery_wait: bool) {
     let grant = state.insert_access_grant_for_test(session.id());
     let request = if spawn {
         LocalDaemonRequest::SpawnAgent(crate::local::SpawnAgentRequest {
+            no_subscribe: false,
             session_id: session.id().into(),
             alias: Some("remote-created".into()),
             provider: Some("dev-stub".into()),
@@ -303,8 +304,9 @@ async fn kernel_access_targeted_revocation_preserves_other_owners_pending_reques
         owner_user_id: owner.into(),
         holder_pid: 1,
         holder_executable: "fixture".into(),
-        lifetime_minutes: 30,
-        expires_at_ms: 0,
+        holder_harness: None,
+        term: crate::local::KernelAccessTerm::Minutes(30),
+        expires_at_ms: None,
     };
     {
         let mut access = state.owned.kernel_access.lock().unwrap();

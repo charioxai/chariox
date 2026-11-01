@@ -65,10 +65,7 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
         .map_err(|error| format!("failed to read terminal working directory: {error}"))?;
     let mut cli = Command::new(&bun);
     #[cfg(unix)]
-    if args.first().map(String::as_str) == Some("access")
-        && args.get(1).map(String::as_str) == Some("request")
-        && !args.iter().any(|arg| arg == "--holder-pid")
-    {
+    if arguments::needs_access_holder(args) {
         cli.env(
             "CHARIOX_CLI_ACCESS_HOLDER_PID",
             chariox_kernel::local::default_access_holder_pid()
@@ -76,14 +73,23 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
                 .to_string(),
         );
     }
-    let status = cli
-        .env("CHARIOX_CLI_ORIGINAL_CWD", terminal_cwd)
+    cli.env("CHARIOX_CLI_ORIGINAL_CWD", terminal_cwd)
         .arg(cli_dir.join("dist/index.js"))
         .args(args)
         .current_dir(&workspace_root)
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
+        .stderr(Stdio::inherit());
+    // Exec owns live pipes and cancellation: replacing the launcher preserves
+    // the process identity and delivers signals to the streaming client.
+    #[cfg(unix)]
+    if args.first().map(String::as_str) == Some("exec") {
+        return Err(format!(
+            "failed to launch TypeScript CLI with `{bun}`: {}",
+            cli.exec()
+        ));
+    }
+    let status = cli
         .status()
         .map_err(|error| format!("failed to launch TypeScript CLI with `{bun}`: {error}"))?;
 

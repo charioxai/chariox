@@ -169,7 +169,7 @@ impl CodexClient {
     }
 }
 
-fn normalize_codex_usage(
+pub(crate) fn normalize_codex_usage(
     account_profile: &str,
     rate_limits: Option<&serde_json::Value>,
     usage: Option<&serde_json::Value>,
@@ -225,6 +225,15 @@ fn collect_usage_meters(
 ) {
     match value {
         serde_json::Value::Object(object) => {
+            // Native updates carry the same identity inline that account reads
+            // use as a rateLimitsByLimitId key. Keep the meter stable across both.
+            let scoped_path = object
+                .get("limitId")
+                .or_else(|| object.get("limit_id"))
+                .and_then(serde_json::Value::as_str)
+                .filter(|id| !id.trim().is_empty() && scoped_container_identity(path).is_none())
+                .map(|id| format!("{path}.rateLimitsByLimitId.{id}"));
+            let path = scoped_path.as_deref().unwrap_or(path);
             let scope_label = string_field(object, &["limitName", "limit_name"])
                 .filter(|label| !label.trim().is_empty())
                 .or_else(|| scope_label.map(str::to_string));

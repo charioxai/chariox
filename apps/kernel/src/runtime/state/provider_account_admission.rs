@@ -8,9 +8,29 @@ impl KernelRuntimeOwnedState {
         selected_run: Option<&crate::provider::RuntimeProviderRun>,
         operation: &'static str,
     ) -> Result<(), DaemonError> {
+        let Some((owner, provider, profile)) =
+            self.agent_account_for_prompt(agent, selected_run)?
+        else {
+            return Ok(());
+        };
+        self.provider_account_profiles.require_authenticated(
+            &owner,
+            provider,
+            &profile,
+            agent.model(),
+            operation,
+        )?;
+        Ok(())
+    }
+
+    fn agent_account_for_prompt(
+        &self,
+        agent: &crate::agent::AgentInstance,
+        selected_run: Option<&crate::provider::RuntimeProviderRun>,
+    ) -> Result<Option<(String, &'static str, String)>, DaemonError> {
         let config = self.config_projection.snapshot();
         let Some(provider) = crate::provider::canonical_provider_family(agent.provider()) else {
-            return Ok(());
+            return Ok(None);
         };
         let current = selected_run.cloned().or_else(|| {
             self.provider_store
@@ -72,23 +92,94 @@ impl KernelRuntimeOwnedState {
                         run.account_profile(),
                     )?;
                     if selected.profile_id == launched.profile_id {
-                        return Ok(());
+                        return Ok(None);
                     }
                 }
-                self.provider_account_profiles.require_authenticated(
-                    &owner,
-                    provider,
-                    run.account_profile(),
-                    agent.model(),
-                    operation,
-                )?;
-                return Ok(());
+                return Ok(Some((owner, provider, run.account_profile().to_string())));
             }
         }
-        self.provider_account_profiles.require_agent_authenticated(
-            &self.provider_account_authority_owner_for_agent(agent)?,
-            agent,
-            operation,
-        )
+        Ok(Some((
+            self.provider_account_authority_owner_for_agent(agent)?,
+            provider,
+            agent.provider_account_profile().to_string(),
+        )))
+    }
+}
+
+impl KernelRuntimeState {
+    pub(super) async fn refresh_unknown_prompt_account(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<(), DaemonError> {
+        let agent = self.owned.agent_store.get_agent(agent_id)?;
+        if agent.session_id() != session_id {
+            return Err(DaemonError::AgentNotInSession {
+                session_id: session_id.to_string(),
+                agent_id: agent_id.to_string(),
+            });
+        }
+        let Some((owner, provider, selection)) =
+            self.owned.agent_account_for_prompt(&agent, None)?
+        else {
+            return Ok(());
+        };
+        let registry = self.owned.provider_account_profiles.clone();
+        let profile = registry.get(&owner, provider, &selection)?;
+        if profile.auth_state != crate::account_profile::ProviderAccountAuthState::Unknown {
+            return Ok(());
+        }
+        // Registered Claude credentials already have their own first-use check,
+        // including home-token replicas that cannot authenticate independently.
+        if !matches!(
+            registry.require_authenticated(
+                &owner,
+                provider,
+                &profile.profile_id,
+                agent.model(),
+                "submit prompt"
+            ),
+            Err(DaemonError::ProviderProfileRefused {
+                reason: crate::error::ProviderProfileRefusal::Unverified,
+                ..
+            })
+        ) {
+            return Ok(());
+        }
+        let config = self.owned.config_projection.snapshot();
+        let result = tokio::task::spawn_blocking(move || {
+            // The lease makes prompts sharing a profile run one check and keeps
+            // the cold launch's own usage refresh from repeating it. When it is
+            // not granted, another check already recorded what admission reads.
+            let Some(_attempt) = registry.acquire_usage_refresh_attempt(
+                &owner,
+                provider,
+                &profile.profile_id,
+                crate::session::unix_epoch_ms(),
+                crate::account_profile::PROVIDER_USAGE_REFRESH_RETRY_AFTER_MS,
+            )?
+            else {
+                return Ok(());
+            };
+            // Authentication only: the explicit refresh would restart the Codex
+            // server that owns a pending device login and fail on optional usage.
+            crate::local::provider_requests::refresh_provider_account_auth_with_config(
+                &registry,
+                &owner,
+                provider,
+                &profile.profile_id,
+                &config,
+            )
+        })
+        .await
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "refresh unknown prompt account",
+            message: error.to_string(),
+        })?;
+        self.with_app_side_effect(|app| app.invalidate_provider_catalog_cache())
+            .await;
+        self.record_waiting_room_change();
+        result?;
+        Ok(())
     }
 }

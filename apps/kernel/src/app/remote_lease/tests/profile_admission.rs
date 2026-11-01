@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::remote_lease::provider_run::LeasedProviderRunMatch;
 use std::future::{poll_fn, Future};
 use std::task::Poll;
 
@@ -82,6 +83,7 @@ async fn assert_run_profile_reconciliation(field: &str, queued_work: Option<bool
         .relay_submit_leased_prompt(
             &lease.id,
             profile.clone(),
+            None,
             "use my selected account",
             "",
             Vec::new(),
@@ -166,6 +168,7 @@ async fn leased_prompt_admission_prevents_interleaved_profile_changes() {
     let submission = router.relay_submit_leased_prompt(
         &lease.id,
         profile.clone(),
+        None,
         "keep my admitted profile",
         "",
         Vec::new(),
@@ -233,6 +236,7 @@ async fn cancelling_leased_prompt_admission_releases_profile_operations() {
     let mut submission = Box::pin(router.relay_submit_leased_prompt(
         &lease.id,
         profile.clone(),
+        None,
         "cancel before admission",
         "",
         Vec::new(),
@@ -314,6 +318,7 @@ async fn leased_prompt_reconciles_durable_home_profile_after_lost_ack_and_restar
         .relay_submit_leased_prompt(
             &lease.id,
             home_profile.clone(),
+            None,
             "use the profile committed by home",
             "",
             Vec::new(),
@@ -378,6 +383,7 @@ async fn failed_leased_prompt_admission_after_run_assignment_settles_its_receipt
         router.relay_submit_leased_prompt(
             &lease.id,
             profile.clone(),
+            None,
             "call the capability loader",
             "",
             Vec::new(),
@@ -475,6 +481,7 @@ async fn assert_leased_claude_home_credential(environment_changed: bool) {
         router.relay_submit_leased_prompt(
             &lease.id,
             profile.clone(),
+            None,
             "call the capability loader",
             "",
             Vec::new(),
@@ -780,5 +787,84 @@ fn assert_leased_project_launch_and_refresh(imported_workspace: bool) {
     assert_ne!(
         first.project_environment_revision(),
         second.project_environment_revision()
+    );
+}
+
+#[tokio::test]
+async fn fresh_leased_prompt_receives_home_resume_state() {
+    crate::test_support::isolated_env_test!();
+    let (app, lease) = leased_agent_fixture(false);
+    let profile = crate::transport::relay_peer::RelayAgentExecutionProfile::from(
+        &app.agents().get_agent(&lease.backing_agent_id).unwrap(),
+    );
+    let app = std::sync::Arc::new(tokio::sync::Mutex::new(app));
+    let router = crate::runtime::router::CommandRouter::with_interactive_capacity(app.clone(), 2);
+    let saved = crate::provider::ProviderResumeState::from_codex_thread_id("archived-home-thread");
+    let (run, _) = router
+        .relay_submit_leased_prompt(
+            &lease.id,
+            profile,
+            Some(saved.clone()),
+            "resume after archive",
+            "",
+            Vec::new(),
+            None,
+            None,
+            Vec::new(),
+            None,
+            crate::extension::RemoteExtensionManifest::default(),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        app.lock()
+            .await
+            .providers()
+            .get_run(&run)
+            .unwrap()
+            .resume_state(),
+        &saved
+    );
+}
+
+#[test]
+fn fresh_leased_agent_resume_state_clears_stale_backing_thread_and_preserves_live_worker() {
+    crate::test_support::isolated_env_test!();
+    let (mut app, lease) = leased_agent_fixture(false);
+    let worker_state = crate::provider::ProviderResumeState::from_codex_thread_id("worker-thread");
+    app.agents_mut()
+        .set_agent_provider_resume_state(&lease.backing_agent_id, worker_state.clone())
+        .unwrap();
+    RemoteLeaseRuntime::new(&mut app)
+        .seed_leased_agent_resume_state(&lease.id, Default::default())
+        .unwrap();
+    assert!(app
+        .agents()
+        .get_agent(&lease.backing_agent_id)
+        .unwrap()
+        .provider_resume_state()
+        .is_empty());
+    let manifest = crate::extension::RemoteExtensionManifest::default();
+    let LeasedProviderRunMatch::LaunchRequired(request) = RemoteLeaseRuntime::new(&mut app)
+        .prepare_leased_provider_run_matches_mcps(&lease, &[], &manifest)
+        .unwrap()
+    else {
+        panic!("fresh launch")
+    };
+    assert!(request.resume_state.is_none());
+    let run = app
+        .providers_mut()
+        .launch_run_detached(request.with_resume_state(worker_state.clone()))
+        .unwrap();
+    RemoteLeaseRuntime::new(&mut app)
+        .seed_leased_agent_resume_state(
+            &lease.id,
+            crate::provider::ProviderResumeState::from_codex_thread_id("stale-home-thread"),
+        )
+        .unwrap();
+    assert_eq!(
+        app.providers().get_run(run.id()).unwrap().resume_state(),
+        &worker_state
     );
 }

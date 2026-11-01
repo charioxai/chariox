@@ -83,6 +83,8 @@ mod computer_secret_input_runtime_state;
 mod config_runtime_state;
 mod critical_approval_passkey;
 mod kernel_access;
+mod outside_events;
+pub(crate) use outside_events::is_outside_event_request;
 mod sudo;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod user_app_view_browser;
@@ -140,6 +142,7 @@ pub(crate) use managed_kernel_quiescence_state::{
     ManagedKernelAdmissionGuard, ManagedKernelQuiescenceChallenge, ManagedKernelQuiescenceGate,
     ManagedKernelQuiescenceOutcome,
 };
+mod claude_permission_rules;
 mod provider_launch_defaults_owned_state;
 mod provider_relaunch_runtime;
 mod provider_reload_pending_runtime;
@@ -157,11 +160,13 @@ mod room_display;
 mod room_environment_health;
 mod room_environment_placement;
 mod room_environment_state;
+mod room_exec_runtime_state;
 mod room_screenshot;
 mod room_secret_observation;
 mod room_shared_display;
 mod room_terminal_runtime_state;
 mod runtime_tool_call_activity;
+mod usage_snapshot;
 mod visible_region_capture;
 pub(crate) use runtime_tool_call_activity::RuntimeToolCallActivity;
 
@@ -184,6 +189,12 @@ pub(crate) struct KernelRuntimeState {
     provider_history_appends: provider_history_runtime::ProviderHistoryAppends,
     leased_agent_operations: leased_agent_operations::LeasedAgentOperations,
     detached_workflow_provider_launches: Arc<std::sync::Mutex<BTreeSet<String>>>,
+    /// Recovery operations this kernel life dispatched. One from an earlier life has no provider
+    /// behind it any more, so restart recovery may supersede it instead of waiting for it.
+    restart_recovery_dispatched: Arc<std::sync::Mutex<BTreeSet<String>>>,
+    /// What the person granted with "Allow for this session" on Claude permission prompts, per
+    /// agent, so a restarted Claude process starts with it again.
+    claude_session_grants: claude_permission_rules::StandingGrants,
     /// The only strong handle on the terminal wake driver. The driver holds a runtime copy made
     /// before this field was set, and the Room terminal service and wake registry hold it weakly,
     /// so dropping the runtime frees the kernel instead of leaving a cycle.
@@ -231,6 +242,7 @@ struct KernelRuntimeOwnedState {
     attached_provider_transcript_cursors: AttachedProviderTranscriptCursorStore,
     slice_store: crate::slice::SliceStore,
     kernel_browser_host: crate::runtime::kernel_browser_host::KernelBrowserHost,
+    dictation: Arc<crate::dictation::DictationService>,
     leased_computer_changes: Arc<std::sync::Mutex<()>>,
     leased_computer_grants: Arc<
         std::sync::Mutex<BTreeMap<String, crate::transport::relay_peer::LeasedComputerGrant>>,
@@ -246,6 +258,7 @@ struct KernelRuntimeOwnedState {
     room_secret_observations: room_secret_observation::RoomSecretObservations,
     kernel_browser_secret_observations: room_secret_observation::RoomSecretObservations,
     room_terminals: crate::room_terminal::RoomTerminalService,
+    room_execs: crate::room_exec::RoomExecService,
     environment_execution_gates: environment_execution_gate::EnvironmentExecutionGates,
     computer_input_executions:
         crate::runtime::computer_input_execution::ComputerInputExecutionStore,
@@ -416,6 +429,7 @@ struct SlicePrivateRelayConnector {
     task: std::thread::JoinHandle<()>,
 }
 
+mod agent_archive_runtime_state;
 mod agent_config_owned_state;
 mod agent_config_runtime_state;
 mod agent_lifecycle_owned_state;
@@ -459,6 +473,7 @@ mod prompt;
 mod prompt_activity_owned_state;
 mod prompt_cancellation_owned_state;
 mod prompt_dispatch;
+mod room_pin;
 use external_command_authority::ExternalCommandAuthority;
 mod prompt_git_observer_runtime;
 mod prompt_queue_owned_state;
@@ -467,6 +482,7 @@ mod prompt_transcript_owned_state;
 mod provider;
 mod provider_account_admission;
 mod provider_account_authority;
+mod provider_account_copy;
 mod provider_focus_owned_state;
 mod provider_launch_failure_runtime;
 mod provider_launch_owned_state;
@@ -544,6 +560,7 @@ mod kernel_browser_secret_runtime;
 mod kernel_browser_state_wait;
 mod owner_handoff_runtime;
 pub(crate) use owner_handoff_runtime::{is_handoff_interaction_id, HANDOFF_OBLIGATION_KIND};
+mod dictation_runtime;
 mod kernel_computer_runtime;
 mod leased_computer_runtime;
 #[cfg(test)]
@@ -737,6 +754,7 @@ impl KernelRuntimeState {
             managed_kernel_registration,
             runtime_tool_call_activity,
             kernel_browser_host,
+            dictation,
             room_computer_revoked,
             sudo_windows,
             pending_agent_context_handoffs,
@@ -757,6 +775,7 @@ impl KernelRuntimeState {
                         app.managed_kernel_registration(),
                         app.runtime_tool_call_activity.clone(),
                         app.kernel_browser_host.clone(),
+                        app.dictation.clone(),
                         app.room_computer_revoked.clone(),
                         app.sudo_window_projection(),
                         app.pending_agent_context_handoff_store(),
@@ -769,6 +788,27 @@ impl KernelRuntimeState {
                 std::thread::sleep(Duration::from_millis(2));
             }
         };
+        let event_config = config_projection.snapshot();
+        durable_state_store
+            .outside_mutate(
+                crate::durable_state::agent_lifecycle::outside::Mutation::Identity {
+                    kernel: event_config.daemon_id.clone(),
+                    machine: event_config.host_machine_id.clone(),
+                },
+            )
+            .expect("outside event identity must be durable before runtime admission");
+        durable_state_store
+            .outside_mutate(
+                crate::durable_state::agent_lifecycle::outside::Mutation::Restart {
+                    keep: kernel_access::grant_inboxes_to_keep(&durable_state_store)
+                        .expect("access grants must be readable before runtime admission"),
+                },
+            )
+            .expect("outside subscriptions must end when their home kernel restarts");
+        agent_store
+            .write()
+            .bind_outside_events(durable_state_store.clone());
+        room_terminals.bind_outside_events(durable_state_store.clone());
         let workspace_live_sync_journal =
             match crate::git_observer::WorkspaceLiveSyncJournal::restore_from_durable_state(
                 &durable_state_store,
@@ -928,6 +968,8 @@ impl KernelRuntimeState {
             provider_history_appends: Default::default(),
             leased_agent_operations: leased_agent_operations::LeasedAgentOperations::default(),
             detached_workflow_provider_launches: Arc::new(std::sync::Mutex::new(BTreeSet::new())),
+            restart_recovery_dispatched: Arc::new(std::sync::Mutex::new(BTreeSet::new())),
+            claude_session_grants: claude_permission_rules::StandingGrants::default(),
             terminal_wake_driver: None,
             managed_terminal_activity: None,
             owned: KernelRuntimeOwnedState {
@@ -964,6 +1006,7 @@ impl KernelRuntimeState {
                 attached_provider_transcript_cursors,
                 slice_store,
                 kernel_browser_host,
+                dictation,
                 leased_computer_changes: Default::default(),
                 leased_computer_grants: Default::default(),
                 app_grant_epochs: Arc::default(),
@@ -982,6 +1025,7 @@ impl KernelRuntimeState {
                     BTreeSet::new(),
                 ).with_identity(&config.relay_private_key),
                 room_terminals,
+                room_execs: Default::default(),
                 computer_input_executions:
                     crate::runtime::computer_input_execution::ComputerInputExecutionStore::default(),
                 room_browser_health_inflight: Arc::new(std::sync::Mutex::new(BTreeSet::new())),
@@ -1374,6 +1418,7 @@ mod room_agent_admission;
 mod agent_assessment_result;
 mod agent_delegation_runtime;
 pub(crate) use agent_assessment_result::PrivateAssessmentDispatch;
+mod agent_deadline_runtime;
 mod agent_goal_context;
 mod agent_goal_migration;
 mod agent_goal_runtime;
@@ -1386,6 +1431,8 @@ mod agent_lifecycle_runtime;
 mod agent_process_group;
 mod agent_process_output;
 mod agent_process_watch;
+#[cfg(test)]
+mod agent_reply_tests;
 mod agent_task_cancellation;
 mod agent_task_failure;
 mod agent_task_human_control_wait;

@@ -10,7 +10,7 @@ fn append_native_provider_output_batch_fans_out_and_records_history() {
         ))
         .expect("session should be created")
     {
-        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        LocalDaemonResponse::SessionCreated { session, agent, .. } => (session, agent),
         _ => panic!("unexpected local response"),
     };
     let attachment = match harness
@@ -28,6 +28,7 @@ fn append_native_provider_output_batch_fans_out_and_records_history() {
     };
     let spawned = match harness
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            no_subscribe: false,
             account_profile: None,
             session_id: session.id().to_string(),
             alias: Some("parallel".to_string()),
@@ -44,7 +45,7 @@ fn append_native_provider_output_batch_fans_out_and_records_history() {
         }))
         .expect("agent should spawn")
     {
-        LocalDaemonResponse::AgentSpawned { agent } => agent,
+        LocalDaemonResponse::AgentSpawned { agent, .. } => agent,
         _ => panic!("unexpected local response"),
     };
     let (default_run_id, spawned_run_id) = harness.with_app_mut(|app| {

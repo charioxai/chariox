@@ -36,9 +36,9 @@ type RemoteMachineKernelSummary = {
 }
 
 export type RemoteMachineCommandHandlerDeps = {
+  flashFooter: (message: string, tone: FooterTone, display?: "toast") => void
   addSshMachine?: (host: string, options: { install_id?: string; port?: number; release?: string }) => Promise<import("./remote-machine-api.js").SshMachineResult>
   removeSshMachine?: (installId: string) => Promise<import("./remote-machine-api.js").SshMachineResult>
-  flashFooter: (message: string, tone: FooterTone, display?: "toast") => void
   refreshWaitingRoomData?: () => Promise<void>
   getRemoteMachines?: () => RemoteMachineSummary[]
   setRemoteMachines?: (machines: RemoteMachineSummary[]) => void
@@ -88,7 +88,7 @@ export async function handleRemoteMachineSlashCommand(
     await reimageManagedEnvironment(deps, args[1], args[2], args.length)
     return
   }
-  deps.flashFooter("usage: /machine list | /machine kernels <machine-ref> | /machine approve <machine-ref> | /machine forget <machine-ref> | /machine rename <machine-ref> <alias> | /machine reimage <environment-id> [confirm|cancel]", "error", "toast")
+  deps.flashFooter("usage: /machine add <link> [--relay-token-env VAR] | /machine linked | /machine unlink <name> | /machine list | /machine kernels <machine-ref> | /machine approve <machine-ref> | /machine forget <machine-ref> | /machine rename <machine-ref> <alias> | /machine reimage <environment-id> [confirm|cancel]", "error", "toast")
 }
 
 async function reimageManagedEnvironment(

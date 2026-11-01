@@ -125,6 +125,7 @@ async fn mp08_peer96_binary_events_negotiate_per_connection_and_downgrade_for_ei
                     client_public_key: "opaque-client-key".into(),
                     subscription_scope: None,
                     resume_from_event_id: None,
+                    heartbeat_interval_ms: None,
                 },
             )
             .await;

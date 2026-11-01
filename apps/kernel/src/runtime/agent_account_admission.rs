@@ -46,17 +46,9 @@ pub(crate) fn resolve_spawn_account(
     if reference == "default" {
         return Ok(());
     }
-    let available = profiles.list(&owner, Some(family))?;
-    let choices = available
-        .iter()
-        .map(|p| format!("{} ({})", p.label, p.profile_id))
-        .collect::<Vec<_>>()
-        .join(", ");
-    Err(DaemonError::LocalTransport {
-        operation: "agent.spawn",
-        message: format!(
-            "account profile `{reference}` is not registered for {family}; available profiles: {}",
-            if choices.is_empty() { "none" } else { &choices }
-        ),
+    Err(DaemonError::ProviderProfileRefused {
+        reason: crate::error::ProviderProfileRefusal::Unavailable,
+        provider: family.to_string(),
+        account_name: reference.to_string(),
     })
 }

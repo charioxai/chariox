@@ -4,12 +4,15 @@
 //! provider output and only their instruction echo is hidden.
 use super::PromptOrigin;
 
+pub(crate) const WORKFLOW_OUTPUT_FOLLOW_UP_PREFIX: &str = "workflow-output-follow-up-";
+
 pub(crate) fn is_internal_prompt_echo_id(prompt_id: &str) -> bool {
     crate::durable_state::agent_lifecycle::goals::is_completion_check_prompt_id(prompt_id)
         || crate::durable_state::agent_lifecycle::goals::is_correction_prompt_id(prompt_id)
         || crate::durable_state::agent_lifecycle::goals::is_owner_resume_prompt_id(prompt_id)
         || crate::durable_state::agent_lifecycle::goals::is_goal_continuation_prompt_id(prompt_id)
         || is_agent_inbox_prompt_id(prompt_id)
+        || prompt_id.starts_with(WORKFLOW_OUTPUT_FOLLOW_UP_PREFIX)
 }
 
 pub(crate) fn is_agent_inbox_prompt_id(prompt_id: &str) -> bool {

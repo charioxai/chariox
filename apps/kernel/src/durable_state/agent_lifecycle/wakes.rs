@@ -36,7 +36,9 @@ pub(super) fn initialize(db: &Connection) -> Result<(), DaemonError> {
 /// Keeps the newest finished wakes of one agent and drops older ones with
 /// their receipts, so wake history cannot grow without bound.
 fn retain_finished(tx: &Transaction<'_>, room: &str, agent: &str) -> Result<(), DaemonError> {
-    let expired = format!("SELECT id FROM agent_wakes WHERE room_id=?1 AND agent_id=?2 AND json_extract(payload,'$.state') IN {FINISHED} ORDER BY rowid DESC LIMIT -1 OFFSET ?3");
+    let expired = format!(
+        "SELECT id FROM agent_wakes WHERE room_id=?1 AND agent_id=?2 AND json_extract(payload,'$.state') IN {FINISHED} ORDER BY rowid DESC LIMIT -1 OFFSET ?3"
+    );
     tx.execute(
         &format!("DELETE FROM agent_wake_receipts WHERE wake_id IN ({expired})"),
         params![room, agent, FINISHED_WAKES_RETAINED],
@@ -800,7 +802,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             }
             // Settle unresolved deliveries, including in-flight attempts, before
             // the timeout sweep can create a Blocked task for a removed recipient.
-            let mut q = tx.prepare("SELECT agent_id,sequence FROM agent_inbox WHERE room_id=?1 AND json_extract(payload,'$.state') IN ('pending','submitting','uncertain','blocked')").map_err(sql)?;
+            let mut q = tx.prepare("SELECT agent_id,sequence FROM agent_inbox WHERE room_id=?1 AND (json_extract(payload,'$.state') IN ('pending','submitting','uncertain','blocked') OR json_extract(payload,'$.reply_requested')=1)").map_err(sql)?;
             let unsettled = q
                 .query_map([&room], |r| {
                     Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
@@ -812,9 +814,15 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             for (a, seq) in unsettled.into_iter().filter(|(a, _)| removed(&room, a)) {
                 let seq = u64::try_from(seq).map_err(|_| error("corrupt inbox sequence"))?;
                 let mut e = get_event(tx, &room, &a, seq)?;
-                e.state = "expired".into();
-                save_event(tx, &e)?;
-                record_delivery(tx, &e)?;
+                if matches!(
+                    e.state.as_str(),
+                    "pending" | "submitting" | "uncertain" | "blocked"
+                ) {
+                    e.state = "expired".into();
+                    save_event(tx, &e)?;
+                    record_delivery(tx, &e)?;
+                }
+                super::replies::recipient_removed(tx, &e, now)?;
             }
             Ok(Outcome::Wakes(retired))
         }

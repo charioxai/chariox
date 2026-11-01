@@ -421,6 +421,7 @@ fn session_history_load_rehydrates_file_image_attachment_previews() {
         mime: "image/png".to_string(),
         filename: Some("file-screenshot.png".to_string()),
         preview_url: None,
+        size_bytes: None,
         contents_base64: None,
     }];
 
@@ -794,6 +795,7 @@ fn canonical_history_events_rehydrate_file_image_attachment_previews() {
         mime: "image/png".to_string(),
         filename: Some("file-screenshot.png".to_string()),
         preview_url: None,
+        size_bytes: None,
         contents_base64: None,
     }];
     let event = HistoryEvent::transcript(7, &entry, HistoryEventTurnContext::default());
@@ -1577,4 +1579,33 @@ fn answered_provider_sessions_outlive_retention_and_backfill_once() {
     let _ = std::fs::remove_file(&path);
     let _ = std::fs::remove_file(path.with_extension("db-wal"));
     let _ = std::fs::remove_file(path.with_extension("db-shm"));
+}
+
+#[test]
+fn delivered_pdf_attachment_history_keeps_its_size() {
+    use base64::Engine;
+    let attachment = PromptAttachment::new(
+        "chariox-terminal://prompt-attachment/report.pdf",
+        "application/pdf",
+        Some("report.pdf".into()),
+    )
+    .with_contents_base64(base64::engine::general_purpose::STANDARD.encode(vec![42; 42_310]));
+    let entry = SessionHistoryEntry::user_prompt_with_attachments(
+        "session",
+        "client",
+        "agent",
+        "Read this",
+        &[attachment],
+    );
+    let event = HistoryEvent::transcript(1, &entry, HistoryEventTurnContext::default());
+    let restored = event.to_session_history_entry().unwrap();
+    let value = serde_json::to_value(restored).unwrap();
+    assert_eq!(
+        value.pointer("/attachments/0/size_bytes"),
+        Some(&serde_json::json!(42_310))
+    );
+    assert!(
+        value.pointer("/attachments/0/contents_base64").is_none(),
+        "history should not retain the PDF body"
+    );
 }

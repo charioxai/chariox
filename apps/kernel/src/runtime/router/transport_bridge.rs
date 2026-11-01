@@ -12,6 +12,15 @@ impl CommandRouter {
         self.runtime_state.clone()
     }
 
+    /// Every durable state event appended from now on.
+    pub(crate) fn subscribe_durable_state_events(
+        &self,
+    ) -> tokio::sync::broadcast::Receiver<crate::durable_state::DurableStateEvent> {
+        self.runtime_state
+            .durable_state_store()
+            .subscribe_appended_events()
+    }
+
     pub(crate) fn kernel_websocket_bind_address(&self) -> (String, u16) {
         let config = self.config_projection.snapshot();
         (config.kernel_websocket_host, config.kernel_websocket_port)

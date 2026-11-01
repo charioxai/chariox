@@ -350,3 +350,12 @@ export type QueuedPromptUpdatedPayload = {
   agent_activity: Record<string, AgentRuntimeActivity>
   agent_activity_revision: number
 }
+
+/** Local 589: read-only references, with no credential/profile locations. */
+export type ProviderUsageAccount = Pick<ProviderAccountProfile, "provider" | "profile_id" | "label" | "usage">
+export type AgentUsageSnapshot = {
+  session_id: string
+  agent_id: string
+  context?: { used_tokens: number; limit_tokens?: number }
+  route: { target: string; target_kernel_id: string; via?: string; via_kernel_id?: string }
+}

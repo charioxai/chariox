@@ -1393,6 +1393,135 @@ async fn external_sudo_revoked_holder_cancels_popup_and_busy_queue() {
     }
 }
 
+fn remote_origin() -> OnBehalfOf {
+    OnBehalfOf {
+        origin_kernel: "kernel-a".into(),
+        origin_name: Some("laptop/main".into()),
+        grant_id: "access-1".into(),
+        harness: "codex".into(),
+    }
+}
+
+// EA2-11: a sudo request another kernel's gateway forwards raises this kernel's own
+// popup, names the origin, and ends when the origin reports its grant ended.
+#[tokio::test]
+async fn remote_sudo_request_raises_the_popup_here_and_ends_with_the_origin_grant() {
+    for authorized in [false, true] {
+        let f = fixture();
+        let origin = remote_origin();
+        let request = external_request(&f);
+        let state = f.state.clone();
+        let from = origin.clone();
+        let task =
+            tokio::spawn(async move { state.request_remote_kernel_sudo(&from, request).await });
+        let prompt = popup(&f.state).await;
+        let presentation = prompt.sudo_request.as_ref().unwrap();
+        assert_eq!(presentation.requester_name, "Codex via laptop/main");
+        assert_eq!(presentation.grant_id.as_deref(), Some("kernel-a:access-1"));
+        if authorized {
+            f.state
+                .answer_sudo_entry_from_terminal(
+                    "local",
+                    "host",
+                    &RespondToInteractionRequest {
+                        session_id: prompt.session_id.clone(),
+                        interaction_id: prompt.interaction_id.clone(),
+                        choice_id: "approve".into(),
+                        custom_reply: None,
+                        passkey: Some(ApprovalPasskey::new(PASSKEY)),
+                        passkey_remember_minutes: None,
+                    },
+                )
+                .await
+                .unwrap();
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert_eq!(f.state.list_sudo_turns("local").len(), 1);
+        assert_eq!(f.state.end_remote_kernel_sudo(&origin), 1);
+        assert!(f.state.list_sudo_turns("local").is_empty());
+        assert!(f.state.passkey_prompts_for("local").is_empty());
+        if !authorized {
+            assert!(tokio::time::timeout(Duration::from_secs(5), task)
+                .await
+                .unwrap()
+                .unwrap()
+                .is_err());
+        }
+    }
+}
+
+// Review of #1063/#1061: the origin crashing, restarting or being cut off must not leave
+// the popup or window running to its own deadline; the target enforces the lease itself.
+#[tokio::test]
+async fn a_remote_requester_whose_origin_goes_silent_ends_here_without_any_report() {
+    for authorized in [false, true] {
+        let f = fixture();
+        let origin = remote_origin();
+        let request = external_request(&f);
+        let state = f.state.clone();
+        let from = origin.clone();
+        let task =
+            tokio::spawn(async move { state.request_remote_kernel_sudo(&from, request).await });
+        let prompt = popup(&f.state).await;
+        if authorized {
+            f.state
+                .answer_sudo_entry_from_terminal(
+                    "local",
+                    "host",
+                    &RespondToInteractionRequest {
+                        session_id: prompt.session_id.clone(),
+                        interaction_id: prompt.interaction_id.clone(),
+                        choice_id: "approve".into(),
+                        custom_reply: None,
+                        passkey: Some(ApprovalPasskey::new(PASSKEY)),
+                        passkey_remember_minutes: None,
+                    },
+                )
+                .await
+                .unwrap();
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        // Renewals keep it alive past what one lease covers.
+        assert!(f.state.renew_remote_kernel_sudo(&origin));
+        assert_eq!(f.state.list_sudo_turns("local").len(), 1);
+        // The origin falls silent: the lease runs out.
+        f.state
+            .owned
+            .kernel_access
+            .lock()
+            .unwrap()
+            .remote_requesters
+            .values_mut()
+            .for_each(|remote| remote.lease_until = std::time::Instant::now());
+        assert!(f.state.list_sudo_turns("local").is_empty());
+        assert!(f.state.passkey_prompts_for("local").is_empty());
+        // A late renewal does not revive it.
+        assert!(!f.state.renew_remote_kernel_sudo(&origin));
+        if !authorized {
+            assert!(tokio::time::timeout(Duration::from_secs(5), task)
+                .await
+                .unwrap()
+                .unwrap()
+                .is_err());
+        }
+    }
+}
+
+#[tokio::test]
+async fn remote_sudo_request_of_another_grant_survives_the_end_of_one() {
+    let f = fixture();
+    let (first, mut second) = (remote_origin(), remote_origin());
+    second.grant_id = "access-2".into();
+    let request = external_request(&f);
+    let state = f.state.clone();
+    let from = second.clone();
+    let _task = tokio::spawn(async move { state.request_remote_kernel_sudo(&from, request).await });
+    popup(&f.state).await;
+    assert_eq!(f.state.end_remote_kernel_sudo(&first), 0);
+    assert_eq!(f.state.list_sudo_turns("local").len(), 1);
+    assert_eq!(f.state.end_remote_kernel_sudo(&second), 1);
+}
+
 #[tokio::test]
 async fn external_sudo_cross_session_request_is_allowed_and_terminal_cannot_request() {
     let f = fixture();
@@ -1500,6 +1629,23 @@ async fn sudo_session_end_removes_running_and_pending_authorizations() {
                 .is_err());
         }
     }
+}
+
+#[tokio::test]
+async fn external_sudo_names_a_room_created_before_enrollment() {
+    let f = fixture();
+    // The fixture's Room is owned by `local`; the kernel's signed-in owner differs.
+    let refused = f
+        .state
+        .attach_external_sudo_source(&f.request.session_id, "enrolled-user")
+        .unwrap_err();
+    let DaemonError::MachineRequest { code, message } = refused else {
+        panic!("expected a typed sudo refusal, got {refused:?}");
+    };
+    assert_eq!(code, "kernel_sudo_room_owner_local");
+    assert!(message.contains("created before this kernel was enrolled"));
+    assert!(message.contains("re-create the Room"));
+    assert!(message.contains("enroll this kernel"));
 }
 
 #[tokio::test]
@@ -2017,4 +2163,17 @@ async fn terminal_commands_use_only_the_exact_live_sudo_turn() {
         "terminal approval was bypassed after sudo ended"
     );
     f.state.owned.room_terminals.end_session(&turn.session_id);
+}
+
+#[test]
+fn agent_archive_cannot_be_escalated_with_sudo() {
+    for archived in [true, false] {
+        let request =
+            crate::local::LocalDaemonRequest::ArchiveAgent(crate::local::ArchiveAgentRequest {
+                session_id: "room".into(),
+                agent_id: "agent".into(),
+                archived,
+            });
+        assert!(super::policy::sudo_request_forbidden(&request));
+    }
 }

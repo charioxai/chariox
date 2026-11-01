@@ -2,20 +2,21 @@
 // Credit-mode clients (display_next) and the kernel push pump (protocol 491)
 // share this body; every frame keeps the same document/region/policy fences.
 import { timestamp } from './kernel-browser-timing.mjs';
-import { displayGeometry as geometry } from './kernel-browser-geometry.mjs';
+import { displayGeometry as canonicalGeometry } from './kernel-browser-geometry.mjs';
 import { displayMaskRegions } from './kernel-browser-pixels.mjs';
 import { assertNotCancelled, assertCurrentDocument } from './browser-controller-actions.mjs';
-import { directLease, exactPatchLimit } from './kernel-browser-display.mjs';
+import { directLease, egressBytes, exactPatchLimit } from './kernel-browser-display.mjs';
 import { nativeDamageTiles } from './kernel-browser-tiles.mjs';
 import { MotionEncoder } from './kernel-browser-motion.mjs';
 import { NativeRefiner } from './kernel-browser-refiner.mjs';
-import { identicalToDelivered, nativeCreditEmpty, nativeRegionBaseCurrent, nativeRegionPending } from './kernel-browser-native-credit.mjs';
+import { identicalToDelivered, nativeCreditEmpty, nativeRegionBaseCurrent, nativeRegionPending, nativeRevisionCurrent } from './kernel-browser-native-credit.mjs';
 import { DisplayCapture } from './kernel-browser-display-capture.mjs';
 import { DisplayDocumentPending } from './kernel-browser-display-document.mjs';
 import { UserDomainRefusal } from './kernel-browser-refusal.mjs';
 
 const frameKinds={video:1,stripes:2,tiles:3,png:4};
 export async function displayCredit(host, stream, command, signal) {
+  const geometry=host.pageSize?.(stream.tab_id)??canonicalGeometry;
   const leased=stream.adoptLease?.(command.after_sequence);
   if(leased)host.timing.event?.('native_lease_ended',{frames:leased});
   const region=stream.regionLease;
@@ -59,7 +60,7 @@ export async function displayCredit(host, stream, command, signal) {
   if (!stream.capture || stream.capture.document !== tab.document_id)
     stream.capture = new DisplayCapture((clip) => {
       return host.displayScreenshot(tab,clip);
-    }, stream.device_scale_factor, host.timing);
+    }, stream.device_scale_factor, () => ({ width:stream.css_width, height:stream.css_height }), host.timing);
   const { connection, sessionId } = region ? stream.regionSource : native ? host.displayDocuments.connection(tab) : await host.browser.resolvePageTarget(tab.target_id);
   const layoutAt = timestamp();
   // MP-08/MP-10: an attested window supplies the complete viewport. Layout
@@ -150,7 +151,7 @@ export async function displayCredit(host, stream, command, signal) {
     else return {generation:host.generation,frame_sent:false,display_frame:null};
   }else{
     source=await stream.capture.next({...tab,input_epoch:epoch},host.protection,stream.previous&&stream.acceptsCredit(command.after_sequence),!stream.exact||!nativeCropSafe,
-      stream.codec!=='png'&&host.protection.values.length===0&&viewport?.scale===1&&Number.isFinite(viewport.pageX)&&Number.isFinite(viewport.pageY)?{x:viewport.pageX,y:viewport.pageY,width:geometry.width,height:geometry.height,scale:1/stream.device_scale_factor,display_motion:true}:null,
+      stream.codec!=='png'&&host.protection.values.length===0&&viewport?.scale===1&&Number.isFinite(viewport.pageX)&&Number.isFinite(viewport.pageY)?{x:viewport.pageX,y:viewport.pageY,width:stream.css_width,height:stream.css_height,scale:1/stream.device_scale_factor,display_motion:true}:null,
       host.scrolling.get(tab.tab_id)?.document_id===tab.document_id&&host.scrolling.get(tab.tab_id).until>performance.now());
   }
   // MP-10: only a post-dispatch native capture can claim the input burst.
@@ -170,10 +171,10 @@ export async function displayCredit(host, stream, command, signal) {
     }else if(native){
       if(!await host.displayDocuments.validate(tab)){compositor?.rejected?.('stale_document');return false;}
     }else await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
-    return !compositor?.closed&&compositor?.regionRevision===regionRevision&&(source.motion || ((host.inputEpochs.get(tab.tab_id) ?? 0) === epoch&&((source.refinement_serial===undefined||compositor?.sample()?.serial===source.refinement_serial)&&(source.native_revision===undefined||source.native_revision===stream.encoder.nativeRevision))));
-  },()=>(region?region.isAlive()&&stream.regionWindow.isCurrent():!native||host.displayDocuments.current(tab))&&!compositor?.closed&&compositor?.regionRevision===regionRevision&&host.protection===capturePolicy&&(source.motion||((host.inputEpochs.get(tab.tab_id)??0)===epoch&&((source.refinement_serial===undefined||compositor?.sample()?.serial===source.refinement_serial)&&(source.native_revision===undefined||source.native_revision===stream.encoder.nativeRevision)))));
+    return !compositor?.closed&&compositor?.regionRevision===regionRevision&&(source.motion || ((host.inputEpochs.get(tab.tab_id) ?? 0) === epoch&&((source.refinement_serial===undefined||compositor?.sample()?.serial===source.refinement_serial)&&nativeRevisionCurrent(source,stream.encoder))));
+  },()=>(region?region.isAlive()&&stream.regionWindow.isCurrent():!native||host.displayDocuments.current(tab))&&!compositor?.closed&&compositor?.regionRevision===regionRevision&&host.protection===capturePolicy&&(source.motion||((host.inputEpochs.get(tab.tab_id)??0)===epoch&&((source.refinement_serial===undefined||compositor?.sample()?.serial===source.refinement_serial)&&nativeRevisionCurrent(source,stream.encoder)))));
   if(frame)host.timing.event?.('frame_out',{at:source.captured_ms,source_kind:{browser_chrome:1,region:2,browser_auxiliary:3,visible_page:4,browser_window:5}[stream.regionTarget?.kind]??0,width:stream.css_width*stream.device_scale_factor,height:stream.css_height*stream.device_scale_factor,sequence:frame.sequence,kind:frameKinds[frame.kind]??0,input_triggered:source.input_triggered?1:0,input_epoch:epoch,
-    damage_ready_ms:source.raw?.damage_ready_ms,input_wake_ms:source.raw?.input_wake_ms,published_ms:source.published_ms,encode_offered_ms:Number.isFinite(source.offeredAt)?performance.timeOrigin+source.offeredAt:undefined,encode_started_ms:source.encode_started_ms,encoded_ms:source.encoded_ms,native_serial:source.raw?.serial});
+    damage_ready_ms:source.raw?.damage_ready_ms,input_wake_ms:source.raw?.input_wake_ms,published_ms:source.published_ms,encode_offered_ms:Number.isFinite(source.offeredAt)?performance.timeOrigin+source.offeredAt:undefined,encode_started_ms:source.encode_started_ms,encoded_ms:source.encoded_ms,native_serial:source.raw?.serial,get payload_bytes(){return egressBytes(frame,stream.relay_binary)}});
   if(frame){stream.compositorMasks=JSON.stringify(source.raw?.[displayMaskRegions]??[]);stream.compositorSerial=source.refinement_serial ?? source.serial;if(source.input_triggered)stream.deliveredInputEpoch=epoch;if(stream.exact&&source.raw?.nativeCommit){source.raw.nativeCommit(stream.encoder.nativeSession,!source.moves);stream.compositorCommittedSerial=stream.compositorSerial;}}
   compositor?.plans?.(stream.exact&&!stream.shiftHold&&stream.compositorMasks==='[]');
   return { generation: host.generation, frame_sent: frame !== null, display_frame: frame };

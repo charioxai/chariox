@@ -5,6 +5,7 @@ import {
   type ParsedSlashCommand,
 } from "./commands.js"
 import type { FooterFlash } from "./footer-flash-controller.js"
+import { isLinkedKernelAdd } from "./linked-kernel-command-handlers.js"
 
 type SlashCommand<K extends ParsedSlashCommand["kind"]> = Extract<ParsedSlashCommand, { kind: K }>
 
@@ -111,7 +112,9 @@ export function createSlashCommandSubmitController(
       }
       const trimmed = options.trimmedPrompt ?? rawPrompt.trim()
       const slashCommand = parseSlashCommand(rawPrompt)
-      if (slashCommand && deps.isAttached()) {
+      // A pairing link is a capability: neither local history nor the kernel's shared history may keep it.
+      const carriesPairingLink = slashCommand?.kind === "kernel" && isLinkedKernelAdd(slashCommand.args)
+      if (slashCommand && deps.isAttached() && !carriesPairingLink) {
         deps.recordPromptAreaHistoryEntry(deps.getSessionId(), rawPrompt)
       }
       if (slashCommand) {

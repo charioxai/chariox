@@ -68,6 +68,7 @@ impl KernelRuntimeState {
     pub(crate) fn managed_activity_report_snapshot_with_transition(
         &self,
     ) -> Result<(u64, super::ManagedActivityObservation, u64), crate::error::DaemonError> {
+        self.owned.room_execs.report_work();
         self.owned.room_terminals.report_work();
         let _mutation = self
             .owned
@@ -185,6 +186,9 @@ impl KernelRuntimeState {
         }));
         self.owned
             .room_terminals
+            .link_managed_kernel(gate.clone(), Arc::downgrade(callback));
+        self.owned
+            .room_execs
             .link_managed_kernel(gate, Arc::downgrade(callback));
     }
 }
@@ -199,6 +203,7 @@ impl KernelRuntimeOwnedState {
             .list_non_ended_sessions_including_hidden();
         running_agent_count(active_turn_count, sessions)
             .max(u8::from(self.room_terminals.has_running_work()))
+            .max(u8::from(self.room_execs.has_running_work()))
     }
 
     pub(super) fn record_managed_activity_transition(&self) {
@@ -254,6 +259,13 @@ impl KernelRuntimeOwnedState {
     }
 
     fn record_managed_activity_transition_at_unlocked(&self, observed_at_ms: Option<u64>) {
+        if let Err(error) = self.publish_outside_runtime_activity() {
+            crate::logging::error_with_fields(
+                "outside.events",
+                "agent run-state transition could not be persisted",
+                serde_json::json!({"error":error.to_string()}),
+            );
+        }
         #[cfg(test)]
         self.managed_activity_record_calls
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);

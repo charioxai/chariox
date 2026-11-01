@@ -172,6 +172,7 @@ fn passkey_prompts_and_their_popup_event_are_versioned() {
         refuse_choice_id: "deny".into(),
         requested_at_ms: 1_000,
         expires_at_ms: 301_000,
+        term: None,
         lifetime_minutes: None,
         max_lifetime_minutes: None,
     };
@@ -256,13 +257,40 @@ fn local_kernel_access_protocol_451_has_no_session_scope_or_bearer() {
         owner_user_id: "local".into(),
         holder_pid: 42,
         holder_executable: "/usr/bin/agent".into(),
-        lifetime_minutes: 30,
-        expires_at_ms: 1_801_000,
+        holder_harness: Some(crate::local::KernelAccessProviderHarness::Claude),
+        term: crate::local::KernelAccessTerm::Minutes(30),
+        expires_at_ms: Some(1_801_000),
+    };
+    // A holder the kernel cannot attribute to a provider harness says nothing about it.
+    assert_eq!(
+        serde_json::to_value(&grant).unwrap()["holder_harness"],
+        "claude"
+    );
+    assert!(serde_json::to_value(KernelAccessGrant {
+        holder_harness: None,
+        ..grant.clone()
+    })
+    .unwrap()
+    .get("holder_harness")
+    .is_none());
+    let until_exit_grant = KernelAccessGrant {
+        grant_id: "g2".into(),
+        term: crate::local::KernelAccessTerm::UntilHolderExits,
+        expires_at_ms: None,
+        ..grant.clone()
     };
     let requests = [
         LocalDaemonRequest::RequestKernelAccess(RequestKernelAccessRequest {
             holder_pid: 42,
-            lifetime_minutes: Some(30),
+            term: Some(crate::local::KernelAccessTerm::Minutes(30)),
+        }),
+        LocalDaemonRequest::RequestKernelAccess(RequestKernelAccessRequest {
+            holder_pid: 42,
+            term: Some(crate::local::KernelAccessTerm::UntilHolderExits),
+        }),
+        LocalDaemonRequest::RequestKernelAccess(RequestKernelAccessRequest {
+            holder_pid: 42,
+            term: None,
         }),
         LocalDaemonRequest::ListKernelAccessGrants(ListKernelAccessGrantsRequest {}),
         LocalDaemonRequest::RevokeKernelAccessGrant(RevokeKernelAccessGrantRequest {
@@ -271,16 +299,20 @@ fn local_kernel_access_protocol_451_has_no_session_scope_or_bearer() {
         LocalDaemonRequest::RevokeKernelAccessGrant(RevokeKernelAccessGrantRequest {
             grant_id: None,
         }),
+        LocalDaemonRequest::RenewKernelSudoRequester(
+            crate::local::RenewKernelSudoRequesterRequest {},
+        ),
     ];
     let responses = [
         LocalDaemonResponse::KernelAccessGranted {
             grant: grant.clone(),
         },
         LocalDaemonResponse::KernelAccessGrantsListed {
-            grants: vec![grant],
+            grants: vec![grant, until_exit_grant],
             sudo_turns: vec![],
         },
         LocalDaemonResponse::KernelAccessRevoked { revoked: 1 },
+        LocalDaemonResponse::KernelSudoRequesterRenewed { renewed: true },
         LocalDaemonResponse::KernelAccessDecisionResponded {
             interaction_id: "g-grant".into(),
         },
@@ -306,12 +338,45 @@ fn local_kernel_access_protocol_451_has_no_session_scope_or_bearer() {
         .is_err(),
         "451 rejects session-scoped clients"
     );
+    assert_eq!(
+        serde_json::to_value(LocalDaemonRequest::RenewKernelSudoRequester(
+            crate::local::RenewKernelSudoRequesterRequest {}
+        ))
+        .unwrap(),
+        serde_json::json!({"RenewKernelSudoRequester": {}})
+    );
+    // 568 replaced the lifetime by a term; the old field is refused, not ignored.
+    assert!(
+        serde_json::from_value::<LocalDaemonRequest>(serde_json::json!({"RequestKernelAccess": {
+            "holder_pid": 42, "lifetime_minutes": 30
+        }}))
+        .is_err(),
+        "568 rejects the removed lifetime_minutes"
+    );
+    // Wire spelling of the term, and of the answer that chooses it.
+    assert_eq!(
+        serde_json::to_value(crate::local::KernelAccessTerm::Minutes(30)).unwrap(),
+        serde_json::json!({"minutes": 30})
+    );
+    assert_eq!(
+        serde_json::to_value(crate::local::KernelAccessTerm::UntilHolderExits).unwrap(),
+        serde_json::json!("until_holder_exits")
+    );
+    assert_eq!(
+        crate::local::KernelAccessTerm::from_reply("until_exit"),
+        Some(crate::local::KernelAccessTerm::UntilHolderExits)
+    );
+    assert_eq!(
+        crate::local::KernelAccessTerm::from_reply("45"),
+        Some(crate::local::KernelAccessTerm::Minutes(45))
+    );
+    assert_eq!(crate::local::KernelAccessTerm::from_reply("soon"), None);
     let snapshot = serde_json::json!({ "requests": requests, "responses": responses,
         "kinds": [PasskeyPromptKind::AccessGrant, PasskeyPromptKind::AccessExtension] });
     let digest = Sha256::digest(serde_json::to_vec(&snapshot).unwrap());
     assert_eq!(
         format!("{digest:x}"),
-        "2e0ccb5c1c904a48d996076f62a500b3dcdab528ab6f1f8c9bbabc275c90f2c1"
+        "546509802affc87d8240d5c2bf3154d4f783ba5c049afc57af16a095a4f36619"
     );
     assert!(serde_json::from_value::<LocalDaemonRequest>(
         serde_json::json!({"RequestKernelAccess": {
@@ -355,13 +420,13 @@ fn external_sudo_requester_and_host_terminal_attribution_are_versioned() {
         LOCAL_DAEMON_PROTOCOL_VERSION,
         crate::test_support::expected_local_protocol_version()
     );
-    let turn: crate::local::KernelSudoTurn = serde_json::from_value(serde_json::json!({"entry_id":"sudo:external","session_id":"s","agent_id":"a","owner_user_id":"local","terminal_id":"host-terminal","prompt_id":"prompt","provider_run_id":"run","requester":{"grant_id":"grant","owner_user_id":"local","holder_pid":123,"holder_executable":"/fixture/external","lifetime_minutes":30,"expires_at_ms":123456}})).unwrap();
+    let turn: crate::local::KernelSudoTurn = serde_json::from_value(serde_json::json!({"entry_id":"sudo:external","session_id":"s","agent_id":"a","owner_user_id":"local","terminal_id":"host-terminal","prompt_id":"prompt","provider_run_id":"run","requester":{"grant_id":"grant","owner_user_id":"local","holder_pid":123,"holder_executable":"/fixture/external","term":{"minutes":30},"expires_at_ms":123456}})).unwrap();
     assert_eq!(
         format!(
             "{:x}",
             Sha256::digest(serde_json::to_vec(&serde_json::to_value(&turn).unwrap()).unwrap())
         ),
-        "50fc270c940c3ed289e977949ad9e2c009ddc00771a6cb6d8484eca224b9af7a"
+        "fa17f728b3b00e7af2382cab1ed18696367b397f0c1fcb0eadcdd91c55163d4c"
     );
 }
 
@@ -412,8 +477,8 @@ fn access_requester_protocol_470_shape_and_hash() {
     let requester: KernelAccessRequester = serde_json::from_value(serde_json::json!({"executable": "/opt/codex", "pid": 42, "process_start_id": "18446744073709551615", "process_exec_version": 7, "provider_harness": "codex"})).unwrap();
     let interaction: crate::session::RuntimeInteraction = serde_json::from_value(serde_json::json!({"id": "g-grant", "kernel_operation_id": "access-grant:g", "kind": "permission", "level": "warning", "title": "Grant external agent access", "message": "Display only", "choices": [{"id": "refuse", "label": "Refuse", "reply": "refuse"}, {"id": "approve", "label": "Approve", "reply": "approve", "requires_passkey": true}], "timeout_sec": 300, "requested_at_ms": 1000, "requester": {"executable": "/opt/codex", "pid": 42, "process_start_id": "18446744073709551615", "process_exec_version": 7, "provider_harness": "codex"}})).unwrap();
     assert_eq!(interaction.requester(), Some(&requester));
-    let grant: PasskeyPrompt = serde_json::from_value(serde_json::json!({"kind": "access_grant", "session_id": "kernel-access", "interaction_id": "g-grant", "title": "External access", "message": "Display only", "approve_choice_id": "approve", "refuse_choice_id": "refuse", "requested_at_ms": 1000, "expires_at_ms": 301000, "lifetime_minutes": 30, "max_lifetime_minutes": 1440, "requester": {"executable": "/opt/codex", "pid": 42, "process_start_id": "18446744073709551615", "process_exec_version": 7, "provider_harness": "codex"}})).unwrap();
-    let extension: PasskeyPrompt = serde_json::from_value(serde_json::json!({"kind": "access_extension", "session_id": "kernel-access", "interaction_id": "g-extension", "title": "External access", "message": "Display only", "approve_choice_id": "approve", "refuse_choice_id": "refuse", "requested_at_ms": 1000, "expires_at_ms": 301000, "lifetime_minutes": 30, "max_lifetime_minutes": 1440, "requester": {"executable": "/opt/codex", "pid": 42, "process_start_id": "18446744073709551615", "process_exec_version": 7, "provider_harness": "codex"}})).unwrap();
+    let grant: PasskeyPrompt = serde_json::from_value(serde_json::json!({"kind": "access_grant", "session_id": "kernel-access", "interaction_id": "g-grant", "title": "External access", "message": "Display only", "approve_choice_id": "approve", "refuse_choice_id": "refuse", "requested_at_ms": 1000, "expires_at_ms": 301000, "term": {"minutes": 30}, "max_lifetime_minutes": 1440, "requester": {"executable": "/opt/codex", "pid": 42, "process_start_id": "18446744073709551615", "process_exec_version": 7, "provider_harness": "codex"}})).unwrap();
+    let extension: PasskeyPrompt = serde_json::from_value(serde_json::json!({"kind": "access_extension", "session_id": "kernel-access", "interaction_id": "g-extension", "title": "External access", "message": "Display only", "approve_choice_id": "approve", "refuse_choice_id": "refuse", "requested_at_ms": 1000, "expires_at_ms": 301000, "term": {"minutes": 30}, "max_lifetime_minutes": 1440, "requester": {"executable": "/opt/codex", "pid": 42, "process_start_id": "18446744073709551615", "process_exec_version": 7, "provider_harness": "codex"}})).unwrap();
     let event = KernelEvent::PasskeyPromptsChanged {
         kernel_now_ms: 1234,
         closed: vec![],
@@ -433,7 +498,7 @@ fn access_requester_protocol_470_shape_and_hash() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "7ae788c3c7dedfc9f1bb25fbd4c44074d1e7263a20138c75b89d3c120eeb0f3e"
+        "7a8f7a3731b82ec085248149a6e969e6aa39652841a0aa34dee5a679186c6c67"
     );
     assert_eq!(
         serde_json::from_value::<KernelEvent>(serde_json::to_value(&event).unwrap()).unwrap(),

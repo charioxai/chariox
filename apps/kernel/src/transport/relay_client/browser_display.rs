@@ -54,6 +54,7 @@ pub(super) async fn enqueue_subscribe(
                     .into(),
                 ),
                 subscription.resume,
+                None,
             )
             .await
             .is_err()

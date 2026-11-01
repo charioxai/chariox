@@ -1,5 +1,6 @@
 // MD-DISPLAY-02/04: real kernel websocket + headed, sandboxed host browser.
 // No credentials/providers/Cloud. External public tools are supplied explicitly.
+import {drillLayout,layoutFixture} from './drill-layout.mjs';
 import {profileOwnedCpu} from './drill-profile.mjs';
 import { createHash } from 'node:crypto';
 import { createReadStream, readFileSync } from 'node:fs';
@@ -32,7 +33,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const [binary, output, tools, pytools] = process.argv.slice(2);
 if (![binary,output,tools,pytools].every(value => value && path.isAbsolute(value))) throw Error('MD-DISPLAY: provide absolute kernel-test binary, evidence directory, Node tools and PyAV tools');
 const require = createRequire(path.join(tools,'package.json'));
-let chromium, PNG, relayCrypto, metrics;
+let chromium, PNG, relayCrypto, relayFraming, mirrorValidator, metrics;
 const pause = ms => new Promise(resolve => setTimeout(resolve,ms));
 const geometry=process.env.MD_GEOMETRY==='1920x1080'?{width:1920,height:1080,dpr:1}:{width:1280,height:800,dpr:Number(process.env.MD_DPR||2)};
 if(![1,2].includes(geometry.dpr))throw Error('MP-08/MP-11: unsupported drill DPR');
@@ -46,7 +47,7 @@ const chrome=process.env.MD_CHROME || '/usr/bin/google-chrome';
 const runtimePath=process.env.MD_RUNTIME_PATH || '/usr/bin:/bin';
 const quote=value=>"'"+value.replaceAll("'","'\"'\"'")+"'";
 let kernel, display, viewer, browser, page, server, ready, shaped, shortTmp, kernelProfiler,stopCpuProfile,dynamicFixtureServed=false;
-const workload=process.env.MD_WORKLOAD||'docs';
+const workload=process.env.MD_LAYOUT_PROTOCOL==='1'?'layout':process.env.MD_WORKLOAD||'docs';
 receipt.workload=workload;const fixtureStats=[];
 receipt.requested_hardware=process.env.MD_SOFTWARE==='0';receipt.memory_floor_gib=memoryFloorGiB(process.env.MD_MEMORY_FLOOR_GIB);
 receipt.requested_software_encoder=process.env.MD_ENCODER||'libx264';receipt.requested_converter=process.env.MD_LIBYUV?'libyuv':'auto';
@@ -66,11 +67,19 @@ async function resource() {
  return sample;
 }
 async function until(check,label,timeout=20000) {const end=Date.now()+timeout;while(Date.now()<end){if(errors.length)throw errors[0];const value=await check();if(value)return value;await pause(25);}throw Error('MD-DISPLAY timeout: '+label);}
-try {
+drill: try {
  const ts=require('typescript');
  ({chromium}=require('playwright-core'));({PNG}=require('pngjs'));metrics=new MetricsWorker(tools);
  const relayCryptoSource=await readFile(path.resolve(here,'../../packages/kernel-client/src/browser-relay-crypto.ts'),'utf8');
  relayCrypto=ts.transpileModule(relayCryptoSource,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ES2022}}).outputText;
+ const framingSource=await readFile(path.resolve(here,'../../packages/kernel-client/src/relay-frame-transport.ts'),'utf8');
+ relayFraming=ts.transpileModule(framingSource,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ES2022}}).outputText;
+ receipt.relay_framing_sha256=createHash('sha256').update(framingSource).digest('hex');
+ if(workload==='layout'){
+  const source=await readFile(path.resolve(here,'../../packages/kernel-client/src/browser-mirror2-security.ts'),'utf8');
+  mirrorValidator=ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ES2022}}).outputText;
+  receipt.mirror_validator_sha256=createHash('sha256').update(source).digest('hex');
+ }
  await resource();
  if(process.env.MD_RELAY==='0')throw Error('MD-DISPLAY: browser origins cannot attach to the native local socket; use the scoped relay drill');
  // Chromium SingletonSocket uses TMPDIR, whose Unix path must stay short.
@@ -85,7 +94,7 @@ try {
  try{const magic=Buffer.alloc(4);const read=await binaryFile.read(magic,0,4,0);if(read.bytesRead!==4||!magic.equals(Buffer.from([127,69,76,70])))throw Error('MD-DISPLAY: copied Linux test binary is not ELF; wait for build completion')}finally{await binaryFile.close()}
  const digest=createHash('sha256');for await(const bytes of createReadStream(copiedBinary))digest.update(bytes);
  receipt.binary={source_path:binary,copied_sha256:digest.digest('hex')};
- receipt.client_assets=[];for(const name of ['harness.html','presenter.mjs','stripe-presenter.mjs','decoder-worker.mjs','scroll-prediction.mjs','motion-samples.mjs']){const contents=await readFile(path.join(here,name));receipt.client_assets.push({name,sha256:createHash('sha256').update(contents).digest('hex')});}
+ receipt.client_assets=[];for(const name of ['harness.html','presenter.mjs','stripe-presenter.mjs','decoder-worker.mjs','scroll-prediction.mjs','motion-samples.mjs','region-binding.mjs','video-sink.mjs','presentation-queue.mjs']){const contents=await readFile(path.join(here,name));receipt.client_assets.push({name,sha256:createHash('sha256').update(contents).digest('hex')});}
  const override = {};
  const assetRoot=process.env.MD_ASSET_ROOT??path.resolve(here,'../kernel/slice-linux-docker/docker');
  if(!path.isAbsolute(assetRoot))throw Error('MP-11: explicit asset root must be absolute');
@@ -142,7 +151,7 @@ try {
   override.CHARIOX_BROWSER_DISPLAY_LIBYUV=destination;
   receipt.colour_converter={name:'libyuv ARGBToI420 (little-endian BGRx)',sha256:createHash('sha256').update(contents).digest('hex')};
  }
- for(const name of ['av','av.libs'])await cp(path.join(pytools,name),path.join(python,name),{recursive:true});
+ if(workload!=='layout')for(const name of ['av','av.libs'])await cp(path.join(pytools,name),path.join(python,name),{recursive:true});
  const pythonWrapper=path.join(root,'encoder-python');
  const profiles=path.join(root,'profiles');let profiling='';
  if(process.env.MD_PROFILE==='1'){
@@ -163,6 +172,7 @@ try {
    if(name==='/fixture-statistics'&&req.method==='POST'){let text='';for await(const chunk of req){text+=chunk;if(text.length>1024)throw Error('fixture statistics bound')};const value=JSON.parse(text);if(![value.updates,value.duration_ms,value.target_hz].every(Number.isFinite))throw Error('fixture statistics shape');fixtureStats.push(value);res.end('ok');return;}
    // MP-11 (owner 2026-10-08): a cross-site (isolated) consent-style frame with a protected field.
    if(name==='/frame-consent'){res.setHeader('Content-Type','text/html');res.end('<!doctype html><body style="margin:0;height:100vh;background:rgb(0,90,200)" onclick="document.body.style.background=\'rgb(0,200,90)\'"><input type="password" value="fixture" style="position:absolute;left:250px;top:120px;width:120px;height:40px;border:0"></body>');return;}
+   if(workload==='layout'&&name==='/layout'){res.setHeader('Content-Type','text/html');res.end(layoutFixture);return;}
    const page=fixture(name,`http://127.0.0.1:${server.address().port}`,sourceText);
    if(page){
     res.setHeader('Content-Type','text/html');const dynamic=process.env.MD_DYNAMIC_PROTECTED==='1'&&!dynamicFixtureServed;if(dynamic)dynamicFixtureServed=true;
@@ -171,16 +181,18 @@ try {
     const frame=process.env.MD_FRAMES==='1'?`<iframe src="http://localhost:${server.address().port}/frame-consent" style="position:fixed;left:600px;top:400px;width:400px;height:200px;border:0;z-index:100"></iframe>`:'';
     res.end(process.env.MD_PROTECTED==='1'||frame?page.replace('</body>',(process.env.MD_PROTECTED==='1'?overlay+button:'')+frame+'</body>'):page);return;
    }
+   if(name==='/mirror-validator.mjs'&&mirrorValidator){res.setHeader('Content-Type','text/javascript');res.end(mirrorValidator);return;}
+   if(name==='/relay-frame-transport.mjs'){res.setHeader('Content-Type','text/javascript');res.end(relayFraming);return;}
    if(name==='/browser-relay-crypto.mjs'){res.setHeader('Content-Type','text/javascript');res.end(relayCrypto);return;}
    if(name==='/relay-bootstrap'){const bootstrap=JSON.parse(await readFile(path.join(root,'home','relay-bootstrap.private.json'),'utf8'));if(shaped)bootstrap.relay_url=shaped.url;res.setHeader('Content-Type','application/json');res.end(JSON.stringify(bootstrap));return;}
-   const assets={'/harness.html':'harness.html','/presenter.mjs':'presenter.mjs','/stripe-presenter.mjs':'stripe-presenter.mjs','/decoder-worker.mjs':'decoder-worker.mjs','/scroll-prediction.mjs':'scroll-prediction.mjs','/motion-samples.mjs':'motion-samples.mjs'};
+   const assets={'/harness.html':'harness.html','/presenter.mjs':'presenter.mjs','/stripe-presenter.mjs':'stripe-presenter.mjs','/decoder-worker.mjs':'decoder-worker.mjs','/scroll-prediction.mjs':'scroll-prediction.mjs','/motion-samples.mjs':'motion-samples.mjs','/region-binding.mjs':'region-binding.mjs','/video-sink.mjs':'video-sink.mjs','/presentation-queue.mjs':'presentation-queue.mjs'};
    if(!assets[name]){res.writeHead(404).end();return;}
    res.setHeader('Content-Type',name.endsWith('.mjs')?'text/javascript':'text/html');res.end(await readFile(path.join(here,assets[name])));
   }catch(error){errors.push(error);res.writeHead(500).end();}
  });
  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
  const origin=`http://127.0.0.1:${server.address().port}`;
- kernel=await launchOwned(process.env.MD_BINARY_LOADER || path.join(root,'kernel-tests'),[...(process.env.MD_BINARY_LOADER ? ['--library-path',process.env.MD_BINARY_LIBS,path.join(root,'kernel-tests')] : []),'--ignored','--exact','runtime::router::tests::kernel_browser::display::kernel_browser_display_protocol_drill','--nocapture'],{uid:runUid,gid:runGid,detached:true,cwd:root,env:{...override,PATH:runtimePath,HOME:home,TMPDIR:shortTmp,DISPLAY:`:${screen.trim()}`,CHARIOX_HOME:path.join(home,'chariox'),CHARIOX_LOG_DIR:path.join(home,'logs'),CHARIOX_DISPLAY_DRILL_ROOT:home,CHARIOX_DISPLAY_FIXTURE_URL:`${origin}/${workload}`,CHARIOX_KERNEL_BROWSER_EXECUTABLE:chrome,CHARIOX_KERNEL_BROWSER_DISPLAY:'1',CHARIOX_BROWSER_DISPLAY_TIMING:'1',CHARIOX_BROWSER_DISPLAY_GEOMETRY:process.env.MD_GEOMETRY,LIBVA_DRIVER_NAME:process.env.LIBVA_DRIVER_NAME,CHARIOX_BROWSER_DISPLAY_SOFTWARE:process.env.MD_SOFTWARE,CHARIOX_BROWSER_DISPLAY_SOFTWARE_ENCODER:process.env.MD_ENCODER,CHARIOX_BROWSER_DISPLAY_OPENH264:process.env.MD_OPENH264,CHARIOX_BROWSER_DISPLAY_STRIPE_WORKERS:process.env.MD_STRIPE_WORKERS,CHARIOX_BROWSER_DISPLAY_OPENH264_ADAPTER:openh264Adapter,CHARIOX_BROWSER_DISPLAY_PYTHON:pythonWrapper,CHARIOX_BROWSER_DISPLAY_NATIVE_WORKER:nativeWorker},stdio:['ignore','pipe','pipe']});groups.push(kernel.pid);await cpu.track(kernel.pid);
+ kernel=await launchOwned(process.env.MD_BINARY_LOADER || path.join(root,'kernel-tests'),[...(process.env.MD_BINARY_LOADER ? ['--library-path',process.env.MD_BINARY_LIBS,path.join(root,'kernel-tests')] : []),'--ignored','--exact','runtime::router::tests::kernel_browser::display::kernel_browser_display_protocol_drill','--nocapture'],{uid:runUid,gid:runGid,detached:true,cwd:root,env:{...override,RUST_MIN_STACK:'16777216',RUST_TEST_THREADS:'1',PATH:runtimePath,HOME:home,TMPDIR:shortTmp,DISPLAY:`:${screen.trim()}`,CHARIOX_HOME:path.join(home,'chariox'),CHARIOX_LOG_DIR:path.join(home,'logs'),CHARIOX_DISPLAY_DRILL_ROOT:home,CHARIOX_DISPLAY_FIXTURE_URL:`${origin}/${workload}`,CHARIOX_KERNEL_BROWSER_EXECUTABLE:chrome,CHARIOX_KERNEL_BROWSER_DISPLAY:'1',CHARIOX_BROWSER_DISPLAY_TIMING:'1',CHARIOX_BROWSER_DISPLAY_GEOMETRY:process.env.MD_GEOMETRY,LIBVA_DRIVER_NAME:process.env.LIBVA_DRIVER_NAME,CHARIOX_BROWSER_DISPLAY_SOFTWARE:process.env.MD_SOFTWARE,CHARIOX_BROWSER_DISPLAY_SOFTWARE_ENCODER:process.env.MD_ENCODER,CHARIOX_BROWSER_DISPLAY_OPENH264:process.env.MD_OPENH264,CHARIOX_BROWSER_DISPLAY_STRIPE_WORKERS:process.env.MD_STRIPE_WORKERS,CHARIOX_BROWSER_DISPLAY_OPENH264_ADAPTER:openh264Adapter,CHARIOX_BROWSER_DISPLAY_PYTHON:pythonWrapper,CHARIOX_BROWSER_DISPLAY_NATIVE_WORKER:nativeWorker},stdio:['ignore','pipe','pipe']});groups.push(kernel.pid);await cpu.track(kernel.pid);
  kernel.stdout.on('data',b=>log.record('stdout',b));kernel.stderr.on('data',b=>log.record('stderr',b));
  kernelExit=waitChild(kernel);
  ready=await until(async()=>{checkChild(kernel,'kernel');try{return JSON.parse(await readFile(path.join(home,'ready.json'),'utf8'))}catch{return null}},'focused MCP opens user-domain tab',45000);
@@ -199,7 +211,7 @@ try {
   const inventory=await readFile(path.resolve(here,'../kernel/src/runtime/kernel_browser_assets.rs'),'utf8');receipt.controller_assets=[];
   for(const match of inventory.matchAll(/include_bytes!\("\.\.\/\.\.\/slice-linux-docker\/docker\/([^"/]+)"\)/g)){
    const actual=await readFile(path.join(base,directories[0].name,match[1]));const expected=await readFile(path.join(assetRoot,match[1]));
-   const sha256=createHash('sha256').update(actual).digest('hex');if(sha256!==createHash('sha256').update(expected).digest('hex'))throw Error('MD-DISPLAY: embedded controller differs from measured source');
+   const sha256=createHash('sha256').update(actual).digest('hex');if(sha256!==createHash('sha256').update(expected).digest('hex'))throw Error('MD-DISPLAY: embedded controller differs from measured source: '+match[1]);
    receipt.controller_assets.push({name:match[1],sha256});
   }
   if(!receipt.controller_assets.length)throw Error('MD-DISPLAY: empty embedded asset inventory');
@@ -215,16 +227,18 @@ try {
  const port=await until(async()=>{checkChild(viewer,'viewer');try{return Number((await readFile(path.join(viewerHome,'DevToolsActivePort'),'utf8')).split('\n')[0])}catch{return null}},'viewer');
  browser=await chromium.connectOverCDP(`http://127.0.0.1:${port}`);
  page=await browser.contexts()[0].newPage();page.on('pageerror',()=>errors.push(Error('MD-DISPLAY browser callback failure')));await page.goto(`${origin}/harness.html`);await page.waitForFunction(()=>window.MDDisplay);
- await page.evaluate(async({ready,bitrate,pngOnly,creditWindow,requestedCodec,dpr,defaultDpr,protectedFixture,dynamicProtection,stripes,legacyRelay,requireBinary})=>{
+ await page.evaluate(async({ready,bitrate,pngOnly,creditWindow,requestedCodec,dpr,defaultDpr,protectedFixture,dynamicProtection,stripes,legacyRelay,requireBinary,layoutProtocol})=>{
   if(pngOnly)globalThis.VideoDecoder=undefined;
   const api=await import('/browser-relay-crypto.mjs');
+  const framing=await import('/relay-frame-transport.mjs');
   const sender=await api.createRelayKeypair();
   const bootstrap=await (await fetch('/relay-bootstrap')).json();
-  let socket,daemonKey,relayProtocolVersion=0;
+  let socket,daemonKey,relayFrames,relayProtocolVersion=0;
   for(let attempt=0;attempt<100;attempt++){
     try {
-     socket=await api.connectRelaySocket(bootstrap.relay_url,!legacyRelay);
-     const connected=new Promise((resolve,reject)=>{socket.onmessage=event=>{const m=JSON.parse(event.data);m.kind==='client_connected'?resolve(m):reject(Error('MD-DISPLAY relay target not ready'))};socket.onclose=()=>reject(Error('MD-DISPLAY relay closed before ready'))});
+     socket=await api.connectRelaySocket(framing.relayTransportUrl(bootstrap.relay_url),!legacyRelay);
+     relayFrames=new framing.RelayFrameReceiver(socket);
+     const connected=new Promise((resolve,reject)=>{socket.onmessage=event=>{try{const text=relayFrames.receive(event.data,receipt=>socket.send(receipt));if(text===null)return;const m=JSON.parse(text);m.kind==='client_connected'?resolve(m):reject(Error('MD-DISPLAY relay target not ready'))}catch(error){reject(error)}};socket.onclose=()=>reject(Error('MD-DISPLAY relay closed before ready'))});
      socket.send(JSON.stringify({kind:'client_connect',auth_token:bootstrap.client_token,target:{daemon_id:bootstrap.daemon_id}}));
      const admitted=await connected;daemonKey=admitted.daemon_public_key;relayProtocolVersion=socket.protocol==='chariox-relay-binary-v96'?96:0;break;
     }catch{socket?.close();await new Promise(resolve=>setTimeout(resolve,100));}
@@ -239,7 +253,9 @@ try {
    const binary=event.data instanceof ArrayBuffer;
    if(binary)window.mdBinaryRelayFrames++;
    window.mdWireBytes+=binary?event.data.byteLength:new TextEncoder().encode(event.data).length;
-   const arrived=stamp();const message=binary?api.decodeBinaryRelayEvent(new Uint8Array(event.data)):JSON.parse(event.data);
+   const arrived=stamp(),text=binary?null:relayFrames.receive(event.data,receipt=>socket.send(receipt));
+   if(!binary&&text===null)return;
+   const message=binary?api.decodeBinaryRelayEvent(new Uint8Array(event.data)):JSON.parse(text);
    if(message.kind==='client_response'){
      const p=pending.get(message.request_id);pending.delete(message.request_id);
      if(!p)return;
@@ -257,10 +273,14 @@ try {
     const encrypted=await api.encryptRelayPayload(daemonKey,JSON.stringify({command_id:'md-display-'+reserved,request}),sender);
     timing('client_request_encrypt',started);
     const sent=stamp();const result=await control({kind:'client_request',target:{daemon_id:bootstrap.daemon_id},encrypted_request:encrypted.payload},reserved);
-    timing(request.KernelBrowser.command.op==='display_input'?'input_round_trip':'capture_or_control_round_trip',sent);return result;
+    timing(request.KernelBrowser?.command.op==='display_input'?'input_round_trip':'capture_or_control_round_trip',sent);return result;
    },onEvent:listener=>{listeners.add(listener);return()=>listeners.delete(listener)}};
   mdTransport.subscribeDisplay=binding=>control({kind:'client_subscribe',subscription_id:binding.subscription_id,target:{daemon_id:bootstrap.daemon_id},session_id:binding.subscription_id,attachment_id:String(binding.generation),client_public_key:sender.publicKeyBase64,subscription_scope:'kernel_browser_display',resume_from_event_id:null});
   mdTransport.unsubscribeDisplay=binding=>control({kind:'client_unsubscribe',subscription_id:binding.subscription_id,client_public_key:sender.publicKeyBase64});
+  if(!bootstrap.pairing_link)throw Error('MP-10: display drill requires a fresh terminal pairing link');
+  const paired=await mdTransport.request({JoinTerminalPairingLink:{pairing_link:bootstrap.pairing_link,terminal_type:'web',alias:'display drill',public_key_thumbprint:await api.relayPublicKeyThumbprint(sender.publicKeyBase64)}});
+  if(!paired.TerminalPairingLinkJoined)throw Error('MP-10: display drill viewer pairing refused');
+  if(layoutProtocol)return;
   const motionSamples=new (await import('/motion-samples.mjs')).MotionSamples();window.mdProtection={enabled:!dynamicProtection,frames:0,violations:0,kinds:{},failures:[]};
   window.mdStream=await MDDisplay.attachBrowserDisplay(MDDisplay.canvas,mdTransport,{tab_id:ready.tab_id,generation:ready.generation},{bitrate,creditWindow,stripes,...(defaultDpr?{}:{deviceScaleFactor:dpr}),codec:requestedCodec,onTiming:timing,onPresented:frame=>{
     if(protectedFixture&&mdProtection.enabled){
@@ -281,7 +301,12 @@ try {
       sample.presented_ms=stamp();
     });
   }});
- },{ready,bitrate:receipt.target_encrypted_bitrate,pngOnly:process.env.MD_PNG_ONLY==='1',creditWindow:Number(process.env.MD_CREDIT_WINDOW||4),requestedCodec:process.env.MD_CODEC||null,dpr:geometry.dpr,defaultDpr:process.env.MD_DEFAULT_DPR==='1',protectedFixture:process.env.MD_PROTECTED==='1',dynamicProtection:process.env.MD_DYNAMIC_PROTECTED==='1',stripes:process.env.MD_STRIPES!=='0',legacyRelay:process.env.MD_LEGACY_RELAY==='1',requireBinary:process.env.MD_REQUIRE_BINARY_RELAY==='1'});
+ },{ready,layoutProtocol:workload==='layout',bitrate:receipt.target_encrypted_bitrate,pngOnly:process.env.MD_PNG_ONLY==='1',creditWindow:Number(process.env.MD_CREDIT_WINDOW||4),requestedCodec:process.env.MD_CODEC||null,dpr:geometry.dpr,defaultDpr:process.env.MD_DEFAULT_DPR==='1',protectedFixture:process.env.MD_PROTECTED==='1',dynamicProtection:process.env.MD_DYNAMIC_PROTECTED==='1',stripes:process.env.MD_STRIPES!=='0',legacyRelay:process.env.MD_LEGACY_RELAY==='1',requireBinary:process.env.MD_REQUIRE_BINARY_RELAY==='1'});
+ if(workload==='layout'){
+  receipt.layout_protocol=await drillLayout({page,ready,output});
+  receipt.status='PASS_LOCAL_PROTOCOL';
+  break drill;
+ }
  receipt.relay_protocol_version=await page.evaluate(()=>mdRelayProtocolVersion);receipt.binary_relay_frames=await page.evaluate(()=>mdBinaryRelayFrames);
  receipt.decode_support=await page.evaluate(async()=>Object.fromEntries(await Promise.all(['avc1.420033','vp8'].map(async codec=>[codec,typeof VideoDecoder==='function'&&Boolean((await VideoDecoder.isConfigSupported({codec})).supported)]))));
  receipt.default_dpr_negotiation=process.env.MD_DEFAULT_DPR==='1';
@@ -498,6 +523,7 @@ try {
  if(process.env.MD_REQUIRE_LATENCY==='1'&&!receipt.latency_goal.passed)throw Error('MD-DISPLAY: input-to-presentation latency goal remains RED');
 } catch(error) {
  receipt.status='RED';receipt.error=String(error.message);process.exitCode=receipt.interrupted?130:1;
+ if(page)await page.screenshot({path:path.join(output,'failure-viewer.png')}).catch(()=>{});
  if(browser&&process.env.MD_PROTECTED==='1')try{
   const page=browser.contexts()[0].pages().at(-1);receipt.protected_presentations=await page.evaluate(()=>window.mdProtection);
   for(const failure of receipt.protected_presentations?.failures??[]){await writeFile(path.join(output,'protected-failure-'+failure.sequence+'.png'),Buffer.from(failure.png.split(',')[1],'base64'));delete failure.png;}

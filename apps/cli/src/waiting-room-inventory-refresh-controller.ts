@@ -28,6 +28,8 @@ type WaitingRoomRowsChangedPatch = {
   activityRevision: string
   sessions: WaitingRoomPublicSessionSummary[]
   removedSessionIds: string[]
+  sessionsTotal?: number
+  sessionsNextCursor?: string | null
   projects?: WaitingRoomProjectSummary[]
   removedProjectIds?: string[]
 }
@@ -39,6 +41,7 @@ type WaitingRoomInventoryRefreshControllerOptions = {
   setInventoryStatus: (status: WaitingRoomInventoryStatus) => void
   getWaitingRoomState: () => WaitingRoomState
   getInventory: () => Promise<WaitingRoomInventory>
+  getSessionPage?: (cursor: string | null) => Promise<{ sessions: WaitingRoomPublicSessionSummary[]; next_cursor: string | null }>
   isKernelHidden: (kernelId: string) => boolean
   getAvailableSessions: () => SessionListEntry[]
   setAvailableSessions: (sessions: SessionListEntry[]) => void
@@ -75,6 +78,7 @@ export type WaitingRoomInventoryRefreshController = {
   applyRowsChanged(patch: WaitingRoomRowsChangedPatch): void
   applyRelayStatusChanged(status: RelayStatusView): void
   applyRemoteMachinesChanged(machines: RemoteMachineView[]): void
+  loadSessionHistory(): Promise<void>
   refreshNow(): Promise<void>
   refresh(): Promise<void>
   invalidate(): void
@@ -127,6 +131,10 @@ export function createWaitingRoomInventoryRefreshController(
   if ((options.cachedInventories?.length ?? 0) > 0) restoreCachedInventory()
 
   const rememberInventory = (inventory: WaitingRoomInventory) => {
+    const previous = inventoriesByKernel.get(inventory.kernelId)
+    if (previous?.structuralVersion === inventory.structuralVersion && previous.sessions.length > inventory.sessions.length) {
+      inventory = { ...inventory, sessions: [...new Map([...previous.sessions, ...inventory.sessions].map(row => [row.id, row])).values()] }
+    }
     inventoriesByKernel.delete(inventory.kernelId)
     inventoriesByKernel.set(inventory.kernelId, inventory)
     while (inventoriesByKernel.size > maximumTrackedKernelInventories) {
@@ -301,6 +309,32 @@ export function createWaitingRoomInventoryRefreshController(
   }
 
   return {
+    async loadSessionHistory() {
+      await refreshNow()
+      if (!options.isKernelConnected() || !activeKernelId) throw new Error("Reconnect the kernel before opening older sessions.")
+      const kernelId = activeKernelId
+      const generation = transportGeneration
+      const initial = inventoriesByKernel.get(kernelId)
+      if (!initial || (initial.sessionsTotal ?? initial.sessions.length) <= initial.sessions.length) return
+      if (!options.getSessionPage) throw new Error("This client cannot load older sessions. Update Chariox and reopen the session list.")
+      let cursor: string | null = null
+      const seen = new Set<string>()
+      do {
+        const page = await options.getSessionPage(cursor)
+        refreshProjectionScope()
+        const inventory = inventoriesByKernel.get(kernelId)
+        if (generation !== transportGeneration || kernelId !== activeKernelId || inventory?.structuralVersion !== initial.structuralVersion) {
+          throw new Error("The session catalog changed. Reopen the session list to load older sessions.")
+        }
+        const owned = page.sessions.map(row => ({ ...row, kernel_id: inventory.kernelId, kernel_alias: inventory.kernelAlias ?? null, machine_id: inventory.machineId, machine_alias: inventory.machineAlias ?? null }))
+        rememberInventory({ ...inventory, sessions: [...new Map([...inventory.sessions, ...owned].map(row => [row.id, row])).values()] })
+        options.setAvailableSessions(visibleSessions(inventoriesByKernel, directTargetKernelId))
+        options.reconcileWaitingRoom(options.getWaitingRoomState())
+        cursor = page.next_cursor
+        if (cursor !== null && seen.has(cursor)) throw new Error("The kernel repeated a session page. Reopen the session list.")
+        if (cursor !== null) seen.add(cursor)
+      } while (cursor !== null)
+    },
     applyTransportClosed() {
       transportGeneration += 1
       rowsBaselinePending = true
@@ -336,8 +370,21 @@ export function createWaitingRoomInventoryRefreshController(
       rowsBaselinePending = false
       inventoryVersion = patch.inventoryVersion
       options.setInventoryStatus("ready")
+      const recentIds = new Set(activeInventory.recentSessionIds ?? activeInventory.sessions.map(row => row.id))
+      const knownIds = new Set(activeInventory.sessions.map(row => row.id))
+      const beforeTotal = activeInventory.sessionsTotal ?? activeInventory.sessions.length
+      const afterTotal = patch.sessionsTotal ?? beforeTotal
+      // The kernel names every row that left its bounded recent window, deleted or merely displaced by a
+      // newer Room. The totals tell them apart: a Room that is gone for good makes the total fall short of
+      // the known Rooms plus the new ones. With no such shortfall every named row still exists.
+      const newRowCount = patch.sessions.filter(row => !knownIds.has(row.id)).length
+      const historyInvalid = beforeTotal + newRowCount > afterTotal
+      const previousSessions = historyInvalid
+        ? activeInventory.sessions.filter(row => recentIds.has(row.id))
+        : activeInventory.sessions
+      const removedSessionIds = historyInvalid ? patch.removedSessionIds : []
       const sessions = mergeWaitingRoomSessionRows(
-        currentInventoryVersion === null ? [] : activeInventory.sessions,
+        currentInventoryVersion === null ? [] : previousSessions,
         patch.sessions.map((session) => ({
           ...session,
           kernel_id: activeInventory.kernelId,
@@ -345,13 +392,17 @@ export function createWaitingRoomInventoryRefreshController(
           machine_id: activeInventory.machineId,
           machine_alias: activeInventory.machineAlias ?? null,
         })),
-        patch.removedSessionIds,
+        removedSessionIds,
       )
+      const nextRecentIds = new Set([...recentIds].filter(id => !patch.removedSessionIds.includes(id)).concat(patch.sessions.map(row => row.id)))
       const nextInventory = {
         ...activeInventory,
         inventoryVersion: patch.inventoryVersion,
         structuralVersion: patch.structuralVersion,
         activityRevision: patch.activityRevision,
+        recentSessionIds: sessions.filter(row => nextRecentIds.has(row.id)).map(row => row.id),
+        sessionsTotal: afterTotal,
+        ...(patch.sessionsNextCursor !== undefined ? { sessionsNextCursor: patch.sessionsNextCursor } : {}),
         sessions,
         projects: patch.projects
           ? mergeWaitingRoomProjectRows(

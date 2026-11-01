@@ -94,7 +94,7 @@ export class MirrorFrames {
   async snapshot(child, loaderId, policy, tab, slot) {
     child.documentId = loaderId;
     await this.mirror.protectTargets(child, tab, policy, `frame:${child.frame.id}:${loaderId}:`);
-    const snap = await this.mirror.evaluate(child, `${child.ref}.snapshot()`);
+    const snap = await this.mirror.evaluate(child, `${child.ref}.snapshot()`, false, undefined, true);
     delete snap.full_pending; // a child frame sends its sheets whole
     await this.mirror.markClosedHosts(child, snap);
     return { ...snap, sheetOps: await this.sheetOps(child, slot, snap.sheets) };
@@ -141,8 +141,8 @@ export class MirrorFrames {
       try {
         const loaderId = await this.loaderId(entry.child);
         if (loaderId !== entry.loaderId) throw new Error('navigated');
-        let raw = await this.mirror.evaluate(entry.child, `${entry.child.ref}.drain()`);
-        if (raw.closed_candidates && await this.mirror.markClosedHosts(entry.child, raw)) { raw = this.mirror.merge(raw, await this.mirror.evaluate(entry.child, `${entry.child.ref}.drain()`)); }
+        let raw = await this.mirror.evaluate(entry.child, `${entry.child.ref}.drain()`, false, undefined, true);
+        if (raw.closed_candidates && await this.mirror.markClosedHosts(entry.child, raw)) { raw = this.mirror.merge(raw, await this.mirror.evaluate(entry.child, `${entry.child.ref}.drain()`, false, undefined, true)); }
         if (raw.resync) throw new Error('resync');
         delete raw.closed_candidates; delete raw.full_pending; // Controller-private discovery signal never enters the strict rebased delta schema.
         const delta = rebaseDelta(raw, entry.slot);

@@ -126,12 +126,20 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// Allocated 160 carries the local 552 `parked_input` reply field.
 /// MP-08/MP-10/MP-11: allocated 164 carries the local 556 `state_wait`.
 /// MP-08/MP-10/MP-11: allocated 175 carries the local 567 `fonts` op `absent`.
+/// MP-08/MP-10/MP-11: allocated 202 carries the local 596 state revision order and `latest_prompt_count`.
+/// Allocated 209 carries the local 603 dictation service/setup contract.
+/// Allocated 216 carries the local 610 union.
 /// Agent-model (145) and event-core (169) contracts were integrated in 570/178.
 /// The Room terminal service (`RoomTerminal`, formerly provisional 177) and its peer forwards ride this number too.
-/// MP-08/MP-10/MP-11: allocated 181 adds exact-home-check assessment wire identities.
-/// MP-08/MP-10/MP-11: allocated 196 acknowledges every leased projection drain, so a
-/// worker keeps drained output until the home applied it.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 196;
+/// Allocated 181 adds exact-home-check assessment wire identities.
+/// Allocated 197 carries the outside `steer` event between peers.
+/// Allocated 215 installs independent provider accounts over the encrypted peer channel.
+/// Allocated 220 unions the staging 216 line with the external agents 215 line.
+/// MP-08/MP-10/MP-11: allocated 232 carries the local 629 browser resize command.
+/// Peer 232 also carries protocol 627 attachment byte sizes in shared history.
+/// MP-08/MP-09/MP-10/MP-11: landing union 239 carries local 636 (peers 233 dialogs, 234 outside events,
+/// 235 binary Room exec and 239 archived-agent discovery with the saved provider thread handoff).
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 239;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;
@@ -143,6 +151,7 @@ pub const REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE: &str =
 /// account cannot start work there; repeating the prompt cannot repair it.
 pub const REMOTE_PROVIDER_ACCOUNT_UNUSABLE_CODE: &str = "provider_account_unusable";
 pub(crate) const ADMIT_LEASED_PROMPT_ACCOUNT_OPERATION: &str = "admit leased prompt account";
+pub(crate) const ENSURE_REMOTE_PROVIDER_ACCOUNT_OPERATION: &str = "ensure remote provider account";
 pub const PROJECT_ENVIRONMENT_SETUP_NOT_FOUND_CODE: &str = "project_environment_setup_not_found";
 pub const PROJECT_ENVIRONMENT_SETUP_REJECTED_CODE: &str = "project_environment_setup_rejected";
 
@@ -890,6 +899,8 @@ pub enum RelayPeerRequest {
     SubmitLeasedPrompt {
         leased_agent_id: String,
         expected_profile: RelayAgentExecutionProfile,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_resume_state: Option<crate::provider::ProviderResumeState>,
         prompt: String,
         #[serde(default, skip_serializing_if = "String::is_empty")]
         hidden_system_context: String,
@@ -1140,6 +1151,10 @@ pub enum RelayPeerRequest {
         context: RemoteSkillSyncContext,
         packages: Vec<CharioxSkillPackage>,
     },
+    InstallProviderAccountCopy {
+        binding: crate::provider_account_copy::ProviderAccountCopyBinding,
+        credential: crate::provider_account_copy::ProviderAccountCopyCredential,
+    },
     EnsureRemoteProviderAccount {
         context: RemoteProviderAccountSyncContext,
         materialization: crate::account_profile::ProviderAccountMaterialization,
@@ -1188,7 +1203,10 @@ impl RelayPeerRequest {
         &self,
         configured: std::time::Duration,
     ) -> std::time::Duration {
-        if matches!(self, Self::EnsureRemoteProviderAccount { .. }) {
+        if matches!(
+            self,
+            Self::EnsureRemoteProviderAccount { .. } | Self::InstallProviderAccountCopy { .. }
+        ) {
             configured.max(std::time::Duration::from_secs(150))
         } else {
             configured
@@ -1458,6 +1476,12 @@ pub enum RelayPeerResponse {
     },
     RemoteSkillPackagesEnsured {
         materialized: Vec<RemoteSkillMaterialization>,
+    },
+    ProviderAccountCopyFailed {
+        code: String,
+    },
+    ProviderAccountCopyInstalled {
+        receipt: crate::provider_account_copy::ProviderAccountCopyReceipt,
     },
     RemoteProviderAccountEnsured {
         provider: String,

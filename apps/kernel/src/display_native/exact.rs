@@ -39,8 +39,8 @@ impl ExactPlan {
         }
         // MP-08/MP-10: small input patches stay PNG for latency. Repairs merge
         // adjacent tiles of each row band into lossless WebP strips, about
-        // half the bytes of tile PNG on text. Higher effort also reduces
-        // paced transfer on dense1080p text, as it does at Retina density.
+        // half the bytes of tile PNG on text. They use the low lossless
+        // effort: on 1080p pages it encodes ~45 % faster for 3-7 % more bytes.
         // Up to eight threads, in order.
         let (pixels, w, patch) = (&self.pixels, self.w, self.patch);
         let rectangles = if patch {
@@ -95,12 +95,15 @@ impl ExactPlan {
         Ok(value)
     }
 }
+/// MP-08/MP-10: lossless WebP effort of repair strips. Above 0 it costs
+/// encoder CPU on every full repair for a few percent fewer bytes.
+pub(super) const REPAIR_EFFORT: i32 = 0;
 /// MP-08/MP-10/MP-11: a legacy relay's outer base64 must also fit the
 /// unchanged 1 MiB egress contract. Leave room for its header/envelope.
 /// Low-entropy text keeps its full-width strip; split only oversized output.
 fn repair_tiles(pixels: &[u8], stride: usize, rect: [i32; 4]) -> Result<Vec<Value>, String> {
     let [x, y, width, height] = rect;
-    let bytes = raster::webp(pixels, stride, rect, 1, 50)?;
+    let bytes = raster::webp(pixels, stride, rect, 1, REPAIR_EFFORT)?;
     if bytes.len() > (1024 * 1024 - 4096) * 3 / 4 {
         let (first, second) = if width >= height && width > 1 {
             let half = width / 2;

@@ -29,6 +29,7 @@ export function formatSessionRuntimeStatus(
   session: RuntimeSession,
   options: SessionRuntimeStatusFormatOptions = {},
 ): string {
+  session = { ...session, agents: session.agents.filter(agent => !agent.archived) }
   const focusedAgent = session.agents.find((agent) => agent.id === session.focused_agent_id) ?? null
   const promptSummary = formatPromptSummary(session)
   const agentSummary = formatAgentSummary(session)
@@ -67,10 +68,11 @@ function formatAgentRuntimeLines(
   session: RuntimeSession,
   options: SessionRuntimeStatusFormatOptions,
 ): string[] {
-  if (session.agents.length === 0) {
+  const agents = session.agents.filter(agent => !agent.archived)
+  if (agents.length === 0) {
     return ["  - none"]
   }
-  return session.agents.map((agent) => [
+  return agents.map((agent) => [
     `  - ${formatAgentLabel(agent)}:`,
     sessionAgentRuntimeDisplayState(session, agent),
     formatAgentProvider(agent),

@@ -230,7 +230,7 @@ test("MP-08 / MP-10 / MP-11: receiver device login feeds actual CLI pairing boot
     bootstrapAttachedSession: async () => ({client: fakeClient, sessionId: "session", transcript: []}),
   }
   const boot = () => bootstrapCliRuntime({argv: ["--terminal-pairing-link", pairingLink], cwd: root}, deps)
-  await assert.rejects(boot(), /signed-in terminal/)
+  await assert.rejects(boot(), /Cloud client authentication failed \(login_required\)/)
   assert.equal(clients, 0, "fresh receiver rejects before IPC")
   await runRemoteTerminalLogin("login", root, "http://127.0.0.1:44123", "account")
   const receivingClient = JSON.parse(await readFile(path.join(root, "login-ready"), "utf8"))

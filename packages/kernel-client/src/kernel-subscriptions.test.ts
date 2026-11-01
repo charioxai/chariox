@@ -84,3 +84,29 @@ test("kernel subscription transport request preserves scope and resume cursor", 
     },
   })
 })
+
+test("a subscription that asks for a heartbeat interval sends it on every subscribe", () => {
+  const session = createKernelSessionSubscriptionStart({
+    previous: null,
+    lastReceivedEventId: null,
+    sessionId: "session-a",
+    attachmentId: "attachment-a",
+    relaySubscriptionId: null,
+    heartbeatIntervalMs: 1000,
+  })
+  const control = buildKernelSubscriptionTransportRequest(session.subscription, null).__kernel_transport
+  assert.equal("heartbeat_interval_ms" in control ? control.heartbeat_interval_ms : undefined, 1000)
+  const waitingRoom = createWaitingRoomInventorySubscriptionStart({
+    previous: null,
+    lastReceivedEventId: null,
+    relaySubscriptionId: null,
+    heartbeatIntervalMs: 1000,
+  })
+  assert.equal(waitingRoom.subscription.heartbeatIntervalMs, 1000)
+  const quiet = createWaitingRoomInventorySubscriptionStart({
+    previous: null,
+    lastReceivedEventId: null,
+    relaySubscriptionId: null,
+  })
+  assert.equal("heartbeat_interval_ms" in buildKernelSubscriptionTransportRequest(quiet.subscription, null).__kernel_transport, false)
+})

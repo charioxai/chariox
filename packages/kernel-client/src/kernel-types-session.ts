@@ -42,6 +42,7 @@ export type SessionViewAttachedResponse = {
 }
 
 export type RuntimeSession = {
+  pinned?: boolean
   id: string
   project_id: string
   alias?: string | null
@@ -188,6 +189,7 @@ export type SessionAgentDefaults = {
 }
 
 export type WaitingRoomPublicSessionSummary = {
+  pinned?: boolean
   id: string
   project_id: string
   kernel_id?: string | null
@@ -411,4 +413,14 @@ export type AgentWake = {
   fire_count: number; missed_fires: number; last_fired_at_ms: number | null; last_sequence: number | null
   last_delivery: string | null; last_delivered_at_ms: number | null; last_acknowledged_at_ms: number | null
   alerted_sequence: number | null
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11: executor-local durable lane stop receipt.
+export type AgentDeadline = {
+  session_id: string
+  agent_id: string
+  deadline_ms: number
+  state: "armed" | "reached"
+  reached_at_ms: number | null
+  stopped_at_ms: number | null
 }

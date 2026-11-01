@@ -15,6 +15,10 @@ pub struct AttachSessionViewRequest {
     pub capability_level: ClientCapabilityLevel,
     #[serde(default)]
     pub preferred_agent_id: Option<String>,
+    /// How many of the latest prompts per agent the initial history holds, so a pane that
+    /// needs more than one turn draws filled. Absent means 1; the kernel caps it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latest_prompt_count: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -216,6 +220,12 @@ pub struct ListSessionsRequest;
 pub struct ListProjectsRequest {
     #[serde(default)]
     pub include_archived: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetRoomPinnedRequest {
+    pub session_id: String,
+    pub pinned: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

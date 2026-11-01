@@ -51,3 +51,26 @@ test('MP-08/MP-10/MP-11 first independent push during registration reaches the p
   assert.deepEqual(seen,[1],'MP-10 do not lose the first independently decoded frame in the registration listener gap');
  }finally{await stream?.close();BrowserDisplayPresenter.prototype.present=previous}
 });
+
+for(const [independent,size,count,expected] of [[true,1,12,[9,10,11,12]],[false,1,12,[13]],[true,4*1024*1024,3,[3]]])test(`MP-08/MP-10 registration bursts recover with ${independent?'independent':'dependent'} frames of ${size} bytes`,async()=>{
+ const previous=BrowserDisplayPresenter.prototype.present,listeners=new Set(),seen=[],acks=[];
+ BrowserDisplayPresenter.prototype.present=async function(frame){this.sequence=frame.sequence;return true};
+ const event=sequence=>({event:'kernel_browser_frame',subscription_id:'fresh',frame:{subscription_id:'fresh',generation:7,sequence,kind:independent?'png':'video',key:false,data:new Uint8Array(size)}});
+ const transport={kernelProtocolVersion:540,displayEventEncoding:'CXD1',initialPush:true,
+  onEvent:fn=>{listeners.add(fn);return()=>listeners.delete(fn)},
+  subscribeDisplay:async()=>{for(let n=1;n<=count;n++)for(const listener of listeners)listener(event(n))},unsubscribeDisplay:async()=>{},
+  request:async({KernelBrowser:{command}})=>{if(command.op==='display_ack')acks.push(command);return {KernelBrowser:{result:command.op==='display_subscribe'?{subscription_id:'fresh',generation:7}:{push:'running'}}}}};
+ let stream;
+ try{
+  stream=await attachBrowserDisplay({width:1280,height:800},transport,{tab_id:'tab',generation:7},{onPresented:frame=>seen.push(frame.sequence)});
+  if(!independent){
+   assert.ok(acks.some(ack=>ack.lost),'a discarded dependency requests an independent frame');
+   assert.deepEqual(seen,[],'dependent frames cannot paint after the registration window overflows');
+   const key={...event(13),frame:{...event(13).frame,kind:'png'}};
+   for(const listener of listeners)listener(key);
+  }
+  for(let n=0;n<50;n++)await Promise.resolve();
+  assert.deepEqual(seen,expected,'only the bounded independently decodable suffix paints on the same binding');
+  assert.equal(stream.error,null);
+ }finally{await stream?.close();BrowserDisplayPresenter.prototype.present=previous}
+});

@@ -259,6 +259,12 @@ impl<'a> ProviderOutputPromptSettlement<'a> {
         if prompt.delivery_pending() {
             return Ok(());
         }
+        if self
+            .app
+            .follow_up_missing_workflow_output(session_id, provider_run_id, &prompt)?
+        {
+            return Ok(());
+        }
         let agent_id = self.provider_run_agent_id(provider_run_id)?;
         if let (Some(workflow_run_id), Some(workflow_node_run_id)) =
             (prompt.workflow_run_id(), prompt.workflow_node_run_id())
@@ -309,6 +315,17 @@ impl<'a> ProviderOutputPromptSettlement<'a> {
             return Ok(false);
         };
         if prompt.workflow_run_id().is_none() || prompt.workflow_node_run_id().is_none() {
+            return Ok(false);
+        }
+        if !crate::app::workflow_output_follow_up::missing_output_is_final(
+            &self.app.durable_state_store(),
+            session_id,
+            &prompt,
+            self.provider_store
+                .get_run(provider_run_id)?
+                .terminal_diagnostic()
+                .is_some(),
+        )? {
             return Ok(false);
         }
         Ok(

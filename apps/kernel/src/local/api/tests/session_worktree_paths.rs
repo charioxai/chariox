@@ -48,7 +48,7 @@ fn session_worktree_paths_accept_absolute_and_preserve_existing_session() {
         ))
         .expect("absolute existing paths should be accepted")
     {
-        LocalDaemonResponse::SessionCreated { session, agent } => {
+        LocalDaemonResponse::SessionCreated { session, agent, .. } => {
             assert_eq!(agent.worktree_id(), Some(session.worktree_id()));
             session
         }
@@ -101,6 +101,7 @@ fn session_worktree_paths_reject_invalid_agent_overrides_without_mutation() {
 
 fn spawn_request(session_id: &str, worktree_id: Option<String>) -> SpawnAgentRequest {
     SpawnAgentRequest {
+        no_subscribe: false,
         session_id: session_id.to_string(),
         alias: None,
         provider: None,

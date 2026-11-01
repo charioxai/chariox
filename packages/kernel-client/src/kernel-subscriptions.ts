@@ -10,6 +10,8 @@ export type KernelSubscriptionState = {
   relaySubscriptionId: string | null
   relayPublicKey: string | null
   relayDecryptEvent: ((payload: EncryptedRelayPayload) => string) | null
+  /** Protocol 596: how often this subscription's `heartbeat` should arrive (at least 500 ms). */
+  heartbeatIntervalMs?: number
 }
 
 export type KernelSubscriptionStart = {
@@ -26,6 +28,7 @@ export function createKernelSessionSubscriptionStart(input: {
   readonly sessionId: string
   readonly attachmentId: string
   readonly relaySubscriptionId: string | null
+  readonly heartbeatIntervalMs?: number | undefined
 }): KernelSubscriptionStart {
   const resumeFromEventId =
     input.previous?.scope === "session"
@@ -41,6 +44,7 @@ export function createKernelSessionSubscriptionStart(input: {
       relaySubscriptionId: input.relaySubscriptionId,
       relayPublicKey: null,
       relayDecryptEvent: null,
+      ...heartbeatField(input.heartbeatIntervalMs),
     },
     resumeFromEventId,
     resetLastReceivedEventId: resumeFromEventId == null,
@@ -51,6 +55,7 @@ export function createWaitingRoomInventorySubscriptionStart(input: {
   readonly previous: KernelSubscriptionState | null
   readonly lastReceivedEventId: number | null
   readonly relaySubscriptionId: string | null
+  readonly heartbeatIntervalMs?: number | undefined
 }): KernelSubscriptionStart {
   const resumeFromEventId =
     input.previous?.scope === "waiting_room_inventory" ? input.lastReceivedEventId : null
@@ -62,10 +67,15 @@ export function createWaitingRoomInventorySubscriptionStart(input: {
       relaySubscriptionId: input.relaySubscriptionId,
       relayPublicKey: null,
       relayDecryptEvent: null,
+      ...heartbeatField(input.heartbeatIntervalMs),
     },
     resumeFromEventId,
     resetLastReceivedEventId: resumeFromEventId == null,
   }
+}
+
+function heartbeatField(heartbeatIntervalMs: number | undefined): { heartbeatIntervalMs?: number } {
+  return heartbeatIntervalMs === undefined ? {} : { heartbeatIntervalMs }
 }
 
 export function kernelSubscriptionScopeValue(subscription: KernelSubscriptionState): string | undefined {
@@ -81,6 +91,9 @@ export function buildKernelSubscriptionTransportRequest(
     session_id: subscription.sessionId,
     attachment_id: subscription.attachmentId,
     resume_from_event_id: resumeFromEventId,
+  }
+  if (subscription.heartbeatIntervalMs !== undefined) {
+    transportRequest.heartbeat_interval_ms = subscription.heartbeatIntervalMs
   }
   const subscriptionScope = kernelSubscriptionScopeValue(subscription)
   if (subscriptionScope) {

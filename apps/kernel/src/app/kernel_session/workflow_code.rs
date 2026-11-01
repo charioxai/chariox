@@ -496,7 +496,13 @@ impl<'a> KernelSessionService<'a> {
             .iter()
             .filter(|node| matches!(&node.agent, WorkflowCodeAgentBinding::Create(_)))
             .count();
-        let current_agent_count = self.app.agents.get_session_agents(session_id).len();
+        let current_agent_count = self
+            .app
+            .agents
+            .get_session_agents(session_id)
+            .iter()
+            .filter(|agent| !agent.archived())
+            .count();
         if caller_metaagent_id.is_none()
             && current_agent_count.saturating_add(generated_agent_count)
                 > session.max_agents() as usize

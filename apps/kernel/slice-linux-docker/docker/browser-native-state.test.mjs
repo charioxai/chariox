@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import {BrowserCdpClient} from './browser-controller-cdp.mjs';
 for(const pending of [false,true])test('MP-08/MP-10/MP-11 known native metadata stays responsive with pending='+pending,async()=>{
  const connection={isOpen:()=>true,send:async()=>assert.fail('metadata does not ask the renderer')},browser=new BrowserCdpClient({connectionFactory:async()=>connection});
- browser.connection=connection;browser.ensureTargetSession=async()=> 's';browser.sessionsByTarget.set('t','s');browser.viewportByTarget.set('t','{}');browser.documentIdsByTarget.set('t','doc');browser.readFocus=()=>assert.fail('state metadata never reads page focus');
+ browser.connection=connection;browser.ensureTargetSession=async()=> 's';browser.sessionsByTarget.set('t','s');browser.viewportByTarget.set('t',{key:'{}'});browser.documentIdsByTarget.set('t','doc');browser.readFocus=()=>assert.fail('state metadata never reads page focus');
  if(!pending)browser.pageFramesByTarget.set('t',{connection,sessionId:'s',frame:{id:'frame',loaderId:'doc'}});
  const result=await browser.inspectPage(connection,{targetId:'t',url:'https://html.spec.whatwg.org/',title:'HTML'}, {},{visibleTargetId:'other'});
  assert.equal(result.document_id,'doc');assert.equal(result.focused,false);assert.equal(result.url,'https://html.spec.whatwg.org/');assert.equal(browser.pageFramesByTarget.has('t'),!pending,'pending metadata never admits a document owner');
@@ -13,7 +13,7 @@ for(const pending of [false,true])test('MP-08/MP-10/MP-11 known native metadata 
 import {nativeStateObservationOptions} from './kernel-browser-display-document.mjs';
 for(const mode of ['ordinary','cold','metrics-changed'])test('MP-08/MP-11 '+mode+' state retains renderer discovery',async()=>{
  const calls=[],connection={isOpen:()=>true,send:async method=>{calls.push(method);if(method==='Page.getFrameTree')throw new Error('renderer discovery reached');return {};}};
- const browser=new BrowserCdpClient({connectionFactory:async()=>connection});browser.connection=connection;browser.ensureTargetSession=async()=> 's';browser.sessionsByTarget.set('t','s');browser.viewportByTarget.set('t',mode==='metrics-changed'?'old':'{}');
+ const browser=new BrowserCdpClient({connectionFactory:async()=>connection});browser.connection=connection;browser.ensureTargetSession=async()=> 's';browser.sessionsByTarget.set('t','s');browser.viewportByTarget.set('t',{key:mode==='metrics-changed'?'old':'{}'});
  if(mode!=='cold')browser.documentIdsByTarget.set('t','doc');
  await assert.rejects(browser.inspectPage(connection,{targetId:'t'},{},mode==='ordinary'?undefined:{visibleTargetId:'t'}),/renderer discovery reached/);
  assert(calls.includes('Page.getFrameTree'));

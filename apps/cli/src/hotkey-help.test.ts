@@ -18,18 +18,10 @@ test("session help lists approval opening keys and slash command", () => {
   assert.ok(items.some(item => item.keys.includes("Ctrl+G") && item.keys.includes("F8") && item.keys.includes("/approvals")))
 })
 
- test("waiting-room command shortcut is shown only with the App prototype flag", () => {
-   const previous=process.env.CHARIOX_USER_APP_VIEWS_PROTOTYPE
-   try {
-     process.env.CHARIOX_USER_APP_VIEWS_PROTOTYPE="0"
-     assert.ok(!buildHotkeySections(false).flatMap(s=>s.items).some(i=>i.keys==="/"))
-     process.env.CHARIOX_USER_APP_VIEWS_PROTOTYPE="1"
-     assert.ok(buildHotkeySections(false).flatMap(s=>s.items).some(i=>i.keys==="/"))
-   } finally {
-     if(previous===undefined)delete process.env.CHARIOX_USER_APP_VIEWS_PROTOTYPE
-     else process.env.CHARIOX_USER_APP_VIEWS_PROTOTYPE=previous
-   }
- })
+test("waiting-room help lists the slash command shortcut", () => {
+  assert.ok(buildHotkeySections(false).flatMap(s=>s.items).some(i=>i.keys==="/"))
+  assert.ok(!buildHotkeySections(true).flatMap(s=>s.items).some(i=>i.keys==="/"))
+})
 
 test("MP-08 / MP-10 copy help offers a legacy-terminal key distinct from Ctrl+C", () => {
   for (const attached of [true, false]) {

@@ -8,9 +8,9 @@ const refuse = reason => { const error = new Error(`MP-11: ${reason}`); error.mi
 const fields = new Set(['mirror_subscription_id', 'generation', 'document_id', 'sequence', 'region_id']);
 const id = value => typeof value === 'string' && /^n[1-9][0-9]{0,15}$/.test(value);
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
-function clipped(box) {
+function clipped(box, {width,height}) {
   if (!Array.isArray(box) || box.length !== 4 || !box.every(Number.isFinite)) refuse('region_geometry');
-  const [x,y,w,h] = box, left = Math.max(0,x), top = Math.max(0,y), right = Math.min(1280,x+w), bottom = Math.min(800,y+h);
+  const [x,y,w,h] = box, left = Math.max(0,x), top = Math.max(0,y), right = Math.min(width,x+w), bottom = Math.min(height,y+h);
   if (w <= 0 || h <= 0 || right <= left || bottom <= top) refuse('region_geometry');
   return {x:left,y:top,width:right-left,height:bottom-top};
 }
@@ -64,7 +64,8 @@ export class Mirror2Regions {
     if (!box) refuse('region_target');
     // A change of compositing (a fade, a rotation starting or ending) retires the lease: the viewer places a patch
     // over a composited region differently from one inside an untransformed element.
-    return {box:box.box,rect:clipped(box.clip ?? box.box),composited:Boolean(box.distorted)};
+    const viewport = this.host.pageSize(tab.tab_id);
+    return {box:box.box,rect:clipped(box.clip ?? box.box,viewport),viewport,composited:Boolean(box.distorted)};
   }
   async resolve(target, scope, {signal} = {}) {
     if (!target || Object.keys(target).some(k => !fields.has(k)) || !id(target.region_id) || typeof target.document_id !== 'string' ||
@@ -86,7 +87,7 @@ export class Mirror2Regions {
       const alive=()=>{
         try {
           if(retired || stream.resetAt !== resetAt || this.host.protection !== policy || this.host.tabs.get(tab.tab_id)?.target_id !== tab.target_id ||
-            (this.host.scales.get(tab.tab_id) ?? 1) !== scale || !same(identities,this.check(request,scope,stream).identities)) return false;
+            (this.host.scales.get(tab.tab_id) ?? 1) !== scale || !same(this.host.pageSize(tab.tab_id),measured.viewport) || !same(identities,this.check(request,scope,stream).identities)) return false;
           return true;
         } catch { return false; }
       };
@@ -100,8 +101,8 @@ export class Mirror2Regions {
       };
       const lease=Object.freeze({binding_id,...request,tab_id:tab.tab_id,rect:Object.freeze(measured.rect),
         // Private placement before the producer's inward codec rounding. The
-        // canonical clip may start inside an offscreen/ancestor-clipped tile.
-        element_offset:Object.freeze({x:measured.rect.x-measured.box[0],y:measured.rect.y-measured.box[1]}),css_width:1280,css_height:800,
+        // viewport clip may start inside an offscreen/ancestor-clipped tile.
+        element_offset:Object.freeze({x:measured.rect.x-measured.box[0],y:measured.rect.y-measured.box[1]}),css_width:measured.viewport.width,css_height:measured.viewport.height,
         device_scale_factor:scale,source_revision:stream.issued,input_epoch:request.sequence,
         // isAlive is a cheap synchronous fence; isCurrent re-measures live bounds.
         // A native consumer MUST await isCurrent before readback/delivery/input.

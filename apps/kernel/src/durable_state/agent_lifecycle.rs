@@ -4,11 +4,16 @@
 mod catalog_continuation_tests;
 pub(crate) mod completion;
 mod continuations;
+#[cfg(test)]
+mod deadline_tests;
+mod deadlines;
 mod delegation;
 mod delivery;
 mod leased_processes;
 pub(crate) use leased_processes::LeasedProcessMutation;
 pub use leased_processes::{LeasedProcessBinding, LeasedProcessReceipt};
+#[cfg(test)]
+mod blocked_intent_tests;
 mod delivery_waits;
 #[cfg(test)]
 mod fault_tests;
@@ -17,16 +22,22 @@ pub(crate) mod faults;
 mod goal_tests;
 pub(crate) mod goals;
 mod migration;
+pub(crate) mod outside;
+#[cfg(test)]
+mod outside_tests;
 #[cfg(test)]
 mod plain_tests;
 mod quarantine;
 mod replies;
+#[cfg(test)]
+mod reply_terminal_tests;
 mod subscriptions;
 mod supervision;
 #[cfg(test)]
 mod tests;
 mod transitions;
 mod types;
+pub(crate) use types::{DelegateGoneReason, ReplyOutcome};
 #[cfg(test)]
 mod wake_tests;
 mod wakes;
@@ -91,6 +102,8 @@ pub(super) fn initialize(db: &mut Connection) -> Result<(), DaemonError> {
         db.execute_batch("ALTER TABLE agent_source_occurrences ADD COLUMN public_answer TEXT")
             .map_err(sql)?;
     }
+    outside::initialize(db)?;
+    deadlines::initialize(db)?;
     wakes::initialize(db)?;
     leased_processes::initialize(db)?;
     workflow_tasks::initialize(db)?;
@@ -169,6 +182,17 @@ impl DurableKernelStateStore {
         let row:Option<(i64,String,String,String)>=db.query_row("SELECT sequence,source_id,occurrence_id,payload FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND CASE WHEN json_valid(payload) THEN json_extract(payload,'$.state') IN ('submitting','uncertain','blocked') OR (json_extract(payload,'$.state')='pending' AND json_extract(payload,'$.urgent')=1 AND json_extract(payload,'$.attempted_at_ms') IS NULL) ELSE 1 END ORDER BY CASE WHEN json_valid(payload) AND json_extract(payload,'$.state')='pending' THEN 1 ELSE 0 END,sequence LIMIT 1",params![room,agent],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional().map_err(sql)?;
         row.map(|(seq, source, id, payload)| decode_inbox(seq, room, agent, &source, &id, &payload))
             .transpose()
+    }
+    /// Includes accepted old messages: their recipient can disappear after delivery.
+    pub(crate) fn agent_unsettled_reply_recipients(
+        &self,
+    ) -> Result<Vec<(String, String)>, DaemonError> {
+        let db = self.lock_connection("agent.lifecycle.reply_recipients")?;
+        let mut q = db.prepare("SELECT DISTINCT i.room_id,i.agent_id FROM agent_inbox i WHERE json_valid(i.payload) AND json_extract(i.payload,'$.reply_requested')=1 AND NOT EXISTS(SELECT 1 FROM agent_source_occurrences o WHERE o.room_id=i.room_id AND o.source_id='agent-event-' || i.agent_id || '-' || i.sequence) ORDER BY i.room_id,i.agent_id").map_err(sql)?;
+        let rows = q
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .map_err(sql)?;
+        rows.collect::<Result<_, _>>().map_err(sql)
     }
     /// Pending inbox rows, rather than task existence, own periodic delivery retries.
     pub(crate) fn agent_pending_inbox_recipients(
@@ -396,7 +420,18 @@ fn decode_task(
     Ok(t)
 }
 fn save(tx: &Transaction<'_>, task: &AgentTaskExecution) -> Result<(), DaemonError> {
+    let previous = tx
+        .query_row(
+            "SELECT payload FROM agent_tasks WHERE task_id=?1",
+            [&task.task_id],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(sql)?
+        .map(|s| decode::<AgentTaskExecution>(&s))
+        .transpose()?;
     tx.execute("INSERT INTO agent_tasks VALUES(?1,?2,?3,?4,?5) ON CONFLICT(task_id) DO UPDATE SET prompt_id=excluded.prompt_id,payload=excluded.payload",params![task.task_id,task.room_id,task.agent_id,task.prompt_id,encode(task)?]).map_err(sql)?;
+    outside::publish_task(tx, task, previous.as_ref())?;
     if matches!(task.state, ExecutionState::Done | ExecutionState::Cancelled) {
         tx.execute("UPDATE agent_registrations SET payload=json_set(payload,'$.live',json('false')) WHERE task_id=?1 AND json_valid(payload)", [&task.task_id]).map_err(sql)?;
     }
@@ -525,7 +560,12 @@ fn new_task(
 }
 fn event(tx: &Transaction<'_>, mut e: InboxEvent) -> Result<InboxEvent, DaemonError> {
     crate::secret_redaction::redact_json_secrets(&mut e.payload);
-    let previous:Option<String>=tx.query_row("SELECT payload FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND source_id=?3 AND occurrence_id=?4",params![e.room_id,e.agent_id,e.source_id,e.occurrence_id],|r|r.get(0)).optional().map_err(sql)?;
+    let recipient = outside::Recipient::SessionAgent {
+        session_id: e.room_id.clone(),
+        agent_id: e.agent_id.clone(),
+    };
+    let (room, agent) = recipient.address();
+    let previous:Option<String>=tx.query_row("SELECT payload FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND source_id=?3 AND occurrence_id=?4",params![room,agent,e.source_id,e.occurrence_id],|r|r.get(0)).optional().map_err(sql)?;
     if let Some(previous) = previous {
         let mut p: InboxEvent = decode(&previous)?;
         if matches!(e.kind.as_str(), "source_completed" | "source_lost") && p.kind == e.kind {

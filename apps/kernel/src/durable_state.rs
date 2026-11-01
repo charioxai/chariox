@@ -78,11 +78,14 @@ pub struct DurableKernelStateStore {
     writer: Arc<DurableStateWriter>,
     workflow_runtime_transition_lock: Arc<Mutex<()>>,
     app_wake_changed: Arc<tokio::sync::Notify>,
+    appended_events: tokio::sync::broadcast::Sender<DurableStateEvent>,
     _owner: Option<Arc<owner::OwnerLease>>,
     workflow_history_authority: workflow_invocation_provenance::WorkflowHistoryAuthority,
 }
 
 const DURABLE_WRITE_QUEUE_CAPACITY: usize = 4_096;
+/// Appended events a live subscriber may fall behind before it loses some.
+const APPENDED_EVENT_BACKLOG: usize = 1_024;
 const DURABLE_WRITE_BATCH_LIMIT: usize = 256;
 const DURABLE_SETTLEMENT_RETRY_BASE_MS: u64 = 100;
 const DURABLE_SETTLEMENT_RETRY_MAX_MS: u64 = 5_000;
@@ -445,6 +448,7 @@ impl DurableKernelStateStore {
             writer: Arc::new(writer),
             workflow_runtime_transition_lock: Arc::new(Mutex::new(())),
             app_wake_changed: Arc::new(tokio::sync::Notify::new()),
+            appended_events: tokio::sync::broadcast::channel(APPENDED_EVENT_BACKLOG).0,
             _owner: None,
             workflow_history_authority: Default::default(),
         })
@@ -471,14 +475,25 @@ impl DurableKernelStateStore {
             timestamp_ms,
             payload_json,
         })?;
-        Ok(DurableStateEvent {
+        let event = DurableStateEvent {
             sequence,
             event_id,
             kind,
             subject_id,
             timestamp_ms,
             payload,
-        })
+        };
+        if self.appended_events.receiver_count() > 0 {
+            let _ = self.appended_events.send(event.clone());
+        }
+        Ok(event)
+    }
+
+    /// Every event appended through `append_event` from now on, for live subscribers.
+    pub(crate) fn subscribe_appended_events(
+        &self,
+    ) -> tokio::sync::broadcast::Receiver<DurableStateEvent> {
+        self.appended_events.subscribe()
     }
 
     pub(crate) fn append_quiescence_snapshot(

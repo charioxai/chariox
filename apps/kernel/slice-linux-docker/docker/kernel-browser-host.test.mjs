@@ -5,6 +5,8 @@ import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import os from "node:os";
 import { PassThrough } from "node:stream";
 import readline from "node:readline";
+import { BrowserCdpClient } from "./browser-controller-cdp.mjs";
+import { BrowserMemory } from "./browser-memory.mjs";
 import { BrowserControllerStdioServer } from "./browser-controller.mjs";
 import path from "node:path";
 import { encodePng, decodePng, maskPng } from "./kernel-browser-pixels.mjs";
@@ -13,6 +15,9 @@ import { candidates as macCandidates, launchEnvironment as macEnvironment } from
 import { launchEnvironment as linuxEnvironment } from "./kernel-browser-linux.mjs";
 import { launchArguments, HostChromium, chromiumTemporaryEnvironment } from "./kernel-browser-process.mjs";
 import { PointerOutsideViewport } from "./kernel-browser-refusal.mjs";
+import { BrowserDialogDefaults } from "./browser-controller-dialogs.mjs";
+// These fixtures exercise the host with the mirror and display kill-switched; tests that need them on set "1" themselves.
+process.env.CHARIOX_KERNEL_BROWSER_MIRROR ??= '0'; process.env.CHARIOX_KERNEL_BROWSER_DISPLAY ??= '0';
 
 test('MP-08 / MP-11: Chromium temporary sockets use the held private directory through a bounded path', () => {
   const environment = { TMPDIR: '/private/' + 'long/'.repeat(60), XAUTHORITY: '/private/authority' };
@@ -77,6 +82,53 @@ async function using(callback) {
   const context = fixture(root);
   try { await callback(context, root); } finally { fixture.secretFocused = false; fixture.protectedField = false; await context.host.stop(); await rm(root, { recursive: true, force: true }); }
 }
+
+test("MP-08/MP-09/MP-10/MP-11 a dialog without Chrome chrome is shared and answerable while its renderer is blocked", () => using(async ({ host }) => {
+  const opened = await host.request({ op: "open", url: "https://example.com" });
+  const tab = host.tabs.get(opened.tabs[0].tab_id);
+  host.browser.dialogDefaults = new BrowserDialogDefaults();
+  host.browser.dialogDefaults.observe({ method: "Page.javascriptDialogOpening", params: {
+    type: "alert", message: "Hello from the page", url: "https://example.com/path" } }, tab.target_id, tab.document_id);
+  host.browser.reconcile = async () => { throw Error("blocked renderer must not be queried"); };
+  const state = await host.handle({ id: 1, method: "host.browser", params: { op: "state", state_wait: true } });
+  assert.equal(state.ok, true);
+  assert.equal(state.result.chrome_window, null);
+  assert.equal(state.result.dialogs.length, 1);
+  const dialog = state.result.dialogs[0];
+  assert.equal(dialog.message, "Hello from the page");
+  assert.equal(dialog.origin, "https://example.com");
+  assert.equal(dialog.tab_id, tab.tab_id);
+  assert.equal(typeof state.result._state_signal, "number");
+  const answer = { op: "dialog", ...dialog, action: "accept" };
+  host.browser.handleDialog = async request => {
+    assert.equal(request.target_id, tab.target_id);
+    assert.equal(request.action, "accept");
+    host.browser.dialogDefaults.delete(tab.target_id);
+  };
+  const answered = await host.handle({ id: 2, method: "host.browser", params: answer });
+  assert.equal(answered.ok, true);
+  assert.deepEqual(answered.result.dialogs, []);
+  const stale = await host.handle({ id: 3, method: "host.browser", params: answer });
+  assert.equal(stale.ok, false);
+  assert.equal(stale.error.code, "browser_dialog_invalid");
+  assert.deepEqual(scheduleHostRequest({ method: "host.browser", params: answer }), { kind: "bridge" });
+}));
+
+test("MP-08/MP-09/MP-10/MP-11 a dialog opening during a state read releases that read", () => using(async ({ host }) => {
+  const opened = await host.request({ op: "open", url: "https://example.com" });
+  const tab = host.tabs.get(opened.tabs[0].tab_id);
+  host.browser.dialogDefaults = new BrowserDialogDefaults();
+  host.browser.reconcile = async () => {
+    host.browser.dialogDefaults.observe({ method: "Page.javascriptDialogOpening", params: {
+      type: "confirm", message: "Continue?", url: "https://example.com" } }, tab.target_id, "new-document");
+    host.stateSignal.notify();
+    return new Promise(() => {});
+  };
+  const state = await host.request({ op: "state", state_wait: true });
+  assert.equal(state.dialogs[0].document_id, "new-document");
+  assert.equal(state.tabs[0].document_id, "new-document");
+  assert.equal(host.stateSignal.waiters.size, 0);
+}));
 
 test("MP-08/MP-10 idle App bridge drains do not hold host input or replies", { timeout: 5000 }, () => using(async ({ host, sent }) => {
   const opened = await host.request({ op: "open", url: "about:blank" });
@@ -1537,7 +1589,7 @@ test('MP-11 agents cannot reach extension management; the person can', () => usi
 
 // MP-08/MP-10/MP-11 (protocol 530/138): the public Browser state keys are the hashed
 // Rust fixture's; a new key needs a protocol bump and a new fixture.
-test('MP-08 public Browser state keys match the protocol 530 fixture', () => using(async ({ host }) => {
+test('MP-08 public Browser state keys match the protocol 630 fixture', () => using(async ({ host }) => {
   const fixture = JSON.parse(await readFile(new URL('../../src/local/api/tests/protocol_shapes/browser-chrome-ui-530.json', import.meta.url), 'utf8'));
   const display = process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;
   process.env.CHARIOX_KERNEL_BROWSER_DISPLAY = '1';
@@ -1547,7 +1599,8 @@ test('MP-08 public Browser state keys match the protocol 530 fixture', () => usi
     host.tabGroups = { active: async () => host.tabs.get(tab.tab_id).target_id };
     host.chromium.policy = 'managed';
     const state = await host.request({ op: 'state' });
-    assert.deepEqual(Object.keys(state).filter(key => !key.startsWith('_')).sort(), fixture.state_keys);
+    const dialogs = JSON.parse(await readFile(new URL('../../src/local/api/tests/protocol_shapes/browser-dialog-630.json', import.meta.url), 'utf8'));
+    assert.deepEqual(Object.keys(state).filter(key => !key.startsWith('_')).sort(), dialogs.state_keys);
     assert.deepEqual(Object.keys(state.chrome_window).sort(), fixture.chrome_window_keys);
     host.chromeWindows.auxiliaryState = () => [{ auxiliary_id: 1, x: 0, y: 0, width: 2, height: 2 }];
     assert.deepEqual(Object.keys((await host.request({ op: 'state' })).chrome_window.auxiliary[0]).sort(), fixture.auxiliary_keys);
@@ -2573,4 +2626,116 @@ test('native selection stays unknown while the saved App selection is pending', 
   host.activeTarget=host.tabs.get(docs.tab_id).target_id;
   assert.equal(host.chromeWindow().active_tab_id,docs.tab_id,'later native changes remain visible');
  } finally {host.chromeWindows={retire(){}};if(previous===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY=previous}
+}));
+
+// Review #1073 P1: an ordinary state read reconciles every Tab; a surviving Tab keeps its committed resize.
+test('MP-08/MP-10 tab reconciliation keeps a surviving Tab layout and drops a retired one', () => using(async ({host}) => {
+ const opened=await host.request({op:'open',url:'about:blank'}),tab=opened.tabs[0];
+ host.browser.setLayout=async()=>{};
+ await host.setLayout(host.tabs.get(tab.tab_id),'resize',{width:900,height:600});
+ const revision=host.layoutRevision(tab.tab_id);
+ await host.request({op:'state'});
+ assert.deepEqual(host.pageSize(tab.tab_id),{width:900,height:600},'a state read must not restore the canonical size under a resized page');
+ assert.equal(host.layoutRevision(tab.tab_id),revision);
+ host.layouts.set('host-tab-retired',{width:700,height:500,subscriptionId:'resize'});host.layoutRevisions.set('host-tab-retired',3);
+ await host.request({op:'state'});
+ assert.equal(host.layouts.has('host-tab-retired'),false);assert.equal(host.layoutRevisions.has('host-tab-retired'),false);
+}));
+
+// #1073 P2: a Tab left at an older size by a resize that failed part-way is not skipped because its owner is already 'resize'.
+test('MP-08/MP-10 reconciliation re-lays out a Tab whose resize layout is older than the window', () => using(async ({host}) => {
+ const opened=await host.request({op:'open',url:'about:blank'}),tab=opened.tabs[0];
+ const applied=[];host.browser.setLayout=async(target,layout)=>{applied.push(layout)};
+ await host.setLayout(host.tabs.get(tab.tab_id),'resize',{width:900,height:600});
+ host.windowLayout={width:1000,height:700};applied.length=0;
+ await host.request({op:'state'});
+ assert.deepEqual(host.pageSize(tab.tab_id),{width:1000,height:700});assert.deepEqual(applied,[{width:1000,height:700}]);
+ applied.length=0;await host.request({op:'state'});assert.deepEqual(applied,[],'an up-to-date Tab is not laid out again');
+}));
+
+// browserperf r2: the URL typed right after opening a Tab was lost because the new Tab reported the canonical size and the
+// view resized the shared window again, retiring the band under the person's click.
+test('MP-08/MP-10 a Tab opened in a resized window inherits the window layout', () => using(async ({host}) => {
+ const opened=await host.request({op:'open',url:'about:blank'});
+ const applied=[];host.browser.setLayout=async(target,layout)=>{applied.push([target,layout])};
+ host.windowLayout={width:900,height:600};
+ const next=await host.request({op:'open',url:'about:blank'});
+ for(const tab of next.tabs)assert.deepEqual(host.pageSize(tab.tab_id),{width:900,height:600});
+ assert(applied.length>=1&&applied.every(([,layout])=>layout.width===900&&layout.height===600));
+ assert.equal(opened.tabs.length+1,next.tabs.length);
+}));
+
+
+test('MP-08/MP-10/MP-11: crashed tabs remain in host state and close under sustained memory pressure', () => using(async ({ host, connection, handlers, sent }) => {
+  const opened = await host.request({ op: 'open', url: 'https://example.test/crashed' });
+  await host.request({ op: 'open', url: 'https://example.test/healthy' });
+  const send = connection.send.bind(connection);
+  connection.close = async () => {};
+  connection.send = async (method, params, session) => {
+    const result = await send(method, params, session);
+    if (method === 'Target.attachToTarget') return { sessionId: `session-${params.targetId}` };
+    if (method === 'Target.closeTarget') return { success: true };
+    return result;
+  };
+  const browser = new BrowserCdpClient({ connectionFactory: async () => connection,
+    memory: new BrowserMemory({ availableMemory: () => 128 * 1024 * 1024 }) });
+  host.browser = browser;
+  const before = await host.request({ op: 'state' });
+  const crashed = before.tabs.find(tab => tab.url.includes('/crashed'));
+  const healthy = before.tabs.find(tab => tab.url.includes('/healthy'));
+  const crashedTarget = host.tabs.get(crashed.tab_id).target_id;
+  for (const handler of handlers) handler({ method: 'Inspector.targetCrashed', sessionId: `session-${crashedTarget}`, params: {} });
+  assert.equal(browser.rendererRecovery.crashed.has(crashedTarget), true);
+  await assert.rejects(browser.memory.requireHeadroom(), error => error.code === 'browser_memory_pressure');
+  const start = sent.length;
+  const state = await host.request({ op: 'state' });
+  assert.equal(state.tabs.length, before.tabs.length);
+  assert.equal(state.tabs.find(tab => tab.tab_id === crashed.tab_id).document_id, crashed.document_id);
+  assert.ok(!sent.slice(start).some(call => call.session === `session-${crashedTarget}`), 'inventory must not query a dead renderer');
+  const closedHealthy = await host.request({ op: 'close', generation: state.generation, tab_id: healthy.tab_id });
+  assert.ok(!closedHealthy.tabs.some(tab => tab.tab_id === healthy.tab_id));
+  const closedCrashed = await host.request({ op: 'close', generation: closedHealthy.generation, tab_id: crashed.tab_id });
+  assert.ok(!closedCrashed.tabs.some(tab => tab.tab_id === crashed.tab_id));
+  assert.equal(browser.rendererRecovery.crashed.size, 0);
+  assert.equal(sent.filter(call => call.method === 'Page.reload').length, 0, 'pressure must hold recovery while close stays usable');
+}));
+
+test('MP-08/MP-10/MP-11: a crash arriving during inventory does not cancel recovery', () => using(async ({ host, connection, handlers, sent }) => {
+  const opened = await host.request({ op: 'open', url: 'https://example.test/crashed' });
+  await host.request({ op: 'open', url: 'https://example.test/healthy' });
+  const send = connection.send.bind(connection);
+  connection.close = async () => {};
+  connection.send = async (method, params, session) => {
+    const result = await send(method, params, session);
+    if (method === 'Target.attachToTarget') return { sessionId: `session-${params.targetId}` };
+    if (method === 'Target.closeTarget') return { success: true };
+    return result;
+  };
+  const browser = new BrowserCdpClient({ connectionFactory: async () => connection,
+    memory: new BrowserMemory({ availableMemory: () => 128 * 1024 * 1024 }) });
+  host.browser = browser;
+  const before = await host.request({ op: 'state' });
+  const crashed = before.tabs.find(tab => tab.url.includes('/crashed'));
+  const healthy = before.tabs.find(tab => tab.url.includes('/healthy'));
+  const crashedTarget = host.tabs.get(crashed.tab_id).target_id;
+  const inspect = browser.inspectPage.bind(browser); let injected = false;
+  browser.inspectPage = async (c, target, ...args) => {
+    if (target.targetId === crashedTarget && !injected) {
+      injected = true;
+      for (const handler of handlers) handler({ method: 'Inspector.targetCrashed', sessionId: `session-${crashedTarget}`, params: {} });
+      const error = new Error('Page.getFrameTree: Target closed'); error.code = 'browser_cdp_command_failed'; throw error;
+    }
+    return inspect(c, target, ...args);
+  };
+  const start = sent.length;
+  const state = await host.request({ op: 'state' });
+  assert.equal(state.tabs.length, before.tabs.length);
+  assert.equal(state.tabs.find(tab => tab.tab_id === crashed.tab_id).document_id, crashed.document_id);
+  assert.equal(browser.rendererRecovery.crashed.has(crashedTarget), true, 'in-flight renderer failure must retain the scheduled recovery');
+  const closedHealthy = await host.request({ op: 'close', generation: state.generation, tab_id: healthy.tab_id });
+  assert.ok(!closedHealthy.tabs.some(tab => tab.tab_id === healthy.tab_id));
+  const closedCrashed = await host.request({ op: 'close', generation: closedHealthy.generation, tab_id: crashed.tab_id });
+  assert.ok(!closedCrashed.tabs.some(tab => tab.tab_id === crashed.tab_id));
+  assert.equal(browser.rendererRecovery.crashed.size, 0);
+  assert.equal(sent.filter(call => call.method === 'Page.reload').length, 0, 'pressure must hold recovery while close stays usable');
 }));

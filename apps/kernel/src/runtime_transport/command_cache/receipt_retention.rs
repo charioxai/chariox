@@ -166,7 +166,8 @@ impl CommandResultCache {
             .find(|id| match results.get(*id) {
                 Some(CommandResultEntry::Completed(result)) => {
                     result.completed_at_ms != 0
-                        && now.saturating_sub(result.completed_at_ms) > APP_RECEIPT_RETENTION_MS
+                        && now.saturating_sub(result.completed_at_ms)
+                            > self.retention.receipt_window_ms
                 }
                 _ => false, // Pending effects and unknown-age legacy receipts are protected.
             })

@@ -3,6 +3,7 @@
 //! The service is authority-free: callers have already decided who may
 //! reach a Room's terminals and which actor a request speaks for.
 
+use super::REFUSED_CODE;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -31,6 +32,8 @@ use crate::pty::{PtyManager, PtySpawnRequest};
 use crate::runtime::state::ManagedKernelQuiescenceGate;
 use crate::session::unix_epoch_ms;
 
+mod outside_events;
+
 const MAX_TERMINALS_PER_ROOM: usize = 16;
 const MAX_INPUT_BYTES: usize = 64 * 1024;
 const MAX_OUTPUT_PAGE_BYTES: usize = 256 * 1024;
@@ -43,8 +46,12 @@ const PERSIST_INTERVAL: Duration = Duration::from_secs(1);
 /// Below the provider tool limit (Codex gives a tool call 300 s).
 pub const MAX_WAIT: Duration = Duration::from_secs(240);
 
+pub(super) fn output_wait(wait: Duration) -> Duration {
+    wait.min(MAX_WAIT)
+}
+
 /// Kernel-private tokens and configs the user's shell must not inherit.
-const KERNEL_SECRET_ENVIRONMENT: &[&str] = &[
+pub(crate) const KERNEL_SECRET_ENVIRONMENT: &[&str] = &[
     "CHARIOX_KERNEL_LOCAL_AUTH_TOKEN",
     "CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE",
     "CHARIOX_RELAY_TOKEN",
@@ -72,6 +79,7 @@ struct Inner {
     state: Mutex<State>,
     store: TerminalStore,
     events: BoundEvents,
+    outside_events: std::sync::RwLock<Option<crate::durable_state::DurableKernelStateStore>>,
     shell_integration: ShellIntegration,
     managed: ManagedWork,
     output_changed: Notify,
@@ -121,6 +129,7 @@ impl RoomTerminalService {
                 }),
                 store,
                 events: BoundEvents::default(),
+                outside_events: std::sync::RwLock::new(None),
                 shell_integration,
                 managed: ManagedWork::default(),
                 output_changed: Notify::new(),
@@ -193,8 +202,11 @@ impl RoomTerminalService {
             .filter(|title| !title.trim().is_empty())
             .unwrap_or_else(|| next_title(&in_room));
         let mut env = BTreeMap::from([("TERM".to_string(), "xterm-256color".to_string())]);
+        let mut reports_first_prompt = false;
         if spec.command.is_none() {
-            env.extend(self.inner.shell_integration.environment(&program));
+            let marks = self.inner.shell_integration.environment(&program);
+            reports_first_prompt = !marks.is_empty();
+            env.extend(marks);
         }
         state.pty.spawn_interactive(PtySpawnRequest {
             process_key: run_id.clone(),
@@ -236,7 +248,7 @@ impl RoomTerminalService {
             let _ = state.pty.remove_process(&run_id);
             return Err(error);
         }
-        let terminal = Terminal::running(record, run_id, shell_pid);
+        let terminal = Terminal::running(record, run_id, shell_pid, reports_first_prompt);
         let summary = terminal.summary(RoomTerminalDriver::Free);
         state.terminals.insert(terminal_id, terminal);
         drop(state);
@@ -288,6 +300,10 @@ impl RoomTerminalService {
         }
         let submits = input.iter().any(|byte| matches!(byte, b'\r' | b'\n'));
         loop {
+            // Decide from what the shell has already reported, not from the
+            // state of the last tick: a command that just ended still looks
+            // like it drives the terminal until its report is read.
+            self.pump_pass(false);
             {
                 // Held until the input is written and the kernel knows about
                 // the command it starts.
@@ -298,8 +314,8 @@ impl RoomTerminalService {
                 let Some(run_id) = terminal.run_id.clone() else {
                     return Err(ended_error(terminal));
                 };
-                let shell_foreground = !terminal.is_busy(pty);
                 let now = Instant::now();
+                let shell_foreground = terminal.at_prompt(pty, now);
                 match terminal.driver.admit(actor, shell_foreground, now) {
                     Admission::Admit => {
                         // Only a line submitted at the prompt starts a command.
@@ -380,7 +396,8 @@ impl RoomTerminalService {
         Ok(terminal.summary(driver))
     }
 
-    /// Output after `after_offset`, waiting up to `wait` for some.
+    /// Output after `after_offset`, waiting up to `wait` (at most `MAX_WAIT`, so the
+    /// answer always arrives inside the gateway's and the CLI's transport deadline).
     pub async fn read_output(
         &self,
         session_id: &str,
@@ -388,7 +405,7 @@ impl RoomTerminalService {
         after_offset: u64,
         wait: Duration,
     ) -> Result<RoomTerminalOutput, DaemonError> {
-        let deadline = Instant::now() + wait;
+        let deadline = Instant::now() + output_wait(wait);
         loop {
             let changed = self.inner.output_changed.notified();
             tokio::pin!(changed);
@@ -428,6 +445,48 @@ impl RoomTerminalService {
             )));
         }
         self.remove(&mut state, terminal_id);
+        drop(state);
+        self.report_work();
+        Ok(())
+    }
+
+    /// Release only terminals opened by this agent; retain their screen and
+    /// scrollback as ended records. The owner already authorized the archive.
+    pub(crate) fn stop_agent(&self, session_id: &str, agent_id: &str) -> Result<(), DaemonError> {
+        self.pump_once();
+        let mut state = self.lock();
+        let ids = state
+            .terminals
+            .values()
+            .filter(|terminal| {
+                terminal.record.session_id == session_id
+                    && terminal.record.opened_by == TerminalActor::Agent(agent_id.to_owned())
+            })
+            .map(|terminal| terminal.record.terminal_id.clone())
+            .collect::<Vec<_>>();
+        for id in ids {
+            let run = state
+                .terminals
+                .get(&id)
+                .and_then(|terminal| terminal.run_id.clone());
+            if let Some(run) = run {
+                state.pty.remove_process(&run)?;
+            }
+            let terminal = state
+                .terminals
+                .get_mut(&id)
+                .expect("selected terminal exists");
+            if let Some(sweep) = terminal.session_sweep.take() {
+                sweep.stop();
+            }
+            if terminal.record.ended.is_none() {
+                terminal.end(RoomTerminalOutcome::ProgramExited {
+                    exit_code: None,
+                    signal: None,
+                });
+            }
+            self.inner.store.save(&terminal.persisted_record())?;
+        }
         drop(state);
         self.report_work();
         Ok(())
@@ -473,8 +532,8 @@ impl RoomTerminalService {
             if !terminal.is_running() {
                 return Err(ended_error(terminal));
             }
-            let program_running = terminal.is_busy(pty);
             let now = Instant::now();
+            let program_running = !terminal.at_prompt(pty, now);
             let mut immediate = None;
             for watch in watches {
                 if let Some(kind) =
@@ -538,8 +597,8 @@ impl RoomTerminalService {
                 wake_id: format!("wait:{next_wait}"),
                 agent_id: agent_id.to_string(),
             };
-            let program_running = terminal.is_busy(pty);
             let now = Instant::now();
+            let program_running = !terminal.at_prompt(pty, now);
             for watch in watches {
                 if let Some(kind) =
                     terminal.arm_watch(owner.clone(), watch, after_offset, now, program_running)
@@ -726,6 +785,7 @@ impl RoomTerminalService {
                         }
                     }
                 }
+                self.publish_outside_jobs(terminal);
                 self.persist_if_due(terminal, now);
             }
         }
@@ -901,9 +961,11 @@ fn ended_error(terminal: &Terminal) -> DaemonError {
     ))
 }
 
-fn refused(message: String) -> DaemonError {
-    DaemonError::LocalTransport {
-        operation: "room terminal",
+/// The terminal service's own sentence about what it will not do. It names only the
+/// terminal id the caller sent, so a grant holder reads it as written (`is_public_code`).
+pub(super) fn refused(message: String) -> DaemonError {
+    DaemonError::MachineRequest {
+        code: REFUSED_CODE.into(),
         message,
     }
 }

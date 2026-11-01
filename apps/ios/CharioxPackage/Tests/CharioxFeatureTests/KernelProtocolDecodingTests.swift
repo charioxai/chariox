@@ -28,6 +28,14 @@ import Testing
                   "model": "default",
                   "state": "Focused",
                   "is_processing": false
+                },
+                {
+                  "id": "archived-agent",
+                  "agent_ref": "2",
+                  "provider": "codex",
+                  "state": "Idle",
+                  "archived": true,
+                  "is_processing": false
                 }
               ]
             }
@@ -47,6 +55,8 @@ import Testing
     #expect(frame.requestID == "request-1")
     #expect(sessions.count == 1)
     #expect(sessions[0].shortDisplayID == "demo")
+    #expect(sessions[0].agents.count == 1)
+    #expect(sessions[0].agents[0].archived == nil)
     #expect(sessions[0].agents[0].alias == "builder")
 }
 

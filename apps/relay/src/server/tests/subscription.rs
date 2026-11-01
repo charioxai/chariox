@@ -92,6 +92,7 @@ async fn subscription_ids_are_owned_by_connected_client() {
                 client_public_key: "client-a-public".to_string(),
                 subscription_scope: None,
                 resume_from_event_id: None,
+                heartbeat_interval_ms: Some(1_000),
             })
             .expect("client A subscribe should serialize")
             .into(),
@@ -106,9 +107,11 @@ async fn subscription_ids_are_owned_by_connected_client() {
             RelayEnvelope::DaemonSubscribe {
                 relay_request_id,
                 relay_subscription_id,
+                heartbeat_interval_ms,
                 ..
             } => {
                 assert_eq!(relay_subscription_id, "shared-subscription-id");
+                assert_eq!(heartbeat_interval_ms, Some(1_000));
                 relay_request_id
             }
             other => panic!("unexpected daemon subscribe envelope: {other:?}"),
@@ -130,6 +133,7 @@ async fn subscription_ids_are_owned_by_connected_client() {
                 client_public_key: "client-b-public".to_string(),
                 subscription_scope: None,
                 resume_from_event_id: None,
+                heartbeat_interval_ms: None,
             })
             .expect("client B subscribe should serialize")
             .into(),
@@ -233,6 +237,7 @@ async fn subscription_ids_are_owned_by_connected_client() {
                 client_public_key: "client-b-public".to_string(),
                 subscription_scope: None,
                 resume_from_event_id: None,
+                heartbeat_interval_ms: None,
             })
             .expect("client B subscribe should serialize")
             .into(),
@@ -402,6 +407,7 @@ async fn disconnecting_client_drops_pending_requests_before_reconnect() {
                 client_public_key: "first-client-public".to_string(),
                 subscription_scope: None,
                 resume_from_event_id: None,
+                heartbeat_interval_ms: None,
             })
             .expect("first subscribe should serialize")
             .into(),
@@ -502,6 +508,7 @@ async fn disconnecting_client_drops_pending_requests_before_reconnect() {
                 client_public_key: "reconnecting-client-public".to_string(),
                 subscription_scope: None,
                 resume_from_event_id: None,
+                heartbeat_interval_ms: None,
             })
             .expect("reconnect subscribe should serialize")
             .into(),

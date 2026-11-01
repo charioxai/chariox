@@ -97,6 +97,9 @@ pub struct SessionHistoryPromptAttachment {
     pub filename: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preview_url: Option<String>,
+    /// Original file size; absent in history written before protocol 627.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size_bytes: Option<u64>,
     /// Payload of a note attachment, so a reloaded chip can be re-read and resubmitted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub contents_base64: Option<String>,
@@ -109,6 +112,7 @@ impl SessionHistoryPromptAttachment {
             mime: attachment.mime().to_string(),
             filename: attachment.filename().map(str::to_string),
             preview_url: image_prompt_attachment_preview_url(attachment),
+            size_bytes: prompt_attachment_size(attachment),
             contents_base64: crate::prompt_notes::is_note(attachment)
                 .then(|| attachment.contents_base64().map(str::to_string))
                 .flatten(),
@@ -129,6 +133,25 @@ impl SessionHistoryEntry {
             attachment.rehydrate_preview_url();
         }
     }
+}
+
+fn prompt_attachment_size(attachment: &crate::session::PromptAttachment) -> Option<u64> {
+    if let Some(contents) = attachment.contents_base64() {
+        let padding = contents
+            .bytes()
+            .rev()
+            .take_while(|byte| *byte == b'=')
+            .count();
+        if contents.len() % 4 != 0 || padding > 2 {
+            return None;
+        }
+        return (contents.len() / 4)
+            .checked_mul(3)?
+            .checked_sub(padding)
+            .map(|size| size as u64);
+    }
+    let metadata = fs::metadata(local_file_url_path(attachment.url())?).ok()?;
+    metadata.is_file().then_some(metadata.len())
 }
 
 fn image_prompt_attachment_preview_url(

@@ -1,3 +1,4 @@
+import { handleLinkedKernelSlashCommand, isLinkedKernelCommand, type LinkedKernelCommandHandlerDeps } from "./linked-kernel-command-handlers.js"
 import { sudoWindowLine } from "./sudo-window-line.js"
 import type { RuntimeSession } from "./cli-types.js"
 import type { ParsedSlashCommand } from "./commands.js"
@@ -20,7 +21,7 @@ export {
 
 type FooterTone = "info" | "error"
 
-export type KernelCommandHandlerDeps = {
+export type KernelCommandHandlerDeps = LinkedKernelCommandHandlerDeps & {
   isAttached: () => boolean
   sessionState: () => RuntimeSession
   flashFooter: (message: string, tone: FooterTone) => void
@@ -50,6 +51,10 @@ export async function handleKernelSlashCommand(
     await handleSudoWindowCommand(deps, args)
     return
   }
+  if (isLinkedKernelCommand(command.args)) {
+    await handleLinkedKernelSlashCommand(deps, command.args)
+    return
+  }
   // MP-08/MP-11 BY-05: project the same kernel-owned outcome as Web.
   if (subcommand === "copy-status") {
     if (args.length !== 1 || !deps.getContextTransferStatus) {
@@ -65,7 +70,7 @@ export async function handleKernelSlashCommand(
   if (subcommand === "access") {
     if (args[0] === "list" && args.length === 1 && deps.listKernelAccessGrants) {
       const { grants, sudo_turns = [] } = await deps.listKernelAccessGrants()
-      const lines = grants.map((g) => `${g.grant_id}: ${JSON.stringify(g.holder_executable)} (pid ${g.holder_pid}), local kernel, expires ${new Date(g.expires_at_ms).toISOString()}`)
+      const lines = grants.map((g) => `${g.grant_id}: ${JSON.stringify(g.holder_executable)} (pid ${g.holder_pid}), local kernel, ${g.term === "until_holder_exits" ? "until the agent exits" : `expires ${new Date(g.expires_at_ms!).toISOString()}`}`)
       lines.push(...sudo_turns.map((t) => `${t.entry_id}: sudo ${t.expires_at_ms ? `window until ${new Date(t.expires_at_ms).toISOString()}` : "pending authorization"}, agent ${t.agent_id}, session ${t.session_id}. Revoke: /kernel access revoke ${t.entry_id}`))
       deps.appendNotice(lines.join("\n") || "No external grants or sudo windows.")
       deps.flashFooter(`${grants.length} external grants, ${sudo_turns.length} sudo windows`, "info")

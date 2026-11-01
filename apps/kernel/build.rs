@@ -3,6 +3,7 @@
 fn main() {
     for file in [
         "src/display_native/capture.c",
+        "src/display_native/x11-runtime.h",
         "src/display_native/codec.c",
         "src/display_native/openh264.c",
         "src/display_native/lossless.c",
@@ -69,10 +70,8 @@ fn main() {
         .iter()
         .any(|path| path.join("libsharpyuv.a").is_file());
     build.compile("chariox_display_native");
-    // OpenH264, x264 and libavcodec are loaded at runtime, never linked.
-    for library in ["X11", "Xext", "Xdamage", "Xcomposite", "Xtst", "dl"] {
-        println!("cargo:rustc-link-lib={library}");
-    }
+    // X11 and codecs are optional runtime dependencies, never ELF requirements.
+    println!("cargo:rustc-link-lib=dl");
     println!("cargo:rustc-link-lib=static=yuv");
     println!("cargo:rustc-link-lib=static=webp");
     if sharpyuv {

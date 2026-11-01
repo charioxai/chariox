@@ -540,7 +540,7 @@ async fn remove_client_peer_unsubscribes_active_and_pending_daemon_subscriptions
     let registry = Arc::new(RwLock::new(registry));
     let relay_request_counter = AtomicU64::new(0);
 
-    let (_, _, _, _, cleanup_count, dropped_pending_count) = remove_peer(
+    let (_, cleanup_count, dropped_pending_count) = remove_peer(
         &registry,
         &routes,
         client_addr,
@@ -1375,6 +1375,7 @@ async fn concurrent_subscription_admission_has_one_owner() {
         client_public_key: "key".into(),
         subscription_scope: None,
         resume_from_event_id: None,
+        heartbeat_interval_ms: None,
     };
     {
         let first = handle_client_packet_route_envelope(

@@ -1,12 +1,13 @@
 import {resolveDisplayTarget,nativeStateObservationOptions} from './kernel-browser-display-document.mjs';
 import {capturePageScreenshot} from './kernel-browser-screenshot.mjs';
 import { mirror2ObserverExpression } from './kernel-browser-mirror2-observer.mjs';
+import {NavigationDisplays} from './kernel-browser-navigation-display.mjs';
 import {captureVisiblePage,pngFallbackCommand,subscribeVisiblePage,visiblePageInputSource,viewerPageInputActive,nativeInputDocumentTarget} from './kernel-browser-page-display.mjs';
 import {reserveDisplay} from './kernel-browser-display-admission.mjs';
 import { appRestoreOrigin } from "./browser-app-restore.mjs";
 import { DesktopDisplay } from './kernel-desktop-display.mjs';
 import {displayMaskRegions} from './kernel-browser-pixels.mjs';
-import {displayGeometry as geometry,hostViewport} from './kernel-browser-geometry.mjs';
+import {displayGeometry as geometry,hostViewport,featureOn} from './kernel-browser-geometry.mjs';
 // MD-2: sessionless host adapter over the shared controller/CDP implementation.
 import { CaptureRefusal, PointerOutsideViewport, UserDomainRefusal } from "./kernel-browser-refusal.mjs";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
@@ -22,12 +23,14 @@ import { NativeAccessibility } from './native-accessibility.mjs';
 import { NativeComputer } from './native-computer.mjs';
 import { HostChromium } from "./kernel-browser-process.mjs";
 import { BrowserRecovery } from "./kernel-browser-recovery.mjs";
+import { requireBrowserMemory } from './browser-memory.mjs';
 import { admitComputerMutation, blockedUrl, extensionManagementUrl, EXTENSIONS_REFUSED } from "./kernel-browser-policy.mjs";
 import { ChromeTabGroups, writeTabGroupsExtension } from "./kernel-browser-tab-groups.mjs";
 import {nativeWindowInventory} from './kernel-browser-native-windows.mjs';
 import { ChromeWindows, InputArbiter } from "./kernel-browser-chrome-window.mjs";
 import { StateSignal, stateChangingEvent } from "./kernel-browser-state-signal.mjs";
 import { redactObservation } from "./browser-controller-snapshot.mjs";
+import {resizeBrowserPage} from './kernel-browser-resize.mjs';
 import { inputHostTab } from "./kernel-browser-input.mjs";
 import { BusyInputQueue, lateInputAck, markDispatched } from "./kernel-browser-input-queue.mjs";
 import { BrowserPopupEvidence, popupActionId } from "./kernel-browser-popup-evidence.mjs";
@@ -35,6 +38,7 @@ import { assertNotCancelled, BrowserActionError } from "./browser-controller-act
 import { captureProtectedDisplay, protectionDeclared, regionProtectionChanged } from "./kernel-browser-region-protection.mjs";
 
 import { MirrorService, MirrorInputEpochRefusal } from "./kernel-browser-mirror.mjs";
+import { VisitedLinks } from "./kernel-browser-visited-links.mjs";
 import { WindowForeground } from './kernel-browser-foreground.mjs';
 import { SampleLane } from './kernel-browser-sample-lane.mjs';
 import { DisplaySessions } from './kernel-display-resumption.mjs';
@@ -56,11 +60,11 @@ export function scheduleHostRequest(request, browser, viewport = hostViewport(),
   // A state poll waits for every page's reconcile: once the viewport is applied
   // it only observes, so input does not queue behind it.
   // Ending a person's parked input never waits behind a browser operation: its authority is already gone.
-  return ['browser.app.calls','browser.app.respond','host.browser.retire_input','host.browser.retire_observer'].includes(request.method) ||
+  return ['browser.app.calls','browser.app.respond','host.browser.retire_input','host.browser.retire_observer'].includes(request.method) || request.method === 'host.browser' && request.params?.op === 'dialog' ||
     ['host.browser','host.computer'].includes(request.method) && (request.params?.op === 'screenshot' &&
     typeof request.params.display_subscription_id === 'string' || request.params?.op === 'mirror_next' && typeof request.params.subscription_id === 'string' ||
     (request.params?.op === 'state' || request.params?.op === 'display_subscribe' && (request.params.target || nativeDesktop && request.method === 'host.browser')) && browser?.canReconcileConcurrently?.(viewport) === true ||
-    request.params?.op === 'state_signal' ||
+    request.params?.op === 'state_signal' || request.params?.op === 'state' && browser?.dialogDefaults?.pending().length > 0 ||
     ['chrome_window_follow', 'note_selection'].includes(request.params?.op))
     ? {kind:'bridge'} : {kind:'barrier'};
 }
@@ -92,6 +96,7 @@ export class KernelBrowserHost {
   constructor(root, { chromium = new HostChromium(root), browserFactory = connection => new BrowserCdpClient({ connectionFactory: () => connection, focusWorldSource: mirror2ObserverExpression() }) } = {}) {
     this.root = root;
     this.timing = displayTiming(root);
+    this.visitedLinks = new VisitedLinks();
     // r55: a Node event loop that stalls delays every request behind it without any step to name: mark the stall itself.
     let tick = timestamp();
     setInterval(() => { const now = timestamp(), late = now - tick - 100; tick = now; if (late > 400) this.timing('node_loop_stall', now - late); }, 100).unref();
@@ -112,9 +117,14 @@ export class KernelBrowserHost {
     this.streams = new Map();
     this.displays = new Map();
     this.displaySessions = new DisplaySessions(this);
+    this.navigationDisplays = new NavigationDisplays(this);
     this.scales = new Map();
     this.layouts = new Map();
     this.layoutRevisions = new Map();
+    // The size the person's view gave the one Chrome window (protocol 629); null keeps the canonical page.
+    this.windowLayout = null;
+    // The windowLayout whose every step (all Tab layouts, stream geometry, window re-bind) completed.
+    this.resizeSettled = null;
     this.inputEpochs = new Map();this.inputChangedAt=new Map();
     this.scrolling = new Map();
     this.sampleLanes = new Map();
@@ -225,7 +235,7 @@ export class KernelBrowserHost {
     this.browser = null;
     for (const stream of this.streams.values()) { stream.off(); clearTimeout(stream.timer); }
     this.streams.clear();
-    this.tabs.clear();
+    this.tabs.clear();this.layouts.clear();this.layoutRevisions.clear();this.windowLayout=null;this.resizeSettled=null;this.navigationDisplays.clear();
     this.popupEvidence.clear();
     this.observed = ++this.observations;
     this.observedDocuments.clear();
@@ -246,6 +256,7 @@ export class KernelBrowserHost {
     assertNotCancelled(signal);
     this.browser = this.browserFactory(connection);
     this.browser.pageTiming = this.timing;
+    this.browser.visitedLinks = this.visitedLinks;
     connection.presentationFence?.bindOwner?.(this.browser, this.timing);
     this.browser.protectedValues = new Set(this.protection.values);
     this.pendingActive = { tab_id: typeof saved.active_tab_id === 'string' ? saved.active_tab_id : null,
@@ -351,18 +362,20 @@ export class KernelBrowserHost {
   }
   // MP-08/MP-10/MP-11: native page density applies to the private display
   // only; the owned Computer desktop stays at its 1x X11 density.
-  viewport() { return hostViewport(!this.chromium.desktop && (process.env.CHARIOX_KERNEL_BROWSER_DISPLAY === '1' || process.env.CHARIOX_KERNEL_BROWSER_MIRROR === '1')); }
+  viewport() { return hostViewport(!this.chromium.desktop && (featureOn('CHARIOX_KERNEL_BROWSER_DISPLAY') || featureOn('CHARIOX_KERNEL_BROWSER_MIRROR'))); }
   // Protocol 560/168: a viewer narrower than the canonical desktop gets the Tab laid out at its own size.
-  // The newest subscription owns the layout; null restores the canonical page.
-  pageSize(tabId) { const l = this.layouts.get(tabId); return l ? { width: l.width, height: l.height } : { width: 1280, height: 800 }; }
+  // The newest subscription owns the layout until an explicit shared-window resize takes precedence; null restores the canonical page.
+  pageSize(tabId) { const l = this.layouts.get(tabId); return l ? { width: l.width, height: l.height } : { width: geometry.width, height: geometry.height }; }
   noteLayout(tabId, before) { const now = this.pageSize(tabId); if (now.width !== before.width || now.height !== before.height) this.layoutRevisions.set(tabId, this.layoutRevision(tabId) + 1); }
   layoutRevision(tabId) { return this.layoutRevisions.get(tabId) ?? 0; }
   async setLayout(tab, subscriptionId, layout) {
+    if(subscriptionId!=='resize'&&this.layouts.get(tab.tab_id)?.subscriptionId==='resize')return;
     const before = this.pageSize(tab.tab_id);
+    await this.browser.setLayout?.(tab.target_id, layout);
     if (layout) this.layouts.set(tab.tab_id, { ...layout, subscriptionId }); else this.layouts.delete(tab.tab_id);
     this.noteLayout(tab.tab_id, before);
-    await this.browser.setLayout?.(tab.target_id, layout);
   }
+
   releaseLayout(tabId, subscriptionId) {
     if (this.layouts.get(tabId)?.subscriptionId !== subscriptionId) return;
     const before = this.pageSize(tabId);
@@ -419,7 +432,7 @@ export class KernelBrowserHost {
         for(const id of [...this.compositors.keys()])if(id!==tab.tab_id&&this.compositors.get(id)?.source instanceof LinuxCapture)await this.closeCompositors(id);
         const claim=this.foreground.claim(tab.tab_id);
         this.nativeScope(null);
-        const source=new LinuxCapture({display:this.chromium.display,pid:this.chromium.browserPid,connection,sessionId,tab,scale:stream.device_scale_factor,hostScale:this.chromium.scale??1,policy,browser:this.browser,frames:frameId=>this.browser.frameSession?.(frameId,connection),screenshot:()=>this.displayScreenshot(tab,null,false),allowed:p=>this.foreground.holds(tab.tab_id,claim)&&this.protection===p&&!p.unknown&&this.generation===generation,timing:this.timing});
+        const source=new LinuxCapture({size:this.pageSize(tab.tab_id),pageWindow:this.layouts.get(tab.tab_id)?.subscriptionId==='resize'?async()=>{await this.chromeWindows.resolve();return this.chromeWindows.current().tabbed}:undefined,display:this.chromium.display,pid:this.chromium.browserPid,connection,sessionId,tab,scale:stream.device_scale_factor,hostScale:this.chromium.scale??1,policy,browser:this.browser,frames:frameId=>this.browser.frameSession?.(frameId,connection),screenshot:()=>this.displayScreenshot(tab,null,false),allowed:p=>this.foreground.holds(tab.tab_id,claim)&&this.protection===p&&!p.unknown&&this.generation===generation,timing:this.timing});
         // Review #1016 P1: Tab switches outside the browser's own paths (the Computer surface's
         // Ctrl+Tab) do not reconcile. Every readback is re-admitted against the live active Tab.
         source.validateCurrent=()=>this.nativeFront(tab);
@@ -432,7 +445,7 @@ export class KernelBrowserHost {
         // retires on that resize, so no live band may be left to notice it: rebind from the owner's inventory.
         finally{this.chromeWindows.resolve().catch(()=>{});}
       }});
-      source??=new CompositorSource({connection,sessionId,tab,scale:stream.device_scale_factor,policy,timing:this.timing,width:geometry.width*stream.device_scale_factor,height:geometry.height*stream.device_scale_factor,format:'jpeg',acquire:()=>this.sampleLane(tab).run('input',()=>this.browser.inputCapture.hold(connection,sessionId)),
+      source??=new CompositorSource({connection,sessionId,tab,scale:stream.device_scale_factor,policy,timing:this.timing,width:this.pageSize(tab.tab_id).width*stream.device_scale_factor,height:this.pageSize(tab.tab_id).height*stream.device_scale_factor,format:'jpeg',acquire:()=>this.sampleLane(tab).run('input',()=>this.browser.inputCapture.hold(connection,sessionId)),
         screenshot:clip=>this.displayScreenshot(tab,clip),protect:()=>this.displayScreenshot(tab),allowed:p=>this.protection===p&&!p.unknown&&!p.values.length&&!p.targets.length&&this.generation===generation});
       const created={source,document:tab.document_id,policy};
       created.ready=source instanceof LinuxCapture?Promise.resolve(source):source.start().catch(()=>{created.refusals=refusals+1;created.retryAt=performance.now()+Math.min(30_000,1000*2**refusals);return null;});
@@ -476,10 +489,45 @@ export class KernelBrowserHost {
   tabState() {
     // MP-08: private creation evidence for the kernel, stripped before client projection.
     const _tab_creation_actions = this.popupEvidence.inventory([...this.tabs.values()]);
+    const dialogs = this.pendingDialogs();
     return redactObservation({ state: "ready", generation: this.generation, _observation: this.observed, _tab_creation_actions,
-      tabs: [...this.tabs.values()].map(({ target_id, opener_target_id, ...tab }) => tab), viewport:this.viewport(), chrome_window: this.chromeWindow(),
+      tabs: [...this.tabs.values()].map(({ target_id, opener_target_id, ...tab }) => tab), dialogs, viewport:this.viewport(), chrome_window: this.chromeWindow(),
       // MP-11: whether Chromium's managed policies apply, or only the kernel's CDP lockdown layer.
       browser_lockdown: this.chromium?.policy ?? null }, this.protection.values);
+  }
+  pendingDialogs() {
+    const byTarget = new Map([...this.tabs.values()].map(tab => [tab.target_id, tab]));
+    return (this.browser?.dialogDefaults?.pending() ?? []).flatMap(({ target_id, ...dialog }) => {
+      const tab = byTarget.get(target_id);
+      if (!tab || typeof dialog.document_id !== "string" || !dialog.document_id) return [];
+      // A navigation can open a dialog before its first renderer observation.
+      // The controller bound this opening to CDP's committed document.
+      tab.document_id = dialog.document_id;
+      return [{ ...dialog, tab_id: tab.tab_id, generation: this.generation }];
+    });
+  }
+  async readState({ signal } = {}) {
+    if (this.pendingDialogs().length) return this.tabState();
+    const waiting = new AbortController();
+    const cancel = () => waiting.abort();
+    signal?.addEventListener('abort', cancel, { once: true });
+    const dialog = async () => {
+      let after = this.stateSignal.count;
+      while (!waiting.signal.aborted) {
+        if (this.pendingDialogs().length) return this.tabState();
+        after = await this.stateSignal.wait(after, 2000, waiting.signal);
+      }
+      // The observation won, or the request was cancelled.
+      return new Promise(() => {});
+    };
+    const observation = async () => {
+      if (this.chromium?.display && this.chromium.policy === 'managed') await this.chromeWindows?.heal?.();
+      await this.chromeWindows?.refreshWarm?.();
+      await this.chromeWindows?.refreshStale?.();
+      return this.reconcile({ readOnly: true });
+    };
+    try { return await Promise.race([dialog(), observation()]); }
+    finally { waiting.abort(); signal?.removeEventListener('abort', cancel); }
   }
   /** PERF_AUDIT 4.2.3 (protocol 540): a viewer that holds frames pushed before its registration
    * response asks for its first frame at registration; the kernel's relay pump starts there
@@ -494,7 +542,7 @@ export class KernelBrowserHost {
   chromeWindow() {
     const tabbed = this.chromeWindows?.bound?.tabbed;
     // MP-11: only the managed lockdown refuses fullscreen; without it no band is offered.
-    if (process.env.CHARIOX_KERNEL_BROWSER_DISPLAY !== "1" || this.chromium?.policy !== "managed" || !(tabbed?.isBandCurrent ?? tabbed?.isCurrent)?.()) return null;
+    if (!featureOn("CHARIOX_KERNEL_BROWSER_DISPLAY") || this.chromium?.policy !== "managed" || !(tabbed?.isBandCurrent ?? tabbed?.isCurrent)?.()) return null;
     const active = [...this.tabs.values()].find(tab => tab.target_id === this.activeTarget);
     // Protocol 530: the window's own popups (menus, omnibox dropdown, extension popups, bubbles).
     // MP-08/MP-10: restoring Apps temporarily focus their own windows. The
@@ -547,6 +595,11 @@ export class KernelBrowserHost {
       this.tabs.set(old?.tab_id ?? `host-tab-${randomUUID()}`, { ...tab, tab_id: old?.tab_id ?? null });
     }
     for (const [id, tab] of this.tabs) tab.tab_id = id;
+    // A surviving Tab keeps its committed page size; only retired Tabs drop theirs.
+    for (const map of [this.layouts, this.layoutRevisions]) for (const id of [...map.keys()]) if (!this.tabs.has(id)) map.delete(id);
+    // A Tab that opened in the resized window is laid out at the window's size, not the canonical one.
+    // A Tab left at an older size by a resize that failed part-way is laid out again too.
+    if (this.windowLayout) for (const tab of [...this.tabs.values()]) { const l = this.layouts.get(tab.tab_id); if (l?.subscriptionId !== 'resize' || l.width !== this.windowLayout.width || l.height !== this.windowLayout.height) await this.setLayout(tab, 'resize', this.windowLayout); }
     const previous = this.activeTarget;
     const intent = this.pendingActive;
     const boundOrigins = new Set([...(this.browser.appTabs?.apps?.values() ?? [])].filter(app => app.ready === true).map(app => app.origin));
@@ -599,6 +652,7 @@ export class KernelBrowserHost {
     return { ...state, tab_id: tabId };
   }
   async createTab(url, tabId, { signal, background = false } = {}) {
+    requireBrowserMemory();
     if (this.tabs.size >= TAB_LIMIT) throw new Error("MD-2: host tab limit reached");
     const connection = await this.browser.ensureConnection();
     const browser = this.browser;
@@ -769,15 +823,28 @@ export class KernelBrowserHost {
   async requestNow(command, { signal, inputGuard, nativeDisplay } = {}) {
     const scope = command.observed_by ?? (command.focused_agent ? "focused-agent" : "adapter");
     assertNotCancelled(signal);
-    if (command.op.startsWith("mirror_") && process.env.CHARIOX_KERNEL_BROWSER_MIRROR !== "1") throw new Error("MP-08: DOM mirror disabled");
-    if (command.op.startsWith("display_") && process.env.CHARIOX_KERNEL_BROWSER_DISPLAY !== "1") throw new Error("MD-DISPLAY: experimental display disabled");
+    if (command.op.startsWith("mirror_") && !featureOn("CHARIOX_KERNEL_BROWSER_MIRROR")) throw new Error("MP-08: DOM mirror disabled");
+    if (command.op.startsWith("display_") && !featureOn("CHARIOX_KERNEL_BROWSER_DISPLAY")) throw new Error("MD-DISPLAY: display disabled");
     if (command.op === "stop") return this.stop();
     // MP-11: observation never launches/relaunches the browser.
-    await this.start({ signal, allowStart: !["state", "snapshot", "screenshot", "subscribe", "poll", "unsubscribe", "display_subscribe", "display_attach", "display_suspend", "display_resume", "display_input_target", "note_selection", "mirror_subscribe", "mirror_next", "mirror_close", "chrome_window_follow"].includes(command.op) });
+    await this.start({ signal, allowStart: !["dialog", "state", "snapshot", "screenshot", "subscribe", "poll", "unsubscribe", "display_subscribe", "display_attach", "display_suspend", "display_resume", "display_input_target", "resize", "note_selection", "mirror_subscribe", "mirror_next", "mirror_close", "chrome_window_follow"].includes(command.op) });
     assertNotCancelled(signal);
     const browserAtStart = this.browser;
     if (this.protection.unknown) throw new Error("MD-5: observation registry unavailable");
     for (const [id, stream] of this.streams) if (Date.now() > stream.expires) await this.removeStream(id);
+    // A modal blocks renderer evaluation. Read and answer from the controller's
+    // CDP event state, never from a reconciliation that waits on that renderer.
+    if (command.op === "dialog") {
+      const tab = this.tabs.get(command.tab_id);
+      if (command.generation !== this.generation || !tab || tab.document_id !== command.document_id ||
+          typeof command.dialog_id !== "string" || !this.browser.dialogDefaults?.current(tab.target_id, command.dialog_id, command.document_id)) {
+        throw new BrowserActionError("browser_dialog_invalid", "browser dialog is no longer pending; read the current browser state");
+      }
+      this.appAgent(tab, command, true);
+      await this.browser.handleDialog({ ...command, target_id: tab.target_id }, { signal });
+      this.stateSignal.notify();
+      return this.observe(this.tabState(), null, scope);
+    }
     // MP-08/MP-10: the kernel's navigate/subscribe preflight reads only its own Tab
     // live; an all-tab reconcile waits for every busy (loading) page.
     if (command.op === "state" && typeof command.tab_id === "string") {
@@ -792,11 +859,8 @@ export class KernelBrowserHost {
     // Protocol 556: the signal count is taken before the read, so a change during it wakes the next wait.
     const stateSignal = command.state_wait === true ? this.stateSignal.count : null;
     // Protocol 540: a viewer's state read right after an address-bar key sees the list Chrome opened.
-    if (command.op === "state" && this.chromium?.display && this.chromium.policy === "managed") await this.chromeWindows?.heal?.();
-    if (command.op === "state") await this.chromeWindows?.refreshWarm?.();
-    if (command.op === "state") await this.chromeWindows?.refreshStale?.();
     if (["start", "state"].includes(command.op)) {
-      const state = this.observe(await this.reconcile({readOnly:command.op==="state"}), null, scope);
+      const state = this.observe(await (command.op === "state" ? this.readState({ signal }) : this.reconcile()), null, scope);
       return command.state_wait === true ? { ...state, _state_signal: stateSignal } : state;
     }
     const agentRequest = command.focused_agent || command._agent_input;
@@ -812,7 +876,9 @@ export class KernelBrowserHost {
     }
     // MP-08/MP-10/MP-11: allocated536 default fallback never resizes the owned desktop.
     if(command.op==='display_subscribe'&&!command.target&&this.chromium.desktop?.binding?.()){
-      try{return this.initialPush(command,await subscribeVisiblePage(this,command,scope,signal));}
+      // A navigation the observer's mirror just reported already started this display (see NavigationDisplays).
+      this.navigationDisplays.remember(command,scope);
+      try{return this.initialPush(command,await this.navigationDisplays.adopt(command,scope)??await subscribeVisiblePage(this,command,scope,signal));}
       catch(error){const png=pngFallbackCommand(error,command);if(!png)throw error;this.timing('native_visible_page_png_fallback',timestamp());command=png;}
     }
     if(command.op==='display_subscribe'&&command.target) {
@@ -854,18 +920,19 @@ export class KernelBrowserHost {
     // Per-dispatch document/cancellation and secret-focus checks remain below.
     // MP-08/MP-10: a navigation or a selection note reads only its own Tab's live document: a full
     // all-tab reconcile waits for busy (loading) pages and held the mutation lane.
-    let tab = command.op === 'input' && typeof command.document_id === 'string' || ['navigate', 'note_selection'].includes(command.op)
+    let tab = command.op === 'input' && typeof command.document_id === 'string' || ['navigate', 'resize', 'note_selection'].includes(command.op)
       ? await slowMark(this.timing, 'input_wait display_target', this.displayTarget(command,nativeInputDocumentTarget(this,command,scope,nativeDisplay),INPUT_DOCUMENT_WAIT_MS)) : await this.target(command);
     assertNotCancelled(signal);
     if (agentRequest && ["input", "navigate"].includes(command.op) && extensionManagementUrl(tab.url)) throw new Error(EXTENSIONS_REFUSED);
-    const { app, agent } = this.appAgent(tab, command, ["input", "navigate", "close"].includes(command.op));
+    const { app, agent } = this.appAgent(tab, command, ["input", "navigate", "close", "resize"].includes(command.op));
     // The page stays on its origin.
     if (app && command.op === "navigate" && new URL(navigationUrl(command.url)).origin !== app.origin) {
       throw new UserDomainRefusal("not_granted");
     }
+    if(command.op==='resize')return resizeBrowserPage(this,tab,command,signal);
     const binding = { target_id: tab.target_id, document_id: tab.document_id };
     if (command.op === "display_subscribe") return this.initialPush(command, await reserveDisplay(this,async()=>{
-      if (process.env.CHARIOX_KERNEL_BROWSER_DISPLAY !== "1") throw new Error("MD-DISPLAY: experimental display disabled");
+      if (!featureOn("CHARIOX_KERNEL_BROWSER_DISPLAY")) throw new Error("MD-DISPLAY: display disabled");
       if (!Array.isArray(command.codecs) || !command.codecs.includes("png") || command.codecs.length > 8 ||
         !Number.isInteger(command.bitrate) || command.bitrate < 500_000 || command.bitrate > 64_000_000 ||
         ![1, 2].includes(command.device_scale_factor) || this.displays.size >= 8) throw new Error("MD-DISPLAY: invalid display negotiation");
@@ -876,7 +943,7 @@ export class KernelBrowserHost {
       const codec=process.env.CHARIOX_BROWSER_DISPLAY_NATIVE_WORKER&&command.codecs.includes('avc1.420033')?'avc1.420033':command.codecs.find(c=>['vp8','vp09.00.50.08','vp09.00.40.08','vp09.00.10.08','avc1.420033'].includes(c))??'png';
       const {DisplayStream} = await import('./kernel-browser-display.mjs');
       const {BrowserEncoder} = await import('./kernel-browser-webcodecs.mjs');
-      const stream = new DisplayStream({ relay_binary:command.codecs.includes('chariox-relay-binary-v96'), subscription_id: id, tab_id: tab.tab_id, observed_by: scope, bitrate: command.bitrate, device_scale_factor: scale, codec, css_width:geometry.width, css_height:geometry.height, dependencies:command.codecs.includes('chariox-video-dependencies-v1'),stripes:command.codecs.includes('chariox-stripes-v1')&&['avc1.420033','vp8'].includes(codec) }, { timing:this.timing,encoder:new BrowserEncoder(this.browser,tab.target_id) });
+      const stream = new DisplayStream({ relay_binary:command.codecs.includes('chariox-relay-binary-v96'), subscription_id: id, tab_id: tab.tab_id, observed_by: scope, bitrate: command.bitrate, device_scale_factor: scale, codec, css_width:this.pageSize(tab.tab_id).width, css_height:this.pageSize(tab.tab_id).height, dependencies:command.codecs.includes('chariox-video-dependencies-v1'),stripes:command.codecs.includes('chariox-stripes-v1')&&['avc1.420033','vp8'].includes(codec) }, { timing:this.timing,encoder:new BrowserEncoder(this.browser,tab.target_id) });
       this.displays.set(id, stream);
       this.armDisplayExpiry(stream);
       return { generation: this.generation, subscription_id: id, codec, bitrate: command.bitrate, device_scale_factor: scale };
@@ -885,7 +952,7 @@ export class KernelBrowserHost {
       // The closed Tab can no longer be restored as the selection (MP-08/MP-10).
       const intent = this.pendingActive, origin = appRestoreOrigin(tab.url);
       if (intent && (intent.tab_id === tab.tab_id || (origin && intent.app_origin === origin))) this.pendingActive = null;
-      this.mirror.removeTab(tab.tab_id);
+      this.mirror.removeTab(tab.tab_id);this.layouts.delete(tab.tab_id);this.layoutRevisions.delete(tab.tab_id);
       for (const [id, stream] of this.displays) if (stream.tab_id === tab.tab_id && !['browser_chrome', 'browser_auxiliary', 'browser_window'].includes(stream.regionTarget?.kind)) { await stream.close(); this.displays.delete(id); }
       await this.closeCompositors(tab.tab_id);if(this.foreground.tab===tab.tab_id)this.foreground.reset();
       this.sampleLanes.delete(tab.tab_id);
@@ -973,7 +1040,7 @@ export class KernelBrowserHost {
         const laneAt=timestamp();
         const deferred=await this.sampleLane(tab).run("input", async () => {
           if(timestamp()-laneAt>250)this.timing('input_wait sample_lane',laneAt);
-          const result=await this.popupEvidence.capture(this.browser, tab, popupActionId(command), beginDispatch => inputHostTab(this.browser, tab, command.input, { signal, inputGuard, documentCurrent, chromeFocused: () => Boolean(this.arbiter?.chromeFocus), slow: (name, operation) => slowMark(this.timing, `input_wait ${name}`, operation), onDispatch: () => { onDispatch(); return beginDispatch(); }, asyncScroll: ()=>viewerActive()&&(handoverOrdered||owned?.attested&&typeof owned.valid==='function'&&owned.valid()), nativeWheel, nativeClick, nativeKey, resolveMirror: input => this.mirror.resolveInput(tab,input,scope,signal) }));
+          const result=await this.popupEvidence.capture(this.browser, tab, popupActionId(command), beginDispatch => inputHostTab(this.browser, tab, command.input, { signal, inputGuard, documentCurrent, chromeFocused: () => Boolean(this.arbiter?.chromeFocus), slow: (name, operation) => slowMark(this.timing, `input_wait ${name}`, operation), onDispatch: () => { onDispatch(); return beginDispatch(); }, viewport:{css_width:this.pageSize(tab.tab_id).width,css_height:this.pageSize(tab.tab_id).height}, asyncScroll: ()=>viewerActive()&&(handoverOrdered||owned?.attested&&typeof owned.valid==='function'&&owned.valid()), nativeWheel, nativeClick, nativeKey, resolveMirror: input => this.mirror.resolveInput(tab,input,scope,signal) }));
           rememberSelection();
           return result;
         });
@@ -1072,7 +1139,7 @@ export class KernelBrowserHost {
         await admitComputerMutation(this, request.params);
         const nativeParams={...request.params,observed_by:observer};
         if (request.params.op === 'display_subscribe') {
-          if(process.env.CHARIOX_KERNEL_BROWSER_DISPLAY!=='1')throw new Error('MP-08: experimental display disabled');
+          if(!featureOn('CHARIOX_KERNEL_BROWSER_DISPLAY'))throw new Error('MP-08: display disabled');
           return {id:request.id,ok:true,result:await this.desktopDisplay.subscribe(nativeParams,request.params.observed_by??'terminal')};
         }
         if (['installed_applications','launch_application'].includes(request.params.op)) {
@@ -1132,7 +1199,7 @@ export class KernelBrowserHost {
         return { id: request.id, ok: true, result: { signal: parked } };
       }
       if (request.method === "host.browser") {
-        if(this.nativeComputer.held.size && ['input','open','close','navigate'].includes(request.params.op))throw new Error('MP-11: native keys held; release desktop input first');
+        if(this.nativeComputer.held.size && ['input','open','close','navigate','resize'].includes(request.params.op))throw new Error('MP-11: native keys held; release desktop input first');
         const at = timestamp();
         // MP-08/MP-11: the kernel's opener ledger names the agent Tabs ([{tab_id, label}]).
         const { _tab_groups: groups, ...params } = request.params ?? {};
@@ -1186,6 +1253,8 @@ export class KernelBrowserHost {
       if (["browser_unavailable"].includes(error?.code)) {
         return { id: request.id, ok: false, error: { code: error.code, message: error.message } };
       }
+      if (error?.code === "browser_dialog_invalid") return { id: request.id, ok: false, error: {
+        code: "browser_dialog_invalid", message: "Browser dialog answer is invalid or no longer pending; read the current browser state." } };
       return { id: request.id, ok: false, error: { code: error?.code === "browser_action_cancelled" ? "browser_action_cancelled" : "kernel_browser_failed", message: error instanceof MirrorInputEpochRefusal ? "MP-11: stale mirror input epoch" : error instanceof PointerOutsideViewport ? error.message : hostFailureMessage(error) } }; }
   }
 }

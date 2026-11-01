@@ -12,7 +12,9 @@ use std::sync::{Arc, Mutex};
 
 use super::{KernelRuntimeOwnedState, KernelRuntimeState, RuntimeChangeSignal};
 use crate::error::DaemonError;
-use crate::local::{PasskeyPrompt, PasskeyPromptClosureReason, PasskeyPromptKind};
+use crate::local::{
+    KernelAccessTerm, PasskeyPrompt, PasskeyPromptClosureReason, PasskeyPromptKind,
+};
 use crate::session::{RuntimeInteraction, RuntimeInteractionChoice, RuntimeSession};
 
 pub(crate) const PASSKEY_ALREADY_ANSWERED: &str = "PASSKEY_ALREADY_ANSWERED";
@@ -136,6 +138,7 @@ pub(super) fn passkey_prompt_for_scope(
         refuse_choice_id: refuse.id().to_owned(),
         requested_at_ms: interaction.requested_at_ms(),
         expires_at_ms: registered_at_ms.saturating_add(timeout_ms),
+        term: None,
         lifetime_minutes: None,
         max_lifetime_minutes: None,
     })))
@@ -180,7 +183,11 @@ impl KernelRuntimeOwnedState {
                         .find(|g| g.grant_id == id)
                         .or_else(|| access.grants.get(id).map(|g| &g.summary))
                 }) {
-                    prompt.lifetime_minutes = Some(grant.lifetime_minutes);
+                    prompt.term = Some(grant.term);
+                    // Clients that predate 568 read the minutes from here.
+                    if let KernelAccessTerm::Minutes(minutes) = grant.term {
+                        prompt.lifetime_minutes = Some(minutes);
+                    }
                     prompt.max_lifetime_minutes = Some(
                         self.config_projection
                             .snapshot()

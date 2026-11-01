@@ -56,3 +56,10 @@ test("project session selection and lifecycle requests match the current protoco
     RestoreProject: { project_id: "project-1" },
   })
 })
+
+
+test("Room stars use the shared kernel pin request", async () => {
+  const { setRoomPinnedRequest } = await import("./ipc-session-requests.js")
+  assert.deepEqual(setRoomPinnedRequest("room", true), { SetRoomPinned: { session_id: "room", pinned: true } })
+  assert.deepEqual(setRoomPinnedRequest("room", false), { SetRoomPinned: { session_id: "room", pinned: false } })
+})

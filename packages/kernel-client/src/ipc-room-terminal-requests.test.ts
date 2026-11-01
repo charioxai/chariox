@@ -94,3 +94,19 @@ test("room terminal results are read from the kernel reply or explain the refusa
 test("the Room terminal service is available from its protocol version", () => {
   assert.ok(LOCAL_DAEMON_PROTOCOL_VERSION >= roomTerminalMinimumProtocolVersion)
 })
+
+test("binary exec requests and results share the kernel's golden byte contract", async () => {
+  const { readFile } = await import("node:fs/promises")
+  const fixture = JSON.parse(await readFile(new URL("../../../fixtures/room-exec-protocol.json", import.meta.url), "utf8")) as {
+    shapes: { kind: string; wire: Record<string, unknown>; sha256: string }[]
+  }
+  for (const shape of fixture.shapes) {
+    assert.equal(sha256(shape.wire), shape.sha256)
+    if (shape.kind === "request") {
+      const wire = shape.wire as { RoomTerminal: { session_id: string; operation: import("./kernel-types.js").RoomTerminalOperation } }
+      assert.deepEqual(roomTerminalRequest({ sessionId: wire.RoomTerminal.session_id }, wire.RoomTerminal.operation), shape.wire)
+    } else assert.ok(roomTerminalResult(shape.wire).result.startsWith("exec_"))
+  }
+  assert.equal(expectRoomTerminalResult({ RoomTerminal: { result: { result: "exec_cancelled" } } }, "exec_cancelled").result, "exec_cancelled")
+  assert.equal(expectRoomTerminalResult({ RoomTerminal: { result: { result: "exec_closed" } } }, "exec_closed").result, "exec_closed")
+})

@@ -1,0 +1,52 @@
+{
+  "items": [
+    "MP-08",
+    "MP-10"
+  ],
+  "local_protocol": 636,
+  "peer_protocol": 239,
+  "allocation": "coordinator-allocated local 593, relay peer unchanged: additive viewport-first snapshot (viewport_first, deferred, snapshot_viewport_complete)",
+  "subscribe": {
+    "KernelBrowser": {
+      "command": {
+        "op": "mirror_subscribe",
+        "tab_id": "t",
+        "generation": 1,
+        "device_scale_factor": 1,
+        "wire": 2,
+        "viewport_first": true
+      }
+    }
+  },
+  "subscribed": {
+    "subscription_id": "s",
+    "generation": 1,
+    "tab_id": "t",
+    "device_scale_factor": 1,
+    "wire": 2,
+    "viewport_first": true
+  },
+  "viewport_reset": {
+    "wire": 2,
+    "sequence": 1,
+    "reset": true,
+    "snapshot_complete": false,
+    "snapshot_viewport_complete": true,
+    "nodes": [
+      {"id": "n1", "parent": null, "kind": "document"},
+      {"id": "n2", "parent": "n1", "kind": "element", "tag": "html"},
+      {"id": "n3", "parent": "n2", "kind": "element", "tag": "body"},
+      {"id": "n4", "parent": "n3", "kind": "element", "tag": "section", "deferred": [8, 1200, 1264, 640.5, null, 16, 16]}
+    ],
+    "ops": []
+  },
+  "fill_delta": {
+    "wire": 2,
+    "sequence": 2,
+    "snapshot_complete": true,
+    "snapshot_viewport_complete": true,
+    "ops": [
+      {"op": "children", "id": "n4", "children": ["n5"], "nodes": [{"id": "n5", "parent": "n4", "kind": "text", "text": "later"}]}
+    ]
+  }
+}

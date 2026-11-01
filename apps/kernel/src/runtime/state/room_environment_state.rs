@@ -234,6 +234,7 @@ impl KernelRuntimeState {
                 .agent_store
                 .get_session_agents(session_id)
                 .into_iter()
+                .filter(|agent| !agent.archived())
                 .map(|agent| {
                     let display_label = agent.alias().unwrap_or(agent.agent_ref());
                     EnvironmentActor::new(

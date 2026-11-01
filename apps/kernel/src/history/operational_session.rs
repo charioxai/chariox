@@ -114,6 +114,30 @@ impl OperationalHistoryStore {
         Ok(agent_ids)
     }
 
+    /// The newest history sequence stored for an agent: the revision of its transcript.
+    pub fn latest_session_agent_sequence(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<u64, DaemonError> {
+        self.delay_read_if_configured();
+        let connection = self.lock_read_connection(Some(session_id))?;
+        connection
+            .query_row(
+                "SELECT COALESCE(MAX(sequence), 0)
+                 FROM history_events
+                 WHERE session_id = ?1 AND agent_id = ?2",
+                params![session_id, agent_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|sequence| sequence.max(0) as u64)
+            .map_err(|error| DaemonError::SessionHistoryFailed {
+                session_id: Some(session_id.to_string()),
+                operation: "read agent history revision",
+                message: error.to_string(),
+            })
+    }
+
     pub fn load_latest_user_prompt_events(
         &self,
         session_id: &str,

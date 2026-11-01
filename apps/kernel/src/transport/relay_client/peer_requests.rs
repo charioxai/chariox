@@ -47,13 +47,13 @@ pub(super) async fn handle_daemon_peer_request(
             &encrypted_request,
         ) {
             Ok(payload) => payload,
-            Err(error) => {
+            Err(_) => {
                 return RelayRequestOutcome {
                     display_event: None,
                     encrypted_response: None,
                     error: Some(relay_error(
                         "invalid_request",
-                        &format!("invalid relay peer request payload: {error}"),
+                        "invalid encrypted relay peer request",
                         false,
                     )),
                 };
@@ -61,13 +61,13 @@ pub(super) async fn handle_daemon_peer_request(
         };
         let request = match serde_json::from_slice::<RelayPeerRequest>(&decrypted.plaintext) {
             Ok(request) => request,
-            Err(error) => {
+            Err(_) => {
                 return RelayRequestOutcome {
                     display_event: None,
                     encrypted_response: None,
                     error: Some(relay_error(
                         "invalid_request",
-                        &format!("invalid relay peer request payload: {error}"),
+                        "invalid encrypted relay peer request",
                         false,
                     )),
                 };
@@ -80,6 +80,56 @@ pub(super) async fn handle_daemon_peer_request(
             daemon_id,
         )
     };
+    #[cfg(test)]
+    if matches!(
+        &request,
+        RelayPeerRequest::InstallProviderAccountCopy { .. }
+    ) && require_bound_managed_context_sender(caller_identity.as_ref(), &encrypted_request)
+        .is_ok()
+    {
+        let release = {
+            state
+                .read()
+                .await
+                .test_observe_authenticated_peer_request(&request)
+        };
+        if let Some(release) = release {
+            let _ = release.await;
+        }
+    }
+    if let RelayPeerRequest::InstallProviderAccountCopy {
+        binding,
+        credential,
+    } = request
+    {
+        let result = match require_bound_managed_context_sender(
+            caller_identity.as_ref(),
+            &encrypted_request,
+        ) {
+            Ok(identity) => {
+                router
+                    .runtime_state()
+                    .install_provider_account_copy(
+                        stable_peer_daemon_id(from_daemon_id),
+                        &requester_public_key,
+                        identity,
+                        binding,
+                        credential,
+                    )
+                    .await
+            }
+            Err(_) => Err(crate::provider_account_copy::failure(
+                "provider_account_copy_unauthorized",
+            )),
+        };
+        let response = match result {
+            Ok(receipt) => RelayPeerResponse::ProviderAccountCopyInstalled { receipt },
+            Err(error) => RelayPeerResponse::ProviderAccountCopyFailed {
+                code: map_relay_error(&error).code,
+            },
+        };
+        return encrypt_peer_response(&daemon_private_key, &requester_public_key, response);
+    }
     let disposable_home_caller =
         if router.kernel_runtime_role() == crate::config::KernelRuntimeRole::RemoteLeaseWorker {
             router.confirmed_disposable_worker_home_caller().ok()
@@ -633,6 +683,9 @@ pub(super) async fn handle_daemon_peer_request(
                 }
             }
         }
+        RelayPeerRequest::InstallProviderAccountCopy { .. } => {
+            unreachable!("account copy is admitted before generic peer dispatch")
+        }
         RelayPeerRequest::Ping { value } => RelayPeerResponse::Pong {
             value,
             daemon_id,
@@ -1111,6 +1164,7 @@ pub(super) async fn handle_daemon_peer_request(
         RelayPeerRequest::SubmitLeasedPrompt {
             leased_agent_id,
             expected_profile,
+            provider_resume_state,
             prompt,
             hidden_system_context,
             attachments,
@@ -1125,6 +1179,7 @@ pub(super) async fn handle_daemon_peer_request(
                 .relay_submit_leased_prompt(
                     &leased_agent_id,
                     expected_profile,
+                    provider_resume_state,
                     &prompt,
                     &hidden_system_context,
                     attachments,

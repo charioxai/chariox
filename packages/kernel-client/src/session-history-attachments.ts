@@ -52,7 +52,9 @@ function richerSessionHistoryPromptAttachment<T extends SessionHistoryPromptAtta
   left: T,
   right: T,
 ): T {
-  return sessionHistoryPromptAttachmentScore(right) > sessionHistoryPromptAttachmentScore(left) ? right : left
+  const richer = sessionHistoryPromptAttachmentScore(right) > sessionHistoryPromptAttachmentScore(left) ? right : left
+  const size = richer.size_bytes ?? left.size_bytes ?? right.size_bytes
+  return size === undefined ? richer : { ...richer, size_bytes: size }
 }
 
 function sessionHistoryPromptAttachmentSetScore<T extends SessionHistoryPromptAttachment>(

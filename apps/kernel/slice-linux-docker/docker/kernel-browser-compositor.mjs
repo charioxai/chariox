@@ -1,4 +1,3 @@
-import {displayGeometry as geometry} from './kernel-browser-geometry.mjs';
 // MD-DISPLAY-02/04: private latest-only compositor source, empty-policy only.
 // A document-bound CSS screenshot attests the first compositor image. Main-frame
 // navigation fences the source synchronously; no raw pixels after Vault use.
@@ -34,7 +33,7 @@ export class CompositorSource {
     if(this.fenced||!this.allowed(this.policy))throw Error('MD-DISPLAY: compositor policy fenced');
     this.off=this.connection.subscribe(message=>{
       if(message.sessionId!==this.sessionId||this.closed)return;
-      if(this.attested&&this.protect&&regionProtectionChanged(message,this.sessionId,this.masks!=='[]')){
+      if(this.attested&&this.protect&&regionProtectionChanged(message,this.sessionId,{targets:Boolean(this.masks&&this.masks!=='[]')})){
         // MP-11: retire old pixels without stopping a hidden renderer between
         // mouse press/release. A fresh masked capture wakes even without paint;
         // tree churn retires frames only once that capture changes the masks.
@@ -60,11 +59,12 @@ export class CompositorSource {
     try {
       this.release=await this.acquire();
       if(this.closed||this.fenced||!this.allowed(this.policy)){await this.release();this.release=null;throw Error('MD-DISPLAY: source admission retired')}
-      await this.connection.send('Page.startScreencast',{format:'png',maxWidth:2560,maxHeight:1600,everyNthFrame:1},this.sessionId);
+      await this.connection.send('Page.startScreencast',{format:'png',maxWidth:this.width,maxHeight:this.height,everyNthFrame:1},this.sessionId);
       const deadline=this.now()+2000;
       while(!this.latest&&!this.closed&&this.now()<deadline)await delay(10);
-      const native=this.width===geometry.width*this.scale&&this.height===geometry.height*this.scale;
-      const reference=await this.screenshot(native?null:{x:0,y:0,width:this.width,height:this.height,scale:1/this.scale});
+      // The source follows the current Tab viewport, including a resized one.
+      // Attest its complete protected raster; pixel dimensions are not a CSS crop.
+      const reference=await this.screenshot(null);
       await assertCurrentDocument(this.connection,this.sessionId,this.tab.target_id,this.tab.document_id);
       if(this.closed||this.fenced||!this.latest||!this.allowed(this.policy))throw Error('MD-DISPLAY: compositor source changed');
       const expected=decodePng(reference.data_base64,this.scale),actual=decodePng(this.latest.data_base64,this.scale);

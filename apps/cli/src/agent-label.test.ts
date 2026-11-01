@@ -4,14 +4,18 @@ import test from "node:test"
 import type { AgentInstance, SliceRecord } from "./cli-types.js"
 import { formatAgentLabel, formatAgentLocationLabel } from "./agent-label.js"
 
-test("formatAgentLabel includes alias when present", () => {
-  assert.equal(formatAgentLabel(agent({ alias: "Builder" })), "agent-a (Builder)")
+test("formatAgentLabel prefers the alias when present", () => {
+  assert.equal(formatAgentLabel(agent({ alias: "Builder" })), "Builder")
+})
+
+test("formatAgentLabel falls back to the ref without an alias", () => {
+  assert.equal(formatAgentLabel(agent()), "agent-a")
 })
 
 test("formatAgentLabel marks agents in Meta mode", () => {
   assert.equal(
     formatAgentLabel(agent({ alias: "Planner", meta_mode: { activated_at_ms: 1 } })),
-    "agent-a (Planner) [Meta mode]",
+    "Planner [Meta mode]",
   )
 })
 

@@ -1,25 +1,18 @@
 //! MP-08 / MP-10 / MP-11: bound the stack used to construct relay TLS futures.
 use std::{future::Future, pin::Pin};
 
-use tokio::net::TcpStream;
-use tokio_tungstenite::{
-    connect_async_with_config,
-    tungstenite::{handshake::client::Response, Error},
-    MaybeTlsStream, WebSocketStream,
-};
+use crate::outbound_dial::{connect_websocket, WebSocket};
+use tokio_tungstenite::tungstenite::{handshake::client::Response, Error};
 
-type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 type ConnectFuture<'a> =
-    Pin<Box<dyn Future<Output = Result<(Socket, Response), Error>> + Send + 'a>>;
+    Pin<Box<dyn Future<Output = Result<(WebSocket, Response), Error>> + Send + 'a>>;
 
 // Keep construction out of callers' poll frames, including their timeout and
 // cancellation wrappers. The normal relay connection remains deferred.
 #[inline(never)]
-pub(super) fn connect(relay_url: &str) -> ConnectFuture<'_> {
-    Box::pin(connect_async_with_config(
+pub(crate) fn connect(relay_url: &str) -> ConnectFuture<'_> {
+    Box::pin(connect_websocket(
         chariox_relay::frame_transport::transport_url(relay_url),
-        None,
-        true,
     ))
 }
 
@@ -30,7 +23,7 @@ pub(super) fn connect_binary_events(relay_url: &str) -> ConnectFuture<'_> {
     match chariox_relay::binary_event::connection_request(
         &chariox_relay::frame_transport::transport_url(relay_url),
     ) {
-        Ok(request) => Box::pin(connect_async_with_config(request, None, true)),
+        Ok(request) => Box::pin(connect_websocket(request)),
         Err(error) => Box::pin(async move { Err(error) }),
     }
 }

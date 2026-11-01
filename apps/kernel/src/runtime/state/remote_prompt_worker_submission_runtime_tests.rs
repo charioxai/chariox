@@ -1200,6 +1200,7 @@ async fn leased_prompt_uses_shared_handoff_dispatch_before_provider_submission()
                 model: leased.model.clone(),
                 effort: leased.effort.clone(),
             },
+            None,
             "Continue the investigation",
             "",
             Vec::new(),

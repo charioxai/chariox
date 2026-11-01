@@ -64,13 +64,26 @@ fn apply_stream_event(
         apply_rate_limit_event(event, batch);
         return;
     }
+    let main = value.get("parent_tool_use_id").is_none_or(Value::is_null);
     if event_kind == "message_start" {
+        if main {
+            let message = event.get("message").unwrap_or(event);
+            state.main_stream_has_context = message
+                .get("model")
+                .and_then(Value::as_str)
+                .is_none_or(|model| format_claude_model(model).is_some());
+            if state.main_stream_has_context {
+                record_context_model(state, message);
+            }
+        }
         if let Some(usage) = event
             .get("message")
             .and_then(|message| message.get("usage"))
             .and_then(usage_from_value)
         {
-            apply_message_usage(state, batch, usage);
+            if main && state.main_stream_has_context {
+                apply_message_usage(state, batch, usage);
+            }
         }
         state.active_stream_message_id = event
             .get("message")
@@ -83,8 +96,10 @@ fn apply_stream_event(
             .and_then(Value::as_str)
             .and_then(format_claude_model)
         {
-            batch.resolved_model = Some(model);
-            batch.resolved_model_source = Some("claude.stream_event");
+            if main {
+                batch.resolved_model = Some(model);
+                batch.resolved_model_source = Some("claude.stream_event");
+            }
         }
     }
     if event_kind == "content_block_start" {
@@ -152,7 +167,9 @@ fn apply_stream_event(
             })
             .and_then(usage_from_value)
         {
-            apply_message_usage(state, batch, usage);
+            if main && state.main_stream_has_context {
+                apply_message_usage(state, batch, usage);
+            }
         }
     }
 }
@@ -251,7 +268,15 @@ fn apply_assistant_message(
     batch: &mut ProviderPromptSignalBatch,
 ) {
     let message = value.get("message").unwrap_or(value);
-    if batch.resolved_model.is_none() {
+    let main = value.get("parent_tool_use_id").is_none_or(Value::is_null)
+        && message
+            .get("model")
+            .and_then(Value::as_str)
+            .is_none_or(|model| format_claude_model(model).is_some());
+    if main {
+        record_context_model(state, message);
+    }
+    if main && batch.resolved_model.is_none() {
         if let Some(model) = message
             .get("model")
             .and_then(Value::as_str)
@@ -262,7 +287,9 @@ fn apply_assistant_message(
         }
     }
     if let Some(usage) = message.get("usage").and_then(usage_from_value) {
-        apply_message_usage(state, batch, usage);
+        if main {
+            apply_message_usage(state, batch, usage);
+        }
     }
     if let Some(content) = message.get("content").and_then(Value::as_array) {
         for (index, block) in content.iter().enumerate() {
@@ -286,6 +313,45 @@ fn apply_assistant_message(
     }
 }
 
+// Match the observed main model; result totals can include other models and subagents.
+fn record_context_model(state: &mut ClaudeRuntimeState, message: &Value) {
+    let Some(model) = message
+        .get("model")
+        .and_then(Value::as_str)
+        .and_then(format_claude_model)
+    else {
+        return;
+    };
+    let model = model.strip_prefix("claude/").unwrap_or(&model).to_string();
+    if state.observed_context_model.as_ref() != Some(&model) {
+        state.last_context_window = None;
+        state.last_context_tokens = None;
+        state.observed_context_model = Some(model);
+    }
+}
+
+fn result_context_window(state: &ClaudeRuntimeState, value: &Value) -> Option<u64> {
+    let model = state.observed_context_model.as_deref()?;
+    let models = value.get("modelUsage")?.as_object()?;
+    if let Some(usage) = models.get(model) {
+        return usage
+            .get("contextWindow")?
+            .as_u64()
+            .filter(|limit| *limit > 0);
+    }
+    let mut matching = models
+        .values()
+        .filter(|usage| usage.get("canonicalModel").and_then(Value::as_str) == Some(model));
+    let usage = matching.next()?;
+    if matching.next().is_some() {
+        return None;
+    }
+    usage
+        .get("contextWindow")?
+        .as_u64()
+        .filter(|limit| *limit > 0)
+}
+
 fn apply_result_message(
     state: &mut ClaudeRuntimeState,
     value: &Value,
@@ -294,9 +360,13 @@ fn apply_result_message(
     if let Some(session_id) = string_field(value, "session_id") {
         record_claude_session_id(state, batch, session_id);
     }
+    if let Some(limit) = result_context_window(state, value) {
+        state.last_context_window = Some(limit);
+    }
     if let Some(mut usage) = value.get("usage").and_then(usage_from_value) {
         // The result sums API calls. Preserve billing, replace only context.
         usage.context_tokens = state.last_context_tokens;
+        usage.context_window = state.last_context_window;
         batch.resolved_usage_tokens_total = usage.total_tokens;
         batch.resolved_usage = Some(usage);
     }
@@ -538,6 +608,7 @@ fn apply_message_usage(
     }
     // Output-only streaming deltas must not erase the input context.
     usage.context_tokens = state.last_context_tokens;
+    usage.context_window = state.last_context_window;
     batch.resolved_usage_tokens_total = usage.total_tokens;
     batch.resolved_usage = Some(usage);
 }

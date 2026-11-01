@@ -7,6 +7,7 @@ fn view_request(session_id: &str, preferred: Option<&str>) -> LocalDaemonRequest
         client_id: "initial-view-client".into(),
         capability_level: ClientCapabilityLevel::FullTerminal,
         preferred_agent_id: preferred.map(str::to_string),
+        latest_prompt_count: None,
     })
 }
 
@@ -131,6 +132,7 @@ fn mp08_mp10_initial_session_view_selects_the_preferred_six_agent_group() {
     for index in 1..8 {
         harness
             .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+                no_subscribe: false,
                 session_id: session.id().into(),
                 account_profile: None,
                 alias: Some(format!("view-agent-{index}")),
@@ -196,6 +198,7 @@ fn mp08_mp10_mp11_initial_view_is_a_bounded_latest_turn_not_a_blob_download() {
     for index in 1..6 {
         harness
             .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+                no_subscribe: false,
                 session_id: session.id().into(),
                 account_profile: None,
                 alias: Some(format!("preview-{index}")),

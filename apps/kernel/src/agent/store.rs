@@ -42,8 +42,15 @@ impl AgentStore {
     ) -> Vec<AgentInstance> {
         let existing_agent_ids = self
             .session_agent_ids(session_id)
+            .into_iter()
+            .flatten()
+            .filter(|agent_id| {
+                self.agents
+                    .get(*agent_id)
+                    .is_some_and(|agent| !agent.archived())
+            })
             .cloned()
-            .unwrap_or_default();
+            .collect::<Vec<_>>();
         let positions = calculate_agent_layout(existing_agent_ids.len() + agents.len());
 
         for (index, agent_id) in existing_agent_ids.iter().enumerate() {
@@ -151,8 +158,15 @@ impl AgentStore {
     ) {
         let agent_ids = self
             .session_agent_ids(session_id)
+            .into_iter()
+            .flatten()
+            .filter(|agent_id| {
+                self.agents
+                    .get(*agent_id)
+                    .is_some_and(|agent| !agent.archived())
+            })
             .cloned()
-            .unwrap_or_default();
+            .collect::<Vec<_>>();
         let positions = calculate_agent_layout(agent_ids.len());
         for (index, agent_id) in agent_ids.iter().enumerate() {
             if let Some(agent) = self.agents.get_mut(agent_id) {
@@ -182,9 +196,11 @@ impl AgentStore {
         let Some(agent_ids) = self.session_agent_ids(session_id) else {
             return summary;
         };
-        summary.count = agent_ids.len();
         for agent_id in agent_ids {
             if let Some(agent) = self.agents.get(agent_id) {
+                if !agent.archived() {
+                    summary.count += 1;
+                }
                 if let Some(alias) = agent.alias() {
                     summary.aliases.insert(alias.trim().to_lowercase());
                 }

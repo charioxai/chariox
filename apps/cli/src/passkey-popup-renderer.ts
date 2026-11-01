@@ -1,7 +1,7 @@
 import {
   BoxRenderable, MouseButton, RGBA, ScrollBoxRenderable, TextAttributes, TextRenderable, type CliRenderer,
 } from "@opentui/core"
-import type { PasskeyPopupView } from "./passkey-popup-controller.js"
+import { UNTIL_AGENT_EXITS, type PasskeyPopupView } from "./passkey-popup-controller.js"
 import { approvalCountdown } from "./kernel-clock.js"
 import { theme } from "./theme.js"
 
@@ -13,8 +13,8 @@ function expiry(expiresAtMs: number): string {
 }
 
 /** Rows a wrapped text takes at `width`, near enough to size its box. */
-function hours(minutes: number | null | undefined): string {
-  const value = (minutes ?? 60) / 60
+function hours(minutes: PasskeyPopupView["passkey"]["lifetime"]): string {
+  const value = (typeof minutes === "number" ? minutes : 60) / 60
   return `${value} hour${value === 1 ? "" : "s"}`
 }
 
@@ -191,8 +191,8 @@ export function createPasskeyPopupRenderer(renderer: CliRenderer, actions: {
       // Hidden input: only the length is ever rendered.
       const remember = text(prompt.kind === "critical_approval"
         ? `Remember for: ${view.passkey.rememberMinutes ? `${view.passkey.rememberMinutes} minutes` : "off"}`
-        : prompt.kind === "sudo" ? prompt.lifetime_minutes ? `Window: ${hours(view.passkey.accessLifetimeMinutes)} · maximum ${hours(prompt.max_lifetime_minutes)} · fresh passkey required` : "Operation scope · fresh passkey required"
-        : `Access for: ${view.passkey.accessLifetimeMinutes} minutes`)
+        : prompt.kind === "sudo" ? prompt.lifetime_minutes ? `Window: ${hours(view.passkey.lifetime)} · maximum ${hours(prompt.max_lifetime_minutes)} · fresh passkey required` : "Operation scope · fresh passkey required"
+        : `Access for: ${view.passkey.lifetime === UNTIL_AGENT_EXITS ? "until the agent exits" : `${view.passkey.lifetime} minutes`}`)
       remember.onMouseUp = (event) => {
         event.stopPropagation()
         if (event.button === MouseButton.LEFT) actions.cycleRemember()

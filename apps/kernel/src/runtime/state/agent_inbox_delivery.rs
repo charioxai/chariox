@@ -7,6 +7,9 @@ impl KernelRuntimeState {
         room: &str,
         agent: &str,
     ) -> Result<(), DaemonError> {
+        if self.owned.agent_store.get_agent(agent)?.archived() {
+            return Ok(());
+        }
         let tasks = self
             .owned
             .durable_state_store
@@ -272,6 +275,7 @@ impl KernelRuntimeState {
                 Err(e) => {
                     let state = ledger::delivery_receipt_state(None, false);
                     self.record_agent_delivery_receipt(room, agent, event.sequence, state)?;
+                    self.owned.settle_failed_delegate_start(room, agent)?;
                     return Err(e);
                 }
             }

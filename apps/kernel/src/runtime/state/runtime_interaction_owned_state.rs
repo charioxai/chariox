@@ -432,19 +432,33 @@ impl KernelRuntimeOwnedState {
                     .is_some_and(|id| id.starts_with("access-"))
                     && choice.requires_passkey()
                 {
-                    let minutes = reply
-                        .parse::<u32>()
-                        .map_err(|_| interaction_error("Access lifetime must be whole minutes"))?;
-                    if minutes == 0
-                        || minutes
-                            > self
-                                .config_projection
-                                .snapshot()
-                                .user_config
-                                .kernel_access
-                                .grant_max_minutes
-                    {
-                        return Err(interaction_error("Access lifetime exceeds kernel policy"));
+                    let term =
+                        crate::local::KernelAccessTerm::from_reply(reply).ok_or_else(|| {
+                            interaction_error("Access term must be whole minutes or until_exit")
+                        })?;
+                    match term {
+                        crate::local::KernelAccessTerm::Minutes(minutes)
+                            if minutes == 0
+                                || minutes
+                                    > self
+                                        .config_projection
+                                        .snapshot()
+                                        .user_config
+                                        .kernel_access
+                                        .grant_max_minutes =>
+                        {
+                            return Err(interaction_error("Access lifetime exceeds kernel policy"));
+                        }
+                        crate::local::KernelAccessTerm::UntilHolderExits
+                            if interaction
+                                .kernel_operation_id()
+                                .is_some_and(|id| id.starts_with("access-extension:")) =>
+                        {
+                            return Err(interaction_error(
+                                "An extension adds time; it cannot last until the agent exits",
+                            ));
+                        }
+                        _ => {}
                     }
                     reply.to_owned()
                 } else {
@@ -492,29 +506,37 @@ impl KernelRuntimeOwnedState {
                 message: format!("interaction {interaction_id} does not define choice {choice_id}"),
             });
         };
-        // The same monotonic decision deadline applies after waiting for the
-        // session writer and immediately before consuming the decision.
+        // Validate the decision after waiting for the session writer. Its time
+        // is pinned before publication so a slow commit cannot bank elevation.
         if pending
             .kernel_operation_deadline
             .is_some_and(|deadline| std::time::Instant::now() >= deadline)
         {
             return Err(interaction_error("Kernel operation decision expired"));
         }
-        let consume = || {
-            if let Some(terminal) = authorizing_terminal {
-                self.sudo_turns
-                    .lock()
-                    .expect("access state poisoned")
-                    .get_mut(interaction_id)
-                    .ok_or_else(|| interaction_error("sudo request revoked before the decision"))?
-                    .terminal_id = terminal.into();
-            }
-            self.pending_interactions
-                .write()
-                .remove(interaction_id)
-                .ok_or_else(|| interaction_error("interaction is no longer pending"))
-        };
-        let pending = consume()?;
+        if let Some(terminal) = authorizing_terminal {
+            self.sudo_turns
+                .lock()
+                .expect("access state poisoned")
+                .get_mut(interaction_id)
+                .ok_or_else(|| interaction_error("sudo request revoked before the decision"))?
+                .terminal_id = terminal.into();
+        }
+        let decision_at = (std::time::Instant::now(), crate::session::unix_epoch_ms());
+        // Keep the decision and its responder available if the event commit fails.
+        if session.is_some() {
+            self.publish_outside_interaction(
+                session_id,
+                &interaction,
+                crate::local::EventInteractionState::Resolved,
+                None,
+            )?;
+        }
+        let pending = self
+            .pending_interactions
+            .write()
+            .remove(interaction_id)
+            .ok_or_else(|| interaction_error("interaction is no longer pending"))?;
         // MP-08/MP-10/MP-11: pin time at the winning fresh decision, before
         // waking its consumer. Scheduler delays cannot bank elevation time.
         if passkey_verified
@@ -528,10 +550,7 @@ impl KernelRuntimeOwnedState {
             self.sudo_verified_at
                 .lock()
                 .expect("sudo verification clocks poisoned")
-                .insert(
-                    interaction_id.to_owned(),
-                    (std::time::Instant::now(), crate::session::unix_epoch_ms()),
-                );
+                .insert(interaction_id.to_owned(), decision_at);
         }
         if pending.passkey_prompt.is_some() {
             // Every terminal closes the popup; a later answer is told why.
@@ -544,11 +563,6 @@ impl KernelRuntimeOwnedState {
         }
         activity_mutation.record();
         drop(sessions);
-        if pending.kernel_wide_interaction.is_none() {
-            self.session_snapshot(session_id)?;
-            self.terminal_stream
-                .notify_terminal_projection_change(session_id);
-        }
         if let Some(sender) = pending
             .responder
             .lock()
@@ -560,6 +574,11 @@ impl KernelRuntimeOwnedState {
                 choice_id: Some(choice_id.to_string()),
                 reply: Some(resolved_reply),
             });
+        }
+        if pending.kernel_wide_interaction.is_none() {
+            self.session_snapshot(session_id)?;
+            self.terminal_stream
+                .notify_terminal_projection_change(session_id);
         }
         crate::logging::debug_with_fields(
             "runtime.interaction",
@@ -621,20 +640,23 @@ impl KernelRuntimeOwnedState {
         if !self.agent_interaction_is_live(&pending) {
             return self.withdraw_agent_interaction_locked(interaction_id, &pending);
         }
-        self.pending_interactions.write().remove(interaction_id);
-        if pending.passkey_prompt.is_some() {
-            let reason = if pending
-                .kernel_operation_deadline
-                .is_some_and(|deadline| std::time::Instant::now() >= deadline)
-            {
-                crate::local::PasskeyPromptClosureReason::Expired
-            } else {
-                crate::local::PasskeyPromptClosureReason::Revoked
-            };
-            self.passkey_prompts
-                .record_closed(session_id, interaction_id, reason);
-        }
+        let consume = || {
+            self.pending_interactions.write().remove(interaction_id);
+            if pending.passkey_prompt.is_some() {
+                let reason = if pending
+                    .kernel_operation_deadline
+                    .is_some_and(|deadline| std::time::Instant::now() >= deadline)
+                {
+                    crate::local::PasskeyPromptClosureReason::Expired
+                } else {
+                    crate::local::PasskeyPromptClosureReason::Revoked
+                };
+                self.passkey_prompts
+                    .record_closed(session_id, interaction_id, reason);
+            }
+        };
         if let Some(interaction) = &pending.user_domain_interaction {
+            consume();
             self.finish_user_domain_interaction(
                 &pending,
                 interaction_id,
@@ -643,6 +665,7 @@ impl KernelRuntimeOwnedState {
             return Ok(());
         }
         if let Some(interaction) = pending.kernel_wide_interaction.as_ref() {
+            consume();
             if let Some(sender) = pending
                 .responder
                 .lock()
@@ -662,14 +685,20 @@ impl KernelRuntimeOwnedState {
             return self.withdraw_agent_interaction_locked(interaction_id, &pending);
         }
         let Some(interaction) = session.remove_active_interaction(interaction_id) else {
-            return Ok(());
+            drop(sessions);
+            drop(activity_mutation);
+            return self.withdraw_agent_interaction_locked(interaction_id, &pending);
         };
+        self.publish_outside_interaction(
+            session_id,
+            &interaction,
+            crate::local::EventInteractionState::Resolved,
+            None,
+        )?;
+        consume();
         sessions.restore_session(session);
         activity_mutation.record();
         drop(sessions);
-        self.session_snapshot(session_id)?;
-        self.terminal_stream
-            .notify_terminal_projection_change(session_id);
         let resolution = timeout_runtime_interaction_resolution(&interaction);
         if let Some(sender) = pending
             .responder
@@ -688,6 +717,9 @@ impl KernelRuntimeOwnedState {
                 "pending_interaction_count_after": self.pending_interactions.write().len(),
             }),
         );
+        self.session_snapshot(session_id)?;
+        self.terminal_stream
+            .notify_terminal_projection_change(session_id);
         Ok(())
     }
 }

@@ -16,6 +16,7 @@ async fn request(socket: &mut Socket, id: &str, command: Browser) -> KernelOutgo
         command_id: Some(id.into()),
         causation_id: None,
         correlation_id: None,
+        kernel: None,
         request: LocalDaemonRequest::KernelBrowser(KernelBrowserRequest { command }),
     };
     socket
@@ -252,6 +253,8 @@ async fn mdnotes_two_local_connections_child() {
                     navigation_preview: None,
                     font_requirements: None,
                     font_absent: None,
+                    viewport_first: None,
+                    visited_links: None,
                     layout_width: None,
                     layout_height: None,
                 },
@@ -361,6 +364,8 @@ async fn mdnotes_two_local_connections_child() {
                     navigation_preview: None,
                     font_requirements: None,
                     font_absent: None,
+                    viewport_first: None,
+                    visited_links: None,
                     layout_width: None,
                     layout_height: None,
                 },

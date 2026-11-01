@@ -86,7 +86,9 @@ pub(super) fn delivery_kind(operation: &Operation) -> Option<&'static str> {
         Operation::ProcessMatched { .. } | Operation::ProcessExited { .. } => {
             Some("process_occurrence")
         }
-        Operation::SourceOutcome { .. } => Some("completion"),
+        Operation::SourceOutcome { .. } | Operation::DelegateUnavailable { .. } => {
+            Some("completion")
+        }
         Operation::OwnerResponse { .. } => Some("owner_response"),
         Operation::Receipt { .. } => Some("delivery_receipt"),
         _ => None,
