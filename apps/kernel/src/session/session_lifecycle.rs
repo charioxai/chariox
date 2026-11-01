@@ -36,6 +36,7 @@ pub struct KernelRestartReconciliation {
     pub removed_terminal_workflow_prompt_count: usize,
     pub interrupted_prompt_count: usize,
     pub stopped_workflow_run_count: usize,
+    pub settled_trigger_steer_count: usize,
 }
 
 impl KernelRestartReconciliation {
@@ -48,6 +49,7 @@ impl KernelRestartReconciliation {
             || self.removed_orphaned_workflow_prompt_count > 0
             || self.removed_terminal_workflow_prompt_count > 0
             || self.stopped_workflow_run_count > 0
+            || self.settled_trigger_steer_count > 0
     }
 }
 

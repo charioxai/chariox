@@ -19,20 +19,7 @@ test("parseRequestedViewLayout handles summary, invalid, and set cases", () => {
 
 test("agent wait commands create durable kernel schedules for the focused agent", async () => {
   const calls: string[] = []
-  const scheduledSession = makeSession({
-    agent_prompt_schedules: [{
-      id: "schedule-1",
-      agent_id: "agent-1",
-      kind: "once",
-      interval_seconds: 3,
-      prompt: "Check once",
-      created_at_ms: 0,
-      next_run_at_ms: 3_000,
-      runs_dispatched: 0,
-      last_triggered_at_ms: null,
-      last_error: null,
-    }],
-  })
+  const scheduledSession = makeSession()
   const handlers = createCommandActionHandlers(makeCommandDeps({
     createAgentPromptSchedule: async (
       sessionId: string,

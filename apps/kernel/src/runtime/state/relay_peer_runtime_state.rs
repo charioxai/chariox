@@ -1009,6 +1009,22 @@ impl KernelRuntimeState {
                         session_id: format!("leased-agent:{leased_agent_id}"),
                     });
                 }
+                Err(error @ DaemonError::ProviderPromptSteerRejected { .. }) => {
+                    // The provider refused after mailbox admission: say so in the
+                    // durable receipt so the home queue entry can be replayed.
+                    let _ = self
+                        .with_app_side_effect(|app| {
+                            RemoteLeaseRuntime::new(app)
+                                .mark_leased_prompt_steer_definitely_not_accepted(
+                                    &leased_agent_id,
+                                    &steer_id,
+                                    &target_home_prompt_id,
+                                    &prepared_provider_run_id,
+                                )
+                        })
+                        .await;
+                    return Err(error);
+                }
                 Err(error) => return Err(error),
             }
             return Ok((provider_run_id, false));

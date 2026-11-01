@@ -1124,6 +1124,7 @@ impl DaemonApp {
                     "removed_terminal_workflow_prompt_count": reconciliation.removed_terminal_workflow_prompt_count,
                     "interrupted_prompt_count": reconciliation.interrupted_prompt_count,
                     "stopped_workflow_run_count": reconciliation.stopped_workflow_run_count,
+                    "settled_trigger_steer_count": reconciliation.settled_trigger_steer_count,
                 }),
             );
         }
@@ -1345,6 +1346,11 @@ impl DaemonApp {
                     prompt_state.last_activity_at_ms,
                 )?;
                 prompt_state.restore_private_states();
+                if let Some(settlement) = prompt_state.trigger_settlement.take() {
+                    self.sessions
+                        .write()
+                        .apply_agent_trigger_settlement(&prompt_state.session_id, settlement)?;
+                }
                 if let Some(timestamp_ms) = prompt_state.last_prompt_sent_at_ms {
                     self.agents
                         .note_prompt_sent_at(&prompt_state.agent_id, timestamp_ms)?;

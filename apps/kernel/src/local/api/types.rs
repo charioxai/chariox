@@ -12,7 +12,7 @@ use chariox_relay::protocol::RelayKernelPresence;
 
 mod agent_deadline;
 mod agent_lifecycle;
-mod agent_prompt_schedule;
+mod agent_triggers;
 mod agent_utility;
 mod apps;
 mod browser_import;
@@ -63,7 +63,7 @@ mod workspace;
 
 pub use agent_deadline::*;
 pub use agent_lifecycle::*;
-pub use agent_prompt_schedule::*;
+pub use agent_triggers::*;
 pub use agent_utility::*;
 pub use apps::*;
 pub use browser_import::*;
@@ -434,4 +434,5 @@ pub use workspace::*;
 /// Allocated 928 adds `question` (the decision as the person sees it) to a pending outside `Interaction`
 /// event and `resolution` (`via`, `choice_id`) to a resolved one; an answer to a closed decision fails with
 /// the stable `interaction_closed`.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 929;
+/// Allocated 930 adds agent triggers; `/wait-in` and `/wait-every` become schedule triggers.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 930;

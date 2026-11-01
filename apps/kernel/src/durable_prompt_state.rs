@@ -4,7 +4,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::durable_state::DurableKernelStateStore;
 use crate::error::DaemonError;
-use crate::session::{DurablePromptPrivateState, PromptQueueItem, RuntimeSession};
+use crate::session::{
+    AgentTriggerSettlement, DurablePromptPrivateState, PromptQueueItem, RuntimeSession,
+};
 
 pub(crate) const DURABLE_PROMPT_STATE_EVENT_KIND: &str = "session.prompt_state.updated";
 
@@ -20,6 +22,11 @@ pub(crate) struct DurablePromptStateEventPayload {
     pub(crate) last_prompt_sent_at_ms: Option<u64>,
     #[serde(default)]
     pub(crate) last_activity_at_ms: u64,
+    /// The trigger firing this change consumed a steered queue entry for. It
+    /// lands in the same event as the removal, so a restart never sees one
+    /// without the other.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) trigger_settlement: Option<AgentTriggerSettlement>,
 }
 
 impl DurablePromptStateEventPayload {
@@ -46,6 +53,7 @@ impl DurablePromptStateEventPayload {
                 .iter()
                 .find(|agent| agent.id() == agent_id)
                 .and_then(|agent| agent.last_prompt_sent_at_ms()),
+            trigger_settlement: None,
         }
     }
 
@@ -72,11 +80,21 @@ pub(crate) fn append_durable_prompt_state_event(
     session: &RuntimeSession,
     agent_id: &str,
 ) -> Result<(), DaemonError> {
-    let payload = serde_json::to_value(DurablePromptStateEventPayload::capture(session, agent_id))
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "durable_state.encode_prompt_state_event",
-            message: error.to_string(),
-        })?;
+    append_durable_prompt_state_event_settling(store, session, agent_id, None)
+}
+
+pub(crate) fn append_durable_prompt_state_event_settling(
+    store: &DurableKernelStateStore,
+    session: &RuntimeSession,
+    agent_id: &str,
+    trigger_settlement: Option<AgentTriggerSettlement>,
+) -> Result<(), DaemonError> {
+    let mut payload = DurablePromptStateEventPayload::capture(session, agent_id);
+    payload.trigger_settlement = trigger_settlement;
+    let payload = serde_json::to_value(payload).map_err(|error| DaemonError::LocalTransport {
+        operation: "durable_state.encode_prompt_state_event",
+        message: error.to_string(),
+    })?;
     store.append_event(
         DURABLE_PROMPT_STATE_EVENT_KIND,
         Some(session.id().to_string()),

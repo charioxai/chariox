@@ -76,7 +76,6 @@ export type RuntimeSession = {
   agent_wakes?: AgentWake[]
   metaagent_tasks?: MetaagentTask[]
   queued_metaagent_tasks?: QueuedMetaagentTask[]
-  agent_prompt_schedules?: AgentPromptSchedule[]
   focused_agent_id: string | null
   max_agents: number
   agents: AgentInstance[]
@@ -122,19 +121,6 @@ export type RuntimeProject = {
 }
 
 export type MetaagentTaskStatus = "active" | "paused" | "blocked" | "completed" | "aborted"
-
-export type AgentPromptSchedule = {
-  id: string
-  agent_id: string
-  kind: "once" | "recurring"
-  interval_seconds: number
-  prompt: string
-  created_at_ms: number
-  next_run_at_ms: number
-  runs_dispatched: number
-  last_triggered_at_ms?: number | null
-  last_error?: string | null
-}
 
 export type MetaagentTask = {
   task_id: string

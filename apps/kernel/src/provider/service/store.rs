@@ -587,7 +587,10 @@ impl ProviderProcessServiceStore {
         mode: PromptAssemblyMode,
         private_assessment_evidence: Option<crate::prompt_assembly::AssessmentEvidence>,
         steering: bool,
-    ) -> Result<(), DaemonError> {
+    ) -> Result<
+        tokio::sync::oneshot::Receiver<crate::provider::ProviderPromptSubmitReceipt>,
+        DaemonError,
+    > {
         let move_session = session_id.clone();
         let move_agent = agent_id.clone();
         self.with_agent_move_admission(&move_session, Some(&move_agent), None, || {
