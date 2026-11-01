@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::session::{AgentPromptScheduleKind, AgentTriggerBusyPolicy, AgentTriggerRepeat};
 
-/// Protocol 900: what fires a new agent trigger.
+/// Protocol 930: what fires a new agent trigger.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum AgentTriggerSourceRequest {
@@ -41,7 +41,7 @@ pub struct DeleteAgentTriggerRequest {
     pub trigger_id: String,
 }
 
-/// Protocol < 900 `/wait-in` and `/wait-every`: creates a queue-policy schedule trigger.
+/// `/wait-in` and `/wait-every`: creates a queue-policy schedule trigger.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CreateAgentPromptScheduleRequest {
     pub session_id: String,
@@ -51,7 +51,7 @@ pub struct CreateAgentPromptScheduleRequest {
     pub prompt: Option<String>,
 }
 
-/// Protocol < 900: deletes the schedule trigger.
+/// Deletes the schedule trigger of a `/wait`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CancelAgentPromptScheduleRequest {
     pub session_id: String,

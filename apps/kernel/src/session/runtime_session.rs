@@ -138,7 +138,7 @@ pub struct RuntimeSession {
     agent_wakes: Vec<crate::durable_state::agent_lifecycle::AgentWake>,
     #[serde(default, skip_serializing_if = "VecDeque::is_empty")]
     queued_metaagent_tasks: VecDeque<QueuedMetaagentTask>,
-    #[serde(flatten)]
+    #[serde(default, skip_serializing_if = "AgentTriggers::is_empty")]
     agent_triggers: AgentTriggers,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     agent_output_read_state: BTreeMap<String, AgentOutputReadState>,

@@ -329,8 +329,8 @@ fn local_daemon_protocol_agent_prompt_schedule_shape_is_versioned() {
     );
 }
 
-/// Protocol 900: agent triggers; `/wait` schedules are schedule triggers and
-/// older clients keep reading them as `agent_prompt_schedules`.
+/// Protocol 930: agent triggers; `/wait` schedules are schedule triggers listed
+/// in the session's `agent_triggers`.
 #[test]
 fn local_daemon_protocol_agent_trigger_shape_is_versioned() {
     assert_eq!(
@@ -411,12 +411,12 @@ fn local_daemon_protocol_agent_trigger_shape_is_versioned() {
         }))
     );
     assert_eq!(
+        snapshot.pointer("/AgentTriggerCreated/session/agent_triggers/0/id"),
+        Some(&serde_json::json!("trigger-1"))
+    );
+    assert_eq!(
         snapshot.pointer("/AgentTriggerCreated/session/agent_prompt_schedules"),
-        Some(&serde_json::json!([{
-            "id": "trigger-1", "agent_id": "agent-1", "kind": "once", "interval_seconds": 60,
-            "prompt": "Continue from where you left off.", "created_at_ms": 1_000,
-            "next_run_at_ms": 61_000, "runs_dispatched": 0,
-        }]))
+        None
     );
     assert_eq!(
         snapshot.pointer("/AgentTriggerCreated/session/agent_triggers/0/id"),
