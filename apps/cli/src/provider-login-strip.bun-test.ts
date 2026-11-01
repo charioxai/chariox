@@ -125,7 +125,7 @@ test("MP-08/MP-10/MP-11 first attachment at a forwarded retry keeps the explanat
       maxAgentsPerScreen: 1, focusedAgentId: "agent-1", activeInteractionForAgent: () => retry,
       selectedChoiceIndex: store.selectedChoiceIndex, setSelectedChoiceIndex: store.setSelectedIndex,
       customReply: store.customReply, customEditing: store.isCustomEditing,
-      queuedPromptStripItemsForAgent: () => [], selectedQueuedPromptIndexForAgent: () => -1, onQueuedPromptAction: () => {},
+      queuedPromptStripItemsForAgent: () => [], selectedQueuedPromptIndexForAgent: () => -1, onQueuedPromptAction: () => {}, agentTriggerStripItemsForAgent: () => [],
       providerLoginState: logins.stripState, focusCustomChoiceOnce: store.focusCustomChoiceOnce,
     })
     await harness.renderOnce()
