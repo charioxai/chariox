@@ -712,11 +712,14 @@ fn browser_dialog_protocol630_snapshot() {
 
 // MP-08/MP-10: coordinator-allocated portable Browser header, including no-band clients.
 #[test]
-fn mp08_mp10_browser_header_577_shape_and_hash() {
-    assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 577);
-    assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 185);
-    let bytes = include_bytes!("browser-header-577.json");
-    assert_eq!(format!("{:x}", Sha256::digest(bytes)), "e40b0ad9627707c875ade39e5964d4942aece56eb4ecef9f697ad32abe2b06a9");
+fn mp08_mp10_browser_header_955_shape_and_hash() {
+    assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 955);
+    assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 395);
+    let bytes = include_bytes!("browser-header-955.json");
+    assert_eq!(
+        format!("{:x}", Sha256::digest(bytes)),
+        "1274dc853a2703ab0b882d3d149171aaa0c10c234c2fde7641aa93a8670bf828"
+    );
     let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     let response: LocalDaemonResponse = serde_json::from_value(snapshot["response"].clone()).unwrap();
     assert_eq!(serde_json::to_value(response).unwrap(), snapshot["response"]);
