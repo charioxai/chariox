@@ -378,7 +378,7 @@ async fn worker_that_lost_only_its_relay_is_cancelled_when_it_reconnects() {
         let leased_agent_id = leased_agent_id.clone();
         async move {
             let mut app = router.app.lock().await;
-            let (session, backing_agent) = crate::app::RemoteLeaseRuntime::new(&mut *app)
+            let (session, backing_agent) = crate::app::RemoteLeaseRuntime::new(&mut app)
                 .leased_agent_backing(&leased_agent_id)?;
             app.prompt_owner_active_prompt_for_agent_snapshot(&session, &backing_agent)
                 .ok()
