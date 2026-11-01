@@ -581,7 +581,7 @@ fn a_root_unreadable_at_start_is_listed_and_counted_once_readable() {
         assert!(
             commands
                 .get(&child.id())
-                .is_some_and(|resident| *resident > 0),
+                .is_some_and(|(resident, _)| *resident > 0),
             "errno {errno}: the root's memory is not counted for limits and pressure: {commands:?}"
         );
     }
