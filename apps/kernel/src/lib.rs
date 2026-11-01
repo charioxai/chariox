@@ -24,6 +24,8 @@ pub(crate) mod git_observer;
 pub(crate) mod git_worktree_placement;
 pub mod history;
 pub mod history_archive;
+#[cfg(unix)]
+pub mod hot_reload;
 pub mod io;
 pub mod local;
 pub mod logging;

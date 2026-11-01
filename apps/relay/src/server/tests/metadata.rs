@@ -794,7 +794,9 @@ async fn client_admission_refusals_report_the_reason_before_closing() {
         })
         .await
         .expect("admission refusal must reach the client promptly");
-        assert!(matches!(response, RelayEnvelope::Close { reason: actual } if actual == reason));
+        assert!(
+            matches!(response, RelayEnvelope::Close { reason: actual, .. } if actual == reason)
+        );
     }
     let _ = shutdown_tx.send(());
     server_task.await.unwrap();

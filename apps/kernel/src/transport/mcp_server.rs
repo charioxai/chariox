@@ -34,12 +34,25 @@ pub(crate) async fn bind_mcp_http_server(
     router: &CommandRouter,
 ) -> Result<TcpListener, DaemonError> {
     let (bind_host, bind_port) = router.runtime_mcp_bind_address();
+    let failed = |error: std::io::Error| DaemonError::LocalTransport {
+        operation: "bind runtime mcp",
+        message: error.to_string(),
+    };
+    // Agents' tool calls during a hot reload wait for the new program.
+    #[cfg(unix)]
+    {
+        let listener = crate::hot_reload::tcp_listener("runtime_mcp", &bind_host, bind_port)
+            .and_then(|listener| {
+                listener.set_nonblocking(true)?;
+                TcpListener::from_std(listener)
+            })
+            .map_err(failed)?;
+        Ok(listener)
+    }
+    #[cfg(not(unix))]
     TcpListener::bind((bind_host.as_str(), bind_port))
         .await
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "bind runtime mcp",
-            message: error.to_string(),
-        })
+        .map_err(failed)
 }
 
 pub(crate) async fn run_mcp_http_server_on_listener(

@@ -76,6 +76,16 @@ impl AttachmentServiceStore {
                 message: "Move attachment owner differs from its execution Room".into(),
             });
         }
+        self.adopt_attachment(sessions, attachment)
+    }
+
+    /// Puts back an attachment this kernel admitted before, as a hot reload
+    /// hands it over.
+    pub(crate) fn adopt_attachment(
+        &self,
+        sessions: &mut SessionService,
+        attachment: RuntimeAttachment,
+    ) -> Result<(), DaemonError> {
         sessions.add_attachment_to_session(attachment.session_id(), attachment.id())?;
         let mut service = self.write();
         service

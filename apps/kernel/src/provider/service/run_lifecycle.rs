@@ -45,8 +45,26 @@ impl ProviderProcessService {
             });
         }
 
-        let run_id = self.next_run_id();
-        let launch_result = adapter.connect(&request)?;
+        // After a hot reload the agent's running turn continues in the same run.
+        #[cfg(unix)]
+        let handed_over = crate::hot_reload::claim_provider_run(
+            &request.session_id,
+            request.agent_id.as_deref(),
+            &request.adapter_key,
+        );
+        #[cfg(not(unix))]
+        let handed_over: Option<(String, Option<String>)> = None;
+        let run_id = match &handed_over {
+            Some((run_id, _)) => run_id.clone(),
+            None => self.next_run_id(),
+        };
+        #[allow(unused_mut)]
+        let mut launch_result = adapter.connect(&request)?;
+        // The handed-over app-server keeps listening where it did.
+        #[cfg(unix)]
+        if let Some(endpoint) = crate::hot_reload::adopting_codex_endpoint(&run_id) {
+            launch_result.structured_endpoint = Some(endpoint);
+        }
 
         crate::logging::info_with_fields(
             "daemon.provider",
@@ -74,6 +92,11 @@ impl ProviderProcessService {
             }),
         );
         let mut run = RuntimeProviderRun::new(run_id.clone(), &request, launch_result);
+        if let Some((_, Some(token))) = handed_over {
+            if run.runtime_mcp_auth_token().is_some() {
+                run.set_runtime_mcp_auth_token(Some(token));
+            }
+        }
         if let Some((home, path)) = request.preparation_environment.clone() {
             run.set_preparation_environment(home, path)?;
         }
@@ -581,7 +604,14 @@ impl ProviderProcessService {
     }
 
     fn next_run_id(&mut self) -> String {
-        self.next_run_number += 1;
-        format!("provider-run-{}", self.next_run_number)
+        loop {
+            self.next_run_number += 1;
+            let run_id = format!("provider-run-{}", self.next_run_number);
+            #[cfg(unix)]
+            if crate::hot_reload::is_handed_over_run(&run_id) || self.runs.contains_key(&run_id) {
+                continue;
+            }
+            return run_id;
+        }
     }
 }

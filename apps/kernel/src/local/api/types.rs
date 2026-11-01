@@ -420,4 +420,6 @@ pub use workspace::*;
 /// `pointer_cursor`) and 923 (session-less Vault unlock).
 /// Allocated 924 makes the managed-environment reimage preflight `desiredRelease.providerId` an opaque
 /// string that Cloud defines (it was a one-value enum); the wire value is unchanged.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 924;
+/// MP-08/MP-09/MP-10/MP-11: 925 marks a hot reload's relay close (`kernel_reload`), which the relay
+/// forwards to the kernel's subscribed clients so they retry within the swap.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 925;

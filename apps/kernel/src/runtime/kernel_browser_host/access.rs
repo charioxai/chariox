@@ -241,6 +241,37 @@ impl KernelBrowserHost {
             .focused(user)
             .map(str::to_owned)
     }
+    #[cfg(unix)]
+    pub(crate) fn hand_over_access(&self) -> crate::runtime::user_domain_access::AccessHandover {
+        let state = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let mut handover = state.access.hand_over();
+        handover.loaded = state
+            .loaded
+            .iter()
+            .filter(|(user, agent, _)| state.access.grant(user, agent).is_ok())
+            .cloned()
+            .collect();
+        handover
+    }
+    /// Takes over the focus, grants and loaded tools a hot reload handed over.
+    #[cfg(unix)]
+    pub(crate) fn adopt_access(
+        &self,
+        mut handover: crate::runtime::user_domain_access::AccessHandover,
+    ) {
+        let loaded = std::mem::take(&mut handover.loaded);
+        let mut state = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        state.access.adopt(handover);
+        // Only for the grants still live when adopted.
+        for (user, agent, capability) in loaded {
+            if state.access.grant(&user, &agent).is_ok() {
+                state.loaded.insert((user, agent, capability));
+            }
+        }
+        drop(state);
+        self.arm_expiry();
+        crate::transport::mcp_server::catalog_changed();
+    }
     pub(crate) fn grant_holders(&self) -> Vec<(String, String)> {
         self.inner
             .lock()

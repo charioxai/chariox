@@ -25,12 +25,7 @@ impl CodexOutputReadiness {
         notifier: crate::provider::output_ready::ProviderEventNotifier,
     ) -> Option<Self> {
         use std::os::fd::AsRawFd;
-        let tokio_tungstenite::tungstenite::stream::MaybeTlsStream::Plain(stream) =
-            socket.get_ref()
-        else {
-            return None;
-        };
-        let stream = stream.try_clone().ok()?;
+        let stream = socket.get_ref().tcp().try_clone().ok()?;
         let shared = Arc::new((Mutex::new(WatchState::default()), Condvar::new()));
         let worker = shared.clone();
         std::thread::Builder::new()
@@ -105,7 +100,7 @@ mod tests {
     use super::*;
     use std::net::{TcpListener, TcpStream};
     use std::time::{Duration, Instant};
-    use tokio_tungstenite::tungstenite::{protocol::Role, stream::MaybeTlsStream, WebSocket};
+    use tokio_tungstenite::tungstenite::{protocol::Role, WebSocket};
 
     // MP-08 / MP-10: reviewer #985 finding 3. An actual idle socket
     // puts the watcher in poll before Drop is measured.
@@ -114,7 +109,11 @@ mod tests {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let stream = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
         let (peer, _) = listener.accept().unwrap();
-        let socket = WebSocket::from_raw_socket(MaybeTlsStream::Plain(stream), Role::Client, None);
+        let socket = WebSocket::from_raw_socket(
+            crate::provider::CodexStream::upgraded(stream, &[]),
+            Role::Client,
+            None,
+        );
         let watcher = CodexOutputReadiness::start(&socket, Default::default()).unwrap();
         let shared = watcher.shared.clone();
         {

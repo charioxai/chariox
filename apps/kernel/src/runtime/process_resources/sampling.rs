@@ -18,6 +18,49 @@ pub struct ProcessSample {
 /// ends only after this many samples in a row that could not read it.
 const UNREADABLE_SAMPLES: u8 = 8;
 
+/// The processes a watch owns, as a hot reload hands them to the next program:
+/// each with the start identity that keeps a recycled PID from being adopted.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub(super) struct Owned {
+    root: u32,
+    processes: Vec<OwnedProcess>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct OwnedProcess {
+    process_id: String,
+    identity: ProcessIdentity,
+}
+
+fn fresh_process_id() -> String {
+    format!("process-{:032x}", rand::random::<u128>())
+}
+
+impl Owned {
+    /// Adds processes the last sample did not list, such as a child its
+    /// parent forked just before the sample and ended right after.
+    pub fn including(&mut self, pids: impl IntoIterator<Item = u32>) {
+        for pid in pids {
+            if pid > 1 && !self.processes.iter().any(|owned| owned.identity.pid == pid) {
+                if let Ok((identity, _)) = inspect(pid) {
+                    self.processes.push(OwnedProcess {
+                        process_id: fresh_process_id(),
+                        identity,
+                    });
+                }
+            }
+        }
+    }
+
+    /// The owned processes that still run.
+    pub fn alive(&self) -> impl Iterator<Item = u32> + '_ {
+        self.processes
+            .iter()
+            .filter(|owned| same_process(owned.identity.pid, &owned.identity))
+            .map(|owned| owned.identity.pid)
+    }
+}
+
 pub(super) struct ProcessTree {
     root: u32,
     owned: BTreeMap<u32, ProcessIdentity>,
@@ -102,13 +145,66 @@ impl ProcessTree {
 
     fn adopt(&mut self, pid: u32, identity: ProcessIdentity) {
         self.owned.insert(pid, identity);
-        self.ids
-            .insert(pid, format!("process-{:032x}", rand::random::<u128>()));
+        self.ids.insert(pid, fresh_process_id());
     }
 
     #[cfg(target_os = "linux")]
     pub fn set_marker(&mut self, marker: &str) {
         self.marker = Some(marker_entry(marker).into_bytes());
+    }
+
+    /// The tree of a previous program's watch: only processes that are still
+    /// the ones it owned, under the ids Health listed them by.
+    pub fn restored(owned: Owned) -> Self {
+        let mut tree = Self {
+            root: owned.root,
+            owned: BTreeMap::new(),
+            ids: BTreeMap::new(),
+            parents: BTreeMap::new(),
+            root_unread: None,
+            unreadable: BTreeMap::new(),
+            #[cfg(target_os = "linux")]
+            cgroup: None,
+            #[cfg(target_os = "linux")]
+            marker: None,
+            #[cfg(target_os = "linux")]
+            unmarked: BTreeMap::new(),
+            #[cfg(target_os = "linux")]
+            empty_since: None,
+        };
+        for process in owned.processes {
+            let pid = process.identity.pid;
+            if same_process(pid, &process.identity) {
+                tree.owned.insert(pid, process.identity);
+                tree.ids.insert(pid, process.process_id);
+            }
+        }
+        tree
+    }
+
+    pub fn owned(&self) -> Owned {
+        Owned {
+            root: self.root,
+            processes: self
+                .owned
+                .iter()
+                .filter_map(|(pid, identity)| {
+                    Some(OwnedProcess {
+                        process_id: self.ids.get(pid)?.clone(),
+                        identity: identity.clone(),
+                    })
+                })
+                .collect(),
+        }
+    }
+
+    pub fn root(&self) -> u32 {
+        self.root
+    }
+
+    /// Any owned process, which tells whether the tree has anything left.
+    pub fn alive_pid(&self) -> Option<u32> {
+        self.owned.keys().next().copied()
     }
 
     #[cfg(target_os = "linux")]

@@ -90,6 +90,7 @@ pub(crate) use claude_runtime::{bounded_result, bounded_result_images};
 pub(crate) use claude_runtime::{
     drain_claude_events, initialize_claude_runtime, submit_claude_prompt,
 };
+pub(crate) use claude_runtime::{hand_over_claude_runtime, ClaudeHandover};
 pub use codex::{
     codex_catalog_endpoint, logout_codex, plan_codex_launch, resolve_codex_executable,
 };
@@ -97,11 +98,15 @@ pub(crate) use codex::{
     ensure_codex_account_endpoint, invalidate_codex_account_endpoint,
     shutdown_codex_account_endpoints,
 };
+#[cfg(test)]
+pub(crate) use codex_client::test_codex_connect;
 pub use codex_client::{
-    CodexClient, CodexNotification, CodexRunSelection, CodexSocket, CodexThread,
+    CodexClient, CodexNotification, CodexRunSelection, CodexSocket, CodexStream, CodexThread,
     CodexThreadStartResponse, ProviderAuthStatus, ProviderLoginStart,
 };
 pub use codex_runtime::CodexRuntimeState;
+#[cfg(unix)]
+pub(crate) use codex_runtime::{hand_over_codex_turn, CodexHandover};
 pub use command_catalog::{
     default_provider_command_catalogs, ProviderCommandCatalog, ProviderCommandCatalogDiscovery,
     ProviderCommandCatalogSource, ProviderCommandDescriptor,

@@ -4,7 +4,7 @@
 // a new or previously unlisted filesystem, process, network or device policy.
 const supportedServiceDirectives = new Set([
   "Type", "User", "Group", "Environment", "ExecStartPre", "ExecStart",
-  "ExecStartPost", "Delegate", "DelegateSubgroup", "Restart", "RestartSec",
+  "ExecStartPost", "ExecReload", "Delegate", "DelegateSubgroup", "Restart", "RestartSec",
   "RestartSteps", "RestartMaxDelaySec", "KillMode", "StateDirectory",
   "StateDirectoryMode",
 ])
@@ -118,6 +118,12 @@ export function verifyPath1ServicePolicy(source, role) {
   if (all.some((line) => /^(EnvironmentFile|PassEnvironment|UnsetEnvironment)=/.test(line)
     || line.startsWith("Environment=") && !/^Environment=[A-Z0-9_]+=[^\s"']+$/.test(line))) {
     fail("contains an unsupported environment override")
+  }
+  // A reload is the kernel's hot reload, signalled to the supervisor.
+  const reload = "ExecReload=/bin/kill -USR2 $MAINPID"
+  if (all.some((line) => line.startsWith("ExecReload=") && line !== reload)
+    || all.filter((line) => line.startsWith("ExecReload=")).length > 1) {
+    fail("has an incompatible ExecReload")
   }
   for (const line of lines) {
     const directive = line.slice(0, line.indexOf("="))

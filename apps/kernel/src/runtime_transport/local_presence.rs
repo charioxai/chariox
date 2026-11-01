@@ -45,6 +45,8 @@ pub(crate) struct LocalKernelPresenceLease {
 impl LocalKernelPresenceLease {
     pub(crate) async fn start(router: &Arc<CommandRouter>, listener: &TcpListener) -> Option<Self> {
         let local_addr = listener.local_addr().ok()?;
+        // Watch before the first read, so a connection made in between is not missed.
+        let mut relay_connection = router.relay_connection_changes().await;
         let relay_status = router.transport_relay_status_snapshot().await;
         let now_ms = now_unix_ms();
         let record = LocalKernelPresenceRecord {
@@ -83,7 +85,12 @@ impl LocalKernelPresenceLease {
         let heartbeat_task = tokio::spawn(async move {
             let mut record = record;
             loop {
-                tokio::time::sleep(ACTIVE_KERNEL_HEARTBEAT_INTERVAL).await;
+                // Local browsers pick only a kernel that is on the relay, so a
+                // (re)connection is published at once, not at the next heartbeat.
+                tokio::select! {
+                    _ = tokio::time::sleep(ACTIVE_KERNEL_HEARTBEAT_INTERVAL) => {}
+                    Ok(()) = relay_connection.changed() => {}
+                }
                 let relay_status = heartbeat_router.transport_relay_status_snapshot().await;
                 record.heartbeat_at_ms = now_unix_ms();
                 record.kernel_alias = relay_status.daemon_alias;

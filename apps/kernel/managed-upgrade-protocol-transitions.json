@@ -1,18 +1,20 @@
 {
   "schemaVersion": 1,
-  "protocol": 924,
+  "protocol": 925,
   "upgradeFrom": [
     629,
     636,
     911,
     923,
-    924
+    924,
+    925
   ],
   "rollbackTo": [
     629,
     636,
     911,
     923,
-    924
+    924,
+    925
   ]
 }

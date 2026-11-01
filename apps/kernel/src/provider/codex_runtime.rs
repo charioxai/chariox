@@ -1,6 +1,8 @@
 mod backfill;
 mod drain;
 mod events;
+#[cfg(unix)]
+mod handover;
 mod input;
 mod interrupt;
 mod lifecycle;
@@ -14,6 +16,8 @@ mod turn;
 mod utility;
 
 pub use drain::drain_codex_events;
+#[cfg(unix)]
+pub(crate) use handover::{hand_over_codex_turn, CodexHandover};
 pub use interrupt::abort_codex_turn;
 pub use lifecycle::initialize_codex_runtime;
 pub use prompt::submit_codex_prompt;

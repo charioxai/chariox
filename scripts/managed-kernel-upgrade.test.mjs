@@ -231,6 +231,63 @@ test("managed kernel upgrade atomically advances the release and receipt without
   ])
 })
 
+test("managed kernel upgrade replaces the running kernel in place when its units and home stay the same", async (context) => {
+  const harness = await makeHarness(context, { workerCapableCurrent: true, runtimeUnitsChange: false })
+  const before = await persistentSnapshot(harness.persistent)
+  const result = harness.run()
+  assert.equal(result.status, 0, result.stderr)
+  assert.equal(
+    await readlink(join(harness.installRoot, "usr/lib/chariox/current")),
+    `releases/${harness.target.digest.slice("sha256:".length)}`,
+  )
+  assert.equal(JSON.parse(await readFile(harness.receiptPath, "utf8")).runtimeReleaseDigest, harness.target.digest)
+  assert.deepEqual(await persistentSnapshot(harness.persistent), before)
+  // Nothing is stopped: the kernel and the runtime services keep running.
+  assert.deepEqual((await readFile(join(harness.state, "systemctl.log"), "utf8")).trim().split("\n"), [
+    `reload ${serviceName}`,
+    `is-active --quiet ${serviceName}`,
+  ])
+})
+
+test("a managed kernel that does not replace itself is rolled back by stop, switch back and start", async (context) => {
+  const harness = await makeHarness(context, { workerCapableCurrent: true, runtimeUnitsChange: false })
+  await put(join(harness.state, "refuse-reload-once"), "refuse\n")
+  const result = harness.run()
+  assert.equal(result.status, 1)
+  assert.match(result.stderr, /did not replace itself with the new release; restored previous managed kernel release/)
+  assert.equal(
+    await readlink(join(harness.installRoot, "usr/lib/chariox/current")),
+    `releases/${harness.current.digest.slice("sha256:".length)}`,
+  )
+  assert.equal(JSON.parse(await readFile(harness.receiptPath, "utf8")).runtimeReleaseDigest, harness.current.digest)
+  assert.deepEqual((await readFile(join(harness.state, "systemctl.log"), "utf8")).trim().split("\n"), [
+    `reload ${serviceName}`,
+    `is-active --quiet ${serviceName}`,
+    `stop ${serviceName}`,
+    "daemon-reload",
+    "enable chariox-app-storage.service",
+    "restart chariox-app-storage.service",
+    "is-active --quiet chariox-app-storage.service",
+    `start ${serviceName}`,
+    `is-active --quiet ${serviceName}`,
+  ])
+})
+
+test("managed kernel upgrade restarts the kernel for a home migration even when its units stay the same", async (context) => {
+  const harness = await makeHarness(context, { workerCapableCurrent: true, runtimeUnitsChange: false })
+  const canonicalHome = join(harness.installRoot, "home/chariox")
+  const legacyHome = join(harness.installRoot, "var/lib/chariox/home")
+  const legacyReceipt = join(legacyHome, "managed/bootstrap-receipt.json")
+  await rename(canonicalHome, legacyHome)
+  await createRootPrivateDirectory(dirname(legacyReceipt))
+  await rename(harness.receiptPath, legacyReceipt)
+  const result = harness.run()
+  assert.equal(result.status, 0, result.stderr)
+  const calls = (await readFile(join(harness.state, "systemctl.log"), "utf8")).trim().split("\n")
+  assert.equal(calls[0], `stop ${serviceName}`)
+  assert.ok(!calls.some((call) => call.startsWith("reload")), calls.join("\n"))
+})
+
 test("managed kernel upgrade stages the App artifact set when advancing from a release built before Apps", async (context) => {
   const harness = await makeHarness(context, { currentAppArtifacts: false })
   const result = harness.run()
