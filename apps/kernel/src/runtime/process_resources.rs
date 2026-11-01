@@ -6,19 +6,29 @@ use std::time::Duration;
 
 mod control;
 use control::WatchCommand;
-pub(crate) use control::{end_owner, outside_ended_for_key, stop_for_key, stop_released};
+pub(crate) use control::{
+    end_owner, outside_ended_for_key, start_now_for_key, stop_for_key, stop_released,
+};
 pub use control::{ProcessControlOutcome, ProcessControlResult, ProcessControlTarget};
 pub(crate) use handover::{adopt_released, hand_over_released, ReleasedJobs};
 mod handover;
+mod admission;
 mod pool;
 mod projection;
 mod sampling;
 mod session_sweep;
+mod submissions;
+#[cfg(test)]
+pub(crate) use admission::WaitReason;
 #[cfg(test)]
 pub(crate) use projection::released_keys_for_session;
+#[cfg(test)]
+pub(crate) use projection::SessionProcessState;
 pub(crate) use projection::{for_session, keys_for_session};
 pub use projection::{SessionProcess, SessionProcessOwner};
 pub(crate) use session_sweep::SessionSweep;
+#[cfg(test)]
+mod admission_tests;
 #[cfg(target_os = "linux")]
 mod cgroup;
 #[cfg(test)]
@@ -253,6 +263,8 @@ impl PreparedDomain {
             cgroup,
             listed: listing,
             released: handed_over,
+            root,
+            submissions: submissions::Submissions::new(true),
             ..Observation::default()
         }));
         self.pool.join(&state);
@@ -260,8 +272,9 @@ impl PreparedDomain {
         let (stop, stopped) = mpsc::channel();
         state.lock().unwrap_or_else(|e| e.into_inner()).control = Some(stop.clone());
         let mut released = handed_over;
-        // Per command: process-table time, resident bytes, growth per second.
-        let mut previous = std::collections::BTreeMap::<u32, (u64, u64, u64)>::new();
+        // Per command: process-table time, resident and written bytes, and
+        // their growth per second.
+        let mut previous = std::collections::BTreeMap::<u32, Rates>::new();
         let worker = std::thread::Builder::new()
             .name("chariox-process-resources".into())
             .spawn(move || loop {
@@ -295,34 +308,49 @@ impl PreparedDomain {
                 let commands = tree
                     .commands(&samples)
                     .into_iter()
-                    .map(|(pid, resident)| {
+                    .map(|(pid, (resident, pids))| {
+                        let writes = pids.iter().map(|pid| admission::written(*pid)).sum();
+                        let rate = |now: u64, before: u64, at: u64, rate: u64| {
+                            (now.saturating_sub(before).saturating_mul(1000) / (sampled_at - at))
+                                .max(rate / 2)
+                        };
                         // A runaway slowed by the pressure brake is still the
                         // runaway: its rate decays by half per new sample.
-                        let growth = match previous.get(&pid) {
-                            Some((at, before, growth)) if sampled_at > *at => {
-                                (resident.saturating_sub(*before).saturating_mul(1000)
-                                    / (sampled_at - at))
-                                    .max(growth / 2)
-                            }
-                            Some((_, _, growth)) => *growth,
-                            None => 0,
+                        let (growth, write_growth) = match previous.get(&pid) {
+                            Some(before) if sampled_at > before.at => (
+                                rate(resident, before.resident, before.at, before.growth),
+                                rate(writes, before.writes, before.at, before.write_growth),
+                            ),
+                            Some(before) => (before.growth, before.write_growth),
+                            None => (0, 0),
                         };
                         pool::CommandUse {
                             pid,
+                            group: process_group(pid),
                             resident,
                             growth,
+                            writes,
+                            write_growth,
+                            effective: tree.effective(pid, &samples),
+                            root: tree.in_harness(pid),
                         }
                     })
                     .collect::<Vec<_>>();
                 previous = commands
                     .iter()
                     .map(|command| {
-                        let entry = previous
+                        let rates = previous
                             .get(&command.pid)
-                            .filter(|(at, ..)| *at >= sampled_at)
+                            .filter(|before| before.at >= sampled_at)
                             .copied()
-                            .unwrap_or((sampled_at, command.resident, command.growth));
-                        (command.pid, entry)
+                            .unwrap_or(Rates {
+                                at: sampled_at,
+                                resident: command.resident,
+                                growth: command.growth,
+                                writes: command.writes,
+                                write_growth: command.write_growth,
+                            });
+                        (command.pid, rates)
                     })
                     .collect();
                 {
@@ -336,6 +364,7 @@ impl PreparedDomain {
                 #[cfg(not(target_os = "linux"))]
                 let unit_charged = None;
                 self.pool.enforce(&watched, unit_charged);
+                admit(&tree, &watched);
                 if ended {
                     break;
                 }
@@ -383,7 +412,23 @@ impl PreparedDomain {
                         );
                         let _ = reply.send(result);
                     }
-                    Err(mpsc::RecvTimeoutError::Timeout) => {}
+                    Ok(WatchCommand::StartNow { process_id, reply }) => {
+                        let started = tree.command_of(&process_id).is_some_and(|command| {
+                            watched
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .admission
+                                .get_mut(&command)
+                                .is_some_and(admission::Entry::force)
+                        });
+                        admit(&tree, &watched);
+                        let _ = reply.send(if started {
+                            Ok(vec![process_id])
+                        } else {
+                            Err("the process is not waiting; refresh Health".into())
+                        });
+                    }
+                    Ok(WatchCommand::Apply) | Err(mpsc::RecvTimeoutError::Timeout) => {}
                     _ => {
                         tree.terminate();
                         break;
@@ -404,6 +449,48 @@ impl PreparedDomain {
             started: control::domain_started(),
         })
     }
+}
+
+/// Process-table time, resident and written bytes of one command, and their
+/// growth per second.
+#[derive(Clone, Copy)]
+struct Rates {
+    at: u64,
+    resident: u64,
+    growth: u64,
+    writes: u64,
+    write_growth: u64,
+}
+
+/// Applies admission's decisions: a waiting command's subtree is stopped
+/// (again each tick, so what it started meanwhile stops too); one that may run
+/// continues.
+fn admit(tree: &sampling::ProcessTree, watched: &Arc<Mutex<Observation>>) {
+    let signals = watched
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .admission
+        .iter_mut()
+        .filter_map(|(command, entry)| {
+            let waiting = entry.wait.is_some();
+            let signal = (waiting || entry.stopped).then_some((*command, waiting));
+            entry.stopped = waiting;
+            signal
+        })
+        .collect::<Vec<_>>();
+    #[cfg(unix)]
+    for (command, waiting) in signals {
+        tree.signal(
+            command,
+            if waiting {
+                libc::SIGSTOP
+            } else {
+                libc::SIGCONT
+            },
+        );
+    }
+    #[cfg(not(unix))]
+    let _ = (tree, signals);
 }
 
 fn configured_cap(value: Option<&str>) -> std::io::Result<Option<u64>> {
@@ -465,10 +552,17 @@ struct Observation {
     in_cgroup: bool,
     /// The memory domain directory, which a hot reload hands to the next program.
     cgroup: Option<std::path::PathBuf>,
+    /// The workload's own process.
+    root: u32,
+    /// Whether each command may wait for room follows who submitted the line
+    /// that started it: a person's own terminal command never does.
+    submissions: submissions::Submissions,
     control: Option<mpsc::Sender<WatchCommand>>,
     outside_ended: bool,
     samples: Vec<ProcessSample>,
     commands: Vec<pool::CommandUse>,
+    /// Admission per command, by the command's top process.
+    admission: std::collections::BTreeMap<u32, admission::Entry>,
     memory_stop: Option<MemoryStop>,
     /// Who Health lists the processes under when no run or terminal does.
     listed: Option<projection::Listing>,
@@ -613,6 +707,86 @@ pub(crate) fn samples_for_key(key: &str) -> Vec<ProcessSample> {
             crate::session::unix_epoch_ms().saturating_sub(sample.sampled_at_ms) <= 5000
         })
         .collect()
+}
+
+fn observation_for_key(key: &str) -> Option<Arc<Mutex<Observation>>> {
+    registry()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(key)
+        .and_then(std::sync::Weak::upgrade)
+}
+
+fn with_submissions_for_key(key: &str, update: impl FnOnce(&mut submissions::Submissions)) {
+    if let Some(state) = observation_for_key(key) {
+        update(&mut state.lock().unwrap_or_else(|e| e.into_inner()).submissions);
+    }
+}
+
+/// The workload of `key` is a terminal's shell: its own start is a person's,
+/// and `reports_lines` says whether the shell marks the lines it runs.
+pub(crate) fn bind_terminal_for_key(key: &str, reports_lines: bool) {
+    with_submissions_for_key(key, |lines| lines.for_terminal(reports_lines));
+}
+
+/// An Enter was accepted at the prompt of the terminal bound to `key`: the
+/// command its line starts may wait for room unless a person submitted it.
+pub(crate) fn submit_line_for_key(key: &str, holdable: bool) {
+    let Some(state) = observation_for_key(key) else {
+        return;
+    };
+    let root = {
+        let observation = state.lock().unwrap_or_else(|e| e.into_inner());
+        observation
+            .submissions
+            .takes_over(holdable)
+            .then_some(observation.root)
+    };
+    // Read outside the lock: the sampler waits for it.
+    let alive = root.map(sampling::live_groups).unwrap_or_default();
+    state
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .submissions
+        .submit(holdable, std::time::Instant::now(), &alive);
+}
+
+/// The shell of the terminal bound to `key` started the next accepted line.
+pub(crate) fn line_started_for_key(key: &str) {
+    with_submissions_for_key(key, |lines| lines.line_started(std::time::Instant::now()));
+}
+
+/// The shell is back at its prompt; `jobs` are the process groups of its job
+/// table.
+pub(crate) fn line_finished_for_key(key: &str, jobs: &[u32]) {
+    with_submissions_for_key(key, |lines| {
+        lines.line_finished(jobs, std::time::Instant::now())
+    });
+}
+
+fn process_group(pid: u32) -> Option<u32> {
+    // SAFETY: getpgid only reads the kernel's process table.
+    let group = unsafe { libc::getpgid(i32::try_from(pid).ok()?) };
+    u32::try_from(group).ok().filter(|group| *group > 1)
+}
+
+/// Whether the command whose top process is `pid` may wait, once the sampler
+/// has seen it.
+#[cfg(test)]
+pub(crate) fn command_holdable_for_key(key: &str, pid: u32) -> Option<bool> {
+    registry()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(key)
+        .and_then(std::sync::Weak::upgrade)
+        .and_then(|state| {
+            state
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .admission
+                .get(&pid)
+                .map(|entry| entry.holdable())
+        })
 }
 
 pub(crate) fn has_key(key: &str) -> bool {

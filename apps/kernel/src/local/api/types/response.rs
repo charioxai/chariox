@@ -4,6 +4,7 @@ use super::*;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum LocalDaemonResponse {
     SessionProcessesStopped { result: crate::runtime::process_resources::ProcessControlResult },
+    SessionProcessStartedNow { process_id: String },
     ProviderUsageSnapshot { accounts: Vec<ProviderUsageAccount> },
     AgentUsageSnapshot { snapshot: AgentUsageSnapshot },
     EventSubscription { subscription: EventSubscription },

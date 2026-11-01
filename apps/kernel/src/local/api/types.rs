@@ -425,4 +425,6 @@ pub use workspace::*;
 /// Version 926 makes the direct data channel's liveness a contract: the kernel pings
 /// every second ahead of queued frames and ends a peer silent for 3 s; browsers leave
 /// a direct path silent for 2.5 s (TR-16).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 926;
+/// Version 927 adds admission: `SessionProcess.state` (`running`, `held` or `paused`, with the
+/// reason, place in line, need and free room) and `StartSessionProcessNow` (`SessionProcessStartedNow`).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 927;

@@ -24,6 +24,7 @@ mod room_environment;
 mod slices;
 mod socket_path;
 mod storage;
+pub(crate) use paths::default_state_dir;
 pub(crate) use socket_path::validate_local_socket_path;
 mod user_config_mutation;
 mod user_config_schema;

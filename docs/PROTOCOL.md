@@ -6109,3 +6109,17 @@ The data-volume bounds of the managed bootstrap (10 to 10000 GB) are gone from t
 validates the size against the provider's limits before it writes the envelope, and the kernel only
 requires a positive size that matches the attached device. The persisted Cloud relay profile keeps
 the relay URL Cloud issued; the old rewrite of a pinned staging address is deleted.
+
+### MP-08 / MP-09 / MP-10 / MP-11: admission — local 927 / relay peer 378
+
+`SessionProcess` gains `state`, set on a command's own process (what it started waits with
+it): `{kind: "running"}`, `{kind: "held", reason, position, need_bytes, free_bytes,
+command_line}` (stopped before it grew, in line for room for its expected peak; `position`
+counts from 1 among commands waiting for the same reason, one per owner in turn) or
+`{kind: "paused", reason, command_line}` (stopped while growing into a tight pool or past
+the disk floor of max(5 %, 10 GiB)). `reason` is `memory` or `disk`. A waiting command
+starts by itself once its room is free and is never failed; clients derive the pane's
+queued-job row from `state` and stop it with `StopSessionProcesses`.
+`StartSessionProcessNow { session_id, process_id }` starts a waiting command whatever the
+room and answers `SessionProcessStartedNow { process_id }`; a command that is not waiting
+is refused. The embedded local union changes, so the relay peer moves to 378.

@@ -337,6 +337,7 @@ pub enum LocalDaemonRequest {
     CancelProviderLogin(CancelProviderLoginRequest),
     LogoutProvider(LogoutProviderRequest),
     StopSessionProcesses(StopSessionProcessesRequest),
+    StartSessionProcessNow(StartSessionProcessNowRequest),
     ListProviderProcesses(ListProviderProcessesRequest),
     TeardownProviderProcesses(TeardownProviderProcessesRequest),
     GetSessionHistoryOutline(GetSessionHistoryOutlineRequest),

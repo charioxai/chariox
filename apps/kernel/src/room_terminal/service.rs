@@ -88,6 +88,9 @@ struct Inner {
     events: BoundEvents,
     outside_events: std::sync::RwLock<Option<crate::durable_state::DurableKernelStateStore>>,
     shell_integration: ShellIntegration,
+    /// The login shell a test opens terminals on, instead of the account's.
+    #[cfg(test)]
+    shell_for_test: Mutex<Option<String>>,
     managed: ManagedWork,
     pump_runtime: OnceLock<tokio::runtime::Handle>,
 }
@@ -170,6 +173,8 @@ impl RoomTerminalService {
                 events: BoundEvents::default(),
                 outside_events: std::sync::RwLock::new(None),
                 shell_integration,
+                #[cfg(test)]
+                shell_for_test: Mutex::new(None),
                 managed: ManagedWork::default(),
                 pump_runtime: OnceLock::new(),
             }),
@@ -198,7 +203,7 @@ impl RoomTerminalService {
         }
         let (program, args) = match &spec.command {
             None => {
-                let shell = login_shell()?;
+                let shell = self.login_shell()?;
                 let args = self.inner.shell_integration.arguments(&shell);
                 (shell, args)
             }
@@ -299,6 +304,10 @@ impl RoomTerminalService {
             cols: spec.cols,
             rows: spec.rows,
         })?;
+        // A person's own command is counted but never waits for room; what an
+        // agent submits may (each submitted Enter sets it for the command it
+        // starts, below).
+        crate::runtime::process_resources::bind_terminal_for_key(&run_id, reports_first_prompt);
         let shell_pid = pty
             .process_id(&run_id)
             .ok()
@@ -429,6 +438,17 @@ impl RoomTerminalService {
                             [key] => pty.signal_key_behind_blocked_input(&run_id, *key)?,
                             _ => None,
                         };
+                        if let (true, true, None) = (shell_foreground, submits, &interrupted) {
+                            // The command a line starts belongs to whoever
+                            // pressed its Enter; the shell reports when it
+                            // reads it.
+                            for _ in 0..enters(input) {
+                                crate::runtime::process_resources::submit_line_for_key(
+                                    &run_id,
+                                    *actor != TerminalActor::User,
+                                );
+                            }
+                        }
                         match interrupted {
                             Some(dropped) => terminal.dropped_input_bytes += dropped as u64,
                             None => pty.input_writer(&run_id)?.enqueue_input(input)?,
@@ -802,6 +822,19 @@ impl RoomTerminalService {
             .collect()
     }
 
+    fn login_shell(&self) -> Result<String, DaemonError> {
+        #[cfg(test)]
+        if let Some(shell) = self.inner.shell_for_test.lock().unwrap().clone() {
+            return Ok(shell);
+        }
+        login_shell()
+    }
+
+    #[cfg(test)]
+    pub(super) fn use_shell_for_test(&self, shell: &str) {
+        *self.inner.shell_for_test.lock().unwrap() = Some(shell.to_string());
+    }
+
     #[cfg(test)]
     pub(super) fn terminal_for_test(&self, id: &str) -> Arc<TerminalOwner> {
         self.lock().terminals[id].clone()
@@ -875,6 +908,42 @@ fn ended_wait_result(terminal: &mut Terminal, pty: &PtyManager) -> RoomTerminalW
             _ => RoomTerminalEventKind::Finished { exit_code, signal },
         }),
     )
+}
+
+/// How many Enters `input` presses at a shell's prompt. The shell reports
+/// each one, a line that runs or an empty one, so the text may have been typed
+/// earlier or recalled from history. A paste in brackets is one line however
+/// many line breaks it holds.
+pub(super) fn enters(input: &[u8]) -> usize {
+    const PASTE_START: &[u8] = b"\x1b[200~";
+    const PASTE_END: &[u8] = b"\x1b[201~";
+    let mut count = 0;
+    let mut pasting = false;
+    let mut index = 0;
+    while index < input.len() {
+        let rest = &input[index..];
+        if !pasting && rest.starts_with(PASTE_START) {
+            pasting = true;
+            index += PASTE_START.len();
+        } else if pasting && rest.starts_with(PASTE_END) {
+            pasting = false;
+            index += PASTE_END.len();
+        } else {
+            match input[index] {
+                b'\r' if !pasting => {
+                    count += 1;
+                    // A CRLF is one line break.
+                    if input.get(index + 1) == Some(&b'\n') {
+                        index += 1;
+                    }
+                }
+                b'\n' if !pasting => count += 1,
+                _ => {}
+            }
+            index += 1;
+        }
+    }
+    count
 }
 
 fn validate_size(cols: u16, rows: u16) -> Result<(), DaemonError> {

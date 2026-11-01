@@ -22,6 +22,7 @@ import {
   queuedPromptTitleLabel,
 } from "@chariox/kernel-client/queued-prompt-controls"
 import type { QueuedPromptStripItem } from "@chariox/kernel-client/queued-prompt-strip-state"
+import type { QueuedJob } from "@chariox/kernel-client/queued-jobs"
 import { theme } from "./theme.js"
 
 type InteractionStripRenderOptions = {
@@ -37,6 +38,8 @@ type InteractionStripRenderOptions = {
   customReply: (interactionId: string) => string
   customEditing: (interactionId: string) => boolean
   queuedPromptStripItemsForAgent: (agentId: string | null | undefined) => readonly QueuedPromptStripItem[]
+  /** Commands of the agent waiting for room, in line order. */
+  queuedJobsForAgent?: (agentId: string | null | undefined) => readonly QueuedJob[]
   selectedQueuedPromptIndexForAgent: (agentId: string | null | undefined) => number
   onQueuedPromptAction: (item: QueuedPromptStripItem, action: "steer" | "cancel") => void
   providerLoginState?: (interaction: RuntimeInteraction) => ProviderLoginStripState | null
@@ -70,7 +73,8 @@ function renderInteractionStrip(
   }
   const interaction = options.activeInteractionForAgent(agent?.id ?? null)
   const queuedPrompts = options.queuedPromptStripItemsForAgent(agent?.id ?? null)
-  const visible = Boolean(interaction) || queuedPrompts.length > 0
+  const queuedJobs = options.queuedJobsForAgent?.(agent?.id ?? null) ?? []
+  const visible = Boolean(interaction) || queuedPrompts.length > 0 || queuedJobs.length > 0
   box.visible = visible
   box.flexDirection = "column"
   box.gap = 0
@@ -131,8 +135,45 @@ function renderInteractionStrip(
     box.add(messageLine)
     renderInteractionChoices(options, box, interaction, focused)
   }
+  renderQueuedJobStrip(options, box, queuedJobs)
   renderQueuedPromptStrip(options, box, queuedPrompts, focused, selectedQueuedPromptIndex)
   box.requestRender?.()
+}
+
+/** One row per command waiting for room, first in the stack: the kernel's
+ * state, so every client shows the same rows. The wait leads so a long
+ * command never clips the place in line. */
+function renderQueuedJobStrip(
+  options: InteractionStripRenderOptions,
+  container: BoxRenderable,
+  jobs: readonly QueuedJob[],
+): void {
+  for (const job of jobs) {
+    const row = new BoxRenderable(options.renderer, {
+      width: "100%",
+      flexDirection: "row",
+      gap: 1,
+      flexShrink: 0,
+    })
+    const kind = new TextRenderable(options.renderer, {
+      content: "Queued",
+      fg: theme.info,
+      attributes: TextAttributes.BOLD,
+      wrapMode: "none",
+    })
+    kind.flexShrink = 0
+    row.add(kind)
+    const copy = new TextRenderable(options.renderer, {
+      content: `${job.wait} · ${job.command}`,
+      fg: theme.text,
+      wrapMode: "word",
+    })
+    copy.flexBasis = 0
+    copy.flexGrow = 1
+    copy.flexShrink = 1
+    row.add(copy)
+    container.add(row)
+  }
 }
 
 function renderQueuedPromptStrip(

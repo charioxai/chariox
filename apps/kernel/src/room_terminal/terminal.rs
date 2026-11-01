@@ -206,6 +206,9 @@ impl Terminal {
     fn on_mark(&mut self, mark: ShellMark) -> Fired {
         match mark {
             ShellMark::CommandStarted => {
+                if let Some(run_id) = &self.run_id {
+                    crate::runtime::process_resources::line_started_for_key(run_id);
+                }
                 // Login files never report a start: this is a real command,
                 // even when the shell has not reported a prompt yet (zsh
                 // installs its finish hook during the first prompt).
@@ -214,7 +217,10 @@ impl Terminal {
                 self.commands_started += 1;
                 Fired::new()
             }
-            ShellMark::CommandFinished { exit_code } => {
+            ShellMark::CommandFinished { exit_code, jobs } => {
+                if let Some(run_id) = &self.run_id {
+                    crate::runtime::process_resources::line_finished_for_key(run_id, &jobs);
+                }
                 self.mark_tracking = true;
                 self.first_prompt_deadline = None;
                 // The first prompt reports before any command has run.

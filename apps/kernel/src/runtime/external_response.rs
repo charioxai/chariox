@@ -426,6 +426,7 @@ response_policies! {
         ProviderAccountCopyOffers,
         ProviderAccountPortabilityPreflightPassed,
         SessionProcessesStopped,
+        SessionProcessStartedNow,
         ProviderProcessesListed,
         ProviderProcessesTornDown,
         SessionHistoryOutline,
