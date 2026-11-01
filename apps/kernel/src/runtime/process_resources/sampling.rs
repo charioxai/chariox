@@ -13,33 +13,102 @@ pub struct ProcessSample {
     pub age_ms: u64,
 }
 
+/// A process still executing its program is unreadable for a moment (its
+/// executable is missing), which looks like an exit. Ownership of a process
+/// ends only after this many samples in a row that could not read it.
+const UNREADABLE_SAMPLES: u8 = 8;
+
 pub(super) struct ProcessTree {
     root: u32,
     owned: BTreeMap<u32, ProcessIdentity>,
     ids: BTreeMap<u32, String>,
     /// Parent of each owned process at the last sample.
     parents: BTreeMap<u32, u32>,
+    /// Failed reads so far of a root that is not owned yet.
+    root_unread: Option<u8>,
+    /// Consecutive failed reads of each owned process.
+    unreadable: BTreeMap<u32, u8>,
     #[cfg(target_os = "linux")]
     cgroup: Option<std::sync::Arc<super::cgroup::Domain>>,
+    /// Without a cgroup: the environment entry the workload's processes
+    /// inherit, however far they detach from it.
+    #[cfg(target_os = "linux")]
+    marker: Option<Vec<u8>>,
+    /// Processes already read without the marker, by the birth they had then.
+    #[cfg(target_os = "linux")]
+    unmarked: BTreeMap<u32, String>,
+    /// Since when the workload owned nothing, while it is still waited on.
+    #[cfg(target_os = "linux")]
+    empty_since: Option<std::time::Instant>,
 }
+
+/// A job that is mid-exec cannot be told from a stranger yet; the workload
+/// is over once nothing of it showed up for this long.
+#[cfg(target_os = "linux")]
+const NOTHING_LEFT_GRACE: std::time::Duration = std::time::Duration::from_secs(1);
+
+#[cfg(target_os = "linux")]
+const MARKER_NAME: &str = "CHARIOX_RESOURCE_DOMAIN";
+
+#[cfg(target_os = "linux")]
+pub(super) fn new_marker() -> String {
+    format!("{:032x}", rand::random::<u128>())
+}
+
+#[cfg(target_os = "linux")]
+pub(super) fn marker_entry(marker: &str) -> String {
+    format!("{MARKER_NAME}={marker}")
+}
+
 impl ProcessTree {
     pub fn new(root: u32) -> Self {
-        let mut owned = BTreeMap::new();
-        if let Ok((identity, _)) = inspect(root) {
-            owned.insert(root, identity);
-        }
-        let ids = owned
-            .keys()
-            .map(|pid| (*pid, format!("process-{:032x}", rand::random::<u128>())))
-            .collect();
-        Self {
+        let mut tree = Self {
             root,
-            owned,
-            ids,
+            owned: BTreeMap::new(),
+            ids: BTreeMap::new(),
             parents: BTreeMap::new(),
+            root_unread: Some(0),
+            unreadable: BTreeMap::new(),
             #[cfg(target_os = "linux")]
             cgroup: None,
-        }
+            #[cfg(target_os = "linux")]
+            marker: None,
+            #[cfg(target_os = "linux")]
+            unmarked: BTreeMap::new(),
+            #[cfg(target_os = "linux")]
+            empty_since: None,
+        };
+        tree.identify_root();
+        tree
+    }
+
+    /// The root is identified at its first readable sample. Only a child of
+    /// the kernel is adopted, and a root that never became readable is given up.
+    fn identify_root(&mut self) {
+        let Some(failed) = self.root_unread else {
+            return;
+        };
+        self.root_unread = match inspect(self.root) {
+            Ok((identity, parent)) => {
+                if parent == std::process::id() {
+                    self.adopt(self.root, identity);
+                }
+                None
+            }
+            Err(_) if failed < UNREADABLE_SAMPLES => Some(failed + 1),
+            Err(_) => None,
+        };
+    }
+
+    fn adopt(&mut self, pid: u32, identity: ProcessIdentity) {
+        self.owned.insert(pid, identity);
+        self.ids
+            .insert(pid, format!("process-{:032x}", rand::random::<u128>()));
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn set_marker(&mut self, marker: &str) {
+        self.marker = Some(marker_entry(marker).into_bytes());
     }
 
     #[cfg(target_os = "linux")]
@@ -73,12 +142,25 @@ impl ProcessTree {
     }
 
     fn observe(&mut self, rows: &[Row]) -> Result<(), String> {
+        self.identify_root();
         // A recorded start identity survives exec but never PID recycling.
-        self.owned
-            .retain(|pid, identity| same_process(*pid, identity));
+        let unreadable = &mut self.unreadable;
+        self.owned.retain(|pid, identity| match inspect(*pid) {
+            Ok((current, _)) => {
+                unreadable.remove(pid);
+                same_birth(&current, identity)
+            }
+            Err(_) => {
+                let failed = unreadable.entry(*pid).or_default();
+                *failed += 1;
+                *failed <= UNREADABLE_SAMPLES
+            }
+        });
+        self.unreadable
+            .retain(|pid, _| self.owned.contains_key(pid));
         self.ids.retain(|pid, _| self.owned.contains_key(pid));
         #[cfg(target_os = "linux")]
-        if let Some(group) = &self.cgroup {
+        if let Some(group) = self.cgroup.clone() {
             for pid in group
                 .pids()
                 .map_err(|error| format!("owned process cgroup membership unavailable: {error}"))?
@@ -86,14 +168,14 @@ impl ProcessTree {
                 if pid > 1 && !self.owned.contains_key(&pid) && group.owns(pid) {
                     if let Ok((identity, _)) = inspect(pid) {
                         if group.owns(pid) && same_process(pid, &identity) {
-                            self.owned.insert(pid, identity);
-                            self.ids
-                                .insert(pid, format!("process-{:032x}", rand::random::<u128>()));
+                            self.adopt(pid, identity);
                         }
                     }
                 }
             }
         }
+        #[cfg(target_os = "linux")]
+        self.adopt_marked(rows);
         let mut changed = true;
         while changed {
             changed = false;
@@ -101,18 +183,83 @@ impl ProcessTree {
                 if !self.owned.contains_key(&row.pid) && self.owned.contains_key(&row.parent) {
                     if let Ok((identity, parent)) = inspect(row.pid) {
                         if parent == row.parent {
-                            self.owned.insert(row.pid, identity);
-                            self.ids.insert(
-                                row.pid,
-                                format!("process-{:032x}", rand::random::<u128>()),
-                            );
+                            self.adopt(row.pid, identity);
                             changed = true;
                         }
                     }
                 }
             }
         }
+        #[cfg(target_os = "linux")]
+        if self.owned.is_empty() {
+            self.empty_since.get_or_insert_with(std::time::Instant::now);
+        } else {
+            self.empty_since = None;
+        }
         Ok(())
+    }
+
+    /// A job that detached (`setsid job &`) and lost its parent is no
+    /// descendant any more. Without a cgroup it is still the workload's:
+    /// it inherited the marker from the process that started it.
+    #[cfg(target_os = "linux")]
+    fn adopt_marked(&mut self, rows: &[Row]) {
+        let Some(marker) = self.marker.clone() else {
+            return;
+        };
+        let present = rows
+            .iter()
+            .map(|row| row.pid)
+            .collect::<std::collections::BTreeSet<_>>();
+        self.unmarked.retain(|pid, _| present.contains(pid));
+        for row in rows {
+            // Another birth at this PID is another process, even when no
+            // sample saw the PID free in between.
+            let known = self
+                .unmarked
+                .get(&row.pid)
+                .is_some_and(|birth| *birth == row.birth);
+            if known || self.owned.contains_key(&row.pid) {
+                continue;
+            }
+            match std::fs::read(format!("/proc/{}/environ", row.pid)) {
+                Ok(environment)
+                    if environment
+                        .split(|byte| *byte == 0)
+                        .any(|entry| entry == marker) =>
+                {
+                    if let Ok((identity, _)) = inspect(row.pid) {
+                        self.adopt(row.pid, identity);
+                    }
+                }
+                // Empty while the process is mid-exec or a zombie: not an answer yet.
+                Ok(environment) if environment.is_empty() => {}
+                Ok(_) => {
+                    self.unmarked.insert(row.pid, row.birth.clone());
+                }
+                // Another user's process: it never becomes readable.
+                Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+                    self.unmarked.insert(row.pid, row.birth.clone());
+                }
+                // Exited, or not readable yet: ask again at the next sample.
+                Err(_) => {}
+            }
+        }
+    }
+
+    /// Whether the workload left nothing running. A shared sample may predate
+    /// a job that detached as the root ended, so a marked workload reads a
+    /// fresh one, and only a lasting emptiness counts.
+    #[cfg(target_os = "linux")]
+    pub fn left_nothing_running(&mut self) -> bool {
+        if self.marker.is_none() {
+            return true;
+        }
+        if !read_process_rows().is_ok_and(|rows| self.observe(&rows).is_ok()) {
+            return false;
+        }
+        self.empty_since
+            .is_some_and(|since| since.elapsed() >= NOTHING_LEFT_GRACE)
     }
 
     pub fn stop(
@@ -345,6 +492,9 @@ struct Row {
     rss: u64,
     cpu: u64,
     age_ms: u64,
+    /// When the process started, as `ps` prints it (whole seconds): unlike the
+    /// elapsed time it is the same at every sample of one process.
+    birth: String,
     sampled_at_ms: u64,
     command: String,
 }
@@ -375,7 +525,7 @@ pub(super) fn ensure_available() -> std::io::Result<()> {
 
 fn read_process_rows() -> Result<Vec<Row>, String> {
     let sampled_at_ms = crate::session::unix_epoch_ms();
-    let output = crate::process_spawn::command("ps").args(["-axo", "pid=,ppid=,rss=,pcpu=,etime=,comm="]).output()
+    let output = crate::process_spawn::command("ps").env("LC_ALL", "C").args(["-axo", "pid=,ppid=,rss=,pcpu=,etime=,lstart=,comm="]).output()
         .map_err(|error| format!("process resource monitor cannot start ps: {error}; install ps and check the kernel PATH"))?;
     if !output.status.success() {
         return Err(
@@ -392,6 +542,12 @@ fn read_process_rows() -> Result<Vec<Row>, String> {
             let rss = fields.next()?.parse::<u64>().ok()?.checked_mul(1024)?;
             let cpu = (fields.next()?.parse::<f64>().ok()? * 10.0) as u64;
             let age_ms = elapsed_ms(fields.next()?)?;
+            // Weekday, month, day, time and year.
+            let birth = fields.by_ref().take(5).collect::<Vec<_>>();
+            if birth.len() < 5 {
+                return None;
+            }
+            let birth = birth.join(" ");
             let command = fields.collect::<Vec<_>>().join(" ");
             Some(Row {
                 pid,
@@ -399,6 +555,7 @@ fn read_process_rows() -> Result<Vec<Row>, String> {
                 rss,
                 cpu,
                 age_ms,
+                birth,
                 sampled_at_ms,
                 command,
             })
@@ -427,4 +584,47 @@ fn elapsed_ms(text: &str) -> Option<u64> {
     days.checked_mul(86400)?
         .checked_add(seconds)?
         .checked_mul(1000)
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod marker_cache_tests {
+    use super::*;
+
+    fn row(pid: u32, birth: &str) -> Row {
+        Row {
+            pid,
+            parent: 1,
+            rss: 0,
+            cpu: 0,
+            age_ms: 0,
+            birth: birth.into(),
+            sampled_at_ms: 0,
+            command: "sleep".into(),
+        }
+    }
+
+    #[test]
+    fn a_process_born_at_a_cached_pid_is_read_again() {
+        let marker = new_marker();
+        let mut job = std::process::Command::new("sleep")
+            .arg("30")
+            .env(MARKER_NAME, &marker)
+            .spawn()
+            .unwrap();
+        let pid = job.id();
+        let mut tree = ProcessTree::new(std::process::id());
+        // Stands for the unmarked process that held this PID first.
+        tree.set_marker("another-workload");
+        tree.adopt_marked(&[row(pid, "born-first")]);
+        tree.set_marker(&marker);
+        tree.adopt_marked(&[row(pid, "born-first")]);
+        let kept_skipping = !tree.owned.contains_key(&pid);
+        // The PID is reused with no sample in between that lacks it.
+        tree.adopt_marked(&[row(pid, "born-second")]);
+        let adopted = tree.owned.contains_key(&pid);
+        let _ = job.kill();
+        let _ = job.wait();
+        assert!(kept_skipping, "a process already read was read again");
+        assert!(adopted, "a marked process on a reused PID was skipped");
+    }
 }

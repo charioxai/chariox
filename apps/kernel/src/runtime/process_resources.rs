@@ -65,6 +65,10 @@ pub(crate) struct PreparedDomain {
     pool: Arc<pool::Pool>,
     #[cfg(target_os = "linux")]
     cgroup: Option<Arc<cgroup::Domain>>,
+    /// Without a cgroup, what every process of the workload inherits, so a
+    /// job that detached from its parent is still found.
+    #[cfg(target_os = "linux")]
+    marker: Option<String>,
 }
 
 impl PreparedDomain {
@@ -97,12 +101,16 @@ impl PreparedDomain {
                 )
             });
         }
+        #[cfg(target_os = "linux")]
+        let marker = cgroup.is_none().then(sampling::new_marker);
         Self {
             unit: unit.to_string(),
             cap,
             pool,
             #[cfg(target_os = "linux")]
             cgroup,
+            #[cfg(target_os = "linux")]
+            marker,
         }
     }
 
@@ -115,6 +123,8 @@ impl PreparedDomain {
             pool,
             #[cfg(target_os = "linux")]
             cgroup: None,
+            #[cfg(target_os = "linux")]
+            marker: Some(sampling::new_marker()),
         }
     }
 
@@ -132,10 +142,15 @@ impl PreparedDomain {
         {
             // Kernel services may be OOM-protected. Workloads must be killable
             // by their own controller; inheriting -1000 makes memory.max loop.
-            let admission = if self.cgroup.is_some() {
-                "printf '%s\\n' \"$$\" > \"$1/cgroup.procs\" || exit 125; shift; exec \"$@\""
-            } else {
-                "shift; exec \"$@\""
+            let admission = match &self.marker {
+                None => {
+                    "printf '%s\\n' \"$$\" > \"$1/cgroup.procs\" || exit 125; shift; exec \"$@\""
+                        .to_string()
+                }
+                Some(marker) => format!(
+                    "export {}; shift; exec \"$@\"",
+                    sampling::marker_entry(marker)
+                ),
             };
             let script = format!(
                 "{} {admission}",
@@ -171,6 +186,10 @@ impl PreparedDomain {
             tree.set_cgroup(group.clone());
         }
         #[cfg(target_os = "linux")]
+        if let Some(marker) = &self.marker {
+            tree.set_marker(marker);
+        }
+        #[cfg(target_os = "linux")]
         let in_cgroup = self.cgroup.is_some();
         #[cfg(not(target_os = "linux"))]
         let in_cgroup = false;
@@ -204,14 +223,16 @@ impl PreparedDomain {
                 };
                 // A job that left soon after its parent may not be observed yet;
                 // its cgroup still holds it, and ending the watch would kill it.
+                // Without one, only a fresh process table can tell.
                 #[cfg(target_os = "linux")]
-                let ended = samples.is_empty()
-                    && self
-                        .cgroup
-                        .as_ref()
-                        .is_none_or(|group| group.pids().is_ok_and(|pids| pids.is_empty()));
+                let ended = released
+                    && samples.is_empty()
+                    && match &self.cgroup {
+                        Some(group) => group.pids().is_ok_and(|pids| pids.is_empty()),
+                        None => tree.left_nothing_running(),
+                    };
                 #[cfg(not(target_os = "linux"))]
-                let ended = samples.is_empty();
+                let ended = released && samples.is_empty();
                 // Rates use the process table's own time: watches share a
                 // cached table, so a tick can see the same table again.
                 let sampled_at = samples.iter().map(|p| p.sampled_at_ms).max().unwrap_or(0);
@@ -258,7 +279,7 @@ impl PreparedDomain {
                 #[cfg(not(target_os = "linux"))]
                 let unit_charged = None;
                 self.pool.enforce(&watched, unit_charged);
-                if released && ended {
+                if ended {
                     break;
                 }
                 match stopped.recv_timeout(INTERVAL) {
