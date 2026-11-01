@@ -205,14 +205,40 @@ mod tests {
                 },
             )
             .unwrap();
-        assert!(
+        // A worker-bound agent with a live App grant sees the same View tools as a local one, but the
+        // home authorises and runs every call; the worker never holds App authority of its own.
+        let app_tools = |agent: &crate::agent::AgentInstance| {
             state
-                .remote_extension_manifest_for_agent(&peer)
+                .remote_extension_manifest_for_agent(agent)
                 .unwrap()
                 .tools
+                .into_iter()
+                .filter(|tool| tool.kind == ExtensionKind::App)
+                .collect::<Vec<_>>()
+        };
+        let advertised = app_tools(&peer);
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+        assert!(
+            !advertised.is_empty(),
+            "MP-11: a live App grant reaches the worker as View tools"
+        );
+        assert!(
+            advertised
                 .iter()
-                .all(|tool| tool.kind != ExtensionKind::App),
-            "MP-11: the home must not advertise App tools to a worker"
+                .all(|tool| tool.name == "chariox.app_views"
+                    && tool.authority == crate::extension::ExtensionAuthority::Home
+                    && tool.execution_location
+                        == crate::extension::ExtensionExecutionLocation::Home),
+            "MP-11: the home advertises only home-run App View tools to a worker"
+        );
+        let peer = state
+            .owned
+            .agent_store
+            .revoke_extension(peer.id(), ExtensionKind::App, "installed")
+            .unwrap();
+        assert!(
+            app_tools(&peer).is_empty(),
+            "MP-11: a worker sees no App tool once its grant is revoked"
         );
         state.shutdown_cleanup().await.unwrap();
         assert!(
