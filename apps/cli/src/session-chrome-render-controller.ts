@@ -45,7 +45,6 @@ export type SessionChromeRenderControllerDeps<TState, TBox = unknown> = {
   getTerminalWidth?: () => number
   /** The column where the footer summary box starts, after the status indicator; the summary has the rest of the terminal width. */
   getFooterSummaryColumn?: (footerSummaryBox: TBox | undefined) => number
-  getConnectionLabel?: () => string | null
   getFooterFlash: () => FooterFlash | null
   getPromptMetaParts: () => PromptMetaPart[]
   setPromptMetaRenderables: (parts: PromptMetaPart[]) => void
@@ -67,7 +66,6 @@ export function createSessionChromeRenderController<TState, TBox = unknown>(
 
   const apply = () => {
     const footerFlash = deps.getFooterFlash()
-    const connectionLabel = deps.getConnectionLabel?.()
     const footerSummary = deps.isAttached()
       ? sessionAttachedFooterSummary({
         session: deps.getSession(),
@@ -100,7 +98,7 @@ export function createSessionChromeRenderController<TState, TBox = unknown>(
         : deps.getSubmitting()
           ? "thinking"
           : "muted",
-      footerSummary: compactFooterSummary(connectionLabel ? `${footerSummary} • ${connectionLabel}` : footerSummary, compactFooterWidth),
+      footerSummary: compactFooterSummary(footerSummary, compactFooterWidth),
       footerFlash,
     })
     deps.setPromptMetaRenderables(deps.isAttached() ? deps.getPromptMetaParts() : [])

@@ -137,7 +137,6 @@ export type CliResponseShellCompositionDeps = {
   multiAgentMode: AnyFn
   sessionStatusMode: AnyFn
   workspaceLiveSyncStatus: AnyFn
-  connectionLabel: () => string | null
   footerFlash: AnyFn
   promptMetaParts: AnyFn
 }
@@ -344,7 +343,6 @@ export function createCliResponseShellComposition(deps: CliResponseShellComposit
     getHotkeyToggleLabel: () => HOTKEY_TOGGLE_LABEL,
     getTerminalWidth: deps.terminalWidth,
     getFooterSummaryColumn: (box) => (box as { x?: number } | undefined)?.x ?? 0,
-    getConnectionLabel: deps.connectionLabel,
     getFooterFlash: deps.footerFlash,
     getPromptMetaParts: deps.promptMetaParts,
     setPromptMetaRenderables: promptMetaRenderController.setRenderables,

@@ -1,7 +1,6 @@
 import { createCliUserAppViewsComposition } from "./cli-user-app-views-composition.js"
 import { sessionActivePromptForAgent } from "@chariox/kernel-client/session-prompt-identity"
 import type { MutableLocalIpcClient } from "./mutable-local-ipc-client.js"
-import { localKernelConnectionLabel } from "./local-connection-indicator.js"
 import { createCliViewPersistence } from "./cli-view-persistence.js"
 import { recordPaneFirstFrame } from "./pane-first-frame-timing.js"
 import { toggleFocusedTranscriptDetails } from "./transcript-details-controller.js"
@@ -821,7 +820,6 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     sessionChromeUpdateController: responseShellSessionChromeUpdateController,
     assignStatusIndicatorBox, assignFooterSummaryBox,
   } = createCliResponseShellComposition({
-    connectionLabel: () => localKernelConnectionLabel(client, sessionState().host_daemon_id ?? relayStatusState()?.daemon_id),
     renderer,
     scheduleTimer: startTimeout,
     clearTimer: clearTimeout,
