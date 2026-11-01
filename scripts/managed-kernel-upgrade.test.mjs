@@ -146,8 +146,8 @@ test("repository release policy admits the target and two retained releases", as
   const runtimeTypes = await readFile(join(repositoryRoot, "apps/kernel/src/local/api/types.rs"), "utf8")
   const runtimeProtocol = Number(runtimeTypes.match(/LOCAL_DAEMON_PROTOCOL_VERSION: u32 = (\d+);/)[1])
   // MP-08/MP-09/MP-10/MP-11: the target and current and previous releases are reciprocal.
-  assert.deepEqual(admittedPredecessorProtocols, [629, 636, 911])
-  const admittedProtocols = [629, 636, 911, runtimeProtocol]
+  assert.deepEqual(admittedPredecessorProtocols, [629, 636, 911, 923])
+  const admittedProtocols = [629, 636, 911, 923, runtimeProtocol]
   assert.deepEqual(policy, {
     schemaVersion: 1,
     protocol: runtimeProtocol,

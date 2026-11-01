@@ -226,6 +226,13 @@
       "reason": "MP-11 reviewed (mp11a signal-guards G-14, P3): foreground group of the PTY, re-read just before the interrupt."
     },
     {
+      "path": "apps/kernel/src/runtime/app_dev_push/build.rs",
+      "kind": "rust-group",
+      "text": "libc::kill(-pid, libc::SIGKILL);",
+      "count": 1,
+      "reason": "MP-11 reviewed: the App compiler's own private group (`process_group(0)` at spawn), signalled only when pid > 1 and before the leader is reaped."
+    },
+    {
       "path": "apps/kernel/src/runtime/browser_controller_process/owned_process_group.rs",
       "kind": "rust-group",
       "text": "libc::kill(-(self.root as i32), libc::SIGKILL);",
