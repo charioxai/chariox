@@ -12,8 +12,8 @@ mod delivery;
 mod leased_processes;
 pub(crate) use leased_processes::LeasedProcessMutation;
 mod worker_stops;
-pub(crate) use worker_stops::{UnstoppedWorkerRun, WorkerStopMutation};
 pub use leased_processes::{LeasedProcessBinding, LeasedProcessReceipt};
+pub(crate) use worker_stops::{UnstoppedWorkerRun, WorkerStopMutation};
 #[cfg(test)]
 mod blocked_intent_tests;
 mod delivery_waits;
