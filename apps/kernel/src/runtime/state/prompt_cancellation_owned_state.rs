@@ -84,6 +84,25 @@ impl KernelRuntimeOwnedState {
         )
     }
 
+    /// Like the cancellation above, but the queue head stays queued for a caller that starts it
+    /// on the run its kind needs (`start_queue_head_after_cancellation`).
+    pub(super) fn finalize_local_prompt_cancellation_deferring_queue_head(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        expected_prompt_id: &str,
+        provider_run_id: Option<&str>,
+    ) -> Result<OwnedPromptCancellation, DaemonError> {
+        self.finalize_local_prompt_ending_with_queue(
+            session_id,
+            agent_id,
+            expected_prompt_id,
+            provider_run_id,
+            PromptEnding::Cancelled,
+            false,
+        )
+    }
+
     pub(super) fn finalize_local_prompt_ending(
         &self,
         session_id: &str,
@@ -91,6 +110,25 @@ impl KernelRuntimeOwnedState {
         expected_prompt_id: &str,
         provider_run_id: Option<&str>,
         ending: PromptEnding,
+    ) -> Result<OwnedPromptCancellation, DaemonError> {
+        self.finalize_local_prompt_ending_with_queue(
+            session_id,
+            agent_id,
+            expected_prompt_id,
+            provider_run_id,
+            ending,
+            true,
+        )
+    }
+
+    fn finalize_local_prompt_ending_with_queue(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        expected_prompt_id: &str,
+        provider_run_id: Option<&str>,
+        ending: PromptEnding,
+        advance_queue: bool,
     ) -> Result<OwnedPromptCancellation, DaemonError> {
         let agent = self.agent_store.get_agent(agent_id)?;
         if agent.session_id() != session_id {
@@ -200,13 +238,13 @@ impl KernelRuntimeOwnedState {
                 "advance queued prompt after cancellation",
             )
         };
-        let started_next = if provider_account_available
+        let queue_head_promotable = provider_account_available
             && !hold_queued_prompts
             && self
                 .prompt_state_owner
                 .active_prompt_for_agent(&self.session_store.get_session(session_id)?, agent_id)
-                .is_none()
-        {
+                .is_none();
+        let started_next = if advance_queue && queue_head_promotable {
             let next_prompt = self
                 .prompt_state_owner
                 .peek_next_queued_prompt(&self.session_store.get_session(session_id)?, agent_id);
@@ -235,6 +273,7 @@ impl KernelRuntimeOwnedState {
                                 },
                                 released_claim,
                                 dispatch: None,
+                                queue_head_deferred: false,
                             });
                         }
                         let activity_mutation = self.begin_managed_activity_mutation();
@@ -351,6 +390,12 @@ impl KernelRuntimeOwnedState {
             },
             released_claim,
             dispatch,
+            queue_head_deferred: !advance_queue
+                && queue_head_promotable
+                && self
+                    .prompt_state_owner
+                    .peek_next_queued_prompt(&self.session_store.get_session(session_id)?, agent_id)
+                    .is_some(),
         })
     }
 

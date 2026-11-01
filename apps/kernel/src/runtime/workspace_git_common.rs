@@ -95,7 +95,10 @@ pub(crate) fn find_repo_root(workspace_path: &str) -> Result<Option<PathBuf>, Da
         })?;
     if !output.status.success() {
         let message = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        if message.contains("not a git repository") {
+        // Git also refuses a repository owned by another user ("dubious ownership"), as a root
+        // kernel meets in a person's home. Git is not usable there, which is not a failure of
+        // the workspace: it simply has no worktrees to offer.
+        if message.contains("not a git repository") || message.contains("dubious ownership") {
             return Ok(None);
         }
         return Err(DaemonError::LocalTransport {

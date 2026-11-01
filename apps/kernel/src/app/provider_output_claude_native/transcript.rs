@@ -354,11 +354,14 @@ fn claude_tool_result_transcript_chunks(
         .filter(|block| block.get("type").and_then(Value::as_str) == Some("tool_result"))
         .filter_map(|block| {
             let tool_use_id = block.get("tool_use_id").and_then(Value::as_str)?;
-            let content = match block.get("content") {
+            let result = block.get("content");
+            let content = match result {
                 Some(Value::String(value)) => value.to_string(),
+                Some(Value::Array(_)) => crate::provider::bounded_result(result),
                 Some(value) => serde_json::to_string(value).unwrap_or_else(|_| value.to_string()),
                 None => String::new(),
             };
+            let (images, images_omitted) = crate::provider::bounded_result_images(result);
             let is_error = block
                 .get("is_error")
                 .and_then(Value::as_bool)
@@ -371,6 +374,12 @@ fn claude_tool_result_transcript_chunks(
                 "status": if is_error { "failed" } else { "completed" },
                 "output": content,
             });
+            if !images.is_empty() {
+                payload["images"] = serde_json::json!(images);
+            }
+            if images_omitted > 0 {
+                payload["images_omitted"] = serde_json::json!(images_omitted);
+            }
             if let Some(call) = call {
                 payload["input"] = call.input;
             }

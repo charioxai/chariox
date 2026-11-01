@@ -81,7 +81,7 @@ fn claude_workspace_trust_rejection_settles_only_own_prompt_with_reason() {
     app.sessions_mut()
         .set_active_provider_run(session.id(), Some(run.id().to_string()))
         .expect("active provider run should be set");
-    let _prompt = match app
+    let prompt = match app
         .record_native_prompt_started_with_attachments(
             session.id(),
             attachment.id(),
@@ -93,6 +93,31 @@ fn claude_workspace_trust_rejection_settles_only_own_prompt_with_reason() {
         .expect("rejected task should become active")
     {
         crate::session::PromptSubmissionOutcome::Started { prompt } => prompt,
+        other => panic!("unexpected prompt outcome: {other:?}"),
+    };
+    // The replacement run is a stub process: a real Claude launch needs a login.
+    app.agents_mut()
+        .set_agent_runtime_profile_with_account_profile(
+            agent.id(),
+            "dev-stub",
+            None,
+            None,
+            None,
+            crate::provider::ProviderResumeState::default(),
+        )
+        .expect("the agent should switch to the stub provider");
+    let queued = match app
+        .record_native_prompt_started_with_attachments(
+            session.id(),
+            attachment.id(),
+            attachment.id(),
+            agent.id(),
+            "queued-behind-startup-trust-task",
+            Vec::new(),
+        )
+        .expect("a second task should queue behind the trust question")
+    {
+        crate::session::PromptSubmissionOutcome::Queued { prompt } => prompt,
         other => panic!("unexpected prompt outcome: {other:?}"),
     };
     let bridge = StartupTrustBridge::default();
@@ -135,7 +160,7 @@ fn claude_workspace_trust_rejection_settles_only_own_prompt_with_reason() {
             .unwrap()
             .active_prompt_for_agent(agent.id())
             .cloned();
-        if primary_active.is_none() {
+        if primary_active.is_none_or(|active| active.id() != prompt.id()) {
             settled = true;
             break;
         }
@@ -164,6 +189,35 @@ fn claude_workspace_trust_rejection_settles_only_own_prompt_with_reason() {
         "{diagnostic}"
     );
     assert!(!diagnostic.contains(root.to_string_lossy().as_ref()));
+    // The person sees the calm stopped state: no error row, the turn cancelled.
+    let error_rows = runtime
+        .owned
+        .terminal_stream
+        .output_records()
+        .into_iter()
+        .filter(|record| record.kind == crate::terminal::TerminalOutputKind::ProviderError)
+        .map(|record| String::from_utf8_lossy(&record.bytes).into_owned())
+        .collect::<Vec<_>>();
+    assert!(error_rows.is_empty(), "{error_rows:?}");
+    let settlement = runtime
+        .owned
+        .operational_history_store
+        .load_prompt_settlement_event(session.id(), agent.id(), prompt.id())
+        .unwrap()
+        .expect("the declined turn settles");
+    assert_eq!(
+        settlement
+            .metadata
+            .get(crate::history::TURN_OUTCOME_METADATA_KEY),
+        Some(&serde_json::to_value(crate::provider::TurnOutcome::cancelled()).unwrap())
+    );
+    assert_queued_prompt_runs_on_replacement(
+        &runtime,
+        session.id(),
+        agent.id(),
+        run.id(),
+        queued.id(),
+    );
     assert!(!fs::read_to_string(&capture_file)
         .unwrap_or_default()
         .contains("rejected-startup-trust-task"));
@@ -171,5 +225,227 @@ fn claude_workspace_trust_rejection_settles_only_own_prompt_with_reason() {
         .block_on(app.lock())
         .pty_mut()
         .remove_process(run.id());
+    let _ = fs::remove_dir_all(root);
+}
+
+/// A prompt queued behind a denied trust question moves to a fresh provider run: the denied run
+/// is over, so the queued prompt must not stay active on it.
+fn assert_queued_prompt_runs_on_replacement(
+    runtime: &KernelRuntimeState,
+    session_id: &str,
+    agent_id: &str,
+    denied_run_id: &str,
+    queued_prompt_id: &str,
+) {
+    let denied = runtime.owned.provider_store.get_run(denied_run_id).unwrap();
+    assert_ne!(denied.state(), crate::provider::ProviderRunState::Running);
+    let active = runtime
+        .owned
+        .session_snapshot(session_id)
+        .unwrap()
+        .active_prompt_for_agent(agent_id)
+        .cloned()
+        .expect("the queued prompt becomes the active prompt");
+    assert_eq!(active.id(), queued_prompt_id);
+    let replacement = runtime
+        .owned
+        .provider_store
+        .get_run_for_agent(session_id, agent_id)
+        .expect("the queued prompt has a provider run");
+    assert_ne!(replacement.id(), denied_run_id);
+    assert_eq!(
+        replacement.state(),
+        crate::provider::ProviderRunState::Running
+    );
+}
+
+#[test]
+fn a_trust_question_declined_during_dispatch_starts_the_queued_prompt_on_a_fresh_run() {
+    declined_dispatch_with_queued_successor(false);
+}
+
+#[test]
+fn a_declined_trust_question_starts_a_queued_workflow_node_on_a_workflow_capable_run() {
+    declined_dispatch_with_queued_successor(true);
+}
+
+fn declined_dispatch_with_queued_successor(workflow_successor: bool) {
+    let worktree = crate::test_support::TestWorktree::new("claude-native-trust-dispatch-denied");
+    let root = std::env::temp_dir().join(format!(
+        "chariox-claude-trust-dispatch-denied-{}-{}",
+        std::process::id(),
+        crate::session::unix_epoch_ms()
+    ));
+    fs::create_dir_all(&root).expect("test root should be created");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon should bootstrap");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-trust-dispatch-denied",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let workflow_run = workflow_successor.then(|| {
+        // The node's run exists before the ordinary turn takes the agent; only the node queues.
+        app.agents_mut()
+            .set_agent_runtime_profile_with_account_profile(
+                agent.id(),
+                "dev-stub",
+                None,
+                None,
+                None,
+                crate::provider::ProviderResumeState::default(),
+            )
+            .expect("the agent should switch to the stub provider");
+        let workflow_id = app
+            .sessions_mut()
+            .create_workflow(session.id(), Some("wf-trust-denied".to_string()))
+            .expect("workflow should exist")
+            .id()
+            .to_string();
+        let node_id = app
+            .sessions_mut()
+            .add_workflow_node(session.id(), &workflow_id, agent.id())
+            .expect("workflow node should be added")
+            .id()
+            .to_string();
+        app.sessions_mut()
+            .create_workflow_endpoint(session.id(), &workflow_id, &node_id, Some("entry".into()))
+            .expect("workflow endpoint should exist");
+        let (workflow_run, _, _) = app
+            .invoke_workflow_endpoint_and_schedule(
+                session.id(),
+                &workflow_id,
+                "entry",
+                Some("start".to_string()),
+            )
+            .expect("workflow should invoke");
+        app.prompt_owner_complete_active_prompt_only(session.id(), agent.id())
+            .expect("the first node prompt should settle");
+        app.end_agent_provider_run(session.id(), agent.id())
+            .expect("the first node run should end");
+        workflow_run
+    });
+    let context_file = root.join("hidden-context.txt");
+    let events_file = root.join("events.jsonl");
+    fs::write(&context_file, "").expect("context file should be created");
+    fs::write(&events_file, "").expect("events file should be created");
+    let mut run = startup_readiness_run(
+        session.id(),
+        agent.id(),
+        "provider-run-trust-dispatch-denied",
+        &context_file,
+        &events_file,
+        "sleep 30".to_string(),
+    );
+    run.mark_running();
+    app.providers_mut().insert_run_for_test(run.clone());
+    app.sessions_mut()
+        .set_active_provider_run(session.id(), Some(run.id().to_string()))
+        .expect("active provider run should be set");
+    // The replacement run is a stub process: a real Claude launch needs a login.
+    app.agents_mut()
+        .set_agent_runtime_profile_with_account_profile(
+            agent.id(),
+            "dev-stub",
+            None,
+            None,
+            None,
+            crate::provider::ProviderResumeState::default(),
+        )
+        .expect("the agent should switch to the stub provider");
+    let mut submit = |text: &str| {
+        app.record_native_prompt_started_with_attachments(
+            session.id(),
+            attachment.id(),
+            attachment.id(),
+            agent.id(),
+            text,
+            Vec::new(),
+        )
+        .expect("prompt should be accepted")
+    };
+    let crate::session::PromptSubmissionOutcome::Started { prompt } = submit("denied-task") else {
+        panic!("the first task should start");
+    };
+    let queued = if let Some(workflow_run) = &workflow_run {
+        // A workflow node waits behind the ordinary turn that raised the trust question.
+        let node_prompt = crate::session::PromptQueueItem::new(
+            app.sessions_mut().reserve_prompt_id(),
+            crate::scheduler::runtime::workflow_prompt_source_attachment_id(workflow_run.id()),
+            agent.id(),
+            "workflow node task",
+            crate::session::PromptStatus::Queued,
+        )
+        .with_workflow_context(workflow_run.id(), workflow_run.node_runs()[0].id());
+        let crate::session::PromptSubmissionOutcome::Queued { prompt: queued } = app
+            .prompt_owner_submit_prepared_prompt(session.id(), node_prompt, false)
+            .expect("the workflow node should queue")
+        else {
+            panic!("the workflow node should queue behind the ordinary turn");
+        };
+        queued
+    } else {
+        let crate::session::PromptSubmissionOutcome::Queued { prompt: queued } =
+            submit("queued-task")
+        else {
+            panic!("the second task should queue");
+        };
+        queued
+    };
+    let app = Arc::new(Mutex::new(app));
+    let _cleanup = InertPtyCleanup {
+        app: Arc::clone(&app),
+        provider_run_id: run.id().into(),
+    };
+    let executor = tokio::runtime::Runtime::new().unwrap();
+    let runtime = executor.block_on(owned_runtime_state(&app));
+    let dispatch = crate::app::KernelPromptDispatch {
+        session_id: session.id().to_string(),
+        provider_run_id: run.id().to_string(),
+        agent_id: agent.id().to_string(),
+        prompt_id: prompt.id().to_string(),
+        target_active_prompt_id: None,
+        source_attachment_id: attachment.id().to_string(),
+        prompt: "denied-task".to_string(),
+        hidden_system_context: String::new(),
+        attachments: Vec::new(),
+        prompt_origin: prompt.prompt_origin(),
+        external_provider: None,
+        external_provider_session_id: None,
+        external_provider_turn_id: None,
+        steering: false,
+    };
+    let denied = DaemonError::ProviderProtocol {
+        provider_run_id: run.id().to_string(),
+        operation: "submit Claude headless prompt",
+        message: "Claude Code workspace trust was denied before the queued task was dispatched."
+            .to_string(),
+    };
+    executor
+        .block_on(runtime.fail_prompt_dispatch(dispatch, denied))
+        .expect("a declined trust question ends the turn without an error");
+    assert_queued_prompt_runs_on_replacement(
+        &runtime,
+        session.id(),
+        agent.id(),
+        run.id(),
+        queued.id(),
+    );
+    if workflow_successor {
+        let replacement = runtime
+            .owned
+            .provider_store
+            .get_run_for_agent(session.id(), agent.id())
+            .expect("the queued node has a provider run");
+        assert!(
+            replacement.workflow_tools_enabled(),
+            "a workflow node must start on a workflow-capable run"
+        );
+    }
     let _ = fs::remove_dir_all(root);
 }
