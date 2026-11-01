@@ -24,7 +24,7 @@ test("fails aggregate requirements missing from otherwise passing reports", () =
       requiredMatrixRuntimeSignals: ["home-extension-manifest-sync"],
       requiredDeploymentPresets: ["hosted-cloud"],
       requiredProviders: ["claude"],
-      requiredScenarios: ["hetzner-collab"],
+      requiredScenarios: ["remote-kernel-collab"],
       requiredGeneratedEvidenceKinds: ["matrix-report"],
       requiredGeneratedMatrixLimitations: ["dry-run-classification-coverage"],
     },
@@ -40,7 +40,7 @@ test("fails aggregate requirements missing from otherwise passing reports", () =
   assert.deepEqual(aggregate.missingArtifactRuntimeAuthorityInvariants, ["worker-execution-authority"])
   assert.deepEqual(aggregate.missingMatrixRuntimeSignals, ["home-extension-manifest-sync"])
   assert.deepEqual(aggregate.missingProviders, ["claude"])
-  assert.deepEqual(aggregate.missingScenarios, ["hetzner-collab"])
+  assert.deepEqual(aggregate.missingScenarios, ["remote-kernel-collab"])
   assert.deepEqual(aggregate.missingGeneratedEvidenceKinds, ["matrix-report"])
   assert.deepEqual(aggregate.missingGeneratedMatrixLimitations, ["dry-run-classification-coverage"])
   assert.deepEqual(
@@ -92,7 +92,7 @@ test("fails aggregate requirements missing from otherwise passing reports", () =
       },
       {
         classification: "matrix-coverage",
-        nextAction: "provide validation gate reports requiring scenarios: hetzner-collab",
+        nextAction: "provide validation gate reports requiring scenarios: remote-kernel-collab",
       },
       {
         classification: "platform-bundle",
@@ -356,11 +356,11 @@ test("aggregates generated evidence provenance from gate reports", () => {
       }],
       commands: [{
         artifactIndexPath: "/tmp/matrices/oss/native-provider-tui-matrix-artifacts.json",
-        args: ["--include-hetzner"],
+        args: ["--include-remote-kernel"],
         artifactIndexFlag: "--artifact-index",
         cwd: "/repo/chariox",
         matrix: "native-provider-tui-matrix",
-        nodeArgs: ["/repo/chariox/apps/cli/scripts/live-native-provider-tui-matrix-drill.mjs", "--include-hetzner", "--report", "/tmp/matrices/oss/native-provider-tui-matrix.json", "--artifact-index", "/tmp/matrices/oss/native-provider-tui-matrix-artifacts.json"],
+        nodeArgs: ["/repo/chariox/apps/cli/scripts/live-native-provider-tui-matrix-drill.mjs", "--include-remote-kernel", "--report", "/tmp/matrices/oss/native-provider-tui-matrix.json", "--artifact-index", "/tmp/matrices/oss/native-provider-tui-matrix-artifacts.json"],
         repo: "oss",
         reportPath: "/tmp/matrices/oss/native-provider-tui-matrix.json",
         scriptPath: "/repo/chariox/apps/cli/scripts/live-native-provider-tui-matrix-drill.mjs",

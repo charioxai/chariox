@@ -7,7 +7,7 @@ import {
   runAcceptance,
   validateOptions,
   validatePreflightEvidence,
-} from "../deploy/event-publication/hetzner-acceptance.mjs"
+} from "../deploy/event-publication/host-acceptance.mjs"
 
 const options = {
   preflight: "/tmp/preflight.json",
@@ -29,7 +29,7 @@ const options = {
 function preflight() {
   return {
     schemaVersion: 1,
-    kind: "chariox-event-publication-hetzner-preflight",
+    kind: "chariox-event-publication-host-preflight",
     runId: options.runId,
     source: { revision: "a".repeat(40), dirty: false },
     separation: { aedsAndAegs: true, eventServicesAndRelay: true },
@@ -150,7 +150,7 @@ test("acceptance checks AEDS then the expected AEGS set and retains bounded evid
   assert.equal(result.record.restartMode, "read-only")
   assert.equal(result.record.component, "github")
   assert.deepEqual(result.record.expectedAegs, ["github"])
-  assert.match(written, /chariox-event-publication-hetzner-acceptance/)
+  assert.match(written, /chariox-event-publication-host-acceptance/)
   assert.doesNotMatch(written, /sshKey/)
 })
 

@@ -10,8 +10,6 @@ use crate::error::DaemonError;
 const MAX_OBSERVATION_BYTES: u64 = 4096;
 const MAX_MOUNTINFO_BYTES: u64 = 1024 * 1024;
 const DATA_ROOT: &str = "/var/lib/chariox-docker/data";
-const MIN_VOLUME_SIZE_GB: u32 = 10;
-const MAX_VOLUME_SIZE_GB: u32 = 10_000;
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -118,7 +116,6 @@ fn validate_observation(
         || observation.linux_boot_id != linux_boot_id
         || !valid_volume_serial(&observation.data_volume_serial)
         || observation.data_volume_serial != expected_serial
-        || !(MIN_VOLUME_SIZE_GB..=MAX_VOLUME_SIZE_GB).contains(&observation.data_volume_size_gb)
         || observation.data_volume_size_gb != expected_size_gb
         || !valid_filesystem_uuid(&observation.filesystem_uuid)
         || !observation.device_path.starts_with("/dev/")

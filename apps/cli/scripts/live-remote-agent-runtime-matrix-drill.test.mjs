@@ -20,7 +20,7 @@ test("remote agent runtime matrix dry-run covers required scenarios and deployme
     const { stdout } = await execFile(process.execPath, [
       scriptPath,
       "--dry-run",
-      "--include-hetzner",
+      "--include-remote-kernel",
       "--include-hosted-cloud",
       "--provider-model",
       "claude=sonnet-test",
@@ -48,8 +48,8 @@ test("remote agent runtime matrix dry-run covers required scenarios and deployme
       "ui-client-projection",
       "lease-reconnect",
       "collab-remote-agent",
-      "hetzner-single-user-remote-agent",
-      "hetzner-collab-remote-agent",
+      "remote-kernel-single-user-remote-agent",
+      "remote-kernel-collab-remote-agent",
       "hosted-single-user-remote-agent",
       "hosted-collab-remote-agent",
     ])
@@ -81,11 +81,11 @@ test("remote agent runtime matrix dry-run covers required scenarios and deployme
       "lease-health",
       "session-authority",
     ])
-    assert.deepEqual(report.scenarios.find((scenario) => scenario.id === "hetzner-single-user-remote-agent").requires, ["hetzner"])
-    assert.equal(report.metadata.deploymentPresets, "hetzner,hosted-cloud,same-host-remote,self-hosted-relay")
+    assert.deepEqual(report.scenarios.find((scenario) => scenario.id === "remote-kernel-single-user-remote-agent").requires, ["remote-kernel"])
+    assert.equal(report.metadata.deploymentPresets, "hosted-cloud,remote-kernel,same-host-remote,self-hosted-relay")
     assert.equal(report.metadata.providers, "claude,codex,opencode")
     assert.equal(report.metadata.providerAccountAliases, "claude=work_claude,codex=work_codex")
-    assert.equal(report.metadata.includesHetzner, true)
+    assert.equal(report.metadata.includesRemoteKernel, true)
     assert.equal(report.metadata.includesHostedCloud, true)
     assert.equal(report.metadata.includesSelfHostedRelay, true)
     assert.equal(report.metadata.generatedMatrixNames, "remote-agent-runtime-matrix")

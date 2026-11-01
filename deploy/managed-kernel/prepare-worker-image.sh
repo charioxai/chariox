@@ -8,7 +8,7 @@ claimed_probe_root=
 probe_root_identity=
 
 fail() {
-  echo "prepare-hetzner-image.sh: $*" >&2
+  echo "prepare-worker-image.sh: $*" >&2
   exit 1
 }
 
@@ -95,18 +95,18 @@ restore_path1_dropin() {
   builder_label=$3
   builder_parent=${builder_link%/*}
   [ -d "$builder_parent" ] && [ ! -L "$builder_parent" ] \
-    || { echo "prepare-hetzner-image.sh: $builder_label drop-in directory is unsafe" >&2; return 1; }
+    || { echo "prepare-worker-image.sh: $builder_label drop-in directory is unsafe" >&2; return 1; }
   if [ -L "$builder_link" ]; then
     builder_actual_target=$(readlink "$builder_link") \
-      || { echo "prepare-hetzner-image.sh: could not inspect $builder_label drop-in" >&2; return 1; }
+      || { echo "prepare-worker-image.sh: could not inspect $builder_label drop-in" >&2; return 1; }
     [ "$builder_actual_target" = "$builder_target" ] \
-      || { echo "prepare-hetzner-image.sh: $builder_label drop-in changed during image preparation" >&2; return 1; }
+      || { echo "prepare-worker-image.sh: $builder_label drop-in changed during image preparation" >&2; return 1; }
   elif [ -e "$builder_link" ]; then
-    echo "prepare-hetzner-image.sh: $builder_label drop-in path became obstructed" >&2
+    echo "prepare-worker-image.sh: $builder_label drop-in path became obstructed" >&2
     return 1
   else
     ln -s "$builder_target" "$builder_link" \
-      || { echo "prepare-hetzner-image.sh: could not restore $builder_label drop-in" >&2; return 1; }
+      || { echo "prepare-worker-image.sh: could not restore $builder_label drop-in" >&2; return 1; }
   fi
 }
 
@@ -160,7 +160,7 @@ cleanup_path1_data_volume_bypass() {
       fi
       restore_path1_data_volume_dropins || builder_cleanup_failed=1
     else
-      echo "prepare-hetzner-image.sh: probe data and any bypassed drop-ins preserved because image-builder storage services could not be stopped" >&2
+      echo "prepare-worker-image.sh: probe data and any bypassed drop-ins preserved because image-builder storage services could not be stopped" >&2
       builder_cleanup_failed=1
     fi
   fi
@@ -188,10 +188,10 @@ bypass_path1_data_volume_dropins() {
 }
 
 if [ "$(id -u)" -ne 0 ]; then
-  fail "run as root on the disposable Hetzner image builder"
+  fail "run as root on the disposable image builder"
 fi
 if [ "$#" -ne 3 ]; then
-  fail "usage: prepare-hetzner-image.sh <release-rootfs> <release-digest> <trusted-public-key>"
+  fail "usage: prepare-worker-image.sh <release-rootfs> <release-digest> <trusted-public-key>"
 fi
 if [ ! -f "$MARKER_PATH" ] || [ -L "$MARKER_PATH" ] \
   || [ "$(sed -n '1p' "$MARKER_PATH")" != "$MARKER_VALUE" ]; then
@@ -673,4 +673,4 @@ find /var/log -type f -exec sh -c ': > "$1"' _ {} \;
 cloud-init clean --logs --machine-id --seed
 rm -f /etc/ssh/ssh_host_* "$MARKER_PATH"
 sync
-echo "managed Hetzner image preparation passed"
+echo "managed worker image preparation passed"

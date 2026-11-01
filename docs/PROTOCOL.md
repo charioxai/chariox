@@ -6049,3 +6049,21 @@ time), shared by this request, the passkey check and the unlock prompt an agent'
 Clients need kernel protocol >=923 (`credentialVaultUnlockMinimumProtocolVersion` in the
 web). The managed-upgrade list is [629, 636, 923]. Focused checks:
 `cargo test -p chariox-kernel --lib vault_unlock` and `node --test scripts/protocol-versions.test.mjs`.
+
+### Opaque reimage provider id: local 924 / relay peer 375
+
+The managed-environment reimage preflight carries `desiredRelease.providerId`. It was a
+one-value enum; it is now an opaque string that Cloud defines (an identifier: lowercase letters,
+digits and `._:-`, at most 128 characters). The kernel checks the identifier when it reads the
+preflight and does not know any provider. The wire value Cloud sends is unchanged, so no client
+changes behaviour; clients stop refusing ids they do not know, and Cloud refuses unsupported
+providers. Relay peer 375 only pairs the embedded local response union with local 924. The
+managed-upgrade list is [629, 636, 911, 923, 924]; 923 is the main release a
+managed kernel can run today, so it upgrades to 924 and rolls back from it. Focused checks:
+`cargo test -p chariox-kernel --lib -- protocol_shapes reimage` and
+`node --test scripts/protocol-versions.test.mjs`.
+
+The data-volume bounds of the managed bootstrap (10 to 10000 GB) are gone from the kernel: Cloud
+validates the size against the provider's limits before it writes the envelope, and the kernel only
+requires a positive size that matches the attached device. The persisted Cloud relay profile keeps
+the relay URL Cloud issued; the old rewrite of a pinned staging address is deleted.

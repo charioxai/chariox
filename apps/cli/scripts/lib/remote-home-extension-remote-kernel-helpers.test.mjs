@@ -7,17 +7,17 @@ import test from "node:test"
 import { promisify } from "node:util"
 
 import {
-  remoteHomeExtensionHetznerPreflightCommand,
-  remoteHomeExtensionHetznerWorkerLaunchCommand,
-} from "./remote-home-extension-hetzner-helpers.mjs"
+  remoteHomeExtensionRemoteKernelPreflightCommand,
+  remoteHomeExtensionRemoteKernelWorkerLaunchCommand,
+} from "./remote-home-extension-remote-kernel-helpers.mjs"
 
 const execFile = promisify(execFileWithCallback)
 
-test("remote Hetzner preflight reports checkout commit skew before launch", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-hetzner-preflight-"))
+test("remote remote kernel preflight reports checkout commit skew before launch", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-remote-kernel-preflight-"))
   try {
-    const command = remoteHomeExtensionHetznerPreflightCommand({
-      hetznerRepo: path.join(rootDir, "missing-repo"),
+    const command = remoteHomeExtensionRemoteKernelPreflightCommand({
+      remoteKernelRepo: path.join(rootDir, "missing-repo"),
       remoteRoot: path.join(rootDir, "remote-root"),
       workerWorktree: path.join(rootDir, "remote-root", "workspace"),
       expectedRepoHead: "2222222",
@@ -37,11 +37,11 @@ test("remote Hetzner preflight reports checkout commit skew before launch", asyn
   }
 })
 
-test("remote Hetzner preflight reports insufficient remote filesystem capacity", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-hetzner-preflight-"))
+test("remote remote kernel preflight reports insufficient remote filesystem capacity", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-remote-kernel-preflight-"))
   try {
-    const command = remoteHomeExtensionHetznerPreflightCommand({
-      hetznerRepo: rootDir,
+    const command = remoteHomeExtensionRemoteKernelPreflightCommand({
+      remoteKernelRepo: rootDir,
       remoteRoot: path.join(rootDir, "remote-root"),
       workerWorktree: path.join(rootDir, "remote-root", "workspace"),
       minFreeKb: Number.MAX_SAFE_INTEGER,
@@ -61,15 +61,15 @@ test("remote Hetzner preflight reports insufficient remote filesystem capacity",
   }
 })
 
-test("remote Hetzner preflight verifies an explicit run-owned worker kernel", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-hetzner-preflight-"))
+test("remote remote kernel preflight verifies an explicit run-owned worker kernel", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-remote-kernel-preflight-"))
   try {
     const workerKernelBinary = path.join(rootDir, "runtime", "chariox-kernel")
     await mkdir(path.dirname(workerKernelBinary), { recursive: true })
     await writeFile(workerKernelBinary, "kernel")
     await chmod(workerKernelBinary, 0o755)
-    const command = remoteHomeExtensionHetznerPreflightCommand({
-      hetznerRepo: rootDir,
+    const command = remoteHomeExtensionRemoteKernelPreflightCommand({
+      remoteKernelRepo: rootDir,
       remoteRoot: path.join(rootDir, "remote-root"),
       workerWorktree: path.join(rootDir, "remote-root", "workspace"),
       workerKernelBinary,
@@ -92,7 +92,7 @@ test("remote Hetzner preflight verifies an explicit run-owned worker kernel", as
 })
 
 test("remote worker launch uses the explicit run-owned kernel", () => {
-  const command = remoteHomeExtensionHetznerWorkerLaunchCommand({
+  const command = remoteHomeExtensionRemoteKernelWorkerLaunchCommand({
     remoteRoot: "/tmp/chariox-worker-root",
     workerWorktree: "/tmp/chariox-worker-root/workspace",
     workerKernelBinary: "/tmp/hosted-runtime/chariox-kernel",

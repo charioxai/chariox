@@ -111,7 +111,7 @@ export function validateOptions(options) {
 export function validatePreflightEvidence(evidence, options) {
   if (
     evidence?.schemaVersion !== 1
-    || evidence?.kind !== "chariox-event-publication-hetzner-preflight"
+    || evidence?.kind !== "chariox-event-publication-host-preflight"
   ) {
     throw new Error("preflight evidence has an unsupported contract")
   }
@@ -242,7 +242,7 @@ export async function runAcceptance(options, dependencies = {}) {
   }
   const record = {
     schemaVersion: 1,
-    kind: "chariox-event-publication-hetzner-acceptance",
+    kind: "chariox-event-publication-host-acceptance",
     runId: options.runId,
     capturedAt: new Date().toISOString(),
     component: options.component,
@@ -257,7 +257,7 @@ export async function runAcceptance(options, dependencies = {}) {
   }
   const evidenceDir = path.resolve(
     options.evidenceDir
-      || path.join(repositoryRoot, ".artifacts/event-publication-hetzner", options.runId),
+      || path.join(repositoryRoot, ".artifacts/event-publication-host", options.runId),
   )
   await (dependencies.mkdir ?? mkdir)(evidenceDir, { recursive: true, mode: 0o700 })
   const evidencePath = path.join(evidenceDir, `${options.component}-acceptance.json`)
@@ -314,7 +314,7 @@ function shellQuote(value) {
 function usage() {
   return [
     "Usage:",
-    "  node deploy/event-publication/hetzner-acceptance.mjs \\",
+    "  node deploy/event-publication/host-acceptance.mjs \\",
     "    --preflight PATH --run-id RUN_ID --component COMPONENT \\",
     "    [--expected-aegs github,jira,linear,gitlab,sentry,slack] \\",
     "    --aeds-host USER@HOST --aegs-host USER@HOST [--relay-host USER@HOST] \\",

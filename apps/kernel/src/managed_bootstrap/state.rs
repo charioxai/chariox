@@ -26,8 +26,6 @@ pub(super) const PROTECTED_MANAGED_BOOTSTRAP_PATH: &str =
     "/etc/chariox/bootstrap/managed-bootstrap.json";
 pub(super) const PROTECTED_DISPOSABLE_WORKER_BOOTSTRAP_PATH: &str =
     "/etc/chariox/bootstrap/disposable-worker-bootstrap.json";
-const MIN_HETZNER_VOLUME_SIZE_GB: u32 = 10;
-const MAX_HETZNER_VOLUME_SIZE_GB: u32 = 10_000;
 const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -788,11 +786,7 @@ pub(super) fn validate_volume_binding_for_schema(
                 number > 0 && number <= MAX_SAFE_INTEGER && number.to_string() == value
             })
     });
-    if !valid_serial
-        || !size_gb.is_some_and(|value| {
-            (MIN_HETZNER_VOLUME_SIZE_GB..=MAX_HETZNER_VOLUME_SIZE_GB).contains(&value)
-        })
-    {
+    if !valid_serial || !size_gb.is_some_and(|value| value > 0) {
         return Err(state_error("data-volume bootstrap binding is invalid"));
     }
     Ok(())

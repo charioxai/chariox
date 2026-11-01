@@ -7,7 +7,7 @@ import { spawn, spawnSync } from "node:child_process"
 import { test } from "node:test"
 import { fileURLToPath } from "node:url"
 
-const scriptUrl = new URL("../deploy/managed-kernel/prepare-hetzner-image.sh", import.meta.url)
+const scriptUrl = new URL("../deploy/managed-kernel/prepare-worker-image.sh", import.meta.url)
 const rootfulSocketHelperUrl = new URL(
   "../deploy/managed-kernel/remove-stale-rootful-docker-socket.sh",
   import.meta.url,
@@ -87,7 +87,7 @@ test("managed image installer rejects omitted topology before staging", async ()
   }
 })
 
-test("Hetzner image preparation is pinned, guarded, and leaves no runtime identity", async () => {
+test("Worker image preparation is pinned, guarded, and leaves no runtime identity", async () => {
   const script = await readFile(scriptUrl, "utf8")
 
   assert.match(script, /MARKER_VALUE=managed-remote-kernels-image-builder-v1/)
@@ -424,7 +424,7 @@ test("rootful Docker socket cleanup fails closed and removes only stale sockets"
   }
 })
 
-test("Hetzner image preparation installs the hosted-drill tools", async () => {
+test("Worker image preparation installs the hosted-drill tools", async () => {
   const script = await readFile(scriptUrl, "utf8")
   for (const dependency of [
     "acl",
@@ -778,7 +778,7 @@ test("managed image validation requires an explicit topology and preserves both 
 
   assert.match(
     runbook,
-    /sudo env CHARIOX_MANAGED_PROVIDER_TOPOLOGY=shared_host \\\n+  deploy\/managed-kernel\/prepare-hetzner-image\.sh \\\n+  <release-rootfs>/,
+    /sudo env CHARIOX_MANAGED_PROVIDER_TOPOLOGY=shared_host \\\n+  deploy\/managed-kernel\/prepare-worker-image\.sh \\\n+  <release-rootfs>/,
   )
   assert.match(runbook, /For a disposable-VM Path-1 image, replace `shared_host` with `path1` and set/)
   assert.match(runbook, /CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY=<external-pinned-builder-public-key>/)
@@ -899,7 +899,7 @@ test("managed slice provider namespaces receive the required outer Docker compat
   assert.match(provisioner, /CHARIOX_SLICE_ALLOW_PROVIDER_SANDBOX_COMPATIBILITY must be 0 or 1/)
 })
 
-test("Hetzner snapshot labels preserve the complete release digest within provider limits", async () => {
+test("Image snapshot labels preserve the complete release digest within provider limits", async () => {
   const runbook = await readFile(runbookUrl, "utf8")
 
   assert.match(runbook, /chariox\.dev\/runtime-release-a=<first 32 lowercase hex characters>/)
@@ -909,7 +909,7 @@ test("Hetzner snapshot labels preserve the complete release digest within provid
 })
 
 test("the sshd DenyUsers check accepts both sshd -T formats and requires both accounts", async () => {
-  const script = await readFile(new URL("../deploy/managed-kernel/prepare-hetzner-image.sh", import.meta.url), "utf8")
+  const script = await readFile(new URL("../deploy/managed-kernel/prepare-worker-image.sh", import.meta.url), "utf8")
   assert.match(script, /DenyUsers chariox chariox-docker/)
   assert.match(script, /runuser -u chariox -- sudo -n true \|\| fail "Path-1 chariox must have passwordless sudo"/)
   const denyCheck = script.match(/awk '(\$1 == "denyusers"[^']*)'/)?.[1]

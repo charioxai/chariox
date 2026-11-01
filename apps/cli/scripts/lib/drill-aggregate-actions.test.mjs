@@ -32,7 +32,7 @@ test("counts and orders aggregate next actions", () => {
     classification: "relay-runtime",
     nextAction: "inspect relay",
     count: 3,
-    sourceDetails: [{ source: "hetzner-matrix", matrix: "remote", scenarioId: "hetzner", reportPath: "/tmp/remote.json" }],
+    sourceDetails: [{ source: "remote-kernel-matrix", matrix: "remote", scenarioId: "remote-kernel", reportPath: "/tmp/remote.json" }],
   })
 
   assert.deepEqual(formatDrillAggregateNextActionCounts(counts), [
@@ -42,7 +42,7 @@ test("counts and orders aggregate next actions", () => {
       nextAction: "inspect relay",
       count: 4,
       sourceDetails: [
-        { source: "hetzner-matrix", matrix: "remote", scenarioId: "hetzner", reportPath: "/tmp/remote.json" },
+        { source: "remote-kernel-matrix", matrix: "remote", scenarioId: "remote-kernel", reportPath: "/tmp/remote.json" },
         { source: "remote-matrix", matrix: "remote", scenarioId: "remote", reportPath: "/tmp/remote.json" },
       ],
     },
@@ -55,7 +55,7 @@ test("counts and orders aggregate next actions", () => {
   ])
   assert.equal(
     formatDrillAggregateNextActionSourceDetails(formatDrillAggregateNextActionCounts(counts)[0].sourceDetails),
-    "hetzner-matrix report=/tmp/remote.json, remote-matrix report=/tmp/remote.json",
+    "remote-kernel-matrix report=/tmp/remote.json, remote-matrix report=/tmp/remote.json",
   )
   assert.equal(
     formatDrillAggregateNextActionSourceDetails([{ reportPath: "/tmp/report-only.json" }]),

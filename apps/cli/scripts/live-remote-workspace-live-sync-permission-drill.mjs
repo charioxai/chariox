@@ -10,13 +10,13 @@ import { runNodeDrillChild } from './lib/drill-child-process.mjs'
 import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
 import { portIsAvailable, resolveBuiltBinary } from './lib/drill-runtime-helpers.mjs'
 import {
-  assertHetznerCharioxBinaries,
-  assertHetznerTcpPortAvailable,
+  assertRemoteKernelCharioxBinaries,
+  assertRemoteKernelTcpPortAvailable,
   spawnRemoteEnv,
-  runHetznerCommand,
+  runRemoteKernelCommand,
   shellQuote,
   sshArgs,
-  stopHetznerProcessByEnv,
+  stopRemoteKernelProcessByEnv,
 } from './lib/native-tui-remote-execution.mjs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
@@ -35,8 +35,8 @@ const DEFAULT_PROVIDERS = ['opencode', 'codex']
 const DEFAULT_MODEL = 'gpt-5.4'
 const DEFAULT_TIMEOUT_MS = 420_000
 const DEFAULT_POLL_MS = 1_000
-const HETZNER_MANAGED_WORKSPACE_LIVE_SYNC_UNSUPPORTED_REASON =
-  'Hetzner managed Workspace Live Sync permission validation is unsupported because the worker runs Linux and managed mode needs selective write fencing, which is only implemented on macOS; use tracked mode on this worker or run the managed provider on a supported host'
+const REMOTE_KERNEL_MANAGED_WORKSPACE_LIVE_SYNC_UNSUPPORTED_REASON =
+  'remote kernel managed Workspace Live Sync permission validation is unsupported because the worker runs Linux and managed mode needs selective write fencing, which is only implemented on macOS; use tracked mode on this worker or run the managed provider on a supported host'
 
 function parseArgs(argv) {
   const options = {
@@ -47,10 +47,10 @@ function parseArgs(argv) {
     pollMs: DEFAULT_POLL_MS,
     keepArtifactsOnFailure: false,
     mode: 'managed',
-    hetznerWorker: false,
-    hetznerHost: process.env.CHARIOX_WORKSPACE_LIVE_SYNC_HETZNER_HOST ?? process.env.CHARIOX_NATIVE_TUI_HETZNER_HOST ?? 'root@195.201.123.115',
-    hetznerKey: process.env.CHARIOX_WORKSPACE_LIVE_SYNC_HETZNER_KEY ?? process.env.CHARIOX_NATIVE_TUI_HETZNER_KEY ?? path.join(os.homedir(), '.ssh/chariox_hetzner_staging'),
-    hetznerRepo: process.env.CHARIOX_WORKSPACE_LIVE_SYNC_HETZNER_REPO ?? process.env.CHARIOX_NATIVE_TUI_HETZNER_REPO ?? '/tmp/chariox-native-remote-validate',
+    remoteKernelWorker: false,
+    remoteKernelHost: process.env.CHARIOX_WORKSPACE_LIVE_SYNC_REMOTE_KERNEL_HOST ?? process.env.CHARIOX_NATIVE_TUI_REMOTE_KERNEL_HOST ?? '',
+    remoteKernelKey: process.env.CHARIOX_WORKSPACE_LIVE_SYNC_REMOTE_KERNEL_KEY ?? process.env.CHARIOX_NATIVE_TUI_REMOTE_KERNEL_KEY ?? '',
+    remoteKernelRepo: process.env.CHARIOX_WORKSPACE_LIVE_SYNC_REMOTE_KERNEL_REPO ?? process.env.CHARIOX_NATIVE_TUI_REMOTE_KERNEL_REPO ?? '/tmp/chariox-native-remote-validate',
   }
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
@@ -67,10 +67,10 @@ function parseArgs(argv) {
     else if (arg === '--poll-ms') options.pollMs = Number(argv[++i])
     else if (arg === '--mode') options.mode = argv[++i]
     else if (arg === '--keep-artifacts-on-failure') options.keepArtifactsOnFailure = true
-    else if (arg === '--hetzner-worker') options.hetznerWorker = true
-    else if (arg === '--hetzner-host') options.hetznerHost = argv[++i]
-    else if (arg === '--hetzner-key') options.hetznerKey = argv[++i]
-    else if (arg === '--hetzner-repo') options.hetznerRepo = argv[++i]
+    else if (arg === '--remote-kernel-worker') options.remoteKernelWorker = true
+    else if (arg === '--remote-kernel-host') options.remoteKernelHost = argv[++i]
+    else if (arg === '--remote-kernel-key') options.remoteKernelKey = argv[++i]
+    else if (arg === '--remote-kernel-repo') options.remoteKernelRepo = argv[++i]
     else if (arg === '--help') options.help = true
     else throw new Error(`unknown argument: ${arg}`)
   }
@@ -87,13 +87,13 @@ function defaultModelForProvider(provider) {
 }
 
 function preflightWorkspaceLiveSyncPermissionSupport(options) {
-  if (options.hetznerWorker && options.mode === 'managed') {
+  if (options.remoteKernelWorker && options.mode === 'managed') {
     return {
       status: 'unsupported',
       mode: 'remote-workspace-live-sync-permission-live-drill',
       liveSyncMode: 'managed',
-      hetznerWorker: true,
-      reason: HETZNER_MANAGED_WORKSPACE_LIVE_SYNC_UNSUPPORTED_REASON,
+      remoteKernelWorker: true,
+      reason: REMOTE_KERNEL_MANAGED_WORKSPACE_LIVE_SYNC_UNSUPPORTED_REASON,
     }
   }
   return null
@@ -214,45 +214,45 @@ async function resolveBinary(binaryPath, manifestPath, binName) {
   return await resolveBuiltBinary(binaryPath, manifestPath, binName)
 }
 
-async function assertHetznerBinaries(options) {
-  await assertHetznerCharioxBinaries(options)
+async function assertRemoteKernelBinaries(options) {
+  await assertRemoteKernelCharioxBinaries(options)
 }
 
-async function syncHetznerCodexAuth(options) {
+async function syncRemoteKernelCodexAuth(options) {
   const workerProfile=requireScopedProviderPath(process.env,"CHARIOX_DRILL_WORKER_CODEX_HOME")
   await execFileAsync("ssh",sshArgs(options,`test -f ${shellQuote(path.posix.join(workerProfile,"auth.json"))}`))
 }
 
-async function assertHetznerRelayPortAvailable(options, port) {
-  await assertHetznerTcpPortAvailable(options, port, 'Hetzner relay port')
+async function assertRemoteKernelRelayPortAvailable(options, port) {
+  await assertRemoteKernelTcpPortAvailable(options, port, 'remote kernel relay port')
 }
 
-async function assertHetznerWorkerPortsAvailable(options, ports) {
+async function assertRemoteKernelWorkerPortsAvailable(options, ports) {
   for (const [label, port] of [
     ['kernel', ports.workerKernelPort],
     ['MCP', ports.workerMcpPort],
     ['OpenCode', ports.workerOpenCodePort],
     ['Codex', ports.workerCodexPort],
   ]) {
-    await assertHetznerTcpPortAvailable(options, port, `Hetzner worker ${label} port`)
+    await assertRemoteKernelTcpPortAvailable(options, port, `remote kernel worker ${label} port`)
   }
 }
 
-async function stopOwnedHetznerRelay(options, port, runId) {
-  await stopHetznerProcessByEnv(options, {
+async function stopOwnedRemoteKernelRelay(options, port, runId) {
+  await stopRemoteKernelProcessByEnv(options, {
     CHARIOX_WORKSPACE_LIVE_SYNC_DRILL_RUN_ID: runId,
     CHARIOX_RELAY_PORT: String(port),
   })
 }
 
-async function stopOwnedHetznerWorker(options, daemonId, port) {
-  await stopHetznerProcessByEnv(options, {
+async function stopOwnedRemoteKernelWorker(options, daemonId, port) {
+  await stopRemoteKernelProcessByEnv(options, {
     CHARIOX_DAEMON_ID: daemonId,
     CHARIOX_KERNEL_PORT: String(port),
   })
 }
 
-function mirrorFixturesToHetznerCommand(options, rootDir) {
+function mirrorFixturesToRemoteKernelCommand(options, rootDir) {
   const parent = path.dirname(rootDir)
   const base = path.basename(rootDir)
   const remoteCommand = [
@@ -265,12 +265,12 @@ function mirrorFixturesToHetznerCommand(options, rootDir) {
     '|',
     'ssh',
     '-i',
-    shellQuote(options.hetznerKey),
+    shellQuote(options.remoteKernelKey),
     '-o',
     'BatchMode=yes',
     '-o',
     'StrictHostKeyChecking=accept-new',
-    shellQuote(options.hetznerHost),
+    shellQuote(options.remoteKernelHost),
     shellQuote(remoteCommand),
   ].join(' ')
 }
@@ -280,12 +280,12 @@ function remoteFileContentCheckCommand(options, filePath, expectedContent) {
   return [
     'ssh',
     '-i',
-    shellQuote(options.hetznerKey),
+    shellQuote(options.remoteKernelKey),
     '-o',
     'BatchMode=yes',
     '-o',
     'StrictHostKeyChecking=accept-new',
-    shellQuote(options.hetznerHost),
+    shellQuote(options.remoteKernelHost),
     shellQuote(remoteCommand),
   ].join(' ')
 }
@@ -383,7 +383,7 @@ async function waitForRemoteMachineKernel(client, machineRef, providers) {
 async function runDrill(privateRoot) {
   const options = parseArgs(process.argv.slice(2))
   if (options.help) {
-    console.log('Usage: node apps/cli/scripts/live-remote-workspace-live-sync-permission-drill.mjs [--providers opencode,codex] [--model MODEL] [--provider-model PROVIDER=MODEL] [--mode managed|tracked] [--hetzner-worker]')
+    console.log('Usage: node apps/cli/scripts/live-remote-workspace-live-sync-permission-drill.mjs [--providers opencode,codex] [--model MODEL] [--provider-model PROVIDER=MODEL] [--mode managed|tracked] [--remote-kernel-worker]')
     return
   }
   if (options.providers.length < 1) throw new Error('remote workspace live sync permission drill requires at least one provider')
@@ -420,7 +420,7 @@ async function runDrill(privateRoot) {
   } = requests
 
   const relayToken = `relay-token-${process.pid}-${Date.now()}`
-  const relayBinary = options.hetznerWorker
+  const relayBinary = options.remoteKernelWorker
     ? null
     : await resolveBinary(
         path.join(repoRoot, 'apps/relay/target/debug/chariox-relay'),
@@ -456,20 +456,20 @@ async function runDrill(privateRoot) {
   let localClient = null
   let succeeded = false
   let failure = null
-  const childRootDir = options.hetznerWorker
-    ? path.join(cliRoot, 'target', 'live-workspace-live-sync-permission-drill', `hetzner-${runId}`)
+  const childRootDir = options.remoteKernelWorker
+    ? path.join(cliRoot, 'target', 'live-workspace-live-sync-permission-drill', `remote-kernel-${runId}`)
     : null
 
   try {
-    if (options.hetznerWorker) {
-      await assertHetznerBinaries(options)
+    if (options.remoteKernelWorker) {
+      await assertRemoteKernelBinaries(options)
       if (options.providers.includes('codex')) {
-        await syncHetznerCodexAuth(options)
+        await syncRemoteKernelCodexAuth(options)
       }
-      await assertHetznerRelayPortAvailable(options, ports.relayPort)
-      await assertHetznerWorkerPortsAvailable(options, ports)
+      await assertRemoteKernelRelayPortAvailable(options, ports.relayPort)
+      await assertRemoteKernelWorkerPortsAvailable(options, ports)
       relayChild = spawnRemoteEnv(options, {
-        CHARIOX_REMOTE_REPO: options.hetznerRepo,
+        CHARIOX_REMOTE_REPO: options.remoteKernelRepo,
         CHARIOX_RELAY_HOST: '127.0.0.1',
         CHARIOX_RELAY_PORT: String(ports.relayPort),
         CHARIOX_RELAY_TOKEN: relayToken,
@@ -477,7 +477,7 @@ async function runDrill(privateRoot) {
       }, './apps/relay/target/debug/chariox-relay', { stdio: ['ignore', 'ignore', 'inherit'] })
       relayTunnel = spawn('ssh', [
         '-i',
-        options.hetznerKey,
+        options.remoteKernelKey,
         '-o',
         'BatchMode=yes',
         '-o',
@@ -485,7 +485,7 @@ async function runDrill(privateRoot) {
         '-N',
         '-L',
         `127.0.0.1:${ports.relayPort}:127.0.0.1:${ports.relayPort}`,
-        options.hetznerHost,
+        options.remoteKernelHost,
       ], { stdio: ['ignore', 'ignore', 'inherit'] })
       await waitForTcpPort(ports.relayPort, '127.0.0.1', 30_000)
     } else {
@@ -515,10 +515,10 @@ async function runDrill(privateRoot) {
       stdio: ['ignore', 'ignore', 'inherit'],
     })
 
-    if (options.hetznerWorker) {
+    if (options.remoteKernelWorker) {
       const remoteRoot = `/tmp/chariox-remote-workspace-live-sync-permission-${runId}`
       workerChild = spawnRemoteEnv(options, {
-        CHARIOX_REMOTE_REPO: options.hetznerRepo,
+        CHARIOX_REMOTE_REPO: options.remoteKernelRepo,
         PATH: '/root/.bun/bin:/root/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
         HOME: '/root',
         XDG_CONFIG_HOME: '/root/.config',
@@ -585,7 +585,7 @@ async function runDrill(privateRoot) {
     for (const provider of options.providers) {
       const model = options.providerModels[provider]
         ?? (options.model === DEFAULT_MODEL ? defaultModelForProvider(provider) : options.model)
-      const workerClient = options.hetznerWorker
+      const workerClient = options.remoteKernelWorker
         ? new LocalIpcClient(relayUrl, {
             relayAuthToken: relayToken,
             targetDaemonAlias: 'worker',
@@ -614,13 +614,13 @@ async function runDrill(privateRoot) {
         '--poll-ms', String(options.pollMs),
         '--history-dir', homeHistoryDir,
         ...(childRootDir ? ['--root-dir', childRootDir] : []),
-        ...(options.hetznerWorker && childRootDir ? ['--after-fixture-command', mirrorFixturesToHetznerCommand(options, childRootDir)] : []),
-        ...(options.hetznerWorker && childRootDir ? ['--workspace-file-check-command', remoteFileContentCheckCommand(
+        ...(options.remoteKernelWorker && childRootDir ? ['--after-fixture-command', mirrorFixturesToRemoteKernelCommand(options, childRootDir)] : []),
+        ...(options.remoteKernelWorker && childRootDir ? ['--workspace-file-check-command', remoteFileContentCheckCommand(
           options,
           path.posix.join(childRootDir, 'workspace', `${provider}-workspace-live-sync-permission.txt`),
           `workspace-live-sync-${provider}`,
         )] : []),
-        ...(options.hetznerWorker && childRootDir ? ['--outside-file-check-command', remoteFileContentCheckCommand(
+        ...(options.remoteKernelWorker && childRootDir ? ['--outside-file-check-command', remoteFileContentCheckCommand(
           options,
           path.posix.join(childRootDir, 'outside-repo', `${provider}-outside-repo-direct-write.txt`),
           `outside-repo-direct-write-${provider}`,
@@ -645,7 +645,7 @@ async function runDrill(privateRoot) {
       liveSyncMode: options.mode,
       model: options.model,
       providerModels: options.providerModels,
-      hetznerWorker: options.hetznerWorker,
+      remoteKernelWorker: options.remoteKernelWorker,
       results,
     }, null, 2))
     succeeded = true
@@ -658,13 +658,13 @@ async function runDrill(privateRoot) {
     await terminateChild(workerChild)
     await terminateChild(relayChild)
     await terminateChild(relayTunnel)
-    if (options.hetznerWorker) {
-      await stopOwnedHetznerWorker(options, workerDaemonId, ports.workerKernelPort)
-      await stopOwnedHetznerRelay(options, ports.relayPort, runId)
-      await runHetznerCommand(options, `rm -rf ${shellQuote(`/tmp/chariox-remote-workspace-live-sync-permission-${runId}`)}`).catch(() => {})
+    if (options.remoteKernelWorker) {
+      await stopOwnedRemoteKernelWorker(options, workerDaemonId, ports.workerKernelPort)
+      await stopOwnedRemoteKernelRelay(options, ports.relayPort, runId)
+      await runRemoteKernelCommand(options, `rm -rf ${shellQuote(`/tmp/chariox-remote-workspace-live-sync-permission-${runId}`)}`).catch(() => {})
     }
-    if (options.hetznerWorker && childRootDir && (succeeded || !options.keepArtifactsOnFailure)) {
-      await runHetznerCommand(options, `rm -rf ${shellQuote(childRootDir)}`).catch(() => {})
+    if (options.remoteKernelWorker && childRootDir && (succeeded || !options.keepArtifactsOnFailure)) {
+      await runRemoteKernelCommand(options, `rm -rf ${shellQuote(childRootDir)}`).catch(() => {})
     }
     await finalizeDrillArtifacts({
       rootDir: evidenceRoot,
@@ -675,7 +675,7 @@ async function runDrill(privateRoot) {
         drill: 'remote-workspace-live-sync-permission',
         mode: options.mode,
         providers: options.providers.join(','),
-        hetznerWorker: options.hetznerWorker,
+        remoteKernelWorker: options.remoteKernelWorker,
         childRootDir: childRootDir ?? '',
         cliRuntimeDir,
       },
