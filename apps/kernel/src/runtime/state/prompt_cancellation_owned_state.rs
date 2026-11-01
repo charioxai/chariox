@@ -238,14 +238,13 @@ impl KernelRuntimeOwnedState {
                 "advance queued prompt after cancellation",
             )
         };
-        let started_next = if advance_queue
-            && provider_account_available
+        let queue_head_promotable = provider_account_available
             && !hold_queued_prompts
             && self
                 .prompt_state_owner
                 .active_prompt_for_agent(&self.session_store.get_session(session_id)?, agent_id)
-                .is_none()
-        {
+                .is_none();
+        let started_next = if advance_queue && queue_head_promotable {
             let next_prompt = self
                 .prompt_state_owner
                 .peek_next_queued_prompt(&self.session_store.get_session(session_id)?, agent_id);
@@ -391,7 +390,12 @@ impl KernelRuntimeOwnedState {
             },
             released_claim,
             dispatch,
-            queue_head_deferred: !advance_queue,
+            queue_head_deferred: !advance_queue
+                && queue_head_promotable
+                && self
+                    .prompt_state_owner
+                    .peek_next_queued_prompt(&self.session_store.get_session(session_id)?, agent_id)
+                    .is_some(),
         })
     }
 

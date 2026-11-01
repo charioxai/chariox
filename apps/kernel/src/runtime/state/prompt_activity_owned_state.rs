@@ -401,15 +401,21 @@ impl KernelRuntimeOwnedState {
                         .push((settlement, prompt.clone()));
                 }
                 let _ = self.workflow_cancel_prompt(&finished.session_id, &prompt);
+                // The queue head may be a workflow node that needs a prepared run. This owned
+                // state cannot prepare one, so the head stays queued for the shared promotion.
                 if let Ok(cancellation) = self
-                    .finalize_local_prompt_cancellation_with_queued_advance(
+                    .finalize_local_prompt_cancellation_deferring_queue_head(
                         &finished.session_id,
                         &agent_id,
                         &finished.prompt_id,
                         Some(&finished.provider_run_id),
                     )
                 {
-                    follow_ups.local.extend(cancellation.dispatch);
+                    if cancellation.queue_head_deferred {
+                        follow_ups
+                            .project_queue_promotions
+                            .push((finished.session_id.clone(), agent_id.clone()));
+                    }
                 }
             }
         }
