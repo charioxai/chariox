@@ -146,6 +146,39 @@ impl KernelRuntimeState {
             .await
     }
 
+    /// The owner's hand-off save. The owner may replace a Vault value that has no record,
+    /// but never an existing credential record: only the same browser-only record is refreshed.
+    /// The check and the write share one lifecycle guard.
+    pub(in crate::runtime::state) async fn save_owner_handoff_credential(
+        &self,
+        service: &crate::secret::RuntimeSecretService,
+        registry: &crate::credential::CharioxCredentialRegistry,
+        mut credential: crate::config::UserCredentialConfig,
+        secret: &str,
+    ) -> Result<(), DaemonError> {
+        let _guard = self.vault_observation_mutation_guard().await;
+        if let Some(previous) = registry.get(&credential.id)? {
+            if previous.source != credential.source
+                || previous.allowed_hosts != credential.allowed_hosts
+                || previous.allowed_uses != credential.allowed_uses
+                || previous.injection != credential.injection
+            {
+                return Err(DaemonError::LocalTransport {
+                    operation: "credential_vault_upsert",
+                    message: format!(
+                        "credential `{}` already exists for another use; save under a different name",
+                        credential.id
+                    ),
+                });
+            }
+            credential.description = previous.description;
+            credential.metadata = previous.metadata;
+        }
+        self.upsert_vault_credential_locked(service, registry, credential, secret, true)
+            .await
+            .map(|_| ())
+    }
+
     /// The storage step of `upsert_observed_vault_credential`. The caller holds the Vault
     /// lifecycle write guard, so the registry it reads here is the one it writes.
     pub(in crate::runtime::state) async fn upsert_vault_credential_locked(
