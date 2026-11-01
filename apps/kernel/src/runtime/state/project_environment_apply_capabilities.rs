@@ -54,8 +54,8 @@ impl KernelRuntimeState {
             .owned
             .session_store
             .sessions_in_project(&env.local_project_id)
-            .into_iter()
-            .find(|s| s.owner_user_id() == owner)
+            .ok()
+            .and_then(|sessions| sessions.into_iter().find(|s| s.owner_user_id() == owner))
         else {
             return;
         };
@@ -90,7 +90,7 @@ impl KernelRuntimeState {
         for session in self
             .owned
             .session_store
-            .sessions_in_project(&env.local_project_id)
+            .sessions_in_project(&env.local_project_id)?
         {
             if !matching_scope(env, r, &session) {
                 continue;
