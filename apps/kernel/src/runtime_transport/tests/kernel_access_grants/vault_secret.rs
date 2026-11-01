@@ -585,6 +585,31 @@ async fn a_deleted_handle_leaves_its_vault_value_and_a_new_request_treats_it_as_
 }
 
 #[tokio::test]
+async fn a_bearer_token_longer_than_a_passkey_is_taken_and_stored_whole() {
+    let mut kernel = Kernel::start().await;
+    let mut holder = Client::start(&kernel.root);
+    grant(&mut kernel, &mut holder).await;
+    let set = serde_json::json!({"SetUserConfigValue":{"path":"secret_link.page_url","value":"https://page.test"}});
+    assert!(kernel.request(set).await["error"].is_null());
+    unlock(&mut kernel).await;
+
+    let token = format!("{CANARY}-{}", "t".repeat(1_000 - CANARY.len() - 1));
+    assert_eq!(token.chars().count(), 1_000);
+    let started = holder.request(request("long_token", false));
+    let id = started["response"]["VaultSecretRequested"]["interaction_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{started}"))
+        .to_owned();
+    let answered = kernel.request(answer(&id, "secret", Some(&token))).await;
+    assert!(answered["error"].is_null(), "{answered}");
+    kernel.secret_status(&mut holder, &id, "stored").await;
+    assert_eq!(
+        kernel.vault_value_sha256("long_token").await,
+        sha256_hex(&token)
+    );
+}
+
+#[tokio::test]
 async fn a_default_port_binding_is_accepted_and_usable_on_that_port_only() {
     let mut kernel = Kernel::start().await;
     let mut holder = Client::start(&kernel.root);
