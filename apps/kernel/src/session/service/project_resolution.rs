@@ -108,7 +108,10 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(created, retry);
-        assert!(service.sessions_in_project(created.id()).is_empty());
+        assert!(service
+            .sessions_in_project(created.id())
+            .unwrap()
+            .is_empty());
         assert!(service
             .prepare_project_resolution(Some(created.id()), "/src", "other", true, None)
             .is_err());
@@ -124,7 +127,10 @@ mod tests {
             .unwrap()
             .unwrap();
         service.restore_projects(vec![project.clone()]);
-        assert!(service.sessions_in_project(project.id()).is_empty());
+        assert!(service
+            .sessions_in_project(project.id())
+            .unwrap()
+            .is_empty());
         let session = service
             .create_session(CreateSessionRequest::new("/src", "/src").with_owner_user_id("owner"))
             .unwrap();

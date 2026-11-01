@@ -876,6 +876,7 @@ mod tests {
             .session_store
             .write()
             .sessions_in_project(saved.id())
+            .unwrap()
             .is_empty());
     }
 

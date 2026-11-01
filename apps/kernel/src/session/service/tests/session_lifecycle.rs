@@ -2229,6 +2229,7 @@ fn standalone_project_remains_visible_and_survives_empty_project_recovery() {
     assert!(service.list_visible_projects("other", true).is_empty());
     assert!(service
         .remove_projects_without_visible_sessions()
+        .unwrap()
         .is_empty());
     assert_eq!(service.durable_projects().len(), 1);
 }
@@ -2265,7 +2266,10 @@ fn review0440_standalone_survives_last_session_delete_and_unpublished_rollback()
         };
         assert!(removed.is_none());
         assert_eq!(service.list_visible_projects("owner", false).len(), 1);
-        assert!(service.sessions_in_project(project.id()).is_empty());
+        assert!(service
+            .sessions_in_project(project.id())
+            .unwrap()
+            .is_empty());
     }
 }
 #[cfg(unix)]
