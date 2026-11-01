@@ -988,7 +988,7 @@ pub enum RelayPeerRequest {
         /// agent. The worker keeps a drained projection until this acknowledges it.
         acknowledged_projection_sequence: u64,
     },
-    /// Peer 217: names the exact prompt it completes, like `CancelLeasedPrompt`.
+    /// Peer 391: names the exact prompt it completes, like `CancelLeasedPrompt`.
     CompleteLeasedPrompt {
         leased_agent_id: String,
         home_prompt_id: String,
