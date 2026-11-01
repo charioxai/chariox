@@ -417,7 +417,9 @@ pub use workspace::*;
 /// viewer that shows the page as video.
 /// Version 923 adds `UnlockCredentialVault`: the owner's own client unlocks the kernel's
 /// existing Vault with no session or agent (`CredentialVaultUnlocked`).
+/// Version 929 adds `RequestVaultSecret` and `GetVaultSecretStatus` for an outside agent that needs a Vault value
+/// the owner types in a connected client or on a link's page, and `PasskeyPromptKind::VaultSecret` for that popup.
 /// Landing union 923 carries 913 (`SessionState` `processes`), 917 (direct browser sessions over WebRTC),
 /// 919 (user-side browser frame stream removed, `display_ack` `paused`), 920 (mirror `document_mode`,
 /// `pointer_cursor`) and 923 (session-less Vault unlock).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 923;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 929;

@@ -6049,3 +6049,20 @@ time), shared by this request, the passkey check and the unlock prompt an agent'
 Clients need kernel protocol >=923 (`credentialVaultUnlockMinimumProtocolVersion` in the
 web). The managed-upgrade list is [629, 636, 923]. Focused checks:
 `cargo test -p chariox-kernel --lib vault_unlock` and `node --test scripts/protocol-versions.test.mjs`.
+
+### Vault value requests from an outside agent — local 929
+
+`RequestVaultSecret { credential_id, label, overwrite }` (grant holders on the local socket only; not forwarded
+to other kernels) answers `VaultSecretRequested { interaction_id, link, expires_at, credential_id }` at once and
+raises a Critical kernel-wide decision on the `kernel-access` scope: a `PasskeyPrompt` with `kind` `vault_secret`
+(`approve_choice_id` `secret`, `refuse_choice_id` `cancel`) that every owner terminal shows. The owner answers it with
+`RespondToInteraction { session_id: "kernel-access", interaction_id, choice_id: "secret", custom_reply: <value> }`
+(or `cancel`); a grant holder is refused for every choice, like any passkey prompt. The kernel stores the value in
+the Vault under `credential_id` (a new handle gets an `Authorization: Bearer ${secret}` header over HTTP; an existing
+one needs `overwrite`) and the agent reads only `GetVaultSecretStatus { interaction_id }` →
+`VaultSecretStatusReported { interaction_id, credential_id, status }` with `status` one of `pending`, `stored`,
+`cancelled`, `timed_out`. The value is never in a response, an event, the command cache, history or a log.
+`link` is `<page>/s/<kernel_id>/<interaction_id>`, `<page>` being `secret_link.page_url` (HTTPS, set by the owner only)
+or the origin of the enrolled Cloud; with neither the request fails with `secret_link_unavailable`. Other refusals:
+`vault_locked`, `secret_request_exists`, `secret_request_invalid`, `secret_request_denied`, `secret_request_unknown`.
+Focused checks: `cargo test -p chariox-kernel --lib vault_secret`.

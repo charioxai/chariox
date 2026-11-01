@@ -152,7 +152,7 @@ mod tests {
         let bytes = include_bytes!("protocol-639-241.json");
         assert_eq!(
             format!("{:x}", Sha256::digest(bytes)),
-            "eecafb8480f2b7ef574c6ab196cab7ea1574d402cddf349cb879ce920e4703c0"
+            "575580294210221ce0e39eaf50320b04888ebb8d1689b09d2f3dce16c6bb9a3f"
         );
         let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
         assert_eq!(
