@@ -218,16 +218,16 @@ export class BrowserCdpClient {
       // browser connection is re-established): it drops out of this
       // reconcile; a live Tab whose session went stale is attached again.
       const appTargets = new Map([...(this.appTabs?.apps?.values() ?? [])].map((app) => [app.targetId, app]));
-      const metricsFor = (target) => (appTargets.has(target.targetId) && this.appMetrics(appTargets.get(target.targetId).page))
-        || this.layoutMetrics(target.targetId, viewport);
+      const metricsFor = (target) => this.targetMetrics(target.targetId, viewport);
+      const projectedPages = pages.filter(target => !appTargets.get(target.targetId)?.background);
       // Window mode changes the available content area. Measure only after
       // Chromium has applied it, and retire page metrics when that mode changes.
       if (typeof browserBarVisible === "boolean") {
         const before = JSON.stringify([...this.browserBarApplied]);
-        await applyBrowserBar(connection, pages, appTargets, browserBarVisible, this.browserBarApplied);
+        await applyBrowserBar(connection, projectedPages, appTargets, browserBarVisible, this.browserBarApplied);
         if (before !== JSON.stringify([...this.browserBarApplied])) this.viewportByTarget.clear();
       }
-      const inspected = (await Promise.all(pages.map(async (target) => {
+      const inspected = (await Promise.all(projectedPages.map(async (target) => {
         try {
           return await this.inspectPage(connection, target, metricsFor(target), {visibleTargetId});
         } catch (error) {
@@ -668,6 +668,13 @@ export class BrowserCdpClient {
     return layout ? { ...viewport, css_width: layout.width, css_height: layout.height } : viewport;
   }
 
+  // What the Tab's page is configured with: beside the panel for an App Tab,
+  // the viewer layout for any other.
+  targetMetrics(targetId, viewport) {
+    const app = [...(this.appTabs?.apps?.values() ?? [])].find((open) => open.targetId === targetId);
+    return (app && this.appMetrics(app.page)) || this.layoutMetrics(targetId, viewport);
+  }
+
   layoutMetrics(targetId, viewport) {
     return { ...deviceMetricsFor(viewport, !!this.applyCanonicalDisplay), ...(this.layoutByTarget.get(targetId) ?? {}) };
   }
@@ -701,7 +708,8 @@ export class BrowserCdpClient {
   async applyLayout(targetId) {
     const connection = this.connection;
     if (!this.canonical || !connection) return;
-    if ([...(this.appTabs?.apps?.values() ?? [])].some((app) => app.targetId === targetId)) return;
+    // Room Apps keep their panel-sized page; tabbed user-domain Apps use the viewer layout.
+    if (this.appViewport && [...(this.appTabs?.apps?.values() ?? [])].some((app) => app.targetId === targetId)) return;
     const sessionId = await this.ensureTargetSession(connection, targetId);
     const metrics = this.layoutMetrics(targetId, this.canonical);
     const key = JSON.stringify(metrics);
@@ -1047,37 +1055,44 @@ export class BrowserCdpClient {
     }
     const sessionId = await this.ensureTargetSession(connection, targetId);
     try {
-      const result = await withBrowserActionFrame({
-        connection,
-        sessionId,
-        targetId,
-        documentId,
-        nodeRef: rawRequest?.node_ref,
-        action: rawRequest?.action,
-        timeoutMs: rawRequest?.timeout_ms,
-        signal,
-        withInput: operation => this.inputCapture.run(connection, sessionId, operation),
-      }, async options => {
-        if (rawRequest?.action?.kind === 'fill' && rawRequest.action.expected_document_url) {
-          const target = await recordBrowserFill(connection, {...options, browserGeneration:this.browserGeneration, trackingDocumentId:documentId, trackingNodeRef:rawRequest.node_ref}, rawRequest.action.text, ++this.fillRevision);
-          this.fillTargets.set(`${targetId}:${rawRequest.node_ref}`, target);
-          // MP-11: a new protected target ends every display lease before the value is typed.
-          retireNativeStates();
-          // MP-11: bind the completed value before releasing in-flight coverage.
-          // A failed action still fingerprints whatever it inserted; an
-          // unprovable completion keeps the fill pending (covered).
-          let result;
-          try { result = await performBrowserAction(options); }
-          catch (error) { await finishBrowserFill(connection, target).catch(() => {}); throw error; }
-          await finishBrowserFill(connection, target);
-          return result;
-        }
-        return performBrowserAction(options);
-      });
-      return {
-        browser_generation: this.browserGeneration,
-        ...result,
+      const dispatch = async (inputTimestamp, inputToken) => {
+        const result = await withBrowserActionFrame({
+          inputTimestamp, inputToken,
+          connection,
+          sessionId,
+          targetId,
+          documentId,
+          nodeRef: rawRequest?.node_ref,
+          action: rawRequest?.action,
+          timeoutMs: rawRequest?.timeout_ms,
+          signal,
+          withInput: operation => this.inputCapture.run(connection, sessionId, operation),
+        }, async options => {
+          if (rawRequest?.action?.kind === 'fill' && rawRequest.action.expected_document_url) {
+            const target = await recordBrowserFill(connection, {...options, browserGeneration:this.browserGeneration, trackingDocumentId:documentId, trackingNodeRef:rawRequest.node_ref}, rawRequest.action.text, ++this.fillRevision);
+            this.fillTargets.set(`${targetId}:${rawRequest.node_ref}`, target);
+            // MP-11: a new protected target ends every display lease before the value is typed.
+            retireNativeStates();
+            // MP-11: bind the completed value before releasing in-flight coverage.
+            // A failed action still fingerprints whatever it inserted; an
+            // unprovable completion keeps the fill pending (covered).
+            let result;
+            try { result = await performBrowserAction(options); }
+            catch (error) { await finishBrowserFill(connection, target).catch(() => {}); throw error; }
+            await finishBrowserFill(connection, target);
+            return result;
+          }
+          return performBrowserAction(options);
+        });
+        return {
+          browser_generation: this.browserGeneration,
+          ...result,
+        };
       };
+      const app = this.appTabs && [...this.appTabs.apps.values()].find(app => app.targetId === targetId);
+      return app && rawRequest.agent_id
+        ? await this.appTabs.input(app, rawRequest.agent_id, dispatch)
+        : await dispatch();
     } catch (error) {
       throw normalizeControllerError(error);
     }
@@ -1308,7 +1323,7 @@ export class BrowserCdpClient {
       if (request.browser_generation !== generation) throw new BrowserControllerError("stale_browser_generation", "Browser artifact needs the observed browser generation");
       const canonical = canonicalViewport(request.viewport);
       const viewport = this.layoutViewport(targetId, canonical);
-      const metricsKey = JSON.stringify(this.layoutMetrics(targetId, canonical));
+      const metricsKey = JSON.stringify(this.targetMetrics(targetId, canonical));
       const assertBound = async () => {
         const tree = await connection.send("Page.getFrameTree", {}, sessionId);
         if (connection !== this.connection || generation !== this.browserGeneration || tree?.frameTree?.frame?.loaderId !== documentId)
@@ -1676,7 +1691,8 @@ export class CdpConnection {
     const caller = {};
     Error.captureStackTrace(caller);
     return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
+      // App handlers remain owned until CDP answers or the connection retires.
+      const timeout = timeoutMs === null ? null : setTimeout(() => {
         this.pending.delete(id);
         const error = new BrowserControllerError(
           "browser_cdp_timeout",

@@ -114,7 +114,7 @@ Coordinator renumbering if merge order changes:
 
 ## Validation and reproduction
 
-Run `apps/cli/scripts/user-app-view-protocol-drill.mjs` with Rust 1.88.0, slot-run,
+Run `apps/cli/scripts/user-app-view-protocol-drill.mjs` with Rust 1.99.0, slot-run,
 four build jobs, a task-local CARGO_TARGET_DIR and external TMPDIR/evidence. It
 covers native no-session signed fixture/channel/passkey, close cancellation,
 Room regressions, protocol hashes and shared request/SDK paths. Also run focused

@@ -353,6 +353,7 @@ pub(crate) enum RoomBrowserControllerCommand {
     },
     Action {
         execution_id: String,
+        agent_id: Option<String>,
         target_id: String,
         document_id: String,
         node_ref: String,
@@ -361,6 +362,7 @@ pub(crate) enum RoomBrowserControllerCommand {
     },
     RecoverAction {
         execution_id: String,
+        agent_id: Option<String>,
         target_id: String,
         document_id: String,
         node_ref: String,

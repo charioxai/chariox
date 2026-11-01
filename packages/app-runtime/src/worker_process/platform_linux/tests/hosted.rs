@@ -128,7 +128,8 @@ fn hosted_native_worker_uses_production_cgroup_and_observer() {
             heap_mib: 64,
             v8_threads: 1,
             max_file_bytes: 1048576,
-        },
+        }
+        .into(),
         _objects: vec![],
         domain: Box::new(ObservedDomain(domain)),
     };

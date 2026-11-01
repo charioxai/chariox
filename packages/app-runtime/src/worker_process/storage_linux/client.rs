@@ -81,8 +81,15 @@ fn connect(uid: u32) -> Result<UnixStream> {
 /// interrupted deletion; absent storage is already deleted.
 pub(in crate::worker_process) fn delete(owner: &str, installation: &str) -> Result<()> {
     let uid = unsafe { libc::geteuid() };
+    // The helper never admits root-owned installations. A v2-only host may
+    // also have no legacy storage/helper at all.
     if uid == 0 {
-        return Err(Error::Identity);
+        return Ok(());
+    }
+    match std::fs::symlink_metadata(ROOT) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+        Ok(_) => {}
     }
     let request = model::Request::Delete {
         owner: owner.into(),

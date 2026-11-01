@@ -85,7 +85,7 @@ jobs:
         # scripts/slice-capture-preflight.test.py compiles its harness with rustc.
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.88.0
+          toolchain: 1.99.0
 
       - name: Install Python test dependencies
         # python3-pil: observation masks. python3-av/ffmpeg: browser display codec tests.
@@ -180,7 +180,7 @@ jobs:
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.88.0
+          toolchain: 1.99.0
           components: rustfmt, clippy
 
       - name: Set up Node.js

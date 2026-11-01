@@ -24,7 +24,7 @@ const toolchainLock = JSON.parse(await readFile(
 test("publication image copies compile-time workflow examples before building the kernel", () => {
   assert.match(workflowCode, /include_str!\("\.\.\/\.\.\/\.\.\/examples\/workflow-code\//)
 
-  const rustStageStart = dockerfile.indexOf("FROM rust:1.88-bookworm@sha256:")
+  const rustStageStart = dockerfile.indexOf("FROM rust:1.99.0-bookworm@sha256:")
   const nextStageStart = dockerfile.indexOf("\nFROM ", rustStageStart + 1)
   assert.notEqual(rustStageStart, -1)
   assert.notEqual(nextStageStart, -1)
@@ -41,13 +41,13 @@ test("publication Rust stage copies the deploy files the kernel embeds at compil
   const source = await readFile(new URL("../apps/kernel/src/runtime/ssh_machine_control.rs", import.meta.url), "utf8")
   const embedded = [...source.matchAll(/include_str!\("(?:\.\.\/)+(deploy\/managed-kernel\/[^"]+)"\)/g)].map((match) => match[1])
   assert.ok(embedded.length > 0)
-  const rustStageStart = dockerfile.indexOf("FROM rust:1.88-bookworm@sha256:")
+  const rustStageStart = dockerfile.indexOf("FROM rust:1.99.0-bookworm@sha256:")
   const rustStage = dockerfile.slice(rustStageStart, dockerfile.indexOf("\nFROM ", rustStageStart + 1))
   for (const path of embedded) assert.ok(rustStage.includes(`COPY ${path} ${path}`), `the Rust stage must copy ${path}`)
 })
 
 test("publication Rust build consumes the workspace lock and every kernel path dependency", () => {
-  const rustStageStart = dockerfile.indexOf("FROM rust:1.88-bookworm@sha256:")
+  const rustStageStart = dockerfile.indexOf("FROM rust:1.99.0-bookworm@sha256:")
   const nextStageStart = dockerfile.indexOf("\nFROM ", rustStageStart + 1)
   const rustStage = dockerfile.slice(rustStageStart, nextStageStart)
   const kernelBuild = rustStage.indexOf("cargo build --locked --manifest-path apps/kernel/Cargo.toml")
@@ -61,6 +61,8 @@ test("publication Rust build consumes the workspace lock and every kernel path d
     "COPY packages/aegs-sdk packages/aegs-sdk",
     "COPY packages/app-package packages/app-package",
     "COPY packages/app-runtime packages/app-runtime",
+    "COPY packages/app-wit packages/app-wit",
+    "COPY packages/app-wasm-worker packages/app-wasm-worker",
     "COPY packages/app-sdk packages/app-sdk",
   ]) {
     const copy = rustStage.indexOf(requiredCopy)
@@ -73,7 +75,7 @@ test("publication Rust build consumes the workspace lock and every kernel path d
     [...kernelCargo.matchAll(/^\s*[\w-]+\s*=\s*\{[^\n}]*path\s*=\s*"([^"]+)"/gm)].map((match) => match[1]),
   )]
   assert.deepEqual(kernelPathDependencies.sort(), [
-    "../../packages/aegs-sdk", "../../packages/app-package", "../../packages/app-runtime", "../../packages/event-protocol", "../relay",
+    "../../packages/aegs-sdk", "../../packages/app-package", "../../packages/app-runtime", "../../packages/app-wasm-worker", "../../packages/event-protocol", "../relay",
   ])
   assert.match(
     rustStage,
@@ -89,7 +91,7 @@ test("publication Rust build consumes the workspace lock and every kernel path d
 })
 
 test("publication Rust build defaults to one Cargo job and accepts an explicit build input", () => {
-  const rustStageStart = dockerfile.indexOf("FROM rust:1.88-bookworm@sha256:")
+  const rustStageStart = dockerfile.indexOf("FROM rust:1.99.0-bookworm@sha256:")
   const nextStageStart = dockerfile.indexOf("\nFROM ", rustStageStart + 1)
   const rustStage = dockerfile.slice(rustStageStart, nextStageStart)
 

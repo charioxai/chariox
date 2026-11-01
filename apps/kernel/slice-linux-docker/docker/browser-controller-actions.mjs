@@ -27,6 +27,8 @@ export async function performBrowserAction({
   sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
   assertContext = async () => {},
   withInput = operation => operation(),
+  inputTimestamp,
+  inputToken,
 }) {
   const backendNodeId = parseBackendNodeReference(nodeRef);
   const normalizedAction = normalizeAction(action);
@@ -69,6 +71,8 @@ export async function performBrowserAction({
           geometry,
           normalizedAction,
           signal,
+          inputTimestamp,
+          inputToken,
         ));
         releaseInBackground = actionResult.dialogOpened;
         return {
@@ -378,6 +382,8 @@ async function executeAction(
   geometry,
   action,
   signal,
+  inputTimestamp,
+  inputToken,
 ) {
   assertNotCancelled(signal);
   if (action.kind === "click") {
@@ -392,32 +398,55 @@ async function executeAction(
       }
     };
     return {
-      dialogOpened: await dispatchClick(connection, sessionId, geometry.x, geometry.y, signal, assertTarget),
+      dialogOpened: await dispatchClick(connection, sessionId, geometry.x, geometry.y, signal, assertTarget, inputTimestamp),
     };
   }
   if (action.kind === "submit") {
-    await submitNearestForm(connection, sessionId, objectId);
+    await submitNearestForm(connection, sessionId, objectId, inputToken);
     return { dialogOpened: false };
   }
   if (action.expectedDocumentUrl !== null) {
-    await secureFillElement(connection, sessionId, objectId, action);
+    await secureFillElement(connection, sessionId, objectId, action, inputToken);
     return { dialogOpened: false };
   }
   await focusElement(connection, sessionId, objectId, !action.append);
   assertNotCancelled(signal);
-  if (action.text) {
+  if (inputToken && (action.text || !action.append)) {
+    const edited = await connection.send("Runtime.callFunctionOn", {
+      objectId,
+      functionDeclaration: `function(text, token) { this.ownerDocument.defaultView.__charioxViewInput.edit(this, text, token); }`,
+      arguments: [{value:action.text},{value:inputToken}],
+      returnByValue:true,
+    }, sessionId);
+    if (edited.exceptionDetails) throw new BrowserActionError("browser_action_failed", "App text edit failed");
+  } else if (action.text) {
     await connection.send("Input.insertText", { text: action.text }, sessionId);
   } else if (!action.append) {
     await dispatchBackspace(connection, sessionId);
   }
   if (action.submit) {
     assertNotCancelled(signal);
-    await submitNearestForm(connection, sessionId, objectId);
+    await submitNearestForm(connection, sessionId, objectId, inputToken);
   }
   return { dialogOpened: false };
 }
 
-async function secureFillElement(connection, sessionId, objectId, action) {
+// The fill runs in an isolated world that cannot reach the App view's caller
+// bridge, so the bridge in the page's own world tags the events it dispatches.
+async function secureFillElement(connection, sessionId, objectId, action, inputToken) {
+  if (!inputToken) return fillSecret(connection, sessionId, objectId, action);
+  const bridge = method => connection.send("Runtime.evaluate", {
+    expression: `globalThis.__charioxViewInput.${method}(${JSON.stringify(inputToken)})`, returnByValue: true,
+  }, sessionId);
+  if ((await bridge("armVaultFill")).exceptionDetails) {
+    throw new BrowserActionError("browser_action_failed", "App input caller unavailable; reopen the App");
+  }
+  try { await fillSecret(connection, sessionId, objectId, action); }
+  // A page that navigated away has no armed fill left to clear.
+  finally { await bridge("clearVaultFill").catch(() => {}); }
+}
+
+async function fillSecret(connection, sessionId, objectId, action) {
   const response = await connection.send(
     "Runtime.callFunctionOn",
     {
@@ -508,9 +537,11 @@ async function secureFillElement(connection, sessionId, objectId, action) {
           }
           setter.call(this, nextValue);
         }
-        this.dispatchEvent(new ownerWindow.Event("input", { bubbles: true, composed: true }));
+        const inputEvent = new ownerWindow.Event("input", { bubbles: true, composed: true });
+        this.dispatchEvent(inputEvent);
         if (!restoreMaskAfterHandler()) return { ok: false, reason: "target_not_masked" };
-        this.dispatchEvent(new ownerWindow.Event("change", { bubbles: true }));
+        const changeEvent = new ownerWindow.Event("change", { bubbles: true });
+        this.dispatchEvent(changeEvent);
         if (!restoreMaskAfterHandler()) return { ok: false, reason: "target_not_masked" };
         if (submit) {
           // Form controls named submit/requestSubmit must not shadow DOM methods.
@@ -585,18 +616,20 @@ async function secureFillElement(connection, sessionId, objectId, action) {
   }
 }
 
-async function submitNearestForm(connection, sessionId, objectId) {
+async function submitNearestForm(connection, sessionId, objectId, inputToken) {
   const response = await connection.send(
     "Runtime.callFunctionOn",
     {
       objectId,
-      functionDeclaration: `function() {
+      functionDeclaration: `function(inputToken) {
         const form = this.form || this.closest?.("form");
         if (!form) return { ok: false, reason: "form_not_found" };
-        if (typeof form.requestSubmit === "function") form.requestSubmit();
+        if (inputToken) this.ownerDocument.defaultView.__charioxViewInput.submit(form, inputToken);
+        else if (typeof form.requestSubmit === "function") form.requestSubmit();
         else form.submit();
         return { ok: true };
       }`,
+      ...(inputToken ? { arguments: [{ value: inputToken }] } : {}),
       returnByValue: true,
       awaitPromise: false,
     },
@@ -610,9 +643,10 @@ async function submitNearestForm(connection, sessionId, objectId) {
   }
 }
 
-async function dispatchClick(connection, sessionId, x, y, signal, assertTarget = async () => {}) {
+async function dispatchClick(connection, sessionId, x, y, signal, assertTarget = async () => {}, inputTimestamp) {
+  const dispatch = params => dispatchMouseEvent(connection, sessionId, { ...params, ...(inputTimestamp === undefined ? {} : { timestamp: inputTimestamp }) });
   await assertTarget();
-  if (await dispatchMouseEvent(connection, sessionId, { type: "mouseMoved", x, y })) {
+  if (await dispatch({ type: "mouseMoved", x, y })) {
     return true;
   }
   assertNotCancelled(signal);
@@ -620,7 +654,7 @@ async function dispatchClick(connection, sessionId, x, y, signal, assertTarget =
   // Revalidate after mouse movement, immediately before the button press.
   await assertTarget();
   assertNotCancelled(signal);
-  if (await dispatchMouseEvent(connection, sessionId, {
+  if (await dispatch({
     type: "mousePressed",
     x,
     y,
@@ -629,7 +663,7 @@ async function dispatchClick(connection, sessionId, x, y, signal, assertTarget =
   })) {
     return true;
   }
-  const dialogOpened = await dispatchMouseEvent(connection, sessionId, {
+  const dialogOpened = await dispatch({
     type: "mouseReleased",
     x,
     y,

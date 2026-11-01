@@ -1,3 +1,4 @@
+import { AppTabs } from './browser-controller-apps.mjs';
 import {resolveDisplayTarget,nativeStateObservationOptions} from './kernel-browser-display-document.mjs';
 import {capturePageScreenshot} from './kernel-browser-screenshot.mjs';
 import { mirror2ObserverExpression } from './kernel-browser-mirror2-observer.mjs';
@@ -29,7 +30,7 @@ import { ChromeWindows, InputArbiter } from "./kernel-browser-chrome-window.mjs"
 import { StateSignal, stateChangingEvent } from "./kernel-browser-state-signal.mjs";
 import { redactObservation } from "./browser-controller-snapshot.mjs";
 import {resizeBrowserPage} from './kernel-browser-resize.mjs';
-import { inputHostTab } from "./kernel-browser-input.mjs";
+import { TextInsertionRefused, inputHostTab } from "./kernel-browser-input.mjs";
 import { BusyInputQueue, lateInputAck, markDispatched } from "./kernel-browser-input-queue.mjs";
 import { BrowserPopupEvidence, popupActionId } from "./kernel-browser-popup-evidence.mjs";
 import { assertNotCancelled, BrowserActionError } from "./browser-controller-actions.mjs";
@@ -58,7 +59,7 @@ export function scheduleHostRequest(request, browser, viewport = hostViewport(),
   // A state poll waits for every page's reconcile: once the viewport is applied
   // it only observes, so input does not queue behind it.
   // Ending a person's parked input never waits behind a browser operation: its authority is already gone.
-  return ['browser.app.calls','browser.app.respond','host.browser.retire_input','host.browser.retire_observer'].includes(request.method) || request.method === 'host.browser' && request.params?.op === 'dialog' ||
+  return ['browser.app.calls','browser.app.respond','browser.app.agent','host.browser.retire_input','host.browser.retire_observer'].includes(request.method) || request.method === 'host.browser' && request.params?.op === 'dialog' ||
     ['host.browser','host.computer'].includes(request.method) && (request.params?.op === 'screenshot' &&
     typeof request.params.display_subscription_id === 'string' || request.params?.op === 'mirror_next' && typeof request.params.subscription_id === 'string' ||
     (request.params?.op === 'state' || request.params?.op === 'display_subscribe' && (request.params.target || nativeDesktop && request.method === 'host.browser')) && browser?.canReconcileConcurrently?.(viewport) === true ||
@@ -245,6 +246,7 @@ export class KernelBrowserHost {
     try{await this.nativeComputer.primeKeyboard();}catch(error){await this.chromium.stop(connection,{preserveDesktop});throw error;}
     assertNotCancelled(signal);
     this.browser = this.browserFactory(connection);
+    this.browser.appTabs = new AppTabs(this.browser, { windowMode: "tabbed" });
     this.browser.pageTiming = this.timing;
     this.browser.visitedLinks = this.visitedLinks;
     connection.presentationFence?.bindOwner?.(this.browser, this.timing);
@@ -360,6 +362,14 @@ export class KernelBrowserHost {
   layoutRevision(tabId) { return this.layoutRevisions.get(tabId) ?? 0; }
   async setLayout(tab, subscriptionId, layout) {
     if(subscriptionId!=='resize'&&this.layouts.get(tab.tab_id)?.subscriptionId==='resize')return;
+    if(this.chromium.desktop) {
+      const native=await this.browser.nativeViewport?.(tab.target_id);
+      if(native?.target_id!==tab.target_id||![native?.width,native?.height].every(n=>Number.isSafeInteger(n)&&n>=2))throw new UserDomainRefusal('stale_reference');
+      // The shared desktop includes Chrome's band and window decorations.
+      // Emulation beyond its real page produces uncapturable canvas margins.
+      const requested=layout??{width:this.viewport().css_width,height:this.viewport().css_height};
+      layout={width:Math.min(requested.width,2*Math.floor(native.width/2)),height:Math.min(requested.height,2*Math.floor(native.height/2))};
+    }
     const before = this.pageSize(tab.tab_id);
     await this.browser.setLayout?.(tab.target_id, layout);
     if (layout) this.layouts.set(tab.tab_id, { ...layout, subscriptionId }); else this.layouts.delete(tab.tab_id);
@@ -767,7 +777,7 @@ export class KernelBrowserHost {
           typeof command.dialog_id !== "string" || !this.browser.dialogDefaults?.current(tab.target_id, command.dialog_id, command.document_id)) {
         throw new BrowserActionError("browser_dialog_invalid", "browser dialog is no longer pending; read the current browser state");
       }
-      this.appAgent(tab, command, true);
+      this.appForInput(tab, command, true);
       await this.browser.handleDialog({ ...command, target_id: tab.target_id }, { signal });
       this.stateSignal.notify();
       return this.observe(this.tabState(), null, scope);
@@ -854,7 +864,7 @@ export class KernelBrowserHost {
       ? await slowMark(this.timing, 'input_wait display_target', this.displayTarget(command,nativeInputDocumentTarget(this,command,scope,nativeDisplay),INPUT_DOCUMENT_WAIT_MS)) : await this.target(command);
     assertNotCancelled(signal);
     if (agentRequest && ["input", "navigate"].includes(command.op) && extensionManagementUrl(tab.url)) throw new Error(EXTENSIONS_REFUSED);
-    const { app, agent } = this.appAgent(tab, command, ["input", "navigate", "close", "resize"].includes(command.op));
+    const app = this.appForInput(tab, command, ["input", "navigate", "close", "resize"].includes(command.op));
     // The page stays on its origin.
     if (app && command.op === "navigate" && new URL(navigationUrl(command.url)).origin !== app.origin) {
       throw new UserDomainRefusal("not_granted");
@@ -896,8 +906,7 @@ export class KernelBrowserHost {
       return state;
     }
     if (command.op === "navigate") {
-      // MP-08/MP-11: an agent's navigation is its input to the App Tab too.
-      if (app && agent) this.browser.appTabs.noteAgent(tab.target_id, agent);
+      if (app) this.browser.appTabs.noteActivity(tab.target_id);
       // MP-08/MP-10/MP-11: a human navigation selects this owned desktop tab.
       // Retire native claims before physical focus can show a different page.
       if(this.chromium.desktop&&!command._agent_input&&!command.focused_agent){
@@ -923,6 +932,7 @@ export class KernelBrowserHost {
     }
     if (command.op === "snapshot") return this.observe({ generation: this.generation, snapshot: await this.browser.snapshot(binding) }, tab, scope);
     if (command.op === "input") {
+      if (app) this.browser.appTabs.noteActivity(tab.target_id);
       const observed = command.document_id ?? (command.focused_agent ? null : this.observedDocuments.get(scope)?.get(tab.tab_id));
       if (!observed || observed !== tab.document_id) throw new UserDomainRefusal("stale_reference");
       const at = timestamp();
@@ -939,7 +949,7 @@ export class KernelBrowserHost {
         // The cached target can still match while a late native window fold
         // changed Chrome's selection. Reconcile checks the live native target
         // before activating, so ordinary keys do not refocus an active tab.
-        if (!agent && !command._agent_input && !command.focused_agent) {
+        if (!agentRequest) {
           this.pendingActive = {tab_id:tab.tab_id,app_origin:origin,apps:intent?.apps ?? [],until:intent?.until ?? Date.now()};
         }
       };
@@ -952,8 +962,6 @@ export class KernelBrowserHost {
         this.inputEpochs.set(tab.tab_id, (this.inputEpochs.get(tab.tab_id) ?? 0) + 1);
         (nativeDisplay?.regionSource??this.compositors.get(tab.tab_id)?.source)?.wake?.();
       };
-      // MP-08/MP-11: before the page can see it, so every call it causes runs as the agent.
-      if (app && agent) this.browser.appTabs.noteAgent(tab.target_id, agent);
       try {
         // MP-08/MP-10/MP-11: agent and ordinary input must await CDP's ack,
         // including the lifetime of hidden-target focus emulation. Only an
@@ -972,7 +980,10 @@ export class KernelBrowserHost {
         const laneAt=timestamp();
         const deferred=await this.sampleLane(tab).run("input", async () => {
           if(timestamp()-laneAt>250)this.timing('input_wait sample_lane',laneAt);
-          const result=await this.popupEvidence.capture(this.browser, tab, popupActionId(command), beginDispatch => inputHostTab(this.browser, tab, command.input, { signal, inputGuard, documentCurrent, chromeFocused: () => Boolean(this.arbiter?.chromeFocus), slow: (name, operation) => slowMark(this.timing, `input_wait ${name}`, operation), onDispatch: () => { onDispatch(); return beginDispatch(); }, viewport:{css_width:this.pageSize(tab.tab_id).width,css_height:this.pageSize(tab.tab_id).height}, asyncScroll: ()=>viewerActive()&&(handoverOrdered||owned?.attested&&typeof owned.valid==='function'&&owned.valid()), nativeWheel, nativeClick, nativeKey, resolveMirror: input => this.mirror.resolveInput(tab,input,scope,signal) }));
+          const dispatch = (inputTimestamp, inputToken) => this.popupEvidence.capture(this.browser, tab, popupActionId(command), beginDispatch => inputHostTab(this.browser, tab, command.input, { signal, inputTimestamp, inputToken, inputGuard, documentCurrent, chromeFocused: () => Boolean(this.arbiter?.chromeFocus), slow: (name, operation) => slowMark(this.timing, `input_wait ${name}`, operation), onDispatch: () => { onDispatch(); return beginDispatch(); }, viewport:{css_width:this.pageSize(tab.tab_id).width,css_height:this.pageSize(tab.tab_id).height}, asyncScroll: ()=>viewerActive()&&(handoverOrdered||owned?.attested&&typeof owned.valid==='function'&&owned.valid()), nativeWheel, nativeClick, nativeKey, resolveMirror: input => this.mirror.resolveInput(tab,input,scope,signal) }));
+          const result = app && agentRequest
+            ? await this.browser.appTabs.input(app, scope.startsWith('agent:') ? scope.slice(6) : null, dispatch)
+            : await dispatch();
           rememberSelection();
           return result;
         });
@@ -985,8 +996,8 @@ export class KernelBrowserHost {
       }
       catch (error) {
         if (dispatched) markDispatched(error);
-        // A busy renderer that is only late to acknowledge a CDP press/release (both already queued in order) leaves nothing held: it must not take the browser down.
-        if ((dispatched && !lateInputAck(error) || ["browser_action_cancelled", "stale_document_reference"].includes(error?.code)) && this.isBrowserLive(browserAtStart)) {
+        // Late CDP acknowledgements and definitive text refusals leave nothing held; neither needs a browser reset.
+        if ((dispatched && !lateInputAck(error) && !(error instanceof TextInsertionRefused) || ["browser_action_cancelled", "stale_document_reference"].includes(error?.code)) && this.isBrowserLive(browserAtStart)) {
           // Clear any dispatched key/button state before another actor can use
           // the browser. Recovery rotates generation; cancelled input never replays.
           await this.stop();
@@ -1021,12 +1032,10 @@ export class KernelBrowserHost {
   }
   // MP-08/MP-11: an agent drives an App Tab as itself, only after the kernel
   // claimed that App view in the agent's own grant.
-  appAgent(tab, command, drives) {
+  appForInput(tab, command, drives) {
     const app = [...(this.browser.appTabs?.apps?.values() ?? [])].find(open => open.targetId === tab.target_id);
-    const agent = command.focused_agent || command._agent_input
-      ? /^agent:(.+)$/.exec(String(command.observed_by ?? ""))?.[1] ?? "unattributed-agent" : null;
-    if (app && drives && agent && command._app_view_tab !== tab.tab_id) throw new UserDomainRefusal("not_granted");
-    return { app, agent };
+    if (app && drives && (command.focused_agent || command._agent_input) && command._app_view_tab !== tab.tab_id) throw new UserDomainRefusal("not_granted");
+    return app;
   }
   async handle(request, { signal } = {}) {
     const browserAtEntry = this.browser;
@@ -1052,11 +1061,10 @@ export class KernelBrowserHost {
         if (this.protection.unknown) throw new Error("MD-5: observation registry unavailable");
         const tab = await this.target(request.params);
         if (tab.document_id !== request.params.document_id) throw new UserDomainRefusal("stale_reference");
-        // MP-08/MP-11: a Vault fill is the agent's input to an App Tab too,
-        // recorded before the field's input/change handlers can run.
-        const { app, agent } = this.appAgent(tab, request.params, true);
-        if (app && agent) this.browser.appTabs.noteAgent(tab.target_id, agent);
+        // Check the App view claim before dispatching the fill.
+        const app = this.appForInput(tab, request.params, true);
         const action = codeInput ? { ...request.params.action, mask_code_input: true } : request.params.action;
+        if (app) this.browser.appTabs.noteActivity(tab.target_id);
         await this.sampleLane(tab).run("input", () => this.browser.performAction({ target_id: tab.target_id, document_id: tab.document_id,
           node_ref: request.params.node_ref, action, timeout_ms: 10_000 }, { signal }));
         await this.save();
@@ -1160,6 +1168,7 @@ export class KernelBrowserHost {
         if (result.ok) {
           await this.reconcile();
           if (request.method === "browser.app.open") {
+            await this.rebindWindows();
             result.result.tab_id = [...this.tabs.values()].find(tab => tab.target_id === result.result.target_id)?.tab_id;
             result.result.generation = this.generation;
           }

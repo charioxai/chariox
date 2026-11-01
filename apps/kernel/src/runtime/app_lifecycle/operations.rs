@@ -236,6 +236,56 @@ impl AppLifecycleService {
         let _operation_guard = self.0.operation(key.clone())?;
         self.stop_under_gate(owner, installation, key)
     }
+    /// A declined or cancelled install request. A first install has no
+    /// release to keep, so it ends like a user stop. An update leaves the
+    /// installed generation alone: only a replacement start owned by this
+    /// request is cancelled, and a generation it already drained starts again
+    /// on demand.
+    pub(crate) fn cancel_install_blocking(
+        &self,
+        owner: &str,
+        installation: &str,
+        request_id: &str,
+        update: bool,
+    ) -> Result<()> {
+        if !update {
+            return self.stop_blocking(owner, installation);
+        }
+        if self.0.stopped.load(Ordering::Acquire) {
+            return Err(LifecycleError::Stopped);
+        }
+        for value in [owner, installation] {
+            if value.is_empty() || value.len() > 128 || value.chars().any(char::is_control) {
+                return Err(LifecycleError::Authority);
+            }
+        }
+        let key = (owner.into(), installation.into());
+        let _operation_guard = self.0.operation(key.clone())?;
+        let replacement = self
+            .0
+            .entries
+            .lock()
+            .map_err(|_| LifecycleError::Supervisor)?
+            .get(&key)
+            .filter(|entry| entry.control.first_request.as_deref() == Some(request_id))
+            .cloned();
+        if let Some(entry) = replacement {
+            entry.control.cancel(false);
+            entry.join();
+            let mut entries = self
+                .0
+                .entries
+                .lock()
+                .map_err(|_| LifecycleError::Supervisor)?;
+            if entries
+                .get(&key)
+                .is_some_and(|current| Arc::ptr_eq(current, &entry))
+            {
+                entries.remove(&key);
+            }
+        }
+        Ok(())
+    }
     pub(super) fn stop_under_gate(&self, owner: &str, installation: &str, key: Key) -> Result<()> {
         // A manual stop ends on-demand use too; its tools leave the catalog.
         self.0.publisher.forget_dormant(owner, installation);

@@ -3,7 +3,7 @@
 This B6 drill uses a fresh owned QEMU VM. It never changes the builder's runtime
 enrollment, AppArmor profiles, storage helper, domains, or provider accounts.
 Run QEMU, Cargo and other heavy commands through the builder's `slot-run` helper.
-Rust 1.88.0 is the baseline. No hosted-CI environment is synthesized.
+Rust 1.99.0 is the baseline. No hosted-CI environment is synthesized.
 
 The included fixture is a signed **text graph**. It verifies installer mechanics:
 trust/digest refusal, normal root provisioning, idempotency, upgrades, runtime

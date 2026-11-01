@@ -1,0 +1,29 @@
+package chariox:app@1.0.0;
+
+// R3, R6, L1/L2: exactly the WASI 0.2.0 runtime compatibility surface.
+// No sockets, terminal, process, environment or incoming HTTP interfaces.
+world wasi-compat {
+  import wasi:io/error@0.2.0;
+  import wasi:io/poll@0.2.0;
+  import wasi:io/streams@0.2.0;
+  import wasi:clocks/monotonic-clock@0.2.0;
+  import wasi:clocks/wall-clock@0.2.0;
+  import wasi:random/random@0.2.0;
+  import wasi:filesystem/types@0.2.0;
+  import wasi:filesystem/preopens@0.2.0;
+  import wasi:cli/stdout@0.2.0;
+  import wasi:cli/stderr@0.2.0;
+  import wasi:http/types@0.2.0;
+  import wasi:http/outgoing-handler@0.2.0;
+}
+
+// Install-time upper bounds; use `app` for SDK bindings.
+world app-admission {
+  include app;
+  include wasi-compat;
+}
+
+// Migration code can access only transactional state, never HTTP/files/host.
+world app-migrations-admission {
+  include migration;
+}

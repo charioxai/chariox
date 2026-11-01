@@ -97,7 +97,7 @@ pub fn run_cli(args: &[String]) -> Result<Value> {
             && args[1] == "--help"
             && matches!(
                 args[0].as_str(),
-                "create" | "keygen" | "manifest" | "pack" | "validate" | "inspect"
+                "create" | "keygen" | "manifest" | "pack" | "dev-pack" | "validate" | "inspect"
             ))
     {
         return Ok(json!({"usage":usage()}));
@@ -196,6 +196,20 @@ pub fn run_cli(args: &[String]) -> Result<Value> {
                 json!({"status":"manifest-created","manifest":manifest,"output":args.required("--output")?}),
             )
         }
+        "dev-pack" => {
+            let args = Arguments::parse(
+                rest,
+                &["--bundle", "--manifest", "--output", "--kernel-protocol"],
+                0,
+            )?;
+            args.protocol()?;
+            super::pack_dev_directory(
+                Path::new(args.required("--bundle")?),
+                Path::new(args.required("--manifest")?),
+                Path::new(args.required("--output")?),
+                &limits,
+            )
+        }
         "pack" => {
             let args = Arguments::parse(
                 rest,
@@ -208,7 +222,18 @@ pub fn run_cli(args: &[String]) -> Result<Value> {
                 ],
                 0,
             )?;
-            let manifest = read_manifest(Path::new(args.required("--manifest")?), &limits)?;
+            let path = Path::new(args.required("--manifest")?);
+            if super::v2::is_manifest(path, &limits)? {
+                args.protocol()?;
+                return super::v2::pack_directory(
+                    Path::new(args.required("--bundle")?),
+                    path,
+                    Path::new(args.required("--key")?),
+                    Path::new(args.required("--output")?),
+                    &limits,
+                );
+            }
+            let manifest = read_manifest(path, &limits)?;
             output(pack_directory(
                 Path::new(args.required("--bundle")?),
                 &manifest,
@@ -221,6 +246,12 @@ pub fn run_cli(args: &[String]) -> Result<Value> {
         "validate" => {
             let args = Arguments::parse(rest, &["--trust", "--kernel-protocol"], 1)?;
             let publisher = read_publisher(Path::new(args.required("--trust")?), &limits)?;
+            args.protocol()?;
+            if let Some(report) =
+                super::v2::validate_archive(Path::new(args.positional[0]), &publisher, &limits)?
+            {
+                return Ok(report);
+            }
             output(validate_archive(
                 Path::new(args.positional[0]),
                 &publisher,

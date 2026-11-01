@@ -251,7 +251,7 @@ def main():
                              "--filter", "@chariox/shell...", "--filter", "@chariox/cli..."])
         run("shell-build", ["pnpm", "--filter", "@chariox/shell", "run", "build"])
         run("cli-build", ["pnpm", "--filter", "@chariox/cli", "run", "build"])
-        run("rust-build", ["flock", args.compile_lock, "cargo", "+1.88.0", "test", "-p", "chariox-kernel",
+        run("rust-build", ["flock", args.compile_lock, "cargo", "+1.99.0", "test", "-p", "chariox-kernel",
                            "--lib", "--locked", "--no-run", "--message-format=json"])
         artifact = None
         for line in (output / "rust-build.log").read_text().splitlines():

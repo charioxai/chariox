@@ -18,6 +18,10 @@ pub enum ErrorCode {
     IncompatibleProtocol,
     IncompatibleSdk,
     IncompatibleContract,
+    /// The component imports a host function this kernel does not offer.
+    ImportNotAllowed,
+    /// The component is not a readable WebAssembly component.
+    InvalidComponent,
     IncompatibleResourcePolicy,
     UntrustedPublisher,
     InvalidSignature,

@@ -267,17 +267,19 @@ pub use api::{
     CallUserAppViewRequest, ConfigureAppAutomationRequest, ControlAppWorkerRequest,
     CreateAppInboxRouteRequest, DeploymentAppsConsent, DeploymentAppsConsentStatus,
     DisableAppAutomationRequest, GetAppLogsRequest, GetAppSetRequest, GrantAppConnectionRequest,
-    GrantAppFileRequest, ListAppInstallationsRequest, ListUserAppViewsRequest, OpenAppViewRequest,
-    OpenUserAppViewRequest, PrepareDeploymentAppsRequest, PreviewDeploymentAppsRequest,
-    RestoreAppDataSnapshotRequest, RevokeAppConnectionRequest, RevokeAppFileGrantsRequest,
-    SaveAppFileExportRequest, SetAppViewPanelRequest, SubscribeUserAppViewsRequest,
-    TestAppInboxRouteRequest, UninstallAppRequest, UserAppView, UserAppViewBrowser,
-    UserAppViewHost, UserAppViewRequest, APP_SET_SCHEMA,
+    GrantAppFileRequest, InspectAppViewRequest, ListAppInstallationsRequest,
+    ListUserAppViewsRequest, OpenAppViewRequest, OpenUserAppViewRequest,
+    PrepareDeploymentAppsRequest, PreviewDeploymentAppsRequest, RestoreAppDataSnapshotRequest,
+    RevokeAppConnectionRequest, RevokeAppFileGrantsRequest, SaveAppFileExportRequest,
+    SetAppViewPanelRequest, SubscribeUserAppViewsRequest, TestAppInboxRouteRequest,
+    UninstallAppRequest, UserAppView, UserAppViewBrowser, UserAppViewHost, UserAppViewRequest,
+    APP_SET_SCHEMA,
 };
 pub use api::{
-    AppInstallOperationPhase, AppInstallOperationRequest, AppInstallOperationSummary,
-    AppPublisherEnrollmentPhase, AppPublisherEnrollmentRequest, AppPublisherEnrollmentSummary,
-    BeginAppInstallRequest, BeginAppPublisherEnrollmentRequest, BeginAppUpdateRequest,
+    AppDevPushFailureCode, AppDevPushRequest, AppInstallOperationPhase, AppInstallOperationRequest,
+    AppInstallOperationSummary, AppPublisherEnrollmentPhase, AppPublisherEnrollmentRequest,
+    AppPublisherEnrollmentSummary, BeginAppDevPushRequest, BeginAppInstallRequest,
+    BeginAppPublisherEnrollmentRequest, BeginAppUpdateRequest,
 };
 pub use api::{
     ApproveBrowserImportRequest, BrowserImportConsentStatus, BrowserImportSelection,

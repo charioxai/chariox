@@ -108,6 +108,7 @@ impl KernelRuntimeState {
                 "claude-native-permission-",
                 "claude-rendered-permission-",
                 "watched-process-",
+                "app-view-action-",
             ]
             .iter()
             .any(|prefix| interaction.id().starts_with(prefix))

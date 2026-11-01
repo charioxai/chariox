@@ -209,7 +209,7 @@ pub(crate) async fn send_peer_request_to_known_kernel_via_relay_with_timeout(
     target: ClientTarget,
     target_public_key: &str,
     request: RelayPeerRequest,
-    response_timeout: Duration,
+    response_timeout: impl Into<Option<Duration>> + Send,
 ) -> Result<RelayPeerResponse, DaemonError> {
     enqueue_peer_request_to_known_kernel_via_relay_with_timeout(
         config,
@@ -230,7 +230,7 @@ pub(crate) async fn enqueue_peer_request_to_known_kernel_via_relay_with_timeout(
     target: ClientTarget,
     target_public_key: &str,
     request: RelayPeerRequest,
-    response_timeout: Duration,
+    response_timeout: impl Into<Option<Duration>> + Send,
 ) -> Result<RelayPeerResponseWaiter, DaemonError> {
     enqueue_peer_request_to_known_kernel_via_relay_authorized(
         config,
@@ -250,9 +250,10 @@ pub(super) async fn enqueue_peer_request_to_known_kernel_via_relay_authorized(
     target: ClientTarget,
     target_public_key: &str,
     mut request: RelayPeerRequest,
-    response_timeout: Duration,
+    response_timeout: impl Into<Option<Duration>> + Send,
     authorize: impl Fn() -> Result<(), DaemonError> + Send + Sync,
 ) -> Result<RelayPeerResponseWaiter, DaemonError> {
+    let response_timeout = response_timeout.into();
     let expected_kernel_id = if let Some(id) = target.daemon_id.as_deref() {
         canonical_peer_daemon_id(id).unwrap_or(id).to_string()
     } else if let Some(alias) = target.daemon_alias.as_deref() {
@@ -310,7 +311,9 @@ pub(super) async fn enqueue_peer_request_to_known_kernel_via_relay_authorized(
         &request_id,
         &target,
         "persistent",
-        u64::try_from(response_timeout.as_millis()).unwrap_or(u64::MAX),
+        response_timeout
+            .map(|timeout| u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX))
+            .unwrap_or(0),
     );
     if send_outgoing_envelope(
         &outgoing_tx,
@@ -330,7 +333,7 @@ pub(super) async fn enqueue_peer_request_to_known_kernel_via_relay_authorized(
             message: "relay is not connected".to_string(),
         });
     }
-    let response_deadline = tokio::time::Instant::now() + response_timeout;
+    let response_deadline = response_timeout.map(|timeout| tokio::time::Instant::now() + timeout);
     let private_key = config.relay_private_key.clone();
     let state = Arc::clone(state);
     let pending = PendingPeerRequest {
@@ -343,7 +346,11 @@ pub(super) async fn enqueue_peer_request_to_known_kernel_via_relay_authorized(
         sender_bound: true,
     };
     Ok(RelayPeerResponseWaiter::new(async move {
-        let envelope = match tokio::time::timeout_at(response_deadline, response_rx).await {
+        let response = match response_deadline {
+            Some(deadline) => tokio::time::timeout_at(deadline, response_rx).await,
+            None => Ok(response_rx.await),
+        };
+        let envelope = match response {
             Ok(Ok(envelope)) => envelope,
             Ok(Err(_)) => {
                 trace.log_completed("cancelled", Some("relay peer request was cancelled"), None);
@@ -356,7 +363,9 @@ pub(super) async fn enqueue_peer_request_to_known_kernel_via_relay_authorized(
                 drop(pending);
                 let message = format!(
                     "timed out waiting for relay peer response after {}ms",
-                    response_timeout.as_millis()
+                    response_timeout
+                        .map(|timeout| timeout.as_millis())
+                        .unwrap_or(0)
                 );
                 trace.log_completed("timeout", Some(&message), None);
                 return Err(DaemonError::LocalTransport {
@@ -489,7 +498,7 @@ pub async fn send_peer_request_via_connected_relay_with_timeout(
     state: &Arc<RwLock<RelayClientState>>,
     target: ClientTarget,
     request: RelayPeerRequest,
-    response_timeout: Duration,
+    response_timeout: impl Into<Option<Duration>> + Send,
 ) -> Result<RelayPeerResponse, DaemonError> {
     enqueue_peer_request_via_connected_relay_with_timeout(
         config,
@@ -509,7 +518,7 @@ pub async fn enqueue_peer_request_via_connected_relay_with_timeout(
     state: &Arc<RwLock<RelayClientState>>,
     target: ClientTarget,
     request: RelayPeerRequest,
-    response_timeout: Duration,
+    response_timeout: impl Into<Option<Duration>> + Send,
 ) -> Result<RelayPeerResponseWaiter, DaemonError> {
     enqueue_peer_request_via_connected_relay_authorized(
         config,
@@ -539,7 +548,7 @@ pub(crate) async fn enqueue_peer_request_via_connected_relay_authorized(
     state: &Arc<RwLock<RelayClientState>>,
     target: ClientTarget,
     request: RelayPeerRequest,
-    response_timeout: Duration,
+    response_timeout: impl Into<Option<Duration>> + Send,
     authorize: impl Fn() -> Result<(), DaemonError> + Send + Sync,
 ) -> Result<RelayPeerResponseWaiter, DaemonError> {
     authorize()?;

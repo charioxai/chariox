@@ -30,7 +30,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24.20.0'
-      - uses: dtolnay/rust-toolchain@1.88.0
+      - uses: dtolnay/rust-toolchain@1.99.0
       - name: Exercise production storage preparation and recovery on disposable images
         id: storage
         run: node scripts/test-app-storage-macos-ci.mjs

@@ -1,0 +1,30 @@
+{
+  "schema": "chariox.app.v2",
+  "appId": "com.example.todo",
+  "version": "1.0.0",
+  "publisher": {
+    "id": "com.example",
+    "keyId": "developer-1",
+    "name": "Local Developer"
+  },
+  "appContractVersion": 2,
+  "resourcePolicy": "chariox.app.resources.v1",
+  "world": "chariox:app/app@1.0.0",
+  "requiredFeatures": [
+    "wasm-component"
+  ],
+  "runtime": {
+    "engine": "wasm",
+    "component": "runtime/app.wasm"
+  },
+  "build": {
+    "language": "typescript",
+    "toolchain": "qjs@cecfa26bd323795be3a08afd3e08a26acfbc15dc+snapshot@059d0f9db52ab78039f7fa57994ee744bdb9145b140837ee3e852ee2713b141b",
+    "sdkVersion": "0.1.0"
+  },
+  "ui": {
+    "entry": "ui/index.html"
+  },
+  "tools": "schemas/tools.json",
+  "capabilities": {}
+}

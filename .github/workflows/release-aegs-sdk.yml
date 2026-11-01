@@ -33,7 +33,7 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.88.0
+          toolchain: 1.99.0
 
       - name: Verify publishable package metadata
         run: |

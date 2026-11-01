@@ -26,7 +26,7 @@ async function script(path, contents) {
 }
 
 const DESKTOP = ["Xvfb", "openbox", "bwrap", "dbus-daemon", "setxkbmap"]
-const PACKAGES = "python3-xlib python3-pil python3-gi python3-pyatspi xvfb openbox bubblewrap dbus-daemon x11-xkb-utils libasound2 libatk-bridge2.0-0 libatk1.0-0 libatspi2.0-0 libcairo2 libcups2 libdbus-1-3 libdrm2 libgbm1 libglib2.0-0 libnspr4 libnss3 libpango-1.0-0 libx11-6 libxcb1 libxcomposite1 libxdamage1 libxext6 libxtst6 libxfixes3 libxkbcommon0 libxrandr2"
+const PACKAGES = "python3-xlib python3-pil python3-gi python3-pyatspi at-spi2-core xvfb openbox bubblewrap dbus-daemon x11-xkb-utils libasound2 libatk-bridge2.0-0 libatk1.0-0 libatspi2.0-0 libcairo2 libcups2 libdbus-1-3 libdrm2 libgbm1 libglib2.0-0 libnspr4 libnss3 libpango-1.0-0 libx11-6 libxcb1 libxcomposite1 libxdamage1 libxext6 libxtst6 libxfixes3 libxkbcommon0 libxrandr2"
 
 async function harness() {
   const base = await mkdtemp(join(tmpdir(), "chariox-local-install-"))
@@ -48,6 +48,8 @@ async function harness() {
   await script(join(root, "usr/bin/python3"), `#!/bin/sh
 [ "\${HARNESS_NATIVE_PYTHON:-ready}" = ready ] || test -e "$HARNESS_STATE/native-python-ready"
 `)
+  await mkdir(join(root, "etc/at-spi2"), { recursive: true })
+  await writeFile(join(root, "etc/at-spi2/accessibility.conf"), "<busconfig/>")
   for (const name of DESKTOP) await script(join(root, "usr/bin", name), "#!/bin/sh\n")
   await script(join(root, "usr/bin/apt-get"), `#!/bin/sh
 echo "$*" >> "$HARNESS_STATE/native-apt"

@@ -3,6 +3,7 @@
 //! kernel. These transactions do not lock or roll back ordinary node:fs writes.
 
 mod changes;
+pub mod data_contract;
 pub(crate) mod migration;
 mod store;
 mod wakes;

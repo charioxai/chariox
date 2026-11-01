@@ -22,7 +22,10 @@ use crate::{
         app_worker_lifecycle::{ActiveStartAdmission, LifecycleStoreError, WorkerPhase},
         DurableKernelStateStore,
     },
-    runtime::{app_control::AppWorkerPublisher, app_operation_budget::AppOperationBudget},
+    runtime::{
+        app_control::AppWorkerPublisher,
+        app_operation_budget::{AppOperationBudget, AppOperationStopped},
+    },
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -51,6 +54,10 @@ pub(crate) enum LifecycleError {
     LiveLimit,
     #[error("app_lifecycle_stopped")]
     Stopped,
+    /// The operation's fixed budget ran out, for example while a large App
+    /// compiled on a slow machine. The compiled cache is kept for a retry.
+    #[error("app_lifecycle_deadline")]
+    Deadline,
     /// Work must wait through restart backoff.
     #[error("app_lifecycle_restart_deferred")]
     RestartDeferred,
@@ -62,6 +69,8 @@ pub(crate) enum LifecycleError {
     Storage,
     #[error("app_lifecycle_preparation")]
     Preparation,
+    #[error("{0}")]
+    Wasm(&'static str),
     /// App storage would leave less than the host's reserve free. The App's
     /// log says how much is free and how much to free (`disk_space`).
     #[error("app_lifecycle_disk_space")]
@@ -70,6 +79,9 @@ pub(crate) enum LifecycleError {
     Registration,
     #[error("app_lifecycle_registration_cancelled")]
     RegistrationCancelled,
+    /// The update's data migration failed: the App's own code names why.
+    #[error("{0}")]
+    Migration(crate::runtime::app_worker::MigrationFailure),
     /// Readiness exceeded its bounded wait. The owner is reaped; a fresh
     /// explicit start can retry the committed generation on the same kernel.
     #[error("app_lifecycle_registration_deadline")]
@@ -90,11 +102,20 @@ pub(crate) enum LifecycleError {
     #[error("app_lifecycle_supervisor")]
     Supervisor,
 }
+impl From<AppOperationStopped> for LifecycleError {
+    fn from(stopped: AppOperationStopped) -> Self {
+        match stopped {
+            AppOperationStopped::Cancelled => Self::Stopped,
+            AppOperationStopped::Deadline => Self::Deadline,
+        }
+    }
+}
 impl From<LifecycleStoreError> for LifecycleError {
     fn from(value: LifecycleStoreError) -> Self {
         match value {
             LifecycleStoreError::Storage => Self::Storage,
             LifecycleStoreError::Stopped => Self::Stopped,
+            LifecycleStoreError::Deadline => Self::Deadline,
             LifecycleStoreError::Stale => Self::Authority,
         }
     }
@@ -105,6 +126,7 @@ impl From<InstallOperationError> for LifecycleError {
             InstallOperationError::CommitUnknown => Self::CommitUnknown,
             InstallOperationError::Storage => Self::Storage,
             InstallOperationError::Stopped => Self::Stopped,
+            InstallOperationError::Deadline => Self::Deadline,
             InstallOperationError::Limit => Self::Busy,
             _ => Self::Authority,
         }

@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import os from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
 import { desktopApplication } from './desktop-applications.mjs';
+import { namespaceLauncher } from './kernel-browser-linux.mjs';
 import { processIdentity, settleOwned, descendants, observedDescendants } from './linux-owned-process.mjs';
 const readyDesktops = new WeakSet();
 export const ownsDesktopDisplay = desktop => readyDesktops.has(desktop) && Boolean(desktop.binding()) &&
@@ -22,7 +23,11 @@ export function desktopEnvironment(source, runtime, uid = process.getuid?.()) {
 }
 export const desktopBusAddress = () => `unix:abstract=chariox-desktop-${randomUUID()}`;
 export const desktopCommand = (binary, args) => ({ binary: '/usr/bin/python3',
-  args: [fileURLToPath(new URL('./linux-desktop-session.py', import.meta.url)), binary, ...args] });
+  // Ubuntu's userns exception belongs to the installed launcher. Bubblewrap's
+  // private Xvfb /tmp must enter through it too, before creating its namespace.
+  args: [fileURLToPath(new URL('./linux-desktop-session.py', import.meta.url)),
+    ...(binary === 'bwrap' ? [namespaceLauncher(), '--user', '--map-root-user', '--mount', '--'] : []),
+    binary, ...args] });
 function authorityCookie(cookie, display) {
   // FamilyWild; the cookie is valid only on this server, whose displayfd is not yet known.
   const field = value => { const size = Buffer.alloc(2); size.writeUInt16BE(value.length); return Buffer.concat([size, value]); };

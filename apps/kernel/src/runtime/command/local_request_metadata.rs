@@ -99,6 +99,16 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
                 (request.session_id.len() <= 128).then_some(request.session_id.as_str()),
             )
         }
+        LocalDaemonRequest::BeginAppDevPush(request) => {
+            LocalRequestMetadata::new("app.dev.push", Interactive).optional_session(
+                (request.session_id.len() <= 128).then_some(request.session_id.as_str()),
+            )
+        }
+        LocalDaemonRequest::GetAppDevPush(request) => {
+            LocalRequestMetadata::new("app.dev.status", Normal).optional_session(
+                (request.session_id.len() <= 128).then_some(request.session_id.as_str()),
+            )
+        }
         LocalDaemonRequest::BeginAppUpdate(request) => {
             LocalRequestMetadata::new("app.update.begin", Interactive).optional_session(
                 (request.session_id.len() <= 128).then_some(request.session_id.as_str()),
@@ -674,6 +684,8 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::CancelAppPublisherEnrollment(_) => "app.publisher.cancel",
         LocalDaemonRequest::ListAppInstallations(_) => "app.list",
         LocalDaemonRequest::BeginAppInstall(_) => "app.install.begin",
+        LocalDaemonRequest::BeginAppDevPush(_) => "app.dev.push",
+        LocalDaemonRequest::GetAppDevPush(_) => "app.dev.status",
         LocalDaemonRequest::BeginAppUpdate(_) => "app.update.begin",
         LocalDaemonRequest::GetAppInstallOperation(_) => "app.install.status",
         LocalDaemonRequest::CancelAppInstallOperation(_) => "app.install.cancel",
@@ -688,6 +700,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::ListAppAutomations(_) => "app.automation.list",
         LocalDaemonRequest::ConfigureAppAutomation(_) => "app.automation.configure",
         LocalDaemonRequest::DisableAppAutomation(_) => "app.automation.disable",
+        LocalDaemonRequest::InspectAppView(_) => "app.view.inspect",
         LocalDaemonRequest::OpenAppView(_) => "app.view.open",
         LocalDaemonRequest::OpenUserAppView(_) => "app.user_view.open",
         LocalDaemonRequest::ListUserAppViews(_) => "app.user_view.list",

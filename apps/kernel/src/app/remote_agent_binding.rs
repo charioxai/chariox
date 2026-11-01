@@ -586,6 +586,7 @@ impl DaemonApp {
                         message: error.to_string(),
                     })?,
             );
+            tools.extend(crate::runtime::state::KernelRuntimeState::remote_app_view_tools(agent));
         }
         Ok(crate::extension::RemoteExtensionManifest {
             tools,

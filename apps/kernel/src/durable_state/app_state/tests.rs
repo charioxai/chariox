@@ -229,6 +229,37 @@ pub(super) fn update_package(
 pub(super) fn inbox_package_version(version: &str, schema: u32) -> (Vec<u8>, TrustedPublisher) {
     package_build(false, false, version, schema, true, false)
 }
+pub(super) fn view_package(total_bytes: usize) -> (Vec<u8>, TrustedPublisher) {
+    let (bytes, publisher) = package();
+    let verified = verify(
+        &bytes,
+        &VerificationPolicy::new(
+            crate::local::LOCAL_DAEMON_PROTOCOL_VERSION,
+            vec![publisher.clone()],
+        ),
+    )
+    .unwrap();
+    let mut manifest = verified.manifest().clone();
+    manifest.version = "2.0.0".into();
+    let html = b"<!doctype html><title>Asset boundary</title><script src=app.js></script>".to_vec();
+    let mut files: BTreeMap<String, Vec<u8>> = verified
+        .files()
+        .map(|(path, bytes)| (path.to_owned(), bytes.to_vec()))
+        .collect();
+    files.insert("ui/app.js".into(), vec![b' '; total_bytes - html.len()]);
+    files.insert("ui/index.html".into(), html);
+    (
+        pack(
+            &manifest,
+            &files,
+            &SigningKey::from_bytes(&[71; 32]),
+            &Limits::default(),
+        )
+        .unwrap(),
+        publisher,
+    )
+}
+
 pub(super) fn package() -> (Vec<u8>, TrustedPublisher) {
     package_with_tools(false)
 }
@@ -421,7 +452,7 @@ fn package_build_ui(
     }
     if browser_ui {
         files.insert("ui/index.html".into(), b"<!doctype html><title>MD integration App</title><h1>Kernel-hosted App</h1><p id='result'>Loading</p><form id='action'><input id='message' aria-label='Message'><button>Call App</button></form><p id='keyboard'>No keyboard action</p><script src='app.js'></script>".to_vec());
-        files.insert("ui/app.js".into(), b"window.chariox.call('echo',{text:'kernel browser page'}).then(result=>document.getElementById('result').textContent='App channel '+JSON.stringify(result)).catch(()=>document.getElementById('result').textContent='App channel refused');document.getElementById('action').addEventListener('submit',event=>{event.preventDefault();window.chariox.call('echo',{text:document.getElementById('message').value}).then(result=>document.getElementById('keyboard').textContent='Keyboard App channel '+JSON.stringify(result)).catch(error=>document.getElementById('keyboard').textContent='Keyboard App channel refused '+error.code);});".to_vec());
+        files.insert("ui/app.js".into(), b"window.chariox.call('echo',{text:'kernel browser page'}).then(result=>document.getElementById('result').textContent='App channel '+JSON.stringify(result)).catch(()=>document.getElementById('result').textContent='App channel refused');window.chariox.form(document.getElementById('action'),async(_input,caller)=>{await caller.call('echo',{text:document.getElementById('message').value}).then(result=>document.getElementById('keyboard').textContent='Keyboard App channel '+JSON.stringify(result)).catch(error=>document.getElementById('keyboard').textContent='Keyboard App channel refused '+error.code);});".to_vec());
     }
     let bytes = pack(
         &manifest,

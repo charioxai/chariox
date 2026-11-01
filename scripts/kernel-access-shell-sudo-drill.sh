@@ -15,4 +15,4 @@ export RUST_MIN_STACK=16777216 RUST_TEST_THREADS=1 CARGO_PROFILE_TEST_DEBUG=0 CA
 pnpm --filter @chariox/shell run build
 export CHARIOX_SUDO_SHELL_CLI="$PWD/apps/shell/dist/shell.js"
 # Shell calls use --kernel-url ws+unix://<kernel socket>; no bearer is sent.
-slot-run cargo +1.88.0 test -p chariox-kernel --lib sudo_shell --locked -- --nocapture
+slot-run cargo +1.99.0 test -p chariox-kernel --lib sudo_shell --locked -- --nocapture

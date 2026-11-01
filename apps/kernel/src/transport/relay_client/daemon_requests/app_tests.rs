@@ -477,7 +477,7 @@ async fn uninstall_is_owner_scoped_generation_checked_and_deactivates() {
     store
         .append_app_log("alice", "installed", "info", "kept", &serde_json::json!({}))
         .unwrap();
-    let mut delete = dispatch(
+    let delete = dispatch(
         &router,
         &cache,
         Some("alice"),
@@ -485,35 +485,8 @@ async fn uninstall_is_owner_scoped_generation_checked_and_deactivates() {
         "u-delete",
     )
     .await;
-    if cfg!(target_os = "linux") {
-        // Linux deletes storage through the root storage helper, absent here:
-        // the App stays uninstalled with its data.
-        assert_eq!(delete, failed(AppRequestErrorCode::StorageUnavailable));
-        assert_eq!(
-            store.app_logs("alice", "installed", 0, 10).unwrap().len(),
-            1
-        );
-        // Deleting again finishes it once the storage can be deleted (here,
-        // fixture storage in place of the helper's).
-        let storage = router.runtime_state().app_control().fixture_app_storage();
-        let generation = store
-            .get_app_installation("alice", "installed")
-            .unwrap()
-            .generation
-            .to_string();
-        delete = dispatch(
-            &router,
-            &cache,
-            Some("alice"),
-            uninstall_with(&generation, true),
-            "u-delete-again",
-        )
-        .await;
-        assert_eq!(
-            storage.deleted(),
-            [("alice".to_owned(), "installed".to_owned())]
-        );
-    }
+    // No engine has allocated private files in this fixture. Forgetting data
+    // must succeed without requiring a legacy helper on a v2-only host.
     let LocalDaemonResponse::AppInstallation { installation } = delete else {
         panic!("Alice deletes the kept data")
     };

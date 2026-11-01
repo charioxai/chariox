@@ -3,7 +3,7 @@
 use super::*;
 use crate::durable_state::app_active_release::{ActiveRelease, ActiveReleaseError};
 use crate::runtime::app_worker::{ActivatedApp, AppWorkerOwner, RegisteredAppWorker};
-use chariox_app_package::VerifiedPackage;
+use chariox_app_package::VerifiedAppPackage;
 use chariox_app_runtime::{
     installation::StageTrustBinding,
     publisher_trust::TrustedPublisherSnapshot,
@@ -101,7 +101,7 @@ pub(super) fn register(
         ActiveRelease::load(context.store.path(), binding.clone(), trust.clone()).map_err(
             preparation_failed(installation, binding.token().generation, "active_release"),
         )?;
-    budget.check().map_err(|_| LifecycleError::Stopped)?;
+    budget.check()?;
     let verified = active.verify().map_err(preparation_failed(
         installation,
         binding.token().generation,
@@ -230,10 +230,65 @@ pub(super) fn register(
 fn spawn(
     context: &owner::Context,
     binding: &StageTrustBinding,
-    verified: &VerifiedPackage<'_>,
+    verified: &VerifiedAppPackage<'_>,
     release: VerifiedReleaseLease,
     migrate_from: Option<u32>,
 ) -> Result<PreparedProcess> {
+    if matches!(verified, VerifiedAppPackage::Wasm(_)) {
+        let committed = context
+            .store
+            .get_app_installation(binding.owner_id(), &binding.token().installation_id)
+            .map_err(|_| LifecycleError::Preparation)?
+            .data_release()
+            .map(|release| release.generation);
+        crate::runtime::app_snapshot_restore::require_recovery_generation(
+            &context.store,
+            binding.owner_id(),
+            &binding.token().installation_id,
+            binding.token().generation,
+        )
+        .map_err(|_| LifecycleError::Preparation)?;
+        let runtime = chariox_app_runtime::worker_process::wasm::WasmRuntime::beside_kernel()
+            .map_err(|error| {
+                LifecycleError::Wasm(chariox_app_runtime::worker_process::wasm::aot_error_code(
+                    &error,
+                ))
+            })?;
+        let prepared = chariox_app_runtime::worker_process::PreparedWorker::prepare_wasm_update(
+            runtime,
+            release,
+            binding,
+            context.store.path(),
+            migrate_from,
+            committed,
+        )
+        .map_err(wasm_preparation_error)?;
+        if context.control.stopped() {
+            return Err(LifecycleError::Stopped);
+        }
+        let (prepared, recovered) = prepared
+            .visit_private_data(|data| {
+                crate::runtime::app_snapshot_restore::recover(
+                    &context.store,
+                    binding.owner_id(),
+                    data,
+                )
+            })
+            .map_err(|_| LifecycleError::Preparation)?;
+        recovered.map_err(|_| LifecycleError::Preparation)?;
+        let process = WorkerProcess::spawn_blocking(prepared, WorkerLimits::default()).map_err(
+            preparation_failed(
+                &binding.token().installation_id,
+                binding.token().generation,
+                "wasm_spawn",
+            ),
+        )?;
+        return Ok(PreparedProcess {
+            process,
+            #[cfg(test)]
+            fixture_release: None,
+        });
+    }
     #[cfg(test)]
     if let Some(fixture) = &context.fixture {
         use chariox_app_runtime::worker_process::test_fixture::Mode;
@@ -250,7 +305,10 @@ fn spawn(
             .native
             .spawn_for_generation_blocking(
                 mode,
-                verified,
+                match verified {
+                    VerifiedAppPackage::Node(package) => package,
+                    _ => return Err(LifecycleError::Preparation),
+                },
                 &binding.token().installation_id,
                 binding.token().generation,
             )
@@ -488,7 +546,19 @@ fn registration_failure(error: crate::runtime::app_worker::AppWorkerError) -> Li
     match error {
         AppWorkerError::Cancelled => LifecycleError::RegistrationCancelled,
         AppWorkerError::Deadline => LifecycleError::RegistrationDeadline,
+        AppWorkerError::Migration(failure) => LifecycleError::Migration(failure),
         _ => LifecycleError::Registration,
+    }
+}
+
+fn wasm_preparation_error(
+    error: chariox_app_runtime::worker_process::WorkerError,
+) -> LifecycleError {
+    use chariox_app_runtime::worker_process::WorkerError;
+    match error {
+        WorkerError::Storage("app_aot_busy") => LifecycleError::Busy,
+        WorkerError::Storage(code) => LifecycleError::Wasm(code),
+        _ => LifecycleError::Preparation,
     }
 }
 
@@ -515,6 +585,20 @@ mod registration_failure_tests {
             registration_failure(AppWorkerError::Unavailable).to_string(),
             "app_lifecycle_registration"
         );
+        assert_eq!(
+            registration_failure(AppWorkerError::Migration(
+                crate::runtime::app_worker::MigrationFailure::from_worker("NOTES_V2_BAD_ROW")
+            ))
+            .to_string(),
+            "app_update_migration_failed_NOTES_V2_BAD_ROW"
+        );
+        // Untrusted worker text never reaches a stored failure.
+        for code in ["", "lower", "HAS SPACE", "A\nB", &"X".repeat(49)] {
+            assert_eq!(
+                crate::runtime::app_worker::MigrationFailure::from_worker(code).to_string(),
+                "app_update_migration_failed"
+            );
+        }
         assert_eq!(
             registration_failure(AppWorkerError::Invalid).to_string(),
             "app_lifecycle_registration"

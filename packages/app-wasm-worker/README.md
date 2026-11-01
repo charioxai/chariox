@@ -1,0 +1,322 @@
+# Async App worker
+
+`chariox-app-wasm-worker` is the Rust execution path for Apps v2 R3
+(MP-08 / MP-09 / MP-10 / MP-11). The kernel owns the installation, verified
+manifest, process, generation and admission. One process serves up to 64 calls
+on one component instance. This crate does not install Apps or supply OS
+containment: those are R4/R5. R6 links the enumerated WASI imports through
+scoped filesystem capabilities and the existing kernel HTTP broker. There are
+no ambient filesystem, network, subprocess or native-library imports.
+on one component instance. R5 supplies mandatory native containment in `serve`;
+R4 owns verified installation/launch integration. R6 extends the linker with broker-backed WASI.
+There are no ambient filesystem, network, subprocess or native-library imports.
+
+## Entry points
+
+- `check WORLD COMPONENT`: R1 structural admission and real Wasmtime compilation,
+  without instantiation or executing App code. This is engine preflight, not
+  a containment, trust or complete installation compatibility verdict.
+- `precompile WORLD COMPONENT OUTPUT`: the same admission followed by local
+  native compilation. Output must not already exist. R4 owns protected cache
+  publication, full AOT provenance and any subsequent unsafe deserialization.
+  This worker never deserializes caller-supplied native code.
+- `serve SUPERVISOR_CONFIG`: run a supervisor-owned JSON launch configuration.
+  Fields are `component`, `generation`, `installation_id`, `release_digest`,
+  `manifest` (the verified v2 manifest), optional `limits`, and optional
+  `installation_root` (an absolute supervisor-owned path). Only its existing real
+  `data` and `tmp` children are preopened; missing/symlinked children are refused.
+  Omission exposes no filesystem preopens. This file is
+  supplied by the kernel, never an App-controlled path or retry policy.
+
+`WorkerEngine::{compile,precompile}` are the library entry points. The engine
+configuration digest is `engine::configuration_digest()`; R4 must also key its
+cache by exact worker build, engine version, target and CPU-feature policy.
+`AppWorker::linker` is the production allowlisted linker, also used by `new`.
+Unknown imports fail linking; production does not install trapping placeholders
+or call the upstream all-interfaces WASI linkers. `with_linker` remains available
+for explicit supervisor/test extensions, never for App-supplied linker policy.
+
+The `test-support` feature exposes `WorkerEngine::deserialize_module` only for
+the native containment probes. A dev-dependency enables it for `cargo test`;
+production builds leave it disabled.
+
+FD3 carries `chariox_app_runtime::wire::Channel`. FD4 writes `CXAWR001` and the
+existing length-prefixed generation, installation and release-digest identity,
+then waits for `CXAWGO01` before compiling or running guest code. Native
+containment is installed before that ready reply. R4 must establish generation
+authority and retain kernel resource/lifecycle supervision before sending continuation. The first
+broker request is `worker.ready`; restart registration must match it exactly.
+
+## Ownership and failure
+
+Every accepted call owns its broker requests, HTTP bodies and subscriptions.
+Pending broker requests cancel when dropped. Stream queues have four 64 KiB
+response chunks; request bodies forward one bounded chunk per broker write.
+Dropping a body or ending a call releases its broker stream. There are at most
+128 broker requests and 128 open stream bridges; transport overflow closes the
+channel so the kernel can release worker-owned resources.
+
+Deadlines and explicit cancellation signal the guest and close its host
+resources. An uncooperative guest gets a bounded grace period, then the shared
+instance is replaced. Normal completion closes resources without resolving the
+guest cancellation future. Linear memory is capped across all core memories;
+refused growth traps with `APP_MEMORY_LIMIT`. Epoch interruption bounds a CPU
+slice. Task-group hooks identify the culprit even after a trap unwinds.
+
+An instance loss reports the culprit's stop reason and
+`APP_INSTANCE_RESTARTED` for affected calls. Only a tool in the verified
+manifest's optional `idempotentTools` list can replay, once, before its original
+deadline. The culprit, cancelled calls and non-idempotent operations never
+replay. The kernel broker must not add a second automatic replay layer.
+Its shared `WorkerPeer` admits 64 executing calls and 16 FIFO waiters, then
+returns `app_peer_busy`; the worker's own 64-call cap remains a defensive bound.
+Cancelled calls retain kernel execution admission until their terminal reply.
+Native process death and OS quotas remain the kernel supervisor/R5 boundary.
+
+## Native containment (R5; MP-08 / MP-09 / MP-10 / MP-11)
+
+`serve` reads the bounded supervisor config and component, discards every FD
+above 4, then installs containment before the ready reply, compiler, epoch ticker
+or Tokio threads. There is no switch or environment variable to bypass it. Both
+the path-based `serve` and the installed `serve-supervised` entry enter it after
+reading every supervisor input. Network and process requests go through kernel
+brokers. The only native file authority left is an installed App's real `data`
+and `tmp` directories (R6's preopens), confined by Landlock.
+Offline `check`/`precompile` compile without instantiating; they do not assert a
+contained installation or run any App export.
+
+Linux uses a default-deny seccomp allowlist to remove path access, sockets,
+exec/fork, ptrace, foreign signals, namespaces, kernel interfaces, memfd and
+io_uring. This ports the v1 native worker's allowlist, thread-only clone,
+clone3-to-ENOSYS and self-query-only prlimit checks from
+`apps/app-worker/src/sandbox_linux.c`, narrowed for the Rust broker transport.
+The v1 Node/bubblewrap/cgroup path is unchanged. No user namespace, mount,
+delegated cgroup or privileged host change is required for the WASM entry.
+Without installation directories every path syscall is refused by seccomp and
+Landlock is not used. With them, Landlock (Linux 5.13+) grants file rights only
+beneath `data` and `tmp` (no execute, devices, sockets or FIFOs), and only then
+does seccomp admit the path syscalls those preopens need; mode, owner and
+timestamp changes stay refused because Landlock does not mediate them. Stat and
+readlink on other paths remain possible (Landlock does not cover metadata). A
+host without Landlock refuses installed Apps with `APP_SANDBOX_LANDLOCK`.
+macOS refuses installed App files until its Seatbelt profile grants them.
+Inherited descriptors are closed before that boundary.
+Unsupported containment fails with `APP_SANDBOX_UNAVAILABLE` before ready.
+On aarch64 Linux only, seccomp admits the private code-cache membarrier commands
+32/64 with zero flags for Wasmtime publication; other commands remain denied.
+
+The Linux executable-memory policy is W^X: seccomp refuses simultaneous WRITE
+and EXEC on mmap/mprotect and denies pkey_mprotect; inherited READ_IMPLIES_EXEC
+is refused. Wasmtime's RW-to-RX code publication and trusted, already-read AOT
+bytes remain admissible. This is a permission policy, not instruction-origin
+authentication: native code that has already compromised the worker can still
+request an ordinary RX mapping. AOT provenance remains R4's authority.
+
+Hard OS limits cover the whole process, including compiler, runtime and all
+threads: on Linux, 1 GiB address space; on both systems, 8 MiB per regular file,
+64 descriptors, zero core dump size. Tighter inherited limits are preserved.
+Launch admission accepts 1–128 MiB of aggregate guest linear memory on both
+platforms, leaving native room for moving-memory copies, compilation and stacks.
+Memory mappings fail with ENOMEM; oversized regular-file output stops with
+SIGXFSZ/EFBIG. These are
+independent of `APP_MEMORY_LIMIT`, `APP_CPU_SLICE` and `INVALID_OUTPUT` returned
+by the component/wire boundaries. A native process stop needs a fresh kernel
+generation; do not replay a non-idempotent call. R4 must retain its existing
+owned-process exit/reap supervision and distinguish native stop from guest trap.
+R4 must give every generation a fresh log file or a drained pipe. The file-size
+limit also applies to inherited stderr/stdout: reusing an append-only regular
+log already above 8 MiB would kill each new generation on its first write.
+macOS omits the native address-space cap: Darwin rejects `RLIMIT_AS` below
+the already-mapped dyld shared region with EINVAL. `RLIMIT_DATA` has the same
+VM-map-size check, and `RLIMIT_RSS` does not provide a hard allocation ceiling.
+The Mac native memory probe reports this gap explicitly; it does not claim an
+ENOMEM boundary. Guest linear-memory limits remain enforced by Wasmtime.
+R4 must retain its kernel memory monitor; this worker alone does not bound
+native compiler/runtime allocations on macOS.
+Hardened macOS execution uses only `allow-jit`: compiler output is copied into
+owned anonymous `MAP_JIT` memory via Wasmtime's public `deserialize_raw` API.
+A custom publisher admits only owned compiler images. Apple Silicon keeps
+MAP_JIT VM permissions RWX and enforces W^X per thread; mprotect on these regions
+is refused. Write protection is disabled only on the copying thread and restored
+before publication. The immutable serialized image, including its metadata,
+shares that region's execute mode; it is never writable guest linear memory.
+Intel uses per-page read-only metadata and RX text protections. The publisher retains the allocations
+for the lifetime of every engine/module/component reference and unwind record.
+App-supplied native artifacts never enter this path. R4 must authenticate any
+cached AOT input before deserializing it under this platform/configuration key.
+The worker introduces no lifetime CPU budget: a healthy long-lived generation
+must not expire after accumulated successful calls. Epoch slices and call
+deadlines bound guest CPU; R4 retains supervisor monitoring for native runaways.
+Inherited OS CPU limits remain in force. The native CPU signal probe lowers
+only its own child's inherited limit to verify that behavior.
+Wasmtime reserves committed guest memory plus 4 MiB of growth headroom and a
+64 KiB guard, avoiding copies on every small grow, without
+memfd-backed copy-on-write initialization. The engine configuration digest
+includes these settings; old AOT entries cannot share the new key.
+
+macOS reuses v1's Seatbelt entry and JIT entitlement, with a broker-only profile
+in `src/containment/macos.sb`. It requires a valid hardened-runtime signature,
+allow-jit, and no unsigned-code/page-protection/debug/library-validation escape
+entitlements, then applies the same hard resource limits and a deny-default
+profile. Native files, network, process creation and executable file mappings
+are not granted. The production release must be signed; ad-hoc signing is only
+for the drill's own disposable copies. Hardened runtime, rather than Seatbelt,
+must enforce the JIT exception. The pinned engine's code publisher and the
+target macOS version must pass both the native/AOT and real-component drills;
+the profile or successful cross-compilation alone cannot establish that proof.
+
+On a Mac with the pinned Rust toolchain and wasm32-unknown-unknown installed:
+
+```sh
+bash packages/app-wasm-worker/scripts/macos-containment-drill.sh "$HOME/chariox-r5-evidence"
+```
+
+The script builds in disposable state, signs only its own binaries with the
+existing minimal entitlement, runs native red/green probes and every source
+component subprocess drill, saves source/binary identities and failures, and
+removes its scratch on exit. It does not use sudo, change system settings or
+touch product accounts. Return its complete evidence directory, including
+`result.json` and `worker-stderr.log`. A signing/JIT/resource refusal is a failed
+platform gate; do not add broader signing entitlements to make it pass.
+
+## Engine compatibility and checks
+
+Wasmtime is pinned to 50.0.0. R1's 0.262 dummy generator imports unused
+`stream.forward` / `future.forward`, which this engine rejects. Test-only
+reencoding removes those unused imports and adjusts indices; it rejects any
+actual use. Production bytes are never rewritten. A real component requiring
+those built-ins fails engine preflight. The source drill App uses wit-bindgen
+0.63.0, whose unused imports are eliminated by its normal WASM link.
+
+Run the focused unit tests with `cargo test -p chariox-app-wasm-worker`.
+Build the source App and run the real subprocess drills through the lane's
+`cargo-slot.sh sh packages/app-wasm-worker/scripts/drill.sh`, with
+`CHARIOX_WORKER_DRILL_DIR` set outside the repository and the
+`wasm32-unknown-unknown` Rust target installed. The script uses the slot's target
+and copies the exact guest before releasing it. Full kernel/client App install,
+containment and real provider acceptance require R2/R4/R5/R6 integration; these
+process drills do not close Stage 1 or MP acceptance rows.
+
+## R4 installed launch and AOT cache
+
+The kernel uses `serve-supervised`, with inherited FD5/6/7/8/9 as documented in
+`app-runtime/src/worker_process/README.md`. `identity` reports the exact running
+worker build, engine, target and CPU policy; `precompile-stdio WORLD` compiles
+retained verified component bytes for the supervisor's protected cache. The
+worker verifies the supervisor's provenance signature, exact runtime key and
+artifact digest before native deserialization. Path-based `check`, `precompile`
+and `serve` remain the R3 offline development/process-drill interfaces; the
+installed kernel launch accepts none of those caller-chosen paths.
+
+Run `scripts/install-drill.sh` through the compile slot for real signed-package
+installation, native echo/restart/cache-hit, eviction, damaged/stale input and
+offline rebuild process drills. These supplement client/kernel/provider drills
+and do not establish R5 containment or full Stage 1 acceptance.
+
+On the R4+A2 integration, run `scripts/installed-ui-actions-drill.sh` through
+the compile slot with an external `CHARIOX_WORKER_DRILL_DIR`. It installs the
+signed source App with UI actions, reopens its stored catalog, starts the native
+Wasm worker and checks the actions exposed by A2's agent view catalog. It does
+not inject declarations into a view context. The browserless drill supplements
+real client/provider acceptance; it does not establish page action execution.
+
+The installed kernel keeps the `worker.ready` response pending until activation.
+The worker serves lifecycle calls while awaiting that response, so precommit
+`health_check` can finish without granting the App broker effects early.
+The installation process drill preserves this ordering before its first echo.
+## WASI brokers and installation directories (R6)
+
+The linker implements precisely R1's WASI 0.3 surface and its versioned 0.2.0
+compatibility imports. Both HTTP versions use `http.open/write/headers/read/cancel`
+on the kernel wire. The upstream ambient HTTP transport feature is disabled;
+there is no socket, DNS, incoming HTTP, process, environment or terminal linker.
+Standard HTTP cannot select opaque connection/effect handles: use `chariox:app/http`
+when an operation needs those explicit authorities. HTTP destinations and effects
+remain subject to the kernel's normal manifest/grant/approval checks.
+Wasmtime's synthesized `Host` header is disabled for this broker; the kernel
+derives HTTP authority from the approved URL and still rejects App-supplied Host.
+
+Responses and uploads use bounded chunks and backpressure. Dropping a response,
+including an early response during an unfinished upload, cancels both pumps and
+releases the broker stream independently of invocation completion. Invocation
+cancellation/deadlines also release both. Explicit WASI request timeouts bound the
+response phases. The broker does not expose connection-phase timing, so setting
+an explicit connect timeout returns WASI `not-supported` (0.3) / an error (0.2);
+clearing it succeeds. It never pretends local stream admission measures TCP/TLS.
+Nonempty request trailers are rejected because the
+broker has no trailers operation; they are never silently discarded.
+
+The supervisor opens `InstallationDirectories::open(root)` after establishing
+installation/generation authority and before entering OS containment, which then
+confines native file access to those two directories, and passes it to
+`AppWorker::with_directories`. `root/data` and `root/tmp` must already be real
+directories. Only those two names are preopened; no host root, cwd, environment
+or inherited descriptors are exposed. Without this explicit configuration there
+are no preopens. WASI 0.2 and 0.3 share the same installation files. Absolute
+paths, traversal outside a preopen and escaping symlinks return WASI
+`not-permitted`; broker-forbidden HTTP returns `http-request-denied`. Other
+broker failures retain stable WASI errors or an internal-error containing only
+the broker reason code. Stdout/stderr go to bounded `log.write` frames, not the
+worker's native stdout/stderr.
+
+The optional supervisor-owned `installation_root` in the CLI launch JSON
+connects this same library seam to R4's verified installation directories.
+The kernel and worker are built/shipped together; this internal launch field
+changes no daemon, relay or client protocol version (coordinator authorization,
+2026-10-26). R5 must apply filesystem quotas and OS containment. Installation snapshots, generation fencing and
+private-file rollback remain supervisor responsibilities.
+
+## Restricted migration world (R6)
+
+`MigrationWorker` executes `chariox:app/migration@1.0.0` in a fresh one-shot
+instance. Its linker contains only transactional state, with no WASI, HTTP,
+registry, filesystem, agents, workflows or host imports. The existing kernel
+staged-generation state broker must continue to refuse occurrences/wakes and
+other effects during migration. Memory, CPU-slice, deadline and cancellation
+grace limits apply; a failed migration is never replayed by this worker.
+Cancelled or expired scopes are rejected before guest entry and checked again
+before accepting a result, so guest success cannot override a stop reason.
+
+R4 must verify the signed migration artifact, fence old writers, checkpoint
+structured and private-file state, invoke the migration under the staged broker,
+and record `migration.step` only after success. This API does not activate a
+release, advance the kernel migration journal or claim that SQL rollback restores
+private files. The installed `serve-supervised` path now consumes the supervisor-selected
+portable migration components on FD9, runs each through this state-only API and
+records `migration.step` before App registration. Private-file checkpoints cover
+`data` only; `tmp` remains outside snapshots. Interrupted preparation, failed
+health and migration failure return through the existing kernel rollback path.
+No client or relay serialized shape changes.
+
+## Additional real-engine drills
+
+`scripts/wasi-policy-drill.sh` builds the source WASI guest and runs both HTTP
+versions through the real Wasmtime adapters, wire decoder and kernel HTTP policy.
+Run it through `cargo-slot.sh` with an external `CHARIOX_WORKER_DRILL_DIR`.
+It requires no controlled HTTP broker reply or network service, and checks that
+URL authority survives while App-supplied Host remains forbidden. This is a
+policy-boundary regression drill, not installed-App or live network acceptance.
+
+`scripts/sdk-drill.sh` builds the actual C/C++ templates and behavioral components
+from `CHARIOX_SDK_CHECKOUT`, using `CHARIOX_C_TOOLCHAIN`, then runs them in the
+real worker subprocess. Set `CHARIOX_WORKER_SDK_DIR` and
+`CHARIOX_WORKER_DRILL_DIR` outside the checkout, and run through `cargo-slot.sh`.
+The SDK fixture checks stream bytes at EOF, yield cancellation, cancellation
+of a pending import, and exactly-once invocation/coroutine destruction. A
+composed caller writes the canonical cancellation future before SDK entry and
+checks that no App code starts. The exact `STARTED_CANCELLED` import status is
+covered by the frozen SDK native tests; this real-host drill does not force it.
+
+`scripts/wasi-drill.sh` builds the source WASI and migration guests, then runs
+real Wasmtime worker-library checks for both HTTP versions, broker denials,
+scoped data/tmp, traversal/symlink rejection, clocks/random/output and restricted
+migration execution/cancellation/deadlines/traps. Its supervisor replies are
+controlled broker test inputs. These source/process checks are supplementary;
+real signed install/launch, kernel broker, OS containment, relay/client/provider
+and ordinary/managed acceptance still require R4/R5 integration.
+Run the native hostile corpus with `cargo test -p chariox-app-wasm-worker --test
+containment` through the same cargo slot. Its uncontained native probes deliberately
+bypass WASM: ordinary base components already cannot import libc, so they cannot
+demonstrate a native file/socket/spawn escape on R3. Engine tests reject those
+imports and malformed bytes; real source components exercise memory/CPU/huge-output
+rejection, same-App recovery and unrelated-App health under the native boundary.

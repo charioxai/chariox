@@ -7,7 +7,8 @@ use std::io::Read;
 use std::os::unix::fs::PermissionsExt;
 
 const STATE_FILE: &str = "uploads.json";
-const MAX_STATE_BYTES: u64 = 128 * 1024;
+// Covers 256 bounded records, including escaped owner/request identifiers.
+const MAX_STATE_BYTES: u64 = 512 * 1024;
 const MAX_ROOT_ENTRIES: usize = MAX_UPLOADS * 2 + 8;
 
 pub(super) fn read_state(root: &Dir, limits: UploadLimits) -> Result<Option<DurableState>> {

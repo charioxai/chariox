@@ -54,7 +54,7 @@ impl KernelRuntimeState {
             .await
             .map_err(|_| AppRequestErrorCode::StorageUnavailable)?
             .map_err(crate::runtime::app_control::registry_error)?;
-            active.extend(page.installations.into_iter().filter_map(|installation| {
+            active.extend(page.installations.into_iter().filter(|installation| installation.channel == chariox_app_runtime::installation::channel::InstallationChannel::Release).filter_map(|installation| {
                 let installation = crate::runtime::app_control::installation_summary(installation);
                 let release = installation.active_release?;
                 Some((installation.installation_id, installation.app_id, release))

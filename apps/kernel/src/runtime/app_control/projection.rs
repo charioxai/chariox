@@ -13,6 +13,8 @@ fn release(release: ReleaseMetadata) -> AppReleaseSummary {
 pub(super) fn installation(value: Installation) -> AppInstallationSummary {
     let data_kept = value.active.is_none() && value.retained.is_some();
     AppInstallationSummary {
+        channel: value.channel,
+        dev_room_id: value.dev_room_id,
         installation_id: value.installation_id,
         app_id: value.app_id,
         generation: value.generation.to_string(),

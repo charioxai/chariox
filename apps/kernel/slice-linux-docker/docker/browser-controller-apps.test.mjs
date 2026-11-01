@@ -162,7 +162,7 @@ test("bridge call ids differ between documents, so a late answer cannot match a 
   const bridge = connection.sent.find((m) => m.method === "Page.addScriptToEvaluateOnNewDocument").params.source;
   const firstIds = () => {
     const sent = [];
-    const context = vm.createContext({ crypto: globalThis.crypto, __charioxAppCall: (payload) => sent.push(JSON.parse(payload).id) });
+    const context = vm.createContext({ addEventListener() {}, crypto: globalThis.crypto, __charioxAppCall: (payload) => sent.push(JSON.parse(payload).id) });
     vm.runInContext(bridge, context);
     vm.runInContext("chariox.call('list_todos')", context);
     return sent[0];
@@ -226,7 +226,7 @@ test("queues bridge calls bound to the installation and resolves responses", asy
 });
 
 for (const counts of [[80, 0, 0, 0], [20, 20, 20, 20]]) {
-test(`an 80-call backlog (${counts.join("/")}) across four views settles every promise or returns retryable APP_BUSY`, async () => {
+test(`an 80-call backlog (${counts.join("/")}) across four views refuses the overflow and completes it on retry`, async () => {
   const { browser, connection } = fakeBrowser();
   const tabs = new AppTabs(browser);
   const contexts = new Map();
@@ -240,7 +240,8 @@ test(`an 80-call backlog (${counts.join("/")}) across four views settles every p
     const { target_id } = await tabs.open({ origin_label: `app-${i}`, installation_id: `inst-${i}`,
       assets: [asset("index.html", "<p>backlog</p>")] });
     const sessionId = await browser.ensureTargetSession(connection, target_id);
-    const context = vm.createContext({ crypto: globalThis.crypto, __charioxAppCall: (payload) => {
+    const context = vm.createContext({ addEventListener() {}, crypto: globalThis.crypto, Math,
+      setTimeout: (fn) => setTimeout(fn, 0), __charioxAppCall: (payload) => {
       bindings.push(tabs.handle(connection, { method: "Runtime.bindingCalled", sessionId,
         params: { name: "__charioxAppCall", payload } }));
     } });
@@ -260,29 +261,117 @@ test(`an 80-call backlog (${counts.join("/")}) across four views settles every p
   const batch = await tabs.takeCalls();
   assert.equal(batch.calls.length, 64);
   assert.equal(batch.open_targets.length, 4);
-  for (const call of batch.calls) {
-    await tabs.respond({ target_id: call.target_id, document_id: call.document_id, call_id: call.call_id, result: { usage: 1 } });
-  }
-  let timer;
-  try {
-    const results = (await Promise.race([Promise.all(outcomes), new Promise((_, reject) => {
-      timer = setTimeout(() => reject(new Error("view backlog timed out")), 1000);
-    })])).flat();
-    assert.equal(results.length, 80);
-    assert.equal(results.filter((r) => r.ok).length, 64);
-    const busy = results.filter((r) => !r.ok);
-    assert.equal(busy.length, 16);
-    for (const error of busy) {
-      assert.equal(error.code, "APP_BUSY");
-      assert.match(error.message, /queue.*64.*retry after 500 ms/i);
+  // The refused overflow retries once the poll freed capacity.
+  let answered = 0;
+  let settled = false;
+  Promise.all(outcomes).then(() => { settled = true; });
+  const deadline = Date.now() + 5000;
+  let calls = batch.calls;
+  while (!settled && Date.now() < deadline) {
+    for (const call of calls) {
+      answered++;
+      await tabs.respond({ target_id: call.target_id, document_id: call.document_id, call_id: call.call_id, result: { usage: 1 } });
     }
-    // A later request can use the capacity freed by the poll.
-    vm.runInContext("chariox.call('usage')", [...contexts.values()][0]);
-    await Promise.all(bindings);
-    assert.equal((await tabs.takeCalls()).calls.length, 1);
-  } finally { clearTimeout(timer); }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await Promise.all(bindings.splice(0));
+    calls = (await tabs.takeCalls()).calls;
+  }
+  assert.ok(settled, "view backlog timed out");
+  const results = (await Promise.all(outcomes)).flat();
+  assert.equal(results.length, 80);
+  assert.ok(results.every((r) => r.ok), "every call completes after its retry");
+  assert.equal(answered, 80);
 });
 }
+
+test("64 simultaneous view calls all complete when the App admits only 13 at a time", async () => {
+  const { browser, connection } = fakeBrowser();
+  const tabs = new AppTabs(browser);
+  const { target_id } = await tabs.open({ origin_label: "app-1", installation_id: "inst-1",
+    assets: [asset("index.html", "<p>burst</p>")] });
+  const sessionId = await browser.ensureTargetSession(connection, target_id);
+  const bindings = [];
+  const delays = [];
+  const send = connection.send.bind(connection);
+  let context;
+  connection.send = async (method, params, session) => {
+    if (method === "Runtime.evaluate") vm.runInContext(params.expression, context);
+    return send(method, params, session);
+  };
+  context = vm.createContext({ addEventListener() {}, crypto: globalThis.crypto, Math,
+    setTimeout: (fn, ms) => { delays.push(ms); return setTimeout(fn, 0); },
+    __charioxAppCall: (payload) => {
+      bindings.push(tabs.handle(connection, { method: "Runtime.bindingCalled", sessionId,
+        params: { name: "__charioxAppCall", payload } }));
+    } });
+  vm.runInContext(connection.sent.find((m) => m.method === "Page.addScriptToEvaluateOnNewDocument"
+    && m.sessionId === sessionId).params.source, context);
+  const outcomes = vm.runInContext(`
+    Promise.all(Array.from({length:64}, () => chariox.call("usage").then(
+      value => ({ok:true,value}), error => ({ok:false,code:error.code}))))`, context);
+  let admitted = 0;
+  let busy = 0;
+  let settled = false;
+  outcomes.then(() => { settled = true; });
+  const deadline = Date.now() + 5000;
+  while (!settled && Date.now() < deadline) {
+    await Promise.all(bindings.splice(0));
+    for (const [i, call] of (await tabs.takeCalls()).calls.entries()) {
+      const full = i >= 13;
+      busy += full ? 1 : 0;
+      admitted += full ? 0 : 1;
+      await tabs.respond({ target_id: call.target_id, document_id: call.document_id, call_id: call.call_id,
+        ...(full ? { error: { code: "APP_BUSY", message: "app_worker_busy; retry after 500 ms" } } : { result: { usage: 1 } }) });
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.ok(settled, "the burst never settled");
+  const results = await outcomes;
+  assert.equal(results.length, 64);
+  assert.ok(results.every((r) => r.ok), `refused: ${[...new Set(results.filter((r) => !r.ok).map((r) => r.code))]}`);
+  assert.ok(busy > 0 && admitted === 64, "the App must have refused some first attempts");
+  assert.ok(delays.every((ms) => ms >= 500), "retries back off by at least 500 ms");
+});
+
+test("a call that stays busy gives up with APP_BUSY after bounded retries", async () => {
+  const { browser, connection } = fakeBrowser();
+  const tabs = new AppTabs(browser);
+  const { target_id } = await tabs.open({ origin_label: "app-1", installation_id: "inst-1",
+    assets: [asset("index.html", "<p>busy</p>")] });
+  const sessionId = await browser.ensureTargetSession(connection, target_id);
+  const bindings = [];
+  const send = connection.send.bind(connection);
+  let context;
+  connection.send = async (method, params, session) => {
+    if (method === "Runtime.evaluate") vm.runInContext(params.expression, context);
+    return send(method, params, session);
+  };
+  context = vm.createContext({ addEventListener() {}, crypto: globalThis.crypto, Math,
+    setTimeout: (fn) => setTimeout(fn, 0),
+    __charioxAppCall: (payload) => {
+      bindings.push(tabs.handle(connection, { method: "Runtime.bindingCalled", sessionId,
+        params: { name: "__charioxAppCall", payload } }));
+    } });
+  vm.runInContext(connection.sent.find((m) => m.method === "Page.addScriptToEvaluateOnNewDocument"
+    && m.sessionId === sessionId).params.source, context);
+  const outcome = vm.runInContext(`chariox.call("usage").then(v => ({ok:true}), e => ({ok:false,code:e.code}))`, context);
+  let attempts = 0;
+  let settled = false;
+  outcome.then(() => { settled = true; });
+  const deadline = Date.now() + 5000;
+  while (!settled && Date.now() < deadline) {
+    await Promise.all(bindings.splice(0));
+    for (const call of (await tabs.takeCalls()).calls) {
+      attempts++;
+      await tabs.respond({ target_id: call.target_id, document_id: call.document_id, call_id: call.call_id,
+        error: { code: "APP_BUSY", message: "app_worker_busy; retry after 500 ms" } });
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  const { ok, code } = await outcome;
+  assert.ok(!ok && code === "APP_BUSY");
+  assert.equal(attempts, 6, "one call and five retries");
+});
 
 test("a saturated App call queue refuses kernel-owned panel requests with retryable busy", async () => {
   const { tabs, connection } = await opened();
@@ -571,7 +660,7 @@ test("view host helpers only queue the shared copy/link methods, never operate t
   const { connection } = await opened();
   const bridge = connection.sent.find((m) => m.method === "Page.addScriptToEvaluateOnNewDocument").params.source;
   const sent = [];
-  const context = vm.createContext({ crypto: globalThis.crypto, __charioxAppCall: payload => sent.push(JSON.parse(payload)),
+  const context = vm.createContext({ addEventListener() {}, crypto: globalThis.crypto, __charioxAppCall: payload => sent.push(JSON.parse(payload)),
     navigator: { clipboard: { writeText() { assert.fail("App view must not copy directly"); } } },
     open() { assert.fail("App view must not open directly"); } });
   vm.runInContext(bridge, context);
@@ -664,53 +753,47 @@ test("user-domain instances of one App have independent targets and do not adopt
   }
 });
 
-// MP-08/MP-10/MP-11: who an App Tab's calls run as comes from the controller's
-// own record of the input it dispatched there, never from the page.
 const bindingCall = (tabs, connection, call) => tabs.handle(connection, { method: "Runtime.bindingCalled", sessionId: "s1",
   params: { name: "__charioxAppCall", payload: JSON.stringify({ params: {}, ...call }) } });
 const takeActors = async (tabs) => (await tabs.takeCalls()).calls.map((call) => call.actor ?? null);
-const agentOf = (id) => ({ kind: "agent", id });
 
-test("a Tab no agent drove runs its calls as the person; one an agent drove, as that agent", async () => {
+test("ambient calls stay human while a scoped invocation waits and after it settles", async () => {
   const { tabs, connection } = await opened();
-  await bindingCall(tabs, connection, { id: "c1", method: "poll" });
-  assert.deepEqual(await takeActors(tabs), [null]);
-  tabs.noteAgent("t1", "agent-7");
-  // Timers, browser-generated events and the person's own clicks look alike to
-  // the controller: after the agent, none of them is the person's.
-  await bindingCall(tabs, connection, { id: "c2", method: "poll" });
-  assert.deepEqual(await takeActors(tabs), [agentOf("agent-7")]);
-  tabs.noteAgent("unknown", "agent-7");
-});
-
-test("the page cannot name who a call runs as", async () => {
-  const { tabs, connection } = await opened();
-  tabs.noteAgent("t1", "agent-7");
-  for (const origin of ["", null, "agent-8", "*"]) await bindingCall(tabs, connection, { id: `c-${origin}`, method: "poll", origin, actor: null });
-  assert.deepEqual(await takeActors(tabs), Array(4).fill(agentOf("agent-7")));
-});
-
-test("a new document of the Tab keeps the agents that drove it", async () => {
-  const { tabs, connection } = await opened();
-  tabs.noteAgent("t1", "agent-7");
-  await navigated(connection, "doc-2");
-  await bindingCall(tabs, connection, { id: "c1", method: "startup" });
-  assert.deepEqual(await takeActors(tabs), [agentOf("agent-7")]);
-});
-
-test("a Tab two agents drove refuses every call with APP_ACTOR_UNKNOWN", async () => {
-  const { tabs, connection } = await opened();
-  const answers = [];
   const send = connection.send.bind(connection);
-  connection.send = async (method, params, id) => {
-    if (method === "Runtime.evaluate") answers.push(params.expression);
-    return send(method, params, id);
+  let release, entered;
+  const started = new Promise(resolve => { entered = resolve; });
+  connection.send = async (method, params, session) => {
+    if (method === 'Runtime.evaluate' && params.awaitPromise) {
+      entered(); return new Promise(resolve => { release = () => resolve({ result: { value: { ok: true, value: null } } }); });
+    }
+    return send(method, params, session);
   };
-  tabs.noteAgent("t1", "agent-7");
-  tabs.noteAgent("t1", "agent-8");
-  await bindingCall(tabs, connection, { id: "c1", method: "poll" });
-  assert.deepEqual(await takeActors(tabs), []);
-  assert.match(answers.at(-1), /__charioxAppResolve\("c1", false, .*APP_ACTOR_UNKNOWN/);
+  const running = tabs.agent({ target_id: 't1', agent: 'agent-7', call: 'invoke', name: 'save' });
+  await started;
+  await bindingCall(tabs, connection, { id: 'human:1', method: 'save', actor: { kind: 'agent', id: 'agent-8' } });
+  assert.deepEqual(await takeActors(tabs), [null]);
+  const token = tabs.apps.get('s1').invocation.token;
+  await bindingCall(tabs, connection, { id: `invocation:${token}:document:1`, method: 'save' });
+  assert.deepEqual(await takeActors(tabs), [{ kind: 'agent', id: 'agent-7' }]);
+  assert.equal((await tabs.agent({ target_id: 't1', agent: 'agent-8', call: 'invoke', name: 'save' })).code, 'view_busy');
+  release(); await running;
+  for (const value of [token, 'unknown']) {
+    const id = `invocation:${value}:document:2`;
+    await bindingCall(tabs, connection, { id, method: 'save' });
+    assert.match(connection.sent.at(-1).params.expression, /APP_INVOCATION_EXPIRED/);
+  }
+  await bindingCall(tabs, connection, { id: 'human:2', method: 'save' });
+  assert.deepEqual(await takeActors(tabs), [null]);
+});
+
+
+test('ambient backend calls always act as the human, including after navigation', async () => {
+  const {tabs,connection}=await opened();
+  for (const id of ['agent-one','agent-two']) await bindingCall(tabs,connection,{id,method:'save',actor:{kind:'agent',id}});
+  assert.deepEqual(await takeActors(tabs),[null,null]);
+  await navigated(connection,'document-two');
+  await bindingCall(tabs,connection,{id:'startup',method:'load'});
+  assert.deepEqual(await takeActors(tabs),[null]);
 });
 
 // MP-08/MP-10/MP-11: a second App calls during navigation, before the kernel binds it.
@@ -831,4 +914,185 @@ test('opening an unchanged App focuses its existing document without navigating'
  assert.deepEqual(again,result);assert(connection.sent.some(x=>x.method==='Target.activateTarget'));
  assert(!connection.sent.some(x=>['Page.navigate','Page.reload'].includes(x.method)),'an unchanged focus must not invalidate current input references');
  assert.equal([...tabs.apps.values()][0].ready,true);
+});
+
+test("MP-08/MP-10 A3: background open is unprojected and human adoption keeps its document", async () => {
+  const { browser, connection } = fakeBrowser();
+  const tabs = new AppTabs(browser);
+  const params = { origin_label: "background", installation_id: "todo", assets: [asset("index.html", "state")] };
+  const first = await tabs.open({ ...params, projection: { kind: "agent", agent: "agent-1" } });
+  const app = [...tabs.apps.values()][0];
+  assert.equal(app.background, true);
+  assert.equal(connection.sent.some(item => item.method === "Target.activateTarget"), false);
+  assert.equal(connection.sent.some(item => item.method === "Browser.setWindowBounds"), false);
+  connection.sent.length = 0;
+  assert.deepEqual(await tabs.open({ ...params, projection: { kind: "agent", agent: "agent-1" } }), first);
+  assert.equal(app.background, true);
+  assert.deepEqual(await tabs.open(params), first);
+  assert.equal(app.background, false);
+  assert.equal(connection.created, 1);
+  assert.equal(connection.sent.filter(item => item.method === "Page.navigate").length, 0);
+  assert.ok(connection.sent.some(item => item.method === "Target.activateTarget"));
+  // A catalog read after adoption cannot hide the person's Tab again.
+  await tabs.open({ ...params, projection: { kind: "agent", agent: "agent-1" } });
+  assert.equal(app.background, false);
+});
+
+test("MP-09/MP-10 A3: default idle is ten minutes and admitted work survives idle cleanup", async () => {
+  const { browser, connection } = fakeBrowser();
+  let now = 0;
+  const tabs = new AppTabs(browser, { now: () => now });
+  const params = { origin_label: "idle", installation_id: "todo", projection: { kind: "agent", agent: "agent-1" }, assets: [asset("index.html", "state")] };
+  await tabs.open(params);
+  const app = [...tabs.apps.values()][0];
+  now = 599999;
+  await tabs.retireIdle();
+  assert.equal(tabs.apps.size, 1);
+  app.agentRunning = Promise.resolve();
+  now = 600001;
+  await tabs.retireIdle();
+  assert.equal(tabs.apps.size, 1);
+  app.agentRunning = null;
+  now += 599999;
+  await tabs.retireIdle();
+  assert.equal(tabs.apps.size, 1);
+  app.pending.add("backend-call");
+  now += 2;
+  await tabs.retireIdle();
+  assert.equal(tabs.apps.size, 1);
+  app.pending.clear();
+  now += 600001;
+  await tabs.retireIdle();
+  assert.equal(tabs.apps.size, 0);
+  assert.ok(connection.sent.some(item => item.method === "Target.closeTarget"));
+  const reopened = await tabs.open(params);
+  assert.equal(reopened.target_id, "t2");
+});
+
+test("MP-09/MP-10 A3: a live Room viewer retains adopted Tabs, detached viewers do not", async () => {
+  const { browser } = fakeBrowser();
+  let now = 0;
+  const tabs = new AppTabs(browser, { idleMs: 30, now: () => now });
+  await tabs.open({ origin_label: "viewer", installation_id: "todo", assets: [asset("index.html", "state")] });
+  browser.roomDisplay = { displays: new Map([["viewer", { expires: Date.now() + 60000, suspended: false }]]) };
+  now = 31;
+  await tabs.retireIdle();
+  assert.equal(tabs.apps.size, 1);
+  browser.roomDisplay.displays.clear();
+  now += 29;
+  await tabs.retireIdle();
+  assert.equal(tabs.apps.size, 1);
+  now += 2;
+  await tabs.retireIdle();
+  assert.equal(tabs.apps.size, 0);
+});
+
+test("background startup calls stay human before and after adoption", async () => {
+  const { browser, connection } = fakeBrowser();
+  let now = 0;
+  const tabs = new AppTabs(browser, { now: () => now });
+  const params = { origin_label: "startup", installation_id: "todo", assets: [asset("index.html", "state")] };
+  await tabs.open({ ...params, projection: { kind: "agent", agent: "agent-1" } });
+  const app = [...tabs.apps.values()][0];
+  await bindingCall(tabs, connection, { id:'startup', method:'load' });
+  assert.deepEqual(await takeActors(tabs), [null]);
+  now = 100;
+  tabs.noteActivity(app.targetId);
+  assert.equal(app.lastActivity, 100);
+  await tabs.open(params);
+  await bindingCall(tabs, connection, { id:'adopted', method:'load' });
+  assert.deepEqual(await takeActors(tabs), [null]);
+});
+
+test("MP-09/MP-10 A3: a concurrent open waits for retirement and failed closes retry", async () => {
+  const { browser } = fakeBrowser();
+  let now = 0, release;
+  const tabs = new AppTabs(browser, { idleMs: 1, now: () => now });
+  const params = { origin_label: "retiring", installation_id: "todo", assets: [asset("index.html", "state")] };
+  await tabs.open({ ...params, projection: { kind: "agent", agent: "agent-1" } });
+  const originalClose = browser.closePageTarget;
+  browser.closePageTarget = () => new Promise(resolve => { release = resolve; });
+  now = 2;
+  const retiring = tabs.retireIdle();
+  await new Promise(resolve => setImmediate(resolve));
+  const refused = await tabs.agent({ target_id: "t1", agent: "agent-1", call: "state" });
+  assert.equal(refused.code, "view_retired");
+  const adopting = tabs.open(params);
+  release();
+  await retiring;
+  assert.equal((await adopting).target_id, "t2");
+  let rejectClose;
+  browser.closePageTarget = () => new Promise((_, reject) => { rejectClose = reject; });
+  now = 4;
+  const failedRetirement = tabs.retireIdle();
+  await new Promise(resolve => setImmediate(resolve));
+  const racingOpen = tabs.open(params);
+  const acceptedOpen = assert.doesNotReject(racingOpen);
+  rejectClose(new Error('CDP close unavailable'));
+  await failedRetirement;
+  await acceptedOpen;
+  assert.equal((await racingOpen).target_id, "t2", "failed retirement leaves the live Tab available");
+  browser.closePageTarget = async () => { throw new Error('CDP close unavailable'); };
+  now = 6;
+  await tabs.retireIdle();
+  assert.equal(tabs.apps.size, 1);
+  browser.closePageTarget = originalClose;
+  await tabs.retireIdle();
+  assert.equal(tabs.apps.size, 0);
+});
+
+test("MP-09/MP-11 A3: a failed idle close cannot starve another App's admitted backend call", async t => {
+  const { browser, connection } = fakeBrowser();
+  const warnings = t.mock.method(console, "error", () => {});
+  let now = 0;
+  const tabs = new AppTabs(browser, { idleMs: 1, now: () => now });
+  for (const name of ["idle", "working"]) {
+    await tabs.open({ origin_label: name, installation_id: name,
+      projection: { kind: "agent", agent: "agent-1" }, assets: [asset("index.html", "state")] });
+  }
+  await navigated(connection, "doc1");
+  await navigated(connection, "doc2", "s-t2");
+  browser.closePageTarget = async () => { throw new Error("CDP close unavailable"); };
+  now = 2;
+  await connection.emit({ method: "Runtime.bindingCalled", sessionId: "s-t2",
+    params: { name: "__charioxAppCall", payload: JSON.stringify({ id: "admitted", method: "usage" }) } });
+  const batch = await tabs.takeCalls();
+  assert.equal(batch.calls[0].call_id, "admitted");
+  assert.equal(batch.calls[0].target_id, "t2");
+  assert.equal(warnings.mock.callCount(), 1);
+  await tabs.retireIdle();
+  assert.equal(warnings.mock.callCount(), 1, "a repeated close failure does not flood diagnostics");
+});
+
+test('a token that retires while document lookup waits cannot admit a backend call', async () => {
+  const {tabs,connection} = await opened();
+  const send = connection.send.bind(connection);
+  let finishAction, finishDocument, enteredAction, enteredDocument;
+  const actionStarted = new Promise(resolve=>{enteredAction=resolve;});
+  const documentStarted = new Promise(resolve=>{enteredDocument=resolve;});
+  connection.send = async (method,params,session) => {
+    if(method==='Runtime.evaluate'&&params.awaitPromise) {
+      enteredAction(); return new Promise(resolve=>{finishAction=()=>resolve({result:{value:{ok:true,value:null}}});});
+    }
+    if(method==='Page.getFrameTree') {
+      enteredDocument(); return new Promise(resolve=>{finishDocument=()=>resolve({frameTree:{frame:{loaderId:'document-found'}}});});
+    }
+    return send(method,params,session);
+  };
+  // The first binding can arrive before the initial loader event.
+  tabs.apps.get('s1').document=null;
+  const running=tabs.agent({target_id:'t1',agent:'agent-one',call:'invoke',name:'save'});
+  await actionStarted;
+  const token=tabs.apps.get('s1').invocation.token;
+  const sending=bindingCall(tabs,connection,{id:`invocation:${token}:document:1`,method:'save'});
+  await documentStarted;
+  finishAction(); await running;
+  finishDocument(); await sending;
+});
+
+test('an unknown invocation token is refused before the action bridge is available', async () => {
+  const {tabs,connection}=await opened();
+  await bindingCall(tabs,connection,{id:'invocation:unknown:document:1',method:'save'});
+  assert.deepEqual(tabs.calls,[]);
+  assert.match(connection.sent.at(-1).params.expression,/APP_INVOCATION_EXPIRED/);
 });

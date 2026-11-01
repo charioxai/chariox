@@ -63,6 +63,8 @@ pub enum LocalDaemonResponse {
     AppInstallationJournal { installation_id: String, updates: Vec<AppUpdateSummary>, },
     AppDataSnapshotRestored { installation_id: String, generation: String, snapshot_id: String, },
     AppRequestFailed { code: AppRequestErrorCode, },
+    AppDevPushBuilding { request_id: String },
+    AppDevPushFailed { request_id: String, code: AppDevPushFailureCode, message: String },
     AppWorker { worker: AppWorkerSummary, },
     AppAutomations { installation_id: String, automations: Vec<AppAutomationSummary>, },
     AppAutomation { installation_id: String, automation: AppAutomationSummary, },
@@ -73,6 +75,8 @@ pub enum LocalDaemonResponse {
     UserAppViewCallResult { result: Option<serde_json::Value>, error: Option<AppViewChannelError> },
     UserAppViewsChanged { cursor: u64, views: Vec<UserAppView>, interactions: Vec<crate::session::RuntimeInteraction> },
     UserDomainInteractionAnswered { interaction_id: String },
+    /// `target_id` is the logical Room Tab ID, for subsequent inspection reads.
+    AppViewInspected { installation_id: String, target_id: String, generation: String, development: bool, catalog_json: String },
     AppViewOpened { installation_id: String, target_id: String, origin: String, bound_agent_id: Option<String>, },
     /// The user's panel choice for the App's views in this session.
     AppViewPanelSet { installation_id: String, placement: Option<crate::session::AppPanelPlacement>, minimized: bool, },

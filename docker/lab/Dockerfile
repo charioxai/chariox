@@ -11,7 +11,7 @@ RUN pnpm install --frozen-lockfile
 COPY apps/cli apps/cli
 RUN pnpm --filter @chariox/cli run build
 
-FROM rust:1.88-bookworm AS rust-builder
+FROM rust:1.99.0-bookworm AS rust-builder
 WORKDIR /opt/chariox
 COPY apps/relay apps/relay
 COPY apps/kernel apps/kernel

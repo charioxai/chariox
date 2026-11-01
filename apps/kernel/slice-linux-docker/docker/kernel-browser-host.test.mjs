@@ -28,7 +28,7 @@ test('MP-08 / MP-11: Chromium temporary sockets use the held private directory t
   for (const pid of [0, 1, -1, NaN]) assert.throws(() => chromiumTemporaryEnvironment(environment, 5, pid));
 });
 
-function fixture(root) {
+function fixture(root, { realCdp = false } = {}) {
   fixture.popups = [];
   const pages = new Map();
   let next = 0;
@@ -36,6 +36,7 @@ function fixture(root) {
   const sent = [];
   const connection = {
     isOpen: () => true,
+    close: async () => {},
     subscribe: handler => { handlers.add(handler); return () => handlers.delete(handler); },
     send: async (method, params, session) => {
       if (connection.beforeSend) await connection.beforeSend(method, params, session);
@@ -43,6 +44,7 @@ function fixture(root) {
       if (method === "Target.getTargets") return { targetInfos: [...pages].map(([targetId, tab]) => ({ targetId, type: "page", ...tab })) };
       if (method === 'Target.getTargetInfo') return {targetInfo:pages.get(params.targetId)};
       if (method === "Target.createTarget") { const id = `target-${++next}`; pages.set(id, { url: params.url }); return { targetId: id }; }
+      if (method === "Target.attachToTarget") return { sessionId: `session-${params.targetId}` };
       if (method === "Target.closeTarget") {
         pages.delete(params.targetId);
         if (pages.size === 0 && chromium.child) chromium.child.exitCode = 0;
@@ -74,12 +76,13 @@ function fixture(root) {
     clearViewport: async target => connection.send('Emulation.clearDeviceMetricsOverride', {}, `session-${target}`),
     inputCapture: { hold: async()=>async()=>{}, run: async (_connection, _session, operation) => operation() },
   });
-  return { host: new KernelBrowserHost(root, { chromium, browserFactory }), chromium, handlers, sent, pages, connection };
+  return { host: new KernelBrowserHost(root, { chromium, browserFactory: realCdp
+    ? () => new BrowserCdpClient({ connectionFactory: async () => connection }) : browserFactory }), chromium, handlers, sent, pages, connection };
 }
 
-async function using(callback) {
+async function using(callback, options) {
   const root = await mkdtemp(path.join(os.tmpdir(), "chariox-md2-test-"));
-  const context = fixture(root);
+  const context = fixture(root, options);
   try { await callback(context, root); } finally { fixture.secretFocused = false; fixture.protectedField = false; await context.host.stop(); await rm(root, { recursive: true, force: true }); }
 }
 
@@ -605,9 +608,8 @@ test("MD-3: bound capture carries the captured document and rejects a capture na
 test("MP-08/MP-11: agents drive App tabs only with the kernel's App view claim; App tabs are not restored", () => using(async ({ host, sent }, root) => {
   const opened = await host.request({op:"open",url:"https://app.a.invalid/"});
   const target = host.tabs.get(opened.tab_id).target_id;
-  const inputs = [];
-  host.browser.appTabs = {apps:new Map([["app", {targetId:target, origin:"https://app.a.invalid"}]]),
-    noteAgent: (targetId, agent) => inputs.push([targetId, agent])};
+  host.browser.appTabs = {apps:new Map([["app", {targetId:target, origin:"https://app.a.invalid"}]]), noteActivity() {},
+    async input(app, agent, dispatch) { assert.equal(agent, 'agent-7'); return dispatch(12345); }};
   const agent = {focused_agent:true,_agent_input:true,observed_by:"agent:agent-7"};
   const command = {op:"input",tab_id:opened.tab_id,generation:opened.generation,document_id:`doc-${target}`,input:{kind:"click",x:12,y:20}};
   for (const op of ["input", "navigate", "close"]) {
@@ -617,18 +619,12 @@ test("MP-08/MP-11: agents drive App tabs only with the kernel's App view claim; 
   const claimed = {...command,...agent,_app_view_tab:opened.tab_id};
   await host.request(claimed);
   assert(sent.some(call=>call.method==="Input.dispatchMouseEvent"));
-  assert.deepEqual(inputs, [[target, "agent-7"]]);
   await host.request({...command});
-  // A person's input is not an agent's: the Tab's record does not change.
-  assert.deepEqual(inputs.slice(1), []);
   // The App page stays on its own origin, whoever navigates it.
   await assert.rejects(host.request({...claimed,op:"navigate",url:"https://example.com/"}), error => error.code === "user_domain_not_granted");
   await assert.rejects(host.request({...command,op:"navigate",url:"https://example.com/"}), error => error.code === "user_domain_not_granted");
-  // An agent's navigation is its input too.
-  inputs.length = 0;
   await host.request({...claimed,op:"navigate",url:"https://app.a.invalid/list"});
   await host.request({...command,op:"navigate",url:"https://app.a.invalid/"});
-  assert.deepEqual(inputs, [[target, "agent-7"]]);
   const {readFile} = await import("node:fs/promises");
   assert.deepEqual(JSON.parse(await readFile(path.join(root,"tabs.json"),"utf8")).tabs, []);
   await host.request({...claimed,op:"close"});
@@ -2593,3 +2589,79 @@ test('MP-08/MP-10/MP-11: a crash arriving during inventory does not cancel recov
   assert.equal(browser.rendererRecovery.crashed.size, 0);
   assert.equal(sent.filter(call => call.method === 'Page.reload').length, 0, 'pressure must hold recovery while close stays usable');
 }));
+
+test('MP-08 / MP-10 user-domain App open and bridge polling keep the native Chrome window', () => using(async ({host, sent}) => {
+  const params = {origin_label:'native-app',installation_id:'installation-1',assets:[{path:'index.html',content_type:'text/html',body_base64:Buffer.from('<canvas/>').toString('base64')}]};
+  const opened = await host.handle({id:1,method:'browser.app.open',params});
+  assert.equal(opened.ok,true,JSON.stringify(opened));
+  assert.equal(sent.find(call=>call.method==='Target.createTarget' && call.params.newWindow!==undefined)?.params.newWindow,false);
+  await host.handle({id:2,method:'browser.app.open',params});
+  await host.handle({id:3,method:'browser.app.calls',params:{wait_ms:0}});
+  assert(!sent.some(call=>call.method==='Browser.setWindowBounds' && call.params.bounds.windowState==='fullscreen'));
+}));
+
+test('MP-08 / MP-10 opening and reopening an App refresh its native window before exposure', () => using(async ({host}) => {
+  host.chromium.display = {};
+  let nativeTarget = null;
+  host.chromeWindows.resolve = async () => { nativeTarget = [...host.tabs.values()].at(-1)?.target_id ?? null };
+  const params = {origin_label:'native-app',installation_id:'installation-1',assets:[{path:'index.html',content_type:'text/html',body_base64:Buffer.from('<canvas/>').toString('base64')}]};
+  const first = await host.handle({id:1,method:'browser.app.open',params});
+  assert.equal(first.ok,true,JSON.stringify(first));
+  assert.equal(nativeTarget,first.result.target_id);
+  nativeTarget = 'retired-window';
+  const reopened = await host.handle({id:2,method:'browser.app.open',params});
+  assert.equal(reopened.ok,true,JSON.stringify(reopened));
+  assert.equal(nativeTarget,reopened.result.target_id);
+}));
+
+test('MP-08 / MP-10 a mirror stays inside the owned native page viewport', () => using(async ({host,chromium}) => {
+  const previous=process.env.CHARIOX_KERNEL_BROWSER_MIRROR;
+  process.env.CHARIOX_KERNEL_BROWSER_MIRROR='1';
+  try {
+    const opened=await host.request({op:'open',url:'about:blank'}),tab=host.tabs.get(opened.tab_id),applied=[];
+    chromium.desktop={};
+    host.browser.nativeViewport=async target=>({target_id:target,width:1272,height:709});
+    host.browser.setLayout=async(target,layout)=>{applied.push({target,layout})};
+    host.mirror.v2.begin=()=>{};
+    const subscribe=options=>host.request({op:'mirror_subscribe',tab_id:tab.tab_id,generation:host.generation,device_scale_factor:1,wire:2,...options});
+    await subscribe({layout_width:1920,layout_height:1080});
+    assert.deepEqual(host.pageSize(tab.tab_id),{width:1272,height:708},'the native viewport, rounded inward for the codec, bounds the canonical page');
+    assert.deepEqual(applied.at(-1),{target:tab.target_id,layout:{width:1272,height:708}});
+    await subscribe({layout_width:900,layout_height:500});
+    assert.deepEqual(host.pageSize(tab.tab_id),{width:900,height:500},'a smaller viewer keeps its requested layout');
+    host.browser.nativeViewport=async()=>null;
+    await assert.rejects(subscribe({}),{code:'user_domain_stale_reference'});
+    assert.deepEqual(host.pageSize(tab.tab_id),{width:900,height:500},'an unavailable native query does not publish a partial layout');
+  } finally {
+    delete chromium.desktop;
+    if(previous===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_MIRROR;else process.env.CHARIOX_KERNEL_BROWSER_MIRROR=previous;
+  }
+}));
+
+test('MP-08 / MP-10 an App mirror applies its native cap through CDP before publication', () => using(async ({host,chromium,sent}) => {
+  const previous=process.env.CHARIOX_KERNEL_BROWSER_MIRROR;
+  process.env.CHARIOX_KERNEL_BROWSER_MIRROR='1';
+  try {
+    const opened=await host.handle({id:1,method:'browser.app.open',params:{origin_label:'layout-app',installation_id:'layout-app',assets:[{path:'index.html',content_type:'text/html',body_base64:Buffer.from('<button style="position:fixed;right:0;bottom:0">Save</button>').toString('base64')}]}});
+    assert.equal(opened.ok,true,JSON.stringify(opened));
+    const tab=[...host.tabs.values()].find(tab=>tab.target_id===opened.result.target_id);
+    assert([...host.browser.appTabs.apps.values()].some(app=>app.targetId===tab.target_id));
+    chromium.desktop={};
+    host.browser.nativeViewport=async target=>({target_id:target,width:1272,height:709});
+    const applied=()=>sent.filter(call=>call.method==='Emulation.setDeviceMetricsOverride'&&call.session===`session-${tab.target_id}`).at(-1)?.params;
+    let publications=0;
+    host.mirror.v2.begin=()=>{
+      const size=host.pageSize(tab.tab_id),metrics=applied();
+      assert.deepEqual({width:metrics.width,height:metrics.height},size,'the App must be resized before the mirror starts');
+      publications++;
+    };
+    await host.request({op:'mirror_subscribe',tab_id:tab.tab_id,generation:host.generation,device_scale_factor:1,wire:2,layout_width:1920,layout_height:1080});
+    assert.equal(publications,1);
+    assert.deepEqual(host.pageSize(tab.tab_id),{width:1272,height:708});
+    await host.browser.setLayout(tab.target_id,null);
+    assert.deepEqual({width:applied().width,height:applied().height},{width:1280,height:800});
+  } finally {
+    delete chromium.desktop;
+    if(previous===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_MIRROR;else process.env.CHARIOX_KERNEL_BROWSER_MIRROR=previous;
+  }
+}, {realCdp:true}));

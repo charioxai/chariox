@@ -66,7 +66,7 @@ impl BrowserControllerProcessStore {
                 supervisor
                     .backend
                     .begin_observation_request(request.method(), request.params())?,
-                supervisor.backend.timeout,
+                request_timeout(supervisor.backend.timeout, request),
             )
         };
         pending
@@ -74,6 +74,21 @@ impl BrowserControllerProcessStore {
             .map_err(|error| format!("{}: {error}", request.method()))?
             .into_result(request.method())
             .map(Some)
+    }
+}
+
+/// An agent call runs the App's own function in the page, for as long as its
+/// deadline: the transport waits that long on top of its usual round trip, so
+/// the page's `deadline` answer arrives before the process is given up on.
+fn request_timeout(
+    base: std::time::Duration,
+    request: &BrowserAppViewRequest,
+) -> std::time::Duration {
+    match request {
+        BrowserAppViewRequest::Agent { deadline_ms, .. } => {
+            base.saturating_add(std::time::Duration::from_millis(*deadline_ms))
+        }
+        _ => base,
     }
 }
 
@@ -284,5 +299,26 @@ done
             assert!(reply.join().unwrap().is_ok());
         }
         store.release("room").unwrap();
+    }
+
+    #[test]
+    fn an_agent_call_waits_for_its_deadline_on_top_of_the_round_trip() {
+        use crate::runtime::browser_controller_app_view::ViewAgentCallKind;
+        let base = std::time::Duration::from_secs(10);
+        let agent = |deadline_ms| BrowserAppViewRequest::Agent {
+            target_id: "t".into(),
+            agent: "a".into(),
+            call: ViewAgentCallKind::State,
+            name: None,
+            input: None,
+            since: None,
+            wait_ms: None,
+            deadline_ms,
+        };
+        assert_eq!(
+            request_timeout(base, &agent(20_000)),
+            std::time::Duration::from_secs(30)
+        );
+        assert_eq!(request_timeout(base, &BrowserAppViewRequest::Calls), base);
     }
 }

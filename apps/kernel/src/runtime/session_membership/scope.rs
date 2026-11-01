@@ -42,6 +42,9 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::ExtendKernelSudo(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
+        LocalDaemonRequest::InspectAppView(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
         LocalDaemonRequest::OpenAppView(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
@@ -666,6 +669,8 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::GetAppPublisherEnrollment(_)
         | LocalDaemonRequest::CancelAppPublisherEnrollment(_)
         | LocalDaemonRequest::BeginAppInstall(_)
+        | LocalDaemonRequest::BeginAppDevPush(_)
+        | LocalDaemonRequest::GetAppDevPush(_)
         | LocalDaemonRequest::BeginAppUpdate(_)
         | LocalDaemonRequest::GetAppInstallOperation(_)
         | LocalDaemonRequest::CancelAppInstallOperation(_)
