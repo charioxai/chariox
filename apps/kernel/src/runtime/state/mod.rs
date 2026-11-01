@@ -218,8 +218,9 @@ pub(crate) struct KernelRuntimeState {
 }
 
 /// (task, worker kernel, lease) of a leased task whose worker did not answer.
-type UncertainLeasedTasks =
-    Arc<std::sync::Mutex<BTreeMap<(String, String, String), leased_task_connectivity::Uncertainty>>>;
+type UncertainLeasedTasks = Arc<
+    std::sync::Mutex<BTreeMap<(String, String, String), leased_task_connectivity::Uncertainty>>,
+>;
 
 #[derive(Clone)]
 struct KernelRuntimeOwnedState {
