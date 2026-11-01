@@ -217,7 +217,7 @@ impl KernelRuntimeState {
         })
     }
 
-    pub(super) async fn save_handoff_secret(
+    pub(in crate::runtime::state) async fn save_handoff_secret(
         &self,
         handoff: &RuntimeHandoff,
         key: &str,
@@ -240,8 +240,9 @@ impl KernelRuntimeState {
         };
         let service = self.home_runtime_secret_service()?;
         let registry = crate::credential::CharioxCredentialRegistry::user()?;
-        self.upsert_observed_vault_credential(&service, &registry, credential, value, false)
+        // The owner chose this key and typed this value: it replaces a Vault value that has no
+        // record. An existing record of another use stays; only the agent flows ask for `overwrite`.
+        self.save_owner_handoff_credential(&service, &registry, credential, value)
             .await
-            .map(|_| ())
     }
 }

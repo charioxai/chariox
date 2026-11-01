@@ -239,6 +239,7 @@ impl CharioxUserConfig {
         self.state.validate()?;
         self.slices.validate()?;
         self.kernel_access.validate()?;
+        self.secret_link.validate()?;
         validate_non_empty("credential_vault.service", &self.credential_vault.service)?;
         validate_non_empty("credential_vault.path", &self.credential_vault.path)?;
         validate_credential_vault_path(&self.credential_vault.path)?;

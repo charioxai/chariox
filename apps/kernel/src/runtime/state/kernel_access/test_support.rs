@@ -63,6 +63,117 @@ impl KernelRuntimeState {
     }
 
     pub(crate) async fn control_access_for_test(&self, action: &str, vault: &std::path::Path) {
+        if let Some(handle) = action.strip_prefix("vault-secret-sha256:") {
+            use sha2::Digest;
+            let user_config = self.owned.config_projection.snapshot().user_config;
+            let service = crate::secret::RuntimeSecretService::with_vault_config(
+                crate::credential::load_user_credentials().unwrap(),
+                &user_config.credential_vault,
+            )
+            .unwrap();
+            let value = service.vault_secret_for_dictation(handle).unwrap().unwrap();
+            std::fs::write(
+                vault.parent().unwrap().join("vault-secret-sha256"),
+                format!("{:x}", sha2::Sha256::digest(value.as_bytes())),
+            )
+            .unwrap();
+            return;
+        }
+        if let Some(handle) = action.strip_prefix("credential-hosts:") {
+            let credential = crate::credential::load_user_credentials()
+                .unwrap()
+                .into_iter()
+                .find(|credential| credential.id == handle)
+                .unwrap();
+            std::fs::write(
+                vault.parent().unwrap().join("credential-hosts"),
+                credential.allowed_hosts.join("\n"),
+            )
+            .unwrap();
+            return;
+        }
+        if let Some(seed) = action.strip_prefix("seed-credential:") {
+            let (handle, vault_key) = seed.split_once('|').unwrap();
+            let user_config = self.owned.config_projection.snapshot().user_config;
+            let service = crate::secret::RuntimeSecretService::with_vault_config(
+                crate::credential::load_user_credentials().unwrap(),
+                &user_config.credential_vault,
+            )
+            .unwrap();
+            let registry = crate::credential::CharioxCredentialRegistry::user().unwrap();
+            service
+                .upsert_vault_backed_credential_with_secret(
+                    &registry,
+                    crate::config::UserCredentialConfig {
+                        id: handle.into(),
+                        description: Some("Owner key".into()),
+                        source: crate::config::UserCredentialSourceConfig::Vault {
+                            key: vault_key.into(),
+                        },
+                        allowed_hosts: vec!["api.example.com".into()],
+                        allowed_uses: vec![
+                            crate::config::UserCredentialUse::Http,
+                            crate::config::UserCredentialUse::Mcp,
+                        ],
+                        injection: crate::config::UserCredentialInjectionConfig::Header {
+                            name: "x-api-key".into(),
+                            value: "${secret}".into(),
+                        },
+                        metadata: None,
+                    },
+                    "seed-value",
+                    false,
+                )
+                .unwrap();
+            return;
+        }
+        if let Some(handle) = action.strip_prefix("remove-credential-record:") {
+            crate::credential::CharioxCredentialRegistry::user()
+                .unwrap()
+                .remove(handle)
+                .unwrap();
+            return;
+        }
+        if let Some(handle) = action.strip_prefix("credential-record:") {
+            let credential = crate::credential::load_user_credentials()
+                .unwrap()
+                .into_iter()
+                .find(|credential| credential.id == handle)
+                .unwrap();
+            std::fs::write(
+                vault.parent().unwrap().join("credential-record"),
+                serde_json::to_string(&credential).unwrap(),
+            )
+            .unwrap();
+            return;
+        }
+        if let Some(check) = action.strip_prefix("credential-policy:") {
+            let (handle, url) = check.split_once('|').unwrap();
+            let user_config = self.owned.config_projection.snapshot().user_config;
+            let service = crate::secret::RuntimeSecretService::with_vault_config(
+                crate::credential::load_user_credentials().unwrap(),
+                &user_config.credential_vault,
+            )
+            .unwrap();
+            let verdict = match service.prepare_http_request_with_credential(
+                crate::secret::CredentialHttpRequest {
+                    credential_id: handle.into(),
+                    method: "GET".into(),
+                    url: url.into(),
+                    headers: Default::default(),
+                    body_text: None,
+                    body_json: None,
+                    timeout_ms: 1_000,
+                    max_response_bytes: 1_024,
+                },
+            ) {
+                Ok(_) => "ok".to_owned(),
+                Err(DaemonError::LocalTransport { operation, .. }) => operation.to_owned(),
+                Err(other) => other.to_string(),
+            };
+            std::fs::write(vault.parent().unwrap().join("credential-policy"), verdict).unwrap();
+            return;
+        }
         if self.control_credential_access_for_test(action, vault).await {
             return;
         }

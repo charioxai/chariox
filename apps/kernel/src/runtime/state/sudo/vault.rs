@@ -167,7 +167,7 @@ fn committed(
 }
 
 /// Deterministic per request so a lost acknowledgement never mints a second value.
-fn generated_handle(turn: &KernelSudoTurn, request_id: &str) -> String {
+pub(super) fn generated_handle(turn: &KernelSudoTurn, request_id: &str) -> String {
     let digest = Sha256::digest(
         [
             turn.owner_user_id.as_str(),

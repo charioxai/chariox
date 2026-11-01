@@ -221,7 +221,7 @@ export type PasskeyPromptClosure = {
 export type PasskeyPrompt = {
   sudo_request?: SudoRequestPresentation | null
   requester?: KernelAccessRequester | null
-  kind: "critical_approval" | "access_grant" | "access_extension" | "sudo"
+  kind: "critical_approval" | "access_grant" | "access_extension" | "sudo" | "vault_secret"
   /** Protocol 568: the term an access popup starts on; absent for sudo and critical approvals. */
   term?: KernelAccessTerm | null
   /** Sudo windows only since protocol 568. */
@@ -550,3 +550,6 @@ export type KernelSudoExtendedResponse = { KernelSudoExtended: { turn: KernelSud
 
 export type RequestKernelSudoRequest = { agent_id: string; prompt: string }
 export type KernelSudoRequestedResponse = { KernelSudoRequested: { agent_id: string } }
+export type VaultSecretStatus = "pending" | "stored" | "cancelled" | "timed_out"
+export type VaultSecretRequestedResponse = { VaultSecretRequested: { interaction_id: string; link: string; expires_at: number; credential_id: string } }
+export type VaultSecretStatusResponse = { VaultSecretStatusReported: { interaction_id: string; credential_id: string; status: VaultSecretStatus } }

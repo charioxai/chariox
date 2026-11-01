@@ -55,6 +55,7 @@ mod terminal_command_catalog;
 mod terminal_interaction;
 mod usage_snapshot;
 mod user_domain_access;
+mod vault_secret;
 mod waiting_room;
 mod workflow;
 mod workflow_notification;
@@ -105,6 +106,7 @@ pub use terminal_command_catalog::*;
 pub use terminal_interaction::*;
 pub use usage_snapshot::*;
 pub use user_domain_access::*;
+pub use vault_secret::*;
 pub use waiting_room::*;
 pub use workflow::*;
 pub use workflow_notification::*;
@@ -415,6 +417,8 @@ pub use workspace::*;
 /// viewer that shows the page as video.
 /// Version 923 adds `UnlockCredentialVault`: the owner's own client unlocks the kernel's
 /// existing Vault with no session or agent (`CredentialVaultUnlocked`).
+/// Version 929 adds `RequestVaultSecret` and `GetVaultSecretStatus` for an outside agent that needs a Vault value
+/// the owner types in a connected client or on a link's page, and `PasskeyPromptKind::VaultSecret` for that popup.
 /// Landing union 923 carries 913 (`SessionState` `processes`), 917 (direct browser sessions over WebRTC),
 /// 919 (user-side browser frame stream removed, `display_ack` `paused`), 920 (mirror `document_mode`,
 /// `pointer_cursor`) and 923 (session-less Vault unlock).
@@ -430,4 +434,4 @@ pub use workspace::*;
 /// Allocated 928 adds `question` (the decision as the person sees it) to a pending outside `Interaction`
 /// event and `resolution` (`via`, `choice_id`) to a resolved one; an answer to a closed decision fails with
 /// the stable `interaction_closed`.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 928;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 929;

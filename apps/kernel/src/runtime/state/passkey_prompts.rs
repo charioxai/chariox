@@ -146,6 +146,36 @@ pub(super) fn passkey_prompt_for_scope(
     })))
 }
 
+/// The popup for an outside agent's Vault value request: the approve choice is the secret
+/// the owner types, the refuse choice cancels.
+pub(super) fn vault_secret_prompt(
+    scope: &str,
+    interaction: &RuntimeInteraction,
+    registered_at_ms: u64,
+) -> Arc<PasskeyPrompt> {
+    Arc::new(PasskeyPrompt {
+        sudo_request: None,
+        requester: None,
+        kind: PasskeyPromptKind::VaultSecret,
+        session_id: scope.to_owned(),
+        session_alias: None,
+        interaction_id: interaction.id().to_owned(),
+        title: interaction
+            .title()
+            .unwrap_or("Value for the Vault")
+            .to_owned(),
+        message: interaction.message().to_owned(),
+        approve_choice_id: "secret".to_owned(),
+        refuse_choice_id: "cancel".to_owned(),
+        requested_at_ms: interaction.requested_at_ms(),
+        expires_at_ms: registered_at_ms
+            .saturating_add(interaction.timeout_sec().unwrap_or_default() * 1000),
+        term: None,
+        lifetime_minutes: None,
+        max_lifetime_minutes: None,
+    })
+}
+
 impl KernelRuntimeOwnedState {
     fn passkey_prompts_for(&self, user_id: &str) -> Vec<PasskeyPrompt> {
         let _mutation = self

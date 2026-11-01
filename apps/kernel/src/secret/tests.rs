@@ -1223,3 +1223,61 @@ fn mp11_vault_rollback_failure_is_explicit_and_does_not_keep_replacement_cached(
         "failed rollback kept a replacement credential cached"
     );
 }
+
+#[test]
+fn a_host_port_entry_matches_the_scheme_default_port_and_only_that_port() {
+    let service = |hosts: &[&str]| {
+        RuntimeSecretService::new(vec![UserCredentialConfig {
+            id: "demo".to_string(),
+            description: None,
+            source: UserCredentialSourceConfig::Env {
+                name: "CHARIOX_TEST_SECRET_UNUSED".to_string(),
+            },
+            allowed_hosts: hosts.iter().map(|host| host.to_string()).collect(),
+            allowed_uses: vec![UserCredentialUse::Http],
+            injection: UserCredentialInjectionConfig::Header {
+                name: "authorization".to_string(),
+                value: "Bearer ${secret}".to_string(),
+            },
+            metadata: None,
+        }])
+    };
+    let allowed = |hosts: &[&str], url: &str| {
+        let service = service(hosts);
+        let credential = service.credential("demo").unwrap();
+        service
+            .ensure_host_allowed(credential, &url::Url::parse(url).unwrap())
+            .is_ok()
+    };
+    // The URL parser drops a scheme's default port; the entry may still name it.
+    assert!(allowed(
+        &["api.example.com:443"],
+        "https://api.example.com/v1"
+    ));
+    assert!(allowed(
+        &["api.example.com:443"],
+        "https://api.example.com:443/v1"
+    ));
+    assert!(allowed(&["localhost:80"], "http://localhost/v1"));
+    assert!(allowed(&["localhost:8080"], "http://localhost:8080/v1"));
+    assert!(allowed(&["api.example.com"], "https://api.example.com/v1"));
+    assert!(allowed(
+        &["api.example.com"],
+        "https://api.example.com:8443/v1"
+    ));
+    // The named port is a restriction, not a spelling.
+    assert!(!allowed(
+        &["api.example.com:443"],
+        "https://api.example.com:8443/v1"
+    ));
+    assert!(!allowed(
+        &["api.example.com:443"],
+        "http://api.example.com/v1"
+    ));
+    assert!(!allowed(&["localhost:80"], "http://localhost:8080/v1"));
+    assert!(!allowed(&["localhost:8080"], "http://localhost/v1"));
+    assert!(!allowed(
+        &["api.example.com:443"],
+        "https://evil.example.net/v1"
+    ));
+}

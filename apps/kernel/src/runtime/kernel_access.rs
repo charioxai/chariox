@@ -137,6 +137,8 @@ pub(crate) struct AccessState {
     /// Grants that ended in memory but whose durable end is not complete. They
     /// authorize nothing; a revoke or the next sweep finishes them.
     pub(crate) owed_ends: Vec<OwedEnd>,
+    /// Outside agents' Vault value requests by interaction id: who asked and how it ended.
+    pub(crate) secret_requests: BTreeMap<String, crate::runtime::state::SecretRequest>,
 }
 
 /// A grant's end (`revoked` or `expired`) that still has to reach the store.

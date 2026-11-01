@@ -280,6 +280,11 @@ impl std::fmt::Debug for RuntimeProviderLogin {
     }
 }
 
+/// The longest value an owner may type for an outside agent's Vault request: a long bearer token
+/// fits. The clients advertise the same limit (`VAULT_SECRET_MAX_LENGTH` in the kernel client, the
+/// secret page and popups in Cloud), and the interaction resolver enforces it.
+pub(crate) const VAULT_SECRET_MAX_CHARS: usize = 8192;
+
 impl RuntimeInteraction {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -380,6 +385,40 @@ impl RuntimeInteraction {
                     && self.custom_choice.is_none()
                     && self.default_on_timeout.is_none()
             })
+    }
+
+    /// An outside agent's request for a Vault value: the owner answers with the secret
+    /// choice or cancels. Critical like every Vault value request, so no grant holder answers it.
+    pub(crate) fn for_vault_secret(
+        id: impl Into<String>,
+        operation_id: impl Into<String>,
+        title: impl Into<String>,
+        message: impl Into<String>,
+        timeout_sec: u64,
+    ) -> Self {
+        let mut interaction = Self::for_kernel_operation(
+            id,
+            operation_id,
+            title,
+            message,
+            vec![RuntimeInteractionChoice::new(
+                "cancel",
+                "Cancel",
+                "cancel",
+                Some(RuntimeInteractionChoiceStyle::Danger),
+            )],
+        );
+        interaction.kind = RuntimeInteractionKind::Choice;
+        interaction.level = RuntimeInteractionLevel::Critical;
+        interaction.custom_choice = Some(RuntimeInteractionCustomChoice::secret(
+            "secret",
+            "Secret",
+            None,
+            Some(1),
+            Some(VAULT_SECRET_MAX_CHARS),
+        ));
+        interaction.timeout_sec = Some(timeout_sec);
+        interaction
     }
 
     /// A kernel-owned decision, projected without creating an agent or prompt.

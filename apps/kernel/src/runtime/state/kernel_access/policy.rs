@@ -224,7 +224,7 @@ impl KernelRuntimeState {
 
 fn protected_config(path: &str) -> bool {
     let path = path.trim().to_ascii_lowercase();
-    ["kernel_access", "credential_vault", "relay"]
+    ["kernel_access", "credential_vault", "relay", "secret_link"]
         .iter()
         .any(|prefix| path == *prefix || path.starts_with(&format!("{prefix}.")))
 }

@@ -327,7 +327,7 @@ pub(super) fn parse_sudo_prompt(prompt: &str) -> Option<&str> {
 
 fn sudo_config_forbidden(path: &str) -> bool {
     let path = path.trim().to_ascii_lowercase();
-    ["kernel_access", "credential_vault", "relay"]
+    ["kernel_access", "credential_vault", "relay", "secret_link"]
         .iter()
         .any(|prefix| path == *prefix || path.starts_with(&format!("{prefix}.")))
 }

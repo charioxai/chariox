@@ -89,6 +89,32 @@ impl CommandRouter {
             )
             .await;
         }
+        if let LocalDaemonRequest::RequestVaultSecret(_)
+        | LocalDaemonRequest::GetVaultSecretStatus(_) = &request
+        {
+            crate::runtime::kernel_runtime_role_policy::ensure_public_request_allowed(
+                &self.config_projection.snapshot(),
+                &request,
+            )?;
+            if command.caller.connection_class
+                != Some(crate::local::KernelConnectionClass::ExternalAgent)
+            {
+                return Err(crate::runtime::kernel_access::error(
+                    "only a local grant holder can ask for a Vault value",
+                ));
+            }
+            return match request {
+                LocalDaemonRequest::RequestVaultSecret(secret) => {
+                    self.runtime_state
+                        .request_vault_secret(&command.caller.caller_id, secret)
+                        .await
+                }
+                LocalDaemonRequest::GetVaultSecretStatus(status) => self
+                    .runtime_state
+                    .vault_secret_status(&command.caller.caller_id, status),
+                _ => unreachable!("matched above"),
+            };
+        }
         if crate::runtime::state::is_outside_event_request(&request) {
             crate::runtime::kernel_runtime_role_policy::ensure_public_request_allowed(
                 &self.config_projection.snapshot(),

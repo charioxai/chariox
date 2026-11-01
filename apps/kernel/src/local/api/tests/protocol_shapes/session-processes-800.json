@@ -1,6 +1,6 @@
 {
-  "protocol_version": 928,
-  "relay_peer_protocol_version": 379,
+  "protocol_version": 929,
+  "relay_peer_protocol_version": 374,
   "shapes": [
     {
       "event": "session_processes_changed",
