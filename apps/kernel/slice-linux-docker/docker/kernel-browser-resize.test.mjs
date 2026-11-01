@@ -6,7 +6,7 @@ const command={op:'resize',tab_id:'t',generation:1,width:900,height:600};
 function fixture(){
  const calls=[],tab={tab_id:'t',target_id:'T'},old={width:1280,height:800},bounds={width:1280,height:888,windowState:'normal'};
  const stream={tab_id:'t',invalidate(){calls.push('stream_reset')}};
- const host={generation:1,tabs:new Map([['t',tab]]),displays:new Map([['s',stream]]),pageSize:()=>old,
+ const host={generation:1,tabs:new Map([['t',tab]]),displays:new Map([['s',stream]]),noteViewportRequest(){},pageSize:()=>old,
   browser:{resolvePageTarget:async()=>({sessionId:'s',connection:{send:async(m,p)=>{calls.push([m,p]);if(m==='Browser.setWindowBounds')Object.assign(bounds,p.bounds);return {windowId:7,bounds:{...bounds}};}}})},
   chromium:{desktop:{binding:()=>({})}},chromeWindows:{current:()=>({tabbed:{scale:1,page_rect:{width:old.width,height:old.height}}}),retire:reason=>calls.push(reason)},closeCompositors:async()=>calls.push('close_source'),setLayout:async(t,owner,size)=>{calls.push(['layout',owner,size]);Object.assign(old,size)},stateSignal:{notify(){}},rebindWindows:async()=>calls.push('rebind')};
  return {host,tab,calls,stream};
@@ -31,7 +31,7 @@ test('MP-08/MP-10 the ordinary host browser entry routes the resize mutation',as
  assert.deepEqual(await KernelBrowserHost.prototype.requestNow.call(host,command),{width:900,height:600});
 });
 test('MP-08/MP-10 failed layout application leaves the last committed size retryable',async()=>{
- const proto=KernelBrowserHost.prototype,host={layouts:new Map(),layoutRevisions:new Map(),browser:{setLayout:async()=>{throw Error('layout unavailable')}},pageSize:proto.pageSize,noteLayout:proto.noteLayout,layoutRevision:proto.layoutRevision};
+ const proto=KernelBrowserHost.prototype,host={layouts:new Map(),layoutRevisions:new Map(),viewportEpochs:new Map(),viewportEpoch:proto.viewportEpoch,noteViewportRequest:proto.noteViewportRequest,browser:{setLayout:async()=>{throw Error('layout unavailable')}},pageSize:proto.pageSize,noteLayout:proto.noteLayout,layoutRevision:proto.layoutRevision};
  await assert.rejects(proto.setLayout.call(host,{tab_id:'t',target_id:'T'},'resize',{width:900,height:600}),/layout unavailable/);assert.equal(host.layouts.size,0);assert.equal(host.layoutRevisions.size,0);
 });
 
@@ -51,7 +51,7 @@ test('MP-08/MP-10 a retried resize completes a partially applied one across ever
  const tabs=new Map([['t',{tab_id:'t',target_id:'T'}],['u',{tab_id:'u',target_id:'U'}]]);
  const streams=[{tab_id:'t',invalidate(){calls.push('reset t')}},{tab_id:'u',invalidate(){calls.push('reset u')}}];
  let failU=1;
- const host={generation:1,tabs,displays:new Map(streams.map((s,i)=>[String(i),s])),layouts:new Map(),layoutRevisions:new Map(),windowLayout:null,
+ const host={generation:1,tabs,displays:new Map(streams.map((s,i)=>[String(i),s])),layouts:new Map(),layoutRevisions:new Map(),viewportEpochs:new Map(),viewportEpoch:proto.viewportEpoch,noteViewportRequest:proto.noteViewportRequest,windowLayout:null,
   pageSize:proto.pageSize,noteLayout:proto.noteLayout,layoutRevision:proto.layoutRevision,setLayout:proto.setLayout,
   browser:{setLayout:async target=>{if(target==='U'&&failU-->0)throw Error('layout unavailable');calls.push('layout '+target)},
    resolvePageTarget:async()=>({sessionId:'s',connection:{send:async(m,p)=>{if(m==='Browser.setWindowBounds')Object.assign(bounds,p.bounds);return {windowId:7,bounds:{...bounds}};}}})},
