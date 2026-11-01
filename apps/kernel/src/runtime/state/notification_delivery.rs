@@ -54,12 +54,14 @@ impl KernelRuntimeState {
             match self.saved_remote_injection(&session, &id) {
                 SavedRemoteInjection::None => {}
                 SavedRemoteInjection::Held => continue,
-                SavedRemoteInjection::Query(identity) => {
+                SavedRemoteInjection::Query(identity, send_id) => {
                     let runtime = self.clone();
                     tokio::spawn(async move {
                         let _claim = claim;
                         runtime
-                            .reconcile_remote_notification_injection(&session, &id, &identity)
+                            .reconcile_remote_notification_injection(
+                                &session, &id, &send_id, &identity,
+                            )
                             .await;
                     });
                     continue;
@@ -599,8 +601,8 @@ enum SavedRemoteInjection {
     /// A saved send that is settled, expired or no longer owned: ordinary
     /// selection must not touch it.
     Held,
-    /// A saved send whose worker receipt decides the outcome.
-    Query(RemoteInjectionIdentity),
+    /// A saved send, under its provider send id, whose worker receipt decides the outcome.
+    Query(RemoteInjectionIdentity, String),
 }
 
 impl KernelRuntimeState {
@@ -635,7 +637,9 @@ impl KernelRuntimeState {
             return SavedRemoteInjection::Held;
         }
         match serde_json::from_value::<RemoteInjectionIdentity>(value.clone()) {
-            Ok(identity) => SavedRemoteInjection::Query(identity),
+            Ok(identity) => {
+                SavedRemoteInjection::Query(identity, notification_send_id(item).to_owned())
+            }
             Err(_) => SavedRemoteInjection::Held,
         }
     }
@@ -644,13 +648,14 @@ impl KernelRuntimeState {
         &self,
         session_id: &str,
         id: &str,
+        send_id: &str,
         identity: &RemoteInjectionIdentity,
     ) {
         let result =
             super::remote_prompt_worker_submission_runtime::query_remote_queued_steer_receipt(
                 self,
                 &identity.agent_id,
-                notification_send_id(item),
+                send_id,
                 &identity.worker_kernel_id,
                 &identity.worker_machine_id,
                 &identity.leased_agent_id,
