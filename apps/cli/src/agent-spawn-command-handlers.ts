@@ -36,6 +36,7 @@ export type AgentSpawnCommandHandlerDeps = {
   currentModelId: () => string
   currentVariantId: () => string
   currentProviderId: () => string
+  currentAccountProfileId?: () => string
   flashFooter: (message: string, tone: FooterTone) => void
   formatError: (error: unknown) => string
   createSlice?: (options: {
@@ -205,7 +206,7 @@ export async function handleAgentSpawnCommand(
       // Without a model the kernel takes the session defaults' provider, so the
       // account comes from them too; the focused agent's account would belong
       // to its own provider.
-      accountProfile: parsed.accountProfile ?? (model ? currentAccountProfileId(deps) : null),
+      accountProfile: parsed.accountProfile ?? (model ? currentAccountProfileId(deps) : undefined),
       alias,
       model: model ?? null,
       effort,
