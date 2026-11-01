@@ -455,6 +455,32 @@ async fn overwriting_a_handle_keeps_its_record_and_changes_only_the_value() {
 }
 
 #[tokio::test]
+async fn a_new_handle_cannot_take_a_vault_slot_another_handle_uses() {
+    let mut kernel = Kernel::start().await;
+    let mut holder = Client::start(&kernel.root);
+    grant(&mut kernel, &mut holder).await;
+    let set = serde_json::json!({"SetUserConfigValue":{"path":"secret_link.page_url","value":"https://page.test"}});
+    assert!(kernel.request(set).await["error"].is_null());
+    unlock(&mut kernel).await;
+
+    // `owner_key` keeps its value under the Vault key `token_slot`; a new handle named
+    // `token_slot` would store under that same key.
+    kernel.control("seed-credential:owner_key|token_slot").await;
+    let seeded = kernel.vault_value_sha256("token_slot").await;
+
+    let started = holder.request(request("token_slot", false));
+    assert!(
+        started["error"]["code"] == "secret_request_exists",
+        "a new handle was offered another handle's Vault slot: {started}"
+    );
+    assert_eq!(
+        kernel.vault_value_sha256("token_slot").await,
+        seeded,
+        "the other handle's value was replaced"
+    );
+}
+
+#[tokio::test]
 async fn a_default_port_binding_is_accepted_and_usable_on_that_port_only() {
     let mut kernel = Kernel::start().await;
     let mut holder = Client::start(&kernel.root);

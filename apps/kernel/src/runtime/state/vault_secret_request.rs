@@ -135,7 +135,7 @@ impl KernelRuntimeState {
 
     /// Waits for the owner's answer and stores it. The value lives in a `Zeroizing` string
     /// from the moment it leaves the answer until the Vault has it.
-    async fn store_answer(
+    pub(in crate::runtime::state) async fn store_answer(
         &self,
         answer: tokio::sync::oneshot::Receiver<PendingInteractionResolution>,
         credential: crate::config::UserCredentialConfig,

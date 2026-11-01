@@ -518,3 +518,171 @@ async fn public_history_agent_vault_credential_keeps_room_output_visible() {
         .hits
         .is_empty());
 }
+
+// A Vault value request stores what the owner typed against the registry as it is when the
+// Vault lifecycle lock is held, not as it was when the answer arrived.
+struct RequestFixture {
+    room: TestRoom,
+    registry: crate::credential::CharioxCredentialRegistry,
+    service: crate::secret::RuntimeSecretService,
+    _root: TestRoot,
+    _home: IsolatedHome,
+    _environment: crate::env_lock::EnvGuard,
+}
+
+fn owner_credential(vault_key: &str) -> crate::config::UserCredentialConfig {
+    crate::config::UserCredentialConfig {
+        id: "owner_key".into(),
+        description: Some("Owner key".into()),
+        source: crate::config::UserCredentialSourceConfig::Vault {
+            key: vault_key.into(),
+        },
+        allowed_hosts: vec!["api.example.com".into()],
+        allowed_uses: vec![crate::config::UserCredentialUse::Http],
+        injection: crate::config::UserCredentialInjectionConfig::Header {
+            name: "x-api-key".into(),
+            value: "${secret}".into(),
+        },
+        metadata: None,
+    }
+}
+
+fn requested_credential(id: &str, vault_key: &str) -> crate::config::UserCredentialConfig {
+    let mut credential = owner_credential(vault_key);
+    credential.id = id.into();
+    credential.injection = crate::config::UserCredentialInjectionConfig::Header {
+        name: "authorization".into(),
+        value: "Bearer ${secret}".into(),
+    };
+    credential
+}
+
+async fn request_fixture(label: &str) -> RequestFixture {
+    let environment = crate::env_lock::lock();
+    let root = TestRoot::new();
+    let home = IsolatedHome::new(root.path());
+    let room = TestRoom::new(label);
+    let vault_path = root.path().join("vault");
+    let mut config = room.runtime.owned.config_projection.snapshot();
+    config.user_config.credential_vault.path = vault_path.display().to_string();
+    room.runtime.owned.config_projection.update(config);
+    crate::secret::create_chariox_encrypted_vault_for_test(&vault_path, "synthetic-passphrase-only")
+        .unwrap();
+    crate::secret::unlock_chariox_encrypted_vault(
+        &vault_path,
+        "synthetic-passphrase-only",
+        crate::secret::VaultUnlockLease::KernelShutdown,
+    )
+    .unwrap();
+    let registry = crate::credential::CharioxCredentialRegistry::user().unwrap();
+    let service = crate::secret::RuntimeSecretService::with_vault_config(
+        Vec::new(),
+        &room.runtime.owned.config_projection.snapshot().user_config.credential_vault,
+    )
+    .unwrap();
+    RequestFixture {
+        room,
+        registry,
+        service,
+        _root: root,
+        _home: home,
+        _environment: environment,
+    }
+}
+
+fn typed(value: &str) -> tokio::sync::oneshot::Receiver<super::super::super::PendingInteractionResolution> {
+    let (send, receive) = tokio::sync::oneshot::channel();
+    send.send(super::super::super::PendingInteractionResolution {
+        status: "answered",
+        choice_id: Some("secret".into()),
+        reply: Some(value.into()),
+    })
+    .unwrap();
+    receive
+}
+
+#[tokio::test]
+async fn an_overwrite_stores_against_the_record_the_lock_holder_left() {
+    let fixture = request_fixture("overwrite-race").await;
+    let runtime = &fixture.room.runtime;
+    runtime
+        .upsert_observed_vault_credential(
+            &fixture.service,
+            &fixture.registry,
+            owner_credential("owner-slot"),
+            "old-value",
+            false,
+        )
+        .await
+        .unwrap();
+
+    // A concurrent credential update holds the Vault lifecycle lock while the owner's answer arrives.
+    let guard = runtime.vault_observation_mutation_guard().await;
+    let mut store = Box::pin(runtime.store_answer(
+        typed("typed-by-the-owner"),
+        requested_credential("owner_key", "owner_key"),
+        true,
+    ));
+    tokio::select! {
+        _ = &mut store => panic!("the answer was stored while the lifecycle lock was held"),
+        _ = tokio::time::sleep(std::time::Duration::from_millis(300)) => {}
+    }
+    let mut updated = owner_credential("owner-slot");
+    updated.injection = crate::config::UserCredentialInjectionConfig::Header {
+        name: "x-updated".into(),
+        value: "${secret}".into(),
+    };
+    updated.allowed_uses = vec![crate::config::UserCredentialUse::Http];
+    fixture.registry.upsert(updated.clone()).unwrap();
+    drop(guard);
+
+    assert_eq!(store.await, crate::local::VaultSecretStatus::Stored);
+    assert_eq!(
+        fixture.registry.get("owner_key").unwrap().unwrap(),
+        updated,
+        "the answer wrote a stale record over the concurrent update"
+    );
+    let value = fixture
+        .service
+        .vault_secret_for_dictation("owner-slot")
+        .unwrap()
+        .unwrap();
+    assert_eq!(value.as_str(), "typed-by-the-owner");
+}
+
+#[tokio::test]
+async fn an_answer_for_a_new_handle_never_replaces_another_handles_vault_slot() {
+    let fixture = request_fixture("occupied-slot").await;
+    let runtime = &fixture.room.runtime;
+    runtime
+        .upsert_observed_vault_credential(
+            &fixture.service,
+            &fixture.registry,
+            owner_credential("token_slot"),
+            "original-value",
+            false,
+        )
+        .await
+        .unwrap();
+
+    let status = runtime
+        .store_answer(
+            typed("typed-by-the-owner"),
+            requested_credential("token_slot", "token_slot"),
+            false,
+        )
+        .await;
+
+    assert_ne!(status, crate::local::VaultSecretStatus::Stored);
+    let value = fixture
+        .service
+        .vault_secret_for_dictation("token_slot")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        value.as_str(),
+        "original-value",
+        "the other handle's value was replaced"
+    );
+    assert!(fixture.registry.get("token_slot").unwrap().is_none());
+}
