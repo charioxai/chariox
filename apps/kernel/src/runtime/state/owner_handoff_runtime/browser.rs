@@ -240,7 +240,9 @@ impl KernelRuntimeState {
         };
         let service = self.home_runtime_secret_service()?;
         let registry = crate::credential::CharioxCredentialRegistry::user()?;
-        self.upsert_observed_vault_credential(&service, &registry, credential, value, false)
+        // The owner chose this key and typed this value: saving replaces what the key holds,
+        // as it always did. Only the agent flows must ask for `overwrite` first.
+        self.upsert_observed_vault_credential(&service, &registry, credential, value, true)
             .await
             .map(|_| ())
     }
