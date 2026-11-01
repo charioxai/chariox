@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import { kernelBrowserAgentTabsMinimumProtocolVersion, kernelBrowserMinimumProtocolVersion, kernelBrowserRequest, kernelDisplayResumeMinimumProtocolVersion, userDomainAccessMinimumProtocolVersion } from "./ipc-kernel-browser-requests.js"
+import { kernelBrowserAgentTabsMinimumProtocolVersion, kernelBrowserMinimumProtocolVersion, kernelBrowserRequest, kernelDisplayResumeMinimumProtocolVersion, kernelTabDisplayMinimumProtocolVersion, userDomainAccessMinimumProtocolVersion } from "./ipc-kernel-browser-requests.js"
 import { LOCAL_DAEMON_PROTOCOL_VERSION } from "./kernel-types.js"
 import { userDomainWindowBadge } from "./index.js"
 
@@ -38,6 +38,17 @@ test("MP-08/MP-10/MP-11 shared display resumption pins allocated protocol 525", 
       KernelBrowser: { command: { op, subscription_id: "prior-delivery", generation: 7 } },
     })
   }
+})
+
+test("MP-08/MP-10 Tab display requests pin allocated protocol 720", () => {
+  assert.equal(kernelTabDisplayMinimumProtocolVersion, 720)
+  assert(LOCAL_DAEMON_PROTOCOL_VERSION >= kernelTabDisplayMinimumProtocolVersion)
+  assert.deepEqual(kernelBrowserRequest({ op: "display_park", subscription_id: "d", generation: 7, parked: true }), {
+    KernelBrowser: { command: { op: "display_park", subscription_id: "d", generation: 7, parked: true } },
+  })
+  assert.deepEqual(kernelBrowserRequest({ op: "display_subscribe", tab_id: "t", generation: 7, codecs: ["png", "avc1.420033"], bitrate: 8_000_000, device_scale_factor: 1, tab_display: true }), {
+    KernelBrowser: { command: { op: "display_subscribe", tab_id: "t", generation: 7, codecs: ["png", "avc1.420033"], bitrate: 8_000_000, device_scale_factor: 1, tab_display: true } },
+  })
 })
 
 // MP-08/MP-10: protocol 629 capabilities already exist on the Rust wire.

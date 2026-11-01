@@ -877,14 +877,19 @@ impl KernelRuntimeState {
             caller_user_id,
             "home extension audit",
         )?;
-        let events = self
-            .owned
+        self.owned
             .durable_state_store
-            .load_subject_events(agent.id(), limit)?;
-        Ok(events
-            .into_iter()
-            .filter(is_home_extension_audit_event)
-            .collect())
+            .load_subject_events_by_kind_prefixes(
+                agent.id(),
+                &[
+                    "home_extension.",
+                    "agent.extension",
+                    "agent.mcp_",
+                    "agent.skill_",
+                    "extension.registration.",
+                ],
+                limit,
+            )
     }
 
     /// Whether a freshly appended event is a row `list_home_extension_audit_events` would return

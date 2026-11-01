@@ -73,12 +73,45 @@ impl PromptStateOwner {
         session: &RuntimeSession,
         agent_id: &str,
     ) -> Result<AgentProfileTransitionClaim, DaemonError> {
+        self.claim_idle_agent_execution_transition(session, agent_id, false)
+    }
+
+    pub(crate) fn claim_idle_agent_move_transition(
+        &self,
+        session: &RuntimeSession,
+        agent_id: &str,
+    ) -> Result<AgentProfileTransitionClaim, DaemonError> {
+        self.claim_idle_agent_execution_transition(session, agent_id, true)
+    }
+
+    /// A turn is running, or queued work is being prepared to start one.
+    pub(crate) fn agent_turn_busy(&self, session: &RuntimeSession, agent_id: &str) -> bool {
         let mut state = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let key = PromptStateKey::new(session.id(), agent_id);
-        if state.profile_transitions.contains_key(&key) {
+        state.queue_promotions.contains(&key)
+            || state
+                .ensure_agent_state(session, agent_id)
+                .active_prompt
+                .is_some()
+    }
+
+    fn claim_idle_agent_execution_transition(
+        &self,
+        session: &RuntimeSession,
+        agent_id: &str,
+        moving: bool,
+    ) -> Result<AgentProfileTransitionClaim, DaemonError> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let key = PromptStateKey::new(session.id(), agent_id);
+        if state.profile_transitions.contains_key(&key)
+            || (!moving && state.execution_transition_pending(&key))
+        {
             return Err(DaemonError::LocalTransport {
                 operation: "update agent profile",
                 message: "the agent already has a profile change in progress".to_string(),

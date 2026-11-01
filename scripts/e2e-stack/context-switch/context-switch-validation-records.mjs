@@ -1,4 +1,20 @@
 // MP-08 / MP-10 / MP-11: score only the response to the current real-client probe.
+// An idle badge and end marker can precede the client's final history patch.
+export class ContextValidationTurnCompletion {
+  #answer
+  #idleSince
+  #sawWorking = false
+  get sawWorking() { return this.#sawWorking }
+  reset() { this.#idleSince = undefined }
+  observe({ busy, answer, now }) {
+    if (busy) this.#sawWorking = true
+    if (busy || answer !== this.#answer) this.reset()
+    this.#answer = answer
+    if (!busy) this.#idleSince ??= now
+    return !busy && now - this.#idleSince >= 5000
+  }
+}
+
 export function contextValidationTurnEntries(entries, marker) {
   const users = entries.flatMap((entry, index) =>
     entry.role === 'user' && entry.text?.includes(marker) ? [index] : [],

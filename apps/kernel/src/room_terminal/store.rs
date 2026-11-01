@@ -1,7 +1,8 @@
 //! What a kernel restart keeps of a terminal: its metadata and scrollback.
+mod writer;
+pub(crate) use writer::PendingWrite;
 
 use std::fs;
-use std::io::Write;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -33,30 +34,56 @@ pub(super) struct TerminalRecord {
 
 pub(super) struct TerminalStore {
     root: PathBuf,
+    writer: std::sync::Arc<writer::Writer>,
 }
 
 impl TerminalStore {
-    pub(super) fn new(root: PathBuf) -> Self {
-        Self { root }
+    pub(super) fn new(root: PathBuf) -> Result<Self, DaemonError> {
+        let writer = writer::Writer::new(root.clone())?;
+        Ok(Self { root, writer })
     }
 
-    pub(super) fn save(&self, record: &TerminalRecord) -> Result<(), DaemonError> {
-        let io = |error: std::io::Error| store_error(&self.root, error);
-        fs::create_dir_all(&self.root).map_err(io)?;
-        let path = self.path(&record.terminal_id);
-        let temporary = path.with_extension("json.tmp");
+    #[cfg(test)]
+    pub(super) fn pause_writer(
+        &self,
+        entered: std::sync::mpsc::Sender<()>,
+        release: std::sync::mpsc::Receiver<()>,
+    ) -> PendingWrite {
+        self.writer
+            .submit(writer::Operation::Pause { entered, release }, false)
+            .unwrap()
+    }
+
+    pub(super) fn enqueue_save(
+        &self,
+        record: &TerminalRecord,
+    ) -> Result<PendingWrite, DaemonError> {
         let body = serde_json::to_vec(record).map_err(|error| DaemonError::LocalTransport {
             operation: "save room terminal",
             message: error.to_string(),
         })?;
-        let mut file = open_private(&temporary).map_err(io)?;
-        file.write_all(&body).map_err(io)?;
-        file.sync_all().map_err(io)?;
-        fs::rename(&temporary, &path).map_err(io)
+        self.writer.submit(
+            writer::Operation::Save {
+                id: record.terminal_id.clone(),
+                body,
+            },
+            false,
+        )
     }
 
-    pub(super) fn remove(&self, terminal_id: &str) {
-        let _ = fs::remove_file(self.path(terminal_id));
+    pub(super) fn save(&self, record: &TerminalRecord) -> Result<(), DaemonError> {
+        self.enqueue_save(record)?.wait()
+    }
+
+    pub(super) fn remove(&self, terminal_id: &str) -> Result<(), DaemonError> {
+        self.writer
+            .submit(
+                writer::Operation::Remove {
+                    id: terminal_id.into(),
+                },
+                true,
+            )?
+            .wait()
     }
 
     /// Every stored record; a record that ran when the kernel stopped is
@@ -96,10 +123,6 @@ impl TerminalStore {
             records.push(record);
         }
         Ok(records)
-    }
-
-    fn path(&self, terminal_id: &str) -> PathBuf {
-        self.root.join(format!("{terminal_id}.json"))
     }
 }
 

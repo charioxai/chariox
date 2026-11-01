@@ -79,6 +79,14 @@ pub enum OutsideEventValue {
         task_state: Option<crate::durable_state::agent_lifecycle::ExecutionState>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reason: Option<String>,
+        /// The turn this run state ends, with how it ended: present on `idle` and
+        /// `error` once the agent has settled a turn.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        prompt_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        turn_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        outcome: Option<crate::provider::TurnOutcome>,
     },
     Interaction {
         state: EventInteractionState,

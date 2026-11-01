@@ -219,7 +219,7 @@ if IFS= read -r -t 10 line; then
 fi
 "#).unwrap();
     std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
-    let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+    let mut child = crate::process_spawn::command(std::env::current_exe().unwrap())
         .args([TEST_NAME, "--exact", "--test-threads=1", "--nocapture"])
         .current_dir(&root)
         .env(CHILD_ROOT, &root)

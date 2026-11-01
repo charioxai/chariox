@@ -128,9 +128,6 @@ fn interaction_requests_use_volatile_command_deduplication() {
             &CommandResultCache::fingerprint_for_test(request),
         ));
     }
-    assert!(request_is_cacheable(&LocalDaemonRequest::ListSessions(
-        ListSessionsRequest,
-    )));
 }
 
 #[tokio::test]
@@ -630,101 +627,6 @@ async fn command_cache_byte_bounds_oversized_non_persisted_results_in_memory() {
 }
 
 #[tokio::test]
-async fn persistent_command_cache_skips_noisy_read_commands_on_disk() {
-    let noisy_command_types = [
-        "external_provider_session.list",
-        "provider.catalog.get",
-        "prompt_input_history.get",
-        "session.state.get",
-        "session.history.blob",
-        "session.history.outline",
-        "slice.list",
-        "terminal.command_catalog.get",
-        "waiting_room.inventory.get",
-        "waiting_room.public_snapshot.get",
-    ];
-    let path = temp_cache_path("skip-read-commands");
-    let cache = CommandResultCache::new_with_persistent_path(path.clone())
-        .expect("persistent cache should initialize");
-
-    for command_type in noisy_command_types {
-        let command_id = format!("command-{}", command_type.replace('.', "-"));
-        let fingerprint = CommandResultCache::fingerprint_for_command_type_test(command_type);
-        cache
-            .insert_completed_for_test(
-                command_id.clone(),
-                fingerprint.clone(),
-                Some(serde_json::json!({ "command_type": command_type })),
-            )
-            .await;
-
-        assert!(matches!(
-            cache.reserve(&command_id, &fingerprint).await,
-            CommandReservation::Wait(_)
-        ));
-    }
-    assert!(
-        fs::read_to_string(&path).unwrap_or_default().is_empty(),
-        "high-frequency read command results should not be serialized to disk"
-    );
-
-    let restored = CommandResultCache::new_with_persistent_path(path.clone())
-        .expect("persistent cache should reload");
-    for command_type in noisy_command_types {
-        let command_id = format!("command-{}", command_type.replace('.', "-"));
-        let fingerprint = CommandResultCache::fingerprint_for_command_type_test(command_type);
-        assert!(matches!(
-            restored.reserve(&command_id, &fingerprint).await,
-            CommandReservation::Dispatch
-        ));
-    }
-
-    let _ = fs::remove_file(path);
-}
-
-#[tokio::test]
-async fn persistent_command_cache_removes_read_only_history_records_on_load() {
-    let path = temp_cache_path("drop-persisted-history-reads");
-    let history_fingerprint =
-        CommandResultCache::fingerprint_for_command_type_test("session.history.outline");
-    let mutation_fingerprint =
-        CommandResultCache::fingerprint_for_command_type_test("prompt.submit");
-    let history = persistent_result_for_test(
-        "command-history",
-        history_fingerprint.clone(),
-        crate::session::unix_epoch_ms(),
-        Some(serde_json::json!({ "history": "large paged response" })),
-    );
-    let mutation = persistent_result_for_test(
-        "command-mutation",
-        mutation_fingerprint.clone(),
-        crate::session::unix_epoch_ms(),
-        Some(serde_json::json!({ "submitted": true })),
-    );
-    rewrite_persistent_results(&path, &[history, mutation]).expect("cache fixture should write");
-
-    let cache = CommandResultCache::new_with_persistent_path(path.clone())
-        .expect("persistent cache should reload");
-
-    assert!(matches!(
-        cache.reserve("command-history", &history_fingerprint).await,
-        CommandReservation::Dispatch
-    ));
-    cache.forget_pending("command-history").await;
-    assert!(matches!(
-        cache
-            .reserve("command-mutation", &mutation_fingerprint)
-            .await,
-        CommandReservation::Wait(_)
-    ));
-    let stored = fs::read_to_string(&path).expect("compacted cache should exist");
-    assert!(!stored.contains("command-history"));
-    assert!(stored.contains("command-mutation"));
-
-    let _ = fs::remove_file(path);
-}
-
-#[tokio::test]
 async fn persistent_command_cache_ignores_malformed_lines() {
     let path = temp_cache_path("ignore-malformed");
     fs::write(
@@ -1081,4 +983,23 @@ fn room_exec_stream_bytes_never_enter_transport_result_caches() {
         request_is_cacheable(&open),
         "a command start still has an at-most-once receipt"
     );
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11: polled reads are answered again on replay, so their
+// responses (a whole session list each) never fill the result cache.
+#[test]
+fn reads_are_not_kept_for_replay() {
+    for read in [
+        serde_json::json!({"ListSessions":null}),
+        serde_json::json!({"GetSessionState":{"session_id":"s"}}),
+        serde_json::json!({"GetDaemonHealth":null}),
+        serde_json::json!({"ReadKernelFile":{"path":"/tmp/file","offset":0,"length":1}}),
+    ] {
+        let request: LocalDaemonRequest = serde_json::from_value(read).unwrap();
+        assert!(!request_is_cacheable(&request), "{request:?}");
+    }
+    let submit: LocalDaemonRequest = serde_json::from_value(serde_json::json!({"SubmitPrompt":{
+        "session_id":"s","attachment_id":"a","target_agent_id":null,"prompt":"p","attachments":[]}}))
+    .unwrap();
+    assert!(request_is_cacheable(&submit));
 }

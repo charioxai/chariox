@@ -111,6 +111,54 @@ test("MP-10: an input whose type is re-set to the same value keeps its node; a n
     assert(children(await next(600)) > 0, "MP-10: a new input type still re-serializes the control");
   }));
 
+test("MP-10: a reset carries the page's document mode, so the viewer frame lays out as the page does", async () => {
+  const table = "<table><tr><td>Hacker News</td></tr></table>";
+  for (const [doctype, mode] of [["", "quirks"], ['<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">', "quirks"],
+    ['<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">', "limited-quirks"],
+    ['<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN" "http://www.w3.org/TR/html4/loose.dtd">', "limited-quirks"], ["<!doctype html>", undefined]])
+    await mirrored("", async ({ next }) => {
+      const packet = await next();
+      assert.equal(packet.reset, true); assert.equal(packet.document_mode, mode, doctype || "no doctype");
+      assert.equal((await next(300)).document_mode, undefined, "a delta keeps the reset's mode");
+    }, { "/": { type: "text/html", body: doctype + table } });
+});
+test("MP-08/MP-10: the kernel reports the cursor the page shows at a point (for a page shown as video)", () => mirrored(
+  `<body style="margin:0;font:16px/20px sans-serif"><a href="/x" style="position:absolute;left:0;top:0;width:200px;height:20px;display:block">link</a>
+   <p style="position:absolute;left:0;top:40px;margin:0">plain text</p>
+   <input style="position:absolute;left:0;top:80px;width:200px;height:20px">
+   <button style="position:absolute;left:0;top:120px;width:200px;height:20px;cursor:not-allowed">no</button>
+   <div style="position:absolute;left:0;top:160px;width:200px;height:20px;cursor:url(/c.png) 2 2,move"></div>
+   <p style="position:absolute;left:0;top:200px;margin:0;user-select:none">unselectable</p>
+   <div style="position:absolute;left:0;top:240px;width:200px;height:20px;cursor:ew-resize"><iframe srcdoc="<html style='cursor:zoom-in'><body style='margin:0'>" style="border:0;width:100px;height:20px"></iframe></div></body>`,
+  async ({ host, tab_id, generation }) => {
+    const at = async (x, y) => (await host.request({ op: "pointer_cursor", tab_id, generation, x, y })).cursor;
+    assert.deepEqual([await at(10, 10), await at(10, 50), await at(10, 90), await at(10, 130), await at(10, 170), await at(10, 210), await at(10, 250), await at(150, 250), await at(600, 600)],
+      ["pointer", "text", "text", "not-allowed", "move", "default", "zoom-in", "ew-resize", "default"]);
+    await assert.rejects(host.request({ op: "pointer_cursor", tab_id, generation, x: 100000, y: 0 }), /outside the page/);
+  }));
+test("MP-08/MP-10: the cursor inside a cross-origin frame (and a frame it hosts) is the frame's own", () => mirrored(
+  `<body style="margin:0"><iframe src="http://localhost:PORT/outer" style="position:absolute;left:10px;top:300px;border:0;width:300px;height:120px"></iframe></body>`,
+  async ({ host, tab_id, generation }) => {
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    const at = async (x, y) => (await host.request({ op: "pointer_cursor", tab_id, generation, x, y })).cursor;
+    // Outer frame: a zoom-in band (0-40), a line of text (40-60), then a frame of its own (60-120) that asks for `help`.
+    assert.deepEqual([await at(20, 320), await at(20, 350), await at(20, 380), await at(20, 100)], ["zoom-in", "text", "help", "default"]);
+  }, {
+    "/outer": { type: "text/html", body: '<!doctype html><body style="margin:0;font:16px/20px sans-serif"><div style="height:40px;cursor:zoom-in"></div><p style="margin:0;height:20px">inner text</p><iframe src="http://127.0.0.1:PORT/deep" style="border:0;width:200px;height:60px;display:block"></iframe>' },
+    "/deep": { type: "text/html", body: '<!doctype html><html style="cursor:help"><body style="margin:0;height:60px">' },
+  }));
+// A frame scaled by CSS shows its document at that scale: a point of the visible frame is the scaled point of its document.
+test("MP-08/MP-10: the cursor inside a CSS-scaled frame (same-origin and cross-origin) is read at the scaled point", () => mirrored(
+  `<body style="margin:0"><iframe srcdoc="<body style='margin:0;display:flex'><div style='width:100px;height:40px;cursor:zoom-in'></div><div style='width:100px;height:40px;cursor:help'></div>" style="position:absolute;left:0;top:300px;border:0;width:200px;height:40px;transform:scale(2);transform-origin:top left"></iframe>
+   <iframe src="http://localhost:PORT/halves" style="position:absolute;left:0;top:500px;border:0;width:200px;height:40px;padding:10px;transform:scale(2);transform-origin:top left"></iframe></body>`,
+  async ({ host, tab_id, generation }) => {
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    const at = async (x, y) => (await host.request({ op: "pointer_cursor", tab_id, generation, x, y })).cursor;
+    // Visible x 100 is document x 50 and visible x 300 is document x 150; the second frame's 10px padding is scaled too.
+    assert.deepEqual([await at(100, 320), await at(300, 320), await at(100, 540), await at(300, 540)], ["zoom-in", "help", "zoom-in", "help"]);
+  }, {
+    "/halves": { type: "text/html", body: '<!doctype html><body style="margin:0;display:flex"><div style="width:100px;height:40px;cursor:zoom-in"></div><div style="width:100px;height:40px;cursor:help"></div>' },
+  }));
 test("MP-10: a node added and removed before the drain sends no children op", () => mirrored("<p>page</p>", async ({ next, evaluate }) => {
   assert.equal((await next()).reset, true);
   await evaluate("const t=document.createElement('div');document.body.append(t);t.remove();true");
@@ -425,6 +473,50 @@ test("MP-10: a click on a node below the native viewport (the viewer scrolled ah
     assert.equal(await evaluate("scrollY"), 0);
     await input(snapshot.sequence, { kind: "click", node_id: button, x: 5, y: 5 });
     assert.deepEqual(await evaluate("hits"), ["b"]);
+  }));
+
+// The viewer aims a wheel step at the node under its pointer; earlier steps may already have moved the native page past it.
+// The step goes to the page where it is now (a click reveals its node, a wheel would take the earlier steps back).
+test("MP-10: a wheel step aimed at a node the native page has scrolled past scrolls the page from where it is", () => mirrored(
+  '<div id="a" style="height:600px"></div><div style="height:6000px"></div>', async ({ next, evaluate, input }) => {
+    const snapshot = await next(), [node] = elements(snapshot).find(([, , attrs]) => attrs.id === "a");
+    await evaluate("scrollTo(0, 2000), true");
+    const started = Date.now();
+    await input(snapshot.sequence, { kind: "scroll", node_id: node, x: 40, y: 100, delta_x: 0, delta_y: 300 });
+    for (let i = 0; i < 40 && await evaluate("scrollY") === 2000; i++) await settle(25);
+    assert.equal(await evaluate("scrollY"), 2300, "MP-10: the page scrolled on from where it was, not back to the node");
+    assert(Date.now() - started < 1000, "MP-10: the step is not held behind the offscreen retries");
+  }));
+
+// The step stays inside the scrolling pane that holds the node: when the pane has moved the node out of its own view, the
+// step goes to the pane's nearest visible point, not to the page behind it.
+test("MP-10: a wheel step aimed at a node scrolled out of its pane keeps scrolling the pane, not the page", () => mirrored(
+  '<div style="height:300px"></div><div id="pane" style="height:200px;overflow:auto"><div id="a" style="height:100px"></div><div style="height:5000px"></div></div><div style="height:3000px"></div>', async ({ next, evaluate, input }) => {
+    const snapshot = await next(), [node] = elements(snapshot).find(([, , attrs]) => attrs.id === "a");
+    await evaluate("pane.scrollTop = 400, true");
+    await input(snapshot.sequence, { kind: "scroll", node_id: node, x: 40, y: 50, delta_x: 0, delta_y: 300 });
+    for (let i = 0; i < 40 && await evaluate("pane.scrollTop") === 400; i++) await settle(25);
+    assert.equal(await evaluate("pane.scrollTop"), 700, "MP-10: the pane scrolled on from where it was");
+    assert.equal(await evaluate("scrollY"), 0, "MP-10: the page behind the pane stayed where it was");
+  }));
+
+// The same inside an attached cross-origin frame: the step goes on from where the frame is, and no reveal takes it back.
+test("MP-10: a wheel step aimed at a node of a cross-origin frame that has scrolled past it scrolls the frame from where it is", () => mirrored(
+  '<script>window.fy=0;addEventListener("message",e=>{window.fy=e.data})</script><iframe src="http://localhost:PORT/long" style="width:300px;height:100px;border:0"></iframe>', async ({ next, evaluate, input }) => {
+    await new Promise(resolve => setTimeout(resolve, 800));
+    const snapshot = await next(), documentOf = () => { let id = 0; for (const row of snapshot.nodes) { id += row[0]; if (row[2] === 1 && id >= 1e9) return `n${id}`; } return null; };
+    const [node] = elements(snapshot).find(([id, , attrs]) => attrs.id === "a" && Number(id.slice(1)) >= 1e9) ?? [];
+    assert(node && documentOf(), "the frame's first child is mirrored");
+    await input(snapshot.sequence, { kind: "scroll_to", node_id: documentOf(), x: 0, y: 2000 });
+    for (let i = 0; i < 40 && await evaluate("fy") !== 2000; i++) await settle(25);
+    assert.equal(await evaluate("fy"), 2000);
+    const started = Date.now();
+    await input(snapshot.sequence, { kind: "scroll", node_id: node, x: 40, y: 50, delta_x: 0, delta_y: 300 });
+    for (let i = 0; i < 40 && await evaluate("fy") === 2000; i++) await settle(25);
+    assert.equal(await evaluate("fy"), 2300, "MP-10: the frame scrolled on from where it was, not back to the node");
+    assert(Date.now() - started < 1000, "MP-10: the step is not held behind the offscreen retries");
+  }, {
+    "/long": { type: "text/html", body: '<!doctype html><body style="margin:0"><div id="a" style="height:600px"></div><div style="height:6000px"></div><script>addEventListener("scroll",()=>parent.postMessage(scrollY,"*"))</script>' },
   }));
 
 test("MP-10: review #941-4 property-only changes of unfocused controls reach the viewer (value, checked, radio group, select, form reset)", () => mirrored(
@@ -1173,6 +1265,85 @@ test("MP-10: linked lossy CSS stops CSSOM serialization before unused suffix rul
     const suffixReads=await host.mirror.v2.evaluate(world,'globalThis.__mirrorLossySuffixReads');
     assert.equal(suffixReads,0,`MP-10: serialization stops at the first lossy rule; read ${suffixReads} suffix rules`);
   }, { "/gh.css": { type: "text/css", body: "p{border:var(--w) solid;border-color:red}" + Array.from({length:200},(_,i)=>`.tail{--suffix-marker-${i}:${i}}`).join("") + ".tail{--suffix-marker-199:199}" } }));
+
+// mirrorfid (pancake.ai/login): Tailwind writes `content-['']` as `.content-\[\'\'\]`; an escaped quote in a
+// selector is not a string, so the source text after it must still reach the viewer.
+test("MP-10: linked lossy CSS read as source keeps the rules after an escaped quote in a selector", () => mirrored(
+  '<link rel="stylesheet" href="/gh.css"><p class="b">fixture</p>', async ({ next }) => {
+    const packets = [await next()];
+    for (let i = 0; i < 5; i++) packets.push(await next(500));
+    const css = mirroredCss(packets) + "\n" + packets.flatMap(packet => Object.values(packet.sheets ?? {})).join("\n");
+    assert(css.includes("var(--w)"), `MP-10: the lossy sheet is read as source text: ${css.slice(0, 300)}`);
+    assert(css.includes("after-quote-marker"), `MP-10: rules after the escaped quote reach the viewer: ${css.slice(-300)}`);
+  }, { "/gh.css": { type: "text/css", body: "@layer utilities{.before\\:content-\\[\\'\\'\\]:before{content:''}.b{border:var(--w) solid;border-color:red}.b{--after-quote-marker:1}}" } }));
+
+// A `{` inside a string in an at-rule's prelude (`@supports (content:"{")`) does not open the block.
+test("MP-10: linked lossy CSS read as source keeps an at-rule whose prelude has a brace in a string", () => mirrored(
+  '<link rel="stylesheet" href="/gh.css"><p class="b">fixture</p>', async ({ next }) => {
+    const packets = [await next()];
+    for (let i = 0; i < 5; i++) packets.push(await next(500));
+    assert.equal(packets.find(packet => packet.fallback)?.fallback, undefined, "MP-10: the whole sheet is copied, no video");
+    const css = mirroredCss(packets) + "\n" + packets.flatMap(packet => Object.values(packet.sheets ?? {})).join("\n");
+    assert(css.includes("supports-marker"), `MP-10: the rules inside the at-rule reach the viewer: ${css.slice(-300)}`);
+  }, { "/gh.css": { type: "text/css", body: '@supports (content:"{"){.b{border:var(--w) solid;border-color:red}.b{--supports-marker:1}}' } }));
+
+// MIRROR-FIDELITY-GUARD: a stylesheet copy with fewer rules than the page's own is never published as the page.
+test("MP-10: a stylesheet the mirror cannot copy whole selects the whole-page video", () => mirrored(
+  '<link rel="stylesheet" href="/gh.css"><p class="tail">fixture</p>', async ({ next, evaluate, host, subscription_id }) => {
+    assert.equal((await next()).fallback, undefined, "MP-10: the complete sheet is mirrored");
+    // Fault injection in the observer's world: one rule serializes as nothing; a page edit makes the observer copy the sheet again.
+    await host.mirror.v2.evaluate(host.mirror.streams.get(subscription_id).world, `(()=>{
+      let prototype=CSSStyleRule.prototype,descriptor;
+      while(prototype&&!descriptor){descriptor=Object.getOwnPropertyDescriptor(prototype,'cssText');prototype=Object.getPrototypeOf(prototype)}
+      Object.defineProperty(CSSStyleRule.prototype,'cssText',{configurable:true,enumerable:descriptor.enumerable,get(){return this.selectorText==='.tail'?'':descriptor.get.call(this)}});
+      return true;
+    })()`);
+    await evaluate("document.styleSheets[0].insertRule('b{color:green}', 0), true");
+    const packets = [];
+    for (let i = 0; i < 6 && !packets.at(-1)?.fallback; i++) packets.push(await next(500));
+    assert.equal(packets.at(-1).fallback, "css_incomplete", `MP-10: an incomplete copy selects the video: ${JSON.stringify(packets.map(p => [p.sequence, p.reset, p.fallback ?? null, p.ops?.map(o => o.op).join()]))}`);
+  }, { "/gh.css": { type: "text/css", body: "p{color:red}.tail{color:blue}" } }));
+
+// The guard's live probe: an unquoted url() with a `}` is valid CSS, but the source-text copy splits the rule there.
+// At the top level the copy loses rules; inside a block it moves a rule out of it. Either way the page shows as video.
+test("MP-10: a source-text copy whose rules differ from the page's own selects the whole-page video", async () => {
+  for (const body of ["p{border:var(--w) solid;border-color:red}.b{background:url(/a}b.png)}.b{--after:1}",
+    "p{border:var(--w) solid;border-color:red}@media (min-width:1px){.b{background:url(/a}b.png)}.b{--after:1}}"])
+    await mirrored('<link rel="stylesheet" href="/gh.css"><p class="b">fixture</p>', async ({ next }) => {
+      const packets = [await next()];
+      for (let i = 0; i < 5 && !packets.at(-1).fallback; i++) packets.push(await next(500));
+      assert.equal(packets.at(-1).fallback, "css_incomplete", body);
+    }, { "/gh.css": { type: "text/css", body } });
+});
+
+// The same guard inside a cross-origin frame: the child is not mounted unstyled, its owner stays an opaque region.
+test("MP-10: a cross-origin frame whose sheet's source copy would lose rules is an opaque region, not an unstyled child", () => mirrored(
+  '<p>top</p><iframe src="http://localhost:PORT/frame" style="width:300px;height:100px"></iframe>', async ({ next }) => {
+    await settle(500);
+    const packet = await next();
+    assert.equal(packet.reset, true);
+    assert.equal(packet.fallback, undefined, "MP-10: the page itself stays a DOM mirror");
+    assert(!JSON.stringify(packet.nodes).includes("framed"), "MP-10: the child document is not published without its style");
+    assert(packet.nodes.some(row => row[4]?.reason === "cross_origin_frame"), `MP-10: the frame is an opaque region: ${JSON.stringify(packet.nodes.filter(row => row[2] === "iframe" || row[4]?.reason))}`);
+  }, {
+    "/frame": { type: "text/html", body: '<!doctype html><link rel="stylesheet" href="http://127.0.0.1:PORT/frame.css"><p class="b">framed</p>' },
+    "/frame.css": { type: "text/css", body: "p{border:var(--w) solid;border-color:red}.b{background:url(/a}b.png)}.b{--after:1}" },
+  }));
+
+test("MP-10: a lossy sheet a cross-origin frame links later selects the whole-page video", () => mirrored(
+  '<p>top</p><iframe src="http://localhost:PORT/frame" style="width:300px;height:100px"></iframe>', async ({ next, evaluate }) => {
+    await settle(500);
+    const first = await next();
+    assert.equal(first.fallback, undefined);
+    assert(JSON.stringify(first.nodes).includes("framed"), "MP-10: the plain frame is mirrored");
+    await evaluate("document.querySelector('iframe').contentWindow.postMessage('link', '*'), true");
+    const packets = [];
+    for (let i = 0; i < 8 && !packets.at(-1)?.fallback; i++) packets.push(await next(500));
+    assert.equal(packets.at(-1).fallback, "css_incomplete", `MP-10: the frame's incomplete copy selects the video: ${JSON.stringify(packets.map(p => [p.sequence, p.reset, p.fallback ?? null]))}`);
+  }, {
+    "/frame": { type: "text/html", body: '<!doctype html><p class="b">framed</p><script>addEventListener("message",()=>{const l=document.createElement("link");l.rel="stylesheet";l.href="http://127.0.0.1:PORT/frame.css";document.head.append(l)})</script>' },
+    "/frame.css": { type: "text/css", body: "p{border:var(--w) solid;border-color:red}.b{background:url(/a}b.png)}.b{--after:1}" },
+  }));
 
 test("MP-08/MP-10: the next document reads a linked sheet the kernel read as source text the same way, borders kept", () => mirrored(
   '<link rel="stylesheet" href="/gh.css"><div class="b" style="width:50px;height:20px">a</div>', async ({ next, evaluate, host }) => {
@@ -2210,3 +2381,77 @@ for (const kind of ['click','scroll']) test(`MP-08/MP-10 resized iframe opaque r
     }finally{await lease.close();}
   },{'/region':{type:'text/html',body:'<!doctype html><style>body{margin:0}</style><canvas width="100" height="60"></canvas><script>const c=document.querySelector("canvas");c.getContext("2d").fillRect(0,0,100,60);c.onclick=()=>parent.postMessage("click","*");c.onwheel=e=>{e.preventDefault();parent.postMessage("scroll","*")}</script>'}}
 ));
+
+// bbcframes: ad creatives sit in frames nested under the page's own frames (GPT slot, safeframe). Each nesting shape must reach the viewer as DOM, not as an opaque region.
+const creativeIds = async next => { const seen = new Set(); for (let n = 0; n < 12; n++) { const packet = await next(n ? 400 : 0, n === 0); for (const nodes of [packet.nodes ?? [], ...packet.ops.filter(op => op.op === "children").map(op => op.nodes)]) for (const [, , attrs] of elements({ nodes })) if (attrs.id) seen.add(attrs.id); if (seen.has("creative")) break; await settle(150); } return seen; };
+const creativePage = { type: "text/html", body: '<!doctype html><body><b id="creative">Truth matters</b>' };
+test("bbcframes: a cross-origin frame inside a same-origin script-written slot frame is mirrored", () => mirrored(
+  '<iframe id="slot" style="width:400px;height:120px"></iframe><script>const d=slot.contentDocument;d.open();d.write(\'<iframe src="http://localhost:PORT/creative" style="width:300px;height:90px"></iframe>\');d.close()</script>',
+  async ({ next }) => { assert((await creativeIds(next)).has("creative"), "the creative inside the slot frame is DOM"); }, { "/creative": creativePage }));
+test("bbcframes: a cross-origin frame inside a cross-origin frame is mirrored", () => mirrored(
+  '<iframe src="http://localhost:PORT/outer" style="width:400px;height:200px"></iframe>',
+  async ({ next }) => { assert((await creativeIds(next)).has("creative"), "the inner creative is DOM"); },
+  { "/outer": { type: "text/html", body: '<!doctype html><body><iframe src="http://a.localhost:PORT/creative" style="width:300px;height:90px"></iframe>' }, "/creative": creativePage }));
+test("bbcframes: a cross-origin frame inside a same-origin frame of a cross-origin frame is mirrored", () => mirrored(
+  '<iframe src="http://localhost:PORT/outer" style="width:400px;height:200px"></iframe>',
+  async ({ next }) => { assert((await creativeIds(next)).has("creative"), "the creative is DOM"); },
+  { "/outer": { type: "text/html", body: '<!doctype html><body><iframe id="slot" style="width:350px;height:150px"></iframe><script>const d=slot.contentDocument;d.open();d.write(\'<iframe src="http://a.localhost:PORT/creative" style="width:300px;height:90px"></iframe>\');d.close()</script>' }, "/creative": creativePage }));
+// Page script receives what a nested creative posts up through its hosts.
+const relay = '<script>addEventListener("message",e=>parent.postMessage(e.data,"*"))</script>';
+const nestedButton = { type: "text/html", body: '<!doctype html><body style="margin:0"><button id="creative" style="width:80px;height:30px" onclick="parent.postMessage(\'hit\',\'*\')">go</button><input id="field">' };
+const nestedOuter = { type: "text/html", body: `<!doctype html><body style="margin:20px">${relay}<iframe src="http://a.localhost:PORT/creative" style="width:200px;height:100px;border:0"></iframe>` };
+test("bbcframes: a click inside a nested cross-origin frame lands on its button", () => mirrored(
+  '<script>window.hits=[];addEventListener("message",e=>hits.push(e.data))</script><iframe src="http://localhost:PORT/outer" style="margin:30px;width:400px;height:200px;border:0"></iframe>',
+  async ({ next, evaluate, input }) => {
+    await creativeIds(next);
+    const snapshot = await next(0, true), [button] = elements(snapshot).find(([id, tag, attrs]) => tag === "button" && attrs.id === "creative" && Number(id.slice(1)) >= 2e9) ?? [];
+    assert(button, "the nested frame's button is mirrored in its own slot");
+    await input(snapshot.sequence, { kind: "click", node_id: button, x: 5, y: 5 });
+    for (let n = 0; n < 20 && !(await evaluate("hits.length")); n++) await settle(50);
+    assert.deepEqual(await evaluate("hits"), ["hit"]);
+  }, { "/outer": nestedOuter, "/creative": nestedButton }));
+test("bbcframes: typing reaches a field inside a nested cross-origin frame", () => mirrored(
+  '<iframe src="http://localhost:PORT/outer" style="width:400px;height:200px"></iframe>',
+  async ({ next, input }) => {
+    await creativeIds(next);
+    const snapshot = await next(0, true), [field] = elements(snapshot).find(([id, tag, attrs]) => tag === "input" && attrs.id === "field" && Number(id.slice(1)) >= 2e9) ?? [];
+    assert(field, "the nested frame's field is mirrored in its own slot");
+    await input(snapshot.sequence, { kind: "text", node_id: field, text: "hi" });
+    const forms = []; for (let n = 0; n < 6 && !forms.length; n++) forms.push(...(await next(500)).ops.filter(op => op.op === "form").map(op => [op.id, op.form.value]));
+    assert.deepEqual(forms, [[field, "hi"]]);
+  }, { "/outer": nestedOuter, "/creative": nestedButton }));
+test("bbcframes: a cross-origin frame added to a cross-origin frame later is mirrored", () => mirrored(
+  '<iframe src="http://localhost:PORT/outer" style="width:400px;height:200px"></iframe>',
+  async ({ next }) => { assert((await creativeIds(next)).has("creative"), "the late creative is DOM"); },
+  { "/outer": { type: "text/html", body: '<!doctype html><body><p id="host">host</p><script>setTimeout(()=>{const f=document.createElement("iframe");f.src="http://a.localhost:PORT/creative";document.body.append(f)},700)</script>' }, "/creative": creativePage }));
+test("bbcframes: a nested frame that navigates is mirrored again, and its host's navigation drops it", () => mirrored(
+  '<iframe src="http://localhost:PORT/outer" style="width:400px;height:200px"></iframe>',
+  async ({ next, evaluate }) => {
+    assert((await creativeIds(next)).has("creative"));
+    await evaluate("frames[0].postMessage('go','*');true");
+    const seen = new Set(); for (let n = 0; n < 16 && !seen.has("second"); n++) { const packet = await next(400); for (const nodes of [packet.nodes ?? [], ...packet.ops.filter(op => op.op === "children").map(op => op.nodes)]) for (const [, , attrs] of elements({ nodes })) if (attrs.id) seen.add(attrs.id); }
+    assert(seen.has("second"), "the navigated nested document is mirrored");
+    await evaluate("frames[0].postMessage('leave','*');true");
+    const host = new Set(); for (let n = 0; n < 16 && !host.has("left"); n++) { const packet = await next(400); for (const nodes of [packet.nodes ?? [], ...packet.ops.filter(op => op.op === "children").map(op => op.nodes)]) for (const [, , attrs] of elements({ nodes })) if (attrs.id) host.add(attrs.id); }
+    assert(host.has("left"), "the host's new document replaces its nested frame");
+  }, { "/outer": { type: "text/html", body: '<!doctype html><body><iframe id="n" src="http://a.localhost:PORT/creative"></iframe><script>addEventListener("message",e=>{if(e.data==="go")n.src="http://b.localhost:PORT/second";if(e.data==="leave")location.href="http://localhost:PORT/left"})</script>' }, "/creative": creativePage, "/second": { type: "text/html", body: '<!doctype html><b id="second">two</b>' }, "/left": { type: "text/html", body: '<!doctype html><b id="left">left</b>' } }));
+test("bbcframes: frames nested deeper than the attach limit stay opaque regions", () => mirrored(
+  '<iframe src="http://localhost:PORT/l1" style="width:400px;height:200px"></iframe>',
+  async ({ next }) => {
+    const seen = new Set(); for (let n = 0; n < 12; n++) { const packet = await next(n ? 400 : 0, n === 0); for (const nodes of [packet.nodes ?? [], ...packet.ops.filter(op => op.op === "children").map(op => op.nodes)]) for (const [, , attrs] of elements({ nodes })) if (attrs.id) seen.add(attrs.id); }
+    assert(seen.has("l4"), "four levels are DOM"); assert(!seen.has("l5"), "the fifth level stays an opaque region");
+  }, Object.fromEntries([1, 2, 3, 4, 5].map(level => [`/l${level}`, { type: "text/html", body: `<!doctype html><b id="l${level}">${level}</b>${level < 5 ? `<iframe src="http://${"abcd"[level - 1]}.localhost:PORT/l${level + 1}"></iframe>` : ""}` }]))));
+test("bbcframes: a nested frame without area stays opaque and does not use the frame budget", () => mirrored(
+  '<iframe src="http://localhost:PORT/outer" style="width:400px;height:200px"></iframe>',
+  async ({ next, host, subscription_id }) => {
+    assert((await creativeIds(next)).has("creative"), "the visible creative is DOM");
+    const urls = [...host.mirror.streams.get(subscription_id).frames.values()].map(entry => new URL(entry.child.frame.url).pathname);
+    assert.deepEqual(urls, ["/outer", "/creative"], "the 0x0 tracker frame is not attached");
+  }, { "/outer": { type: "text/html", body: '<!doctype html><body><iframe src="http://b.localhost:PORT/tracker" style="border:0;width:0;height:0"></iframe><iframe src="http://a.localhost:PORT/creative" style="width:300px;height:90px"></iframe>' }, "/creative": creativePage, "/tracker": { type: "text/html", body: '<!doctype html><b id="tracker">t</b>' } }));
+test("bbcframes: a web font used inside a nested cross-origin frame is delivered", () => mirrored(
+  '<iframe src="http://localhost:PORT/outer" style="width:400px;height:200px"></iframe>',
+  async ({ next }) => {
+    const delivered = []; for (let n = 0; n < 12; n++) { const packet = await next(n ? 500 : 0, n === 0); delivered.push(...packet.resources.map(r => [r.key, r.mime_type])); if (delivered.some(([key, mime]) => mime === "font/woff2" && Number(key.slice(1)) >= 2e6)) break; }
+    assert(delivered.some(([key, mime]) => mime === "font/woff2" && Number(key.slice(1)) >= 2e6), `the nested frame's font arrived in its own slot (${JSON.stringify(delivered)})`);
+  }, { "/outer": nestedOuter2("/inner"), "/inner": { type: "text/html", body: '<!doctype html><style>@font-face{font-family:T;src:url(http://a.localhost:PORT/t.woff2) format("woff2")}b{font-family:T}</style><b id="creative">Truth matters</b>' }, "/t.woff2": { type: "font/woff2", headers: { "Access-Control-Allow-Origin": "*" }, body: "wOF2" + "\u0001".repeat(60) } }));
+function nestedOuter2(path) { return { type: "text/html", body: `<!doctype html><body><iframe src="http://a.localhost:PORT${path}" style="width:300px;height:90px"></iframe>` }; }

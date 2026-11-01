@@ -82,6 +82,7 @@ fn kernel_websocket_state_and_cancel_ack_while_structured_provider_io_is_slow() 
                 variant: None,
                 structured_endpoint: None,
                 provider_session_id: None,
+                native_checkpoint_binding: None,
                 native_tui: false,
             }),
         )
@@ -127,6 +128,7 @@ fn kernel_websocket_state_and_cancel_ack_while_structured_provider_io_is_slow() 
                 variant: None,
                 structured_endpoint: None,
                 provider_session_id: None,
+                native_checkpoint_binding: None,
                 native_tui: false,
             }),
         )

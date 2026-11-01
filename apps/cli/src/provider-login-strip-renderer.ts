@@ -47,10 +47,7 @@ export function renderProviderLoginStrip(options: ProviderLoginStripOptions): vo
   container.add(header)
 
   const url = state.view.url
-  if (!url && state.problem) {
-    // The provider dropped its link after rejecting a code.
-    container.add(text("1. This link expired. Press Esc, then 1 to cancel, and sign in again.", theme.warning))
-  } else if (!url) {
+  if (!url) {
     container.add(text("1. Waiting for the authorization link…", theme.textMuted))
   } else {
     container.add(text("1. Cmd-click the link (Terminal.app: Cmd-double-click), or drag-select and Cmd-C:"))

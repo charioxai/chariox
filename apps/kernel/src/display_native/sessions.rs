@@ -207,6 +207,9 @@ fn clips(
 }
 pub(super) struct Sessions {
     sessions: HashMap<String, Session>,
+    /// MP-08/MP-10 (P2): the last encoded whole frame is coarse; the capture loop takes an unchanged
+    /// readback at the frame interval so the encoder refines it (Selkies keeps encoding after a change).
+    pub refine: std::sync::Arc<std::sync::atomic::AtomicBool>,
     revision: u64,
     w: i32,
     h: i32,
@@ -216,6 +219,7 @@ impl Sessions {
     pub fn new(w: i32, h: i32, root: PathBuf) -> Self {
         Self {
             sessions: HashMap::new(),
+            refine: Default::default(),
             revision: 0,
             w,
             h,
@@ -456,6 +460,11 @@ impl Sessions {
         };
         let mut reply = backend(&codec);
         let reduced = unsafe { ffi::cx_codec_reduced(codec.0) } == 1;
+        self.refine.store(
+            matches!(&outcome, EncodeOutcome::Rows(rows) if !rows.is_empty())
+                && unsafe { ffi::cx_codec_refining(codec.0) } == 1,
+            std::sync::atomic::Ordering::Relaxed,
+        );
         let mut cpu = [0f64; 6];
         unsafe {
             ffi::cx_codec_cpu(codec.0, cpu.as_mut_ptr());

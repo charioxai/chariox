@@ -19,6 +19,9 @@ type FooterTone = "info" | "error"
 
 export type ProviderCommandHandlerDeps = {
   currentProviderId: () => string
+  openSessionProcesses?: () => void
+  confirmProcessStop?: (agent: string) => Promise<boolean>
+  stopSessionProcesses?: (target: {kind: "agent"; agent_id: string} | {kind: "process"; process_id: string}) => Promise<void>
   flashFooter: (message: string, tone: FooterTone) => void
   appendNotice: (message: string) => void
   showProviderLoginLink?: (url: string, options?: ProviderLoginLinkOptions) => Promise<boolean | void>
@@ -38,6 +41,12 @@ export type ProviderCommandHandlerDeps = {
   readSecret?: (prompt: string) => Promise<string>
   storeProviderSetupToken?: (profile: string, value: string, replace: boolean) => Promise<{ replaced: boolean }>
   logoutProvider?: (provider: string, accountProfile?: string) => Promise<ProviderLogoutOutcome>
+  getRelayStatus?: () => Promise<{ daemon_id?: string }>
+  refreshWaitingRoomInventory?: () => Promise<void>
+  applyAccountSelection?: (value: string) => Promise<void>
+  listProviderAccountCopyOffers?: () => Promise<import("@chariox/kernel-client").ProviderAccountCopyOffer[]>
+  copyProviderAccountFromKernel?: (offer: import("@chariox/kernel-client").ProviderAccountCopyOffer) => Promise<import("@chariox/kernel-client").ProviderAccountCopyReceipt>
+  accountCopyBinding?: () => object
   listProviderAccountProfiles?: (provider?: string | null) => Promise<ProviderAccountProfile[]>
   createProviderAccountProfile?: (provider: string, label: string) => Promise<ProviderAccountProfile>
   linkProviderAccountProfile?: (provider: string, label: string, path: string) => Promise<ProviderAccountProfile>
@@ -143,6 +152,20 @@ export async function handleProviderSlashCommand(
   }
   if (action === "reauth") {
     await reauthProvider(deps, maybeProvider ?? deps.currentProviderId(), maybeProfile, method.value)
+    return
+  }
+  if (action === "session-processes") {
+    if (deps.openSessionProcesses) deps.openSessionProcesses()
+    else deps.flashFooter("Process view is unavailable.", "error")
+    return
+  }
+  if (action === "processes" && parts[1] === "list") { deps.openSessionProcesses?.(); return }
+  if (action === "processes" && parts[1] === "kill") {
+    const [, , kind, id] = parts
+    if (!id || !["agent", "process"].includes(kind ?? "") || parts.length !== 4 || !deps.stopSessionProcesses) { deps.flashFooter("usage: /provider processes kill <agent|process> <id>", "error"); return }
+    if (kind === "agent" && !await deps.confirmProcessStop?.(id)) return
+    try { await deps.stopSessionProcesses(kind === "agent" ? {kind: "agent", agent_id: id} : {kind: "process", process_id: id}); deps.flashFooter("Processes stopped.", "info") }
+    catch (error) { deps.flashFooter(error instanceof Error ? error.message : String(error), "error") }
     return
   }
   if (action === "processes") {
@@ -360,6 +383,27 @@ async function handleProviderAccountsCommand(
   args: string[],
 ): Promise<void> {
   const [action = "list", provider, profile, ...rest] = args
+  if (action === "copy") {
+    if (!deps.listProviderAccountCopyOffers || !deps.copyProviderAccountFromKernel) throw new Error("Update this client to copy a login")
+    const binding = deps.accountCopyBinding?.()
+    const current = () => !deps.accountCopyBinding || deps.accountCopyBinding() === binding
+    const offers = await deps.listProviderAccountCopyOffers()
+    const offer = offers.find(offer => offer.source_kernel_id === provider && offer.account_profile === profile)
+    if (!provider || !profile) {
+      deps.appendNotice(offers.length ? offers.map(offer => `${offer.label} · on ${offer.source_label} · Copy login to this machine: /provider accounts copy ${offer.source_kernel_id} ${offer.account_profile}`).join("\n") : "No login copies are available. Connect the source machine and check its sign-in.")
+      return
+    }
+    if (!offer) throw new Error("This login is no longer offered by the source machine. Open /provider accounts copy again.")
+    if (!current()) throw new Error("The kernel connection changed. Open /provider accounts copy again.")
+    deps.flashFooter(`Copying ${offer.label} from ${offer.source_label}; answer the kernel approval`, "info")
+    const receipt = await deps.copyProviderAccountFromKernel(offer)
+    if ((await deps.getRelayStatus?.())?.daemon_id === receipt.target_kernel_id && current()) {
+      await deps.refreshWaitingRoomInventory?.()
+      if ((await deps.getRelayStatus?.())?.daemon_id === receipt.target_kernel_id && current()) await deps.applyAccountSelection?.(receipt.account_profile)
+    }
+    deps.appendNotice("Login copied to this machine. The source machine keeps its own login.")
+    return
+  }
   if (action === "list") {
     if (!deps.listProviderAccountProfiles) {
       deps.flashFooter("provider account management is unavailable", "error")

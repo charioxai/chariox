@@ -176,6 +176,89 @@ async fn reconnecting_daemon_replaces_stale_socket_without_removing_live_registr
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_replaced_daemon_socket_cannot_overwrite_the_live_registration() {
+    let server = RelayServer::new(RelayConfig {
+        host: "127.0.0.1".to_string(),
+        port: 0,
+        shared_token: Some("secret".to_string()),
+    });
+    let listener = server
+        .bind_listener()
+        .await
+        .expect("relay listener should bind");
+    let addr = listener.local_addr().expect("listener should have addr");
+
+    let server = RelayServer::new(RelayConfig {
+        host: addr.ip().to_string(),
+        port: addr.port(),
+        shared_token: Some("secret".to_string()),
+    });
+    let registry = server.registry();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    let server_task = tokio::spawn(async move {
+        server
+            .run_listener_until(listener, async {
+                let _ = shutdown_rx.await;
+            })
+            .await
+            .expect("relay server should run");
+    });
+
+    let url = format!("ws://{}:{}", addr.ip(), addr.port());
+    let send = |envelope: RelayEnvelope| {
+        Message::Text(
+            serde_json::to_string(&envelope)
+                .expect("envelope should serialize")
+                .into(),
+        )
+    };
+    let (mut stale_socket, _) = connect_async_with_retry(&url)
+        .await
+        .expect("first daemon should connect to relay");
+    stale_socket
+        .send(send(RelayEnvelope::DaemonRegister {
+            registration: test_registration("daemon-1", "machine-1", "macOS", 10),
+        }))
+        .await
+        .expect("first register frame should send");
+    sleep(Duration::from_millis(50)).await;
+    let (mut live_socket, _) = connect_async_with_retry(&url)
+        .await
+        .expect("second daemon should connect to relay");
+    live_socket
+        .send(send(RelayEnvelope::DaemonRegister {
+            registration: test_registration("daemon-1", "machine-2", "linux", 20),
+        }))
+        .await
+        .expect("second register frame should send");
+    sleep(Duration::from_millis(50)).await;
+
+    // The replaced socket keeps running and heartbeats its old registration.
+    stale_socket
+        .send(send(RelayEnvelope::DaemonHeartbeat {
+            daemon_id: "daemon-1".to_string(),
+            registration: Some(test_registration("daemon-1", "machine-1", "macOS", 10)),
+        }))
+        .await
+        .expect("stale heartbeat frame should send");
+    sleep(Duration::from_millis(100)).await;
+
+    {
+        let guard = registry.read().await;
+        assert_eq!(
+            guard
+                .daemon("daemon-1")
+                .map(|registration| registration.machine_id.as_str()),
+            Some("machine-2"),
+            "a replaced socket's heartbeat overwrote the live registration"
+        );
+    }
+
+    let _ = shutdown_tx.send(());
+    server_task.await.expect("server task should join");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn daemon_socket_cannot_switch_registered_identity() {
     let server = RelayServer::new(RelayConfig {
         host: "127.0.0.1".to_string(),

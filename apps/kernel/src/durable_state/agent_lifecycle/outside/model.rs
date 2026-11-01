@@ -38,14 +38,31 @@ pub(crate) struct Part {
     #[serde(default)]
     pub ended_at_ms: Option<u64>,
     pub remote_cursors: BTreeMap<String, u64>,
+    /// The cursor each followed kernel confirmed as acknowledged. It trails
+    /// `remote_cursors` while an acknowledgement is lost, and the difference is
+    /// what is still owed to that kernel.
+    #[serde(default)]
+    pub remote_acks: BTreeMap<String, u64>,
     #[serde(default)]
     pub cleanup_targets: Vec<EventTarget>,
     #[serde(default)]
-    pub forwarded_counts: BTreeMap<String, u64>,
-    #[serde(default)]
     pub run_states: BTreeMap<String, crate::local::EventRunState>,
+    /// The last settled turn each followed agent's holder has been told of.
+    #[serde(default)]
+    pub settled_prompts: BTreeMap<String, String>,
     #[serde(default)]
     pub kernel_health: BTreeMap<String, bool>,
+    /// The inbox rows at the last count, so retention counts again only when appends since
+    /// then could have reached the limit.
+    #[serde(default)]
+    pub counted: Option<CountedInbox>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct CountedInbox {
+    /// `latest` when the rows were counted; a later row has a higher sequence.
+    pub at: u64,
+    pub rows: u64,
 }
 impl Part {
     pub(super) fn new(id: String, home: bool) -> Self {
@@ -59,10 +76,12 @@ impl Part {
             ended: None,
             ended_at_ms: None,
             remote_cursors: BTreeMap::new(),
+            remote_acks: BTreeMap::new(),
             cleanup_targets: Vec::new(),
-            forwarded_counts: BTreeMap::new(),
             run_states: BTreeMap::new(),
+            settled_prompts: BTreeMap::new(),
             kernel_health: BTreeMap::new(),
+            counted: None,
         }
     }
     pub(crate) fn subscription(&self) -> EventSubscription {
@@ -121,6 +140,12 @@ pub(crate) enum Mutation {
         id: String,
         cursor: u64,
     },
+    /// The followed `kernel` confirmed the acknowledgement of events up to `cursor`.
+    RemoteAcked {
+        id: String,
+        kernel: String,
+        cursor: u64,
+    },
     Restart {
         keep: Vec<String>,
     },
@@ -134,11 +159,39 @@ pub(crate) enum Mutation {
     },
 }
 
+impl Mutation {
+    /// Whether committing this changes which sessions and agents the subscriptions follow.
+    pub(in crate::durable_state::agent_lifecycle) fn changes_targets(&self) -> bool {
+        match self {
+            Self::Subscribe { .. } | Self::Unsubscribe { .. } | Self::Restart { .. } => true,
+            Self::Publish { event, .. } => super::followed::removes_target(event),
+            Self::Import { events, .. } => events.iter().any(super::followed::removes_target),
+            Self::KernelHealth { .. }
+            | Self::RunStates { .. }
+            | Self::Ack { .. }
+            | Self::RemoteAcked { .. }
+            | Self::CleanupAck { .. }
+            | Self::Identity { .. } => false,
+            #[cfg(test)]
+            Self::Bound { .. } => false,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct RunState {
     pub session_id: String,
     pub agent_id: String,
     pub state: crate::local::EventRunState,
+    /// The agent's last settled turn and how it ended, while it is not working.
+    pub turn: Option<SettledTurn>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct SettledTurn {
+    pub prompt_id: String,
+    pub turn_id: String,
+    pub outcome: crate::provider::TurnOutcome,
 }
 
 /// A decision that was open before a holder followed its target.

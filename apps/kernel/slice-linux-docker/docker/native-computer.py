@@ -152,12 +152,13 @@ def main(request, connection=None):
     accessibility=load('native-accessibility')
     browser_protection=request.get('browser_protection')
     values=request.get('values') or []
-    before=accessibility.capture_snapshot(request.get('processes',[]),request.get('browser_processes'),browser_protection,values)
+    fill=request.get('fill')
+    before=accessibility.capture_snapshot(request.get('processes',[]),request.get('browser_processes'),browser_protection,values,fill)
     # MP-08/MP-11 (Miguel 2026-10-09): native password controls draw dots.
     # Only exact Vault-filled plain entries contribute local AT-SPI masks.
     mask=request['mask']
     image=capture(mask,before.get('masks',()))
-    after=accessibility.capture_snapshot(request.get('processes',[]),request.get('browser_processes'),browser_protection,values)
+    after=accessibility.capture_snapshot(request.get('processes',[]),request.get('browser_processes'),browser_protection,values,fill)
     if before!=after:
         image.close()
         raise NativeProtectionChanged('native protection changed during capture')

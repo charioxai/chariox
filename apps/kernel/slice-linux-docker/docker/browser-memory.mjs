@@ -1,5 +1,7 @@
 // MP-08/MP-10/MP-11: the same pressure policy for a Room and a native browser.
 // Node's availableMemory includes the process's cgroup limit, unlike host RAM.
+import { execFileSync } from 'node:child_process';
+
 const MiB = 1024 * 1024;
 const HEADROOM = 512 * MiB;
 const RECLAIM_HEADROOM = 1024 * MiB;
@@ -11,13 +13,36 @@ export class BrowserMemoryPressureError extends Error {
   }
 }
 
-export function requireBrowserMemory(available = process.availableMemory()) {
+// On macOS libuv reports only strictly free pages, so a Mac with 39 % memory free
+// and normal pressure shows ~70 MiB. Free, inactive and speculative pages are
+// disjoint queues; "Pages purgeable" overlaps them, so it is never added.
+const VM_STAT_RECLAIMABLE = ['Pages free', 'Pages inactive', 'Pages speculative'];
+
+export function parseVmStat(text) {
+  const pageSize = Number(/page size of (\d+) bytes/.exec(text)?.[1]);
+  if (!Number.isSafeInteger(pageSize) || pageSize <= 0) throw new Error('vm_stat did not report a page size');
+  let pages = 0;
+  for (const name of VM_STAT_RECLAIMABLE) {
+    const count = Number(new RegExp(`^${name}:\\s+(\\d+)\\.`, 'm').exec(text)?.[1]);
+    if (!Number.isSafeInteger(count)) throw new Error(`vm_stat did not report "${name}"`);
+    pages += count;
+  }
+  return pages * pageSize;
+}
+
+const readVmStat = () => execFileSync('/usr/bin/vm_stat', { encoding: 'utf8', timeout: 2000 });
+
+export function availableMemory({ platform = process.platform, vmStat = readVmStat } = {}) {
+  return platform === 'darwin' ? parseVmStat(vmStat()) : process.availableMemory();
+}
+
+export function requireBrowserMemory(available = availableMemory()) {
   if (!Number.isSafeInteger(available) || available < HEADROOM) throw new BrowserMemoryPressureError();
 }
 
 export class BrowserMemory {
-  constructor({ availableMemory = () => process.availableMemory(), interval = 1000 } = {}) {
-    this.availableMemory = availableMemory;
+  constructor({ availableMemory: read = availableMemory, interval = 1000 } = {}) {
+    this.availableMemory = read;
     this.interval = interval;
   }
   close() {

@@ -575,6 +575,7 @@ pub(super) fn write_session_delete(
         params![event_id, session_id, timestamp_ms as i64, payload_json],
     )?;
     let sequence = transaction.last_insert_rowid().max(0) as u64;
+    super::retired_sessions::apply_event(transaction, "session.deleted", payload_json)?;
     transaction.execute(
         "DELETE FROM durable_workflow_hot_entities
          WHERE owner_id = ?1 AND session_id = ?2",

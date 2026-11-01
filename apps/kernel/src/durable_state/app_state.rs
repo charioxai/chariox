@@ -178,12 +178,12 @@ impl DurableKernelStateStore {
                 wake_changed: self.app_wake_changed.clone(),
                 response,
             })))?;
-        receiver
-            .recv()
-            .map_err(|error| DaemonError::LocalTransport {
+        crate::durable_state::await_writer_response(receiver).map_err(|error| {
+            DaemonError::LocalTransport {
                 operation: "durable_state.await_app_state",
                 message: error.to_string(),
-            })?
+            }
+        })?
     }
 }
 

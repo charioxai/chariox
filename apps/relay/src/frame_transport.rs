@@ -7,13 +7,27 @@ use std::collections::BTreeMap;
 pub const DISPLAY_EVENT_SCOPE: &str = "kernel_browser_display";
 /// MP-08/MP-10/MP-11: allocated535/143, delivery registration invoking525 resume.
 pub const DISPLAY_RESUME_SCOPE: &str = "kernel_browser_display_resume";
-/// MP-08/MP-10/MP-11: 553/161, initial resume plus binary-v96 event transport.
-pub const DISPLAY_RESUME_CONNECT_CAPABILITY: &str = "chariox-room-display-resume-v553";
+/// MP-08/MP-10/MP-11: 722 / relay98, initial resume plus bounded raw binary event transport.
+pub const DISPLAY_RESUME_CONNECT_CAPABILITY: &str = "chariox-room-display-resume-v722";
 pub fn is_display_scope(scope: Option<&str>) -> bool {
     matches!(scope, Some(DISPLAY_EVENT_SCOPE | DISPLAY_RESUME_SCOPE))
 }
 pub const TRANSPORT_QUERY: &str = "chariox_transport=chunks-v2";
 pub const CHUNK_BYTES: usize = 16 * 1024;
+const BINARY_CHUNK_MAGIC: &[u8; 4] = b"CXB1";
+pub const BINARY_CHUNK_HEADER_BYTES: usize = 16;
+pub const BINARY_CHUNK_PAYLOAD_BYTES: usize = CHUNK_BYTES - BINARY_CHUNK_HEADER_BYTES;
+
+/// The same socket-local transfer/receipt contract, without encoding ciphertext as text.
+pub fn binary_chunk(transfer_id: u32, offset: usize, total: usize, payload: &[u8]) -> Vec<u8> {
+    let mut chunk = Vec::with_capacity(BINARY_CHUNK_HEADER_BYTES + payload.len());
+    chunk.extend_from_slice(BINARY_CHUNK_MAGIC);
+    chunk.extend_from_slice(&transfer_id.to_be_bytes());
+    chunk.extend_from_slice(&(offset as u32).to_be_bytes());
+    chunk.extend_from_slice(&(total as u32).to_be_bytes());
+    chunk.extend_from_slice(payload);
+    chunk
+}
 /// Bulk bytes in flight per socket: a 480 KB mirror packet takes two round
 /// trips instead of eight. 256 KiB per RTT is 23 Mbit/s at 90 ms.
 pub const WINDOW_BYTES: usize = 256 * 1024;
@@ -73,11 +87,72 @@ pub fn transport_url(value: &str) -> String {
 #[derive(Default)]
 pub struct FrameReceiver {
     active: BTreeMap<u32, (usize, String)>,
+    binary_active: BTreeMap<u32, (usize, Vec<u8>)>,
     last_id: u32,
     reserved: usize,
 }
 
 impl FrameReceiver {
+    /// Complete events retain CXR1 framing; only CXB1 fragments enter reassembly.
+    pub fn receive_binary(
+        &mut self,
+        bytes: &[u8],
+    ) -> Result<(Option<Vec<u8>>, Option<String>), &'static str> {
+        if !bytes.starts_with(BINARY_CHUNK_MAGIC) {
+            return Ok((Some(bytes.to_vec()), None));
+        }
+        if bytes.len() <= BINARY_CHUNK_HEADER_BYTES || bytes.len() > CHUNK_BYTES {
+            return Err("invalid binary transport chunk bounds");
+        }
+        let transfer_id = u32::from_be_bytes(bytes[4..8].try_into().unwrap());
+        let offset = u32::from_be_bytes(bytes[8..12].try_into().unwrap()) as usize;
+        let total = u32::from_be_bytes(bytes[12..16].try_into().unwrap()) as usize;
+        let payload = &bytes[BINARY_CHUNK_HEADER_BYTES..];
+        // Full non-final chunks bound both fragment storage and receipt pressure.
+        if transfer_id == 0
+            || total == 0
+            || total > MAX_MESSAGE_BYTES
+            || offset > total
+            || payload.len() != BINARY_CHUNK_PAYLOAD_BYTES.min(total - offset)
+        {
+            return Err("invalid binary transport chunk bounds");
+        }
+        if self.active.contains_key(&transfer_id) {
+            return Err("transport payload type changed");
+        }
+        if !self.binary_active.contains_key(&transfer_id) {
+            if offset != 0
+                || transfer_id <= self.last_id
+                || self.active.len() + self.binary_active.len() >= MAX_TRANSFERS
+                || total > MAX_ASSEMBLY_BYTES - self.reserved
+            {
+                return Err("invalid transport transfer start");
+            }
+            self.last_id = transfer_id;
+            self.reserved += total;
+            self.binary_active.insert(transfer_id, (total, Vec::new()));
+        }
+        let (expected_total, assembled) = self.binary_active.get_mut(&transfer_id).unwrap();
+        if *expected_total != total || assembled.len() != offset {
+            return Err("non-contiguous transport chunk");
+        }
+        assembled.extend_from_slice(payload);
+        let ack = serde_json::to_string(&TransportFrame::TransportAck {
+            transfer_id,
+            offset: assembled.len() as u32,
+        })
+        .map_err(|_| "cannot encode transport receipt")?;
+        if assembled.len() == total {
+            let (_, completed) = self.binary_active.remove(&transfer_id).unwrap();
+            self.reserved -= total;
+            if completed.starts_with(BINARY_CHUNK_MAGIC) {
+                return Err("nested transport frame");
+            }
+            Ok((Some(completed), Some(ack)))
+        } else {
+            Ok((None, Some(ack)))
+        }
+    }
     /// Returns the complete original envelope, and a receipt to send immediately.
     /// An ordinary envelope may interleave without disturbing the active transfer.
     pub fn receive(
@@ -121,10 +196,13 @@ impl FrameReceiver {
         if payload.is_empty() {
             return Err("invalid transport chunk bounds");
         }
+        if self.binary_active.contains_key(&transfer_id) {
+            return Err("transport payload type changed");
+        }
         if !self.active.contains_key(&transfer_id) {
             if offset != 0
                 || transfer_id <= self.last_id
-                || self.active.len() >= MAX_TRANSFERS
+                || self.active.len() + self.binary_active.len() >= MAX_TRANSFERS
                 || total > MAX_ASSEMBLY_BYTES - self.reserved
             {
                 return Err("invalid transport transfer start");
@@ -188,6 +266,19 @@ where
                     }
                     if let Some(text) = text {
                         return Some(Ok(Message::Text(text.into())));
+                    }
+                }
+                Err(reason) => return Some(Err(Error::Io(std::io::Error::other(reason)))),
+            },
+            Ok(Message::Binary(bytes)) => match receiver.receive_binary(&bytes) {
+                Ok((bytes, receipt)) => {
+                    if let Some(receipt) = receipt {
+                        if let Err(error) = socket.send(Message::Text(receipt.into())).await {
+                            return Some(Err(error));
+                        }
+                    }
+                    if let Some(bytes) = bytes {
+                        return Some(Ok(Message::Binary(bytes.into())));
                     }
                 }
                 Err(reason) => return Some(Err(Error::Io(std::io::Error::other(reason)))),
@@ -314,5 +405,108 @@ mod multiplex_tests {
                 .0;
         }
         assert_eq!(complete, Some(catalog));
+    }
+    fn raw_text_chunk(id: u32, offset: u32, total: u32, payload: &str) -> String {
+        serde_json::to_string(&TransportFrame::TransportChunk {
+            transfer_id: id,
+            offset,
+            total_bytes: total,
+            payload: payload.into(),
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn raw_chunks_reassemble_opaque_bytes_and_interleave_text() {
+        use sha2::{Digest, Sha256};
+        assert_eq!(
+            format!("{:x}", Sha256::digest(binary_chunk(1, 0, 6, b"public"))),
+            "fa5b707d03b00e85bbdecf394f2c67be1bbac50dac8c64aa30e37a051aa96816"
+        );
+        let bytes = [b"CXR1".as_slice(), &vec![0xff; 50000]].concat();
+        let mut receiver = FrameReceiver::default();
+        let mut complete = None;
+        for (index, payload) in bytes.chunks(BINARY_CHUNK_PAYLOAD_BYTES).enumerate() {
+            let offset = index * BINARY_CHUNK_PAYLOAD_BYTES;
+            let wire = binary_chunk(1, offset, bytes.len(), payload);
+            assert!(wire.len() <= CHUNK_BYTES);
+            let (received, ack) = receiver.receive_binary(&wire).unwrap();
+            let TransportFrame::TransportAck {
+                transfer_id,
+                offset: next,
+            } = serde_json::from_str(&ack.unwrap()).unwrap()
+            else {
+                panic!("receipt");
+            };
+            assert_eq!(transfer_id, 1);
+            assert_eq!(next as usize, offset + payload.len());
+            complete = received;
+            if index == 0 {
+                let text = r#"{"kind":"client_response"}"#;
+                assert_eq!(
+                    receiver
+                        .receive(&raw_text_chunk(2, 0, text.len() as u32, text))
+                        .unwrap()
+                        .0
+                        .as_deref(),
+                    Some(text)
+                );
+            }
+        }
+        assert_eq!(complete.unwrap(), bytes);
+        assert_eq!(receiver.reserved, 0);
+        assert!(receiver.binary_active.is_empty());
+    }
+
+    #[test]
+    fn raw_chunks_bound_fragments_and_share_text_budgets() {
+        let payload = vec![0xfe; BINARY_CHUNK_PAYLOAD_BYTES];
+        for wire in [
+            binary_chunk(0, 0, 20000, &payload),
+            binary_chunk(1, 0, MAX_MESSAGE_BYTES + 1, &payload),
+            binary_chunk(1, 0, 20000, &[1]),
+            binary_chunk(1, 1, 20000, &payload),
+            binary_chunk(1, 0, 0, &[1]),
+            binary_chunk(1, 0, 20000, &[]),
+        ] {
+            assert!(FrameReceiver::default().receive_binary(&wire).is_err());
+        }
+        let mut receiver = FrameReceiver::default();
+        receiver
+            .receive_binary(&binary_chunk(1, 0, 20000, &payload))
+            .unwrap();
+        assert!(receiver
+            .receive(&raw_text_chunk(
+                1,
+                BINARY_CHUNK_PAYLOAD_BYTES as u32,
+                20000,
+                "x"
+            ))
+            .is_err());
+        for id in 2..=4 {
+            receiver
+                .receive(&raw_text_chunk(id, 0, 20000, "x"))
+                .unwrap();
+        }
+        assert!(receiver
+            .receive_binary(&binary_chunk(5, 0, 20000, &payload))
+            .is_err());
+        let mut receiver = FrameReceiver::default();
+        receiver
+            .receive_binary(&binary_chunk(1, 0, MAX_MESSAGE_BYTES, &payload))
+            .unwrap();
+        receiver
+            .receive(&raw_text_chunk(2, 0, MAX_MESSAGE_BYTES as u32, "x"))
+            .unwrap();
+        assert!(receiver
+            .receive_binary(&binary_chunk(3, 0, 20000, &payload))
+            .is_err());
+        let nested = b"CXB1private-canary";
+        assert_eq!(
+            FrameReceiver::default()
+                .receive_binary(&binary_chunk(1, 0, nested.len(), nested))
+                .unwrap_err(),
+            "nested transport frame"
+        );
     }
 }

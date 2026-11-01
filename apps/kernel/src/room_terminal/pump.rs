@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use super::events::{Fired, QUIET_BEFORE_WAITING};
 use super::terminal::{ProgramEnd, Terminal};
-use super::types::RoomTerminalOutcome;
+use super::types::{RoomTerminalOutcome, TerminalActor};
 use crate::pty::{PtyManager, PtyProcessState};
 
 /// How long an idle shell may take to start a command that was queued as
@@ -27,7 +27,7 @@ impl Terminal {
             fired: Fired::new(),
         };
         if let Some(run_id) = self.run_id.clone() {
-            pumped.output_changed = self.drain(pty, &run_id, now, &mut pumped.fired);
+            pumped.output_changed = self.drain(pty, &run_id, now, &mut pumped.fired).0;
         }
         pumped
     }
@@ -40,13 +40,34 @@ impl Terminal {
         let Some(run_id) = self.run_id.clone() else {
             return pumped;
         };
-        if self.drain(pty, &run_id, now, &mut pumped.fired) {
-            pumped.output_changed = true;
-        }
+        let (produced, output_closed) = self.drain(pty, &run_id, now, &mut pumped.fired);
+        pumped.output_changed |= produced;
         if let Ok(PtyProcessState::Exited { exit_code, signal }) = pty.poll_process_state(&run_id) {
-            self.drain(pty, &run_id, now, &mut pumped.fired);
-            if let Some(sweep) = &self.session_sweep {
-                sweep.stop();
+            // A job still in the session can hold the PTY open: the output
+            // closes only once the sweep has ended it.
+            if !self.exit_swept {
+                self.exit_swept = true;
+                if let Some(sweep) = self.session_sweep {
+                    sweep.stop_soon();
+                }
+            }
+            if !output_closed {
+                return pumped;
+            }
+            let limit = pty.memory_limit_bytes(&run_id);
+            let outside_end = crate::runtime::process_resources::outside_ended_for_key(&run_id);
+            if limit.is_none() && !outside_end {
+                pty.release_exited_process_jobs(
+                    &run_id,
+                    &self.record.session_id,
+                    crate::runtime::process_resources::SessionProcessOwner::Terminal(
+                        self.record.terminal_id.clone(),
+                    ),
+                    match &self.record.opened_by {
+                        TerminalActor::Agent(agent_id) => Some(agent_id.clone()),
+                        TerminalActor::User => None,
+                    },
+                );
             }
             let _ = pty.remove_process(&run_id);
             self.record_program_end(ProgramEnd {
@@ -56,10 +77,16 @@ impl Terminal {
                 exit_code,
                 signal: signal.clone(),
             });
-            pumped
-                .fired
-                .extend(self.watches.on_shell_exit(exit_code, signal.clone()));
-            self.end(RoomTerminalOutcome::ProgramExited { exit_code, signal });
+            pumped.fired.extend(match limit {
+                Some(limit_bytes) => self.watches.on_memory_limit(limit_bytes),
+                None if outside_end => self.watches.on_outside_end(),
+                None => self.watches.on_shell_exit(exit_code, signal.clone()),
+            });
+            self.end(match limit {
+                Some(limit_bytes) => RoomTerminalOutcome::MemoryLimit { limit_bytes },
+                None if outside_end => RoomTerminalOutcome::OutsideEnd,
+                None => RoomTerminalOutcome::ProgramExited { exit_code, signal },
+            });
             pumped.output_changed = true;
             return pumped;
         }
@@ -136,12 +163,13 @@ impl Terminal {
         run_id: &str,
         now: Instant,
         fired: &mut Fired,
-    ) -> bool {
+    ) -> (bool, bool) {
         let mut produced = false;
-        for chunk in pty.drain_output(run_id).unwrap_or_default() {
+        let (chunks, closed) = pty.drain_output_batch(run_id).unwrap_or_default();
+        for chunk in chunks {
             fired.extend(self.apply_output(&chunk.bytes, now));
             produced = true;
         }
-        produced
+        (produced, closed)
     }
 }
