@@ -1207,6 +1207,7 @@ pub(crate) fn map_kernel_error(error: &DaemonError) -> KernelTransportError {
         } => kernel_error("local_transport_error", error, false),
         DaemonError::LocalTransport { .. } => kernel_error("local_transport_error", error, true),
         DaemonError::PtySpawn { .. } => kernel_error("pty_spawn_failed", error, true),
+        DaemonError::TooManyOpenFiles => kernel_error("too_many_open_files", error, true),
         DaemonError::PtyCleanup { .. } => kernel_error("pty_cleanup_failed", error, true),
         DaemonError::PtyWrite { .. } => kernel_error("pty_write_failed", error, true),
         DaemonError::PtyResize { .. } => kernel_error("pty_resize_failed", error, true),

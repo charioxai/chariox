@@ -423,6 +423,8 @@ pub enum DaemonError {
         provider_run_id: String,
         message: String,
     },
+    #[error("too many open files in this kernel; close a terminal and try again")]
+    TooManyOpenFiles,
     #[error("failed to clean up PTY for provider run `{provider_run_id}`: {message}")]
     PtyCleanup {
         provider_run_id: String,

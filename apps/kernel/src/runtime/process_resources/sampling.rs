@@ -221,9 +221,9 @@ impl ProcessTree {
         self.cgroup = Some(cgroup);
     }
 
-    pub fn sample(&mut self) -> Result<Vec<ProcessSample>, String> {
+    pub fn sample(&mut self) -> Result<Vec<ProcessSample>, SamplingError> {
         let rows = process_rows()?;
-        self.observe(&rows)?;
+        self.observe(&rows).map_err(SamplingError::Unusable)?;
         self.parents = rows
             .iter()
             .filter(|row| self.owned.contains_key(&row.pid))
@@ -696,7 +696,52 @@ struct Row {
     command: String,
 }
 
-type CachedRows = (std::time::Instant, Result<Vec<Row>, String>);
+/// Why the process table could not be read.
+#[derive(Debug, Clone)]
+pub(super) enum SamplingError {
+    /// The kernel lacks descriptors, files or memory for a moment, so it could
+    /// not start `ps`. The tree it watches is fine; the next tick may read.
+    Short(i32),
+    /// Nothing will change by trying again: `ps` is missing, refused or
+    /// answers with columns the monitor cannot read.
+    Unusable(String),
+}
+impl std::fmt::Display for SamplingError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Short(errno) => write!(
+                f,
+                "process resource monitor cannot start ps for now: {}",
+                std::io::Error::from_raw_os_error(*errno)
+            ),
+            Self::Unusable(message) => f.write_str(message),
+        }
+    }
+}
+impl From<SamplingError> for String {
+    fn from(error: SamplingError) -> Self {
+        error.to_string()
+    }
+}
+
+/// Starting `ps` failed for want of descriptors, files or memory, which the
+/// kernel gets back; anything else (no `ps`, no permission) stays failed.
+fn shortage(error: &std::io::Error) -> Option<i32> {
+    #[cfg(unix)]
+    return error.raw_os_error().filter(|errno| {
+        matches!(
+            *errno,
+            libc::EMFILE | libc::ENFILE | libc::EAGAIN | libc::ENOMEM
+        )
+    });
+    #[cfg(not(unix))]
+    {
+        let _ = error;
+        None
+    }
+}
+
+type CachedRows = (std::time::Instant, Result<Vec<Row>, SamplingError>);
 
 /// One shared sample avoids a ps process for every watchdog tick.
 fn cached_rows() -> std::sync::MutexGuard<'static, CachedRows> {
@@ -704,14 +749,14 @@ fn cached_rows() -> std::sync::MutexGuard<'static, CachedRows> {
     ROWS.get_or_init(|| {
         std::sync::Mutex::new((
             std::time::Instant::now() - std::time::Duration::from_secs(1),
-            Err("process sample unavailable".into()),
+            Err(SamplingError::Unusable("process sample unavailable".into())),
         ))
     })
     .lock()
     .unwrap_or_else(|e| e.into_inner())
 }
 
-fn process_rows() -> Result<Vec<Row>, String> {
+fn process_rows() -> Result<Vec<Row>, SamplingError> {
     let mut cache = cached_rows();
     if cache.0.elapsed() >= std::time::Duration::from_millis(200) {
         cache.1 = read_process_rows();
@@ -729,7 +774,7 @@ pub(super) fn live_groups(root: u32) -> Vec<u32> {
             crate::logging::error_with_fields(
                 "process_resources.monitor",
                 "the processes of a terminal could not be read when its submitter changed",
-                serde_json::json!({"pid": root, "error": error}),
+                serde_json::json!({"pid": root, "error": error.to_string()}),
             );
             return Vec::new();
         }
@@ -755,7 +800,10 @@ pub(super) fn live_groups(root: u32) -> Vec<u32> {
 }
 
 pub(super) fn ensure_available() -> std::io::Result<()> {
-    process_rows().map(|_| ()).map_err(std::io::Error::other)
+    process_rows().map(|_| ()).map_err(|error| match error {
+        SamplingError::Short(errno) => std::io::Error::from_raw_os_error(errno),
+        SamplingError::Unusable(message) => std::io::Error::other(message),
+    })
 }
 
 fn run_ps() -> std::io::Result<std::process::Output> {
@@ -785,15 +833,19 @@ pub(super) mod ps_failure {
     }
 }
 
-fn read_process_rows() -> Result<Vec<Row>, String> {
+fn read_process_rows() -> Result<Vec<Row>, SamplingError> {
     let sampled_at_ms = crate::session::unix_epoch_ms();
-    let output = run_ps()
-        .map_err(|error| format!("process resource monitor cannot start ps: {error}; install ps and check the kernel PATH"))?;
+    let output = run_ps().map_err(|error| match shortage(&error) {
+        Some(errno) => SamplingError::Short(errno),
+        None => SamplingError::Unusable(format!(
+            "process resource monitor cannot start ps: {error}; install ps and check the kernel PATH"
+        )),
+    })?;
     if !output.status.success() {
-        return Err(
+        return Err(SamplingError::Unusable(
             "process resource monitor failed: ps must support pid, ppid, rss, pcpu, etime and comm"
                 .into(),
-        );
+        ));
     }
     let rows = String::from_utf8_lossy(&output.stdout)
         .lines()
@@ -824,10 +876,10 @@ fn read_process_rows() -> Result<Vec<Row>, String> {
         })
         .collect::<Vec<_>>();
     if rows.is_empty() {
-        return Err(
+        return Err(SamplingError::Unusable(
             "process resource monitor received an empty process table; check ps availability"
                 .into(),
-        );
+        ));
     }
     Ok(rows)
 }
