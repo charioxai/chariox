@@ -20,7 +20,7 @@ export async function captureProtectedBrowserImage({connection,sessionId,targetI
   if(bytes.length<24||bytes.readUInt32BE(16)!==viewport.css_width*viewport.device_scale_factor||bytes.readUInt32BE(20)!==viewport.css_height*viewport.device_scale_factor)throw new BrowserSnapshotError('browser_artifact_invalid','Browser capture dimensions differ from the canonical viewport');
   await assertBrowserFramesUnchanged(connection,frames);
   return {bytes,redaction};
-  });
+  },{strict:true});
 }
 
 export function blackPng(width, height) {

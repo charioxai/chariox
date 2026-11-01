@@ -45,7 +45,7 @@ function fixture(scenario) {
         return { frameTree: frame(sessionId, captured && scenario === "reparented" && sessionId === "child" ? "foreign-root" : ({ child: "root", nested: "child", foreign: "foreign-root" })[sessionId], captured && scenario === "child_navigation" && sessionId === "child" ? "changed" : `doc-${sessionId}`) };
       }
       if (method === "Page.getLayoutMetrics") return { cssVisualViewport: { pageX: 0, pageY: 0, clientWidth: 8, clientHeight: 6, scale: 1 } };
-      if (method === "Target.getTargets") return { targetInfos: ["child", "nested", "foreign"].map(targetId => ({ type: "iframe", targetId })) };
+      if (method === "Target.getTargets") return { targetInfos: [["child", "root"], ["nested", "child"], ["foreign", "foreign-root"]].map(([targetId, parentFrameId]) => ({ type: "iframe", targetId, parentFrameId })) };
       if (method === "Target.attachToTarget") return { sessionId: params.targetId };
       if (method === "DOMSnapshot.captureSnapshot") {
         if (scenario === "child_unavailable" && sessionId === "child") throw new Error("renderer disconnected");
