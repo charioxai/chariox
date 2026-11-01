@@ -975,6 +975,17 @@ impl KernelRuntimeState {
             &binding.leased_agent_id,
             stale_provider_run_id,
         );
+        // A turn a delegator waits on ends failed and wakes it (A10-S04); the owner's own
+        // turn keeps the decision to resume or cancel it (A10-S02).
+        if !self.lost_turn_has_waiter(session_id, agent_id, prompt.id())? {
+            self.owned.block_failed_prompt_task(
+                session_id,
+                agent_id,
+                prompt.id(),
+                Some(&projected_run_id),
+                &diagnostic,
+            )?;
+        }
         self.end_lost_leased_provider_run(session_id, &projected_run_id)?;
         self.settle_remote_prompt_receipt(
             session_id,
@@ -994,6 +1005,30 @@ impl KernelRuntimeState {
         .await?;
         self.schedule_agent_lifecycle_sweep();
         Ok(())
+    }
+
+    /// Whether another task in the Room waits on the task of this turn.
+    fn lost_turn_has_waiter(
+        &self,
+        room: &str,
+        agent: &str,
+        prompt: &str,
+    ) -> Result<bool, DaemonError> {
+        let tasks = self
+            .owned
+            .durable_state_store
+            .agent_tasks(Some(room), None)?;
+        let Some(task) = tasks
+            .iter()
+            .find(|task| task.agent_id == agent && task.prompt_id == prompt)
+        else {
+            return Ok(false);
+        };
+        Ok(tasks.iter().any(|waiter| {
+            waiter.obligations.iter().any(|obligation| {
+                obligation.completion_task_id.as_deref() == Some(task.task_id.as_str())
+            })
+        }))
     }
 
     fn log_remote_prompt_recovery_retry(
