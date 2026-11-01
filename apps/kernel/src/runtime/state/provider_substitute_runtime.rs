@@ -30,7 +30,7 @@ impl KernelRuntimeState {
             return Ok(SubstituteRerun::NotApplicable);
         }
         let agent = self.owned.agent_store.get_agent(attempt.agent_id)?;
-        if agent.remote_execution().is_some() {
+        if agent.remote_execution().is_some() || self.workspace_of_run_is_lost(failed_run) {
             return Ok(SubstituteRerun::NotApplicable);
         }
         let session_id = failed_run.session_id();

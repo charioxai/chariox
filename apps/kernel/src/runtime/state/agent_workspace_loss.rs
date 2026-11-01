@@ -4,6 +4,26 @@
 use super::*;
 
 impl KernelRuntimeState {
+    /// The run's directory is gone, or no longer holds the git worktree the sweep
+    /// saw there. A substitute would run in the same directory, so a lost
+    /// workspace never reruns the turn.
+    pub(super) fn workspace_of_run_is_lost(
+        &self,
+        run: &crate::provider::RuntimeProviderRun,
+    ) -> bool {
+        let Some(directory) = run.working_directory() else {
+            return false;
+        };
+        !directory.join(".git").exists()
+            && (!directory.exists()
+                || self
+                    .owned
+                    .git_workspaces_seen
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .contains(run.id()))
+    }
+
     /// Fails the active turn of every local provider run whose working directory
     /// is gone: removed, or emptied of the git worktree the sweep saw earlier.
     pub(super) async fn end_turns_on_lost_workspace(&self) {
@@ -25,14 +45,13 @@ impl KernelRuntimeState {
                 continue;
             };
             running.insert(run.id().to_string());
-            let mut seen = self
-                .owned
-                .git_workspaces_seen
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
             if directory.join(".git").exists() {
-                seen.insert(run.id().to_string());
-            } else if !directory.exists() || seen.contains(run.id()) {
+                self.owned
+                    .git_workspaces_seen
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(run.id().to_string());
+            } else if self.workspace_of_run_is_lost(&run) {
                 lost.push((
                     agent.session_id().to_string(),
                     run.id().to_string(),
