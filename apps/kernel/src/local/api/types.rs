@@ -422,4 +422,7 @@ pub use workspace::*;
 /// string that Cloud defines (it was a one-value enum); the wire value is unchanged.
 /// MP-08/MP-09/MP-10/MP-11: 925 marks a hot reload's relay close (`kernel_reload`), which the relay
 /// forwards to the kernel's subscribed clients so they retry within the swap.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 925;
+/// Version 926 makes the direct data channel's liveness a contract: the kernel pings
+/// every second ahead of queued frames and ends a peer silent for 3 s; browsers leave
+/// a direct path silent for 2.5 s (TR-16).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 926;
