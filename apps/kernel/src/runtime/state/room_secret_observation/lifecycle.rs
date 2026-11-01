@@ -142,8 +142,36 @@ impl KernelRuntimeState {
         overwrite: bool,
     ) -> Result<crate::secret::VaultCredentialUpsertResult, DaemonError> {
         let _guard = self.vault_observation_mutation_guard().await;
+        self.upsert_vault_credential_locked(service, registry, credential, secret, overwrite)
+            .await
+    }
+
+    /// The storage step of `upsert_observed_vault_credential`. The caller holds the Vault
+    /// lifecycle write guard, so the registry it reads here is the one it writes.
+    pub(in crate::runtime::state) async fn upsert_vault_credential_locked(
+        &self,
+        service: &crate::secret::RuntimeSecretService,
+        registry: &crate::credential::CharioxCredentialRegistry,
+        credential: crate::config::UserCredentialConfig,
+        secret: &str,
+        overwrite: bool,
+    ) -> Result<crate::secret::VaultCredentialUpsertResult, DaemonError> {
         crate::credential::validate_credential_registration(&credential)?;
         let previous = registry.get(&credential.id)?;
+        // A new handle must not take over the Vault slot of another handle: storing would
+        // replace that handle's value.
+        if previous.is_none() {
+            if let crate::config::UserCredentialSourceConfig::Vault { key } = &credential.source {
+                if let Some(holder) = registry.other_handle_using_vault_key(key, &credential.id)? {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "credential_vault_upsert",
+                        message: format!(
+                            "Vault key `{key}` already holds the value of credential `{holder}`"
+                        ),
+                    });
+                }
+            }
+        }
         // A new handle can still overwrite an existing Vault key. Rejecting an
         // existing handle or an empty value must not revoke unrelated observations.
         if (overwrite || previous.is_none()) && !secret.is_empty() {

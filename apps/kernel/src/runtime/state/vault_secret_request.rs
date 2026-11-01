@@ -159,9 +159,11 @@ impl KernelRuntimeState {
                 &user_config.credential_vault,
             )?;
             let registry = crate::credential::CharioxCredentialRegistry::user()?;
-            // The handle may have changed while the owner typed; store against what it is now.
+            // The handle may have changed while the owner typed: the record to store against is
+            // chosen under the same Vault lifecycle lock as the write.
+            let _guard = self.vault_observation_mutation_guard().await;
             let credential = replacing_or_new(&registry, credential.clone(), overwrite)?;
-            self.upsert_observed_vault_credential(
+            self.upsert_vault_credential_locked(
                 &service,
                 &registry,
                 credential,
@@ -314,6 +316,15 @@ fn replacing_or_new(
     overwrite: bool,
 ) -> Result<crate::config::UserCredentialConfig, DaemonError> {
     let Some(existing) = registry.get(&requested.id)? else {
+        // The new handle stores under its own id; another handle may already keep its value there.
+        if let crate::config::UserCredentialSourceConfig::Vault { key } = &requested.source {
+            if registry
+                .other_handle_using_vault_key(key, &requested.id)?
+                .is_some()
+            {
+                return Err(refusal("secret_request_exists"));
+            }
+        }
         return Ok(requested);
     };
     if !overwrite {

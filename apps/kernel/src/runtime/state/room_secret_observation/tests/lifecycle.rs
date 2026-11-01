@@ -566,8 +566,11 @@ async fn request_fixture(label: &str) -> RequestFixture {
     let mut config = room.runtime.owned.config_projection.snapshot();
     config.user_config.credential_vault.path = vault_path.display().to_string();
     room.runtime.owned.config_projection.update(config);
-    crate::secret::create_chariox_encrypted_vault_for_test(&vault_path, "synthetic-passphrase-only")
-        .unwrap();
+    crate::secret::create_chariox_encrypted_vault_for_test(
+        &vault_path,
+        "synthetic-passphrase-only",
+    )
+    .unwrap();
     crate::secret::unlock_chariox_encrypted_vault(
         &vault_path,
         "synthetic-passphrase-only",
@@ -577,7 +580,13 @@ async fn request_fixture(label: &str) -> RequestFixture {
     let registry = crate::credential::CharioxCredentialRegistry::user().unwrap();
     let service = crate::secret::RuntimeSecretService::with_vault_config(
         Vec::new(),
-        &room.runtime.owned.config_projection.snapshot().user_config.credential_vault,
+        &room
+            .runtime
+            .owned
+            .config_projection
+            .snapshot()
+            .user_config
+            .credential_vault,
     )
     .unwrap();
     RequestFixture {
@@ -590,7 +599,9 @@ async fn request_fixture(label: &str) -> RequestFixture {
     }
 }
 
-fn typed(value: &str) -> tokio::sync::oneshot::Receiver<super::super::super::PendingInteractionResolution> {
+fn typed(
+    value: &str,
+) -> tokio::sync::oneshot::Receiver<super::super::super::PendingInteractionResolution> {
     let (send, receive) = tokio::sync::oneshot::channel();
     send.send(super::super::super::PendingInteractionResolution {
         status: "answered",
