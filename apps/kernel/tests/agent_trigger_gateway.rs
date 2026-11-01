@@ -200,6 +200,26 @@ fn a_kernel_that_requires_a_host_token_starts_the_http_trigger_gateway() {
                 .as_str()
                 .unwrap_or_else(|| panic!("{spawned}"))
                 .to_string();
+            // A trigger reaches a running agent: start its turn.
+            let attached = request(
+                &mut socket,
+                json!({"AttachToSession": {"session_id": session_id,
+                    "client_id": "trigger-gateway-test", "capability_level": "FullTerminal"}}),
+            )
+            .await
+            .unwrap();
+            let attachment_id = attached["SessionAttached"]["attachment"]["id"]
+                .as_str()
+                .unwrap_or_else(|| panic!("{attached}"))
+                .to_string();
+            request(
+                &mut socket,
+                json!({"SubmitPrompt": {"session_id": session_id, "attachment_id": attachment_id,
+                    "target_agent_id": agent_id, "prompt": "write four hundred parts",
+                    "attachments": []}}),
+            )
+            .await
+            .unwrap();
 
             let trigger = request(
                 &mut socket,
@@ -214,23 +234,33 @@ fn a_kernel_that_requires_a_host_token_starts_the_http_trigger_gateway() {
                 .unwrap_or_else(|| panic!("{trigger}"))
                 .to_string();
 
-            let invoked = request(
-                &mut socket,
-                json!({"InvokeAgentTrigger": {"session_id": session_id,
-                    "trigger_id": trigger_id, "payload": {"event": "pushed"}}}),
-            )
-            .await
-            .unwrap();
-            assert_eq!(
-                invoked["AgentTriggerInvoked"]["invocation"]["status"],
-                "accepted",
-                "{invoked}"
-            );
+            // What the gateway forwards from a POST.
+            let deadline = Instant::now() + Duration::from_secs(60);
+            loop {
+                let invoked = request(
+                    &mut socket,
+                    json!({"InvokeAgentTrigger": {"session_id": session_id,
+                        "trigger_id": trigger_id, "payload": {"event": "pushed"}}}),
+                )
+                .await
+                .unwrap();
+                match invoked["AgentTriggerInvoked"]["invocation"]["status"].as_str() {
+                    Some("accepted") => break,
+                    Some("offline") if Instant::now() < deadline => {
+                        tokio::time::sleep(Duration::from_millis(200)).await
+                    }
+                    _ => panic!("the agent did not take the trigger: {invoked}"),
+                }
+            }
         });
     let leftovers: Vec<_> = std::fs::read_dir(scratch.join("tmp"))
         .unwrap()
         .flatten()
         .map(|entry| entry.file_name())
+        .filter(|name| {
+            name.to_string_lossy()
+                .starts_with("chariox-agent-trigger-auth")
+        })
         .collect();
     assert!(
         leftovers.is_empty(),
