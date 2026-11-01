@@ -166,14 +166,14 @@ impl SessionService {
         self.room_environments.remove(session_id);
         self.ephemeral_session_ids.remove(session_id);
         let project_id = deleted.project_id().to_string();
-        let project_has_visible_sessions = self
-            .sessions_in_project(&project_id)?
-            .into_iter()
-            .any(|session| {
-                !session.is_hidden()
-                    && session.id() != session_id
-                    && session.project_id() == project_id.as_str()
-            });
+        let project_has_visible_sessions =
+            self.sessions_in_project(&project_id)?
+                .into_iter()
+                .any(|session| {
+                    !session.is_hidden()
+                        && session.id() != session_id
+                        && session.project_id() == project_id.as_str()
+                });
         let removed_project = (!retain_project
             && !project_id.is_empty()
             && !project_has_visible_sessions
