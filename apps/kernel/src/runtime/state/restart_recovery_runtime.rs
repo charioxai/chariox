@@ -2547,7 +2547,6 @@ mod tests {
                 .drive_durable_restart_recovery(
                     &targets,
                     &BTreeSet::new(),
-                    BTreeSet::new(),
                     window,
                     std::time::Duration::from_millis(1),
                 )

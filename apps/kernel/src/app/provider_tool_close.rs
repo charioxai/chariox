@@ -185,6 +185,7 @@ mod tests {
                 None,
                 status,
                 None,
+                None,
             )
             .expect("the turn should settle");
     }

@@ -99,6 +99,7 @@ async fn f4_legacy_agents_inner() {
                 slice_ref: None,
                 worktree_placement: None,
                 metaagent: false,
+                no_subscribe: false,
             });
             let Ok(LocalDaemonResponse::AgentSpawned { agent, .. }) = router
                 .dispatch(terminal_command(&spawn, Some(user)), spawn)

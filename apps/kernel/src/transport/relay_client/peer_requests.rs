@@ -3527,7 +3527,6 @@ mod tests {
                 1,
             ));
             let state = Arc::new(RwLock::new(RelayClientState::default()));
-            let (outgoing_tx, _priority_rx, _event_rx) = RelayOutgoingSender::channel(1);
             let source_private_key = relay_crypto::generate_private_key_base64();
             let source_public_key =
                 relay_crypto::public_key_from_private_key_base64(&source_private_key)
@@ -3535,7 +3534,6 @@ mod tests {
             let outcome = send_lease_worker_request(
                 &router,
                 &state,
-                &outgoing_tx,
                 "source-kernel-1",
                 scoped_machine_identity(
                     "machine-home-1",

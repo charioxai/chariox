@@ -500,9 +500,8 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns
                         }
                         _ => unreachable!(),
                     }
-                    let (outgoing, _priority, _events) = RelayOutgoingSender::channel(8);
                     let result = crate::transport::relay_client::peer_requests::send_authenticated_peer_request_for_test(
-                        &source_router, &Arc::new(RwLock::new(RelayClientState::default())), &outgoing,
+                        &source_router, &Arc::new(RwLock::new(RelayClientState::default())),
                         &target.daemon_id, identity, &target.relay_private_key, &source.relay_public_key,
                         RelayPeerRequest::RequestProviderAccountCopy { request },
                     ).await;
@@ -945,9 +944,8 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns
             }
             let peer:RelayPeerRequest=serde_json::from_value(serde_json::json!({"kind":"install_provider_account_copy","binding":binding,"credential":canary})).unwrap();
             assert!(!format!("{peer:?}").contains(canary));
-            let (outgoing, _priority, _events) = RelayOutgoingSender::channel(8);
-            let response=crate::transport::relay_client::peer_requests::send_authenticated_peer_request_for_test(
-                &target_router,&Arc::new(RwLock::new(RelayClientState::default())),&outgoing,
+                let response=crate::transport::relay_client::peer_requests::send_authenticated_peer_request_for_test(
+                &target_router,&Arc::new(RwLock::new(RelayClientState::default())),
                 &source.daemon_id,identity,&source.relay_private_key,&target.relay_public_key,peer).await;
             let public = match response {
                 Ok(response) => serde_json::to_value(response).unwrap(),
@@ -1214,11 +1212,9 @@ fn account_copy_encrypted_target_entry_point_requires_same_owner() {
                 &source.relay_public_key,
             )),
         };
-        let (outgoing, _priority, _events) = RelayOutgoingSender::channel(8);
         let result = crate::transport::relay_client::peer_requests::handle_daemon_peer_request(
             &router,
             &Arc::new(RwLock::new(RelayClientState::default())),
-            &outgoing,
             &source.daemon_id,
             Some(identity),
             encrypted,

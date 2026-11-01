@@ -6226,6 +6226,7 @@ mod projection_acknowledgement {
                         completed_at_ms: 1,
                         home_prompt_id: Some(fixture.dispatch.prompt_id.clone()),
                         provider_termination: None,
+                        failure: None,
                     }]
                 } else {
                     Vec::new()

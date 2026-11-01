@@ -13,8 +13,7 @@ impl KernelRuntimeState {
     ) -> Result<ProcessControlResult, DaemonError> {
         self.authorize_current_external_command()?;
         let session = self.owned.session_store.get_session(session_id)?;
-        if session.owner_user_id() != caller
-            && !self.is_legacy_local_terminal_owner(session_id, caller)
+        if !self.acts_for_owner(session_id, caller, session.owner_user_id())
             && !session
                 .collaboration_level_for_user(caller)
                 .is_some_and(|level| level.can_prompt_agent_directly())

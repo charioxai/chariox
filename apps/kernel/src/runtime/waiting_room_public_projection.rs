@@ -1805,7 +1805,7 @@ mod tests {
         let rows = waiting_room_session_summaries(
             vec![session],
             &MetaagentEventStore::default(),
-            crate::session::DEFAULT_LOCAL_USER_ID,
+            &local_caller(),
         );
         assert_eq!(
             rows[0]
