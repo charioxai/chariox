@@ -11,6 +11,12 @@ pub(crate) use control::{
 };
 pub use control::{ProcessControlOutcome, ProcessControlResult, ProcessControlTarget};
 pub(crate) use handover::{adopt_released, hand_over_released, ReleasedJobs};
+
+/// The commands whose admission has stopped them, for a kernel that replaces
+/// its program in place.
+pub(crate) fn hand_over_admission() -> Vec<HeldCommand> {
+    pool::Pool::shared().held_commands()
+}
 mod admission;
 mod handover;
 mod pool;
@@ -19,7 +25,7 @@ mod sampling;
 mod session_sweep;
 mod submissions;
 #[cfg(test)]
-pub(crate) use admission::WaitReason;
+pub(crate) use admission::{adopt_admission, HeldCommand, WaitReason};
 #[cfg(test)]
 pub(crate) use projection::released_keys_for_session;
 #[cfg(test)]

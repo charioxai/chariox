@@ -121,7 +121,17 @@ impl Pool {
     /// The commands whose admission has stopped them, for a kernel that
     /// replaces its program in place.
     pub(super) fn held_commands(&self) -> Vec<admission::HeldCommand> {
-        Vec::new()
+        self.members()
+            .iter()
+            .flat_map(|member| {
+                let observation = member.lock().unwrap_or_else(|e| e.into_inner());
+                observation
+                    .admission
+                    .iter()
+                    .filter_map(|(pid, entry)| admission::HeldCommand::of(*pid, entry))
+                    .collect::<Vec<_>>()
+            })
+            .collect()
     }
 
     fn members(&self) -> Vec<Arc<Mutex<Observation>>> {

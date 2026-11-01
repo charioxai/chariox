@@ -20,7 +20,7 @@ use crate::room_terminal::{RoomTerminalService, TerminalHandover};
 
 /// The handover this program writes and reads. A new program must print the
 /// same number for `--handover-format` before this one hands over to it.
-pub const HANDOVER_FORMAT: u32 = 9;
+pub const HANDOVER_FORMAT: u32 = 10;
 const HANDOVER_ENV: &str = "CHARIOX_HANDOVER";
 const VERIFY_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -33,6 +33,9 @@ struct Handover {
     // Jobs that workloads which ended left running stay their owners' (agent or
     // Room terminal): the next program watches them again.
     released_jobs: Vec<crate::runtime::process_resources::ReleasedJobs>,
+    // Commands whose admission stopped them for room stay stopped, listed and
+    // startable: the next program's admission is told which they are.
+    admission: Vec<crate::runtime::process_resources::HeldCommand>,
     // Focus and grants list agents' user-domain tools: a provider that listed
     // them must not see its tools change.
     user_domain: crate::runtime::user_domain_access::AccessHandover,
@@ -197,6 +200,8 @@ pub fn receive() {
         set_close_on_exec(*fd, true);
     }
     *lock(&INHERITED_LISTENERS) = std::mem::take(&mut handover.listeners);
+    // Before any process is watched again, so its first sample finds them.
+    crate::runtime::process_resources::adopt_admission(std::mem::take(&mut handover.admission));
     crate::runtime::process_resources::adopt_released(std::mem::take(&mut handover.released_jobs));
     crate::logging::info_with_fields(
         "hot_reload.receive",
@@ -663,6 +668,7 @@ async fn prepare(terminals: &RoomTerminalService) -> Result<Handover, String> {
             providers: Vec::new(),
             attachments: Vec::new(),
             released_jobs: Vec::new(),
+            admission: Vec::new(),
             user_domain: Default::default(),
             credentials_fd: None,
             listeners: lock(&LISTENERS).clone(),
@@ -693,6 +699,7 @@ fn replace_program() -> Option<String> {
     let start = START.get()?;
     // Read last: everything has stopped, so no workload ends after this.
     prepared.handover.released_jobs = crate::runtime::process_resources::hand_over_released();
+    prepared.handover.admission = crate::runtime::process_resources::hand_over_admission();
     match send_credentials(&prepared.handover.providers) {
         Ok(fd) => prepared.handover.credentials_fd = fd,
         Err(error) => return Some(format!("the credentials could not be handed over: {error}")),

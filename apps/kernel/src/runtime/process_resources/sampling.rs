@@ -633,7 +633,7 @@ fn same_process(pid: u32, identity: &ProcessIdentity) -> bool {
 // Linux start ticks and Darwin's unique process ID survive exec. Darwin's
 // idversion and executable describe an exec image, so they are deliberately
 // retained for kernel-access admission but excluded from resource ownership.
-fn same_birth(current: &ProcessIdentity, identity: &ProcessIdentity) -> bool {
+pub(super) fn same_birth(current: &ProcessIdentity, identity: &ProcessIdentity) -> bool {
     current.pid == identity.pid && current.start == identity.start && current.uid == identity.uid
 }
 
