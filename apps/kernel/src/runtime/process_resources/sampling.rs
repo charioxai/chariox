@@ -13,14 +13,21 @@ pub struct ProcessSample {
     pub age_ms: u64,
 }
 
+/// A process still executing its program is unreadable for a moment (its
+/// executable is missing), which looks like an exit. Ownership of a process
+/// ends only after this many samples in a row that could not read it.
+const UNREADABLE_SAMPLES: u8 = 8;
+
 pub(super) struct ProcessTree {
     root: u32,
     owned: BTreeMap<u32, ProcessIdentity>,
     ids: BTreeMap<u32, String>,
     /// Parent of each owned process at the last sample.
     parents: BTreeMap<u32, u32>,
-    /// The root could not be read at start and is not owned yet.
-    root_unidentified: bool,
+    /// Failed reads so far of a root that is not owned yet.
+    root_unread: Option<u8>,
+    /// Consecutive failed reads of each owned process.
+    unreadable: BTreeMap<u32, u8>,
     #[cfg(target_os = "linux")]
     cgroup: Option<std::sync::Arc<super::cgroup::Domain>>,
 }
@@ -31,7 +38,8 @@ impl ProcessTree {
             owned: BTreeMap::new(),
             ids: BTreeMap::new(),
             parents: BTreeMap::new(),
-            root_unidentified: true,
+            root_unread: Some(0),
+            unreadable: BTreeMap::new(),
             #[cfg(target_os = "linux")]
             cgroup: None,
         };
@@ -39,20 +47,22 @@ impl ProcessTree {
         tree
     }
 
-    /// A root still executing its program answers `inspect` with a failure for
-    /// a moment. It is identified at the first readable sample: only a child of
-    /// the kernel is adopted, and a root that already ended never is.
+    /// The root is identified at its first readable sample. Only a child of
+    /// the kernel is adopted, and a root that never became readable is given up.
     fn identify_root(&mut self) {
-        let settled = match inspect(self.root) {
+        let Some(failed) = self.root_unread else {
+            return;
+        };
+        self.root_unread = match inspect(self.root) {
             Ok((identity, parent)) => {
                 if parent == std::process::id() {
                     self.adopt(self.root, identity);
                 }
-                true
+                None
             }
-            Err(error) => error.kind() == std::io::ErrorKind::NotFound,
+            Err(_) if failed < UNREADABLE_SAMPLES => Some(failed + 1),
+            Err(_) => None,
         };
-        self.root_unidentified = !settled;
     }
 
     fn adopt(&mut self, pid: u32, identity: ProcessIdentity) {
@@ -92,15 +102,22 @@ impl ProcessTree {
     }
 
     fn observe(&mut self, rows: &[Row]) -> Result<(), String> {
-        if self.root_unidentified {
-            self.identify_root();
-        }
-        // A recorded start identity survives exec but never PID recycling. An
-        // unreadable process may be mid-exec: it stays owned until it is gone.
+        self.identify_root();
+        // A recorded start identity survives exec but never PID recycling.
+        let unreadable = &mut self.unreadable;
         self.owned.retain(|pid, identity| match inspect(*pid) {
-            Ok((current, _)) => same_birth(&current, identity),
-            Err(error) => error.kind() != std::io::ErrorKind::NotFound,
+            Ok((current, _)) => {
+                unreadable.remove(pid);
+                same_birth(&current, identity)
+            }
+            Err(_) => {
+                let failed = unreadable.entry(*pid).or_default();
+                *failed += 1;
+                *failed <= UNREADABLE_SAMPLES
+            }
         });
+        self.unreadable
+            .retain(|pid, _| self.owned.contains_key(pid));
         self.ids.retain(|pid, _| self.owned.contains_key(pid));
         #[cfg(target_os = "linux")]
         if let Some(group) = self.cgroup.clone() {
