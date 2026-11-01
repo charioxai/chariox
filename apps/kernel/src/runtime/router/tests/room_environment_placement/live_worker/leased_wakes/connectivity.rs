@@ -372,6 +372,21 @@ async fn worker_that_lost_only_its_relay_is_cancelled_when_it_reconnects() {
         }
     };
     let while_offline = worker_run_state(&router).await;
+    let leased_agent_id = binding(&fixture, &agent).await.leased_agent_id;
+    let worker_prompt_status = |router: &Arc<CommandRouter>| {
+        let router = Arc::clone(router);
+        let leased_agent_id = leased_agent_id.clone();
+        async move {
+            let mut app = router.app.lock().await;
+            let (session, backing_agent) = crate::app::RemoteLeaseRuntime::new(&mut *app)
+                .leased_agent_backing(&leased_agent_id)?;
+            app.prompt_owner_active_prompt_for_agent_snapshot(&session, &backing_agent)
+                .ok()
+                .flatten()
+                .map(|prompt| prompt.status())
+        }
+    };
+    let open_while_offline = runtime.unstopped_worker_runs_for_test();
 
     let (stop, receiver) = watch::channel(false);
     let relay_state = router.app.lock().await.relay_client_state();
@@ -404,19 +419,28 @@ async fn worker_that_lost_only_its_relay_is_cancelled_when_it_reconnects() {
         stop,
         task,
     };
-    let mut after_reconnect = None;
     for step in 1..=8 {
         runtime
             .sweep_agent_lifecycle_at_for_test(start + 45_000 + step * 30_000)
             .await
             .unwrap();
-        let state = worker_run_state(&worker.router).await;
-        if state.as_ref().ok() != Some(&crate::provider::ProviderRunState::Running) {
-            after_reconnect = Some(state);
+        if runtime.unstopped_worker_runs_for_test() == 0 {
             break;
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
+    eventually_async(
+        "the worker turn is cancelled after it reconnected",
+        || async {
+            matches!(
+                worker_prompt_status(&worker.router).await,
+                None | Some(crate::session::PromptStatus::Cancelling)
+            )
+            .then_some(())
+        },
+    )
+    .await;
+    let open_after = runtime.unstopped_worker_runs_for_test();
     let final_task = store
         .agent_tasks(Some(&room), Some(&agent))
         .unwrap()
@@ -437,9 +461,10 @@ async fn worker_that_lost_only_its_relay_is_cancelled_when_it_reconnects() {
         while_offline.as_ref().ok() == Some(&crate::provider::ProviderRunState::Running),
         "the worker's provider keeps running while only its relay is cut: {while_offline:?}"
     );
-    assert!(
-        after_reconnect.is_some(),
-        "the worker run was never cancelled after it reconnected"
+    assert_eq!(
+        (open_while_offline, open_after),
+        (1, 0),
+        "the unconfirmed run is an open obligation until the worker is told to stop it"
     );
     assert_eq!(
         final_task.state,

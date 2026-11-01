@@ -973,6 +973,7 @@ impl KernelRuntimeState {
         }
         let tasks = self.owned.durable_state_store.agent_tasks(None, None)?;
         Box::pin(self.check_leased_task_connections(&tasks, now)).await?;
+        self.discharge_worker_stop_obligations(now).await;
         let now = crate::session::unix_epoch_ms();
         let mut blocked = Vec::new();
         for task in self.owned.durable_state_store.agent_tasks(None, None)? {

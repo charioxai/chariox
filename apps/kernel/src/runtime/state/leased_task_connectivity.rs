@@ -37,28 +37,27 @@ impl KernelRuntimeState {
                 })
             })
             .collect();
-        let results = futures_util::future::join_all(workers.into_iter().map(|(key, binding)| async move {
-            let reply = tokio::time::timeout(PROBE_TIMEOUT, async {
-                let config = self.with_app_side_effect(move |app| app.relay_config_for_remote_execution(&binding)).await;
-                let target = ClientTarget { daemon_id: Some(key.0.clone()), daemon_alias: None };
-                let request = RelayPeerRequest::Ping { value: PROBE.into() };
-                match self.connected_relay_state_for_config(&config).await {
-                    Some(state) => crate::transport::relay_client::send_peer_request_via_connected_relay_with_timeout(
-                        &config, &state, target, request, PROBE_TIMEOUT,
-                    ).await,
-                    None => crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
-                        &config, target, request, PROBE_TIMEOUT,
-                    ).await,
-                }
-            }).await;
-            let slice_hosted = self
-                .owned
-                .slice_store
-                .resolve_by_worker_kernel_ref(&key.0)
-                .is_some();
-            let probe = classify_probe(&reply, slice_hosted);
-            (key, probe)
-        })).await.into_iter().collect::<BTreeMap<_, _>>();
+        let results =
+            futures_util::future::join_all(workers.into_iter().map(|(key, binding)| async move {
+                let reply = self
+                    .peer_request_to_worker(
+                        binding,
+                        RelayPeerRequest::Ping {
+                            value: PROBE.into(),
+                        },
+                    )
+                    .await;
+                let slice_hosted = self
+                    .owned
+                    .slice_store
+                    .resolve_by_worker_kernel_ref(&key.0)
+                    .is_some();
+                let probe = classify_probe(&reply, slice_hosted);
+                (key, probe)
+            }))
+            .await
+            .into_iter()
+            .collect::<BTreeMap<_, _>>();
 
         // Re-read after relay I/O: a task may finish or move while a probe is in flight.
         let current = self.owned.durable_state_store.agent_tasks(None, None)?;
@@ -120,9 +119,35 @@ impl KernelRuntimeState {
             }
         }
         for (task, binding, offline_ms) in lost {
-            Box::pin(self.end_turn_on_lost_worker(&task, &binding, offline_ms)).await?;
+            Box::pin(self.end_turn_on_lost_worker(&task, &binding, offline_ms, now)).await?;
         }
         Ok(())
+    }
+
+    /// One request to the worker over its relay, answered or not within `PROBE_TIMEOUT`.
+    pub(super) async fn peer_request_to_worker(
+        &self,
+        binding: crate::agent::RemoteAgentBinding,
+        request: RelayPeerRequest,
+    ) -> Result<Result<RelayPeerResponse, DaemonError>, tokio::time::error::Elapsed> {
+        tokio::time::timeout(PROBE_TIMEOUT, async {
+            let target = ClientTarget {
+                daemon_id: Some(binding.worker_kernel_id.clone()),
+                daemon_alias: None,
+            };
+            let config = self
+                .with_app_side_effect(move |app| app.relay_config_for_remote_execution(&binding))
+                .await;
+            match self.connected_relay_state_for_config(&config).await {
+                Some(state) => crate::transport::relay_client::send_peer_request_via_connected_relay_with_timeout(
+                    &config, &state, target, request, PROBE_TIMEOUT,
+                ).await,
+                None => crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
+                    &config, target, request, PROBE_TIMEOUT,
+                ).await,
+            }
+        })
+        .await
     }
 
     /// The worker is gone and with it the provider run it hosted. The turn ends
@@ -132,6 +157,7 @@ impl KernelRuntimeState {
         task: &AgentTaskExecution,
         binding: &crate::agent::RemoteAgentBinding,
         offline_ms: u64,
+        now: u64,
     ) -> Result<(), DaemonError> {
         let Some(run) = binding.active_worker_provider_run_id.as_deref() else {
             return Ok(());
@@ -147,7 +173,8 @@ impl KernelRuntimeState {
         }
         let host = self.owned.leased_host_name(binding);
         let lost = format!(
-            "The {host} hosting this turn has been offline for {} s",
+            "The {host} hosting this turn has been offline for {} s and its run is not confirmed stopped; \
+             Chariox cancels it when the worker is reachable again",
             offline_ms / 1000
         );
         self.settle_lost_remote_prompt_run(
@@ -158,7 +185,9 @@ impl KernelRuntimeState {
             &lost,
             "the relay reports the worker kernel is not connected",
         )
-        .await
+        .await?;
+        self.open_worker_stop_obligation(binding, &task.prompt_id, run, now);
+        Ok(())
     }
 }
 
@@ -177,7 +206,9 @@ enum Verdict {
     BecameUncertain,
     Restored,
     /// The relay has reported the worker offline for the whole grace period.
-    Lost { offline_ms: u64 },
+    Lost {
+        offline_ms: u64,
+    },
 }
 
 /// Folds one probe into the task's connection state. A probe alone never
@@ -315,7 +346,10 @@ mod tests {
                 "connect temporary relay peer socket",
                 "invalid peer certificate: UnknownIssuer",
             ),
-            ("connect relay metadata socket", "metadata response was not JSON"),
+            (
+                "connect relay metadata socket",
+                "metadata response was not JSON",
+            ),
             ("send relay peer request", "relay is not connected"),
         ] {
             assert!(
@@ -327,7 +361,11 @@ mod tests {
 
     #[test]
     fn offline_is_counted_from_the_first_offline_report_not_from_earlier_uncertainty() {
-        let key = ("task".to_string(), "worker".to_string(), "lease".to_string());
+        let key = (
+            "task".to_string(),
+            "worker".to_string(),
+            "lease".to_string(),
+        );
         let mut uncertain = BTreeMap::new();
         let at = |seconds: u64| seconds * 1_000;
         assert_eq!(

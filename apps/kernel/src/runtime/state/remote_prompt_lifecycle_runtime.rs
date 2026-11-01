@@ -992,7 +992,7 @@ pub(super) struct RemotePromptReceipt<'a> {
 // MP-08 / MP-09 / MP-10 / MP-11 A10/G03: this worker has lost the
 // exact lease whose cancellation we verified. Release cancelled work only;
 // a missing lease remains insufficient evidence for successful completion.
-fn remote_prompt_cancellation_should_treat_as_settled(error: &DaemonError) -> bool {
+pub(super) fn remote_prompt_cancellation_should_treat_as_settled(error: &DaemonError) -> bool {
     remote_prompt_completion_should_treat_as_settled(error)
         || matches!(
             error,

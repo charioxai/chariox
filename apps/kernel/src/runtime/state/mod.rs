@@ -269,6 +269,7 @@ struct KernelRuntimeOwnedState {
     browser_import_admission: crate::runtime::browser_import_admission::BrowserImportAdmission,
     human_control_task_waits: Arc<std::sync::Mutex<BTreeMap<String, u64>>>,
     uncertain_leased_tasks: UncertainLeasedTasks,
+    unstopped_worker_runs: leased_worker_stop_obligation::UnstoppedWorkerRuns,
     /// Running provider runs whose working directory the sweep has seen as a git worktree.
     git_workspaces_seen: Arc<std::sync::Mutex<BTreeSet<String>>>,
     room_computer_revoked: Arc<std::sync::Mutex<BTreeSet<String>>>,
@@ -1044,6 +1045,7 @@ impl KernelRuntimeState {
                 environment_execution_gates: Default::default(),
                 human_control_task_waits: Default::default(),
                 uncertain_leased_tasks: Default::default(),
+                unstopped_worker_runs: Default::default(),
                 git_workspaces_seen: Default::default(),
                 room_computer_revoked,
                 room_secret_observations,
@@ -1478,6 +1480,7 @@ mod agent_wake_scheduler;
 mod agent_workflow_tasks;
 mod agent_workspace_loss;
 mod leased_task_connectivity;
+mod leased_worker_stop_obligation;
 mod room_dispatch_obligation;
 mod terminal_wake;
 mod terminal_wake_worker;
