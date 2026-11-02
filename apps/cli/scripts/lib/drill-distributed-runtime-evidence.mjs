@@ -142,7 +142,7 @@ export function distributedRuntimeMatrixCommandsFor({
   return [
     {
       artifactIndexFlag: "--artifact-index",
-      args: [...commonArgs, ...providerAccountArgsFor(providerAccounts, ["claude", "codex", "opencode"]), "--include-hetzner"],
+      args: [...commonArgs, ...providerAccountArgsFor(providerAccounts, ["claude", "codex", "opencode"]), "--include-remote-kernel"],
       cwd: ossRoot,
       matrix: "native-provider-tui-matrix",
       outputDir: ossOutputDir,
@@ -152,7 +152,7 @@ export function distributedRuntimeMatrixCommandsFor({
     },
     {
       artifactIndexFlag: "--artifact-index",
-      args: [...commonArgs, ...providerAccountArgsFor(providerAccounts, ["claude", "codex", "opencode"]), "--include-hetzner", "--include-hosted-cloud"],
+      args: [...commonArgs, ...providerAccountArgsFor(providerAccounts, ["claude", "codex", "opencode"]), "--include-remote-kernel", "--include-hosted-cloud"],
       cwd: ossRoot,
       matrix: "remote-agent-runtime-matrix",
       outputDir: ossOutputDir,
@@ -162,7 +162,7 @@ export function distributedRuntimeMatrixCommandsFor({
     },
     {
       artifactIndexFlag: "--artifact-index",
-      args: [...commonArgs, ...providerAccountArgsFor(providerAccounts, ["claude", "codex", "opencode"]), "--include-slices", "--include-hetzner", "--include-hosted-cloud"],
+      args: [...commonArgs, ...providerAccountArgsFor(providerAccounts, ["claude", "codex", "opencode"]), "--include-slices", "--include-remote-kernel", "--include-hosted-cloud"],
       cwd: ossRoot,
       matrix: "runtime-resilience-chaos-matrix",
       outputDir: ossOutputDir,
@@ -172,7 +172,7 @@ export function distributedRuntimeMatrixCommandsFor({
     },
     {
       artifactIndexFlag: "--artifact-index",
-      args: [...commonArgs, "--include-hetzner"],
+      args: [...commonArgs, "--include-remote-kernel"],
       cwd: ossRoot,
       matrix: "remote-home-extension-matrix",
       outputDir: ossOutputDir,
@@ -192,7 +192,7 @@ export function distributedRuntimeMatrixCommandsFor({
     },
     {
       artifactIndexFlag: "--artifact-index",
-      args: [...commonArgs, ...providerAccountArgsFor(providerAccounts, ["codex", "opencode"]), "--include-remote", "--include-hetzner", "--include-opencode"],
+      args: [...commonArgs, ...providerAccountArgsFor(providerAccounts, ["codex", "opencode"]), "--include-remote", "--include-remote-kernel", "--include-opencode"],
       cwd: ossRoot,
       matrix: "workspace-live-sync-matrix",
       outputDir: ossOutputDir,
@@ -202,7 +202,7 @@ export function distributedRuntimeMatrixCommandsFor({
     },
     {
       artifactIndexFlag: "--output-artifact-index",
-      args: [...commonArgs, ...providerAccountArgsFor(providerAccounts, ["claude", "codex", "opencode"]), "--include-hosted-cloud", "--include-hetzner"],
+      args: [...commonArgs, ...providerAccountArgsFor(providerAccounts, ["claude", "codex", "opencode"]), "--include-hosted-cloud", "--include-remote-kernel"],
       cwd: cloudRoot,
       matrix: "browser-terminal-resilience-matrix",
       outputDir: cloudOutputDir,

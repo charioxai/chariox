@@ -92,6 +92,7 @@ impl KernelRuntimeState {
                 prompt.id(),
                 prompt.prompt(),
                 prompt.attachments(),
+                prompt.prompt_origin(),
             )?;
             owned.echo_steering_prompt_to_other_attachments(
                 &request.session_id,

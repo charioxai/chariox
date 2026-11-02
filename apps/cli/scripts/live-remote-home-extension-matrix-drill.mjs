@@ -9,9 +9,9 @@ import {
   selectDrillMatrixScenarios,
 } from './lib/drill-matrix-runner.mjs'
 import {
-  appendHetznerPassthrough,
+  appendRemoteKernelPassthrough,
   drillDeploymentPresetMetadata,
-  parseHetznerPassthroughArg,
+  parseRemoteKernelPassthroughArg,
 } from './lib/drill-environment-presets.mjs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
@@ -42,26 +42,26 @@ const MATRIX = [
     ],
   },
   {
-    id: 'hetzner-single',
-    description: 'Hetzner worker, single user',
-    args: ['--hetzner-worker'],
-    requires: ['hetzner'],
+    id: 'remote-kernel-single',
+    description: 'remote kernel worker, single user',
+    args: ['--remote-kernel-worker'],
+    requires: ['remote-kernel'],
     classification: 'worker-execution',
     runtimeSignals: ['home-extension-manifest-sync', 'lease-health', 'provider-run-lifecycle', 'session-authority'],
     exitCriteria: [
-      'single-user home-owned extensions execute on home while worker runs on Hetzner',
+      'single-user home-owned extensions execute on home while worker runs on remote kernel',
       'self-hosted relay carries projection and invocation without owning runtime authority',
     ],
   },
   {
-    id: 'hetzner-collab',
-    description: 'Hetzner worker, collab',
-    args: ['--hetzner-worker', '--collab'],
-    requires: ['hetzner'],
+    id: 'remote-kernel-collab',
+    description: 'remote kernel worker, collab',
+    args: ['--remote-kernel-worker', '--collab'],
+    requires: ['remote-kernel'],
     classification: 'kernel-authority',
     runtimeSignals: ['home-extension-manifest-sync', 'lease-health', 'session-authority'],
     exitCriteria: [
-      'collab remote agent on Hetzner can invoke only home-authorized tools',
+      'collab remote agent on remote kernel can invoke only home-authorized tools',
       'home revoke and authorization checks remain authoritative across machines',
     ],
   },
@@ -75,15 +75,15 @@ function printHelp() {
     'By default this runs only local single-user and local collab scenarios.',
     '',
     'Options:',
-    '  --include-hetzner        Include Hetzner worker scenarios',
+    '  --include-remote-kernel        Include remote kernel worker scenarios',
     '  --only IDS               Comma-separated scenario ids',
     '  --dry-run                Print selected commands without running drills',
     '  --continue-on-failure    Run every selected scenario before exiting non-zero',
     '  --report PATH            Write a machine-readable matrix report; defaults under .artifacts/drill-matrices',
     '  --artifact-index PATH    Write a verifiable artifact index for the matrix report',
-    '  --hetzner-host HOST      Forwarded to Hetzner drill scenarios',
-    '  --hetzner-key PATH       Forwarded to Hetzner drill scenarios',
-    '  --hetzner-repo PATH      Forwarded to Hetzner drill scenarios',
+    '  --remote-kernel-host HOST      Forwarded to remote kernel drill scenarios',
+    '  --remote-kernel-key PATH       Forwarded to remote kernel drill scenarios',
+    '  --remote-kernel-repo PATH      Forwarded to remote kernel drill scenarios',
     '',
     'Scenario ids:',
     ...MATRIX.map((scenario) => `  ${scenario.id.padEnd(15)} ${scenario.description}`),
@@ -98,7 +98,7 @@ function readValue(argv, index, flag) {
 
 function parseArgs(argv) {
   const options = {
-    includeHetzner: false,
+    includeRemoteKernel: false,
     only: null,
     dryRun: false,
     continueOnFailure: false,
@@ -110,7 +110,7 @@ function parseArgs(argv) {
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
     if (arg === '--') continue
-    else if (arg === '--include-hetzner') options.includeHetzner = true
+    else if (arg === '--include-remote-kernel') options.includeRemoteKernel = true
     else if (arg === '--dry-run') options.dryRun = true
     else if (arg === '--continue-on-failure') options.continueOnFailure = true
     else if (arg === '--report') options.reportPath = readValue(argv, i++, arg)
@@ -121,10 +121,10 @@ function parseArgs(argv) {
     else if (arg === '--only') options.only = parseDrillScenarioIds(readValue(argv, i++, arg))
     else if (arg.startsWith('--only=')) options.only = parseDrillScenarioIds(arg.slice('--only='.length))
     else {
-      const hetznerArg = parseHetznerPassthroughArg(argv, i)
-      if (hetznerArg) {
-        options.passthrough.push(...hetznerArg.args)
-        i = hetznerArg.nextIndex
+      const remoteKernelArg = parseRemoteKernelPassthroughArg(argv, i)
+      if (remoteKernelArg) {
+        options.passthrough.push(...remoteKernelArg.args)
+        i = remoteKernelArg.nextIndex
         continue
       }
       throw new Error(`unknown argument: ${arg}`)
@@ -137,15 +137,15 @@ function selectScenarios(options) {
   return selectDrillMatrixScenarios({
     scenarios: MATRIX,
     requestedIds: options.only,
-    enabledRequirements: new Set(options.includeHetzner ? ['hetzner'] : []),
-    requirementLabels: { hetzner: '--include-hetzner' },
+    enabledRequirements: new Set(options.includeRemoteKernel ? ['remote-kernel'] : []),
+    requirementLabels: { "remote-kernel": '--include-remote-kernel' },
   })
 }
 
 function commandForScenario(scenario, passthrough) {
   return {
     command: process.execPath,
-    args: appendHetznerPassthrough([drillScript, ...scenario.args], scenario, passthrough),
+    args: appendRemoteKernelPassthrough([drillScript, ...scenario.args], scenario, passthrough),
   }
 }
 
@@ -168,14 +168,14 @@ async function main() {
     reportPath,
     artifactIndexPath,
     metadata: {
-      includeHetzner: options.includeHetzner,
+      includeRemoteKernel: options.includeRemoteKernel,
       generatedMatrixNames: 'remote-home-extension-matrix',
       generatedMatrixRepos: 'oss',
       ...drillDeploymentPresetMetadata([
         'local',
         'self-hosted-relay',
-        ...(options.includeHetzner ? ['hetzner'] : []),
-      ], { hetznerPassthrough: options.passthrough }),
+        ...(options.includeRemoteKernel ? ['remote-kernel'] : []),
+      ], { remoteKernelPassthrough: options.passthrough }),
     },
   })
   const failed = results.filter((result) => !result.ok)

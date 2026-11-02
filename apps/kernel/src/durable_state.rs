@@ -52,6 +52,7 @@ pub(crate) mod apps;
 #[cfg(test)]
 mod apps_tests;
 pub(crate) mod browser_import;
+mod created_resources;
 mod owner;
 mod retired_sessions;
 pub(crate) mod room_environment;
@@ -65,6 +66,8 @@ mod writer_fence;
 mod writer_latency_tests;
 use writer_fence::fenced_writer_error;
 pub(crate) mod notification_target;
+mod trigger_firings;
+pub(crate) mod trigger_resends;
 pub(crate) mod workflow_dispatch_intents;
 pub(crate) mod workflow_notifications;
 pub(crate) mod workflow_queue_start;
@@ -427,6 +430,10 @@ impl DurableKernelStateStore {
         app_automations::initialize(&mut connection)?;
         workflow_notifications::initialize(&mut connection)?;
         agent_lifecycle::initialize(&mut connection)?;
+        created_resources::initialize(&connection).map_err(|_| DaemonError::LocalTransport {
+            operation: "resource_register.initialize",
+            message: "cannot initialize resource register".into(),
+        })?;
         retired_sessions::initialize(&connection).map_err(|error| DaemonError::LocalTransport {
             operation: "durable_state.retired_sessions",
             message: error.to_string(),
@@ -456,6 +463,14 @@ impl DurableKernelStateStore {
                 operation: "durable_state.workflow_dispatch_intents",
                 message: error.to_string(),
             }
+        })?;
+        trigger_resends::initialize(&connection).map_err(|error| DaemonError::LocalTransport {
+            operation: "durable_state.trigger_resends",
+            message: error.to_string(),
+        })?;
+        trigger_firings::initialize(&connection).map_err(|error| DaemonError::LocalTransport {
+            operation: "durable_state.trigger_firings",
+            message: error.to_string(),
         })?;
         let outside_followed = Arc::new(agent_lifecycle::outside::Followed::default());
         let writer = DurableStateWriter::start(&path, Arc::clone(&outside_followed))?;
@@ -1897,9 +1912,20 @@ fn commit_durable_write_batch(
                 .and_then(|_| {
                     let sequence = transaction.last_insert_rowid().max(0) as u64;
                     retired_sessions::apply_event(&transaction, kind, payload_json)?;
+                    created_resources::apply_event(&transaction, kind, payload_json)?;
                     if kind == crate::durable_prompt_state::DURABLE_PROMPT_STATE_EVENT_KIND {
                         workflow_dispatch_intents::record_prompt_state_in(
                             &transaction,
+                            payload_json,
+                        )?;
+                        trigger_resends::record_prompt_state_in(&transaction, payload_json)?;
+                    }
+                    if kind == "session.updated"
+                        && payload_json.contains("\"settled_trigger_prompt_id\"")
+                    {
+                        trigger_firings::record_settlement_in(
+                            &transaction,
+                            subject_id.as_deref(),
                             payload_json,
                         )?;
                     }

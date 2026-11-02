@@ -428,19 +428,14 @@ pub struct ManagedEnvironmentReimagePreflightRetained {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ManagedEnvironmentReimagePreflightDesiredRelease {
-    pub provider_id: ManagedEnvironmentReimageProviderId,
+    /// Opaque id of the compute provider; Cloud defines the values and refuses unsupported ones.
+    pub provider_id: String,
     pub provider_image_id: String,
     pub provider_profile_id: String,
     pub provider_profile_digest: String,
     pub runtime_release_digest: String,
     pub runtime_source_commit: String,
     pub runtime_source_tree: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ManagedEnvironmentReimageProviderId {
-    Hetzner,
 }
 
 /// Ask Cloud to update a Path-1 machine in place to the currently placed release

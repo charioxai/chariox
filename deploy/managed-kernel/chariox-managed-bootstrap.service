@@ -2,8 +2,8 @@
 Description=Chariox managed independent kernel supervisor
 After=network-online.target chariox-docker-admission-locks.service
 Requires=chariox-docker-admission-locks.service
-Wants=network-online.target chariox-rootless-docker.service chariox-app-storage.service
-After=chariox-rootless-docker.service chariox-app-storage.service
+Wants=network-online.target chariox-rootless-docker.service
+After=chariox-rootless-docker.service
 ConditionPathExists=/usr/local/bin/chariox-managed-bootstrap
 StartLimitIntervalSec=0
 
@@ -39,7 +39,6 @@ ExecStart=/usr/local/bin/chariox-managed-bootstrap
 # unit's own cgroup, which fails with EBUSY once controllers are enabled there.
 # This runs once the main process is in the supervisor subgroup, before the unit
 # is active; App workers start later and need the `apps` subtree it creates.
-ExecStartPost=+/usr/libexec/chariox-app-storage --prepare-managed-domain
 Restart=always
 RestartSec=2s
 RestartSteps=8
@@ -67,7 +66,7 @@ RestrictSUIDSGID=true
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 StateDirectory=chariox
 StateDirectoryMode=0700
-ReadWritePaths=/home/chariox /var/lib/chariox /var/lib/chariox-slice-share /var/lib/chariox-app-storage
+ReadWritePaths=/home/chariox /var/lib/chariox /var/lib/chariox-slice-share
 UMask=0007
 
 [Install]

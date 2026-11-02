@@ -1,6 +1,100 @@
 //! Existing provider reload/continuation queues, without launching a provider.
 use super::*;
 
+// MP-08 / MP-10 / MP-11: a passive catalog refresh must not replay a firing.
+#[tokio::test]
+async fn passive_catalog_change_during_trigger_turn_reloads_without_replay() {
+    crate::test_support::isolated_env_test!();
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(
+            crate::session::CreateSessionRequest::new("catalog-trigger", "catalog-trigger")
+                .with_agent_defaults(crate::session::SessionAgentDefaults::new("codex")),
+        )
+        .unwrap();
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "agent-schedules:catalog-trigger",
+            crate::attachment::ClientCapabilityLevel::AutomationOnly,
+        ))
+        .unwrap();
+    app.prompt_owner_submit_prepared_prompt(
+        session.id(),
+        crate::session::PromptQueueItem::new(
+            "just-fired-trigger",
+            attachment.id(),
+            agent.id(),
+            "one firing only",
+            crate::session::PromptStatus::Queued,
+        )
+        .with_agent_trigger("trigger-before-restart"),
+        false,
+    )
+    .unwrap();
+    let request = crate::provider::LaunchProviderRequest::new(
+        session.id(),
+        "codex",
+        "codex",
+        "default",
+        "gpt-6-luna",
+    )
+    .with_agent_id(agent.id());
+    let mut run = crate::provider::RuntimeProviderRun::new(
+        "catalog-trigger-run",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+            process_label: "metadata-only".into(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: vec![],
+            pty_env: Default::default(),
+            pty_env_remove: vec![],
+            working_directory: None,
+            structured_endpoint: None,
+        },
+    );
+    run.set_runtime_mcp_auth_token(Some("synthetic-catalog-trigger".into()));
+    app.providers().write().insert_run_for_test(run);
+    let app = Arc::new(Mutex::new(app));
+    let mut runtime = owned_runtime_state(&app).await;
+    runtime.owned.pending_mcp_continuations = PendingMcpContinuationStore::default();
+    runtime.runtime_tool_catalog_changed_for_auth_token("synthetic-catalog-trigger");
+    assert!(
+        runtime.owned.pending_mcp_continuations.write().is_empty(),
+        "passive changes must not manufacture a second turn from a completed trigger"
+    );
+    assert!(
+        runtime
+            .owned
+            .pending_provider_reloads
+            .write()
+            .contains_key(agent.id()),
+        "the catalog refresh must remain pending until idle"
+    );
+    runtime
+        .owned
+        .pending_provider_reloads
+        .write()
+        .remove(agent.id());
+    runtime.remember_pending_runtime_tools_continuation(
+        session.id(),
+        agent.id(),
+        "one firing only",
+    );
+    runtime.runtime_tool_catalog_changed_for_auth_token("synthetic-catalog-trigger");
+    assert_eq!(
+        runtime.owned.pending_mcp_continuations.write().len(),
+        1,
+        "an explicit loader still owns its one interrupted continuation"
+    );
+    assert!(
+        runtime.owned.pending_provider_reloads.write().is_empty(),
+        "the catalog monitor must not start a competing reload for that continuation"
+    );
+}
+
 #[tokio::test]
 async fn idle_native_capacity_and_lane_contention_do_not_invalidate_catalog() {
     crate::test_support::isolated_env_test!();

@@ -9,6 +9,10 @@ import { timestamp } from './kernel-browser-timing.mjs';
 import { mirror2ObserverExpression, sanitizeMirrorCss } from './kernel-browser-mirror2-observer.mjs';
 import { assertCurrentDocument, assertNotCancelled, BrowserActionError } from './browser-controller-actions.mjs';
 import { captureRegionMasks } from './kernel-browser-region-protection.mjs';
+// VAUDIT S3 / AU-03: the owner's own view shows Vault fills and captures as the page does. Only the
+// mask inputs change; staleness still follows the live protection policy's identity.
+const OWNER_VIEW = Object.freeze({ unknown: false, values: Object.freeze([]), targets: Object.freeze([]) });
+export const maskPolicy = (stream, policy) => stream.audience === 'owner' ? OWNER_VIEW : policy;
 import { decodePng, maskPixels } from './kernel-browser-pixels.mjs';
 import { losslessRegion } from './kernel-browser-pixels.mjs';
 import { MirrorFrames, slotOf, localId, rebaseId } from './kernel-browser-mirror2-frames.mjs';
@@ -262,10 +266,12 @@ export class Mirror2 {
   // MP-11: nothing built under the old protection (early packet, cached replies, resend history) reaches the viewer.
   // Protocol 560/168: the page size a packet describes (and the layout changes seen, so A->B->A differs); a stream whose last packet described another one resets.
   layoutKey(tabId) { const size = this.host.pageSize?.(tabId); return size ? `${size.width}x${size.height}#${this.host.layoutRevision?.(tabId) ?? 0}` : ''; }
-  // The observation consumed the page's pending changes: a refused packet retires the stream base, so the next credit re-snapshots.
+  // The observation consumed the page's pending changes: a refused packet retires the stream base. The stream's layout key
+  // differs from the page's now, so the next credit re-snapshots. Its protection policy is unchanged: input keeps its admission.
   layoutMoved(stream, tab, layoutKey) {
     if (this.layoutKey(tab.tab_id) === layoutKey) return;
-    stream.policy = null; throw new Error('MP-11: mirror layout changed during observation');
+    this.host.timing?.event?.('mirror2_layout_moved', {});
+    throw new Error('MP-11: mirror layout changed during observation');
   }
   invalidate(stream) { stream.policy = null; stream.early = null; stream.replies = null; stream.history = null; stream.historyBytes = 0; stream.resources.clear(); }
   dispose(stream) {
@@ -287,6 +293,7 @@ export class Mirror2 {
   // are `backend:N`, child-frame refs `frame:<id>:<loader>:backend:N` (prefix).
   async protectTargets(world, tab, policy, prefix = '', patience) {
     await this.evaluate(world, `${world.ref}.resetTargets()`, false, patience?.());
+    if (policy.display_masked === false) return;
     for (const target of policy.targets) {
       if (target.kind !== 'browser' || target.target_id !== tab.target_id || typeof target.node_ref !== 'string') continue;
       if (prefix ? !target.node_ref.startsWith(prefix) : target.node_ref.startsWith('frame:') || target.document_id && target.document_id !== tab.document_id) continue;
@@ -481,7 +488,7 @@ export class Mirror2 {
         stream.resetAt = stream.issued + 1;
         stream.ownScrolls.clear(); stream.frames.clear(); stream.frameSlots.clear(); stream.frameSlot = 0;
         for (const [key, entry] of stream.resources) if (entry.slot) stream.resources.delete(key); else if (!entry.sent || entry.sentAt > (stream.acked ?? 0)) { entry.sent = false; entry.offset = 0; }
-        if (world.snapshotPending?.policy !== policy) await this.protectTargets(world, tab, policy, '', patience);
+        if (world.snapshotPending?.policy !== policy) await this.protectTargets(world, tab, maskPolicy(stream, policy), '', patience);
         const snapshotAt = timestamp();
         const snap = await this.snapshotOnce(world, policy, patience, stream.knownSheets ?? [], this.snapshotOptions(stream, world));
         this.host.timing?.('mirror2_snapshot', snapshotAt);
@@ -498,7 +505,7 @@ export class Mirror2 {
         this.host.timing?.('mirror2_sheets', sheetsAt);
         const framesAt = timestamp();
         // Cross-origin frames: child DOM under the owner, or an opaque region.
-        const frames = await this.frames.attach(world, stream, snap.nodes.filter(r => r.foreign).map(r => r.id), policy, tab);
+        const frames = await this.frames.attach(world, stream, snap.nodes.filter(r => r.foreign).map(r => r.id), maskPolicy(stream, policy), tab);
         this.host.timing?.('mirror2_frames', framesAt);
         this.opaque(snap.nodes, frames.opaque);
         return this.frames.project(stream, { ...snap, sheets: [], nodes: [...snap.nodes, ...frames.records], ops: this.viewerOps(stream, [...(snap.ops ?? []), ...frames.ops, ...sheetOps]), resources: [...snap.resources, ...(frames.resources ?? [])] });
@@ -518,12 +525,12 @@ export class Mirror2 {
       for (const op of delta.ops) {
         if (op.op === 'scroll' && stream.ownScrolls.get(op.id) === JSON.stringify(op.scroll)) continue; // this viewer's own scroll
         if (op.op === 'children') {
-          const frames = await this.frames.attach(world, stream, op.nodes.filter(r => r.foreign).map(r => r.id), policy, tab);
+          const frames = await this.frames.attach(world, stream, op.nodes.filter(r => r.foreign).map(r => r.id), maskPolicy(stream, policy), tab);
           this.opaque(op.nodes, frames.opaque);
           ops.push({ ...op, nodes: [...op.nodes, ...frames.records] }, ...frames.ops); resources.push(...(frames.resources ?? []));
         } else ops.push(op);
       }
-      const children = await this.frames.drain(stream, policy, tab);
+      const children = await this.frames.drain(stream, maskPolicy(stream, policy), tab);
       return this.frames.project(stream, { ...delta, ops: this.viewerOps(stream, [...ops, ...children.ops]), resources: [...resources, ...children.resources], changed: [...delta.changed, ...children.changed] });
     };
     let resources = [];
@@ -910,8 +917,8 @@ export class Mirror2 {
     const world = stream.world;
     if (!world || world.connection !== this.host.browser.connection || !world.connection.isOpen()) throw new Error('MP-11: region document unavailable');
     await assertCurrentDocument(world.connection, world.sessionId, tab.target_id, tab.document_id);
-    await this.protectTargets(world, tab, this.host.protection);
-    const boxes = [...(await this.evaluate(world, `${world.ref}.regionBoxes()`)).filter(b => !stream.frames.has(b.id)), ...await this.frames.regionBoxes(stream, world, tab, this.host.protection)];
+    await this.protectTargets(world, tab, maskPolicy(stream, this.host.protection));
+    const boxes = [...(await this.evaluate(world, `${world.ref}.regionBoxes()`)).filter(b => !stream.frames.has(b.id)), ...await this.frames.regionBoxes(stream, world, tab, maskPolicy(stream, this.host.protection))];
     await assertCurrentDocument(world.connection, world.sessionId, tab.target_id, tab.document_id);
     assertNotCancelled(signal); return boxes;
   }

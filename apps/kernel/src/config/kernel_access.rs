@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::error::DaemonError;
+use crate::local::KernelAccessProviderHarness;
+use std::path::Path;
 
 /// External-agent access grants last at most 24 hours.
 const GRANT_MAX_MINUTES: u32 = 1440;
@@ -13,6 +15,48 @@ pub struct UserKernelAccessConfig {
     pub grant_max_minutes: u32,
     pub grant_extend_notice_minutes: u32,
     pub request_timeout_minutes: u32,
+    /// Development standing grants, edited by hand in the config file only (see
+    /// `standing_holders`). Kept raw so one malformed entry never stops the kernel booting.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub standing_holders: Vec<serde_json::Value>,
+}
+
+/// A holder that an owner pre-approved for `until-exit` access: the agent harness and the
+/// exact executable path of its process.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StandingHolder {
+    pub harness: KernelAccessProviderHarness,
+    pub executable: String,
+}
+
+/// Reads `[[kernel_access.standing_holders]]` from the user config file on every call, so adding
+/// or removing an entry needs no restart. An unreadable file or a malformed entry grants nothing.
+pub(crate) fn read_standing_holders(path: &Path) -> Vec<StandingHolder> {
+    let Ok(payload) = super::read_user_config(&path.to_path_buf()) else {
+        return Vec::new();
+    };
+    let entries = match toml::from_str::<toml::Table>(&payload) {
+        Ok(table) => table
+            .get("kernel_access")
+            .and_then(|section| section.get("standing_holders"))
+            .and_then(|entries| entries.as_array().cloned())
+            .unwrap_or_default(),
+        Err(_) => return Vec::new(),
+    };
+    let total = entries.len();
+    let holders: Vec<StandingHolder> = entries
+        .into_iter()
+        .filter_map(|entry| entry.try_into().ok())
+        .collect();
+    if holders.len() != total {
+        crate::logging::warn_with_fields(
+            "config.kernel_access",
+            "ignored malformed kernel_access.standing_holders entries; each needs harness (codex, claude or opencode) and executable",
+            serde_json::json!({ "ignored": total - holders.len(), "user_config_path": path.display().to_string() }),
+        );
+    }
+    holders
 }
 
 impl Default for UserKernelAccessConfig {
@@ -22,6 +66,7 @@ impl Default for UserKernelAccessConfig {
             grant_max_minutes: GRANT_MAX_MINUTES,
             grant_extend_notice_minutes: 5,
             request_timeout_minutes: 10,
+            standing_holders: Vec::new(),
         }
     }
 }

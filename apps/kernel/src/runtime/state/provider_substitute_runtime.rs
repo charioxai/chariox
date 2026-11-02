@@ -8,7 +8,7 @@ impl KernelRuntimeState {
     /// configured substitute this turn has not tried yet, in list order, until
     /// none is left. The list is read at each failure, so edits made during the
     /// turn apply and no substitute runs twice. The substitute serves only this
-    /// turn. A user cancel is not a provider failure; remote, external and
+    /// turn. A user cancel or a stop from Health is not a provider failure; remote, external and
     /// provider-native turns are not rerun.
     pub(super) async fn rerun_failed_turn_on_substitute(
         &self,
@@ -17,6 +17,7 @@ impl KernelRuntimeState {
     ) -> Result<SubstituteRerun, DaemonError> {
         let failed_run = attempt.provider_run;
         if active_prompt.status() == crate::session::PromptStatus::Cancelling
+            || !attempt.failure.is_error()
             || active_prompt.is_external()
             || failed_run
                 .resume_state()
@@ -30,7 +31,7 @@ impl KernelRuntimeState {
             return Ok(SubstituteRerun::NotApplicable);
         }
         let agent = self.owned.agent_store.get_agent(attempt.agent_id)?;
-        if agent.remote_execution().is_some() {
+        if agent.remote_execution().is_some() || self.workspace_of_run_is_lost(failed_run) {
             return Ok(SubstituteRerun::NotApplicable);
         }
         let session_id = failed_run.session_id();

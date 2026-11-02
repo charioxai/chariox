@@ -180,23 +180,14 @@ impl KernelRuntimeState {
                 self.cancel_agent_wake(&wake, &wake.task_id, None).await?;
             }
         }
-        let schedules = session
-            .agent_prompt_schedules()
-            .iter()
-            .filter(|s| s.agent_id() == agent_id)
-            .map(|s| s.id().to_string())
-            .collect::<Vec<_>>();
-        if !schedules.is_empty() {
-            for schedule in schedules {
-                owned
-                    .session_store
-                    .write()
-                    .cancel_agent_prompt_schedule(room, &schedule)?;
-            }
-            owned.persist_agent_prompt_schedule_session(
-                room,
-                "agent_archived_schedules_cancelled",
-            )?;
+        // An archived agent keeps nothing that fires prompts into it.
+        if !owned
+            .session_store
+            .write()
+            .remove_agent_triggers_for_agent(room, agent_id)?
+            .is_empty()
+        {
+            owned.persist_agent_trigger_session(room, "agent_archived_triggers_removed")?;
         }
         let agent = owned.agent_store.get_agent(agent_id)?;
         if agent.remote_execution().is_some() {

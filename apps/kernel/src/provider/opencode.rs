@@ -34,6 +34,10 @@ pub fn resolve_opencode_executable() -> Result<PathBuf, DaemonError> {
     resolve_opencode_executable_unlocked()
 }
 
+/// A command waiting for room still counts against the bash tool's own
+/// timeout (2 minutes by default): give it the time a queued build needs.
+const BASH_TIMEOUT: (&str, &str) = ("OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS", "1800000");
+
 fn resolve_opencode_executable_unlocked() -> Result<PathBuf, DaemonError> {
     if let Some(path) = env::var_os(OPENCODE_ENV_OVERRIDE).map(PathBuf::from) {
         return OPENCODE_EXECUTABLE_RESOLUTION
@@ -148,6 +152,8 @@ fn managed_launch(
         );
         env
     };
+    let mut pty_env = pty_env;
+    pty_env.insert(BASH_TIMEOUT.0.into(), BASH_TIMEOUT.1.into());
     ProviderLaunchResult {
         endpoint_mode: AgentEndpointMode::Managed,
         process_label: "opencode:serve".to_string(),
@@ -209,6 +215,25 @@ mod tests {
             .local_addr()
             .expect("listener should expose a local address")
             .port()
+    }
+
+    #[test]
+    fn a_command_waiting_for_room_gets_the_bash_timeout_a_queued_build_needs() {
+        let launch = super::managed_launch(
+            std::path::PathBuf::from("opencode"),
+            4096,
+            "127.0.0.1".into(),
+            "http://127.0.0.1:4096".into(),
+            std::collections::BTreeMap::new(),
+            Vec::new(),
+        );
+        assert_eq!(
+            launch
+                .pty_env
+                .get("OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS")
+                .map(String::as_str),
+            Some("1800000")
+        );
     }
 
     #[test]

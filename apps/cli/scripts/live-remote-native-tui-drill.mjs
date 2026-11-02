@@ -43,23 +43,23 @@ import {
   waitForProviderRunMcpAdmission,
 } from "./lib/native-tui-capabilities.mjs"
 import {
-  assertHetznerTcpPortAvailable,
-  copyHetznerDirectoryToLocal,
+  assertRemoteKernelTcpPortAvailable,
+  copyRemoteKernelDirectoryToLocal,
   ensureExecutionDirectory,
-  hetznerNativeRuntimeTempDir,
-  prepareHetznerClaudeWorkspaceTrust,
-  prepareHetznerWorktree,
+  remoteKernelNativeRuntimeTempDir,
+  prepareRemoteKernelClaudeWorkspaceTrust,
+  prepareRemoteKernelWorktree,
   spawnRemoteEnv,
   removeExecutionFile,
-  removeHetznerNativeRuntimePaths,
-  removeHetznerWorktree,
-  restoreHetznerClaudeWorkspaceTrust,
-  seedHetznerOpenCodeRuntimeProfile,
+  removeRemoteKernelNativeRuntimePaths,
+  removeRemoteKernelWorktree,
+  restoreRemoteKernelClaudeWorkspaceTrust,
+  seedRemoteKernelOpenCodeRuntimeProfile,
   seedLocalOpenCodeRuntimeProfile,
   shellQuote,
   sshArgs,
-  stopHetznerProcessByEnv,
-  stopHetznerRuntimeBeforeClaudeTrustRestore,
+  stopRemoteKernelProcessByEnv,
+  stopRemoteKernelRuntimeBeforeClaudeTrustRestore,
   waitForExecutionFileContent,
 } from "./lib/native-tui-remote-execution.mjs"
 import {
@@ -131,14 +131,14 @@ async function disableWorkspaceLiveSync(kernelUrl, localAuthEnvironment) {
   }
 }
 
-async function hetznerNativePortsAreAvailable(options, ports) {
+async function remoteKernelNativePortsAreAvailable(options, ports) {
   for (const [label, port] of [
     ["relay", ports.relayPort],
     ["worker kernel", ports.workerKernelPort],
     ["worker MCP", ports.workerMcpPort],
   ]) {
     try {
-      await assertHetznerTcpPortAvailable(options, port, `Hetzner ${label} port`)
+      await assertRemoteKernelTcpPortAvailable(options, port, `remote kernel ${label} port`)
     } catch (error) {
       if (error instanceof Error && /is already in use by pid\(s\)/.test(error.message)) {
         return false
@@ -155,11 +155,11 @@ function parseArgs(argv) {
     keepArtifactsOnFailure: false,
     homeManagedSliceLocalDocker: false,
     standardHomeWorker: false,
-    hetznerWorker: false,
-    hetznerHost: process.env.CHARIOX_NATIVE_TUI_HETZNER_HOST ?? "root@195.201.123.115",
-    hetznerRelayHost: process.env.CHARIOX_NATIVE_TUI_HETZNER_RELAY_HOST ?? "195.201.123.115",
-    hetznerKey: process.env.CHARIOX_NATIVE_TUI_HETZNER_KEY ?? path.join(os.homedir(), ".ssh/chariox_hetzner_staging"),
-    hetznerRepo: process.env.CHARIOX_NATIVE_TUI_HETZNER_REPO ?? "/tmp/chariox-native-remote-validate",
+    remoteKernelWorker: false,
+    remoteKernelHost: process.env.CHARIOX_NATIVE_TUI_REMOTE_KERNEL_HOST ?? "",
+    remoteKernelRelayHost: process.env.CHARIOX_NATIVE_TUI_REMOTE_KERNEL_RELAY_HOST ?? "",
+    remoteKernelKey: process.env.CHARIOX_NATIVE_TUI_REMOTE_KERNEL_KEY ?? "",
+    remoteKernelRepo: process.env.CHARIOX_NATIVE_TUI_REMOTE_KERNEL_REPO ?? "/tmp/chariox-native-remote-validate",
     includePermissions: false,
     includeAttachments: false,
     includeMcpSkills: false,
@@ -178,17 +178,17 @@ function parseArgs(argv) {
       options.homeManagedSliceLocalDocker = true
     } else if (arg === "--standard-home-worker") {
       options.standardHomeWorker = true
-    } else if (arg === "--hetzner-worker") {
-      options.hetznerWorker = true
+    } else if (arg === "--remote-kernel-worker") {
+      options.remoteKernelWorker = true
       options.standardHomeWorker = true
-    } else if (arg === "--hetzner-host") {
-      options.hetznerHost = argv[++index]
-    } else if (arg === "--hetzner-relay-host") {
-      options.hetznerRelayHost = argv[++index]
-    } else if (arg === "--hetzner-key") {
-      options.hetznerKey = argv[++index]
-    } else if (arg === "--hetzner-repo") {
-      options.hetznerRepo = argv[++index]
+    } else if (arg === "--remote-kernel-host") {
+      options.remoteKernelHost = argv[++index]
+    } else if (arg === "--remote-kernel-relay-host") {
+      options.remoteKernelRelayHost = argv[++index]
+    } else if (arg === "--remote-kernel-key") {
+      options.remoteKernelKey = argv[++index]
+    } else if (arg === "--remote-kernel-repo") {
+      options.remoteKernelRepo = argv[++index]
     } else if (arg === "--include-permissions") {
       options.includePermissions = true
     } else if (arg === "--include-attachments") {
@@ -211,8 +211,8 @@ function parseArgs(argv) {
   if (placementModes > 1) {
     throw new Error("--home-managed-slice-local-docker and --standard-home-worker are mutually exclusive")
   }
-  if (options.hetznerWorker && !options.standardHomeWorker) {
-    throw new Error("--hetzner-worker requires --standard-home-worker")
+  if (options.remoteKernelWorker && !options.standardHomeWorker) {
+    throw new Error("--remote-kernel-worker requires --standard-home-worker")
   }
   for (const provider of options.providers) {
     if (provider !== "opencode" && provider !== "codex" && provider !== "claude") {
@@ -242,11 +242,11 @@ function printHelp() {
     "",
     "  --providers opencode,codex,claude",
     "  --standard-home-worker     Run home and worker kernels through the relay",
-    "  --hetzner-worker           Run relay and worker kernel on the configured Hetzner host",
-    "  --hetzner-host HOST        SSH host for --hetzner-worker (default root@195.201.123.115)",
-    "  --hetzner-relay-host HOST  Relay host clients connect to for --hetzner-worker",
-    "  --hetzner-key PATH         SSH key for --hetzner-worker",
-    "  --hetzner-repo PATH        Remote Chariox checkout for --hetzner-worker",
+    "  --remote-kernel-worker           Run relay and worker kernel on the configured remote kernel host",
+    "  --remote-kernel-host HOST        SSH host for --remote-kernel-worker",
+    "  --remote-kernel-relay-host HOST  Relay host clients connect to for --remote-kernel-worker",
+    "  --remote-kernel-key PATH         SSH key for --remote-kernel-worker",
+    "  --remote-kernel-repo PATH        Remote Chariox checkout for --remote-kernel-worker",
     "  --home-managed-slice-local-docker  Run native TUIs through the home kernel into a managed local Docker slice",
     "  --include-permissions         Validate provider-native permissions through the Chariox observer",
     "  --include-attachments         Validate prompt attachment transfer through native TUI providers",
@@ -258,17 +258,17 @@ function printHelp() {
 }
 
 
-async function syncHetznerCodexAuth(options) {
+async function syncRemoteKernelCodexAuth(options) {
   const workerProfile=requireScopedProviderPath(process.env,"CHARIOX_DRILL_WORKER_CODEX_HOME")
   await execFileAsync("ssh",sshArgs(options,`test -f ${shellQuote(path.posix.join(workerProfile,"auth.json"))}`))
 }
 
-async function syncHetznerClaudeAuth() {
+async function syncRemoteKernelClaudeAuth() {
   throw new Error(CLAUDE_UNATTENDED_CREDENTIALS_GUIDANCE)
 }
 
-async function syncHetznerWorkerKernelConfig(options, root, remoteRuntimeRoot) {
-  const localConfigPath = path.join(root, "hetzner-worker-config.toml")
+async function syncRemoteKernelWorkerKernelConfig(options, root, remoteRuntimeRoot) {
+  const localConfigPath = path.join(root, "remote-kernel-worker-config.toml")
   const remoteConfigDir = path.posix.join(remoteRuntimeRoot, "xdg-config", "chariox")
   await writeFile(
     localConfigPath,
@@ -278,13 +278,13 @@ async function syncHetznerWorkerKernelConfig(options, root, remoteRuntimeRoot) {
   await execFileAsync("ssh", sshArgs(options, `mkdir -p ${shellQuote(remoteConfigDir)}`))
   await execFileAsync("scp", [
     "-i",
-    options.hetznerKey,
+    options.remoteKernelKey,
     "-o",
     "BatchMode=yes",
     "-o",
     "StrictHostKeyChecking=accept-new",
     localConfigPath,
-    `${options.hetznerHost}:${path.posix.join(remoteConfigDir, "config.toml")}`,
+    `${options.remoteKernelHost}:${path.posix.join(remoteConfigDir, "config.toml")}`,
   ])
 }
 
@@ -380,9 +380,9 @@ async function runDrill(privateRoot) {
   const root = privateRoot
   const evidenceRoot=path.join(os.homedir(),".codex","evidence","native-tui",runId)
   const ports = await makeAvailablePorts({
-    candidateFactory: options.hetznerWorker ? makeNonEphemeralDrillPorts : undefined,
-    additionalAvailability: options.hetznerWorker
-      ? (candidate) => hetznerNativePortsAreAvailable(options, candidate)
+    candidateFactory: options.remoteKernelWorker ? makeNonEphemeralDrillPorts : undefined,
+    additionalAvailability: options.remoteKernelWorker
+      ? (candidate) => remoteKernelNativePortsAreAvailable(options, candidate)
       : undefined,
   })
   const relayToken = `remote-native-token-${process.pid}`
@@ -394,16 +394,16 @@ async function runDrill(privateRoot) {
   const homeDaemonId = `remote-native-home-${runId}`
   const workerDaemonId = `remote-native-worker-${runId}`
   const remoteRuntimeParent = `/tmp/arb-remote-native-tui-${process.pid}`
-  const remoteRuntimeRoot = options.hetznerWorker
+  const remoteRuntimeRoot = options.remoteKernelWorker
     ? `/tmp/arb-remote-native-tui-${runId}`
     : null
   const remoteClaudeTrustStatePath = remoteRuntimeRoot
     ? path.posix.join(remoteRuntimeRoot, "claude-workspace-trust.json")
     : null
   const remoteTempDir = remoteRuntimeRoot
-    ? hetznerNativeRuntimeTempDir(remoteRuntimeRoot)
+    ? remoteKernelNativeRuntimeTempDir(remoteRuntimeRoot)
     : null
-  const workerKernelUrl = options.hetznerWorker ? null : `ws://127.0.0.1:${ports.workerKernelPort}`
+  const workerKernelUrl = options.remoteKernelWorker ? null : `ws://127.0.0.1:${ports.workerKernelPort}`
   const workspace = repoRoot
   const worktree = repoRoot
   const homeDir = path.join(root, "home")
@@ -414,7 +414,7 @@ async function runDrill(privateRoot) {
   const xdgDataHome = path.join(root, "xdg-data")
   const xdgCacheHome = path.join(root, "xdg-cache")
   const homeCapabilityRoot = path.join(root, "home-capabilities")
-  const workerCapabilityRoot = options.hetznerWorker
+  const workerCapabilityRoot = options.remoteKernelWorker
     ? path.posix.join(remoteRuntimeRoot, "worker-capabilities")
     : path.join(root, "worker-capabilities")
   const sliceBuildImagePolicy = process.env.CHARIOX_NATIVE_TUI_SLICE_BUILD_IMAGE ?? "always"
@@ -423,9 +423,9 @@ async function runDrill(privateRoot) {
   let relayTunnel = null
   let kernel = null
   let workerKernel = null
-  let hetznerWorktreePrepared = false
-  let hetznerClaudeTrustPrepared = false
-  let hetznerClaudeTrustRestoreFailure = null
+  let remoteKernelWorktreePrepared = false
+  let remoteKernelClaudeTrustPrepared = false
+  let remoteKernelClaudeTrustRestoreFailure = null
   const localOpenCodeCredentialPaths = []
   const managedSlices = []
   let succeeded = false
@@ -451,7 +451,7 @@ async function runDrill(privateRoot) {
         destinationXdgCacheHome: xdgCacheHome,
       })
       if (homeCredentialPath) localOpenCodeCredentialPaths.push(homeCredentialPath)
-      if (options.standardHomeWorker && !options.hetznerWorker) {
+      if (options.standardHomeWorker && !options.remoteKernelWorker) {
         const workerCredentialPath = await seedLocalOpenCodeRuntimeProfile({
           sourceDataHome: sourceOpenCodeDataHome,
           sourceCacheHome: path.join(sourceXdgCacheHome, "opencode"),
@@ -473,7 +473,7 @@ async function runDrill(privateRoot) {
         `build_image = ${JSON.stringify(sliceBuildImagePolicy === "always" ? "auto" : sliceBuildImagePolicy)}`,
       ] : [],
     })
-    if (options.standardHomeWorker && !options.hetznerWorker) {
+    if (options.standardHomeWorker && !options.remoteKernelWorker) {
       await writeIsolatedKernelConfig({
         xdgConfigHome: path.join(root, "worker-xdg-config"),
         storageRoot: path.join(root, "worker-kernel-storage"),
@@ -482,26 +482,26 @@ async function runDrill(privateRoot) {
     if (options.homeManagedSliceLocalDocker) {
       await prebuildLocalDockerSliceImageIfNeeded(sliceBuildImagePolicy)
     }
-    if (options.hetznerWorker) {
-      await prepareHetznerWorktree(options, worktree)
-      hetznerWorktreePrepared = true
+    if (options.remoteKernelWorker) {
+      await prepareRemoteKernelWorktree(options, worktree)
+      remoteKernelWorktreePrepared = true
       if (options.providers.includes("claude")) {
-        await syncHetznerClaudeAuth(options, root)
-        await prepareHetznerClaudeWorkspaceTrust(options, worktree, remoteClaudeTrustStatePath)
-        hetznerClaudeTrustPrepared = true
+        await syncRemoteKernelClaudeAuth(options, root)
+        await prepareRemoteKernelClaudeWorkspaceTrust(options, worktree, remoteClaudeTrustStatePath)
+        remoteKernelClaudeTrustPrepared = true
       }
-      await syncHetznerWorkerKernelConfig(options, root, remoteRuntimeRoot)
+      await syncRemoteKernelWorkerKernelConfig(options, root, remoteRuntimeRoot)
       await ensureExecutionDirectory(options, true, remoteTempDir)
       if (options.providers.includes("opencode")) {
-        await seedHetznerOpenCodeRuntimeProfile(options, remoteRuntimeRoot)
+        await seedRemoteKernelOpenCodeRuntimeProfile(options, remoteRuntimeRoot)
       }
       if (options.providers.includes("codex")) {
-        await syncHetznerCodexAuth(options)
+        await syncRemoteKernelCodexAuth(options)
       }
     }
-    if (options.hetznerWorker) {
+    if (options.remoteKernelWorker) {
       relay = spawnRemoteEnv(options, {
-        CHARIOX_REMOTE_REPO: options.hetznerRepo,
+        CHARIOX_REMOTE_REPO: options.remoteKernelRepo,
         CHARIOX_RELAY_HOST: "127.0.0.1",
         CHARIOX_RELAY_PORT: String(ports.relayPort),
         CHARIOX_RELAY_TOKEN: relayToken,
@@ -511,7 +511,7 @@ async function runDrill(privateRoot) {
       })
       relayTunnel = spawn("ssh", [
         "-i",
-        options.hetznerKey,
+        options.remoteKernelKey,
         "-o",
         "BatchMode=yes",
         "-o",
@@ -519,7 +519,7 @@ async function runDrill(privateRoot) {
         "-N",
         "-L",
         `127.0.0.1:${ports.relayPort}:127.0.0.1:${ports.relayPort}`,
-        options.hetznerHost,
+        options.remoteKernelHost,
       ], {
         stdio: ["ignore", "ignore", "inherit"],
       })
@@ -573,9 +573,9 @@ async function runDrill(privateRoot) {
     await disableWorkspaceLiveSync(homeKernelUrl, homeLocalAuthEnvironment)
     await waitForRelayTarget(relayUrl, relayToken, targetDaemonAlias)
     if (options.standardHomeWorker) {
-      if (options.hetznerWorker) {
+      if (options.remoteKernelWorker) {
         workerKernel = spawnRemoteEnv(options, {
-          CHARIOX_REMOTE_REPO: options.hetznerRepo,
+          CHARIOX_REMOTE_REPO: options.remoteKernelRepo,
           RUST_MIN_STACK: rustMinStack,
           PATH: `/root/.bun/bin:/root/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`,
           HOME: "/root",
@@ -666,12 +666,12 @@ async function runDrill(privateRoot) {
         workspace,
         worktree,
         options: { ...options, workerLocalAuthEnvironment },
-        nativeEnv: options.hetznerWorker
+        nativeEnv: options.remoteKernelWorker
           ? {
             HOME: realHomeDir,
             ...(options.providers.includes("codex")?{CODEX_HOME: requireScopedProviderPath(process.env,"CODEX_HOME")} : {}),
-            CHARIOX_NATIVE_PROVIDER_ENDPOINT_SSH_HOST: options.hetznerHost,
-            CHARIOX_NATIVE_PROVIDER_ENDPOINT_SSH_KEY: options.hetznerKey,
+            CHARIOX_NATIVE_PROVIDER_ENDPOINT_SSH_HOST: options.remoteKernelHost,
+            CHARIOX_NATIVE_PROVIDER_ENDPOINT_SSH_KEY: options.remoteKernelKey,
           }
           : {},
       }))
@@ -714,24 +714,24 @@ async function runDrill(privateRoot) {
     for (const credentialPath of localOpenCodeCredentialPaths) {
       await rm(credentialPath, { force: true })
     }
-    if (options.hetznerWorker) {
-      await stopHetznerRuntimeBeforeClaudeTrustRestore({
-        stopWorker: () => stopHetznerProcessByEnv(options, {
+    if (options.remoteKernelWorker) {
+      await stopRemoteKernelRuntimeBeforeClaudeTrustRestore({
+        stopWorker: () => stopRemoteKernelProcessByEnv(options, {
           CHARIOX_DAEMON_ID: workerDaemonId,
           CHARIOX_RELAY_TOKEN: relayToken,
         }),
-        stopRelay: () => stopHetznerProcessByEnv(options, {
+        stopRelay: () => stopRemoteKernelProcessByEnv(options, {
           CHARIOX_RELAY_PORT: String(ports.relayPort),
           CHARIOX_RELAY_TOKEN: relayToken,
         }),
-        restoreTrust: hetznerClaudeTrustPrepared
-          ? () => restoreHetznerClaudeWorkspaceTrust(options, worktree, remoteClaudeTrustStatePath)
+        restoreTrust: remoteKernelClaudeTrustPrepared
+          ? () => restoreRemoteKernelClaudeWorkspaceTrust(options, worktree, remoteClaudeTrustStatePath)
           : null,
       }).then(() => {
-        hetznerClaudeTrustPrepared = false
+        remoteKernelClaudeTrustPrepared = false
       }).catch((error) => {
-        hetznerClaudeTrustRestoreFailure = error
-        console.error(`Hetzner Claude workspace trust restoration failed: ${error.message}`)
+        remoteKernelClaudeTrustRestoreFailure = error
+        console.error(`remote kernel Claude workspace trust restoration failed: ${error.message}`)
       })
       if (remoteRuntimeRoot && options.providers.includes("opencode")) {
         await removeExecutionFile(
@@ -741,43 +741,43 @@ async function runDrill(privateRoot) {
         ).catch(() => {})
       }
       if (preserveFailedRun && remoteRuntimeRoot) {
-        await copyHetznerDirectoryToLocal(
+        await copyRemoteKernelDirectoryToLocal(
           options,
           path.posix.join(remoteRuntimeRoot, "worker-logs"),
           path.join(root, "remote-worker-logs"),
         ).catch((error) => {
-          console.error(`Hetzner worker log collection failed: ${error.message}`)
+          console.error(`remote kernel worker log collection failed: ${error.message}`)
         })
       }
       const removableRuntimePaths = [remoteRuntimeParent]
-      if (!hetznerClaudeTrustRestoreFailure) {
+      if (!remoteKernelClaudeTrustRestoreFailure) {
         removableRuntimePaths.push(remoteRuntimeRoot)
       } else {
-        console.error(`Hetzner Claude workspace trust restoration state kept at ${remoteClaudeTrustStatePath}`)
+        console.error(`remote kernel Claude workspace trust restoration state kept at ${remoteClaudeTrustStatePath}`)
       }
-      await removeHetznerNativeRuntimePaths(options, removableRuntimePaths)
-      if (hetznerWorktreePrepared) {
-        await removeHetznerWorktree(options, worktree)
+      await removeRemoteKernelNativeRuntimePaths(options, removableRuntimePaths)
+      if (remoteKernelWorktreePrepared) {
+        await removeRemoteKernelWorktree(options, worktree)
       }
     }
-    const finalFailure = hetznerClaudeTrustRestoreFailure
+    const finalFailure = remoteKernelClaudeTrustRestoreFailure
       ? new AggregateError(
-        failure && failure !== hetznerClaudeTrustRestoreFailure
-          ? [failure, hetznerClaudeTrustRestoreFailure]
-          : [hetznerClaudeTrustRestoreFailure],
-        `Hetzner Claude workspace trust restoration failed; state remains at ${remoteClaudeTrustStatePath}`,
+        failure && failure !== remoteKernelClaudeTrustRestoreFailure
+          ? [failure, remoteKernelClaudeTrustRestoreFailure]
+          : [remoteKernelClaudeTrustRestoreFailure],
+        `remote kernel Claude workspace trust restoration failed; state remains at ${remoteClaudeTrustStatePath}`,
       )
       : failure
     await finalizeDrillArtifacts({
       rootDir: evidenceRoot,
-      passed: succeeded && !hetznerClaudeTrustRestoreFailure,
+      passed: succeeded && !remoteKernelClaudeTrustRestoreFailure,
       preserveOnFailure: options.keepArtifactsOnFailure,
       failure: finalFailure,
       metadata: {
         drill: "remote-native-tui",
         providers: options.providers.join(","),
         standardHomeWorker: options.standardHomeWorker,
-        hetznerWorker: options.hetznerWorker,
+        remoteKernelWorker: options.remoteKernelWorker,
         homeManagedSliceLocalDocker: options.homeManagedSliceLocalDocker,
         includePermissions: options.includePermissions,
         includeAttachments: options.includeAttachments,
@@ -793,7 +793,7 @@ async function runDrill(privateRoot) {
     if (preserveFailedRun) {
       console.error(`remote native TUI drill artifacts kept at ${root}`)
     }
-    if (hetznerClaudeTrustRestoreFailure) {
+    if (remoteKernelClaudeTrustRestoreFailure) {
       throw finalFailure
     }
   }

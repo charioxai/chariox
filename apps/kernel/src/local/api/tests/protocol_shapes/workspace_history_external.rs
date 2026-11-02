@@ -1031,7 +1031,9 @@ fn local_daemon_protocol_prompt_attachment_size_shape_is_versioned_and_hashed() 
 
 #[test]
 fn local_daemon_protocol_session_process_memory_outcomes_are_versioned() {
-    use crate::runtime::process_resources::{ProcessSample, SessionProcess, SessionProcessOwner};
+    use crate::runtime::process_resources::{
+        ProcessSample, SessionProcess, SessionProcessOwner, SessionProcessState, WaitReason,
+    };
     let snapshot = serde_json::json!({
         "protocol_version": LOCAL_DAEMON_PROTOCOL_VERSION,
         "relay_peer_protocol_version": crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
@@ -1045,10 +1047,47 @@ fn local_daemon_protocol_session_process_memory_outcomes_are_versioned() {
                     pid: 42,
                     command: "python3".into(),
                     resident_set_bytes: 1048576,
+                    disk_io_bytes: Some(4096),
                     cpu_millis: 250,
                     sampled_at_ms: 10000,
                     age_ms: 3000,
-                }
+                },
+                state: SessionProcessState::Running,
+            }, SessionProcess {
+                owner: SessionProcessOwner::Agent("agent-1".into()),
+                process: ProcessSample {
+                    process_id: "process-issued-2".into(),
+                    pid: 43,
+                    command: "cargo".into(),
+                    resident_set_bytes: 1048576,
+                    disk_io_bytes: Some(4096),
+                    cpu_millis: 0,
+                    sampled_at_ms: 10000,
+                    age_ms: 1000,
+                },
+                state: SessionProcessState::Held {
+                    reason: WaitReason::Memory,
+                    position: 2,
+                    need_bytes: 6442450944,
+                    free_bytes: 2147483648,
+                    command_line: "cargo build --release".into(),
+                },
+            }, SessionProcess {
+                owner: SessionProcessOwner::Agent("agent-2".into()),
+                process: ProcessSample {
+                    process_id: "process-issued-3".into(),
+                    pid: 44,
+                    command: "pnpm".into(),
+                    resident_set_bytes: 1048576,
+                    disk_io_bytes: Some(4096),
+                    cpu_millis: 0,
+                    sampled_at_ms: 10000,
+                    age_ms: 1000,
+                },
+                state: SessionProcessState::Paused {
+                    reason: WaitReason::Disk,
+                    command_line: "pnpm test".into(),
+                },
             }],
         },
         crate::provider::ProviderRunTermination::memory_limit(33554432, 10000),
@@ -1071,9 +1110,16 @@ fn local_daemon_protocol_session_process_memory_outcomes_are_versioned() {
             }
         },
         crate::provider::ProviderRunTermination::outside_end(10000),
+        LocalDaemonRequest::StartSessionProcessNow(crate::local::StartSessionProcessNowRequest {
+            session_id: "room-1".into(),
+            process_id: "process-issued-2".into(),
+        }),
+        LocalDaemonResponse::SessionProcessStartedNow {
+            process_id: "process-issued-2".into(),
+        },
     ]});
     let expected: serde_json::Value =
-        serde_json::from_str(include_str!("session-processes-800.json")).unwrap();
+        serde_json::from_str(include_str!("session-processes-954.json")).unwrap();
     assert_eq!(snapshot, expected);
     assert_eq!(
         LOCAL_DAEMON_PROTOCOL_VERSION,
@@ -1084,6 +1130,6 @@ fn local_daemon_protocol_session_process_memory_outcomes_are_versioned() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "57513b91aa2885f544ca32ee659d3515429d908f34941879f1e2bd615ff38cf1"
+        "1bb1b16ae9be70caea58871462b17697c526fb3ea49139624f7a6718a20319fe"
     );
 }

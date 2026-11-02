@@ -181,6 +181,7 @@ pub(crate) enum Operation {
         stopped: bool,
     },
     LeasedProcess(super::LeasedProcessMutation),
+    WorkerStop(super::WorkerStopMutation),
     CreateLeasedWake {
         task: String,
         prompt: String,

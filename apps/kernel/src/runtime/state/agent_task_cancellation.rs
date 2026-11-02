@@ -205,6 +205,18 @@ impl KernelRuntimeState {
         &self,
         root: &AgentTaskExecution,
     ) -> Result<(), DaemonError> {
+        let answer = self.owned.public_agent_task_answer(root)?;
+        self.cancel_agent_task_resources_answering(root, answer)
+            .await
+    }
+
+    /// `root_answer` is what the root task's waiters read when it ends, such as
+    /// the outcome of the failed turn that cancelled it.
+    pub(super) async fn cancel_agent_task_resources_answering(
+        &self,
+        root: &AgentTaskExecution,
+        root_answer: Option<serde_json::Value>,
+    ) -> Result<(), DaemonError> {
         let mut pending = vec![root.clone()];
         let mut seen = BTreeSet::new();
         let mut first_error = None;
@@ -437,7 +449,9 @@ impl KernelRuntimeState {
                     .durable_state_store
                     .agent_lifecycle(Operation::SourceOutcome {
                         now: crate::session::unix_epoch_ms(),
-                        public_answer: None,
+                        public_answer: (task.task_id == root.task_id)
+                            .then(|| root_answer.clone())
+                            .flatten(),
                         room: task.room_id.clone(),
                         source: task.task_id.clone(),
                         occurrence: format!("task-terminal-{}", task.task_id),

@@ -188,17 +188,27 @@ async fn accepted_catalog_continuation_survives_source_provider_retirement() {
 // completion path (settlement, reload, task replay) must keep that promise.
 #[tokio::test]
 async fn loader_turn_completion_schedules_the_promised_continuation() {
-    loader_turn_promised_continuation_starts(false).await;
+    loader_turn_promised_continuation_starts(false, false).await;
+}
+
+// The Claude Stop hook completes the prompt without the managed settlement, so
+// the task is still unsettled when the idle agent's continuation runs.
+#[tokio::test]
+async fn loader_turn_ended_by_the_stop_hook_still_continues() {
+    loader_turn_promised_continuation_starts(false, true).await;
 }
 
 // P2-4: the turn's client can leave as the turn ends. The kernel owns the
 // promised continuation, so it must not depend on any client staying attached.
 #[tokio::test]
 async fn loader_turn_continuation_survives_the_last_client_leaving() {
-    loader_turn_promised_continuation_starts(true).await;
+    loader_turn_promised_continuation_starts(true, false).await;
 }
 
-async fn loader_turn_promised_continuation_starts(requester_leaves_after_turn: bool) {
+async fn loader_turn_promised_continuation_starts(
+    requester_leaves_after_turn: bool,
+    ended_by_stop_hook: bool,
+) {
     crate::test_support::isolated_env_test!();
     let worktree = crate::test_support::TestWorktree::new("catalog-loader-continuation");
     let mut config = crate::config::DaemonConfig::for_tests();
@@ -251,10 +261,21 @@ async fn loader_turn_promised_continuation_starts(requester_leaves_after_turn: b
     );
     assert_eq!(result.payload["requires_provider_restart"], true);
 
-    runtime
-        .settle_owned_provider_prompt(session.id(), run.id(), true, false, true)
-        .await
-        .unwrap();
+    if ended_by_stop_hook {
+        runtime
+            .owned
+            .ensure_agent_task(session.id(), agent.id(), &prompt, Some(run.id()))
+            .unwrap();
+        app.lock()
+            .await
+            .complete_active_prompt(session.id(), agent.id(), Some(run.id()))
+            .unwrap();
+    } else {
+        runtime
+            .settle_owned_provider_prompt(session.id(), run.id(), true, false, true)
+            .await
+            .unwrap();
+    }
     if requester_leaves_after_turn {
         // The continuation task is spawned on this runtime and has not run yet.
         runtime.owned.detach(source.id()).unwrap();
@@ -325,10 +346,23 @@ async fn catalog_continuation_without_a_retained_intent_projects_failure() {
         "finish the request",
         crate::session::PromptStatus::Queued,
     );
-    // The turn is admitted but its catalog hand-off never retained a continuation.
+    // The turn was settled as finished before its continuation could be retained.
     runtime
         .owned
         .ensure_agent_task(session.id(), agent.id(), &prompt, Some(run.id()))
+        .unwrap();
+    runtime
+        .owned
+        .durable_state_store
+        .agent_lifecycle(crate::durable_state::agent_lifecycle::Operation::Settle {
+            room: session.id().into(),
+            agent: agent.id().into(),
+            prompt: prompt.id().into(),
+            run: run.id().into(),
+            has_answer: true,
+            cancelled: false,
+            now: crate::session::unix_epoch_ms(),
+        })
         .unwrap();
     runtime.owned.pending_mcp_continuations.write().insert(
         agent.id().into(),

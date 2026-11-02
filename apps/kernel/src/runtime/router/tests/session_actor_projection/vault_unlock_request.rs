@@ -828,3 +828,270 @@ async fn under_ask_every_time_the_client_unlock_covers_the_next_write_only() {
     .unwrap();
     assert!(!f.status().await.unlocked);
 }
+
+// MP-08 / MP-10 / MP-11: owner operations use the real admission/router path.
+#[tokio::test]
+async fn owner_vault_roundtrip_preserves_identity_and_audits_reveal() {
+    crate::test_support::isolated_env_test!();
+    use crate::local::{OwnerVaultRequest as Request, OwnerVaultResult as Result};
+    let fixture = Fixture::locked();
+    fixture.unlock(PASSPHRASE).await.unwrap();
+    let send = |request| fixture.send(LocalDaemonRequest::OwnerVault(request));
+    let response = send(Request::Create {
+        name: "GitHub".into(),
+        kind: "Password".into(),
+        use_binding: crate::config::VaultUseBinding {
+            target: crate::config::VaultUseTarget::Site {
+                origin: "https://github.com".into(),
+            },
+            value_kind: Default::default(),
+        },
+        value: VaultPassphrase::new(SENTINEL),
+    })
+    .await
+    .unwrap();
+    let LocalDaemonResponse::OwnerVault {
+        result: Result::Saved { id },
+    } = response
+    else {
+        panic!("save not confirmed")
+    };
+    let list = fixture
+        .send(LocalDaemonRequest::ListCredentials(
+            crate::local::ListCredentialsRequest,
+        ))
+        .await
+        .unwrap();
+    assert!(!serde_json::to_string(&list).unwrap().contains(SENTINEL));
+    let LocalDaemonResponse::CredentialsListed {
+        credentials: entries,
+    } = list
+    else {
+        panic!("list not confirmed")
+    };
+    assert_eq!(entries.len(), 1);
+    assert_eq!(
+        entries[0]
+            .metadata
+            .as_ref()
+            .unwrap()
+            .use_binding
+            .as_ref()
+            .unwrap()
+            .target,
+        crate::config::VaultUseTarget::Site {
+            origin: "https://github.com".into()
+        }
+    );
+    assert_eq!(
+        entries[0]
+            .metadata
+            .as_ref()
+            .unwrap()
+            .created_by_id
+            .as_deref(),
+        Some(DEFAULT_LOCAL_USER_ID)
+    );
+    let reveal = send(Request::Reveal { id: id.clone() }).await.unwrap();
+    assert!(!format!("{reveal:?}").contains(SENTINEL));
+    let LocalDaemonResponse::OwnerVault {
+        result: Result::Revealed { value, .. },
+    } = reveal
+    else {
+        panic!("reveal not confirmed")
+    };
+    assert!(value.expose_secret() == SENTINEL);
+    send(Request::Replace {
+        id: id.clone(),
+        value: VaultPassphrase::new("replacement-sentinel"),
+    })
+    .await
+    .unwrap();
+    let LocalDaemonResponse::CredentialsListed { credentials: after } = fixture
+        .send(LocalDaemonRequest::ListCredentials(
+            crate::local::ListCredentialsRequest,
+        ))
+        .await
+        .unwrap()
+    else {
+        panic!("list not confirmed")
+    };
+    assert_eq!(after[0].id, entries[0].id);
+    assert_eq!(after[0].description, entries[0].description);
+    assert_eq!(
+        after[0].metadata.as_ref().unwrap().use_binding,
+        entries[0].metadata.as_ref().unwrap().use_binding
+    );
+    assert_eq!(
+        after[0].metadata.as_ref().unwrap().created_at_ms,
+        entries[0].metadata.as_ref().unwrap().created_at_ms
+    );
+    let LocalDaemonResponse::OwnerVault {
+        result: Result::Activity { events, .. },
+    } = send(Request::Activity { id: id.clone() }).await.unwrap()
+    else {
+        panic!("activity not confirmed")
+    };
+    assert_eq!(
+        events
+            .iter()
+            .map(|event| event.event.as_str())
+            .collect::<Vec<_>>(),
+        ["Created by owner", "Viewed by owner", "Replaced by owner"]
+    );
+    send(Request::Delete { id }).await.unwrap();
+    let LocalDaemonResponse::CredentialsListed {
+        credentials: entries,
+    } = fixture
+        .send(LocalDaemonRequest::ListCredentials(
+            crate::local::ListCredentialsRequest,
+        ))
+        .await
+        .unwrap()
+    else {
+        panic!("list not confirmed")
+    };
+    assert!(entries.is_empty());
+}
+
+#[tokio::test]
+async fn owner_vault_rejects_agents_other_users_and_locked_values() {
+    use crate::local::OwnerVaultRequest;
+    let fixture = Fixture::locked();
+    assert!(fixture
+        .send(LocalDaemonRequest::OwnerVault(OwnerVaultRequest::Reveal {
+            id: "entry".into()
+        }))
+        .await
+        .is_err());
+    fixture.unlock(PASSPHRASE).await.unwrap();
+    for class in [
+        KernelConnectionClass::KernelAgent,
+        KernelConnectionClass::ExternalAgent,
+        KernelConnectionClass::Host,
+    ] {
+        let caller =
+            KernelCaller::for_source(&KernelCommandSource::LocalCli).with_connection_class(class);
+        assert!(fixture
+            .send_as(
+                caller,
+                LocalDaemonRequest::OwnerVault(OwnerVaultRequest::Generate {
+                    name: "Test".into(),
+                    kind: "Password".into(),
+                    use_binding: crate::config::VaultUseBinding {
+                        target: crate::config::VaultUseTarget::Site {
+                            origin: "https://example.org".into()
+                        },
+                        value_kind: Default::default()
+                    }
+                })
+            )
+            .await
+            .is_err());
+    }
+    let mut caller = KernelCaller::for_source(&KernelCommandSource::LocalCli)
+        .with_connection_class(KernelConnectionClass::Terminal);
+    caller.user_id = Some("other-user".into());
+    assert!(fixture
+        .send_as(
+            caller,
+            LocalDaemonRequest::OwnerVault(OwnerVaultRequest::Reveal { id: "entry".into() })
+        )
+        .await
+        .is_err());
+}
+
+#[tokio::test]
+async fn owner_vault_generates_without_returning_value_and_validates_inputs() {
+    crate::test_support::isolated_env_test!();
+    use crate::local::{OwnerVaultRequest as Request, OwnerVaultResult as Result};
+    let fixture = Fixture::locked();
+    fixture.unlock(PASSPHRASE).await.unwrap();
+    let response = fixture
+        .send(LocalDaemonRequest::OwnerVault(Request::Generate {
+            name: "Generated".into(),
+            kind: "Password".into(),
+            use_binding: crate::config::VaultUseBinding {
+                target: crate::config::VaultUseTarget::Site {
+                    origin: "https://example.org".into(),
+                },
+                value_kind: Default::default(),
+            },
+        }))
+        .await
+        .unwrap();
+    let LocalDaemonResponse::OwnerVault {
+        result: Result::Saved { id },
+    } = response
+    else {
+        panic!("save not confirmed")
+    };
+    let reveal = fixture
+        .send(LocalDaemonRequest::OwnerVault(Request::Reveal { id }))
+        .await
+        .unwrap();
+    let LocalDaemonResponse::OwnerVault {
+        result: Result::Revealed { value, .. },
+    } = reveal
+    else {
+        panic!("reveal not confirmed")
+    };
+    assert_eq!(value.expose_secret().len(), 32);
+    for (name, usage) in [("", "example.org"), ("Name", "")] {
+        assert!(fixture
+            .send(LocalDaemonRequest::OwnerVault(Request::Create {
+                name: name.into(),
+                kind: "Password".into(),
+                use_binding: crate::config::VaultUseBinding {
+                    target: crate::config::VaultUseTarget::Site {
+                        origin: usage.into()
+                    },
+                    value_kind: Default::default()
+                },
+                value: VaultPassphrase::new(SENTINEL)
+            }))
+            .await
+            .is_err());
+    }
+}
+
+#[test]
+fn owner_vault_command_payload_and_debug_redact_values() {
+    let request = LocalDaemonRequest::OwnerVault(crate::local::OwnerVaultRequest::Create {
+        name: "Name".into(),
+        kind: "Password".into(),
+        use_binding: crate::config::VaultUseBinding {
+            target: crate::config::VaultUseTarget::Site {
+                origin: "https://example.org".into(),
+            },
+            value_kind: Default::default(),
+        },
+        value: VaultPassphrase::new(SENTINEL),
+    });
+    let command = KernelCommand::from_local_request("owner-vault-redaction", None, None, &request);
+    assert!(!serde_json::to_string(&command.payload)
+        .unwrap()
+        .contains(SENTINEL));
+    assert!(!format!("{request:?}").contains(SENTINEL));
+}
+
+#[test]
+fn owner_vault_response_is_withheld_from_every_model_bound_projection() {
+    let response = LocalDaemonResponse::OwnerVault {
+        result: crate::local::OwnerVaultResult::Revealed {
+            id: "entry".into(),
+            value: VaultPassphrase::new(SENTINEL),
+        },
+    };
+    let mut wire = serde_json::to_value(response).unwrap();
+    let refusal = crate::runtime::external_response::project_response_value(&mut wire).unwrap_err();
+    assert!(!refusal.to_string().contains(SENTINEL));
+    let request = LocalDaemonRequest::OwnerVault(crate::local::OwnerVaultRequest::Reveal {
+        id: "entry".into(),
+    });
+    // The payload used by history/traces never serializes the response value.
+    let command = KernelCommand::from_local_request("owner-vault-reveal", None, None, &request);
+    assert!(!serde_json::to_string(&command.payload)
+        .unwrap()
+        .contains(SENTINEL));
+}

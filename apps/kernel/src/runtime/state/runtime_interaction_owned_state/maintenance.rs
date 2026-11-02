@@ -93,8 +93,7 @@ impl KernelRuntimeOwnedState {
                 .publish_outside_interaction(
                     &session_id,
                     &interaction,
-                    crate::local::EventInteractionState::Resolved,
-                    None,
+                    InteractionPhase::cancelled(),
                 )
                 .is_err()
             {

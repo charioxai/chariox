@@ -1,5 +1,4 @@
-//! Port of the v1 native worker's seccomp allowlist and pthread checks
-//! (apps/app-worker/src/sandbox_linux.c), narrowed to broker-only native I/O.
+//! Seccomp allowlist with pthread checks and broker-only native I/O.
 //! Path syscalls are absent from the allowlist, including on older kernels.
 use std::io;
 

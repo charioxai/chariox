@@ -11,8 +11,6 @@ mod ownership;
 mod recovery;
 mod restore;
 mod start;
-#[cfg(target_os = "macos")]
-pub(crate) use start::macos_storage_root;
 #[cfg(test)]
 pub(crate) mod tests;
 mod uninstall;

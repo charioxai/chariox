@@ -3,6 +3,8 @@
 //! This module owns writing admitted prompts or cancellation signals to local provider runtimes,
 //! including structured prompt I/O and provider-runtime lane spawning.
 
+use super::owned::OwnedPromptCancellation;
+use super::structured_prompt_dispatch::SteerReceipt;
 use super::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -10,6 +12,23 @@ pub(super) enum PromptDispatchAcceptance {
     Submitted,
     PreparingBrief,
     Dropped,
+}
+
+/// The person sees this sentence on the blocked task; the run and prompt ids stay in the log.
+fn prompt_ack_timeout_error(dispatch: &crate::app::KernelPromptDispatch) -> DaemonError {
+    crate::logging::warn_with_fields(
+        "daemon.prompt_dispatch",
+        "provider did not acknowledge the prompt after PTY injection",
+        serde_json::json!({
+            "session_id": dispatch.session_id,
+            "provider_run_id": dispatch.provider_run_id,
+            "prompt_id": dispatch.prompt_id,
+        }),
+    );
+    DaemonError::LocalTransport {
+        operation: CLAUDE_HEADLESS_PROMPT_ACK_OPERATION,
+        message: "The agent did not respond to your message.".to_string(),
+    }
 }
 
 const CLAUDE_HEADLESS_PROMPT_ACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
@@ -183,9 +202,17 @@ impl KernelRuntimeState {
             .map(|_| ())
     }
 
-    pub(super) async fn enqueue_prompt_dispatch_with_acceptance(
+    pub(super) fn enqueue_prompt_dispatch_with_acceptance<'a>(
+        &'a self,
+        dispatch: &'a crate::app::KernelPromptDispatch,
+    ) -> impl std::future::Future<Output = Result<bool, DaemonError>> + 'a {
+        self.enqueue_prompt_dispatch_with_receipt(dispatch, SteerReceipt::Awaited)
+    }
+
+    pub(super) async fn enqueue_prompt_dispatch_with_receipt(
         &self,
         dispatch: &crate::app::KernelPromptDispatch,
+        receipt_policy: SteerReceipt,
     ) -> Result<bool, DaemonError> {
         {
             let owned = &self.owned;
@@ -214,7 +241,11 @@ impl KernelRuntimeState {
                 }
             }
             let result = self
-                .enqueue_prompt_dispatch_after_liveness_with_acceptance(dispatch, owned)
+                .enqueue_prompt_dispatch_after_liveness_with_receipt(
+                    dispatch,
+                    owned,
+                    receipt_policy,
+                )
                 .await;
             if result
                 .as_ref()
@@ -309,19 +340,34 @@ impl KernelRuntimeState {
             .map(|_| ())
     }
 
-    pub(super) async fn enqueue_prompt_dispatch_after_liveness_with_acceptance(
+    pub(super) fn enqueue_prompt_dispatch_after_liveness_with_acceptance<'a>(
+        &'a self,
+        dispatch: &'a crate::app::KernelPromptDispatch,
+        owned: &'a KernelRuntimeOwnedState,
+    ) -> impl std::future::Future<Output = Result<PromptDispatchAcceptance, DaemonError>> + 'a {
+        self.enqueue_prompt_dispatch_after_liveness_with_receipt(
+            dispatch,
+            owned,
+            SteerReceipt::Awaited,
+        )
+    }
+
+    async fn enqueue_prompt_dispatch_after_liveness_with_receipt(
         &self,
         dispatch: &crate::app::KernelPromptDispatch,
         owned: &KernelRuntimeOwnedState,
+        receipt_policy: SteerReceipt,
     ) -> Result<PromptDispatchAcceptance, DaemonError> {
         self.authorize_current_external_command()?;
         if !owned.ensure_prompt_dispatch_matches_active_prompt(dispatch)? {
             return Ok(PromptDispatchAcceptance::Dropped);
         }
         if let Some(rerouted) = self.dispatch_off_finished_turn_substitute(dispatch).await? {
-            return Box::pin(
-                self.enqueue_prompt_dispatch_after_liveness_with_acceptance(&rerouted, owned),
-            )
+            return Box::pin(self.enqueue_prompt_dispatch_after_liveness_with_receipt(
+                &rerouted,
+                owned,
+                receipt_policy,
+            ))
             .await;
         }
         if !dispatch.steering {
@@ -419,6 +465,7 @@ impl KernelRuntimeState {
                     &provider_run,
                     handoff,
                     &hidden_system_context,
+                    receipt_policy,
                 )
                 .await
                 .map(|submitted| {
@@ -654,14 +701,15 @@ impl KernelRuntimeState {
                         {
                             return Err(DaemonError::ProviderRefusal { message });
                         }
-                        if tokio::time::Instant::now() >= deadline {
-                            return Err(DaemonError::LocalTransport {
-                                operation: CLAUDE_HEADLESS_PROMPT_ACK_OPERATION,
-                                message: format!(
-                                    "provider `{}` did not acknowledge prompt `{}` after PTY injection",
-                                    dispatch.provider_run_id, dispatch.prompt_id
-                                ),
-                            });
+                        // Claude answers the turn it is on before the prompt it queued, so
+                        // its silence is not a failure to respond while that turn runs.
+                        if tokio::time::Instant::now() >= deadline
+                            && !crate::app::claude_headless_prompt_queued_behind_running_turn(
+                                &provider_run,
+                                &dispatch.prompt_id,
+                            )
+                        {
+                            return Err(prompt_ack_timeout_error(dispatch));
                         }
                         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                     }
@@ -772,6 +820,17 @@ impl KernelRuntimeState {
         let dispatch_owns_active_prompt = self
             .owned
             .prompt_dispatch_matches_active_prompt(&dispatch)?;
+        if dispatch_owns_active_prompt
+            && matches!(&error, DaemonError::ProviderProtocol { message, .. }
+                if crate::app::claude_workspace_trust_declined(message))
+        {
+            return self
+                .stop_turn_after_declined_workspace_trust(
+                    &dispatch.session_id,
+                    &dispatch.provider_run_id,
+                )
+                .await;
+        }
         if dispatch_owns_active_prompt {
             let run = self
                 .owned
@@ -1002,6 +1061,13 @@ impl KernelRuntimeState {
                         &dispatch.agent_id,
                     )
                     .is_some();
+            } else if should_advance
+                && self
+                    .queue_head_is_workflow_turn(&dispatch.session_id, &dispatch.agent_id)
+                    .await
+            {
+                // The failed run lacks what a workflow node needs; its promotion prepares one.
+                restart_provider_for_queued_prompt = true;
             } else if should_advance {
                 match owned.advance_next_queued_prompt_dispatch(
                     &dispatch.session_id,
@@ -1061,23 +1127,13 @@ impl KernelRuntimeState {
             self.spawn_prompt_dispatch(next_dispatch, self.provider_runtime_lanes.clone());
         }
         if restart_provider_for_queued_prompt {
-            let session_id = dispatch.session_id.clone();
-            let agent_id = dispatch.agent_id.clone();
-            let replacement_provider_run_id = self
-                .with_app_side_effect(move |app| {
-                    app.ensure_prompt_provider_run_for_agent(&session_id, &agent_id)
-                })
-                .await?;
-            if let Some(replacement_dispatch) = self.owned.advance_next_queued_prompt_dispatch(
+            // The queue head starts the way it does after any settlement: a workflow node gets
+            // its workflow-capable run, an ordinary prompt a plain one.
+            Box::pin(self.advance_project_queued_prompt_after_settlement(
                 &dispatch.session_id,
                 &dispatch.agent_id,
-                &replacement_provider_run_id,
-            )? {
-                self.spawn_prompt_dispatch(
-                    replacement_dispatch,
-                    self.provider_runtime_lanes.clone(),
-                );
-            }
+            ))
+            .await;
         }
         Err(error)
     }
@@ -1590,6 +1646,116 @@ impl KernelRuntimeState {
         }
     }
 
+    /// A native Stop is settled once its interrupt is queued: the turn ends as stopped.
+    pub(super) async fn settle_stopped_native_prompt(
+        &self,
+        dispatch: &crate::app::KernelPromptAbortDispatch,
+    ) {
+        let Some((agent_id, prompt)) = self.owned.cancelling_prompt_for_abort(
+            &dispatch.session_id,
+            &dispatch.provider_run_id,
+            &dispatch.prompt_id,
+        ) else {
+            return;
+        };
+        let settlement = self.owned.settle_stopped_agent_task(
+            &dispatch.session_id,
+            &agent_id,
+            &prompt,
+            &dispatch.provider_run_id,
+        );
+        let _ = self
+            .owned
+            .workflow_cancel_prompt(&dispatch.session_id, &prompt);
+        let cancellation = self
+            .finalize_cancelled_prompt(
+                &dispatch.session_id,
+                &agent_id,
+                &dispatch.prompt_id,
+                Some(&dispatch.provider_run_id),
+            )
+            .await;
+        if let Some(settlement) = settlement {
+            self.finish_stopped_agent_task(settlement, &prompt).await;
+        }
+        // A prompt the person sent while the Stop settled is promoted here; without its dispatch
+        // it would stay active and never reach the provider.
+        if let Ok(cancellation) = cancellation {
+            self.start_queue_head_after_cancellation(&dispatch.session_id, &agent_id, cancellation)
+                .await;
+        }
+    }
+
+    /// Whether the next queued prompt is a workflow turn, which needs a prepared run.
+    async fn queue_head_is_workflow_turn(&self, session_id: &str, agent_id: &str) -> bool {
+        let Ok(session) = self.owned.session_store.get_session(session_id) else {
+            return false;
+        };
+        let Some(head) = self
+            .owned
+            .prompt_state_owner
+            .peek_next_queued_prompt(&session, agent_id)
+        else {
+            return false;
+        };
+        let (session_id, agent_id) = (session_id.to_string(), agent_id.to_string());
+        self.with_app_side_effect(move |app| {
+            crate::app::KernelAgentService::new(app).queued_prompt_is_workflow_turn(
+                &session_id,
+                &agent_id,
+                &head,
+            )
+        })
+        .await
+    }
+
+    /// Cancels the active prompt. A queue head that needs a prepared run (a workflow node) is
+    /// left queued, because the settling run would start it without the workflow tools and
+    /// with the cancelled conversation.
+    pub(super) async fn finalize_cancelled_prompt(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        prompt_id: &str,
+        provider_run_id: Option<&str>,
+    ) -> Result<OwnedPromptCancellation, DaemonError> {
+        let head_is_workflow_turn = self.queue_head_is_workflow_turn(session_id, agent_id).await;
+        if head_is_workflow_turn {
+            self.owned
+                .finalize_local_prompt_cancellation_deferring_queue_head(
+                    session_id,
+                    agent_id,
+                    prompt_id,
+                    provider_run_id,
+                )
+        } else {
+            self.owned
+                .finalize_local_prompt_cancellation_with_queued_advance(
+                    session_id,
+                    agent_id,
+                    prompt_id,
+                    provider_run_id,
+                )
+        }
+    }
+
+    /// Starts what `finalize_cancelled_prompt` left: an ordinary head it already promoted, or a
+    /// deferred head through the promotion every settlement uses, which prepares its run.
+    pub(super) async fn start_queue_head_after_cancellation(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        cancellation: OwnedPromptCancellation,
+    ) {
+        if let Some(next) = cancellation.dispatch {
+            self.spawn_prompt_dispatch(next, self.provider_runtime_lanes.clone());
+        }
+        if cancellation.queue_head_deferred {
+            Box::pin(self.advance_project_queued_prompt_after_settlement(session_id, agent_id))
+                .await;
+        }
+    }
+
     pub(crate) fn spawn_prompt_abort(
         &self,
         dispatch: crate::app::KernelPromptAbortDispatch,
@@ -1619,32 +1785,7 @@ impl KernelRuntimeState {
                     .unwrap_or_default();
                 let outcome = match state.enqueue_prompt_abort(&dispatch).await {
                     Ok(()) if !structured => {
-                        if let Some((agent_id, prompt)) = state.owned.cancelling_prompt_for_abort(
-                            &dispatch.session_id,
-                            &dispatch.provider_run_id,
-                            &dispatch.prompt_id,
-                        ) {
-                            let settlement = state.owned.settle_stopped_agent_task(
-                                &dispatch.session_id,
-                                &agent_id,
-                                &prompt,
-                                &dispatch.provider_run_id,
-                            );
-                            let _ = state
-                                .owned
-                                .workflow_cancel_prompt(&dispatch.session_id, &prompt);
-                            let _ = state
-                                .owned
-                                .finalize_local_prompt_cancellation_with_queued_advance(
-                                    &dispatch.session_id,
-                                    &agent_id,
-                                    &dispatch.prompt_id,
-                                    Some(&dispatch.provider_run_id),
-                                );
-                            if let Some(settlement) = settlement {
-                                state.finish_stopped_agent_task(settlement, &prompt).await;
-                            }
-                        }
+                        state.settle_stopped_native_prompt(&dispatch).await;
                         PromptAbortDispatchOutcome::Done
                     }
                     Ok(()) => {
@@ -1764,11 +1905,7 @@ pub(in crate::runtime::state) mod tests {
         let failure = claude_native_dispatch_terminal_failure(&run)
             .expect("terminal failure should be classified");
 
-        assert!(failure.contains("terminal permission error"), "{failure}");
-        assert!(
-            failure.contains("cannot be used with root/sudo privileges"),
-            "{failure}"
-        );
+        assert_eq!(failure, "Claude refused YOLO because this kernel runs as root. Run the kernel as a normal user, or update Chariox.");
         let _ = std::fs::remove_dir_all(fixture_root);
     }
 
@@ -1816,7 +1953,39 @@ pub(in crate::runtime::state) mod tests {
         assert!(CLAUDE_HEADLESS_PROMPT_ACK_TIMEOUT >= std::time::Duration::from_secs(30));
     }
 
-    async fn owned_runtime_state(app: &Arc<Mutex<DaemonApp>>) -> KernelRuntimeState {
+    #[test]
+    fn an_unacknowledged_prompt_reads_plainly_for_the_person() {
+        let dispatch = crate::app::KernelPromptDispatch {
+            session_id: "session-private".into(),
+            provider_run_id: "provider-run-private".into(),
+            agent_id: "agent-private".into(),
+            prompt_id: "prompt-private".into(),
+            target_active_prompt_id: None,
+            source_attachment_id: "attachment-private".into(),
+            prompt: "hello".into(),
+            hidden_system_context: String::new(),
+            attachments: Vec::new(),
+            prompt_origin: crate::session::PromptOrigin::default(),
+            external_provider: None,
+            external_provider_session_id: None,
+            external_provider_turn_id: None,
+            steering: false,
+        };
+        let shown =
+            crate::terminal::user_facing_dispatch_failure(&prompt_ack_timeout_error(&dispatch));
+        for internal in [
+            "provider-run-private",
+            "prompt-private",
+            "PTY",
+            "provider `",
+        ] {
+            assert!(!shown.contains(internal), "{internal} in {shown:?}");
+        }
+    }
+
+    pub(in crate::runtime::state) async fn owned_runtime_state(
+        app: &Arc<Mutex<DaemonApp>>,
+    ) -> KernelRuntimeState {
         let (
             config_projection,
             session_store,
@@ -2167,12 +2336,19 @@ pub(in crate::runtime::state) mod tests {
                     .with_account_profile(profile.profile_id.clone()),
             )
             .expect("workflow Claude agent should create");
+        // The default Argon2id cost takes seconds in a debug build on a small CI
+        // runner, and the unlock after the interaction runs it inside the launch.
+        crate::secret::create_chariox_encrypted_vault_for_test(
+            &vault_path,
+            "correct horse battery staple",
+        )
+        .expect("vault should create");
         crate::secret::unlock_chariox_encrypted_vault(
             &vault_path,
             "correct horse battery staple",
             crate::secret::VaultUnlockLease::KernelShutdown,
         )
-        .expect("vault should initialize");
+        .expect("vault should unlock");
         crate::provider::store_provider_account_credential(
             &config,
             crate::session::DEFAULT_LOCAL_USER_ID,
@@ -2203,7 +2379,7 @@ pub(in crate::runtime::state) mod tests {
         runtime.spawn_workflow_prompt_dispatches(dispatches);
 
         let passphrase_interaction =
-            tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            tokio::time::timeout(std::time::Duration::from_secs(60), async {
                 loop {
                     if let Some(interaction) = runtime
                         .owned
@@ -2238,7 +2414,7 @@ pub(in crate::runtime::state) mod tests {
             )
             .await
             .expect("vault passphrase interaction should resolve");
-        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        tokio::time::timeout(std::time::Duration::from_secs(60), async {
             loop {
                 if !runtime
                     .detached_workflow_provider_launches
@@ -2340,12 +2516,19 @@ pub(in crate::runtime::state) mod tests {
                 crate::attachment::ClientCapabilityLevel::FullTerminal,
             ))
             .expect("test client should attach");
+        // The default Argon2id cost takes seconds in a debug build on a small CI
+        // runner, and the unlock after the interaction runs it inside the launch.
+        crate::secret::create_chariox_encrypted_vault_for_test(
+            &vault_path,
+            "correct horse battery staple",
+        )
+        .expect("vault should create");
         crate::secret::unlock_chariox_encrypted_vault(
             &vault_path,
             "correct horse battery staple",
             crate::secret::VaultUnlockLease::KernelShutdown,
         )
-        .expect("vault should initialize");
+        .expect("vault should unlock");
         crate::provider::store_provider_account_credential(
             &config,
             crate::session::DEFAULT_LOCAL_USER_ID,
@@ -2419,7 +2602,7 @@ pub(in crate::runtime::state) mod tests {
             )
             .await
             .expect("vault passphrase interaction should resolve");
-        let submission = tokio::time::timeout(std::time::Duration::from_secs(10), submit)
+        let submission = tokio::time::timeout(std::time::Duration::from_secs(60), submit)
             .await
             .expect("the prompt must finish after the unlock")
             .unwrap()
@@ -3003,7 +3186,7 @@ pub(in crate::runtime::state) mod tests {
         runtime_with_active_prompt_and_config(DaemonConfig::for_tests(), prior).await
     }
 
-    async fn runtime_with_active_prompt_and_config(
+    pub(in crate::runtime::state) async fn runtime_with_active_prompt_and_config(
         config: DaemonConfig,
         prior: &[&str],
     ) -> (
@@ -4217,6 +4400,98 @@ pub(in crate::runtime::state) mod tests {
         assert!(!tasks[0].reason.contains("late duplicate"));
     }
 
+    #[tokio::test]
+    async fn a_later_owner_prompt_retires_the_blocked_task_of_a_failed_dispatch() {
+        use crate::durable_state::agent_lifecycle::{ExecutionState, Operation};
+        let (_worktree, runtime, session_id, agent_id, _, provider_run_id, dispatch) =
+            runtime_with_admitted_prompt().await;
+        let mut config = runtime.owned.config_projection.snapshot();
+        config.room_agent_tools = true;
+        runtime.owned.config_projection.update(config);
+        runtime
+            .owned
+            .durable_state_store
+            .agent_lifecycle(Operation::Begin {
+                owner: runtime
+                    .owned
+                    .session_store
+                    .get_session(&session_id)
+                    .unwrap()
+                    .owner_user_id()
+                    .into(),
+                room: session_id.clone(),
+                agent: agent_id.clone(),
+                prompt: dispatch.prompt_id.clone(),
+                run: Some(provider_run_id.clone()),
+                now: crate::session::unix_epoch_ms(),
+            })
+            .unwrap();
+        let failed_prompt_id = dispatch.prompt_id.clone();
+        let source_attachment_id = dispatch.source_attachment_id.clone();
+        let unacknowledged = prompt_ack_timeout_error(&dispatch);
+        runtime
+            .fail_prompt_dispatch(dispatch, unacknowledged)
+            .await
+            .expect_err("failed dispatch must retain its error");
+        let blocked_card = |runtime: &KernelRuntimeState| {
+            runtime
+                .owned
+                .session_store
+                .get_session(&session_id)
+                .unwrap()
+                .active_interactions()
+                .iter()
+                .any(|i| i.id().starts_with("task-blocked-"))
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !blocked_card(&runtime) {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the failed dispatch offers the owner its decision");
+
+        let attachment = runtime
+            .owned
+            .attachment_store
+            .get_attachment(&source_attachment_id)
+            .unwrap();
+        runtime
+            .submit_prepared_prompt(crate::app::KernelPreparedPromptSubmission {
+                session_id: session_id.clone(),
+                prompt: PromptQueueItem::new(
+                    "next-owner-prompt",
+                    &source_attachment_id,
+                    &agent_id,
+                    "try again",
+                    PromptStatus::Queued,
+                )
+                .with_source_attachment(&attachment),
+                force_queue: false,
+                refresh_projection: true,
+            })
+            .await
+            .expect("the next prompt is accepted");
+
+        let task = runtime
+            .owned
+            .durable_state_store
+            .agent_tasks(Some(&session_id), Some(&agent_id))
+            .unwrap()
+            .into_iter()
+            .find(|task| task.prompt_id == failed_prompt_id)
+            .unwrap();
+        assert_eq!(
+            task.state,
+            ExecutionState::Cancelled,
+            "the failed attempt is superseded by the owner's next turn"
+        );
+        assert!(
+            !blocked_card(&runtime),
+            "the stale decision must leave the Room"
+        );
+    }
+
     /// What a room agent's owner sees after the dispatch fails with `error`:
     /// the provider-error transcript and the failure recorded on the settlement.
     async fn owner_view_of_failed_dispatch(
@@ -4283,6 +4558,9 @@ pub(in crate::runtime::state) mod tests {
         let expected = crate::provider::TurnOutcome::classify(&adapter_key, REFUSAL);
         assert_eq!(expected.kind, crate::provider::TurnOutcomeKind::Overloaded);
         assert!(visible.contains(&expected.notice()));
+        assert!(visible
+            .iter()
+            .all(|text| !text.contains("Selected model is at capacity")));
         assert_eq!(failure, Some(serde_json::to_value(&expected).unwrap()));
     }
 
@@ -4531,7 +4809,10 @@ pub(in crate::runtime::state) mod tests {
 
         let entries = not_carried_out_entries(&runtime, &session_id, &observer_id);
         assert_eq!(entries.len(), 1, "{entries:?}");
-        assert!(entries[0].contains("rejected"), "{entries:?}");
+        assert!(
+            entries[0].contains("The provider could not complete this request"),
+            "{entries:?}"
+        );
         assert!(entries[0].ends_with("It was dropped; send it again to retry."));
         let failed = failed_requests(&runtime, &agent_id);
         assert_eq!(failed.len(), 1);
@@ -5109,17 +5390,20 @@ pub(in crate::runtime::state) mod tests {
         let failed = failed_requests(&runtime, agent.id());
         assert_eq!(failed.len(), 1, "{provider}");
         assert_eq!(failed[0].excerpt, "record r372-mcp-1, then r372-mcp-2");
-        assert_eq!(failed[0].reason, "usage limit reached", "{provider}");
+        assert_eq!(
+            failed[0].reason, "The provider's usage limit was reached",
+            "{provider}"
+        );
         assert_eq!(
             not_carried_out_entries(&runtime, session.id(), observer.id()),
-            vec!["Request not carried out: usage limit reached. It was dropped; send it again to retry."],
+            vec!["Request not carried out: The provider's usage limit was reached. It was dropped; send it again to retry."],
             "{provider}"
         );
         assert!(runtime
             .owned
             .agent_store
             .hidden_context_with_failed_requests(agent.id(), "")
-            .starts_with("Your previous request (\"record r372-mcp-1, then r372-mcp-2\") failed (usage limit reached)"));
+            .starts_with("Your previous request (\"record r372-mcp-1, then r372-mcp-2\") failed (The provider's usage limit was reached)"));
     }
 
     #[tokio::test]

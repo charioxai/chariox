@@ -136,7 +136,7 @@ impl KernelRuntimeState {
                 interaction,
             )
             .await?;
-        let state = self.clone();
+        let state = self.as_kernel();
         tokio::spawn(async move {
             if let Ok(answer) = rx.await {
                 if answer.status == "timed_out" {
@@ -149,7 +149,8 @@ impl KernelRuntimeState {
         Ok(())
     }
 
-    /// A new owner turn replaces a failed restart attempt, not a goal or owned work.
+    /// A new owner turn replaces a failed attempt (a restart, a refused or unacknowledged dispatch),
+    /// not a goal or owned work.
     pub(super) async fn retire_superseded_restart_task(
         &self,
         room: &str,
@@ -174,9 +175,11 @@ impl KernelRuntimeState {
         else {
             return Ok(false);
         };
-        if previous.outcome.as_ref().is_none_or(|outcome| {
-            outcome.kind != crate::provider::TurnOutcomeKind::InterruptedByRestart
-        }) || previous.prompt_id == prompt.id()
+        if previous
+            .outcome
+            .as_ref()
+            .is_none_or(|outcome| outcome.kind == crate::provider::TurnOutcomeKind::Completed)
+            || previous.prompt_id == prompt.id()
         {
             return Ok(false);
         }

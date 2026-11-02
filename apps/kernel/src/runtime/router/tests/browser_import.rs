@@ -38,6 +38,33 @@ impl Drop for Scratch {
     }
 }
 
+fn ready_environment(
+    state: &crate::runtime::state::KernelRuntimeState,
+    session_id: &str,
+) -> crate::session::RoomEnvironmentSnapshot {
+    state
+        .start_room_environment(
+            session_id,
+            crate::session::CanonicalViewport::new(800, 600, 1, 800, 600).unwrap(),
+        )
+        .unwrap();
+    state
+        .transition_room_environment(session_id, crate::session::EnvironmentLifecycle::Ready)
+        .unwrap();
+    state
+        .reconcile_room_environment_controller_tabs(
+            session_id,
+            vec![crate::session::EnvironmentTabObservation {
+                runtime_target_id: "target-1".into(),
+                document_id: "doc-1".into(),
+                url: "https://example.com/".into(),
+                title: "fixture".into(),
+            }],
+            Some("target-1"),
+        )
+        .unwrap()
+}
+
 async fn consent_round_trip(cleanup_failure: Option<bool>) {
     let config = DaemonConfig::for_tests();
     let database_path = config.user_config.state.path.clone().unwrap();
@@ -61,27 +88,7 @@ async fn consent_round_trip(cleanup_failure: Option<bool>) {
         .unwrap();
     let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 2);
     let state = &router.runtime_state;
-    state
-        .start_room_environment(
-            session.id(),
-            crate::session::CanonicalViewport::new(800, 600, 1, 800, 600).unwrap(),
-        )
-        .unwrap();
-    state
-        .transition_room_environment(session.id(), crate::session::EnvironmentLifecycle::Ready)
-        .unwrap();
-    let environment = state
-        .reconcile_room_environment_controller_tabs(
-            session.id(),
-            vec![crate::session::EnvironmentTabObservation {
-                runtime_target_id: "target-1".into(),
-                document_id: "doc-1".into(),
-                url: "https://example.com/".into(),
-                title: "fixture".into(),
-            }],
-            Some("target-1"),
-        )
-        .unwrap();
+    let environment = ready_environment(state, session.id());
     let selection = json!({
         "session_id": session.id(), "attachment_id": attachment.id(),
         "environment_id": environment.environment_id,
@@ -529,4 +536,116 @@ async fn dispatch_source(
         .dispatch(command, request)
         .await
         .map(|response| serde_json::to_value(response).unwrap())
+}
+
+// The enrolled owner's room predates enrollment: the room and its attachments are stored under
+// `local` while the caller keeps its authenticated identity. Its own attachment must be accepted.
+#[test]
+fn browser_import_consent_accepts_the_enrolled_owners_attachment_in_a_pre_enrollment_room() {
+    std::thread::Builder::new()
+        .stack_size(64 * 1024 * 1024)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(enrolled_owner_import());
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+async fn enrolled_owner_import() {
+    let mut config = DaemonConfig::for_tests();
+    config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+        user_id: "kernel-owner".into(),
+        realm_id: "test-realm".into(),
+        ..Default::default()
+    });
+    let _scratch = Scratch(
+        std::path::PathBuf::from(config.user_config.state.path.as_ref().unwrap())
+            .parent()
+            .unwrap()
+            .to_path_buf(),
+    );
+    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let session = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("browser-import", "worktree"))
+        .unwrap()
+        .0;
+    assert_eq!(session.owner_user_id(), DEFAULT_LOCAL_USER_ID);
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 2);
+    let caller = |user: &str| KernelCaller {
+        caller_id: "import-client".into(),
+        caller_kind: KernelCallerKind::RemoteClient,
+        user_id: Some(user.into()),
+        client_id: Some("import-client".into()),
+        machine_id: None,
+        realm_id: Some("test-realm".into()),
+        public_key_thumbprint: Some("test-client-key".into()),
+        metaagent_id: None,
+        connection_class: Some(crate::local::KernelConnectionClass::Terminal),
+    };
+    let owner = caller("kernel-owner");
+    let attached = dispatch(
+        &router,
+        &owner,
+        json!({"AttachToSession": {
+            "session_id": session.id(), "client_id": "import-client",
+            "capability_level": "FullTerminal"}}),
+    )
+    .await
+    .unwrap();
+    let attachment_id = attached["SessionAttached"]["attachment"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(
+        router
+            .app
+            .lock()
+            .await
+            .attachments()
+            .get_attachment(&attachment_id)
+            .unwrap()
+            .owner_user_id(),
+        DEFAULT_LOCAL_USER_ID
+    );
+    let environment = ready_environment(&router.runtime_state, session.id());
+    let selection = json!({
+        "session_id": session.id(), "attachment_id": attachment_id,
+        "environment_id": environment.environment_id,
+        "runtime_generation": environment.runtime_generation,
+        "tab_id": environment.tabs[0].tab_id,
+        "document_revision": environment.tabs[0].document_revision,
+        "source_store_id": "0", "domains": ["example.com"],
+        "partition_sites": [], "overwrite": false
+    });
+    let prepare = json!({"PrepareBrowserImport": {"selection": selection}});
+    let prepared = dispatch(&router, &owner, prepare.clone())
+        .await
+        .expect("the enrolled owner prepares an import with its own attachment");
+    let id = prepared["BrowserImportConsent"]["request_id"]
+        .as_str()
+        .unwrap();
+    let approve = json!({"ApproveBrowserImport": {"request_id": id, "selection": selection}});
+    let mut other_transport = owner.clone();
+    other_transport.public_key_thumbprint = Some("other-client-key".into());
+    assert!(dispatch(&router, &other_transport, approve.clone())
+        .await
+        .is_err());
+    assert_eq!(
+        dispatch(&router, &owner, approve).await.unwrap()["BrowserImportConsent"]["status"],
+        "approved"
+    );
+    let cancel = json!({"CancelBrowserImport": {
+        "session_id": session.id(), "attachment_id": attachment_id, "request_id": id}});
+    assert!(dispatch(&router, &owner, cancel).await.is_ok());
+    assert!(
+        dispatch(&router, &caller("stranger"), prepare)
+            .await
+            .is_err(),
+        "a stranger is neither a room member nor the attachment's owner"
+    );
 }

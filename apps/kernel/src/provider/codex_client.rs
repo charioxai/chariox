@@ -51,9 +51,15 @@ use permission::{codex_permission_policy, workspace_live_sync_codex_permission_g
 pub(crate) use auth::normalize_codex_usage;
 pub use auth::{ProviderAuthStatus, ProviderLoginStart};
 pub use health::{codex_endpoint_is_healthy, CODEX_ENDPOINT_STARTUP_TIMEOUT};
+#[cfg(test)]
+pub(crate) use interrupt_cleanup::CODEX_INTERRUPT_ANSWER_DEADLINE;
 pub(crate) use notifications::codex_error_text;
 pub use notifications::CodexNotification;
-pub use socket_io::CodexSocket;
+#[cfg(unix)]
+pub(crate) use socket_io::continue_codex_socket;
+#[cfg(test)]
+pub(crate) use socket_io::test_codex_connect;
+pub use socket_io::{CodexSocket, CodexStream};
 pub use thread_runtime::{CodexThread, CodexThreadStartResponse};
 
 #[derive(Clone)]
@@ -1309,15 +1315,71 @@ mod tests {
             ),
         ];
         for (error, kind, retryable, message) in cases {
+            assert!(error_text(error.clone()).contains(message));
             assert_eq!(
                 TurnOutcome::classify("codex", &error_text(error.clone())),
-                TurnOutcome {
-                    kind,
-                    retryable,
-                    reason: message.to_string()
-                },
+                TurnOutcome::provider_failure(kind, retryable),
                 "{error}"
             );
+        }
+    }
+
+    #[test]
+    fn ea2_75_documented_codex_codes_and_http_details_keep_their_meaning() {
+        use crate::provider::{TurnOutcome, TurnOutcomeKind::*};
+        for (code, kind, retryable) in [
+            ("flexUnavailable", Overloaded, true),
+            ("policyCapacityUnavailable", Overloaded, true),
+            ("sessionBudgetExceeded", UsageLimit, false),
+            ("contextWindowExceeded", Other, false),
+            ("invalidPrompt", Other, false),
+            ("modelNotFound", Other, false),
+            ("tooManyDenials", Other, false),
+            ("bioPolicy", Other, false),
+            ("cyberPolicy", Other, false),
+            ("misalignmentPolicyViolation", Other, false),
+            ("badRequest", Other, false),
+            ("sandboxError", Other, false),
+            ("threadRollbackFailed", Other, false),
+            ("internalServerError", Other, true),
+            ("responseTooManyFailedAttempts", Network, true),
+        ] {
+            let framed =
+                super::codex_error_text(&json!({"codexErrorInfo":code}), "Request rejected");
+            let outcome = TurnOutcome::classify("codex", &framed);
+            assert_eq!(
+                (outcome.kind, outcome.retryable),
+                (kind, retryable),
+                "{code}"
+            );
+        }
+        for variant in [
+            "httpConnectionFailed",
+            "responseStreamConnectionFailed",
+            "responseStreamDisconnected",
+            "responseTooManyFailedAttempts",
+        ] {
+            for (status, kind, retryable) in [
+                (401, SignInRequired, false),
+                (429, UsageLimit, true),
+                (503, Overloaded, true),
+                (529, Overloaded, true),
+                (502, Network, true),
+                (408, Network, true),
+                (400, Other, false),
+                (403, Other, false),
+            ] {
+                let framed = super::codex_error_text(
+                    &json!({"codexErrorInfo": {variant: {"httpStatusCode": status}}}),
+                    "Request rejected",
+                );
+                let outcome = TurnOutcome::classify("codex", &framed);
+                assert_eq!(
+                    (outcome.kind, outcome.retryable),
+                    (kind, retryable),
+                    "{variant} {status}"
+                );
+            }
         }
     }
 
@@ -1473,8 +1535,9 @@ mod metadata_discovery_tests {
     use super::*;
     #[test]
     fn review971_assessment_denies_native_shell_file_network_and_mcp_requests() {
+        use crate::provider::test_codex_connect as connect;
         use std::{net::TcpListener, thread};
-        use tokio_tungstenite::tungstenite::{accept, connect};
+        use tokio_tungstenite::tungstenite::accept;
         let methods = [
             (
                 "item/commandExecution/requestApproval",

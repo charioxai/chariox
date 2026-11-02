@@ -66,6 +66,23 @@ fn refresh_provider_usage_before_launch(
     Ok(())
 }
 
+/// A turn a hot reload handed over keeps running in its provider process: the
+/// launch only adopts it, so there is no capacity to check before it. Checking
+/// Codex starts a profile app-server and holds the kernel while it boots.
+fn adopts_handed_over_turn(request: &LaunchProviderRequest) -> bool {
+    #[cfg(unix)]
+    {
+        request.agent_id.as_deref().is_some_and(|agent_id| {
+            crate::hot_reload::provider_handed_over(&request.session_id, agent_id)
+        })
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = request;
+        false
+    }
+}
+
 impl DaemonApp {
     pub(crate) fn prepare_app_provider_launch_request(
         &self,
@@ -126,22 +143,24 @@ impl DaemonApp {
                 execution_owner_user_id
             };
             let profile = if request.client_interface.is_chariox() {
-                refresh_provider_usage_before_launch(
-                    &self.provider_account_profiles,
-                    &account_owner_user_id,
-                    &request.provider,
-                    &request.account_profile,
-                    crate::session::unix_epoch_ms(),
-                    || {
-                        crate::local::provider_requests::refresh_provider_account_profile_with_config(
-                            &self.provider_account_profiles,
-                            &account_owner_user_id,
-                            &request.provider,
-                            &request.account_profile,
-                            &self.config,
-                        )
-                    },
-                )?;
+                if !adopts_handed_over_turn(&request) {
+                    refresh_provider_usage_before_launch(
+                        &self.provider_account_profiles,
+                        &account_owner_user_id,
+                        &request.provider,
+                        &request.account_profile,
+                        crate::session::unix_epoch_ms(),
+                        || {
+                            crate::local::provider_requests::refresh_provider_account_profile_with_config(
+                                &self.provider_account_profiles,
+                                &account_owner_user_id,
+                                &request.provider,
+                                &request.account_profile,
+                                &self.config,
+                            )
+                        },
+                    )?;
+                }
                 self.provider_account_profiles.require_authenticated(
                     &account_owner_user_id,
                     &request.provider,
@@ -161,15 +180,17 @@ impl DaemonApp {
                 &request.provider,
                 &profile.profile_id,
             )?;
-            let provider_credential_env =
-                crate::provider::resolve_provider_account_credentials_for_launch(
+            let provider_credential_env = match handed_over_credentials(&request) {
+                Some(credentials) => credentials,
+                None => crate::provider::resolve_provider_account_credentials_for_launch(
                     &self.config,
                     &self.provider_account_profiles,
                     &account_owner_user_id,
                     &request.provider,
                     &profile.profile_id,
                     request.client_interface,
-                )?;
+                )?,
+            };
             // MP-08 / MP-10 / MP-11: activation refreshes account credentials without
             // dropping the Project bindings already resolved by the runtime.
             let mut launch_environment = std::mem::take(&mut request.provider_credential_env);
@@ -310,6 +331,19 @@ impl DaemonApp {
             request,
         )
     }
+}
+
+/// A turn handed over by a hot reload already runs with its credentials.
+pub(crate) fn handed_over_credentials(
+    request: &crate::provider::LaunchProviderRequest,
+) -> Option<crate::provider::ProviderCredentialEnvironment> {
+    #[cfg(unix)]
+    return crate::hot_reload::handed_over_credentials(
+        &request.session_id,
+        request.agent_id.as_deref(),
+    );
+    #[cfg(not(unix))]
+    None
 }
 
 #[cfg(test)]

@@ -203,6 +203,10 @@ impl CommandRouter {
         }
         Ok(grant)
     }
+    /// The user an admitted terminal acts as (see `self_host_terminal_grants::owner_user_id`).
+    pub(crate) fn self_host_terminal_owner_user_id(&self) -> String {
+        crate::runtime::self_host_terminal_grants::owner_user_id(&self.config_projection.snapshot())
+    }
     pub(crate) fn self_host_terminal_pairing_required(&self) -> bool {
         crate::runtime::self_host_terminal_grants::required(&self.config_projection.snapshot())
     }
@@ -247,7 +251,10 @@ impl CommandRouter {
             .runtime_state
             .attachment_owner_user_id(attachment_id)
             .await?;
-        if owner_user_id == user_id {
+        if self
+            .runtime_state
+            .acts_for_owner(session_id, user_id, &owner_user_id)
+        {
             return Ok(());
         }
         Err(DaemonError::SessionAccessDenied {
@@ -715,8 +722,16 @@ impl CommandRouter {
     pub(crate) async fn relay_complete_leased_prompt(
         &self,
         leased_agent_id: &str,
+        home_prompt_id: &str,
+        worker_provider_run_id: &str,
     ) -> Result<crate::session::PromptCompletion, DaemonError> {
-        relay_peer_runtime::complete_relay_leased_prompt(&self.runtime_state, leased_agent_id).await
+        relay_peer_runtime::complete_relay_leased_prompt(
+            &self.runtime_state,
+            leased_agent_id,
+            home_prompt_id,
+            worker_provider_run_id,
+        )
+        .await
     }
 
     pub(crate) async fn relay_resolve_leased_project_environment_setup_target(
@@ -938,31 +953,14 @@ impl CommandRouter {
         relay_peer_runtime::try_pump_relay_leased_runtime_projections(&self.runtime_state).await
     }
 
-    pub(crate) async fn relay_drain_leased_runtime_projection(
-        &self,
-        leased_agent_id: &str,
-        provider_run_id: &str,
-        pump_output: bool,
-        replay_settled_completion: bool,
-    ) -> Result<Option<(String, crate::transport::relay_peer::RelayPeerEvent)>, DaemonError> {
-        relay_peer_runtime::drain_relay_leased_runtime_projection(
-            &self.runtime_state,
-            leased_agent_id,
-            provider_run_id,
-            pump_output,
-            replay_settled_completion,
-            false,
-        )
-        .await
-    }
-
     pub(crate) async fn relay_drain_leased_runtime_projection_authorized(
         &self,
         leased_agent_id: &str,
         provider_run_id: &str,
         pump_output: bool,
         replay_settled_completion: bool,
-    ) -> Result<Option<(String, crate::transport::relay_peer::RelayPeerEvent)>, DaemonError> {
+        acknowledged_projection_sequence: u64,
+    ) -> Result<Option<crate::app::DrainedLeasedProjection>, DaemonError> {
         relay_peer_runtime::drain_relay_leased_runtime_projection(
             &self.runtime_state,
             leased_agent_id,
@@ -970,6 +968,7 @@ impl CommandRouter {
             pump_output,
             replay_settled_completion,
             true,
+            acknowledged_projection_sequence,
         )
         .await
     }

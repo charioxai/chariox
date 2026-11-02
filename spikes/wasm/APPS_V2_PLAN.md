@@ -170,7 +170,7 @@ uses the same compiler pins and verifier as register and later publication.
 
 Inventory the first-party Apps on the implementation base, port all shipped
 ones, and retain their tools, events, integrations, permissions and data. Remove
-the embedded Node backend, bootstrap and obsolete engine path in the same
+the retired native JavaScript engine backend, bootstrap and obsolete engine path in the same
 completed port sequence. This does not remove Chromium's JavaScript view engine
 or Node used by build tools. Existing Node packages need a rebuild; provide a
 clear compatibility error and a data-preserving replacement drill.

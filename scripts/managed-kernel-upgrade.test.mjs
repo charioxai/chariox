@@ -92,7 +92,7 @@ test("Path-1 upgrade drop-in guard checks reload freshness and both effective se
   assert.ok(guard.indexOf("--property=NeedDaemonReload") < guard.indexOf("--property=DropInPaths"))
   assert.match(source, /select_supervisor_service\nassert_path1_units_have_no_dropins\nif \[ "\$recover_only" -eq 1 \]; then/)
   assert.ok(source.indexOf("\nassert_path1_units_have_no_dropins\n") < source.indexOf("\nrecover_transaction\n"))
-  assert.match(source, /systemctl daemon-reload \|\| return 1\n  assert_path1_units_have_no_dropins \|\| return 1\n  start_path1_runtime_services \|\| return 1\n  start_managed_app_storage \|\| return 1\n  health_not_before_ms=/)
+  assert.match(source, /systemctl daemon-reload \|\| return 1\n  assert_path1_units_have_no_dropins \|\| return 1\n  start_path1_runtime_services \|\| return 1\n  health_not_before_ms=/)
   assert.match(source, /if ! systemctl daemon-reload \\\n  \|\| ! assert_path1_units_have_no_dropins \\\n  \|\| ! start_path1_runtime_services \\\n/)
 
   const scratch = await mkdtemp(join(tmpdir(), "chariox-upgrade-dropin-"))
@@ -146,8 +146,8 @@ test("repository release policy admits the target and two retained releases", as
   const runtimeTypes = await readFile(join(repositoryRoot, "apps/kernel/src/local/api/types.rs"), "utf8")
   const runtimeProtocol = Number(runtimeTypes.match(/LOCAL_DAEMON_PROTOCOL_VERSION: u32 = (\d+);/)[1])
   // MP-08/MP-09/MP-10/MP-11: the target and current and previous releases are reciprocal.
-  assert.deepEqual(admittedPredecessorProtocols, [629, 636, 911, 923])
-  const admittedProtocols = [629, 636, 911, 923, runtimeProtocol]
+  assert.deepEqual(admittedPredecessorProtocols, [629, 636])
+  const admittedProtocols = [...admittedPredecessorProtocols, runtimeProtocol]
   assert.deepEqual(policy, {
     schemaVersion: 1,
     protocol: runtimeProtocol,
@@ -223,90 +223,68 @@ test("managed kernel upgrade atomically advances the release and receipt without
   assert.deepEqual((await readFile(join(harness.state, "systemctl.log"), "utf8")).trim().split("\n"), [
     `stop ${serviceName}`,
     "daemon-reload",
-    "enable chariox-app-storage.service",
-    "restart chariox-app-storage.service",
-    "is-active --quiet chariox-app-storage.service",
     `start ${serviceName}`,
     `is-active --quiet ${serviceName}`,
   ])
 })
 
-test("managed kernel upgrade stages the App artifact set when advancing from a release built before Apps", async (context) => {
-  const harness = await makeHarness(context, { currentAppArtifacts: false })
+test("managed kernel upgrade replaces the running kernel in place when its units and home stay the same", async (context) => {
+  const harness = await makeHarness(context, { workerCapableCurrent: true, runtimeUnitsChange: false })
+  const before = await persistentSnapshot(harness.persistent)
   const result = harness.run()
   assert.equal(result.status, 0, result.stderr)
-  const targetRelease = join(harness.installRoot, `usr/lib/chariox/releases/${harness.target.digest.slice("sha256:".length)}`)
   assert.equal(
     await readlink(join(harness.installRoot, "usr/lib/chariox/current")),
     `releases/${harness.target.digest.slice("sha256:".length)}`,
   )
-  for (const [path, contents, mode] of [
-    ["usr/local/bin/chariox-app-package", "#!/bin/sh\necho app-package-target\n", 0o755],
-    ["usr/libexec/chariox-app-storage", "#!/bin/sh\necho app-storage-target\n", 0o755],
-    ["etc/systemd/system/chariox-app-storage.service",
-      await readFile(join(repositoryRoot, "deploy/managed-kernel/chariox-app-storage.service"), "utf8"), 0o644],
-  ]) {
-    assert.equal(await readFile(join(targetRelease, path), "utf8"), contents)
-    assert.equal((await stat(join(targetRelease, path))).mode & 0o777, mode)
-  }
-  const config = JSON.parse(await readFile(join(harness.installRoot, "etc/chariox/app-storage.json"), "utf8"))
-  assert.deepEqual(config.owners, [{uid: harness.charioxIdentity.uid, gid: harness.charioxIdentity.gid,
-    cgroup_root: "/sys/fs/cgroup/system.slice/chariox-managed-bootstrap.service/apps",
-    kernel_database_paths: ["/home/chariox/.chariox/state/kernel.db"]}])
-  for (const path of ["usr/local/bin/chariox-app-package", "usr/libexec/chariox-app-storage",
-    "etc/systemd/system/chariox-app-storage.service"]) {
-    assert.equal(await readFile(join(harness.installRoot, path), "utf8"), await readFile(join(targetRelease, path), "utf8"))
-  }
-  const serviceLog = await readFile(join(harness.state, "systemctl.log"), "utf8")
-  assert.match(serviceLog, /enable chariox-app-storage.service/)
-  assert.ok(serviceLog.indexOf("restart chariox-app-storage.service") < serviceLog.indexOf("start chariox-managed-bootstrap.service"))
-  const rollback = harness.run({}, [harness.current.rootfs, harness.target.digest, harness.current.digest, harness.trustedKey])
-  assert.equal(rollback.status, 0, rollback.stderr)
-  assert.match(rollback.stderr, /App storage is disabled/)
-  for (const path of ["usr/local/bin/chariox-app-package", "usr/libexec/chariox-app-storage",
-    "etc/systemd/system/chariox-app-storage.service"]) {
-    assert.equal(await lstat(join(harness.installRoot, path)).then(() => true, () => false), false)
-  }
-  assert.deepEqual(JSON.parse(await readFile(join(harness.installRoot, "etc/chariox/app-storage.json"), "utf8")), config)
-
-  const previousRelease = join(harness.installRoot, `usr/lib/chariox/releases/${harness.current.digest.slice("sha256:".length)}`)
-  assert.equal(await lstat(join(previousRelease, "usr/local/bin/chariox-app-package")).then(() => true, () => false), false)
+  assert.equal(JSON.parse(await readFile(harness.receiptPath, "utf8")).runtimeReleaseDigest, harness.target.digest)
+  assert.deepEqual(await persistentSnapshot(harness.persistent), before)
+  // Nothing is stopped: the kernel and the runtime services keep running.
+  assert.deepEqual((await readFile(join(harness.state, "systemctl.log"), "utf8")).trim().split("\n"), [
+    `reload ${serviceName}`,
+    `is-active --quiet ${serviceName}`,
+  ])
 })
 
-test("failed release F upgrade disables App links while preserving storage enrollment", async (context) => {
-  const harness = await makeHarness(context, {currentAppArtifacts: false})
-  await put(join(harness.state, "fail-health-once"), "fail\n")
+test("a managed kernel that does not replace itself is rolled back by stop, switch back and start", async (context) => {
+  const harness = await makeHarness(context, { workerCapableCurrent: true, runtimeUnitsChange: false })
+  await put(join(harness.state, "refuse-reload-once"), "refuse\n")
   const result = harness.run()
   assert.equal(result.status, 1)
-  assert.match(result.stderr, /restored previous managed kernel release/)
-  assert.match(result.stderr, /App storage is disabled/)
-  for (const path of ["usr/local/bin/chariox-app-package", "usr/libexec/chariox-app-storage",
-    "etc/systemd/system/chariox-app-storage.service"]) {
-    assert.equal(await lstat(join(harness.installRoot, path)).then(() => true, () => false), false)
-  }
-  assert.match(await readFile(join(harness.state, "systemctl.log"), "utf8"), /disable --now chariox-app-storage.service/)
-  assert.equal(await lstat(join(harness.installRoot, "etc/chariox/app-storage.json")).then(() => true, () => false), true)
+  assert.match(result.stderr, /did not replace itself with the new release; restored previous managed kernel release/)
+  assert.equal(
+    await readlink(join(harness.installRoot, "usr/lib/chariox/current")),
+    `releases/${harness.current.digest.slice("sha256:".length)}`,
+  )
+  assert.equal(JSON.parse(await readFile(harness.receiptPath, "utf8")).runtimeReleaseDigest, harness.current.digest)
+  assert.deepEqual((await readFile(join(harness.state, "systemctl.log"), "utf8")).trim().split("\n"), [
+    `reload ${serviceName}`,
+    `is-active --quiet ${serviceName}`,
+    `stop ${serviceName}`,
+    "daemon-reload",
+    `start ${serviceName}`,
+    `is-active --quiet ${serviceName}`,
+  ])
 })
 
-test("failed pre-Apps rollback resumes after current changed but before App links were removed", async context => {
-  const harness = await makeHarness(context, {currentAppArtifacts: false})
-  await put(join(harness.state, "fail-health-once"), "fail\n")
-  await put(join(harness.state, "crash-after-pre-apps-current"), "crash\n")
-  const interrupted = harness.run()
-  assert.equal(interrupted.signal, "SIGKILL")
-  const unit = join(harness.installRoot, "etc/systemd/system/chariox-app-storage.service")
-  assert.equal((await lstat(unit)).isSymbolicLink(), true)
-  assert.equal(await stat(unit).then(() => true, () => false), false, "current now makes the unit dangle")
-  assert.equal(await readlink(join(harness.installRoot, "usr/lib/chariox/current")), `releases/${harness.current.digest.slice(7)}`)
-  // Re-run the same command. It recovers the interrupted rollback first, then
-  // makes a fresh successful upgrade; no operator repairs the dangling link.
-  const recovered = harness.run()
-  assert.equal(recovered.status, 0, recovered.stderr)
-  assert.match(recovered.stderr, /App storage is disabled/)
-  assert.equal((await stat(unit)).isFile(), true)
-  const calls = (await readFile(join(harness.state, "systemctl.log"), "utf8")).split("\n")
-  assert.equal(calls.filter(line => line === "disable --now chariox-app-storage.service").length, 1)
+test("managed kernel upgrade restarts the kernel for a home migration even when its units stay the same", async (context) => {
+  const harness = await makeHarness(context, { workerCapableCurrent: true, runtimeUnitsChange: false })
+  const canonicalHome = join(harness.installRoot, "home/chariox")
+  const legacyHome = join(harness.installRoot, "var/lib/chariox/home")
+  const legacyReceipt = join(legacyHome, "managed/bootstrap-receipt.json")
+  await rename(canonicalHome, legacyHome)
+  await createRootPrivateDirectory(dirname(legacyReceipt))
+  await rename(harness.receiptPath, legacyReceipt)
+  const result = harness.run()
+  assert.equal(result.status, 0, result.stderr)
+  const calls = (await readFile(join(harness.state, "systemctl.log"), "utf8")).trim().split("\n")
+  assert.equal(calls[0], `stop ${serviceName}`)
+  assert.ok(!calls.some((call) => call.startsWith("reload")), calls.join("\n"))
 })
+
+
+
+
 
 test("Path-1 upgrade rejects effective home or worker drop-ins before recovery or service mutation", async (context) => {
   for (const [marker, unit] of [
@@ -519,9 +497,6 @@ test("managed kernel upgrade stops the live service before migrating legacy home
   assert.deepEqual((await readFile(join(harness.state, "systemctl.log"), "utf8")).trim().split("\n"), [
     `stop ${serviceName}`,
     "daemon-reload",
-    "enable chariox-app-storage.service",
-    "restart chariox-app-storage.service",
-    "is-active --quiet chariox-app-storage.service",
     `start ${serviceName}`,
     `is-active --quiet ${serviceName}`,
   ])
@@ -834,24 +809,7 @@ test("managed kernel upgrade preserves an exact disposable worker receipt and pe
   )
 })
 
-test("allocation-worker upgrade and recovery preserve install-time App storage enrollment", async context => {
-  const harness = await makeHarness(context, {receiptKind: "allocation_worker", path1Release: true})
-  const config = {schema: "chariox.app-storage-enrollment.v1", owners: [{
-    uid: harness.charioxIdentity.uid, gid: harness.charioxIdentity.gid,
-    cgroup_root: "/sys/fs/cgroup/system.slice/chariox-path1-managed-bootstrap.service/apps",
-    kernel_database_paths: ["/home/chariox/.chariox/state/kernel.db"],
-  }]}
-  const enrollment = join(harness.installRoot, "etc/chariox/app-storage.json")
-  await put(enrollment, `${JSON.stringify(config)}\n`, 0o644)
-  await put(join(harness.state, "fail-health-once"), "fail\n")
-  const failed = harness.run({CHARIOX_MANAGED_PROVIDER_TOPOLOGY: "path1", CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY: harness.trustedBuilderKey})
-  assert.equal(failed.status, 1)
-  assert.match(failed.stderr, /restored previous managed kernel release/)
-  assert.deepEqual(JSON.parse(await readFile(enrollment, "utf8")), config)
-  const succeeded = harness.run({CHARIOX_MANAGED_PROVIDER_TOPOLOGY: "path1", CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY: harness.trustedBuilderKey})
-  assert.equal(succeeded.status, 0, succeeded.stderr)
-  assert.deepEqual(JSON.parse(await readFile(enrollment, "utf8")), config)
-})
+
 
 test("ordinary managed upgrade rejects a worker release override before service mutation", async (context) => {
   const harness = await makeHarness(context)
@@ -1050,9 +1008,6 @@ test("managed kernel upgrade rolls the binary and receipt back together when hea
   assert.deepEqual(calls.slice(-7), [
     `stop ${serviceName}`,
     "daemon-reload",
-    "enable chariox-app-storage.service",
-    "restart chariox-app-storage.service",
-    "is-active --quiet chariox-app-storage.service",
     `start ${serviceName}`,
     `is-active --quiet ${serviceName}`,
   ])
@@ -1280,7 +1235,7 @@ test("managed kernel upgrade accepts the schema 3 receipt a Path-1 kernel writes
 
 // MP-07/MP-10/MP-11: use the shipped policy verbatim so normalization cannot
 // hide stale release metadata. This fixture does not prove live state migration.
-for (const predecessor of [629, 636, 911]) test(`MP-08/MP-09/MP-10/MP-11 signed predecessor ${predecessor} to current runtime upgrade and rollback use the shipped policy`, async (context) => {
+for (const predecessor of admittedPredecessorProtocols) test(`MP-08/MP-09/MP-10/MP-11 signed predecessor ${predecessor} to current runtime upgrade and rollback use the shipped policy`, async (context) => {
   const repositoryPolicy = JSON.parse(await readFile(join(repositoryRoot, "apps/kernel/managed-upgrade-protocol-transitions.json"), "utf8"))
   const runtimeTypes = await readFile(join(repositoryRoot, "apps/kernel/src/local/api/types.rs"), "utf8")
   const runtimeProtocol = Number(runtimeTypes.match(/LOCAL_DAEMON_PROTOCOL_VERSION: u32 = (\d+);/)[1])
@@ -1723,8 +1678,6 @@ test("managed kernel upgrade remains a dedicated offline release operation", asy
   assert.match(contents, /systemctl start "\$service_name"/)
   assert.doesNotMatch(contents, /install-image\.sh/)
   assert.doesNotMatch(contents, /\b(?:groupadd|useradd|usermod|loginctl)\b/)
-  assert.match(contents, /systemctl enable chariox-app-storage.service/)
-  assert.match(contents, /systemctl restart chariox-app-storage.service/)
   assert.doesNotMatch(contents, /\b(?:curl|wget|ssh|scp)\b/)
   assert.doesNotMatch(contents, /installation[_-]origin|CHARIOX_INSTALLATION/)
   assert.doesNotMatch(contents, /\.arroba/)
@@ -1753,18 +1706,5 @@ test("managed kernel upgrade remains a dedicated offline release operation", asy
 })
 
 
-test("App enrollment propagates directory creation failure inside a conditional caller", async context => {
-  const root = await mkdtemp(join(tmpdir(), "chariox-app-enroll-failure-"))
-  context.after(() => rm(root, {recursive: true, force: true}))
-  const bin = join(root, "bin")
-  await put(join(bin, "id"), "#!/bin/sh\necho 1000\n", 0o755)
-  await put(join(bin, "install"), "#!/bin/sh\nexit 42\n", 0o755)
-  const helper = join(repositoryRoot, "deploy/managed-kernel/managed-app-storage.sh")
-  const result = spawnSync("sh", ["-c", '. "$1"; enroll_managed_app_storage "$2" shared_host || exit 23', "test", helper, join(root, "host")], {
-    env: {...process.env, PATH: `${bin}:${process.env.PATH}`}, encoding: "utf8",
-  })
-  assert.equal(result.status, 23)
-  assert.equal(await lstat(join(root, "host/etc/chariox/app-storage.json")).then(() => true, () => false), false)
-})
 
 }

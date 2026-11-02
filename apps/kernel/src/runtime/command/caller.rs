@@ -100,11 +100,14 @@ impl KernelCaller {
 
     /// MP-08/MP-10/MP-11: one admitted Cloud-free terminal identity for RPCs
     /// and display metadata. Transport tokens never supply its authority.
-    pub(crate) fn from_paired_terminal(grant: crate::config::PersistedClientPairing) -> Self {
+    pub(crate) fn from_paired_terminal(
+        grant: crate::config::PersistedClientPairing,
+        owner_user_id: String,
+    ) -> Self {
         let mut caller = Self::for_relay_request(None);
         caller.caller_id = grant.client_id.clone();
         caller.client_id = Some(grant.client_id);
-        caller.user_id = Some(DEFAULT_LOCAL_USER_ID.into());
+        caller.user_id = Some(owner_user_id);
         caller.public_key_thumbprint = Some(grant.public_key_thumbprint);
         caller.connection_class = Some(KernelConnectionClass::Terminal);
         caller
@@ -157,8 +160,11 @@ pub(crate) fn relay_connection_class(
 }
 
 pub(crate) fn command_caller_user_id(command: &KernelCommand) -> String {
-    command
-        .caller
+    caller_user_id(&command.caller)
+}
+
+pub(crate) fn caller_user_id(caller: &KernelCaller) -> String {
+    caller
         .user_id
         .clone()
         .unwrap_or_else(|| DEFAULT_LOCAL_USER_ID.to_string())

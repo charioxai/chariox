@@ -3,6 +3,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import os from "node:os";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { PortableEncoder } from "./kernel-browser-display.mjs";
+import { CompositorSource } from "./kernel-browser-compositor.mjs";
 import { PassThrough } from "node:stream";
 import readline from "node:readline";
 import { BrowserCdpClient } from "./browser-controller-cdp.mjs";
@@ -67,7 +71,8 @@ function fixture(root, { realCdp = false } = {}) {
     },
   };
   const chromium = { child: null, start: async () => { chromium.child = { exitCode: null, signalCode: null }; return "http://127.0.0.1:1"; }, stop: async () => { chromium.child = null; } };
-  const browserFactory = () => ({ connection, ensureConnection: async () => connection,ensureTargetSession:async (_connection,target)=>`session-${target}`, close: async () => {},
+  const webBotAuth={byTab:new Map()};
+  const browserFactory = () => ({ connection, webBotAuth, configureWebBotAuth:async(tabId,signer)=>{if(signer===null||signer?.disabled===true)webBotAuth.byTab.delete(tabId);else webBotAuth.byTab.set(tabId,signer);return{configured:true,kid:'fixture-kid'};}, attachWebBotAuth:async(_tabId,_targetId,session)=>{await connection.send('Fetch.enable',{patterns:[{urlPattern:'*',requestStage:'Request'}]},session);},clearWebBotAuth:async(tabId)=>webBotAuth.byTab.delete(tabId), ensureConnection: async () => connection,ensureTargetSession:async (_connection,target)=>`session-${target}`, close: async () => {},
     reconcile: async viewport => { connection.density=viewport.device_scale_factor; return { tabs: [...pages].map(([target_id, tab]) => ({ target_id, document_id: `doc-${target_id}`, title: "fixture", ...tab })) }; },
     manageTab: async ({ target_id }) => pages.delete(target_id),
     navigate: async ({ target_id, url }) => { pages.set(target_id, { url }); },
@@ -85,6 +90,84 @@ async function using(callback, options) {
   const context = fixture(root, options);
   try { await callback(context, root); } finally { fixture.secretFocused = false; fixture.protectedField = false; await context.host.stop(); await rm(root, { recursive: true, force: true }); }
 }
+
+test("MP-08/MP-09/MP-10/MP-11 configures Web Bot Auth before a Tab's first navigation", () => using(async ({ host, sent }) => {
+  const signer = { private_key: "private-seed-must-not-return", signature_agent: "https://agents.example.test", not_before: 1, expires_at: 2 };
+  const reply = await host.handle({ id: 701, method: "host.browser", params: {
+    op: "open", tab_id: "wba-tab", url: "https://example.test/", _web_bot_auth: signer,
+  } });
+  assert.equal(reply.ok, true);
+  assert.equal(reply.result.tabs[0].tab_id, "wba-tab");
+  assert.equal(JSON.stringify(reply).includes("private-seed-must-not-return"), false);
+  const create = sent.findIndex(({ method, params }) => method === "Target.createTarget" && params.url === "about:blank");
+  const enable = sent.findIndex(({ method }) => method === "Fetch.enable");
+  const navigate = sent.findIndex(({ method, params }) => method === "Page.navigate" && params.url === "https://example.test/");
+  assert.ok(create >= 0 && enable > create && navigate > enable);
+}));
+
+test("MP-08/MP-09/MP-10/MP-11 restores opted-in tabs only after the signer is attached", () => using(async ({ host, sent }, root) => {
+  const tabId = "host-tab-wba-restore";
+  await writeFile(path.join(root, "tabs.json"), JSON.stringify({
+    generation: 4,
+    tabs: [{ tab_id: tabId, url: "https://example.test/restored", web_bot_auth: true, web_bot_auth_project_id: "project-a" }],
+  }));
+  await host.start();
+  assert.equal(sent.some(({ method, params }) => method === "Page.navigate" && params.url === "https://example.test/restored"), false,
+    "opted-in restore URL stays pending until a signer is available");
+  assert.equal(host.tabState().tabs.find(tab => tab.tab_id === tabId)?.title,
+    "Web Bot Auth restore requires an agent to resume this tab");
+
+  const configure = host.browser.configureWebBotAuth;
+  host.browser.configureWebBotAuth = async (id, signer, targetId) => {
+    const result = await configure(id, signer, targetId);
+    if (signer && targetId) await host.browser.attachWebBotAuth(id, targetId, `session-${targetId}`);
+    return result;
+  };
+  const now = Math.floor(Date.now() / 1000);
+  const signer = { private_key: "A".repeat(43), signature_agent: "https://agents.example.test",
+    not_before: now - 10, expires_at: now + 10, project_id: "project-a", policy_revision: 1 };
+  const response = await host.handle({ id: 702, method: "host.browser", params: {
+    op: "state", tab_id: tabId, generation: host.generation, _web_bot_auth: signer,
+  } });
+  assert.equal(response.ok, true, JSON.stringify(response));
+  const fetchEnable = sent.findIndex(({ method }) => method === "Fetch.enable");
+  const restoreNavigation = sent.findIndex(({ method, params }) => method === "Page.navigate" && params.url === "https://example.test/restored");
+  assert.ok(fetchEnable >= 0 && restoreNavigation > fetchEnable, JSON.stringify(sent.map(({ method, params }) => [method, params])));
+}));
+
+test("MP-08/MP-09/MP-10/MP-11 project WBA policy acknowledges without signer data", () => using(async ({ host }) => {
+  await host.request({ op: "open", url: "https://example.test/" });
+  let applied;
+  host.browser.webBotAuth.applyProjectPolicy = (projects, reset, revision) => { applied = { projects, reset, revision }; };
+  const response = await host.handle({ id: "wba-policy", method: "host.web_bot_auth_policy", params: {
+    projects: ["enabled-project"], reset: false, revision: 4,
+  } });
+  assert.deepEqual(applied, { projects: ["enabled-project"], reset: false, revision: 4 });
+  assert.equal(response.ok, true);
+  assert.deepEqual(response.result, { updated: true });
+  assert.equal(JSON.stringify(response).includes("private_key"), false);
+}));
+
+test("MP-08/MP-09/MP-10/MP-11 a disabled signer marker reaches CDP and clears project bookkeeping", () => using(async ({ host }) => {
+  const opened = await host.request({ op: "open", url: "https://example.test/" });
+  const tabId = opened.tabs[0].tab_id;
+  host.webBotAuthProjects.set(tabId, "project-a");
+  host.browser.webBotAuth.byTab.set(tabId, { projectId: "project-a" });
+  let received;
+  const configure = host.browser.configureWebBotAuth;
+  host.browser.configureWebBotAuth = async (id, marker, targetId) => {
+    received = marker;
+    return configure(id, marker, targetId);
+  };
+  const marker = { disabled: true, policy_revision: 9 };
+  const response = await host.handle({ id: 703, method: "host.browser", params: {
+    op: "state", tab_id: tabId, generation: host.generation, _web_bot_auth: marker,
+  } });
+  assert.equal(response.ok, true, JSON.stringify(response));
+  assert.equal(received, marker, "the revision marker is forwarded intact to CDP");
+  assert.equal(host.webBotAuthProjects.has(tabId), false);
+  assert.equal(host.browser.webBotAuth.byTab.has(tabId), false);
+}));
 
 test("MP-08/MP-09/MP-10/MP-11 a dialog without Chrome chrome is shared and answerable while its renderer is blocked", () => using(async ({ host }) => {
   const opened = await host.request({ op: "open", url: "https://example.com" });
@@ -415,7 +498,7 @@ test('MP-11 a refused compositor attestation is cached per document with backoff
   if(method==='Page.startScreencast')for(const handler of handlers)handler({method:'Page.screencastFrame',sessionId:session,params:{data:encodePng(1280,800,Buffer.alloc(1280*800*4,255)),sessionId:1}});
   return result;
  };
- const stream={codec:'avc1.420033',device_scale_factor:1};
+ const stream={subscription_id:'host-display-a',codec:'avc1.420033',device_scale_factor:1};host.displays.set(stream.subscription_id,stream);
  for(let n=0;n<4;n++)assert.equal(await host.compositorFor(tab,stream),null);
  assert.equal(attempts,1,'credits cannot rebuild a refused source');
  host.compositors.get(tab.tab_id).retryAt=-Infinity;
@@ -423,6 +506,30 @@ test('MP-11 a refused compositor attestation is cached per document with backoff
  assert(host.compositors.get(tab.tab_id).retryAt>performance.now()+1500,'consecutive refusals back off further');
  pages.get(tab.target_id).document_id='next';tab.document_id='next';
  assert.equal(await host.compositorFor(tab,stream),null);assert.equal(attempts,3,'a new document retries at once');
+ host.displays.delete(stream.subscription_id);
+}));
+// F-5 (b3, browserfix r5): a credit still in flight when its display was removed started a compositor that nobody
+// stopped; its protected capture per screencast frame held the sample lane, and each typed key waited 30-50 ms.
+test('MP-08/MP-10 a credit for a removed display starts no compositor',()=>using(async({host,sent})=>{
+ const opened=await host.request({op:'open',url:'about:blank'}),tab=host.tabs.get(opened.tab_id);
+ const stream={subscription_id:'host-display-gone',codec:'avc1.420033',device_scale_factor:1};host.displays.set(stream.subscription_id,stream);
+ const resolve=host.browser.resolvePageTarget.bind(host.browser);
+ host.browser.resolvePageTarget=async target=>{const page=await resolve(target);host.displays.delete(stream.subscription_id);return page};
+ const screencasts=sent.filter(c=>c.method==='Page.startScreencast').length;
+ assert.equal(await host.compositorFor(tab,stream),null);
+ assert.equal(host.compositors.has(tab.tab_id),false,'no compositor is left for the removed display');
+ assert.equal(sent.filter(c=>c.method==='Page.startScreencast').length,screencasts,'no screencast starts');
+}));
+test('MP-08/MP-10 removing the last display stops the compositor without waiting for the stream close',()=>using(async({host})=>{
+ const opened=await host.request({op:'open',url:'about:blank'}),tab=host.tabs.get(opened.tab_id),order=[];
+ let streamClosed;const source={close:async()=>{order.push('compositor')}};
+ host.compositors.set(tab.tab_id,{source,ready:Promise.resolve(source)});
+ // The stream's close is slow (encoder helpers): the compositor's captures must not wait behind it.
+ const stream={subscription_id:'host-display-last',tab_id:tab.tab_id,close:()=>new Promise(resolve=>{streamClosed=resolve;})};host.displays.set(stream.subscription_id,stream);
+ await host.removeDisplay(stream);assert.equal(host.compositors.has(tab.tab_id),false);
+ await new Promise(resolve=>setTimeout(resolve,10));
+ assert.deepEqual(order,['compositor']);
+ streamClosed();await Promise.all(host.displayTeardowns);
 }));
 test('MP-11 overlapping saves serialize the shared tabs.json.new writer',()=>using(async({host},root)=>{
  await host.request({op:'open',url:'about:blank'});
@@ -432,7 +539,7 @@ test('MP-11 overlapping saves serialize the shared tabs.json.new writer',()=>usi
 test('MP-11 a compositor close rejected by a dead connection cannot abort stop',()=>using(async({host,chromium})=>{
  const opened=await host.request({op:'open',url:'about:blank'});
  host.compositors.set(opened.tab_id,{ready:Promise.resolve(null),source:{close:async()=>{throw Error('connection closed')}}});
- assert.equal((await host.request({op:'stop'})).state,'stopped');assert.equal(chromium.child,null);
+ await assert.rejects(host.request({op:'stop'}),/owned display teardown failed/);assert.equal(chromium.child,null);
 }));
 test("MD-5: metadata scrubs echoes and never persists a secret-bearing restore URL", () => using(async ({ host }, root) => {
   const opened = await host.request({ op: "open", url: "https://example.com/?q=synthetic-protected-value" });
@@ -450,9 +557,11 @@ test("MD-5: metadata scrubs echoes and never persists a secret-bearing restore U
   assert(candidates.includes("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"));
   assert(candidates.includes("/Users/md-test/Applications/Chromium.app/Contents/MacOS/Chromium"));
   const environment = { HOME: "/private/drill/home", DISPLAY: ":99", XAUTHORITY: "/unused", WAYLAND_DISPLAY: "wayland-0" };
-  assert.deepEqual(macEnvironment(environment), { HOME: environment.HOME });
+  assert.deepEqual(macEnvironment(environment), { HOME: environment.HOME, CHARIOX_KERNEL_BROWSER_HEADLESS: "1" });
+  const offscreen = macEnvironment({ ...environment, CHARIOX_KERNEL_BROWSER_HEADLESS: "0" });
+  assert(launchArguments("/private/drill/profile", offscreen.CHARIOX_KERNEL_BROWSER_HEADLESS === "1", true).includes("--headless=new"), "Browser does not create native windows on the owner's Mac desktop");
   assert.equal(environment.DISPLAY, ":99");
-  assert.throws(() => linuxEnvironment({}, 0), /normal Unix user/);
+  assert.deepEqual(linuxEnvironment({}, 0), {});
   assert.deepEqual(linuxEnvironment({ DISPLAY: ":99" }, 501), { DISPLAY: ":99" });
   const args = launchArguments("/private/drill/profile", false);
   assert(!args.some(arg => /headless|no-sandbox|password-store|mock-keychain/.test(arg)));
@@ -496,6 +605,27 @@ test("MD-4 reviewer R3: discovery and legacy restoration stay within the durable
   assert.equal((await host.request({ op: "state" })).tabs.length, 127);
 }));
 
+
+test("F-5 a restarted browser opens at the size its last viewer gave the window, before any viewer attaches", () => using(async ({ host, chromium, connection }, root) => {
+  const opened = await host.request({ op: "open", url: "https://example.com/kept" });
+  const send = connection.send, bounds = { width: 1280, height: 888, windowState: "normal" }, moves = [];
+  connection.send = async (method, params, session) => {
+    if (method === "Browser.getWindowForTarget") return { windowId: 7, bounds: { ...bounds } };
+    if (method === "Browser.setWindowBounds") { moves.push(params.bounds); Object.assign(bounds, params.bounds); return {}; }
+    if (method === "Page.getLayoutMetrics") return { cssVisualViewport: { scale: 1, zoom: 1, pageX: 0, pageY: 0 }, cssLayoutViewport: { clientWidth: bounds.width, clientHeight: bounds.height - 88 } };
+    return send(method, params, session);
+  };
+  const tab = opened.tabs.find(entry => entry.url === "https://example.com/kept");
+  await host.request({ op: "resize", tab_id: tab.tab_id, generation: opened.generation, width: 900, height: 600 });
+  assert.deepEqual(host.pageSize(tab.tab_id), { width: 900, height: 600 });
+  assert.deepEqual(JSON.parse(await readFile(path.join(root, "tabs.json"), "utf8")).window_layout, { width: 900, height: 600 });
+  // The restarted Chrome window opens at its default size.
+  Object.assign(bounds, { width: 1280, height: 888 }); moves.length = 0;
+  chromium.child.exitCode = 1;
+  const recovered = await host.request({ op: "start" });
+  assert.deepEqual(host.pageSize(recovered.tabs.find(entry => entry.url === "https://example.com/kept").tab_id), { width: 900, height: 600 }, "the page has the viewer's size before a viewer attaches");
+  assert.deepEqual(moves, [{ width: 900, height: 688 }]);
+}));
 
 test("MD-3 b220: cancelled pending input never inserts text", () => using(async ({ host, sent, connection }) => {
   const opened = await host.request({ op: "open", url: "about:blank" });
@@ -871,6 +1001,47 @@ test("MP-08/MP-10/MP-11 owner code flag reaches the bound controller action", ()
   assert.equal(denied.ok, false);
   assert.equal(captured, null, "a non-terminal code exception cannot reach physical input");
 }));
+
+test("MP-08/MP-10/MP-11 kernel factor fill reaches the bound controller without owner masking", () => using(async ({ host }) => {
+  const url = "https://example.test/verification";
+  const opened = await host.request({ op: "open", url });
+  const tab = opened.tabs[0];
+  let captured;
+  host.browser.performAction = async action => { captured = action; return {}; };
+  const result = await host.handle({ id: "factor", method: "host.secret", params: {
+    tab_id: tab.tab_id, generation: opened.generation, document_id: tab.document_id,
+    node_ref: "backend:104", observed_by: "agent:factor-user", vault_factor_input: true,
+    action: { kind: "fill", text: "fixture-only-code", expected_document_url: url },
+  } });
+  assert.equal(result.ok, true);
+  assert.equal(captured.action.vault_factor_input, true);
+  assert.notEqual(captured.action.mask_code_input, true);
+}));
+
+test("MP-08/MP-09/MP-10/MP-11 configures Web Bot Auth before an agent Vault fill", () => using(async ({ host }) => {
+  const opened = await host.request({ op: "open", url: "https://example.test/account" });
+  const tab = opened.tabs[0];
+  const order = [];
+  host.browser.configureWebBotAuth = async (tabId, signer, targetId) => {
+    order.push(["configure", tabId, targetId]);
+    signer.private_key = "";
+    return { configured: true, kid: "fixture-kid" };
+  };
+  host.browser.performAction = async () => { order.push(["fill"]); return {}; };
+  const signer = {
+    private_key: "A".repeat(43), signature_agent: "https://agents.example.test",
+    not_before: Math.floor(Date.now() / 1000) - 1, expires_at: Math.floor(Date.now() / 1000) + 3600,
+  };
+  const result = await host.handle({ id: "agent-vault-fill", method: "host.secret", params: {
+    tab_id: tab.tab_id, generation: opened.generation, document_id: tab.document_id,
+    node_ref: "backend:105", observed_by: "agent:agent-7", _web_bot_auth: signer,
+    action: { kind: "fill", text: "fixture-secret", append: false, submit: false },
+  } });
+  assert.equal(result.ok, true);
+  assert.deepEqual(order, [["configure", tab.tab_id, host.tabs.get(tab.tab_id).target_id], ["fill"]]);
+  assert.equal(signer.private_key, "");
+  assert.equal(JSON.stringify(result).includes("A".repeat(43)), false);
+}));
 test('MP-11 agent native input cannot bypass App human-channel admission', () => using(async ({host}) => {
   await host.request({op:'open',url:'https://example.com'});
   host.browser.appTabs={apps:new Map([['app',{targetId:'target-1'}]])};
@@ -939,6 +1110,18 @@ test('MP-08 a desktop tab drops the Browser panel DPR emulation with its last vi
  assert.equal(sent.filter(c=>c.method==='Emulation.setDeviceMetricsOverride').length,0,'a Browser viewer never emulates density on the desktop');
  await host.request({op:'unsubscribe',subscription_id:subscribed.subscription_id,generation:subscribed.generation});
  assert.equal(sent.filter(c=>c.method==='Emulation.clearDeviceMetricsOverride').length,1);assert.equal(host.scales.has(tab.tab_id),false);
+ }finally{delete host.chromium.desktop;if(original===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY=original;}
+}));
+
+// MP-08/MP-10: the unsubscribe no longer holds the controller lock, so it can finish after the viewer resized the window;
+// its late clear must not wipe the viewport the resize set (the region screenshot then has the wrong size).
+test('MP-08/MP-10 a late display unsubscribe does not clear the viewer-sized viewport',()=>using(async({host,sent})=>{
+ const original=process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;process.env.CHARIOX_KERNEL_BROWSER_DISPLAY='1';
+ try{const tab=await host.request({op:'open',url:'about:blank'});host.chromium.desktop={binding:()=>null};
+ const subscribed=await host.request({op:'display_subscribe',tab_id:tab.tab_id,generation:tab.generation,codecs:['png'],bitrate:8000000,device_scale_factor:2});
+ host.windowLayout={width:800,height:600};
+ await host.request({op:'unsubscribe',subscription_id:subscribed.subscription_id,generation:subscribed.generation});
+ assert.equal(sent.filter(c=>c.method==='Emulation.clearDeviceMetricsOverride').length,0,'the resized window keeps its viewport');assert.equal(host.scales.has(tab.tab_id),false);
  }finally{delete host.chromium.desktop;if(original===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY=original;}
 }));
 
@@ -1026,7 +1209,7 @@ test("MP-08 completed agent input cannot attribute a later native popup on the s
   assert.equal(state._tab_openers?.[human.tab_id], undefined, "opener alone carries no actor evidence");
   assert.equal(state._tab_creation_actions?.[agent.tab_id], "action-agent");
   assert.equal(state._tab_creation_actions?.[human.tab_id], undefined);
-  assert.equal(handlers.size, 3, "activation, lockdown and recovery observers remain until host shutdown");
+  assert.equal(handlers.size, 4, "activation, downloads, lockdown and recovery observers remain until host shutdown");
 }));
 
 // MP-08/MP-10/MP-11: shared viewers observe one canonical tab, never change
@@ -1282,7 +1465,7 @@ test('MP-11 the host allows downloads and closes Tabs on blocked schemes only', 
   await host.request({ op: 'open', url: 'about:blank' });
   // Miguel 2026-10-15: no CDP download deny (r8 live drill: it also cancelled the Web Store package
   // of an extension the person adds); Chrome's settings/internal pages and DevTools stay open.
-  assert(!sent.some(call => call.method === 'Browser.setDownloadBehavior'), 'no CDP download deny');
+  assert(!sent.some(call => call.method === 'Browser.setDownloadBehavior' && call.params.behavior === 'deny'), 'downloads stay allowed in the managed spool');
   const send = connection.send;
   connection.send = async (method, params, session) => method === 'DOM.getDocument'
     ? { root: { nodeId: 1, documentURL: session === 'refused' ? 'chrome-error://chromewebdata/' : params.url } }
@@ -1439,8 +1622,8 @@ test('MP-11 agents cannot reach extension management; the person can', () => usi
 
 // MP-08/MP-10/MP-11 (protocol 530/138): the public Browser state keys are the hashed
 // Rust fixture's; a new key needs a protocol bump and a new fixture.
-test('MP-08 public Browser state keys match the protocol 630 fixture', () => using(async ({ host }) => {
-  const fixture = JSON.parse(await readFile(new URL('../../src/local/api/tests/protocol_shapes/browser-chrome-ui-530.json', import.meta.url), 'utf8'));
+test('MP-08 public Browser state keys match the protocol 937 fixture', () => using(async ({ host }) => {
+  const fixture = JSON.parse(await readFile(new URL('../../src/local/api/tests/protocol_shapes/browser-header-937.json', import.meta.url), 'utf8'));
   const display = process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;
   process.env.CHARIOX_KERNEL_BROWSER_DISPLAY = '1';
   try {
@@ -1449,8 +1632,7 @@ test('MP-08 public Browser state keys match the protocol 630 fixture', () => usi
     host.tabGroups = { active: async () => host.tabs.get(tab.tab_id).target_id };
     host.chromium.policy = 'managed';
     const state = await host.request({ op: 'state' });
-    const dialogs = JSON.parse(await readFile(new URL('../../src/local/api/tests/protocol_shapes/browser-dialog-630.json', import.meta.url), 'utf8'));
-    assert.deepEqual(Object.keys(state).filter(key => !key.startsWith('_')).sort(), dialogs.state_keys);
+    assert.deepEqual(Object.keys(state).filter(key => !key.startsWith('_')).sort(), fixture.state_keys);
     assert.deepEqual(Object.keys(state.chrome_window).sort(), fixture.chrome_window_keys);
     host.chromeWindows.auxiliaryState = () => [{ auxiliary_id: 1, x: 0, y: 0, width: 2, height: 2 }];
     assert.deepEqual(Object.keys((await host.request({ op: 'state' })).chrome_window.auxiliary[0]).sort(), fixture.auxiliary_keys);
@@ -1595,7 +1777,7 @@ test('MP-11 the host allows downloads and closes Tabs on blocked schemes only', 
   await host.request({ op: 'open', url: 'about:blank' });
   // Miguel 2026-10-15: no CDP download deny (r8 live drill: it also cancelled the Web Store package
   // of an extension the person adds); Chrome's settings/internal pages and DevTools stay open.
-  assert(!sent.some(call => call.method === 'Browser.setDownloadBehavior'), 'no CDP download deny');
+  assert(!sent.some(call => call.method === 'Browser.setDownloadBehavior' && call.params.behavior === 'deny'), 'downloads stay allowed in the managed spool');
   const send = connection.send;
   connection.send = async (method, params, session) => method === 'DOM.getDocument'
     ? { root: { nodeId: 1, documentURL: session === 'refused' ? 'chrome-error://chromewebdata/' : params.url } }
@@ -1860,11 +2042,11 @@ test('MP-08/MP-10/MP-11 a native key reads the active Tab live on a snapshot mis
 // MP-08/MP-10/MP-11: failed extension startup and browser recovery release observers.
 test('MP-08/MP-10/MP-11 native owner observers retire on recovery and shutdown',()=>using(async({host,chromium,handlers,connection})=>{
  const {ChromeTabGroups}=await import('./kernel-browser-tab-groups.mjs');
- await host.request({op:'open',url:'about:blank'});assert.equal(host.tabGroups,null);assert.equal(handlers.size,2,'failed extension load leaves lockdown and recovery');
- const groups=new ChromeTabGroups(connection);await groups.nativeState.attach('worker-session');host.tabGroups=groups;assert.equal(handlers.size,3);
+ await host.request({op:'open',url:'about:blank'});assert.equal(host.tabGroups,null);assert.equal(handlers.size,3,'failed extension load leaves downloads, lockdown and recovery');
+ const groups=new ChromeTabGroups(connection);await groups.nativeState.attach('worker-session');host.tabGroups=groups;assert.equal(handlers.size,4);
  chromium.child.exitCode=1;await host.request({op:'start'});
  assert.equal(groups.nativeState.closed,true);assert.equal(groups.nativeState.off,null);assert.equal(host.tabGroups,null);
- assert.equal(handlers.size,2,'lockdown and recovery remain; the retired native observer is gone');
+ assert.equal(handlers.size,3,'downloads, lockdown and recovery remain; the retired native observer is gone');
  await host.request({op:'stop'});assert.equal(handlers.size,0);
 }));
 
@@ -2217,7 +2399,7 @@ test('MP-08/MP-10 a parked wait starts no browser and never queues behind the ho
 }));
 
 
-test('MP-08/MP-10 browser death automatically restores stable tabs, active tab and groups', {timeout: 10000}, () => using(async ({host,chromium,handlers,sent,connection}) => {
+test('MP-08/MP-10 the first read after browser death restores stable tabs, active tab and groups', {timeout: 10000}, () => using(async ({host,chromium,handlers,sent,connection}) => {
   const a=await host.request({op:'open',url:'https://www.wikipedia.org/'});
   const b=await host.request({op:'open',url:'https://github.com/charioxai/chariox'});
   host.activeTarget=host.tabs.get(a.tab_id).target_id;
@@ -2226,9 +2408,8 @@ test('MP-08/MP-10 browser death automatically restores stable tabs, active tab a
   const generation=host.generation;
   chromium.child.signalCode='SIGSEGV';
   for(const handler of [...handlers])handler({method:'Chariox.browserDisconnected',params:{code:'browser_cdp_disconnected'}});
-  for(let n=0;n<150&&host.generation===generation;n++)await new Promise(r=>setTimeout(r,10));
-  await host.starting;
-  assert.equal(host.generation,generation+1,'the loss signal restarts without a user request');
+  await new Promise(r=>setTimeout(r,300));await host.start({allowStart:false}); // what the first read after the short wait does
+  assert.equal(host.generation,generation+1,'the first read after the short wait restarts it');
   assert.deepEqual([...host.tabs.keys()],[a.tab_id,b.tab_id]);
   assert.equal(host.activeTarget,host.tabs.get(a.tab_id).target_id);
   assert.deepEqual(host.savedGroups,[{tab_id:b.tab_id,label:'Mara'}]);
@@ -2252,8 +2433,7 @@ test('MP-08/MP-10 interrupted old-browser actions settle without replay or stopp
   await began.promise;
   chromium.child.signalCode='SIGSEGV';
   for(const handler of [...handlers])handler({method:'Chariox.browserDisconnected',params:{code:'browser_cdp_disconnected'}});
-  for(let n=0;n<150&&host.generation===opened.generation;n++)await new Promise(r=>setTimeout(r,10));
-  await host.starting;ended.resolve();
+  await askAfterBackoff(host);ended.resolve();
   const reply=await action;
   assert.equal(reply.ok,false);assert.equal(reply.error.code,'browser_unavailable');assert.match(reply.error.message,/disconnected.*not replayed/);
   assert.equal(host.generation,opened.generation+1);assert(host.browser);assert.equal(chromium.child.signalCode,null);
@@ -2268,6 +2448,26 @@ test('MP-08/MP-10 concurrent recovery reads launch one browser and explicit stop
   assert(states.every(state=>state.tabs.length===1&&state.tabs[0].tab_id===opened.tab_id));
   await host.stop();await new Promise(r=>setTimeout(r,300));assert.equal(starts,2);assert.equal(host.recovery.enabled,false);
   await assert.rejects(host.request({op:'state'}),{code:'browser_unavailable'});
+}));
+
+// A lost browser comes back when a request asks for it, after the short wait the recovery sets; a read inside the wait is refused.
+async function askAfterBackoff(host){
+  await new Promise(r=>setTimeout(r,300));
+  return host.request({op:'state'});
+}
+// 2026-10-31: closing the kernel browser's window brought it back at once, with nobody looking.
+test('MP-08/MP-10 a lost browser is not relaunched while nothing asks for it; the next request starts it', {timeout:10000}, () => using(async ({host,chromium,handlers}) => {
+  const opened=await host.request({op:'open',url:'https://www.wikipedia.org/'});
+  let starts=0;const start=chromium.start;chromium.start=async()=>{starts++;return start();};
+  chromium.child.signalCode='SIGSEGV';
+  for(const handler of [...handlers])handler({method:'Chariox.browserDisconnected',params:{code:'browser_cdp_disconnected'}});
+  await assert.rejects(host.request({op:'state'}),{code:'browser_unavailable'},'a read inside the wait is refused');
+  await new Promise(r=>setTimeout(r,700));
+  assert.equal(starts,0,'nobody is asking: no relaunch');
+  assert.equal(host.recovery.enabled,true);
+  const state=await host.request({op:'state'});
+  assert.equal(starts,1,'a request is demand');
+  assert.equal(state.generation,opened.generation+1);assert(state.tabs.some(tab=>tab.tab_id===opened.tab_id),'its tabs come back');
 }));
 
 test('MP-08/MP-10 a cancelled viewer does not cancel shared browser recovery', () => using(async ({host,chromium}) => {
@@ -2303,10 +2503,10 @@ for(const late of [false,true])test(`MP-08/MP-10 a disconnected page input never
  const action=host.handle({id:'page-input',method:'host.browser',params:{op:'input',_agent_input:true,tab_id:opened.tab_id,generation:opened.generation,document_id:tab.document_id,input:{kind:'scroll',x:20,y:20,delta_x:0,delta_y:120}}});
  await began.promise;chromium.child.signalCode='SIGSEGV';live=false;
  for(const handler of [...handlers])handler({method:'Chariox.browserDisconnected',params:{code:'browser_cdp_disconnected'}});
- if(late){for(let n=0;n<150&&host.generation===opened.generation;n++)await new Promise(r=>setTimeout(r,10));await host.starting;}
+ if(late)await askAfterBackoff(host);
  gate.resolve();const reply=await action;
  assert.equal(reply.ok,false);assert.equal(reply.error.code,'browser_unavailable');assert.match(reply.error.message,/not replayed/);
- for(let n=0;n<150&&host.generation===opened.generation;n++)await new Promise(r=>setTimeout(r,10));await host.starting;
+ await askAfterBackoff(host);
  assert.equal(host.generation,opened.generation+1);assert(host.browser);assert.equal(host.recovery.enabled,true);assert(host.tabs.has(opened.tab_id));assert.equal(presses,1,'the old input is never replayed');
 }));
 
@@ -2444,6 +2644,42 @@ for (const mirrored of [false,true]) test(`MP-08/MP-10/MP-11: ${mirrored?'DOM':'
  assert.equal(active,target(todo.tab_id));assert.equal(activations,1);
  await host.request(input);assert.equal(activations,1,'already selected native tab requires no activation');
  const saved=JSON.parse(await readFile(path.join(root,'tabs.json'),'utf8'));assert.equal(saved.active_tab_id,todo.tab_id);
+}));
+
+// MP-08/MP-10: a click whose page opens a Tab (window.open, target=_blank) leaves Chromium showing that Tab; the opener's admitted selection must not pull focus back.
+test('MP-08/MP-10 a Tab opened by the clicked page keeps the foreground over the opener selection', () => using(async ({host,connection}) => {
+ const opener=await host.request({op:'open',url:'https://example.com/opener'});
+ const target=id=>host.tabs.get(id).target_id;let active=target(opener.tab_id),activations=0,popup;
+ host.tabGroups={active:async()=>active};host.activeTarget=target(opener.tab_id);
+ const send=connection.send.bind(connection);
+ connection.send=async(method,params,session)=>{
+  if(method==='Target.activateTarget'){active=params.targetId;activations++}
+  if(method.startsWith('Input.')&&!popup){popup=(await send('Target.createTarget',{url:'https://example.com/popup'})).targetId;active=popup}
+  return send(method,params,session)};
+ await host.request({op:'input',tab_id:opener.tab_id,generation:opener.generation,document_id:host.tabs.get(opener.tab_id).document_id,input:{kind:'text',text:'x'}});
+ assert(popup,'the click opened a Tab');
+ assert.equal(activations,0,'the opener selection must not re-activate over the new Tab');
+ await host.reconcile();
+ assert.equal(host.activeTarget,popup,'the new Tab is the active Tab');
+ assert.equal(host.pendingActive,null);
+}));
+
+// Review #1072 P2: a state read that adopts the popup while the input acknowledgement is pending must not let the ack rebuild the opener intent.
+test('MP-08/MP-10 a popup adopted before the input acknowledgement keeps the foreground', () => using(async ({host,connection}) => {
+ const opener=await host.request({op:'open',url:'https://example.com/opener'});
+ const target=id=>host.tabs.get(id).target_id;let active=target(opener.tab_id),activations=0,popup;
+ host.tabGroups={active:async()=>active};host.activeTarget=target(opener.tab_id);
+ const send=connection.send.bind(connection);
+ connection.send=async(method,params,session)=>{
+  if(method==='Target.activateTarget'){active=params.targetId;activations++}
+  if(method.startsWith('Input.')&&!popup){popup=(await send('Target.createTarget',{url:'https://example.com/popup'})).targetId;active=popup;await host.reconcile()}
+  return send(method,params,session)};
+ await host.request({op:'input',tab_id:opener.tab_id,generation:opener.generation,document_id:host.tabs.get(opener.tab_id).document_id,input:{kind:'text',text:'x'}});
+ assert(popup,'the click opened a Tab');
+ assert.equal(host.pendingActive,null,'the acknowledgement must not rebuild the opener selection');
+ await host.reconcile();
+ assert.equal(activations,0,'the opener selection must not re-activate over the new Tab');
+ assert.equal(host.activeTarget,popup,'the new Tab is the active Tab');
 }));
 
 // MP-08/MP-10/MP-11: an input can publish before its focus reconciliation settles.
@@ -2665,3 +2901,131 @@ test('MP-08 / MP-10 an App mirror applies its native cap through CDP before publ
     if(previous===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_MIRROR;else process.env.CHARIOX_KERNEL_BROWSER_MIRROR=previous;
   }
 }, {realCdp:true}));
+
+test('MP-08/MP-10 protocol933 portable header follows Chromium without a native band', () => using(async ({host,connection}) => {
+ const first=await host.request({op:'open',url:'https://example.com/first'}),second=await host.request({op:'open',url:'https://example.com/second'});
+ const png=encodePng(16,16,Buffer.alloc(16*16*4,255));
+ const send=connection.send;connection.send=async(method,params,session)=>method==='Page.getNavigationHistory'?{currentIndex:1,entries:[{id:1},{id:2}]}:send(method,params,session);
+ host.tabGroups={active:async()=>host.tabs.get(second.tab_id).target_id,favicon:async()=>png};
+ await host.request({op:'state'});await new Promise(r=>setTimeout(r,300));await host.request({op:'state'});await new Promise(r=>setTimeout(r,10));const state=await host.request({op:'state'});
+ assert.equal(state.chrome_window,null);assert.equal(state.active_tab_id,second.tab_id);
+ const tab=state.tabs.find(t=>t.tab_id===second.tab_id);assert.equal(tab.can_go_back,true);assert.equal(tab.can_go_forward,false);assert.equal(tab.favicon_png_base64,png);
+ assert(state.tabs.some(t=>t.tab_id===first.tab_id));
+}));
+test("MP-11: the kernel's policy with its own key order is the same policy and keeps bound mirror streams current", async () => {
+  const host = new KernelBrowserHost("/unused-policy-order", { chromium: { start: async () => { throw new Error("must not launch"); } } });
+  const bound = host.protection;
+  let invalidated = 0;
+  host.mirror.invalidate = () => { invalidated++; };
+  // The kernel serializes its policy with sorted keys.
+  await host.protect(JSON.parse('{"targets":[],"unknown":false,"values":[]}'));
+  assert.equal(invalidated, 0);
+  assert.ok(host.protection === bound, "a mirror stream bound to the first policy must stay current");
+  await host.protect(JSON.parse('{"targets":[],"unknown":false,"values":["synthetic-protected-value"]}'));
+  assert.equal(invalidated, 1);
+});
+test("MD-2: the host process exits after its shutdown reply even when a handle is left open", async () => {
+  const { spawn } = await import("node:child_process");
+  const root = await mkdtemp(path.join(os.tmpdir(), "host-shutdown-"));
+  try {
+    // A leftover handle (a helper socket, a timer) must not keep the process alive: the kernel waits for its exit.
+    const child = spawn(process.execPath, ["--import", "data:text/javascript,setInterval(()=>{},1000)", path.join(import.meta.dirname, "kernel-browser-host.mjs"), "stdio", root], { stdio: ["pipe", "pipe", "inherit"] });
+    const reply = new Promise(resolve => readline.createInterface({ input: child.stdout }).once("line", resolve));
+    const exited = new Promise(resolve => child.once("exit", resolve));
+    child.stdin.write(JSON.stringify({ id: 1, method: "shutdown", params: {} }) + "\n");
+    assert.equal(JSON.parse(await reply).ok, true);
+    const outcome = await Promise.race([exited.then(() => "exited"), new Promise(resolve => setTimeout(resolve, 3000, "still running"))]);
+    if (outcome !== "exited") child.kill("SIGKILL");
+    assert.equal(outcome, "exited");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+
+test('MP-08/MP-09/MP-10/MP-11 unsubscribe answers before slow helpers exit and stop reaps them', {timeout:10000}, () => using(async ({host, connection}) => {
+  const previous=process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;
+  process.env.CHARIOX_KERNEL_BROWSER_DISPLAY='1';
+  const children=[];
+  try {
+    const tab=await host.request({op:'open',url:'about:blank'});
+    const opened=await host.request({op:'display_subscribe',tab_id:tab.tab_id,generation:tab.generation,codecs:['png'],bitrate:8000000,device_scale_factor:1});
+    const stream=host.displays.get(opened.subscription_id);
+    const encoders=[];
+    for(let i=0;i<2;i++){
+      const child=spawn(process.execPath,['-e',"process.on('SIGTERM',()=>{});process.stdin.resume();process.stdin.on('end',()=>{});setInterval(()=>{},1000);console.log('ready')"],{stdio:['pipe','pipe','ignore']});
+      children.push(child);await once(child.stdout,'data');
+      const encoder=new PortableEncoder();encoder.child=child;encoders.push(encoder);
+    }
+    stream.encoder=encoders[0];
+    const source=new CompositorSource({connection,sessionId:'fixture',tab,scale:1,policy:{},hasher:encoders[1],allowed:()=>true});
+    host.compositors.set(tab.tab_id,{source,ready:Promise.resolve(source)});
+    const started=performance.now();
+    const reply=await host.request({op:'unsubscribe',subscription_id:opened.subscription_id,generation:tab.generation});
+    assert.equal(reply.unsubscribed,true);
+    assert.ok(performance.now()-started<250,'unsubscribe must answer within 250ms while slow helpers still run');
+    assert.equal(host.displays.has(opened.subscription_id),false);
+    assert.equal(host.compositors.has(tab.tab_id),false,'detach the old compositor before a replacement viewer attaches');
+    assert.equal(source.closed,true,'a detached compositor cannot capture more frames');
+    assert.ok(children.every(child=>child.exitCode===null&&child.signalCode===null),'answer does not wait for helper exit');
+    const stopped=host.stop();
+    await new Promise(resolve=>setTimeout(resolve,30));
+    assert.ok(children.some(child=>child.exitCode===null&&child.signalCode===null),'teardown remains owned while stop waits');
+    await stopped;
+    assert.ok(children.every(child=>child.signalCode==='SIGKILL'),'stop waits for every stubborn helper to be reaped');
+    assert.ok(performance.now()-started<1800,'helper grace periods run concurrently');
+  } finally {
+    if(previous===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY=previous;
+    for(const child of children)if(child.exitCode===null&&child.signalCode===null){assert.ok(Number.isSafeInteger(child.pid)&&child.pid>1);child.kill('SIGKILL');await once(child,'exit');}
+  }
+}));
+
+
+test('MP-08/MP-10/MP-11 a background display failure is reported after stopping Chromium', () => using(async ({host,chromium}) => {
+  const previous=process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;process.env.CHARIOX_KERNEL_BROWSER_DISPLAY='1';
+  try {
+    const tab=await host.request({op:'open',url:'about:blank'});
+    const sub=await host.request({op:'display_subscribe',tab_id:tab.tab_id,generation:tab.generation,codecs:['png'],bitrate:8000000,device_scale_factor:1});
+    host.displays.get(sub.subscription_id).encoder={close:async()=>{throw Error('owned helper did not exit')}};
+    assert.equal((await host.request({op:'unsubscribe',subscription_id:sub.subscription_id,generation:sub.generation})).unsubscribed,true);
+    await assert.rejects(host.stop(),/owned display teardown failed/);
+    assert.equal(chromium.child,null,'a teardown failure cannot skip Chromium shutdown');
+    assert.equal(host.displayTeardowns.size,0);
+  } finally {if(previous===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY=previous;}
+}));
+
+test('MP-08/MP-09/MP-10/MP-11 host state, cancellation and Room cleanup use the shared download registry', () => using(async ({host,handlers}) => {
+  const opened=await host.request({op:'open',url:'about:blank',_download_session:'room-a'});
+  const tab=host.tabs.get(opened.tab_id); host.browser.targetsByFrame=new Map([['download-frame',tab.target_id]]);
+  const emit=(method,params)=>{for(const handler of handlers)handler({method,params});};
+  emit('Browser.downloadWillBegin',{guid:'download-a',frameId:'download-frame',suggestedFilename:'test.txt'});
+  let state=await host.request({op:'state'}); assert.equal(state.downloads[0].state,'in_progress');
+  await assert.rejects(host.request({op:'cancel_download',generation:opened.generation+1,tab_id:tab.tab_id,download_id:'download-a'}));
+  state=await host.request({op:'cancel_download',generation:opened.generation,tab_id:tab.tab_id,download_id:'download-a'});
+  assert.equal(state.downloads[0].state,'in_progress');
+  emit('Browser.downloadProgress',{guid:'download-a',state:'canceled',receivedBytes:0}); await host.downloads.settle();
+  assert.equal((await host.request({op:'state'})).downloads[0].state,'cancelled');
+  const reply=await host.handle({id:1,method:'host.downloads.cleanup',params:{session_id:'room-a'}});
+  assert.equal(reply.ok,true); assert.deepEqual((await host.request({op:'state'})).downloads,[]);
+  const directory=host.downloads.root; await host.stop();
+  const {access}=await import('node:fs/promises'); await assert.rejects(access(directory));
+}));
+
+test("MP-08/MP-09/MP-10/MP-11 signed Vault fills retain factor and plain target admission", () => using(async ({ host }) => {
+  const url = "https://example.test/verification";
+  const opened = await host.request({ op: "open", url });
+  const tab = opened.tabs[0];
+  const order = [];
+  host.browser.configureWebBotAuth = async () => { order.push("sign"); };
+  host.browser.performAction = async ({ action }) => { order.push(action); return {}; };
+  for (const flag of ["vault_factor_input", "plain_target"]) {
+    const result = await host.handle({ id: flag, method: "host.secret", params: {
+      tab_id: tab.tab_id, generation: opened.generation, document_id: tab.document_id,
+      node_ref: "backend:104", observed_by: "agent:factor-user", [flag]: true,
+      _web_bot_auth: { project_id: "project-fixture" },
+      action: { kind: "fill", text: "fixture-only-value", expected_document_url: url },
+    } });
+    assert.equal(result.ok, true);
+    assert.equal(order.at(-2), "sign");
+    assert.equal(order.at(-1)[flag], true);
+    assert.equal(order.at(-1).mask_code_input, false);
+  }
+}));

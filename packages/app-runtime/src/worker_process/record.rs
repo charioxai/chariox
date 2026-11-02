@@ -6,40 +6,46 @@ pub(super) const CONTINUE: &[u8; 8] = b"CXAWGO01";
 pub(super) const UNCONTAINED: &[u8; 8] = b"CXAWC001";
 
 pub(super) enum PreparedLaunch {
-    Node(LaunchRecord),
+    #[cfg(any(test, feature = "test-fixtures"))]
+    Fixture(LaunchRecord),
     Wasm {
         generation: String,
         installation: String,
         release_digest: String,
     },
 }
+#[cfg(any(test, feature = "test-fixtures"))]
 impl From<LaunchRecord> for PreparedLaunch {
     fn from(record: LaunchRecord) -> Self {
-        Self::Node(record)
+        Self::Fixture(record)
     }
 }
 impl PreparedLaunch {
     pub fn generation(&self) -> &str {
         match self {
-            Self::Node(record) => &record.generation,
+            #[cfg(any(test, feature = "test-fixtures"))]
+            Self::Fixture(record) => &record.generation,
             Self::Wasm { generation, .. } => generation,
         }
     }
     pub fn installation(&self) -> &str {
         match self {
-            Self::Node(record) => &record.installation,
+            #[cfg(any(test, feature = "test-fixtures"))]
+            Self::Fixture(record) => &record.installation,
             Self::Wasm { installation, .. } => installation,
         }
     }
     pub fn release_digest(&self) -> &str {
         match self {
-            Self::Node(record) => &record.release_digest,
+            #[cfg(any(test, feature = "test-fixtures"))]
+            Self::Fixture(record) => &record.release_digest,
             Self::Wasm { release_digest, .. } => release_digest,
         }
     }
     pub fn encode(&self) -> Result<Vec<u8>, WorkerError> {
         match self {
-            Self::Node(record) => record.encode(),
+            #[cfg(any(test, feature = "test-fixtures"))]
+            Self::Fixture(record) => record.encode(),
             Self::Wasm { .. } => {
                 self.validate()?;
                 Ok(Vec::new())
@@ -81,16 +87,10 @@ impl PreparedLaunch {
         }
         frame
     }
-    #[cfg(test)]
-    pub fn node(&self) -> Option<&LaunchRecord> {
-        match self {
-            Self::Node(record) => Some(record),
-            _ => None,
-        }
-    }
 }
 
 /// Internal native ABI, never deserialized from a terminal or App request.
+#[cfg(any(test, feature = "test-fixtures"))]
 pub(super) struct LaunchRecord {
     pub generation: String,
     pub installation: String,
@@ -104,6 +104,7 @@ pub(super) struct LaunchRecord {
     pub max_file_bytes: u64,
 }
 
+#[cfg(any(test, feature = "test-fixtures"))]
 impl LaunchRecord {
     pub fn encode(&self) -> Result<Vec<u8>, WorkerError> {
         let generation = self

@@ -104,6 +104,10 @@ export function nextInteractionChoiceIndex(options: {
   return (options.currentIndex + options.delta + count) % count
 }
 
+/** The longest Vault value an owner client takes for an outside agent's request: the kernel's
+ * `VAULT_SECRET_MAX_CHARS`, which the secret-entry interaction advertises as its `max_length`. */
+export const VAULT_SECRET_MAX_LENGTH = 8192
+
 /** Appends typed or pasted text, up to `maxLength` characters (code points,
  * as the kernel counts them). */
 export function appendInteractionCustomReply(options: {

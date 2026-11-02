@@ -56,11 +56,11 @@ export function generatedEvidenceFixture() {
       }],
       commands: [{
         artifactIndexPath: "/tmp/matrices/oss/native-provider-tui-matrix-artifacts.json",
-        args: ["--include-hetzner"],
+        args: ["--include-remote-kernel"],
         artifactIndexFlag: "--artifact-index",
         cwd: "/repo/chariox",
         matrix: "native-provider-tui-matrix",
-        nodeArgs: ["/repo/chariox/apps/cli/scripts/live-native-provider-tui-matrix-drill.mjs", "--include-hetzner", "--report", "/tmp/matrices/oss/native-provider-tui-matrix.json", "--artifact-index", "/tmp/matrices/oss/native-provider-tui-matrix-artifacts.json"],
+        nodeArgs: ["/repo/chariox/apps/cli/scripts/live-native-provider-tui-matrix-drill.mjs", "--include-remote-kernel", "--report", "/tmp/matrices/oss/native-provider-tui-matrix.json", "--artifact-index", "/tmp/matrices/oss/native-provider-tui-matrix-artifacts.json"],
         repo: "oss",
         reportPath: "/tmp/matrices/oss/native-provider-tui-matrix.json",
         scriptPath: "/repo/chariox/apps/cli/scripts/live-native-provider-tui-matrix-drill.mjs",

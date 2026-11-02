@@ -739,7 +739,7 @@ class FrameConnection {
       return { frameTree };
     }
     if (method === "Target.getTargets") {
-      return { targetInfos: [{ targetId: "child-target", type: "iframe" }] };
+      return { targetInfos: [{ targetId: "child-target", type: "iframe", parentFrameId: "root-frame" }] };
     }
     if (method === "Target.attachToTarget") return { sessionId: "child-session" };
     if (method === "Target.detachFromTarget") return {};

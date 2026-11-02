@@ -27,8 +27,6 @@ codesigned runtime inventory (#681).
 | CLI/TUI | `apps/cli`, compiled with Bun `--compile` | `bin/chariox` |
 | App developer tool | `packages/app-package` (`chariox-app-package`) | `bin/chariox-app-package` |
 | WASM App worker (kernel-side, one per kernel) | `packages/app-wasm-worker` (`chariox-app-wasm-worker`) | `bin/chariox-app-wasm-worker`, beside the kernel |
-| Runtime installer | `packages/app-runtime` (`chariox-app-runtime-install`) | `libexec/chariox-app-runtime-install` |
-| App storage helper (Linux only) | `packages/app-runtime` (`chariox-app-storage`) | `libexec/chariox-app-storage` |
 | Signed App runtime | native artifact, launcher, sandbox, SDK bundle | `runtime/` |
 | Linux installer | `deploy/local-linux`, `deploy/release-bundle/install.sh` | `deploy/`, `install.sh` |
 | Slice build context | Committed runtime source roots and Dockerfile inputs | `share/chariox/slice-build-context/` |
@@ -57,7 +55,6 @@ chariox-<version>-<platform>/
   manifest.json        schema chariox.release-bundle.v1
   manifest.sig         Ed25519 signature over manifest.json (128 hex)
   bin/                 chariox, chariox-kernel, chariox-relay, chariox-app-package, chariox-app-wasm-worker
-  libexec/             chariox-app-runtime-install, chariox-app-storage (Linux)
   runtime/             the signed App runtime release, unchanged
   share/chariox/slice-build-context/  committed inputs used to build slice images
   deploy/              Linux only: local-linux/ installer and the units it installs
@@ -67,7 +64,6 @@ chariox-<version>-<platform>/
 
 `manifest.json` records:
 - `version`, `platform` and `sourceCommit`;
-- `runtime.inventorySha256` and `runtime.publicKeyHex`;
 - on macOS, the codesigning identity, team and notarization submission;
 - every file's path, size, mode and SHA-256.
 
@@ -83,29 +79,9 @@ Each check accepts a bundle only if all of these hold:
 - `runtime/runtime-inventory.json` is the inventory the manifest names, and its
   `runtime-inventory.sig` verifies with the runtime key the manifest names.
 
-During root enrollment, `chariox-app-runtime-install` verifies the runtime again
-against that key and digest.
-
-### Packaged slice context preflight — MP-07 / MP-08 / MP-10 / MP-11
-
-`release-bundle.mjs slice-context` derives local `COPY` and `ADD` inputs, and
-local `RUN` bind mounts, from the Dockerfile at the requested source commit.
-It exports them alongside the provisioner's runtime source roots. Public
-provider version pins are build inputs and must be included.
-
-Export, assembly, signing and Node bundle verification resolve those inputs
-from the packaged context. Assembly checks the copied distribution directory
-before writing its manifest. A checksum-consistent bundle missing a Dockerfile
-input must fail preflight. The check supports static local paths, directories,
-simple source globs, quoted and JSON forms, and ignores inputs from other build
-stages. Unsupported dynamic/remote inputs and ignore files fail explicitly;
-extend the resolver or validate with a real image build before adopting them.
-
-The supplementary regression command is
-`node --test scripts/release-bundle.test.mjs scripts/slice-build-context.test.mjs`.
-This proves packaged input closure, not successful image execution or live
-slice acceptance. The real released TUI/kernel `/slice create … --headed` and
-`/slice start` drill remains required on the signed candidate.
+The release signature covers the kernel and the WASM App worker beside it.
+The worker's exact build hash identifies its AOT artifacts. There is no separate
+App engine inventory or privileged runtime enrollment.
 
 ## Channels
 
@@ -175,8 +151,6 @@ step installs it with.
 - One semantic version, `X.Y.Z[-pre]`, for the bundle. The tag `vX.Y.Z` must point
   at the commit CI builds, so the version and the source commit are fixed together.
 - `manifest.json`, the bundle and tarball names, and `chariox --version` carry it.
-- The runtime inventory records the same `sourceCommit`, and the assembler refuses
-  a runtime built from another commit.
 - The kernel's local protocol version is independent: clients compare protocol
   versions, not bundle versions. A protocol change still bumps the protocol version
   (AGENTS.md).
@@ -185,38 +159,15 @@ step installs it with.
 
 ## Upgrade path
 
-**Linux.** To upgrade, unpack the new bundle and run the same two steps.
-- `install-root.sh` enrolls the new runtime as a new generation. The old generation
-  stays while running workers hold its lease.
-- The helper restarts only if its binary, unit or owners changed. A restart stops
-  the Apps of running kernels, and the script says so.
-- `install-user.sh` replaces the kernel and restarts the user unit. Apps recover
-  through the kernel's startup recovery.
-- Kernel state migrates forward only. Downgrades are not supported; restore from a
-  backup instead.
+**Linux.** Unpack and verify the signed bundle, run the privileged browser
+setup if required, then replace the ordinary user's kernel and adjacent WASM
+worker through `install-user.sh`. Apps recover through kernel startup recovery.
 
-**macOS.** A new `.pkg`, built by its own task, replaces the binaries and enrolls
-the new runtime generation. Restarting the kernel relocks the vault, and the owner
-unlocks it.
+**macOS.** The signed `.pkg` installs the kernel and adjacent WASM worker,
+provisions the shared admission locks and restarts the console user's kernel.
+The owner unlocks the Vault again after restart.
 
 ## Open items
 
-- **Runtime builder in CI.** The release workflow consumes `runtime-input-<platform>`
-  artifacts: the reviewed native artifact, launcher, sandbox and platform libraries,
-  plus the builder's signed attestation. No CI job produces them yet. On Hetzner,
-  `/w/linux-kernel/tools/build-runtime-release.sh` does it by hand.
-- **Bun under the hardened runtime.** #678 gives the JIT entitlement only to
-  `chariox-app-worker`. The Bun-compiled `chariox` needs
-  `com.apple.security.cs.allow-jit` too.
-- **Third-party notices** for the code embedded in the compiled CLI (Bun, OpenTUI,
-  Solid and others).
-- **Symbol stripping.** The release kernel is 129 MB with symbols. Stripped
-  binaries and a separate symbol archive would shrink the download.
-
-## Later channels
-
-- Homebrew cask (from the `.pkg`).
-- `darwin-x64` and `linux-arm64` bundles. OpenTUI and Bun already support them; the
-  runtime and launcher need their native builds.
-- Distribution packages (`.deb`, `.rpm`) wrapping the Linux bundle.
-- An updater that checks for newer signed bundles.
+Third-party notices cover compiled CLI libraries and the WASM worker's engine.
+Real install, App edit/save/reopen and containment drills remain release gates.

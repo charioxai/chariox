@@ -6,6 +6,22 @@ use crate::transport::flow_control;
 use super::super::{select_next_queued_prompt_candidate, KernelAgentService};
 
 impl<'a> KernelAgentService<'a> {
+    /// A workflow node, or a prompt a leased workflow turn runs on this agent, needs a run with
+    /// the workflow tools (and a fresh context when its node asks for one).
+    pub(crate) fn queued_prompt_is_workflow_turn(
+        &mut self,
+        session_id: &str,
+        agent_id: &str,
+        prompt: &PromptQueueItem,
+    ) -> bool {
+        crate::app::workflow_runtime::is_workflow_prompt_source(prompt.source_attachment_id())
+            || crate::app::RemoteLeaseRuntime::new(self.app).is_leased_workflow_backing_prompt(
+                session_id,
+                agent_id,
+                prompt.id(),
+            )
+    }
+
     // Activation may synchronously finish a provider launch. A runtime queue
     // promoter owns dispatch separately, so this step never consumes the head.
     pub(crate) fn prepare_queued_prompt_provider_run(
@@ -45,16 +61,8 @@ impl<'a> KernelAgentService<'a> {
                 return Ok(None);
             };
             let target_agent_id = peeked.target_agent_id().to_string();
-            let source_is_workflow = crate::app::workflow_runtime::is_workflow_prompt_source(
-                peeked.source_attachment_id(),
-            );
-            let leased_workflow_prompt = !source_is_workflow
-                && crate::app::RemoteLeaseRuntime::new(self.app).is_leased_workflow_backing_prompt(
-                    session_id,
-                    &target_agent_id,
-                    peeked.id(),
-                );
-            let is_workflow_prompt = source_is_workflow || leased_workflow_prompt;
+            let is_workflow_prompt =
+                self.queued_prompt_is_workflow_turn(session_id, &target_agent_id, &peeked);
             let provider_run_id = match self.prepare_queued_prompt_provider_run(
                 session_id,
                 &target_agent_id,

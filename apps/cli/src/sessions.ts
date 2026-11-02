@@ -25,7 +25,7 @@ export const CHARIOX_ASCII_ART = [
   " \\____|_| |_/_/   \\_\\_| \\_\\___\\___/_/\\_\\",
 ].join("\n")
 
-export const SESSION_NEW_HELP_TEXT = "Use arrows to choose a project, provider, model, variant, worktree, theme, or remote inventory. Enter on a project opens its sessions. E renames, R restores, A archives, and D deletes the selected project or session."
+export const SESSION_NEW_HELP_TEXT = "Use arrows to choose a project, provider, model, variant, worktree, theme, or remote inventory. Enter on a project opens its sessions. E renames, R restores, A archives, and D deletes the selected project or session. Type / for commands, such as /credential vault unlock."
 export const SESSION_NEW_PLACEHOLDER = "Use the waiting room arrows to choose your next session"
 export const SESSION_NEW_FOOTER_HINT = `Waiting room • arrows move • Enter confirms • E rename • A archive • D delete • R restore • ${HOTKEY_TOGGLE_LABEL} hotkeys`
 export const SESSION_NEW_ERROR_HINT = "No session attached. Use the waiting room to create or join a session."

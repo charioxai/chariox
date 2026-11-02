@@ -194,6 +194,52 @@ fn claude_permission_recent_appends_every_drain_as_received() {
 }
 
 #[test]
+fn the_models_own_reply_on_the_recent_frame_is_not_a_provider_failure() {
+    let root = std::env::temp_dir().join(format!(
+        "chariox-claude-recent-reply-test-{}-{}",
+        std::process::id(),
+        timestamp_millis()
+    ));
+    fs::create_dir_all(&root).expect("test root should be created");
+    let context_file = root.join("context.json");
+    let events_file = root.join("events.jsonl");
+    let run = startup_readiness_run(
+        "session",
+        "agent",
+        "run-recent-reply",
+        &context_file,
+        &events_file,
+        "true".into(),
+    );
+    let recent = claude_permission_recent_file(&context_file.display().to_string()).unwrap();
+
+    // The reply of the previous turn, drawn on the terminal with dropped
+    // characters, merely talks about limits.
+    fs::write(
+        &recent,
+        "apshot was t o large to read n full, the page said it was rate limited\n",
+    )
+    .unwrap();
+    assert!(claude_native_recent_terminal_failure(&run).is_none());
+
+    fs::write(&recent, "The page said Credit balance is too low.\n").unwrap();
+    assert!(claude_native_recent_terminal_failure(&run).is_none());
+
+    fs::write(&recent, "API Error: 400 Credit balance is too low\n").unwrap();
+    assert!(claude_native_recent_terminal_failure(&run).is_some());
+
+    // The provider's own limit dialog is still a failure.
+    fs::write(
+        &recent,
+        "You've hit your session limit · resets 3:50am (Europe/Madrid)\n",
+    )
+    .unwrap();
+    assert!(claude_native_recent_terminal_failure(&run)
+        .is_some_and(|failure| failure.contains("substitutable resource limit")));
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn claude_permission_detection_bridges_every_permission_request() {
     let mcp_permission = serde_json::json!({
         "hook_event_name": "PermissionRequest",
@@ -1101,6 +1147,120 @@ fn assert_claude_stop_stays_active_until_deferred_transcript_drain_finishes(
         .collect::<Vec<_>>();
     assert!(String::from_utf8_lossy(&output).contains("late final response"));
 
+    let _ = fs::remove_dir_all(root);
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11: Claude fires SessionEnd when a stop from Health
+// ends its process tree. That is not the turn finishing: the exit settles it.
+#[test]
+fn session_end_after_a_stop_from_health_does_not_complete_the_turn() {
+    let worktree = crate::test_support::TestWorktree::new("claude-native-session-end-stop");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon should bootstrap");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-claude-session-end-stop",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let stub = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "claude-code",
+                "default",
+                "test",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .expect("a process to stop should launch");
+    let root = std::env::temp_dir().join(format!(
+        "chariox-claude-session-end-stop-test-{}-{}",
+        std::process::id(),
+        timestamp_millis()
+    ));
+    fs::create_dir_all(&root).expect("test root should be created");
+    let context_file = root.join("hidden-context.txt");
+    let events_file = root.join("events.jsonl");
+    fs::write(&context_file, "").expect("context file should be created");
+    fs::write(
+        &events_file,
+        serde_json::json!({ "hook_event_name": "SessionEnd" }).to_string(),
+    )
+    .expect("SessionEnd event should be written");
+    let request = crate::provider::LaunchProviderRequest::new(
+        session.id(),
+        "claude",
+        "claude-headless",
+        "default",
+        "claude-sonnet",
+    )
+    .with_agent_id(agent.id())
+    .with_client_interface(crate::provider::ProviderClientInterface::NativeTui);
+    let mut run = RuntimeProviderRun::new(
+        stub.id(),
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+            process_label: "test-claude-session-end-stop".to_string(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: std::collections::BTreeMap::from([
+                (
+                    "CHARIOX_CLAUDE_NATIVE_CONTEXT".to_string(),
+                    context_file.display().to_string(),
+                ),
+                (
+                    "CHARIOX_CLAUDE_NATIVE_EVENTS".to_string(),
+                    events_file.display().to_string(),
+                ),
+            ]),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: None,
+        },
+    );
+    run.mark_running();
+    app.providers_mut().insert_run_for_test(run.clone());
+    let prompt = match app
+        .record_native_prompt_started_with_attachments(
+            session.id(),
+            attachment.id(),
+            attachment.id(),
+            agent.id(),
+            "run a command",
+            Vec::new(),
+        )
+        .expect("native prompt should be recorded")
+    {
+        crate::session::PromptSubmissionOutcome::Started { prompt } => prompt,
+        other => panic!("unexpected prompt outcome: {other:?}"),
+    };
+    write_claude_native_marker(
+        &context_file.display().to_string(),
+        &format!("injected:{}", prompt.id()),
+    );
+    crate::runtime::process_resources::stop_for_key(run.id(), None)
+        .expect("the run's process tree should stop from Health");
+
+    let outcome = ProviderOutputClaudeNativeBridge::new(&mut app)
+        .process(session.id(), run.id(), &run, None)
+        .expect("SessionEnd event should be processed");
+
+    assert!(
+        !outcome.needs_deferred_transcript_drain,
+        "the exit settles a stopped turn, not Claude's SessionEnd"
+    );
+    assert!(app
+        .prompt_owner_active_prompt_for_agent(session.id(), agent.id())
+        .expect("active prompt should load")
+        .is_some());
     let _ = fs::remove_dir_all(root);
 }
 
@@ -2378,6 +2538,170 @@ fn claude_native_dispatch_marker_extracts_steering_identity() {
     assert_eq!(claude_native_dispatch_prompt_id("startup-wait:1234"), None);
 }
 
+/// A headless run whose composer is idle and whose prompt `prompt-queued` was typed long ago
+/// but never acknowledged: the shape that makes the kernel type the prompt again.
+fn unacknowledged_prompt_after_a_stop(
+    queued_in_claude: bool,
+) -> (
+    DaemonApp,
+    RuntimeProviderRun,
+    KernelPromptDispatch,
+    String,
+    PathBuf,
+) {
+    let app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon should bootstrap");
+    let root = std::env::temp_dir().join(format!(
+        "chariox-claude-queued-retry-test-{}-{}-{queued_in_claude}",
+        std::process::id(),
+        timestamp_millis()
+    ));
+    fs::create_dir_all(&root).expect("test root should be created");
+    let context_file = root.join("hidden-context.txt");
+    fs::write(&context_file, "").expect("context file should be created");
+    fs::write(root.join("events.jsonl"), "").expect("events file should be created");
+    fs::write(
+        root.join("permission-recent.txt"),
+        "Claude Code ❯ ⏵⏵ mode (shift+tab to cycle)",
+    )
+    .expect("composer fixture should be written");
+    let context_file = context_file.display().to_string();
+    let request = crate::provider::LaunchProviderRequest::new(
+        "session-1",
+        "claude",
+        "claude-headless",
+        "default",
+        "claude-sonnet",
+    )
+    .with_agent_id("agent-1")
+    .with_client_interface(crate::provider::ProviderClientInterface::NativeTui);
+    let run = RuntimeProviderRun::new(
+        "provider-run-1",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+            process_label: "test-claude-queued-retry".to_string(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: std::collections::BTreeMap::from([
+                (
+                    "CHARIOX_CLAUDE_NATIVE_CONTEXT".to_string(),
+                    context_file.clone(),
+                ),
+                (
+                    "CHARIOX_CLAUDE_NATIVE_EVENTS".to_string(),
+                    root.join("events.jsonl").display().to_string(),
+                ),
+            ]),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: None,
+        },
+    );
+    write_claude_native_marker(&context_file, "injected:prompt-queued");
+    // The retry record as the injection left it, minutes ago; the flag is written like the
+    // transcript pass writes it.
+    let retry_path = permission::claude_headless_submit_retry_path(&context_file)
+        .expect("the retry record has a path");
+    fs::write(
+        retry_path,
+        serde_json::json!({
+            "prompt_id": "prompt-queued",
+            "count": 1,
+            "last_attempt_ms": 1,
+            "visible_prompt": "ok",
+            "queued_in_claude": queued_in_claude,
+        })
+        .to_string(),
+    )
+    .expect("retry record should be written");
+    let dispatch = KernelPromptDispatch {
+        session_id: "session-1".to_string(),
+        provider_run_id: run.id().to_string(),
+        agent_id: "agent-1".to_string(),
+        prompt_id: "prompt-queued".to_string(),
+        target_active_prompt_id: None,
+        source_attachment_id: "attachment-1".to_string(),
+        prompt: "ok".to_string(),
+        hidden_system_context: String::new(),
+        attachments: Vec::new(),
+        prompt_origin: crate::session::PromptOrigin::Chariox,
+        external_provider: None,
+        external_provider_session_id: None,
+        external_provider_turn_id: None,
+        steering: false,
+    };
+    (app, run, dispatch, context_file, root)
+}
+
+#[test]
+fn a_prompt_claude_has_queued_behind_its_running_turn_is_not_typed_again() {
+    let (mut app, run, dispatch, context_file, root) = unacknowledged_prompt_after_a_stop(true);
+    let attempt = ProviderOutputClaudeNativeBridge::new(&mut app).process_prompt_dispatch_attempt(
+        "session-1",
+        run.id(),
+        &run,
+        &dispatch,
+        &no_context_handoff,
+    );
+    assert_eq!(
+        attempt.expect("a queued prompt only waits"),
+        ClaudeNativeDispatchAttempt::AwaitingInjection
+    );
+    assert_eq!(
+        claude_native_marker(&context_file).as_deref(),
+        Some("injected:prompt-queued"),
+        "the retry must not type the prompt a second time"
+    );
+    assert_eq!(read_claude_headless_submit_retry(&context_file).count, 1);
+    assert!(claude_headless_prompt_queued_behind_running_turn(
+        &run,
+        "prompt-queued"
+    ));
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn an_idle_composer_still_retypes_a_prompt_claude_never_received() {
+    let (mut app, run, dispatch, context_file, root) = unacknowledged_prompt_after_a_stop(false);
+    let attempt = ProviderOutputClaudeNativeBridge::new(&mut app).process_prompt_dispatch_attempt(
+        "session-1",
+        run.id(),
+        &run,
+        &dispatch,
+        &no_context_handoff,
+    );
+    assert!(
+        attempt.is_err()
+            || claude_native_marker(&context_file)
+                .as_deref()
+                .is_some_and(|marker| marker.starts_with("submit-wait:")),
+        "without an enqueue record the retry types the prompt again"
+    );
+    assert!(!claude_headless_prompt_queued_behind_running_turn(
+        &run,
+        "prompt-queued"
+    ));
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn the_enqueue_record_of_the_injected_prompt_marks_it_queued_in_claude() {
+    let (_app, run, _dispatch, context_file, root) = unacknowledged_prompt_after_a_stop(false);
+    record_claude_headless_enqueue(&context_file, &["a different prompt".to_string()]);
+    assert!(!claude_headless_prompt_queued_behind_running_turn(
+        &run,
+        "prompt-queued"
+    ));
+    record_claude_headless_enqueue(&context_file, &["ok".to_string()]);
+    assert!(claude_headless_prompt_queued_behind_running_turn(
+        &run,
+        "prompt-queued"
+    ));
+    let _ = fs::remove_dir_all(root);
+}
+
 #[test]
 fn claude_headless_steering_enqueue_acknowledges_exact_injected_prompt() {
     let root = std::env::temp_dir().join(format!(
@@ -2549,6 +2873,63 @@ fn claude_transcript_result_keeps_the_tool_name_and_input_of_its_call() {
     assert_eq!(payload["tool"], "Bash");
     assert_eq!(payload["input"]["command"], "pwd");
     assert_eq!(payload["status"], "completed");
+    let _ = fs::remove_dir_all(dir);
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11: after a stop from Health Claude repairs the dangling call on resume with a
+// result of its own; that is no tool output for the person to read.
+#[test]
+fn claude_resume_repair_of_an_interrupted_call_is_not_a_tool_result() {
+    let dir = std::env::temp_dir().join(format!(
+        "chariox-claude-transcript-repair-test-{}",
+        std::process::id()
+    ));
+    let _ = fs::create_dir_all(&dir);
+    let transcript = dir.join("session.jsonl").display().to_string();
+    let repair = serde_json::json!({
+        "type": "user", "uuid": "user-repair",
+        "message": { "role": "user", "content": [
+            { "type": "tool_result", "tool_use_id": "toolu_gone", "is_error": true,
+              "content": "[Tool call interrupted: the session ended before this call's result was recorded, so its outcome is unknown. Check whether it took effect before relying on it or running it again.]" }
+        ] }
+    });
+    fs::write(&transcript, format!("{repair}\n")).expect("repair should write");
+    let drain = drain_claude_transcript_file(&transcript, &mut ClaudeTranscriptCursor::default());
+
+    assert!(drain.chunks.is_empty(), "{:?}", drain.chunks);
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn claude_transcript_result_with_an_image_block_carries_the_image_not_its_base64_text() {
+    let dir = std::env::temp_dir().join(format!(
+        "chariox-claude-transcript-result-image-test-{}",
+        std::process::id()
+    ));
+    let _ = fs::create_dir_all(&dir);
+    let transcript = dir.join("session.jsonl").display().to_string();
+    let result = serde_json::json!({
+        "type": "user", "uuid": "user-1",
+        "message": { "role": "user", "content": [
+            { "type": "tool_result", "tool_use_id": "toolu_1", "content": [
+                { "type": "text", "text": "chart.png" },
+                { "type": "image", "source": { "type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo=" } },
+                { "type": "image", "source": { "type": "base64", "media_type": "image/svg+xml", "data": "PHN2Zz4=" } }
+            ] }
+        ] }
+    });
+    fs::write(&transcript, format!("{result}\n")).expect("result should write");
+    let mut cursor = ClaudeTranscriptCursor::default();
+    let drain = drain_claude_transcript_file(&transcript, &mut cursor);
+
+    assert_eq!(drain.chunks.len(), 1);
+    let payload: Value = serde_json::from_str(&drain.chunks[0].text).expect("result is JSON");
+    assert_eq!(payload["output"], "chart.png");
+    assert_eq!(
+        payload["images"],
+        serde_json::json!(["data:image/png;base64,iVBORw0KGgo="])
+    );
+    assert!(payload.get("images_omitted").is_none());
     let _ = fs::remove_dir_all(dir);
 }
 

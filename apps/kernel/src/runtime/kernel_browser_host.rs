@@ -26,6 +26,8 @@ pub(crate) struct KernelBrowserHost {
     root: PathBuf,
     /// Counts ownership changes, taken under the actor lock, so the browser host can order their input retirements.
     authority_epoch: Arc<AtomicU64>,
+    web_bot_auth_revision: Arc<AtomicU64>,
+    terminal_leases: terminal_lease::TerminalLeases,
 }
 #[derive(Default)]
 struct HostState {
@@ -39,9 +41,12 @@ struct HostState {
     access: UserDomainAccess,
     actors: BTreeMap<String, Arc<Mutex<KernelBrowserActors>>>,
     loaded: BTreeSet<(String, String, KernelBrowserCapability)>,
+    download_sessions: BTreeMap<String, BTreeSet<String>>,
     expiry_wake: Option<Arc<tokio::sync::Notify>>,
 }
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub(crate) enum KernelBrowserCapability {
     Browser,
     Computer,
@@ -135,6 +140,8 @@ impl KernelBrowserHost {
             inner: Arc::new(Mutex::new(HostState::default())),
             root: root.join("kernel-browser"),
             authority_epoch: Arc::default(),
+            web_bot_auth_revision: Arc::default(),
+            terminal_leases: Arc::default(),
         }
     }
     // MD-DISPLAY-04: queued credits wait asynchronously, away from the
@@ -151,8 +158,77 @@ impl KernelBrowserHost {
             .or_insert_with(|| Arc::new(super::kernel_browser_display_gate::DisplayGate::default()))
             .clone()
     }
+    pub(crate) fn cleanup_session_downloads(&self, session: &str) -> Result<(), String> {
+        let backends: Vec<_> = {
+            let state = self
+                .inner
+                .lock()
+                .map_err(|_| "browser host lock poisoned")?;
+            state
+                .download_sessions
+                .get(session)
+                .into_iter()
+                .flatten()
+                .filter_map(|user| state.browsers.get(user).cloned())
+                .collect()
+        };
+        for backend in backends {
+            let mut backend = backend
+                .lock()
+                .map_err(|_| "browser backend lock poisoned")?;
+            if !backend.host_is_live()? {
+                // The controller retires its stopped predecessor's artifacts without launching Chrome.
+                backend.start()?;
+            }
+            backend
+                .host_request_classified(
+                    "host.downloads.cleanup",
+                    serde_json::json!({"session_id": session}),
+                )
+                .map_err(|error| error.to_string())?;
+        }
+        self.inner
+            .lock()
+            .map_err(|_| "browser host lock poisoned")?
+            .download_sessions
+            .remove(session);
+        Ok(())
+    }
+
     pub(crate) fn profile_root(&self, user: &str) -> PathBuf {
         self.root.join(Self::profile_key(user))
+    }
+    pub(crate) fn update_web_bot_auth_policy(
+        &self,
+        projects: &[String],
+        reset: bool,
+    ) -> Result<(), String> {
+        let revision = self.web_bot_auth_revision.fetch_add(1, Ordering::SeqCst) + 1;
+        let browsers = self
+            .inner
+            .lock()
+            .map_err(|_| "browser host lock poisoned")?
+            .browsers
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        for browser in browsers {
+            let mut backend = browser
+                .lock()
+                .map_err(|_| "browser operation lock poisoned")?;
+            if backend.health()?.state
+                == super::browser_controller_process::BrowserControllerProcessState::Ready
+            {
+                backend.host_request(
+                    "host.web_bot_auth_policy",
+                    serde_json::json!({"projects": projects, "reset": reset, "revision": revision}),
+                )?;
+            }
+        }
+        Ok(())
+    }
+    pub(crate) fn web_bot_auth_revision(&self) -> u64 {
+        self.web_bot_auth_revision.load(Ordering::SeqCst)
     }
     pub(crate) fn profile_key(user: &str) -> String {
         format!("{:x}", Sha256::digest(user.as_bytes()))
@@ -215,6 +291,29 @@ impl KernelBrowserHost {
         let backend = self.inner.lock().ok()?.browsers.get(user)?.clone();
         let backend = backend.lock().ok()?;
         backend.direct_frames()
+    }
+
+    pub(crate) fn update_protection_if_running(
+        &self,
+        user: &str,
+        policy: Value,
+    ) -> Result<(), String> {
+        let backend = self
+            .inner
+            .lock()
+            .map_err(|_| "MD-2: browser host lock poisoned")?
+            .browsers
+            .get(user)
+            .cloned();
+        if let Some(backend) = backend {
+            let mut backend = backend.lock().map_err(|_| "MD-2: browser lock poisoned")?;
+            if backend.host_is_live()? {
+                backend
+                    .protect_host(policy)
+                    .map_err(|_| "MD-5: display audience update failed")?;
+            }
+        }
+        Ok(())
     }
     fn backend(
         &self,
@@ -443,7 +542,25 @@ impl KernelBrowserHost {
         crate::transport::kernel_browser_display::slow("rust_backend_queue", &op_label, queued);
         self.require_running()?;
         self.check_admission(admission)?;
+        if let Some(revision) = params["_web_bot_auth"]["policy_revision"].as_u64() {
+            if revision != self.web_bot_auth_revision() {
+                return Err("Web Bot Auth policy changed; retry the browser operation".into());
+            }
+        }
         self.scope_browser_request(admission, method, &params)?;
+        if method == "host.browser"
+            && matches!(params["op"].as_str(), Some("open" | "navigate" | "input"))
+        {
+            if let Some(session) = params["_download_session"].as_str() {
+                self.inner
+                    .lock()
+                    .map_err(|_| "browser host lock poisoned")?
+                    .download_sessions
+                    .entry(session.into())
+                    .or_default()
+                    .insert(user.into());
+            }
+        }
         if method == "host.browser" && params["op"] == "stop" {
             let model = self.actor_model(user)?;
             let (id, cancellation) = {
@@ -602,7 +719,9 @@ impl KernelBrowserHost {
                     params["op"].as_str(),
                     Some("open" | "close" | "navigate" | "resize" | "input")
                 ));
-        if method == "host.browser" && params["op"] == "dialog" {
+        if method == "host.browser"
+            && matches!(params["op"].as_str(), Some("dialog" | "cancel_download"))
+        {
             let ledger = model.lock().map_err(|_| "MD-3: actor lock poisoned")?;
             if admission.is_some_and(|admission| admission.revoked_in_actor_lock()) {
                 return Err("MP-11: not_granted: browser authority revoked".into());
@@ -714,10 +833,14 @@ impl KernelBrowserHost {
                 params["op"].as_str(),
                 Some("note_selection" | "pointer_cursor")
             );
+        // Dropping a display stream releases its compositor on the controller, which can take seconds
+        // (the Browser view does it right after a navigation paints): input must not queue behind it.
+        let display_release = method == "host.browser" && params["op"] == "unsubscribe";
         let mut result = if display
             || mirror_credit
             || display_subscribe
             || note
+            || display_release
             || method == "browser.app.calls"
             || state
             || (method == "host.browser" && params["op"] == "input")
@@ -764,7 +887,8 @@ impl KernelBrowserHost {
         // retained agent's projection; scoped inventory cannot remove another
         // actor's tabs or input ownership from the shared ledger.
         // Creation evidence belongs to the private controller seam. Never expose
-        // it in the serialized client result or use it to widen capability grants.
+        // it in the serialized client result. It extends a grant only to the agent whose
+        // admitted input opened the Tab (below), never to the agent that happens to read it.
         let tab_creation_actions = result
             .as_mut()
             .ok()
@@ -774,9 +898,10 @@ impl KernelBrowserHost {
                 state.remove("_tab_creation_actions")
             })
             .unwrap_or(Value::Null);
+        let mut opened_by_agents = Vec::new();
         if let Ok(state) = &mut result {
             let mut ledger = model.lock().map_err(|_| "MD-3: actor lock poisoned")?;
-            ledger.reconcile_inventory(state, &tab_creation_actions)?;
+            opened_by_agents = ledger.reconcile_inventory(state, &tab_creation_actions)?;
             if method == "host.browser" && request_params["op"] == "dialog" {
                 if let Some(tab) = request_params["tab_id"].as_str() {
                     ledger.dialog_answered(&browser_actor(admission, &request_params), tab);
@@ -821,6 +946,19 @@ impl KernelBrowserHost {
             }
             ledger.project_tabs(payload);
         }
+        if result.is_ok() && !opened_by_agents.is_empty() {
+            let mut state = self
+                .inner
+                .lock()
+                .map_err(|_| "MP-11: grant lock unavailable")?;
+            for (tab, actor) in &opened_by_agents {
+                if let Some(agent) = actor.actor_id.strip_prefix("agent:") {
+                    // A popup opened by an agent's click belongs to that agent like a Tab it opened itself.
+                    // An agent whose grant has ended has nothing to extend.
+                    let _ = state.access.opened_tab(user, agent, tab);
+                }
+            }
+        }
         if let (Some(admission), Ok(payload)) = (admission, &mut result) {
             if let Some(agent) = admission.agent.as_deref() {
                 let mut state = self
@@ -837,7 +975,7 @@ impl KernelBrowserHost {
                 }
                 if state.access.focused(user) != Some(agent) {
                     let grant = state.access.grant(user, agent)?;
-                    for field in ["tabs", "dialogs"] {
+                    for field in ["tabs", "dialogs", "downloads"] {
                         if let Some(tabs) = payload.get_mut(field).and_then(Value::as_array_mut) {
                             tabs.retain(|tab| {
                                 tab["tab_id"].as_str().is_some_and(|id| {
@@ -1163,6 +1301,56 @@ mod tests {
     use super::*;
 
     #[test]
+    fn web_bot_auth_policy_change_rejects_material_prepared_before_a_browser_started() {
+        let root = std::env::temp_dir().join(format!("wba-policy-{:032x}", rand::random::<u128>()));
+        let host = KernelBrowserHost::new(root.clone());
+        let revision = host.web_bot_auth_revision();
+        host.update_web_bot_auth_policy(&[], false).unwrap();
+        for material in [
+            serde_json::json!({"policy_revision": revision}),
+            serde_json::json!({"policy_revision": revision, "disabled": true}),
+        ] {
+            let error = host
+                .protected_request(
+                    "owner",
+                    None,
+                    "host.browser",
+                    serde_json::json!({"op": "open", "url": "https://example.com",
+                        "_web_bot_auth": material}),
+                    Value::Null,
+                )
+                .unwrap_err();
+            assert!(error.to_string().contains("Web Bot Auth policy changed"));
+        }
+        drop(host);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// A hot reload keeps the user-domain tools a running agent loaded, for
+    /// its live grant, though the user has since focused another agent (who
+    /// alone could load them again).
+    #[cfg(unix)]
+    #[test]
+    fn a_hot_reload_keeps_the_user_domain_tools_an_agent_loaded() {
+        use KernelBrowserCapability::{Browser, Computer};
+        let old = KernelBrowserHost::new(PathBuf::from("/unused/hot-reload-loaded-old"));
+        old.set_focus("owner", Some("agent"));
+        old.load_for("owner", "agent", Computer).unwrap();
+        old.load_for("owner", "agent", Browser).unwrap();
+        old.set_focus("owner", Some("other"));
+        assert!(old.has_grant("owner", "agent"));
+        let handover = serde_json::to_value(old.hand_over_access()).unwrap();
+
+        let new = KernelBrowserHost::new(PathBuf::from("/unused/hot-reload-loaded-new"));
+        new.adopt_access(serde_json::from_value(handover).unwrap());
+        for capability in [Computer, Browser] {
+            assert!(new.is_loaded_for("owner", "agent", capability));
+            assert!(!new.is_loaded_for("owner", "other", capability));
+        }
+        assert!(new.load_for("owner", "agent", Computer).is_err());
+    }
+
+    #[test]
     fn mp08_mp10_mp11_a07_owner_handoff_keeps_authenticated_actor_after_takeover() {
         let mut model = KernelBrowserActors::default();
         model.reconcile(&serde_json::json!({"generation":1,"tabs":[{"tab_id":"host-tab-a","document_id":"doc-a"}]})).unwrap();
@@ -1450,6 +1638,8 @@ mod dialog_tests;
 mod native_input_tests;
 
 mod access;
+mod terminal_lease;
+pub(crate) use terminal_lease::TerminalLease;
 #[cfg(test)]
 mod tabs_tests;
 

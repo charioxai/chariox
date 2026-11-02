@@ -28,6 +28,36 @@ resize and window inventory run through its worker. Without the runtime display
 libraries those operations are unavailable; ordinary kernel and DOM browser
 operations remain available. Featureless builds refuse every native resize.
 
+MP-08 / MP-09 / MP-10 / MP-11: a Linux kernel running as root lazily creates
+and validates the locked system account `chariox-browser` using `useradd`.
+Chromium, Xvfb, the desktop buses and graphical applications run as that user,
+with supplementary groups cleared and Chromium's sandbox enabled. The kernel
+keeps control, Vault handling and capture workers under its own identity. CDP
+uses inherited private pipes; it never opens a debugging TCP port.
+Root desktop helpers disable Python user-site loading because their shared
+browser home is writable by the unprivileged account.
+
+The privileged mount-construction workspace stays in the kernel's private
+profile-state directory, mode 0700 owned by root. It is never constructed under
+the browser-owned display runtime; that runtime is only bound as `/tmp` after
+the private root and policy mount are ready. Stop removes the construction
+workspace after the owned process tree settles.
+
+Root browser files live under `/var/lib/chariox-browser/<profile-root-hash>/`;
+the profile and browser home are private to that account. The root kernel's home
+and Vault remain private. Uploads expose only validated workspace copies through
+read-only group access; the quota ledger stays root-only. Chromium writes to an
+owned incoming download directory, and the controller moves completed files to
+the kernel user's existing browser-downloads path. Stop retires incoming files,
+upload leases and the owned desktop; the browser profile persists. Non-root
+Linux kernels and macOS retain their existing paths and identities.
+
+The root path requires `getent`, `useradd`, `setpriv` and usable private mount
+namespaces. A host that cannot provision or use the account returns
+`browser_user_unavailable` with recovery instructions. Setup's pinned Chromium
+and AppArmor profiles remain required on hosts restricting unprivileged user
+namespaces; disabling Chromium's sandbox is never a recovery step.
+
 OpenH264, x264 and libavcodec/libavutil are also loaded at runtime. The codec uses
 public `AVCodecContext`, `AVFrame`, `AVPacket` and `AVHWFramesContext` fields:
 FFmpeg majors 58, 59, 60 and 61 do **not** share those struct layouts. Only the
@@ -141,6 +171,15 @@ switch; the kernel passes the resolved value to the browser host. The
 normal host browser still requires a non-root Unix user and sandbox-capable
 Chromium. Its existing per-user profile, focused runtime MCP tools, tab registry,
 input cancellation and Vault observation barrier remain authoritative.
+
+MP-08/MP-10/MP-11 browser regression tests require the software codecs, including
+OpenH264. Install `apps/kernel/slice-linux-docker/docker/browser-test-requirements.txt`
+in a disposable virtual environment and set `CHARIOX_BROWSER_DISPLAY_PYTHON` to
+its absolute `bin/python` path when running the Node browser suites. PyAV 16.1.0
+wheels omit `libopenh264`; those cannot validate the explicitly selected backend.
+The encoder must report refusal rather than silently substitute x264.
+The installed-controller regression resolves Chromium through the product's
+executable discovery, including `CHARIOX_KERNEL_BROWSER_EXECUTABLE` overrides.
 
 The experimental software video adapter needs Python 3 and operator-installed
 PyAV with `libvpx-vp9`. `CHARIOX_BROWSER_DISPLAY_PYTHON` may select an absolute
@@ -754,3 +793,71 @@ amd64 ABI probe does not establish arm64 runtime acceptance. No automatic x264
 fallback is introduced. Ordinary/managed host packaging can call this same
 installer; their target-specific library provisioning remains independently
 validated by those installation lanes.
+
+## MP-08 / MP-09 / MP-10 / MP-11: display unsubscribe teardown
+
+Unsubscribe detaches the stream and its last Tab compositor before replying.
+The host retains every detached teardown until it settles and drains those
+teardowns before stopping or replacing Chromium. A teardown failure is reported
+only after owned Chromium cleanup; recovery must not launch a replacement after
+failed helper cleanup. Viewer surface/capture behavior and mirror limits are
+unchanged. No serialized protocol shape changes.
+
+Stream helpers close concurrently. Each child receives EOF, then SIGTERM after
+its grace period, then SIGKILL after a second grace period. Reaping has a final
+2-second bound. Portable encoders use 500 ms per grace period; native capture
+uses 1 second. Exit events end each wait immediately. Active producer/refiner
+work is retired before encoder shutdown, and all close results settle before
+teardown completes. Region capture and encoder shutdown also overlap; the
+window/document lease remains held until both settle.
+
+Required focused scenarios (acceptance area `multidomain-base`):
+
+- `BROWSER07`: through the host unsubscribe request, two helpers that ignore EOF
+  and SIGTERM cannot delay the answer beyond 250 ms. The stream and compositor
+  are detached and cannot resume delivery.
+- `BROWSER08`: host stop waits for both helpers to be reaped; their 500 ms grace
+  periods overlap (combined teardown below 1.8 seconds). Exercise the final
+  deadline and failure reporting without skipping Chromium cleanup.
+- `BROWSER10`: on measured before/after kernels, record DPR1 unsubscribe answer
+  p50/p95 across 20 real display subscriptions, then exercise Browser view
+  close/reopen through the real hosted client and check owned process cleanup
+  after kernel stop. Keep kernel hashes, source heads and evidence outside git.
+
+The first two scenarios are regression checks; they do not establish hosted
+client acceptance or the broader MP-08 / MP-09 / MP-10 / MP-11 parity matrix.
+
+## MP-08 / MP-09 / MP-10 / MP-11: page permission dialogs (BROWSER09)
+
+The kernel browser presents page permission requests in the existing JSON
+`dialogs` list as `kind: "permission"`. The message is the permission name and
+`origin` is the requesting HTTP(S) execution context's origin, read from CDP.
+The ordinary document-bound `dialog` operation answers it: `accept` allows and
+`dismiss` denies. The viewer uses the same dialog and offers Allow/Deny.
+Unanswered requests are denied after 30 seconds. Navigation, context destruction,
+tab close and browser shutdown retire pending requests. Answers cannot revive a
+retired request. Decisions last for that origin and the running browser session;
+they are not saved to the profile, and CDP overrides are reset on reconnect.
+
+CDP's Browser permission setters do not supply a permission-prompt event, and
+Page's JavaScript-dialog events do not include browser permissions. The kernel
+therefore installs a main-world script through `Runtime.addBinding` and
+`Page.addScriptToEvaluateOnNewDocument` before navigating owned tabs. It wraps
+`geolocation.getCurrentPosition` / `watchPosition`,
+`Notification.requestPermission`, `permissions.query` for the covered names,
+and `clipboard.read` / `readText`. Querying permission state never opens a dialog.
+Actual geolocation and clipboard operations still use Chromium's native API
+after the kernel applies an explicit CDP grant; granting geolocation does not
+provide a virtual location or guarantee the machine has a location provider.
+
+Camera, microphone and screen capture always reject with a plain unavailable
+reason, and native CDP defaults deny these permissions too. No virtual devices
+are provided. Clipboard writes keep their native gesture requirements. Other
+APIs (for example MIDI, USB, Bluetooth, serial, local fonts and filesystem
+pickers), service workers and out-of-process iframe targets are not shimmed.
+A popup's script that executes before its controller session attaches is also
+outside the interception coverage. The native defaults for the covered names
+are denied, so such requests cannot silently acquire a grant. Same-process
+frame requests use their own CDP context origin and share the tab dialog list.
+No request or answer protocol shape changes: the permission kind extends the
+existing JSON state value.

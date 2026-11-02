@@ -736,7 +736,7 @@ async function passingWorkspaceLiveSyncGateReport(rootDir) {
     completedAt: "2026-06-13T00:00:01.000Z",
     durationMs: 1000,
     metadata: {
-      deploymentPresets: "hetzner,local,same-host-remote,self-hosted-relay",
+      deploymentPresets: "local,remote-kernel,same-host-remote,self-hosted-relay",
       providers: "codex,opencode",
     },
     scenarios: workspaceLiveSyncRequiredScenarios(),

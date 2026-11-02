@@ -10,11 +10,11 @@ import * as protectedIo from "./slice-data-volume-protected-io.mjs"
 
 export const {
   DATA_ROOT,
-  HETZNER_BYTES_PER_GB,
+  BYTES_PER_GIB,
   MIN_VOLUME_SIZE_GB,
   MAX_VOLUME_SIZE_GB,
   expectedVolumeBytes,
-  selectHetznerVolumeDevice,
+  selectDataVolumeDevice,
   discoverVolumeDevice,
 } = volumeDevice
 export const {
@@ -90,7 +90,7 @@ function assertMountMatches(mount, device, binding, commands) {
   }
   const sourcePath = commands.run("/usr/bin/realpath", ["-e", source])
   const deviceRealPath = commands.run("/usr/bin/realpath", ["-e", device.path])
-  if (sourcePath !== deviceRealPath) fail("mounted data-root source does not match the expected Hetzner Volume")
+  if (sourcePath !== deviceRealPath) fail("mounted data-root source does not match the expected data volume")
   if (binding && binding.filesystemUuid !== device.filesystemUuid) {
     fail("mounted data-root filesystem UUID changed")
   }
@@ -110,17 +110,17 @@ function assertDeviceNotBusy(device, io, commands, mountedAtDataRoot) {
     .map((value) => value.trim())
     .filter(Boolean)
   if (mountpoints.some((value) => !mountedAtDataRoot || value !== DATA_ROOT)) {
-    fail("Hetzner Volume has an unexpected mount or partition use")
+    fail("data volume has an unexpected mount or partition use")
   }
-  if (io.holders(device.majorMinor)) fail("Hetzner Volume is in use by another block device")
+  if (io.holders(device.majorMinor)) fail("data volume is in use by another block device")
   if (mountedAtDataRoot) {
     const filesystemUse = commands.tryRun("/usr/bin/fuser", ["--mount", "--", DATA_ROOT])
-    if (filesystemUse.status === 0) fail("Hetzner Volume filesystem is in use by a process")
-    if (filesystemUse.status !== 1) fail("could not verify that the Hetzner Volume filesystem is unused")
+    if (filesystemUse.status === 0) fail("data volume filesystem is in use by a process")
+    if (filesystemUse.status !== 1) fail("could not verify that the data volume filesystem is unused")
   }
   const inUse = commands.tryRun("/usr/bin/fuser", ["--", device.path])
-  if (inUse.status === 0) fail("Hetzner Volume is in use by a process")
-  if (inUse.status !== 1) fail("could not verify that the Hetzner Volume is unused")
+  if (inUse.status === 0) fail("data volume is in use by a process")
+  if (inUse.status !== 1) fail("could not verify that the data volume is unused")
 }
 
 function readVolumeUuid(commands, devicePath) {
@@ -137,7 +137,7 @@ function mountDataRoot(commands, device, filesystemUuid, waitForUdev = false) {
   const uuidDevice = commands.run("/usr/bin/realpath", ["-e", uuidPath])
   const selectedDevice = commands.run("/usr/bin/realpath", ["-e", device.path])
   if (uuidDevice !== selectedDevice) {
-    fail("filesystem UUID does not resolve to the expected Hetzner Volume")
+    fail("filesystem UUID does not resolve to the expected data volume")
   }
   commands.run("/usr/bin/systemd-mount", [
     "--no-ask-password", "--automount=no", "--fsck=no", "--type=xfs", "--options=pquota", uuidPath, DATA_ROOT,
@@ -179,7 +179,7 @@ export function admitDataVolume({ commands = systemCommands, io = systemIo } = {
   const wantedBytes = expectedVolumeBytes(input.sizeGb)
   let device = volumeDevice.discoverVolumeDevice(commands, input.serial)
   if (device.sizeBytes !== wantedBytes) {
-    fail(`Hetzner Volume block capacity mismatch: expected ${wantedBytes} bytes, observed ${device.sizeBytes}`)
+    fail(`data volume block capacity mismatch: expected ${wantedBytes} bytes, observed ${device.sizeBytes}`)
   }
   const binding = io.readBinding()
   if (binding && (
@@ -197,7 +197,7 @@ export function admitDataVolume({ commands = systemCommands, io = systemIo } = {
       device.filesystemType !== "xfs" || device.filesystemUuid !== binding.filesystemUuid ||
       signatures.length !== 1 || signatures[0] !== "xfs"
     ) {
-      fail("bound Hetzner Volume filesystem identity changed; refusing to format")
+      fail("bound data volume filesystem identity changed; refusing to format")
     }
     if (!mountedAtDataRoot) {
       if (!io.ensureMountpoint()) fail("unmounted Docker data-root contains unbound files")
@@ -205,7 +205,7 @@ export function admitDataVolume({ commands = systemCommands, io = systemIo } = {
     }
   } else {
     if (mountedAtDataRoot || device.filesystemType || device.filesystemUuid || signatures.length !== 0) {
-      fail("unbound Hetzner Volume is not provably blank; refusing to format")
+      fail("unbound data volume is not provably blank; refusing to format")
     }
     assertDeviceNotBusy(device, io, commands, false)
     if (!io.ensureMountpoint()) fail("Docker data-root contains files before initial volume admission")
@@ -221,7 +221,7 @@ export function admitDataVolume({ commands = systemCommands, io = systemIo } = {
   }
   device = volumeDevice.discoverVolumeDevice(commands, input.serial)
   if (device.sizeBytes !== wantedBytes) {
-    fail(`Hetzner Volume block capacity changed during admission: expected ${wantedBytes} bytes, observed ${device.sizeBytes}`)
+    fail(`data volume block capacity changed during admission: expected ${wantedBytes} bytes, observed ${device.sizeBytes}`)
   }
   const verifiedMount = findDataMount(commands)
   const verifiedBinding = binding ?? io.readBinding()
@@ -233,7 +233,7 @@ export function admitDataVolume({ commands = systemCommands, io = systemIo } = {
   io.writeObservation({
     schemaVersion: 1,
     dataVolumeSerial: device.serial,
-    dataVolumeSizeGb: device.sizeBytes / HETZNER_BYTES_PER_GB,
+    dataVolumeSizeGb: device.sizeBytes / BYTES_PER_GIB,
     filesystemUuid: verifiedBinding.filesystemUuid,
     devicePath: device.path,
     majorMinor: device.majorMinor,

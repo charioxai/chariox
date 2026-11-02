@@ -45,11 +45,19 @@ impl KernelRuntimeState {
             .leased_interaction_home_target(session_id, agent_id, None)
             .await?
         {
-            let response = crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
-                &config, ClientTarget { daemon_id: Some(home_kernel_id), daemon_alias: None },
-                RelayPeerRequest::UpdateNativeInteraction { context, interaction_id: interaction_id.into(), login },
-                Duration::from_secs(20),
-            ).await?;
+            // Worker to home: the route the interaction itself was created on.
+            let response = self
+                .send_worker_home_runtime_request(
+                    &config,
+                    &home_kernel_id,
+                    RelayPeerRequest::UpdateNativeInteraction {
+                        context,
+                        interaction_id: interaction_id.into(),
+                        login,
+                    },
+                    Duration::from_secs(20),
+                )
+                .await?;
             return match response {
                 crate::transport::relay_peer::RelayPeerResponse::NativeInteractionUpdated {} => {
                     Ok(())
@@ -238,7 +246,8 @@ impl KernelRuntimeState {
             custom_reply,
             None,
             false,
-        )
+        )?;
+        self.schedule_question_answer_delivery(interaction_id)
     }
 
     pub(super) fn create_terminal_credential_interaction(
@@ -398,7 +407,7 @@ impl KernelRuntimeState {
             )
             .await?;
         self.owned
-            .resolve_terminal_runtime_interaction(
+            .resolve_attributed_terminal_runtime_interaction(
                 session_id,
                 interaction_id,
                 choice_id,
@@ -406,11 +415,42 @@ impl KernelRuntimeState {
                 caller_user_id,
                 authorization.verified,
                 connection_class,
+                self.interaction_answerer.as_ref(),
             )
             .map_err(|error| {
                 self.owned
                     .closed_interaction_error(session_id, interaction_id, error)
-            })
+            })?;
+        self.audit_interaction_answered(session_id, interaction_id, choice_id, connection_class);
+        self.schedule_question_answer_delivery(interaction_id)
+    }
+
+    /// Who closed a decision and through which connection; never the reply text.
+    /// The answer already took effect, so a failed record is logged, not returned.
+    fn audit_interaction_answered(
+        &self,
+        session_id: &str,
+        interaction_id: &str,
+        choice_id: &str,
+        connection_class: Option<crate::local::KernelConnectionClass>,
+    ) {
+        let recorded = self.owned.durable_state_store.append_event(
+            "interaction.answered",
+            Some(interaction_id.into()),
+            serde_json::json!({
+                "session_id": session_id,
+                "choice_id": choice_id,
+                "connection_class": connection_class,
+                "at_ms": crate::session::unix_epoch_ms(),
+            }),
+        );
+        if let Err(error) = recorded {
+            crate::logging::error_with_fields(
+                "runtime.interaction",
+                "answered interaction could not be recorded",
+                serde_json::json!({"error": error.to_string()}),
+            );
+        }
     }
 
     pub(crate) async fn timeout_runtime_interaction(

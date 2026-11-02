@@ -7,6 +7,7 @@ use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::sync::{Arc, Mutex};
 use std::thread;
+mod web_bot_auth;
 
 #[derive(Debug, Default)]
 struct MemoryVaultStore {
@@ -116,6 +117,7 @@ fn credential_handles_do_not_include_internal_vault_metadata() {
         allowed_uses: vec![UserCredentialUse::Browser],
         injection: UserCredentialInjectionConfig::Browser,
         metadata: Some(UserCredentialMetadataConfig {
+            use_binding: None,
             created_by_kind: Some("agent".to_string()),
             created_by_id: Some("agent-1".to_string()),
             session_id: Some("session-1".to_string()),
@@ -652,6 +654,7 @@ fn vault_process_cache_is_scoped_by_backend_path_service_and_key() {
         crate::session::unix_epoch_ms()
     );
     let writer = RuntimeSecretService {
+        vault_use_approval: None,
         credentials: Vec::new(),
         vault_service: service_name.clone(),
         vault_backend: CredentialVaultBackend::ProcessMemory,
@@ -664,6 +667,7 @@ fn vault_process_cache_is_scoped_by_backend_path_service_and_key() {
         .expect("writer should warm its scoped cache");
 
     let reader = RuntimeSecretService {
+        vault_use_approval: None,
         credentials: vec![UserCredentialConfig {
             id: "shared-key".to_string(),
             description: None,
@@ -1260,3 +1264,90 @@ fn app_dev_key_stays_in_the_vault_and_invalid_storage_is_not_replaced() {
         .values()
         .all(|value| value == "invalid-test-value"));
 }
+
+#[test]
+fn a_host_port_entry_matches_the_scheme_default_port_and_only_that_port() {
+    let service = |hosts: &[&str]| {
+        RuntimeSecretService::new(vec![UserCredentialConfig {
+            id: "demo".to_string(),
+            description: None,
+            source: UserCredentialSourceConfig::Env {
+                name: "CHARIOX_TEST_SECRET_UNUSED".to_string(),
+            },
+            allowed_hosts: hosts.iter().map(|host| host.to_string()).collect(),
+            allowed_uses: vec![UserCredentialUse::Http],
+            injection: UserCredentialInjectionConfig::Header {
+                name: "authorization".to_string(),
+                value: "Bearer ${secret}".to_string(),
+            },
+            metadata: None,
+        }])
+    };
+    let allowed = |hosts: &[&str], url: &str| {
+        let service = service(hosts);
+        let credential = service.credential("demo").unwrap();
+        service
+            .ensure_host_allowed(credential, &url::Url::parse(url).unwrap())
+            .is_ok()
+    };
+    // The URL parser drops a scheme's default port; the entry may still name it.
+    assert!(allowed(
+        &["api.example.com:443"],
+        "https://api.example.com/v1"
+    ));
+    assert!(allowed(
+        &["api.example.com:443"],
+        "https://api.example.com:443/v1"
+    ));
+    assert!(allowed(&["localhost:80"], "http://localhost/v1"));
+    assert!(allowed(&["localhost:8080"], "http://localhost:8080/v1"));
+    assert!(allowed(&["api.example.com"], "https://api.example.com/v1"));
+    assert!(allowed(
+        &["api.example.com"],
+        "https://api.example.com:8443/v1"
+    ));
+    // The named port is a restriction, not a spelling.
+    assert!(!allowed(
+        &["api.example.com:443"],
+        "https://api.example.com:8443/v1"
+    ));
+    assert!(!allowed(
+        &["api.example.com:443"],
+        "http://api.example.com/v1"
+    ));
+    assert!(!allowed(&["localhost:80"], "http://localhost:8080/v1"));
+    assert!(!allowed(&["localhost:8080"], "http://localhost/v1"));
+    assert!(!allowed(
+        &["api.example.com:443"],
+        "https://evil.example.net/v1"
+    ));
+}
+
+#[test]
+fn totp_inputs_compute_codes_instead_of_returning_the_seed() {
+    let seed = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
+    let credential: UserCredentialConfig = serde_json::from_value(serde_json::json!({
+        "id":"totp-test", "source":{"type":"vault","key":"totp-test"},
+        "allowed_hosts":["example.com"], "allowed_uses":["browser","pty"],
+        "injection":{"kind":"totp","algorithm":"sha1","digits":8,"period_s":30}
+    }))
+    .expect("TOTP is a supported credential kind");
+    let store = Arc::new(MemoryVaultStore::default());
+    store.set_secret("totp-test", "totp-test", seed).unwrap();
+    let service = RuntimeSecretService::with_vault_store(vec![credential], "totp-test", store);
+    let browser = service
+        .browser_secret_input_for_target_url("totp-test", "https://example.com/login")
+        .unwrap();
+    assert!(
+        browser.len() == 8 && browser.bytes().all(|c| c.is_ascii_digit()),
+        "browser receives only a computed code"
+    );
+    assert!(service.terminal_secret_input("totp-test").unwrap().len() == 8);
+    assert!(service
+        .browser_secret_input_for_target_url("totp-test", "https://other.example/login")
+        .is_err());
+    let handles = serde_json::to_string(&service.list_handles()).unwrap();
+    assert!(!handles.contains(seed) && !handles.contains(&browser));
+}
+
+mod factors;

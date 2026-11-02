@@ -9,7 +9,6 @@ async fn mk03_move_peer_binds_generation_and_refuses_stale_mutations() {
     ));
     let router = Arc::new(CommandRouter::with_interactive_capacity(app.clone(), 4));
     let state = Arc::new(RwLock::new(RelayClientState::default()));
-    let (sender, _priority, _events) = RelayOutgoingSender::channel(8);
     let thumb = crate::runtime::terminal_pairings::public_key_thumbprint;
     let identity = crate::agent_move::AgentMoveIdentity {
         operation_id: "move-peer-probe".into(),
@@ -42,7 +41,6 @@ async fn mk03_move_peer_binds_generation_and_refuses_stale_mutations() {
         let response = send_authenticated_peer_request_for_test(
             &router,
             &state,
-            &sender,
             &temporary_home,
             caller.clone(),
             &home.relay_private_key,
@@ -89,7 +87,6 @@ async fn mk03_move_peer_binds_generation_and_refuses_stale_mutations() {
     let response = send_authenticated_peer_request_for_test(
         &router,
         &state,
-        &sender,
         &temporary_home,
         caller.clone(),
         &home.relay_private_key,
@@ -125,7 +122,6 @@ async fn mk03_move_peer_binds_generation_and_refuses_stale_mutations() {
     let prepared = send_authenticated_peer_request_for_test(
         &router,
         &state,
-        &sender,
         &temporary_home,
         caller.clone(),
         &home.relay_private_key,
@@ -174,7 +170,6 @@ async fn mk03_move_peer_binds_generation_and_refuses_stale_mutations() {
         let response = send_authenticated_peer_request_for_test(
             &router,
             &state,
-            &sender,
             &temporary_home,
             caller.clone(),
             &home.relay_private_key,

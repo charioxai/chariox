@@ -5,16 +5,10 @@ use crate::runtime::process_resources::{
 };
 
 impl KernelRuntimeState {
-    pub(crate) async fn stop_session_processes(
-        &self,
-        session_id: &str,
-        caller: &str,
-        target: ProcessControlTarget,
-    ) -> Result<ProcessControlResult, DaemonError> {
+    fn authorize_process_control(&self, session_id: &str, caller: &str) -> Result<(), DaemonError> {
         self.authorize_current_external_command()?;
         let session = self.owned.session_store.get_session(session_id)?;
-        if session.owner_user_id() != caller
-            && !self.is_legacy_local_terminal_owner(session_id, caller)
+        if !self.acts_for_owner(session_id, caller, session.owner_user_id())
             && !session
                 .collaboration_level_for_user(caller)
                 .is_some_and(|level| level.can_prompt_agent_directly())
@@ -24,6 +18,57 @@ impl KernelRuntimeState {
                 user_id: caller.into(),
             });
         }
+        Ok(())
+    }
+
+    /// Start now: a command waiting for room starts whatever the room; the
+    /// pool's pressure stop stays the safety net.
+    pub(crate) async fn start_session_process_now(
+        &self,
+        session_id: &str,
+        caller: &str,
+        process_id: &str,
+    ) -> Result<(), DaemonError> {
+        self.authorize_process_control(session_id, caller)?;
+        let key = crate::runtime::process_resources::keys_for_session(
+            session_id,
+            &self.owned.provider_store,
+            &self.owned.room_terminals,
+        )
+        .into_iter()
+        .map(|(_, key)| key)
+        .find(|key| {
+            crate::runtime::process_resources::samples_for_key(key)
+                .iter()
+                .any(|row| row.process_id == process_id)
+        })
+        .ok_or_else(|| DaemonError::LocalTransport {
+            operation: "start session process now",
+            message: "the process has ended or is not owned by this session; refresh Health".into(),
+        })?;
+        let process_id = process_id.to_string();
+        tokio::task::spawn_blocking(move || {
+            crate::runtime::process_resources::start_now_for_key(&key, process_id)
+        })
+        .await
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "start session process now",
+            message: error.to_string(),
+        })?
+        .map_err(|message| DaemonError::LocalTransport {
+            operation: "start session process now",
+            message,
+        })?;
+        Ok(())
+    }
+
+    pub(crate) async fn stop_session_processes(
+        &self,
+        session_id: &str,
+        caller: &str,
+        target: ProcessControlTarget,
+    ) -> Result<ProcessControlResult, DaemonError> {
+        self.authorize_process_control(session_id, caller)?;
         let keys = crate::runtime::process_resources::keys_for_session(
             session_id,
             &self.owned.provider_store,
@@ -86,7 +131,15 @@ impl KernelRuntimeState {
                 message,
             })?;
             if let SessionProcessOwner::Agent(agent_id) = owner {
-                self.owned.record_notice_for_agent(session_id, None, Some(&agent_id), self.owned.attachment_store.list_session_attachment_ids(session_id), format!("Process outside end: {} owned process(es) stopped by a session controller.", ids.len()));
+                self.owned.record_notice_for_agent(
+                    session_id,
+                    None,
+                    Some(&agent_id),
+                    self.owned
+                        .attachment_store
+                        .list_session_attachment_ids(session_id),
+                    "Stopped from Machines.".to_string(),
+                );
             }
             stopped.extend(ids);
         }

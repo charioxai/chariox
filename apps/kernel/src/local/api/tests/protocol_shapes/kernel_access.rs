@@ -284,15 +284,18 @@ fn local_kernel_access_protocol_451_has_no_session_scope_or_bearer() {
     };
     let requests = [
         LocalDaemonRequest::RequestKernelAccess(RequestKernelAccessRequest {
-            holder_pid: 42,
+            holder_pid: Some(42),
+            no_wait: false,
             term: Some(crate::local::KernelAccessTerm::Minutes(30)),
         }),
         LocalDaemonRequest::RequestKernelAccess(RequestKernelAccessRequest {
-            holder_pid: 42,
+            holder_pid: Some(42),
+            no_wait: false,
             term: Some(crate::local::KernelAccessTerm::UntilHolderExits),
         }),
         LocalDaemonRequest::RequestKernelAccess(RequestKernelAccessRequest {
-            holder_pid: 42,
+            holder_pid: Some(42),
+            no_wait: false,
             term: None,
         }),
         LocalDaemonRequest::ListKernelAccessGrants(ListKernelAccessGrantsRequest {}),
@@ -550,5 +553,78 @@ fn sudo_presentation_and_authoritative_closure_protocol_538_shape_and_hash() {
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
         "4a8c957ea27a395af0494a6d25ce19333f4eb9804d63991e88b60acef08dbd3b"
+    );
+}
+
+// EXT-21 / EXT-24: a sandboxed requester cannot name a host pid, and status is about one holder.
+#[test]
+fn kernel_access_938_lets_the_kernel_pick_the_holder_own_no_wait_and_report_one_holder() {
+    use crate::local::{
+        GetKernelAccessStatusRequest, KernelAccessHolderState, KernelAccessStatus,
+        KernelAccessStatusReason, RequestKernelAccessRequest,
+    };
+    assert_eq!(
+        serde_json::to_value(LocalDaemonRequest::RequestKernelAccess(
+            RequestKernelAccessRequest {
+                holder_pid: None,
+                term: Some(crate::local::KernelAccessTerm::UntilHolderExits),
+                no_wait: true,
+            }
+        ))
+        .unwrap(),
+        serde_json::json!({"RequestKernelAccess": {"term": "until_holder_exits", "no_wait": true}})
+    );
+    assert_eq!(
+        serde_json::from_value::<LocalDaemonRequest>(
+            serde_json::json!({"RequestKernelAccess": {}})
+        )
+        .unwrap(),
+        LocalDaemonRequest::RequestKernelAccess(RequestKernelAccessRequest {
+            holder_pid: None,
+            term: None,
+            no_wait: false,
+        })
+    );
+    assert_eq!(
+        serde_json::to_value(LocalDaemonRequest::GetKernelAccessStatus(
+            GetKernelAccessStatusRequest {
+                holder_pid: Some(42)
+            }
+        ))
+        .unwrap(),
+        serde_json::json!({"GetKernelAccessStatus": {"holder_pid": 42}})
+    );
+    assert!(
+        serde_json::from_value::<LocalDaemonRequest>(
+            serde_json::json!({"GetKernelAccessStatus": {"grant_id": "g"}})
+        )
+        .is_err(),
+        "status names a holder, nothing else"
+    );
+    let status = LocalDaemonResponse::KernelAccessStatus {
+        status: KernelAccessStatus {
+            state: KernelAccessHolderState::Ended,
+            holder_pid: 42,
+            holder_executable: "/usr/bin/codex".into(),
+            holder_harness: Some(crate::local::KernelAccessProviderHarness::Codex),
+            grant: None,
+            reason: Some(KernelAccessStatusReason {
+                code: "access_refused".into(),
+                message: "the user refused access".into(),
+            }),
+        },
+    };
+    let value = serde_json::to_value(&status).unwrap();
+    assert_eq!(
+        value,
+        serde_json::json!({"KernelAccessStatus": {"status": {
+            "state": "ended", "holder_pid": 42, "holder_executable": "/usr/bin/codex",
+            "holder_harness": "codex",
+            "reason": {"code": "access_refused", "message": "the user refused access"}
+        }}})
+    );
+    assert_eq!(
+        serde_json::from_value::<LocalDaemonResponse>(value).unwrap(),
+        status
     );
 }

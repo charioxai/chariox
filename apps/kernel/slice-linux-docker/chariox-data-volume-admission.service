@@ -1,5 +1,5 @@
 [Unit]
-Description=Chariox dedicated Hetzner data-volume admission
+Description=Chariox dedicated data-volume admission
 After=local-fs.target
 Before=chariox-slice-disk-quota-allocator.service chariox-rootless-docker.service chariox-path1-managed-bootstrap.service chariox-disposable-worker-bootstrap.service
 RequiresMountsFor=/var/lib/chariox-docker/data

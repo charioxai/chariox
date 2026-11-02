@@ -2,6 +2,7 @@
 //! lifetime retains that exact grant until idle, expiry or revocation.
 use super::browser_controller_process::BrowserCancellation;
 use crate::local::{UserDomainGrant, UserDomainNotice, UserDomainResource};
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -12,7 +13,7 @@ pub(crate) const MAX_GRANT_LIFETIME: Duration = Duration::from_secs(24 * 3600);
 const MAX_TRANSFER_RESOURCES: usize = 64;
 
 /// MP-08/MP-11: why a grant exists. Agents can never mint one without a cause.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum GrantCause {
     Focus,
     Prompt(String),
@@ -54,6 +55,31 @@ impl Grant {
     fn live(&self, now: Instant) -> bool {
         self.expires_at.is_none_or(|expires_at| now < expires_at)
     }
+}
+
+/// What a hot reload hands over: each user's focus, the live grants and the
+/// user-domain tools their agents loaded, so agents keep the tools their
+/// providers listed. Resources and subscriptions end with the kernel browser.
+#[cfg(unix)]
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub(crate) struct AccessHandover {
+    focus: BTreeMap<String, String>,
+    grants: Vec<GrantHandover>,
+    pub(crate) loaded: Vec<(
+        String,
+        String,
+        super::kernel_browser_host::KernelBrowserCapability,
+    )>,
+}
+
+#[cfg(unix)]
+#[derive(Debug, Serialize, Deserialize)]
+struct GrantHandover {
+    user: String,
+    agent: String,
+    cause: GrantCause,
+    expires_at_ms: Option<u64>,
+    session: String,
 }
 
 pub(crate) struct GrantRetirement {
@@ -118,6 +144,42 @@ impl UserDomainAccess {
             self.focus.remove(user);
         }
         self.changed(user);
+    }
+    #[cfg(unix)]
+    pub(crate) fn hand_over(&self) -> AccessHandover {
+        let now = Instant::now();
+        AccessHandover {
+            focus: self.focus.clone(),
+            grants: self
+                .grants
+                .iter()
+                .filter(|(_, grant)| grant.live(now))
+                .map(|((user, agent), grant)| GrantHandover {
+                    user: user.clone(),
+                    agent: agent.clone(),
+                    cause: grant.cause.clone(),
+                    expires_at_ms: grant.expires_at_ms,
+                    session: grant.session.clone(),
+                })
+                .collect(),
+            loaded: Vec::new(),
+        }
+    }
+    #[cfg(unix)]
+    pub(crate) fn adopt(&mut self, handover: AccessHandover) {
+        let now_ms = crate::session::unix_epoch_ms();
+        for handed in handover.grants {
+            let lifetime = match handed.expires_at_ms {
+                None => None,
+                Some(at) if at > now_ms => Some(Duration::from_millis(at - now_ms)),
+                Some(_) => continue,
+            };
+            let mut grant = Grant::new(handed.cause, lifetime);
+            grant.session = handed.session;
+            self.changed(&handed.user);
+            self.grants.insert((handed.user, handed.agent), grant);
+        }
+        self.focus = handover.focus;
     }
     pub(crate) fn focused(&self, user: &str) -> Option<&str> {
         self.focus.get(user).map(String::as_str)

@@ -661,12 +661,17 @@ impl KernelRuntimeState {
             .as_ref()
             .and_then(|termination| termination.failure.clone())
             .or(failure);
-        // Every client renders this one entry: the cause, the harness's own
-        // words and what to do next.
+        // Every client renders this calm explanation and recovery.
         let failure_notice = failure.as_ref().map(crate::provider::TurnOutcome::notice);
         project_terminal_failure_chunk(&mut poll_result, failure_notice.as_deref());
         let mut recorded_notice_messages = std::collections::HashSet::new();
         recorded_notice_messages.extend(terminal_failure.iter().cloned());
+        recorded_notice_messages.extend(
+            poll_result
+                .terminal_failure
+                .as_deref()
+                .map(provider_notice_message),
+        );
         recorded_notice_messages.extend(failure_notice);
         for notice in &poll_result.notices {
             let message = provider_notice_message(notice);
@@ -949,14 +954,14 @@ mod tests {
         let notice = provider_prompt_dispatch_failure_notice(&failure);
         assert_eq!(
             crate::provider::provider_turn_failure_reason("claude", &notice, None),
-            "usage or rate limit: You've hit your session limit · resets 10:40pm (Europe/Madrid)"
+            "The provider's usage limit was reached"
         );
         let codex = provider_prompt_dispatch_failure_notice(
             "Codex error [server_overloaded]: Selected model is at capacity.",
         );
         assert_eq!(
             crate::provider::provider_turn_failure_reason("codex", &codex, None),
-            "model at capacity (server_overloaded)"
+            "The provider is at capacity"
         );
     }
 

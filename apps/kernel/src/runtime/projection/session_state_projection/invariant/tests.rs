@@ -689,3 +689,31 @@ fn invariant_diagnostics_retain_a_bounded_sample_under_widespread_drift() {
         snapshot.mismatches.len()
     );
 }
+
+/// MP-08 / MP-09 / MP-10 / MP-11 F6: a worker's leased-agent backing sessions are hidden from the
+/// session list but are real sessions, so their agents are not orphans.
+#[test]
+fn projection_invariant_health_accepts_the_agents_of_hidden_sessions() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace", "worktree").with_hidden(true))
+        .expect("hidden session should be created");
+    let session = crate::app::KernelSessionReadService::new(&app)
+        .session_snapshot(session.id())
+        .expect("session snapshot should load");
+    assert!(session.is_hidden());
+    let session_store = SessionStateProjectionStore::default();
+    let agent_store = AgentRuntimeProjectionStore::default();
+    session_store.update(session.clone());
+    session_store.update_list(vec![session.clone()]);
+    agent_store.update_session(&session);
+
+    let snapshot =
+        session_store.invariant_snapshot(&agent_store, &[agent], &BTreeMap::new(), &Vec::new());
+
+    assert!(
+        snapshot.mismatches.is_empty(),
+        "a hidden session's agent is healthy: {:?}",
+        snapshot.mismatches
+    );
+}

@@ -13,17 +13,17 @@ import { assertBinary, terminateChild, waitForTcpPort } from './lib/drill-runtim
 import { joinRemoteHomeExtensionCollaborator } from './lib/remote-home-extension-collab-helpers.mjs'
 import { createHomeExtensionFixtures } from './lib/home-extension-fixtures.mjs'
 import {
-  ensureRemoteHomeExtensionHetznerWorkspace,
-  removeRemoteHomeExtensionHetznerRoot,
-  spawnRemoteHomeExtensionHetznerWorker,
-  startRemoteHomeExtensionHetznerRelay,
-  stopRemoteHomeExtensionHetznerRelay,
-  stopRemoteHomeExtensionHetznerWorker,
-} from './lib/remote-home-extension-hetzner-helpers.mjs'
+  ensureRemoteHomeExtensionRemoteKernelWorkspace,
+  removeRemoteHomeExtensionRemoteKernelRoot,
+  spawnRemoteHomeExtensionRemoteKernelWorker,
+  startRemoteHomeExtensionRemoteKernelRelay,
+  stopRemoteHomeExtensionRemoteKernelRelay,
+  stopRemoteHomeExtensionRemoteKernelWorker,
+} from './lib/remote-home-extension-remote-kernel-helpers.mjs'
 import { createRemoteHomeExtensionRelayTokenFactory } from './lib/remote-home-extension-relay-helpers.mjs'
 import { waitForDaemon, waitForRelayTarget, waitForRemoteMachine } from './lib/remote-home-extension-session-helpers.mjs'
 import { callRuntimeMcp, expectReject, expectRuntimeMcpReject, waitForRuntimeTool } from './lib/runtime-mcp-assertions.mjs'
-import { runHetznerCommand, shellQuote } from './lib/native-tui-remote-execution.mjs'
+import { runRemoteKernelCommand, shellQuote } from './lib/native-tui-remote-execution.mjs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, '..')
@@ -36,23 +36,23 @@ const RELAY_REALM = 'remote-home-extension-drill'
 
 function parseArgs(argv) {
   const options = {
-    hetznerWorker: false,
+    remoteKernelWorker: false,
     collab: false,
     restartRelay: false,
     restartWorker: false,
-    hetznerHost: process.env.CHARIOX_REMOTE_HOME_EXTENSION_HETZNER_HOST ?? process.env.CHARIOX_NATIVE_TUI_HETZNER_HOST ?? 'root@195.201.123.115',
-    hetznerKey: process.env.CHARIOX_REMOTE_HOME_EXTENSION_HETZNER_KEY ?? process.env.CHARIOX_NATIVE_TUI_HETZNER_KEY ?? path.join(os.homedir(), '.ssh', 'chariox_hetzner_staging'),
-    hetznerRepo: process.env.CHARIOX_REMOTE_HOME_EXTENSION_HETZNER_REPO ?? process.env.CHARIOX_NATIVE_TUI_HETZNER_REPO ?? '/tmp/chariox-native-remote-validate',
+    remoteKernelHost: process.env.CHARIOX_REMOTE_HOME_EXTENSION_REMOTE_KERNEL_HOST ?? process.env.CHARIOX_NATIVE_TUI_REMOTE_KERNEL_HOST ?? '',
+    remoteKernelKey: process.env.CHARIOX_REMOTE_HOME_EXTENSION_REMOTE_KERNEL_KEY ?? process.env.CHARIOX_NATIVE_TUI_REMOTE_KERNEL_KEY ?? '',
+    remoteKernelRepo: process.env.CHARIOX_REMOTE_HOME_EXTENSION_REMOTE_KERNEL_REPO ?? process.env.CHARIOX_NATIVE_TUI_REMOTE_KERNEL_REPO ?? '/tmp/chariox-native-remote-validate',
   }
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
-    if (arg === '--hetzner-worker') options.hetznerWorker = true
+    if (arg === '--remote-kernel-worker') options.remoteKernelWorker = true
     else if (arg === '--collab') options.collab = true
     else if (arg === '--restart-relay') options.restartRelay = true
     else if (arg === '--restart-worker') options.restartWorker = true
-    else if (arg === '--hetzner-host') options.hetznerHost = argv[++i]
-    else if (arg === '--hetzner-key') options.hetznerKey = argv[++i]
-    else if (arg === '--hetzner-repo') options.hetznerRepo = argv[++i]
+    else if (arg === '--remote-kernel-host') options.remoteKernelHost = argv[++i]
+    else if (arg === '--remote-kernel-key') options.remoteKernelKey = argv[++i]
+    else if (arg === '--remote-kernel-repo') options.remoteKernelRepo = argv[++i]
     else if (arg === '--help') options.help = true
     else throw new Error(`unknown argument: ${arg}`)
   }
@@ -61,7 +61,7 @@ function parseArgs(argv) {
 
 function printHelp() {
   console.log([
-    'Usage: node apps/cli/scripts/live-remote-home-extension-drill.mjs [--hetzner-worker] [--collab] [--restart-relay] [--restart-worker]',
+    'Usage: node apps/cli/scripts/live-remote-home-extension-drill.mjs [--remote-kernel-worker] [--collab] [--restart-relay] [--restart-worker]',
     '',
     'Runs a home-owned remote extension drill with home/worker kernels:',
     '- projects home-owned script, MCP, and connector tools to a remote agent',
@@ -71,13 +71,13 @@ function printHelp() {
     '- with --collab, verifies a collaborator-owned remote agent can invoke home grants but cannot grant/revoke/request them',
     '- with restart flags, verifies home authority after relay and worker loss',
     '',
-    '  --hetzner-worker       Run relay and worker kernel on the configured Hetzner host',
+    '  --remote-kernel-worker       Run relay and worker kernel on the configured remote kernel host',
     '  --collab              Run the main agent path as user-2 over a scoped relay',
     '  --restart-relay       Restart the relay during the active prompt',
     '  --restart-worker      Restart the worker and repair the lease before revocation',
-    '  --hetzner-host HOST    SSH host for --hetzner-worker',
-    '  --hetzner-key PATH     SSH key for --hetzner-worker',
-    '  --hetzner-repo PATH    Remote Chariox checkout containing built binaries',
+    '  --remote-kernel-host HOST    SSH host for --remote-kernel-worker',
+    '  --remote-kernel-key PATH     SSH key for --remote-kernel-worker',
+    '  --remote-kernel-repo PATH    Remote Chariox checkout containing built binaries',
   ].join('\n'))
 }
 
@@ -363,7 +363,7 @@ async function main() {
   const workerAlias = `remote-home-extension-worker-${process.pid}`
   const workerKernelRef = options.collab ? workerDaemonId : workerAlias
   const remoteRoot = `/tmp/chariox-remote-home-extension-${process.pid}-${Date.now()}`
-  const workerWorktree = options.hetznerWorker ? path.posix.join(remoteRoot, 'workspace') : workspace
+  const workerWorktree = options.remoteKernelWorker ? path.posix.join(remoteRoot, 'workspace') : workspace
 
   let relay = null
   let relayTunnel = null
@@ -395,8 +395,8 @@ async function main() {
     } = fixtures
     homeOnlyMcp = fixtures.homeOnlyMcp
 
-    const relayBinary = options.hetznerWorker
-      ? path.posix.join(options.hetznerRepo, 'apps/relay/target/debug/chariox-relay')
+    const relayBinary = options.remoteKernelWorker
+      ? path.posix.join(options.remoteKernelRepo, 'apps/relay/target/debug/chariox-relay')
       : await resolveBinary(path.join(repoRoot, 'apps/relay/target/debug/chariox-relay'), path.join(repoRoot, 'apps/relay/Cargo.toml'), 'chariox-relay')
     const daemonBinary = await resolveBinary(path.join(repoRoot, 'apps/kernel/target/debug/chariox-kernel'), path.join(repoRoot, 'apps/kernel/Cargo.toml'), 'chariox-kernel')
     const localRelayEnv = {
@@ -409,13 +409,13 @@ async function main() {
         CHARIOX_RELAY_SCOPED_HMAC_SECRET: RELAY_SECRET,
       } : {}),
     }
-    if (options.hetznerWorker) {
-      await ensureRemoteHomeExtensionHetznerWorkspace(options, {
+    if (options.remoteKernelWorker) {
+      await ensureRemoteHomeExtensionRemoteKernelWorkspace(options, {
         remoteRoot,
         workerWorktree,
         expectedRepoHead: await resolveLocalGitHead(),
       })
-      const hetznerRelay = await startRemoteHomeExtensionHetznerRelay({
+      const remoteKernelRelay = await startRemoteHomeExtensionRemoteKernelRelay({
         options,
         relayPort,
         workerMcpPort,
@@ -425,8 +425,8 @@ async function main() {
         secret: RELAY_SECRET,
         remoteRoot,
       })
-      relay = hetznerRelay.relay
-      relayTunnel = hetznerRelay.tunnel
+      relay = remoteKernelRelay.relay
+      relayTunnel = remoteKernelRelay.tunnel
     } else {
       relay = spawn(relayBinary, [], {
         cwd: repoRoot,
@@ -468,8 +468,8 @@ async function main() {
       capabilityRoot: workerCapabilityRoot,
       socketName: 'worker.sock',
     })
-    if (options.hetznerWorker) {
-      worker = spawnRemoteHomeExtensionHetznerWorker({
+    if (options.remoteKernelWorker) {
+      worker = spawnRemoteHomeExtensionRemoteKernelWorker({
         options,
         remoteRoot,
         workerWorktree,
@@ -490,7 +490,7 @@ async function main() {
     }
     const homeUrl = `ws://127.0.0.1:${homeKernelPort}`
     await waitForDaemon(LocalIpcClient, homeUrl, listRemoteMachinesRequest, { ...process.env, XDG_STATE_HOME: path.join(rootDir, "home-state") })
-    if (!options.hetznerWorker) {
+    if (!options.remoteKernelWorker) {
       await waitForDaemon(LocalIpcClient, `ws://127.0.0.1:${workerKernelPort}`, listRemoteMachinesRequest, localWorkerEnv)
     }
     await waitForRelayTarget(LocalIpcClient, relayUrl, probeRelayToken, 'home', listRemoteMachinesRequest)
@@ -544,10 +544,10 @@ async function main() {
         enabled: true,
         required: false,
       }, null, 2)}\n`
-      if (options.hetznerWorker) {
+      if (options.remoteKernelWorker) {
         const remoteWorkerMcpDir = path.posix.join(remoteRoot, 'worker-capabilities', 'user', 'mcps')
         const remoteWorkerMcpPath = path.posix.join(remoteWorkerMcpDir, 'home_echo_mcp.json')
-        await runHetznerCommand(options, `mkdir -p ${shellQuote(remoteWorkerMcpDir)} && cat > ${shellQuote(remoteWorkerMcpPath)} <<'EOF'\n${workerCollisionMcp}EOF`)
+        await runRemoteKernelCommand(options, `mkdir -p ${shellQuote(remoteWorkerMcpDir)} && cat > ${shellQuote(remoteWorkerMcpPath)} <<'EOF'\n${workerCollisionMcp}EOF`)
       } else {
         await mkdir(workerMcpDir, { recursive: true })
         await writeFile(path.join(workerMcpDir, 'home_echo_mcp.json'), workerCollisionMcp, 'utf8')
@@ -563,8 +563,8 @@ async function main() {
         collisionAgent.id,
         { nativeTui: true },
       )), 'definition mismatch')
-      if (options.hetznerWorker) {
-        await runHetznerCommand(options, `rm -f ${shellQuote(path.posix.join(remoteRoot, 'worker-capabilities', 'user', 'mcps', 'home_echo_mcp.json'))}`)
+      if (options.remoteKernelWorker) {
+        await runRemoteKernelCommand(options, `rm -f ${shellQuote(path.posix.join(remoteRoot, 'worker-capabilities', 'user', 'mcps', 'home_echo_mcp.json'))}`)
       } else {
         await rm(path.join(workerMcpDir, 'home_echo_mcp.json'), { force: true })
       }
@@ -603,8 +603,8 @@ async function main() {
 
     if (options.restartRelay) {
       log('relay-restart-starting')
-      if (options.hetznerWorker) {
-        await stopRemoteHomeExtensionHetznerRelay(options, remoteRoot)
+      if (options.remoteKernelWorker) {
+        await stopRemoteHomeExtensionRemoteKernelRelay(options, remoteRoot)
         await terminateChild(relayTunnel)
         relayTunnel = null
         await terminateChild(relay)
@@ -615,8 +615,8 @@ async function main() {
       }
       await waitForRelayTargetUnavailable(LocalIpcClient, relayUrl, probeRelayToken, 'home')
       await sleep(500)
-      if (options.hetznerWorker) {
-        const restartedRelay = await startRemoteHomeExtensionHetznerRelay({
+      if (options.remoteKernelWorker) {
+        const restartedRelay = await startRemoteHomeExtensionRemoteKernelRelay({
           options,
           relayPort,
           workerMcpPort,
@@ -669,14 +669,14 @@ async function main() {
         'AgentsListed',
       ).agents.find((candidate) => candidate.id === agent.id)?.remote_execution?.leased_agent_id
       log('worker-restart-starting', { previousLeaseId, previousProviderRunId: previousLaunch.id })
-      if (options.hetznerWorker) {
-        await stopRemoteHomeExtensionHetznerWorker(options, { remoteRoot, workerDaemonId })
+      if (options.remoteKernelWorker) {
+        await stopRemoteHomeExtensionRemoteKernelWorker(options, { remoteRoot, workerDaemonId })
       }
       await terminateChild(worker)
       worker = null
       await waitForRelayTargetUnavailable(LocalIpcClient, relayUrl, probeRelayToken, 'worker')
-      if (options.hetznerWorker) {
-        worker = spawnRemoteHomeExtensionHetznerWorker({
+      if (options.remoteKernelWorker) {
+        worker = spawnRemoteHomeExtensionRemoteKernelWorker({
           options,
           remoteRoot,
           workerWorktree,
@@ -770,7 +770,7 @@ async function main() {
     if (afterConnectorRevokeMarker !== evidence.connectorMarker) throw new Error('revoked home-proxy connector executed after revoke')
 
     succeeded = true
-    console.log('[remote-home-extension-drill] pass', JSON.stringify({ mode: options.hetznerWorker ? 'hetzner-worker' : 'local-worker', collab: options.collab, restartRelay: options.restartRelay, restartWorker: options.restartWorker, script: 'home_only_lookup', mcp: 'home_echo_mcp', connector: 'home_local_api', workerAlias, revoke: true }))
+    console.log('[remote-home-extension-drill] pass', JSON.stringify({ mode: options.remoteKernelWorker ? 'remote-kernel-worker' : 'local-worker', collab: options.collab, restartRelay: options.restartRelay, restartWorker: options.restartWorker, script: 'home_only_lookup', mcp: 'home_echo_mcp', connector: 'home_local_api', workerAlias, revoke: true }))
   } catch (error) {
     failure = error
     throw error
@@ -783,10 +783,10 @@ async function main() {
     await terminateChild(home)
     await terminateChild(relayTunnel)
     await terminateChild(relay)
-    if (options.hetznerWorker) {
-      await stopRemoteHomeExtensionHetznerWorker(options, { remoteRoot, workerDaemonId })
-      await stopRemoteHomeExtensionHetznerRelay(options, remoteRoot)
-      await removeRemoteHomeExtensionHetznerRoot(options, remoteRoot)
+    if (options.remoteKernelWorker) {
+      await stopRemoteHomeExtensionRemoteKernelWorker(options, { remoteRoot, workerDaemonId })
+      await stopRemoteHomeExtensionRemoteKernelRelay(options, remoteRoot)
+      await removeRemoteHomeExtensionRemoteKernelRoot(options, remoteRoot)
     }
     await new Promise((resolve) => homeOnlyMcp?.close?.(resolve) ?? resolve())
     await finalizeDrillArtifacts({
@@ -795,7 +795,7 @@ async function main() {
       failure,
       metadata: {
         drill: 'remote-home-extension',
-        mode: options.hetznerWorker ? 'hetzner-worker' : 'local-worker',
+        mode: options.remoteKernelWorker ? 'remote-kernel-worker' : 'local-worker',
         collab: options.collab,
         restartRelay: options.restartRelay,
         restartWorker: options.restartWorker,

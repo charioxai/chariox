@@ -45,7 +45,6 @@ COPY packages/app-wasm-worker packages/app-wasm-worker
 COPY packages/app-sdk-rust packages/app-sdk-rust
 COPY packages/app-sdk-tools packages/app-sdk-tools
 COPY packages/app-sdk packages/app-sdk
-COPY apps/app-worker/bundle.lock.json apps/app-worker/bundle.lock.json
 COPY apps/kernel/slice-linux-docker/prebuilt /opt/chariox-prebuilt
 RUN cargo metadata --locked --no-deps --format-version 1 > /dev/null
 ARG CHARIOX_PREBUILT_RUNTIME=0
@@ -66,7 +65,6 @@ RUN mkdir -p /opt/chariox-runtime-bin \
           CARGO_BUILD_JOBS="$CHARIOX_CARGO_BUILD_JOBS" CARGO_INCREMENTAL=0 cargo build --locked --features native-display --release --package chariox-kernel --bin chariox-kernel --bin chariox-managed-bootstrap \
           && CARGO_BUILD_JOBS="$CHARIOX_CARGO_BUILD_JOBS" CARGO_INCREMENTAL=0 cargo build --locked --release --package chariox-relay --bin chariox-relay \
           && CARGO_BUILD_JOBS="$CHARIOX_CARGO_BUILD_JOBS" CARGO_INCREMENTAL=0 cargo build --locked --release --package chariox-app-package --bin chariox-app-package \
-          && CARGO_BUILD_JOBS="$CHARIOX_CARGO_BUILD_JOBS" CARGO_INCREMENTAL=0 cargo build --locked --release --package chariox-app-runtime --bin chariox-app-storage \
           && CARGO_BUILD_JOBS="$CHARIOX_CARGO_BUILD_JOBS" CARGO_INCREMENTAL=0 cargo build --locked --release --package chariox-app-wasm-worker --bin chariox-app-wasm-worker \
           && profile_dir="release" \
           ;; \
@@ -86,7 +84,6 @@ COPY --from=rust-builder /opt/chariox-source/target/release/chariox-kernel /char
 COPY --from=rust-builder /opt/chariox-source/target/release/chariox-managed-bootstrap /chariox-managed-bootstrap
 COPY --from=rust-builder /opt/chariox-source/target/release/chariox-relay /chariox-relay
 COPY --from=rust-builder /opt/chariox-source/target/release/chariox-app-package /chariox-app-package
-COPY --from=rust-builder /opt/chariox-source/target/release/chariox-app-storage /chariox-app-storage
 COPY --from=rust-builder /opt/chariox-source/target/release/chariox-app-wasm-worker /chariox-app-wasm-worker
 
 FROM node:26-bookworm-slim@sha256:367679cf9792759492a486e4aa4b421764d71a9546a6dae8aab81a99eb797b3e AS selkies-build
@@ -248,6 +245,8 @@ RUN /opt/chariox-slice/check-runtime.sh
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-cdp.mjs /opt/chariox-slice/browser-cdp.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/install-display-codec.py apps/kernel/slice-linux-docker/docker/display-codec-pin.json /opt/chariox-slice/
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-actions.mjs /opt/chariox-slice/browser-controller-actions.mjs
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-capture.mjs /opt/chariox-slice/browser-controller-capture.mjs
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-web-bot-auth.mjs /opt/chariox-slice/browser-controller-web-bot-auth.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-input.mjs /opt/chariox-slice/browser-controller-input.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-notes.mjs /opt/chariox-slice/browser-controller-notes.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-focus-world.mjs /opt/chariox-slice/browser-focus-world.mjs
@@ -256,6 +255,7 @@ COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controlle
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/selkies-capture.py /opt/chariox-slice/selkies-capture.py
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-resources.mjs /opt/chariox-slice/browser-controller-resources.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-response-bodies.mjs apps/kernel/slice-linux-docker/docker/browser-memory.mjs apps/kernel/slice-linux-docker/docker/browser-renderer-recovery.mjs /opt/chariox-slice/
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/linux-browser-user.mjs /opt/chariox-slice/linux-browser-user.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/linux-owned-desktop.mjs /opt/chariox-slice/linux-owned-desktop.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-capture-presentation.mjs \
      apps/kernel/slice-linux-docker/docker/desktop-applications.mjs \
@@ -274,6 +274,10 @@ COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-app-draft
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-app-input-callers.mjs /opt/chariox-slice/browser-app-input-callers.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-app-view-actions.mjs /opt/chariox-slice/browser-app-view-actions.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-events.mjs /opt/chariox-slice/browser-controller-events.mjs
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-page-permissions.mjs \
+     apps/kernel/slice-linux-docker/docker/browser-page-permission-shim.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-downloads.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-upload.mjs /opt/chariox-slice/
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-files.mjs /opt/chariox-slice/browser-controller-files.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-artifacts.mjs /opt/chariox-slice/browser-controller-artifacts.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-image.mjs /opt/chariox-slice/browser-controller-image.mjs
@@ -321,6 +325,8 @@ COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/validate-screen.s
 
 RUN chmod +x /opt/chariox-slice/browser-cdp.mjs \
     /opt/chariox-slice/browser-controller-actions.mjs \
+    /opt/chariox-slice/browser-controller-capture.mjs \
+    /opt/chariox-slice/browser-controller-web-bot-auth.mjs \
     /opt/chariox-slice/browser-controller-input.mjs \
     /opt/chariox-slice/browser-focus-world.mjs \
     /opt/chariox-slice/browser-controller-cursor.mjs \
@@ -384,6 +390,7 @@ COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/kernel-browser-cd
      apps/kernel/slice-linux-docker/docker/kernel-browser-foreground.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-geometry.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-screenshot.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-header.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-host.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-recovery.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-input.mjs \

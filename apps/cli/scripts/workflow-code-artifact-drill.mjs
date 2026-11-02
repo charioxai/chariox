@@ -6,7 +6,7 @@ import { pathToFileURL } from 'node:url'
 import { LocalIpcClient, applyWorkflowCodeArtifactRequest, attachToSessionRequest, createSessionRequest, createWorkflowCodeArtifactRequest, deleteWorkflowCodeArtifactRequest, endSessionRequest, exportWorkflowCodePackageRequest, exportWorkflowCodeSourceRequest, getSessionStateRequest, getWorkflowCodeArtifactRequest, importWorkflowCodeArtifactRequest, installSkillRequest, listWorkflowCodeArtifactsRequest, runWorkflowCodeArtifactRequest, uninstallSkillRequest, updateWorkflowCodeArtifactRequest } from '@chariox/kernel-client'
 import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
 import { WORKFLOW_CODE_ARTIFACT_SKILL_PREFIX, assert, buildKernel, cliRoot, defaultToyExpectation, parseArgs, providerRebindings, repoRoot, sleep, spawnedKernel, unwrap, waitForKernel, workflowCodeSource } from './lib/workflow-code-artifact-drill-runtime.mjs'
-import { validateArtifactHistory, validateHetznerSecondKernelDistribution, validateSecondKernelDistribution, validateSecondKernelExampleSuite } from './lib/workflow-code-artifact-drill-distribution.mjs'
+import { validateArtifactHistory, validateRemoteKernelSecondKernelDistribution, validateSecondKernelDistribution, validateSecondKernelExampleSuite } from './lib/workflow-code-artifact-drill-distribution.mjs'
 import { applyExampleSuite, runRealProviderTopologyDrill, validateApplyResult, validateSessionProjection, writeWorkflowCodeArtifactSkillSource } from './lib/workflow-code-artifact-drill-topology.mjs'
 import { applyExistingAgentArtifact, applyOutputSchemaArtifact } from './lib/workflow-code-artifact-drill-artifacts.mjs'
 
@@ -24,15 +24,15 @@ async function main() {
       providerRebindings: providerRebindings(),
       exampleSuite: options.exampleSuite,
       secondKernel: options.secondKernel,
-      hetznerSecondKernel: options.hetznerSecondKernel,
+      remoteKernelSecondKernel: options.remoteKernelSecondKernel,
       realProviderTopology: options.realProviderTopology,
       providerIds: options.providerIds,
       providerModels: options.providerModels,
       providerAccounts: options.providerAccounts,
       providerEfforts: options.providerEfforts,
-      hetznerHost: options.hetznerHost,
-      hetznerRepo: options.hetznerRepo,
-      hetznerRemoteRoot: options.hetznerRemoteRoot,
+      remoteKernelHost: options.remoteKernelHost,
+      remoteKernelRepo: options.remoteKernelRepo,
+      remoteKernelRemoteRoot: options.remoteKernelRemoteRoot,
     }, null, 2))
     return
   }
@@ -241,7 +241,7 @@ async function main() {
         await client.send(endSessionRequest(realProviderSession.id)).catch(() => {})
       }
     }
-    if ((options.secondKernel || options.hetznerSecondKernel) && installedSkill) {
+    if ((options.secondKernel || options.remoteKernelSecondKernel) && installedSkill) {
       await client.send(uninstallSkillRequest(workspace, skillName)).catch(() => {})
       installedSkill = false
     }
@@ -266,8 +266,8 @@ async function main() {
         timeoutMs: options.timeoutMs,
       })
       : null
-    const hetznerSecondKernel = options.hetznerSecondKernel
-      ? await validateHetznerSecondKernelDistribution({
+    const remoteKernelSecondKernel = options.remoteKernelSecondKernel
+      ? await validateRemoteKernelSecondKernelDistribution({
         packageExport: exported,
         inlineSource: liveInlineSource,
         directorySource: liveDirectorySource,
@@ -297,7 +297,7 @@ async function main() {
       realProviderTopology,
       secondKernel,
       exampleSuiteSecondKernel,
-      hetznerSecondKernel,
+      remoteKernelSecondKernel,
     }
     console.log(JSON.stringify(summary, null, 2))
 

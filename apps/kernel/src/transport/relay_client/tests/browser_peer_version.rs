@@ -155,7 +155,6 @@ async fn check_versions(advertisements: &[u32], app_agent: Option<AppViewProbe>)
                 .await
                 .unwrap();
             let state = Arc::new(RwLock::new(RelayClientState::default()));
-            let (outgoing, _priority, _events) = RelayOutgoingSender::channel(32);
             let mut heartbeat = tokio::time::interval(Duration::from_millis(250));
             loop {
                 tokio::select! {
@@ -177,7 +176,7 @@ async fn check_versions(advertisements: &[u32], app_agent: Option<AppViewProbe>)
                         requests.lock().await.push(request["kind"].as_str().unwrap().to_string());
                         // Production authorization, lease creation/spawn/destruction and encryption.
                         let outcome = super::super::peer_requests::handle_daemon_peer_request(
-                            &router, &state, &outgoing, &from_daemon_id, caller_identity, encrypted_request,
+                            &router, &state, &from_daemon_id, caller_identity, encrypted_request,
                         ).await;
                         let encrypted_response = outcome.encrypted_response.map(|encrypted| {
                             let clear = relay_crypto::decrypt_payload_for_private_key(

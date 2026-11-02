@@ -359,9 +359,11 @@ pub(crate) async fn check_relay_remote_mcp_availability(
 pub(crate) async fn complete_relay_leased_prompt(
     runtime_state: &KernelRuntimeState,
     leased_agent_id: &str,
+    home_prompt_id: &str,
+    worker_provider_run_id: &str,
 ) -> Result<PromptCompletion, DaemonError> {
     runtime_state
-        .complete_relay_leased_prompt(leased_agent_id)
+        .complete_relay_leased_prompt(leased_agent_id, home_prompt_id, worker_provider_run_id)
         .await
 }
 
@@ -562,7 +564,8 @@ pub(crate) async fn drain_relay_leased_runtime_projection(
     pump_output: bool,
     replay_settled_completion: bool,
     require_authorization: bool,
-) -> Result<Option<(String, RelayPeerEvent)>, DaemonError> {
+    acknowledged_projection_sequence: u64,
+) -> Result<Option<crate::app::DrainedLeasedProjection>, DaemonError> {
     runtime_state
         .drain_relay_leased_runtime_projection(
             leased_agent_id,
@@ -570,6 +573,7 @@ pub(crate) async fn drain_relay_leased_runtime_projection(
             pump_output,
             replay_settled_completion,
             require_authorization,
+            acknowledged_projection_sequence,
         )
         .await
 }

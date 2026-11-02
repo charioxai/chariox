@@ -27,9 +27,7 @@ const RELEASE_ARTIFACTS = [
 ]
 const APP_ARTIFACTS = [
   ["chariox-app-package", "/usr/local/bin/chariox-app-package", "file", 0o755],
-  ["chariox-app-storage", "/usr/libexec/chariox-app-storage", "file", 0o755],
   ["chariox-app-wasm-worker", "/usr/local/bin/chariox-app-wasm-worker", "file", 0o755],
-  ["chariox-app-storage.service", "/etc/systemd/system/chariox-app-storage.service", "file", 0o644],
 ]
 const DATA_VOLUME_ARTIFACTS = [
   ["chariox-data-volume-admission.service", "/etc/systemd/system/chariox-data-volume-admission.service", "file", 0o644],
@@ -527,7 +525,7 @@ test("MP-11-RD-F5 binds every App helper and service digest and executable mode"
 })
 
 test("MP-11-RD-F5 rejects signed builder attestations omitting or substituting App helpers", async () => {
-  for (const name of ["chariox-app-package", "chariox-app-storage", "chariox-app-wasm-worker"]) {
+  for (const name of ["chariox-app-package", "chariox-app-wasm-worker"]) {
     for (const mutation of [{ omitAttestedApp: name }, { wrongAttestedApp: name }]) {
       await withFixture({ ...mutation, dataVolumeArtifacts: true, manifestPatch: { schemaVersion: 3, managedUpdateEvidenceVersion: 1 } }, async fixture => {
         await assert.rejects(verifyPath1ReviewedRelease(fixture.options), /builder attestation/)

@@ -38,5 +38,6 @@ export async function resizeBrowserPage(host,tab,command,signal){
  host.stateSignal.notify();
  await host.rebindWindows();current();
  host.resizeSettled=layout;
+ await host.save?.();
  return {width,height};
 }

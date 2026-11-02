@@ -156,9 +156,31 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// MP-08/MP-10/MP-11: allocated 371 pairs the embedded local response union with local 920.
 /// 374 pairs the embedded local response union with local 923 (`CredentialVaultUnlocked`).
 /// Landing union 374 pairs the embedded local union with local 923 (it carries peers 364, 370 and 371).
-/// Allocated 381 pairs the embedded local union with local 933 (Apps v2): it admits the Room App-agent request and
-/// unprojected App projection, and carries projection and trusted Room input callers.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 381;
+/// Allocated 375 pairs the embedded local response union with local 924 (opaque reimage `providerId`).
+/// MP-08/MP-09/MP-10/MP-11: 376 pairs local 925 (the relay close's `kernel_reload`).
+/// 377 pairs the embedded local union with local 926 (direct data channel liveness).
+/// 378 pairs the embedded local union with local 927 (`SessionProcess.state`, `StartSessionProcessNow`).
+/// Allocated 379 pairs the embedded local response union with local 928 (`question` and `resolution` on outside interaction events).
+/// Allocated 380 carries the local 931 `schedule` and `notification` prompt origins.
+/// Allocated 386 carries the local 932 HTTP agent trigger variants with the `http` prompt origin.
+/// Landing union 381 pairs the embedded local union with local 932; it carries peers 375 to 380 and
+/// takes 381 for the HTTP trigger variants (allocated as 386).
+/// Browser header 382 carries the local 933 header state.
+/// MP-08/MP-10/MP-11: 383 acknowledges the leased projection drain; it pairs with local 934.
+/// MP-08/MP-10/MP-11: 384 binds `CompleteLeasedPrompt` to the exact home prompt and worker provider run, so a late
+/// completion cannot end the prompt that replaced it; it pairs with local 935.
+/// MP-08/MP-10/MP-11: 385 pairs the embedded local union with local 936 (non-blocking task-owned questions).
+/// Browser downloads 386 carries local 937 download state and cancellation.
+/// MP-08/MP-10/MP-11: 387 pairs the embedded local union with local 938 (kernel-resolved access holder).
+/// MP-08 / MP-09 / MP-10 / MP-11: 403 carries local954 process disk I/O.
+/// MP-08/MP-10/MP-11: peer 390 carries Vault fill audience masking.
+/// MP-08/MP-09/MP-10/MP-11: 392 carries local 943 `env` and `file` credentials.
+/// Resource register 393 carries local 944 resource metadata and tool calls.
+/// Vault TOTP 394 carries local 945 factor credential metadata.
+/// VAUDIT S3 397 carries local 948 (kernel-browser Vault capture and fill).
+/// Peer 399 carries the shared RelayStatus local protocol field (local 950).
+/// Peer 409 carries the final integrated local 960 Vault and Machines contract.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 411;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;
@@ -171,6 +193,10 @@ pub const REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE: &str =
 pub const REMOTE_PROVIDER_ACCOUNT_UNUSABLE_CODE: &str = "provider_account_unusable";
 pub(crate) const ADMIT_LEASED_PROMPT_ACCOUNT_OPERATION: &str = "admit leased prompt account";
 pub(crate) const ENSURE_REMOTE_PROVIDER_ACCOUNT_OPERATION: &str = "ensure remote provider account";
+/// The worker refused a completion because the prompt it names is not the leased
+/// agent's current prompt (already finished, or replaced by a later one).
+pub const LEASED_PROMPT_NOT_CURRENT_CODE: &str = "leased_prompt_not_current";
+pub const LEASED_PROMPT_RUN_CHANGED_CODE: &str = "leased_prompt_run_changed";
 pub const PROJECT_ENVIRONMENT_SETUP_NOT_FOUND_CODE: &str = "project_environment_setup_not_found";
 pub const PROJECT_ENVIRONMENT_SETUP_REJECTED_CODE: &str = "project_environment_setup_rejected";
 
@@ -979,9 +1005,15 @@ pub enum RelayPeerRequest {
         provider_run_id: String,
         #[serde(default)]
         pump_output: bool,
+        /// Peer 383: the last projection sequence the home applied for this leased
+        /// agent. The worker keeps a drained projection until this acknowledges it.
+        acknowledged_projection_sequence: u64,
     },
+    /// Peer 384: names the exact prompt it completes, like `CancelLeasedPrompt`.
     CompleteLeasedPrompt {
         leased_agent_id: String,
+        home_prompt_id: String,
+        worker_provider_run_id: String,
     },
     ObserveLeasedGitAfter {
         leased_agent_id: String,
@@ -1377,6 +1409,9 @@ pub enum RelayPeerResponse {
     LeasedRuntimeProjectionDrained {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         event: Option<RelayPeerEvent>,
+        /// Present when the worker retains `event` until the home acknowledges it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        projection_sequence: Option<u64>,
     },
     LeasedPromptCompleted {
         provider_run_id: Option<String>,
@@ -2551,18 +2586,6 @@ mod room_terminal_peer_shapes {
                 Sha256::digest(serde_json::to_vec(&encoded).unwrap())
             ),
             expected_sha256
-        );
-    }
-
-    #[test]
-    fn room_browser_action_caller_snapshot_and_hash() {
-        assert_wire::<RelayPeerRequest>(
-            serde_json::json!({"command":{"action":{"kind":"click"},"agent_id":"agent-1","document_id":"doc","execution_id":"input-1","kind":"action","node_ref":"backend:1","target_id":"target","timeout_ms":500},"kind":"room_browser_controller","session_id":"room","slice_id":"slice"}),
-            "41f2c13ea62d9beb81d1a132d9565af2e073188334f53845e1e79744ae6304fd",
-        );
-        assert_wire::<RelayPeerRequest>(
-            serde_json::json!({"command":{"action":{"kind":"click"},"agent_id":null,"document_id":"doc","execution_id":"input-1","kind":"action","node_ref":"backend:1","target_id":"target","timeout_ms":500},"kind":"room_browser_controller","session_id":"room","slice_id":"slice"}),
-            "4660dbbf9c897fe827902d22e1789099d917918aa1cb2f3ee14dfd0c41715217",
         );
     }
 

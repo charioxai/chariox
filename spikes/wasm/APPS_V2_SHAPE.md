@@ -26,7 +26,7 @@ in the UI.
 
 ### 1.1 Backend
 
-An App backend is JavaScript running in an embedded Node worker that the
+An App backend is JavaScript running in an retired native JavaScript engine worker that the
 kernel launches and sandboxes.
 
 - The kernel spawns the worker with `posix_spawn` and fixed descriptors:
@@ -197,14 +197,14 @@ view can do. That is where §4 goes.
 
 | Part of §1 | Kept | Changes | Lost | Better |
 |---|---|---|---|---|
-| Launch, sandbox, limits | FD3/FD4, bwrap/Seatbelt, cgroup, clean env | Worker is one Rust binary with wasmtime instead of embedded Node; the macOS executable-memory entitlement stays (as Node's JIT) | — | **Per-call limits** inside the process: CPU slice stops a runaway call at 1.0 s and names it; memory cap is a linear-memory cap, not a V8 heap guess (fixes PLATFORM_REVIEW P1 on macOS); 14–17 MiB RSS vs 56; cold start 2–8 ms vs 31 |
+| Launch, sandbox, limits | FD3/FD4, bwrap/Seatbelt, cgroup, clean env | Worker is one Rust binary with wasmtime instead of retired native JavaScript engine; the macOS executable-memory entitlement stays (as Node's JIT) | — | **Per-call limits** inside the process: CPU slice stops a runaway call at 1.0 s and names it; memory cap is a linear-memory cap, not a V8 heap guess (fixes PLATFORM_REVIEW P1 on macOS); 14–17 MiB RSS vs 56; cold start 2–8 ms vs 31 |
 | Concurrency | one instance serves many calls (as Node's event loop) | the 16-call SDK cap disappears; the **kernel's 16 broker-call cap becomes the only ceiling** and must become a queue | — | 64 callers on one instance measured |
 | SDK API | `register(chariox)` with the same namespaces for JS | implemented as a layer over WIT imports; `AbortSignal` from the `cancel` future; `BigInt` → number | `node:*` modules, npm packages that need Node built-ins or Web APIs (QuickJS has no `fetch`, `TextDecoder`, `crypto`; SDK polyfills them), 4/5 popular packages worked | the same API in Rust, C, Python, with typed contracts in one WIT file |
 | Views | unchanged: the view is a browser Tab; `window.chariox.call` | nothing in the view layer depends on the backend language | — | §4 adds declared actions on top |
 | Capabilities, approvals | unchanged | install also checks the component's imports against the world's allowlist (`chariox-wasm-worker-async check`) | — | the kernel can **prove** what an App can call: a component with an unknown import is refused at install, which finally makes "only reviewed code runs" true for the backend (no `eval` of fetched code in Rust/C; QuickJS `eval` stays inside the sandbox with the same imports) |
 | State, HTTP, files, events | brokers unchanged | HTTP bodies and live event feeds become WASI streams with backpressure | `node:fs` → two WASI preopens (`data`, `tmp`) | 50 MiB stream at 230–280 MiB/s with +1–4 MiB memory vs Node 48 MiB/s and +37 MiB |
 | Dev loop | `/app dev` unchanged in shape | pack compiles to a component (0.2–1.4 s) and the kernel precompiles at install (16–700 ms) | Node debugger / `--inspect`; `console.log` stays (stderr pipe) | one package runs on every OS and CPU; no runtime bundle per OS |
-| Package, signing, install, generations | unchanged | `runtime.engine: "wasm"`, `world` field; install-time AOT cache keyed by release digest + worker build | `engine: "node"` | smaller releases (190 KiB Rust, 1.5 MB JS, 300 KB C vs Node runtime per OS) |
+| Package, signing, install, generations | unchanged | `runtime.engine: "wasm"`, `world` field; install-time AOT cache keyed by release digest + worker build | `engine: "node"` | smaller releases (190 KiB Rust, 1.5 MB JS, 300 KB C vs retired native engine per OS) |
 | Agents (runtime MCP) | unchanged | — | — | queueing lets many agents share one instance (§4) |
 | Library (planned) | unchanged | the automatic review gets a component to analyse instead of a Node bundle: imports are the capability surface | — | review can be mechanical for imports |
 

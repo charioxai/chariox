@@ -128,13 +128,24 @@ grant lock before resource/subscription registration or inventory projection;
 revocation followed by refocus cannot adopt an old call's result into a fresh
 grant. A final live cancellation/provider-run check fences returned results.
 
+### MP-08 / MP-09 / MP-10 / MP-11: Vault capture and use by command and file (local 943)
+
+Local 943 and relay peer 392 add the kernel-local credential uses and
+injection kinds `env` and `file` (`{"allowed_uses":["env","file"],
+"injection":{"kind":"env"}}`). The sudo MCP tools
+`chariox.vault.capture_command`, `chariox.vault.use_env`,
+`chariox.vault.capture_file` and `chariox.vault.write_file` add no request or
+event shape. See [Sudo windows](KERNEL_SUDO.md).
+
 ### MP-08 / MP-10 / MP-11: A06 Vault generation and login (local 469)
 
 Local 469 combines A04 (460) and A05 (462); relay peer 87 combines peer 82 and
-86. A06 adds no serialized request or event shape: the sudo-only MCP tool
+86. A06 adds no serialized request or event shape: the MCP tool
 `chariox.vault.generate` replaces `chariox.create_generated_credential`, and
 `chariox.kernel_browser_paste_secret` accepts a live sudo window in place of
 focus for a retained grant. See [Sudo windows](KERNEL_SUDO.md).
+
+MP-08 / MP-09 / MP-10 / MP-11, local 956 / peer 405: Vault generation is an ordinary agent tool. Generated and captured entries persist `metadata.use_binding` with one exact destination and a value kind. Browser/HTTP site uses compare canonical origins (scheme, host, effective port), not host suffixes. Environment/stdin, file, TOTP and WebAuthn bindings are distinct uses. Bindings and card kind cannot be changed by overwriting or aliasing a handle. Payment-card values require one owner interaction per operation; ordinary values need no task approval or sudo. Only the encrypted Vault's actual setup/unlock still requires its key. `chariox_kernel_request` remains sudo-only.
 
 ### MP-08 / MP-10 / MP-11: A05 capability acquisition (local 462)
 
@@ -574,6 +585,8 @@ Remote native TUI composition:
 - worker output, notices, completions, and permission interactions MUST return to the home kernel through existing leased runtime projection and native interaction relay paths
 - relay peer protocol v3 extends leased runtime projection with an optional worker `provider_run` snapshot. The home kernel MUST project that worker-owned run onto the home session/agent, including any resolved `provider_session_id` and resume state, because some providers such as Codex only expose the durable thread id after the first turn rather than at launch time.
 - relay peer protocol v7 correlates projected completions with `home_prompt_id`. Workers retain the latest settled completion for pull-based replay, and home kernels MUST ignore a stale replay when that prompt is no longer active. This makes a completion recoverable when a fire-and-forget worker projection is lost without allowing the replay to settle a later queued turn.
+- relay peer protocol 383 (local 934) acknowledges pulled projections; both kernels must speak 383. Each `drain_leased_runtime_projection` carries the required `acknowledged_projection_sequence`, the last projection sequence the home applied for that leased agent (persisted by the home). A worker answering with `projection_sequence` keeps that projection and answers every later drain with it until a drain acknowledges it, then drains new output. A reply lost on the way home (a relay writer closing at reconnect, a home timeout) is therefore answered again: no output is lost, and the home applies each sequence once. The worker no longer pushes a projection after a steer; the home's next drain carries it. A home recovering a settled worker receipt (restart, cancellation) applies and acknowledges the retained output of that run before its completion.
+- relay peer protocol 384 (local 935) binds `complete_leased_prompt` to the exact prompt it completes: the request carries `home_prompt_id` and `worker_provider_run_id`, like `cancel_leased_prompt`. The worker completes the leased agent's prompt only when it is still that home prompt on that worker run; a completion of an earlier or already finished prompt is refused with `leased_prompt_not_current` and changes nothing, so the current turn keeps running. A home treats that refusal as the prompt having settled on the worker. When the home prompt is still the one running but on another provider run (a relaunch the home has not followed yet), the worker refuses with the distinct code `leased_prompt_run_changed`; that prompt has not settled, so the home keeps its turn active and retries the completion once it follows the successor run. Both kernels must speak 217.
 - relay peer protocol v8 carries an optional exact worker-local skill requirement set for native TUI launch and prompt submission. Standard workers validate matching local package hashes without receiving package payloads; home-managed slices may materialize packages first. Workers project the validated set onto the leased backing agent so per-prompt hidden skill context stays worker-local and grant revocations cannot leave stale skills active.
 - relay peer protocol v9 adds idempotent queued-prompt steering for leased agents. The home kernel keeps queue/history authority and removes the queued prompt only after the worker acknowledges provider delivery; the worker keys delivery by the home queued prompt ID, rejects stale active-turn targets, and replays acknowledgements without injecting duplicate provider input.
 - relay peer protocol v10 forwards provider-targeted terminal resizes to leased worker PTYs. The worker validates that the requested provider run belongs to the leased agent and acknowledges the applied dimensions; the home kernel does not report a remote resize as successful before that acknowledgement.
@@ -755,6 +768,17 @@ when their bytes arrive after its prompt boundary. Both kernels must speak 181;
 178 workers do not provide this identity. Ordinary failed completions retain the
 worker termination and settle as failed work.
 
+MP-08 / MP-10 / MP-11: 934/383 makes the leased projection drain acknowledged
+(see the leased runtime projection rules above). A kernel on an older peer cannot
+drain an acknowledged projection.
+
+MP-08 / MP-10 / MP-11: 935/384 binds the leased prompt completion to its exact prompt
+(see the leased prompt rules above). 590 stays reciprocal for upgrade and rollback; 373 is
+the oldest unpinned intermediate removed to make room. The worker also refuses every client
+request (attach, prompt, mutation, read) on the hidden backing session of a leased agent with
+`leased_backing_session_refused`, naming the home session, including a local terminal that carries
+no user (the local membership exemption does not cover it); peer requests from the home are unaffected.
+
 MP-08 / MP-10 / MP-11: coordinator-allocated 513/121 adds the paired terminal
 actor normalization for display metadata/credits and the historical workflow
 read policy. A run with neither immutable agent creator nor invoking-user proof
@@ -830,6 +854,47 @@ and shows wait reason/deadline and aggregate unresolved obligations. Web and
 native clients must consume the same projection; client integration is required
 before claiming visibility on those clients.
 
+MP-08 / MP-09 / MP-10 / MP-11, local protocol **936**, relay peer **385**:
+`chariox.request_popup` accepts optional `wait` (default `true`). Blocking
+questions keep their existing response and turn lifetime. With `wait:false`,
+the tool returns `{interaction_id, registration_id}` immediately. Its ordinary
+`RuntimeInteraction` adds optional `asking_task_id`; older clients can ignore
+that field and answer using the unchanged `RespondToInteraction` request.
+No additional card or client request is introduced.
+
+An async question is the `interaction` kind of the existing durable wake
+registry. The asking task owns its obligation and completion registration;
+`events.yield` may include that registration alongside other sources. A turn
+whose only unresolved obligations are questions may finish normally: settlement
+retains those registrations as a wait. Other unfinished work still requires
+normal completion or an explicit valid yield. The question survives native turn
+completion and kernel restart, including its original absolute deadline.
+The retained wait uses the latest outstanding question deadline, bounded by
+clients' four-digit ISO year range. If any such question has no timeout, the wait
+uses `9999-12-31T23:59:59.999Z` (`253_402_300_799_999` milliseconds since the Unix
+epoch), so an unrelated periodic retention cap cannot spend provider wake turns.
+
+A failed provider turn keeps the task blocked with the provider failure reason
+and its pending questions intact. The owner must reconcile and resume or cancel;
+a question does not convert a failed turn into a healthy wait. Answers remain
+in the durable inbox for reconciliation after owner resumption; automatic
+delivery cannot restart the blocked provider.
+
+The first admitted answer commits a `source_completed` inbox event with the
+resolution in `payload.public_answer`: `interaction_id`, `status`, `choice_id`,
+exact `reply`, authenticated `answered_by`, `user_id`, `agent_id`, `client_id`
+and `connection_class`, plus the usual wake/task attribution. The existing
+inbox delivery and provider acceptance machinery starts the next idle turn;
+retries cannot produce another occurrence. Session membership and existing
+grants govern who may answer. A deadline produces `status:"timed_out"` with
+the fixed default choice/reply when configured, or null choice/reply otherwise;
+its answerer fields are null. Stop, task cancellation or agent/session removal
+withdraws the question without applying its timeout default. Withdrawal uses
+`source_lost`, including the existing `public_answer.cancelled:true` receipt
+when a task cancels its wake. An ended asking task receives no new provider
+turn. Resolution commits before projection removal, so restart closes a leftover
+resolved card.
+
 Ordinary provider runs receive `chariox.events.subscribe`, `subscriptions`,
 `unsubscribe`, `inbox`, `ack`, `yield` and `blocked`. Each requires current
 `task_id` and `origin_prompt_id`; room/run/turn fences precede resource lookup
@@ -859,7 +924,8 @@ tasks, including physical resource settlement after cancellation. The canonical
 admission and settlement, so cancellation also releases the parent's wait.
 This lineage is private kernel storage and adds no serialized client fields.
 
-A final answer with unresolved obligations gets one persisted corrective turn,
+A final answer with unresolved obligations other than the async-question wait
+described above gets one persisted corrective turn,
 then blocks if still invalid. Unfinished work without a live wake source is
 corrected or shown as blocked, never silently left idle. The kernel sweeps every
 30 seconds. Three consecutive settled wake turns without real progress block
@@ -5096,6 +5162,61 @@ authority for its own sessions, agents, terminals and files.
   `kernel_join_refused`. The grant on the other kernel is revoked there; forgetting only drops it here.
 The Rust hash test `kernel_gateway_protocol_568_shapes_and_hash` pins the shapes.
 
+Allocated 930 (relay peer unchanged) adds agent triggers: prompts that fire into an agent's own
+conversation. `CreateAgentTrigger {session_id, agent_id, source, busy_policy, prompt?}`,
+`UpdateAgentTrigger {session_id, trigger_id, busy_policy?, prompt?, enabled?}` and
+`DeleteAgentTrigger {session_id, trigger_id}` answer `AgentTriggerCreated|Updated|Deleted {trigger,
+session}`. 930 has one source, `{"kind": "schedule", "interval_seconds", "repeat": "once"|"every"}`.
+`busy_policy` decides what a firing does while the agent runs a turn: `queue` waits in the prompt
+queue, `steer` is queued and then steered into the running turn exactly like the queued-prompt
+steer. A refused steer leaves the firing queued, records `last_error` and raises a notice. A
+schedule whose previous firing is still queued or running coalesces (`coalesced` counts it).
+Triggers are deleted with their agent and when it is archived. Whoever may prompt the agent may manage its triggers. The
+session lists them in `agent_triggers`. `/wait-in` and `/wait-every` are queue-policy schedule
+triggers. 931 removes the `/wait` schedule shape: `CreateAgentPromptSchedule`,
+`CancelAgentPromptSchedule` and the session's `agent_prompt_schedules` are gone, and stored
+`/wait` schedules from earlier kernels are not migrated. The shape is pinned by
+`local_daemon_protocol_agent_trigger_shape_is_versioned`.
+
+Allocated 933 (relay peer 382) adds the portable header state to the `KernelBrowser` state: `active_tab_id` (the Tab Chromium
+shows, `null` when none or while a pending activation is unsettled) and, per Tab, `can_go_back` and `can_go_forward` (Chromium's
+navigation history bounds, `null` while unknown) and `favicon_png_base64` (a bounded PNG read from Chromium's own favicon cache, `null`
+without one). `null` means unknown: a client keeps Back and Forward disabled for it and never invents an icon. They are presentation
+hints; they never admit input or pixels. `mp08_mp10_browser_header_933_shape_and_hash` pins the shape.
+
+Allocated 932 (relay peer 381; allocated as 386) adds the HTTP trigger source `{"kind": "http", "ingress_id", "port"}` (the
+create request sends `{"kind": "http"}` and the kernel picks both), `InvokeAgentTrigger
+{session_id, trigger_id, payload}` answering `AgentTriggerInvoked {invocation}` and
+`ReadAgentTriggerTranscript {session_id, trigger_id, cursor?}` answering `AgentTriggerTranscript`.
+The `schedule`, `http` and `notification` prompt origins also travel in
+`SubmitLeasedPrompt.git_context.prompt_origin`: the home refuses a worker below peer 381 instead of sending one. `local_daemon_protocol_http_agent_trigger_shape_is_versioned` pins the shapes.
+
+Allocated 931 (relay peer 380) makes every trigger firing a labelled prompt and lets a person
+resend one the provider did not confirm. A firing's transcript prompt carries `prompt_origin`
+`schedule` (a schedule trigger), `http` (an HTTP trigger) or `notification` (a workflow notification) and is recorded before
+the provider write, so it exists even if the kernel stops first. A steered firing that the provider
+did not confirm, whether a receipt was lost or the kernel restarted mid-delivery, is never sent
+again by itself: the session lists it in `trigger_deliveries` as `{prompt_id, trigger_id,
+agent_id, origin, prompt, busy_policy, state: "not_confirmed"|"resent", recorded_at_ms}` (newest
+last, 32 kept). `ResendTriggerDelivery {session_id, prompt_id}` answers `TriggerDeliveryResent
+{session}`: it admits one more labelled prompt under the entry's `busy_policy` (queue or steer)
+and refuses a second resend. A transient claim excludes concurrent clicks. The replacement's
+durable admission atomically consumes the resend; a failed admission leaves it `not_confirmed`.
+Relay peer 380 carries the new `schedule` and `notification` origins in a leased prompt's
+`prompt_origin`: a worker below 380 cannot read them, so the home refuses it instead of sending one.
+Once admitted, it stays `resent` even after the replacement finishes, a later processing error,
+or a restart from a stale session event or snapshot. Whoever may prompt the agent may resend. An HTTP
+trigger's `AgentTriggerTranscript` also carries `deliveries`, the `not_confirmed` entries of that
+trigger, for the local trigger page. The shape is
+pinned by `local_daemon_protocol_trigger_delivery_shape_is_versioned`.
+
+The TUI advertises `/trigger resend <prompt-id>` and shows unconfirmed firings
+in the existing trigger stripe and `/trigger list`, including their origin and
+busy policy.
+
+
+Steered trigger settlement records an internal SQLite firing receipt atomically with its session event. Recovery uses that prompt identity to avoid advancing a recurring trigger twice after interrupted hold removal.
+
 MP-08 / MP-10 / MP-11: the same 560/168 allocation adds `mirror_subscribe.layout_width` and
 `layout_height` (both or neither, integers in CSS px): the size of the display that views the Tab.
 A viewer narrower than the canonical desktop (a phone) sends its page area; the kernel lays that
@@ -5533,9 +5654,11 @@ error and the agent is in the `error` state. `retryable` is whether a later atte
 may succeed without anyone changing anything (overload, crash, network loss, a plain
 HTTP 429 and `interrupted_by_restart` are; an exhausted plan, a missing sign-in and an
 unrecognised error are not). A reader decides to retry or stop from `kind` and
-`retryable` only. `reason` is text for people: the harness's own error text with
-credentials removed, whitespace and diagnostic length preserved; it is empty for
-`completed` and `cancelled`. Chariox adds no retry, backoff or usage-limit policy; the
+`retryable` only. `reason` is text for people: a controlled explanation of the
+provider failure, such as `The provider is at capacity.`; it is empty for
+`completed` and `cancelled`. Kernel-authored failures can retain specific recovery
+details, such as a missing workspace path. Native provider diagnostics are retained
+in kernel logs with credentials redacted, rather than copied into public reasons. Chariox adds no retry, backoff or usage-limit policy; the
 provider's own behaviour is unchanged and the orchestrating agent decides.
 
 The kernel types a failure once from the harness's native error: Codex
@@ -5543,10 +5666,12 @@ The kernel types a failure once from the harness's native error: Codex
 error names with their HTTP status and native `isRetryable` flag, then the words of
 the error; a process exit, signal or transport loss is `provider_crashed` or
 `network` without any text. A failure the provider reported without a protocol
-frame, such as a rejected dispatch, is typed from its text; it does not become
-termination evidence. If native sign-in recovery is declined, the failed turn
-retains the original native kind and reason while the existing recovery notice
-explains what happened.
+frame is typed from its text. Rejected Codex dispatches retain structured
+`error.data.codexErrorInfo` when present. `explicit_provider_error` records the
+termination provenance; `provider_termination.failure` carries the typed cause and
+matches the settled turn outcome. If native sign-in recovery is declined, the
+failed turn retains its original kind and controlled public reason while the
+existing recovery notice explains what happened.
 
 `interrupted_by_restart` is a turn the kernel restarted in the middle of and could
 not resume (for example the Vault stayed locked, or no provider session identified
@@ -5557,10 +5682,8 @@ restart recovery does resume ends with the outcome of the resumed turn.
 A provider run whose process is gone and whose exit the kernel never saw is
 `provider_crashed`, retryable.
 The provider-error transcript entry of a failed turn, shown by every client, reads
-`<Cause headline>. <harness message>. <recovery>`, for example `Usage limit reached.
-You've hit your weekly limit · resets Oct 28, 9pm (UTC). Wait for the limit to reset
-(the message gives the time when the provider does) or switch this agent to another
-account, then send the request again.` It replaces the earlier `Provider prompt
+`<controlled explanation> <recovery>`, for example `The provider is at capacity.
+Try again in a moment or choose another model.` It replaces the earlier `Provider prompt
 dispatch failed: <message>` entry and, for a process exit, the bare exit text; the
 entry text carries no new serialized field. A Claude account whose plan limit is
 reached still passes the credential check, because the limit answer proves the token
@@ -5961,6 +6084,26 @@ and the termination name the same cause. The managed-upgrade list is
 `local_daemon_protocol_received_event_shape_is_versioned`) and
 `node --test scripts/protocol-versions.test.mjs`.
 
+### MP-08 / MP-09 / MP-10 / MP-11: a hot reload's relay close — local 925 / peer 376
+
+A kernel that stops for a hot reload (SIGUSR2, EA2-86) is back on the relay within
+about a second, under the same daemon id. Its last relay message says so:
+`{"kind":"close","reason":"daemon shutting down","kernel_reload":true}`. The relay
+remembers the flag of the registered daemon's close and puts it on the close it sends
+to that daemon's subscribed clients:
+`{"kind":"close","reason":"target daemon disconnected from relay","kernel_reload":true}`.
+Any other loss (an ordinary stop, a dropped socket, a replaced registration) is
+announced as before, without the field (`kernel_reload` is omitted when false). The
+reason string is unchanged, so clients that do not read the field keep treating the
+close as temporary.
+
+The web retries a subscription whose socket closed with `kernel_reload` every
+~250 ms (+0–50 ms jitter) for up to 10 s, then falls back to its normal backoff for a
+kernel that is away (up to 3 s); every other close keeps that backoff. The managed-upgrade
+list is [629, 636, 911, 925]. Focused checks: `cargo test -p chariox-relay --lib
+subscribers_hear_that_their_kernel_left_for_a_hot_reload` and the hot reload test
+`a_hot_reload_tells_the_relay_it_is_a_reload`.
+
 ### Direct browser sessions over WebRTC — local 917 / relay peer 362
 
 `local_browser_connect` may carry an SDP `offer`; the kernel answers
@@ -5978,6 +6121,28 @@ the STUN Binding responder every relay runs on UDP 3478 of its host
 (`CHARIOX_RELAY_STUN_ADDRESS`, `off` disables): the kernel asks from each of its
 sockets, the browser passes `stun:<relay host>:3478` as its ICE server. STUN only
 reflects addresses; no TURN, and a pair that cannot connect stays on the relay.
+
+### Direct data channel liveness — local 926 / relay peer 377
+
+No frame changes; the data channel's ping/pong become a contract (TR-16). The kernel
+puts a ping ahead of its queued fragments every second and the browser answers each
+with a pong. A browser that hears nothing for 2.5 s leaves the path and moves its
+lanes to the relay as a carrier switch (commands replay, subscriptions resume from
+their cursors, the open view keeps its state); the kernel ends a peer that neither
+answered nor acknowledged queued data for 3 s (on a slow link the ping can wait behind
+a megabyte already in SCTP; a browser still acknowledging it is alive). A viewer's display
+registered again on another carrier (same viewer key, same generation) keeps the pump that
+serves it: the pump moves to the new carrier with its encoder state, gate and worker lease,
+and sends there once the registration response is queued, so the switch starts no pump and
+asks for no independent frame (a frame the viewer missed in the switch still asks for one,
+as on any lane); the carrier it left can no longer stop it. Another viewer key, another
+generation or a 535 resume gets a fresh pump, which stops the one it replaces at once so a
+late end cannot retire the generation the new one serves.
+The way back is proven first: the browser opens and admits direct sockets for every
+lane the relay carries while the relay keeps carrying them, and switches only once all
+are admitted. Browsers open data channels only to kernels >=926
+(`dataChannelMinimumProtocolVersion` in the web). The managed-upgrade list is
+[629, 636, 911, 926].
 
 ### MP-08 / MP-09 / MP-10 / MP-11: user-side browser frame stream removed — local 919 / peer 370
 
@@ -6050,15 +6215,135 @@ Clients need kernel protocol >=923 (`credentialVaultUnlockMinimumProtocolVersion
 web). The managed-upgrade list is [629, 636, 923]. Focused checks:
 `cargo test -p chariox-kernel --lib vault_unlock` and `node --test scripts/protocol-versions.test.mjs`.
 
-### Apps v2 — local 933 / relay peer 381
+### Apps v2 — local 962 / relay peer 411
 
 One allocation carries the whole Apps v2 Stage 1 line. Local requests: `BeginAppInstall` and
 `BeginAppUpdate` take a `source` (`local_file`, `register`, `dev_push`; omitted means `local_file`),
 `BeginAppDevPush` and `GetAppDevPush` start and poll a kernel-side build from the workspace
 (`AppDevPushBuilding`, `AppDevPushFailed`), and `InspectAppView` reads an open Room App Tab
 (`AppViewInspected`). Room App views take the versioned App-agent request and unprojected Room opens
-over the existing Room browser controller command. Relay peer 381 admits the App-agent request and the
-unprojected projection, and pairs the embedded local union with local 933. Clients carry no separate
-minimum for these requests: a kernel older than 933 refuses an unknown variant, and development
-stage kernels are re-provisioned. The managed-upgrade list is [629, 636, 911, 923, 933]. Focused checks:
+over the existing Room browser controller command. Relay peer 411 admits the App-agent request and the
+unprojected projection, and pairs the embedded local union with local 962. Clients carry no separate
+minimum for these requests: a kernel older than 962 refuses an unknown variant, and development
+stage kernels are re-provisioned. The managed-upgrade list is [629, 636, 962]. Focused checks:
 `cargo test -p chariox-kernel --lib protocol_shapes` and `pnpm protocol:conformance`.
+
+### Opaque reimage provider id: local 924 / relay peer 375
+
+The managed-environment reimage preflight carries `desiredRelease.providerId`. It was a
+one-value enum; it is now an opaque string that Cloud defines (an identifier: lowercase letters,
+digits and `._:-`, at most 128 characters). The kernel checks the identifier when it reads the
+preflight and does not know any provider. The wire value Cloud sends is unchanged, so no client
+changes behaviour; clients stop refusing ids they do not know, and Cloud refuses unsupported
+providers. Relay peer 375 only pairs the embedded local response union with local 924. The
+managed-upgrade list is [629, 636, 911, 923, 924]; 923 is the main release a
+managed kernel can run today, so it upgrades to 924 and rolls back from it. Focused checks:
+`cargo test -p chariox-kernel --lib -- protocol_shapes reimage` and
+`node --test scripts/protocol-versions.test.mjs`.
+
+The data-volume bounds of the managed bootstrap (10 to 10000 GB) are gone from the kernel: Cloud
+validates the size against the provider's limits before it writes the envelope, and the kernel only
+requires a positive size that matches the attached device. The persisted Cloud relay profile keeps
+the relay URL Cloud issued; the old rewrite of a pinned staging address is deleted.
+
+### MP-08 / MP-09 / MP-10 / MP-11: admission — local 927 / relay peer 378
+
+`SessionProcess` gains `state`, set on a command's own process (what it started waits with
+it): `{kind: "running"}`, `{kind: "held", reason, position, need_bytes, free_bytes,
+command_line}` (stopped before it grew, in line for room for its expected peak; `position`
+counts from 1 among commands waiting for the same reason, one per owner in turn) or
+`{kind: "paused", reason, command_line}` (stopped while growing into a tight pool or past
+the disk floor of max(5 %, 10 GiB)). `reason` is `memory` or `disk`. A waiting command
+starts by itself once its room is free and is never failed; clients derive the pane's
+queued-job row from `state` and stop it with `StopSessionProcesses`.
+`StartSessionProcessNow { session_id, process_id }` starts a waiting command whatever the
+room and answers `SessionProcessStartedNow { process_id }`; a command that is not waiting
+is refused. The embedded local union changes, so the relay peer moves to 378.
+
+Local protocol 928 and relay peer 379: the `interaction` outside event tells an outside agent the
+question it may show the person. A `pending` record carries `question` `{ title?, message,
+choices[{ id, label, style? }], text_reply?{ id, label, placeholder?, min_length, max_length? },
+expires_at_ms?, default_on_timeout? }` exactly when the grant holder may answer the decision; it
+has no choice reply texts, passkey flags or secret inputs, and the message is bounded to 8 KiB,
+the choices to 8 and the labels to 120 characters. Every other decision (critical level, a choice
+that needs the passkey, a passkey prompt, a secret input, provider login, credential, user-domain,
+hand-off or kernel-operation decision) carries the section 8 `pointer` and the summary `owner
+approval`; the event and the grant refusal read the same rule (`PendingInteraction::requires_terminal`),
+so an event never offers a question the kernel then refuses. A `resolved` record carries
+`resolution` `{ via: terminal | external_agent | timeout | cancelled, choice_id? }`, never reply
+text. An answer to a decision that is no longer pending fails with the stable code
+`interaction_closed` (a passkey prompt a terminal answered keeps `PASSKEY_ALREADY_ANSWERED`), and
+each applied answer writes an `interaction.answered` audit event `{ session_id, choice_id,
+connection_class, at_ms }` without the reply text. The managed-upgrade list is [629, 636, 911, 923, 928].
+Focused checks: `cargo test -p chariox-kernel --lib choice_events` and `node --test dist/agent-command-table.test.js`.
+
+### Vault value requests from an outside agent — local 929
+
+`RequestVaultSecret { credential_id, label, hosts, overwrite }` (grant holders on the local socket only; not forwarded
+to other kernels) answers `VaultSecretRequested { interaction_id, link, expires_at, credential_id }` at once and
+raises a Critical kernel-wide decision on the `kernel-access` scope: a `PasskeyPrompt` with `kind` `vault_secret`
+(`approve_choice_id` `secret`, `refuse_choice_id` `cancel`) that every owner terminal shows. The owner answers it with
+`RespondToInteraction { session_id: "kernel-access", interaction_id, choice_id: "secret", custom_reply: <value> }`
+(or `cancel`); a grant holder is refused for every choice, like any passkey prompt. The kernel stores the value in
+the Vault under `credential_id` (a new handle gets an `Authorization: Bearer ${secret}` header over HTTP, bound to `hosts`: at least one
+`host` or `host:port`, lowercase, no scheme, path or `*`, no IP literal but loopback, else `secret_request_invalid`; the
+prompt names the label and the hosts; an existing one needs `overwrite` and the same hosts) and the agent reads only `GetVaultSecretStatus { interaction_id }` →
+`VaultSecretStatusReported { interaction_id, credential_id, status }` with `status` one of `pending`, `stored`,
+`cancelled`, `timed_out`. The value is never in a response, an event, the command cache, history or a log.
+`link` is `<page>/s/<kernel_id>/<interaction_id>`, `<page>` being `secret_link.page_url` (HTTPS, set by the owner only)
+or the origin of the enrolled Cloud; with neither the request fails with `secret_link_unavailable`. Other refusals:
+`vault_locked`, `secret_request_exists`, `secret_request_invalid`, `secret_request_denied`, `secret_request_unknown`.
+Focused checks: `cargo test -p chariox-kernel --lib vault_secret`.
+
+### Acknowledged leased projection drain — local 934 / relay peer 383
+
+A worker keeps a drained leased projection until the home kernel acknowledges it, so a lost
+reply or a home restart cannot lose output. `drain_leased_runtime_projection` carries the
+required `acknowledged_projection_sequence`; `leased_runtime_projection_drained` carries the
+optional `projection_sequence` of the event it retains. Both kernels must speak peer 383. The
+managed-upgrade list is [629, 636, 911, 923, 934]. Focused checks:
+`cargo test -p chariox-kernel --lib protocol_shapes` and `pnpm protocol:conformance`.
+
+Landing 3 carries local 934 to 937 / relay peer 383 to 386 on top of the Landing 2 release at
+local 933 / peer 382, so the managed-upgrade list is [629, 636, 911, 923, 933, 936, 937].
+
+MP-08 / MP-09 / MP-10 / MP-11, local protocol **938**, relay peer **387** (EXT-21 / EXT-24):
+`RequestKernelAccess.holder_pid` is optional. Absent, the kernel resolves the holder from the
+Unix peer's host ancestry (SO_PEERCRED / LOCAL_PEERPID): the first installed provider harness
+in the kernel's own PID namespace, climbed to the outermost of a run of that same executable
+(Codex's per-command sandbox helper), else the depth-two fallback for an unsandboxed peer. A
+present pid must still be the requester or one of its OS ancestors. `no_wait: true` makes the
+kernel record the pending request, raise the popup and answer `KernelAccessStatus` at once; the
+owner's decision binds to the holder only, and a refusal, timeout or invalidation is remembered
+by holder identity. The Unix-only `GetKernelAccessStatus { holder_pid? }` answers
+`KernelAccessStatus { state: granted | pending | ended | not_requested, holder_pid,
+holder_executable, holder_harness?, grant?, reason? }` for that one identity; a pid outside the
+caller's chain is refused. The CLI's client-side holder discovery and detached `--no-wait`
+waiter are removed. The managed-upgrade list is [629, 636, 911, 923, 933, 936, 937, 938].
+
+MP-08 / MP-09 / MP-10 / MP-11, local 941 / peer 390: `KernelBrowser`
+`paste_secret` lets an authenticated person fill the focused editable field of
+`tab_id` / `generation` with `credential_id`. The kernel discovers the focused
+node from a fresh snapshot, validates the document and credential host/use, and
+uses the same registered Vault fill as the agent tool. It never submits. The
+Vault must be unlocked. Agents keep the observed-node MCP fill; this command
+is admitted only through the human terminal adapter. Responses contain only
+`inserted: true`. Browser display audience comes from the home kernel; model
+observations stay protected even when the owner's display is unmasked.
+
+## MP-08 / MP-09 / MP-10 / MP-11 shared client protocol discovery (950/399)
+
+`RelayStatus.status.local_daemon_protocol_version` is the answering kernel's
+`LOCAL_DAEMON_PROTOCOL_VERSION`. Local IPC, direct and encrypted relay callers
+read the same status projection. Hosted and self-hosted Web links read it before
+becoming ready, including reconnects, instead of depending on a Cloud heartbeat.
+The pairing-only link still joins before making any other request. This field
+advertises support; every request retains its kernel-owned authorization checks.
+The managed upgrade policy keeps current and previous releases 636 and 629 plus target 950.
+
+MP-08 / MP-09 / MP-10 / MP-11: the Apps v2/Landing 3 union uses the
+coordinator-assigned local 962 / relay peer 411. App execution is contract-2 WASM
+only. The native worker ships beside the kernel, enters containment before its
+identity handshake, and exposes only the versioned App WIT world through the
+kernel capability broker. The replaced engine's launch, runtime enrollment and
+privileged storage-helper paths are removed. Reinstall unsupported stored Apps.

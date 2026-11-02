@@ -24,6 +24,8 @@ pub(crate) mod git_observer;
 pub(crate) mod git_worktree_placement;
 pub mod history;
 pub mod history_archive;
+#[cfg(unix)]
+pub mod hot_reload;
 pub mod io;
 pub mod local;
 pub mod logging;
@@ -57,6 +59,7 @@ pub mod slice;
 pub mod slice_provider_auth;
 pub mod terminal;
 pub mod transport;
+pub mod web_bot_auth;
 pub mod workflow_code;
 pub(crate) mod workflow_publication_apps;
 pub(crate) mod workflow_publication_requirements;

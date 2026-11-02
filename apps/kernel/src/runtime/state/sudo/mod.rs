@@ -22,17 +22,21 @@ mod policy;
 mod process;
 mod receipts;
 mod scope;
-mod vault;
 mod window;
 pub(crate) use policy::{is_sudo_control, is_sudo_prompt};
-pub(crate) use vault::{require_login_handle_scope, vault_generate_spec, VAULT_GENERATE};
 pub(crate) use window::sudo_window_minutes;
 #[cfg(test)]
 pub(crate) use window::SUDO_WINDOW_LENGTH_FOR_TEST;
 #[cfg(test)]
+mod agent_auth_tests;
+#[cfg(test)]
 mod catalog_tests;
 #[cfg(test)]
+mod forgotten_machine_tests;
+#[cfg(test)]
 mod goal_tests;
+#[cfg(test)]
+mod leased_route_tests;
 #[cfg(test)]
 mod operation_tests;
 #[cfg(test)]
@@ -50,13 +54,19 @@ mod relaunch_tests;
 #[cfg(test)]
 mod remote_command_tests;
 #[cfg(test)]
+mod resource_register_tests;
+#[cfg(test)]
 mod task_scope_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
+mod vault_command_tests;
+#[cfg(test)]
 mod vault_tests;
 #[cfg(test)]
 mod window_tests;
+#[cfg(test)]
+mod worker_cleanup_tests;
 
 pub(super) type SudoStore = Arc<std::sync::Mutex<BTreeMap<String, KernelSudoTurn>>>;
 
@@ -91,3 +101,6 @@ const SUDO_WARNING: Duration = Duration::from_secs(10 * 60);
 /// A due warning/expiry handled later than this by the sweep means its
 /// dedicated timer did not fire: the kernel alerts instead of staying silent.
 const SUDO_TIMER_TOLERANCE: Duration = Duration::from_secs(5);
+
+#[cfg(all(test, target_os = "linux"))]
+mod watched_process_tests;

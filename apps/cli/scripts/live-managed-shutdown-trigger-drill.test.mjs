@@ -212,7 +212,7 @@ test("explicit lifecycle uses owner IPC stop and delete receipts and writes priv
     id: () => "run-fixture-1",
     writeEvidence: async (path, value) => {
       captured = structuredClone(value)
-      const { writeCaptureOutput } = await import("./path1-provider-rebuild-capture.mjs")
+      const { writeCaptureOutput } = await import("./path1-capture-output.mjs")
       return writeCaptureOutput(path, value)
     },
   })

@@ -139,6 +139,19 @@ done
         params.clone(),
         policy.clone(),
     );
+    let cancel = json!({"op":"cancel_download","tab_id":"host-tab-a","generation":1,"download_id":"download-a"});
+    assert!(matches!(
+        host.protected_request_admitted(
+            "alice",
+            Some(&admission),
+            "host.browser",
+            cancel,
+            policy.clone()
+        ),
+        Err(crate::error::HostFailure::Refused(
+            crate::error::UserDomainRefusalReason::NotGranted
+        ))
+    ));
     let reached = root.path().join("answered").exists();
     let human = host.protected_request(
         "alice",

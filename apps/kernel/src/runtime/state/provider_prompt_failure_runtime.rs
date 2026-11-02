@@ -41,6 +41,24 @@ impl KernelRuntimeState {
         .map(|_| ())
     }
 
+    #[cfg(test)]
+    pub(crate) async fn fail_provider_run_for_test(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        termination: crate::provider::ProviderRunTermination,
+    ) -> Result<(), DaemonError> {
+        let message = termination.reason.clone();
+        self.fail_owned_provider_prompt_with_termination(
+            session_id,
+            provider_run_id,
+            &message,
+            true,
+            Some(termination),
+        )
+        .await
+    }
+
     #[expect(
         clippy::too_many_arguments,
         reason = "Keep native failure evidence separate from termination and recovery diagnostics"
@@ -93,6 +111,22 @@ impl KernelRuntimeState {
             owned.record_failed_provider_tools(session_id, provider_run_id, &agent_id, termination);
         }
         let guarded_prompt_id = active_prompt.id().to_string();
+        // A stop from Health is plain to the person; what the provider printed
+        // while its tree was stopped stays in the kernel log.
+        let stopped_reason = provider_termination
+            .as_ref()
+            .filter(|termination| {
+                termination.category == crate::provider::ProviderRunTerminationCategory::OutsideEnd
+            })
+            .map(|termination| termination.reason.clone());
+        if stopped_reason.is_some() {
+            tracing::info!(
+                provider_run_id,
+                detail = %crate::secret_redaction::redact_secrets(message),
+                "provider turn stopped by a session controller"
+            );
+        }
+        let message = stopped_reason.as_deref().unwrap_or(message);
         self.flush_provider_history(provider_run_id).await?;
         // The settled turn always says why it failed. A failure without
         // termination evidence, such as a rejected dispatch, is typed from its
@@ -113,12 +147,7 @@ impl KernelRuntimeState {
         {
             return Ok(true);
         }
-        let safe_message = crate::provider::sanitize_provider_diagnostic(message);
-        let safe_message = if safe_message.is_empty() {
-            "provider reported an error".to_string()
-        } else {
-            safe_message
-        };
+        let safe_message = failure.notice();
         let failed_attempt = FailedProviderAttempt {
             provider_run: &provider_run,
             agent_id: &agent_id,
@@ -246,16 +275,21 @@ impl KernelRuntimeState {
         if !attempt_recorded {
             self.record_failed_provider_attempt(&failed_attempt).await?;
         }
-        let _ = self.inject_metaagent_turn_failure_event(
-            session_id,
-            &agent_id,
-            &active_prompt,
-            Some(provider_run_id),
-            &safe_message,
-        );
+        if failure.is_error() {
+            let _ = self.inject_metaagent_turn_failure_event(
+                session_id,
+                &agent_id,
+                &active_prompt,
+                Some(provider_run_id),
+                &safe_message,
+            );
+        }
         // Provider EOF/error cannot promote a partial answer to done. Task
         // bookkeeping is best-effort: the prompt failure path below always runs.
-        let task_settlement = if owned.config_projection.snapshot().room_agent_tools {
+        let task_settlement = if !failure.is_error() {
+            // A stop the person made (from Health) ends the task as a Stop does.
+            owned.settle_stopped_agent_task(session_id, &agent_id, &active_prompt, provider_run_id)
+        } else if owned.config_projection.snapshot().room_agent_tools {
             let settle = || -> Result<_, DaemonError> {
                 let prepared = crate::app::KernelPreparedPromptSubmission {
                     session_id: session_id.into(),
@@ -270,7 +304,11 @@ impl KernelRuntimeState {
                     .ok_or_else(|| {
                         crate::durable_state::agent_lifecycle::error("failed turn has no task")
                     })?;
-                crate::durable_state::agent_lifecycle::end_failed_turn(&owned.durable_state_store,&task,format!("Provider run failed: {safe_message}. Owner must reconcile and resume or cancel"))?;
+                crate::durable_state::agent_lifecycle::end_failed_turn(
+                    &owned.durable_state_store,
+                    &task,
+                    safe_message.clone(),
+                )?;
                 Ok(owned
                     .durable_state_store
                     .agent_tasks(Some(session_id), Some(&agent_id))?
@@ -305,23 +343,30 @@ impl KernelRuntimeState {
                 Some(provider_run_id),
                 Some(active_prompt.id()),
                 provider_termination,
-                failure,
+                failure.clone(),
             )?
         };
         if completion.is_none() {
             return Ok(false);
         }
-        Box::pin(self.finish_agent_task_settlement(task_settlement, &active_prompt)).await?;
+        Box::pin(self.finish_failed_agent_task_settlement(
+            task_settlement,
+            &active_prompt,
+            Some(&failure),
+        ))
+        .await?;
         // Recorded before any queued prompt or substitute is started, so the
         // agent's next turn carries the note.
-        owned.record_failed_request(
-            session_id,
-            provider_run_id,
-            provider_run.adapter_key(),
-            &agent_id,
-            &active_prompt,
-            message,
-        );
+        if failure.is_error() {
+            owned.record_failed_request(
+                session_id,
+                provider_run_id,
+                provider_run.adapter_key(),
+                &agent_id,
+                &active_prompt,
+                message,
+            );
+        }
         if workflow_failed {
             let dispatches = owned.workflow_maybe_start_next_queued_prompt(session_id);
             owned

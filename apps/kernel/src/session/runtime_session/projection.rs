@@ -97,6 +97,13 @@ pub(super) fn redacted_for_user(mut session: RuntimeSession, user_id: &str) -> R
     session
         .agent_wakes
         .retain(|wake| visible_agent_ids.contains(&wake.agent_id));
+    // A trigger and its unconfirmed firings carry the owner's prompt text.
+    session
+        .agent_triggers_mut()
+        .retain(|trigger| visible_agent_ids.contains(trigger.agent_id()));
+    session
+        .trigger_deliveries
+        .retain(|delivery| visible_agent_ids.contains(delivery.agent_id()));
     // A04: window, run and requester details belong to the window's owner.
     session
         .sudo_windows

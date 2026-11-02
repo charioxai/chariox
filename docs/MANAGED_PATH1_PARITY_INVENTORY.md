@@ -1,5 +1,17 @@
 # Managed Path-1 parity inventory (MP-11)
 
+## MP-08 / MP-09 / MP-10 / MP-11 process disk telemetry (2026-11-02)
+
+Local954 / peer403 adds nullable `disk_io_bytes` to the existing session process
+sample. It is the cumulative storage reads plus writes of each active process,
+read from Linux process I/O or macOS process rusage. Unavailable counters remain
+null. Ordinary and managed kernels use the same launch-owned sampling and
+session feed; process ownership, admission, Start now and stop authority are
+unchanged. Machines sums these counters upward and keeps unknown totals unknown.
+The focused real-write regression is
+`runtime::process_resources::tests::disk_io_sample_reports_real_owned_process_writes`.
+Hosted UI acceptance is recorded separately by the machinesui lane.
+
 ## MP-08 / MP-09 / MP-10 / MP-11 provider account references (2026-10-28)
 
 Local 770 / peer 320 projects account identity, authentication state and configured
@@ -120,6 +132,23 @@ history. The kernel derives it from inline bytes or a local file's metadata;
 ordinary and managed placement use the same history path. The Web consumes this
 metadata instead of setting every historical attachment size to zero. Existing
 history without this field remains readable. No managed shutdown policy changes.
+## MP-08 / MP-09 / MP-10 / MP-11 root Claude YOLO compatibility (2026-10-25)
+
+Ordinary root kernels now apply the same Claude compatibility marker already
+used inside managed bubblewrap: `IS_SANDBOX=1`. The ordinary override is scoped
+to effective UID 0 and YOLO Claude agents, including permission changes that
+restart a running provider. Required mode removes the shim from that run's
+explicit environment; inherited operator settings remain the operator's choice.
+Non-root launches and other adapters receive no override. The managed namespace
+policy remains unchanged.
+
+The shared provider failure classifier maps Claude's recorded root refusal to
+an actionable error through the existing failure pane. There is no protocol
+shape or shutdown-policy change. See [the self-hosting guide and offline
+version-bump drill](RUNNING_LOCAL.md#claude-yolo-when-self-hosting-as-root).
+The drill and focused real root-kernel comparison establish this compatibility
+case; they do not close the full ordinary/managed MP-10 matrix or replace
+independent review of this MP-11 provider-launch change.
 
 ## MP-08 / MP-09 / MP-10 / MP-11: unprojected Room App Tabs (A3)
 
@@ -1531,7 +1560,7 @@ command/state files abbreviate `apps/ios/CharioxPackage/Sources/CharioxFeature/S
    discarded. Codex, Claude and OpenCode resolve commands in PATH order
    (`provider/codex.rs:164-176`, `provider/claude.rs:508-524`,
    `provider/opencode.rs:163-176`); image setup places pinned binaries under
-   `/usr/local/bin` (`prepare-hetzner-image.sh:197-199`). Root's 17/17 focused
+   `/usr/local/bin` (`prepare-worker-image.sh:197-199`). Root's 17/17 focused
    Node source-contract checks do not execute Rust resolver behavior. The
    Rust resolver tests cover timeout cleanup of a background stdout writer
    and oversized output; actual effective units and resolved binaries on the
@@ -1571,7 +1600,7 @@ command/state files abbreviate `apps/ios/CharioxPackage/Sources/CharioxFeature/S
 | **Current d3** · Kernel-only slice broker lease vs provider inheritance — `managed_bootstrap/mod.rs:44-59`; `supervisor.rs:301-317,451-516,713-1010,1366-1449`; `worker.rs:575,1056-1293`; `slice/local_docker/broker.rs:119-197,215-235`; `provider/managed_isolation.rs:110-143,168-201,908-936` | Path-1 clears inherited broker controls and restores only a slice root derived from the absolute broker socket. The private lease is passed to the kernel by FD; without a lease the kernel gets a required marker and no socket/FD. Kernel startup consumes and scrubs the controls and sets close-on-exec. The provider launch scrub removes all broker controls and the slice root, while the Linux launch regressions use the production provider command seam to check the child has no broker environment or FD. This supports ordinary provider launch while retaining kernel-owned slice operations; it does not establish live access or fresh-worker behavior. The Rust tests were inspected, not run here. |
 | **Current d3** · Environment scrub, retry, restore, reconnect — `provider/managed_isolation.rs:107-143,168-201,908-936,1324-1351`; `provider/service/run_lifecycle.rs:11-64`; `runtime/state/provider_relaunch_runtime.rs:55-85`; `runtime/state/provider_launch_failure_runtime.rs:27-45,120-174`; `runtime/state/project_environment_setup.rs:2061-2099`; `provider/run_actor/command_execution.rs:25-70` | The fixed list removes managed topology, slice, bootstrap, broker and release controls; ambient secret-like and numbered workspace-root names are also removed. Selected account paths and resolved credentials are intentional launch inputs. Initial starts and policy relaunches resolve through the common adapter; setup-recovery snapshots preserve that launch. Prompt submit/abort restore live runtime slots without selecting a new topology. Launch-failure retry here retries durable cleanup, not provider execution. Live retry/reconnect comparison remains open. |
 | Supervisor restart and systemd — `managed_bootstrap/supervisor.rs:110-172`; `managed_bootstrap/worker.rs:278-304,463-489`; Path-1 units `chariox-path1-managed-bootstrap.service:9-32`, `chariox-disposable-worker-bootstrap.service:9-39`; `verify-image-release.mjs:369-445`; `upgrade-image.sh:121-134,654-660` | Kernel respawn uses the same Path-1 helper; worker preparation/restart remains Path-1. Role units contain no provider-restricting `Protect*`, `Private*`, `NoNewPrivileges`, namespace, address-family, `ReadWritePaths`, or `UMask` directives; release verification rejects those on the home unit and upgrade rejects Path-1 drop-ins. Worker `StateDirectory=chariox`/mode `0700` allocates service state, not a filesystem/process sandbox. Hardened shared-host, rootless Docker and broker services are separate. Effective installed units remain uninspected. |
-| **Current d3** · Image, shell, container and AppArmor selectors — `prepare-hetzner-image.sh:36-54,137-149,239-241`; `install-image.sh:16-31,104-113,445-537,563-568`; `upgrade-image.sh:24-40,121-142`; builder `scripts/build-managed-kernel-release.mjs:11-16,121-182`; guard `scripts/managed-kernel-release.test.mjs:915-940,1013-1050`; slice `docker/Dockerfile:2,5,53-56,58,67`; `provision-linux-docker-slice.sh:766-784,860-883`; `docker/start-runtime.sh` (`start_slice_kernel`); `chariox-slice-provider.apparmor:1-7` | Preparation/install/upgrade choose Path-1 explicitly and verify its unit. The builder selects the named `scratch` target, which exports exactly the kernel, managed-bootstrap, and relay binaries; it then creates and signs the build attestation outside that image stage. The other Dockerfile base images are digest-pinned. The exporter is an artifact stage, not an installed runtime/state image. The installer separately verifies the signed release/attestation and publishes it under the digest-named root-owned release tree. Bubblewrap/AppArmor/seccomp compatibility flags apply to the separate inner Docker slice; they are not selected for host Path-1 provider children. The image was not built or installed here; effective host policy remains uninspected. |
+| **Current d3** · Image, shell, container and AppArmor selectors — `prepare-worker-image.sh:36-54,137-149,239-241`; `install-image.sh:16-31,104-113,445-537,563-568`; `upgrade-image.sh:24-40,121-142`; builder `scripts/build-managed-kernel-release.mjs:11-16,121-182`; guard `scripts/managed-kernel-release.test.mjs:915-940,1013-1050`; slice `docker/Dockerfile:2,5,53-56,58,67`; `provision-linux-docker-slice.sh:766-784,860-883`; `docker/start-runtime.sh` (`start_slice_kernel`); `chariox-slice-provider.apparmor:1-7` | Preparation/install/upgrade choose Path-1 explicitly and verify its unit. The builder selects the named `scratch` target, which exports exactly the kernel, managed-bootstrap, and relay binaries; it then creates and signs the build attestation outside that image stage. The other Dockerfile base images are digest-pinned. The exporter is an artifact stage, not an installed runtime/state image. The installer separately verifies the signed release/attestation and publishes it under the digest-named root-owned release tree. Bubblewrap/AppArmor/seccomp compatibility flags apply to the separate inner Docker slice; they are not selected for host Path-1 provider children. The image was not built or installed here; effective host policy remains uninspected. |
 | **Current d3** · Allowed managed differences and mandatory shutdown — `managed_bootstrap/release.rs:81-190,285-345`; `install-image.sh:104-113,445-537`; `upgrade-image.sh:620-654`; `local/api/types/managed_environment.rs:92-103,220-237`; `runtime/managed_environment_control/cloud_contract.rs:153-170,206-211,362-368`; CLI `waiting-room-managed-environments.ts:312-381` | The only approved differences remain signed release deployment/atomic activation and mandatory managed-machine automatic shutdown. The ordinary Path-1 provider launch and kernel/provider protocol remain shared. OSS defines and projects minimum-runtime/idle-delay policy; the Cloud timer, reconciliation, and last-agent-finished execution are outside this refreshed OSS source pass and the retained Cloud baseline is stale. Inspect current Cloud and run every required shutdown trigger on the rebuilt machine before closing MP-09. |
 | Exact protected paths and Swift/TUI projections — `git_worktree_placement.rs:18-33,42-157,193-242`; `runtime/workspace_search.rs:198-253`; `packages/kernel-client/src/waiting-room-runtime-placement.ts:54-90,104-125`; CLI `waiting-room-controller.ts:320-411`, `waiting-room-managed-environments.ts:43-68,95-124`, `waiting-room-managed-environment-launch-controller.ts:88-120`, `waiting-room-managed-environment-reimage-controller.ts:78-145`, `waiting-room-start-rows.ts:136-147`, `cli-waiting-room-composition.ts:547-625,752-885`; `packages/kernel-client/src/ipc-managed-environment-requests.ts:24-140,183-218,234-305`; Swift `KernelProtocolModels.swift:3-89`, `KernelProtocolRequests.swift` | Exact entry and session/provider launch share cwd preflight. The local placement fix protects five control subdirectories, not the root/development/siblings. CLI projects catalog/readiness, trusted-root/context setup, lifecycle/auto-stop and reimage confirmation. After preparation it strips managed-only fields before ordinary session launch (`cli-waiting-room-composition.ts:598-625`). These are setup/control-plane projections, not an execution exception. Inspected Swift session/request models have no managed-environment projection; Swift managed commands concern live sync (`CharioxAppModelCommands.swift:85-98,157-189`; `CommandCenter.swift:164-167,464-495`). No Swift build or end-to-end client parity was run. |
 
@@ -1673,8 +1702,8 @@ owns that exact-head result.
 | **Root materialization, basename, and collision behavior** — `apps/kernel/src/managed_bootstrap/mod.rs:88-98,323-396,518-522,758-781`; `apps/kernel/src/managed_context/empty.rs:161-208`; `apps/kernel/src/managed_context/development/export.rs`; `apps/kernel/src/managed_context/development/import.rs` | Bootstrap rejects mismatched/non-normalized roots, stores the root with the existing generation-bound receipt, and the empty-workspace/import paths use the trusted setting. Export preserves a validated source basename and rejects case-insensitive selected-repository collisions; import rejects occupied destinations instead of clobbering. Focused source assertions include `apps/kernel/src/managed_context/development/tests.rs:699-818` (basename and collision), `823-874` (trusted-root publication/retry), and `887-947` (occupied destinations), plus `apps/kernel/src/managed_bootstrap/tests.rs:325-400` (root match/mismatch). The copied context, custom directory creation, no-clobber recovery, and reconnect flow still need exact-head execution on a fresh worker. |
 | **Bootstrap retry, restart, and identity restoration** — `apps/kernel/src/managed_bootstrap/worker.rs:280-510,517-571,690-719`; `apps/kernel/src/managed_bootstrap/supervisor.rs:120-270`; `apps/kernel/src/provider/run_actor/command_execution.rs:34-103`; `apps/kernel/src/runtime/state/provider_launch_owned_state.rs:180-246` | Bounded bootstrap retry and receipt recovery preserve the same allocation, release, root, and worker configuration; restart reconstructs the Path-1 child boundary. Focused source tests include `apps/kernel/src/managed_bootstrap/worker.rs:1054-1200` (`disposable_worker_spawn_uses_ordinary_kernel_and_scrubs_parent_state`), `1435-1510` (`disposable_worker_restart_reapplies_path1_contract`), and `apps/kernel/src/managed_bootstrap/supervisor.rs:1095-1255` (`path1_confirmation_restart_reapplies_ordinary_boundary`). No provider retry/history divergence is source-proven here. Provider process ancestry/environment and session/history parity across restart/reconnect remain live gates. |
 | **Errors and client/runtime projections** — `apps/kernel/src/git_worktree_placement.rs:48-160`; `apps/kernel/src/provider/managed_isolation.rs:907-945`; `apps/kernel/src/transport/relay_client/peer_requests.rs:1681-1703`; `apps/cli/src/waiting-room-managed-environment-launch-controller.ts:348-408`; `apps/ios/CharioxPackage/Sources/CharioxFeature/Kernel/KernelProtocolModels.swift:3-19,54-69` | Ordinary cwd errors retain the shared local-transport mapping; isolated-provider and context-transfer failures use their scoped error surfaces. The CLI projects the server managed-root summary, while the inspected Swift `RuntimeSession` has no managed-machine projection. No iOS build or exhaustive cross-client parity review was done. Compare structured errors and post-pivot Web/TUI/Swift behavior on the same runtime before closing MP-08. |
-| **Managed-home vs disposable-worker service selection** — `deploy/managed-kernel/prepare-hetzner-image.sh:29-42,123-124`; `deploy/managed-kernel/install-image.sh:16-24,467-476`; `deploy/managed-kernel/upgrade-image.sh:24-40,108-123,602-613`; `deploy/managed-kernel/managed-kernel-upgrade-state.mjs:331-337`; `apps/cli/scripts/live-path1-rebuild-evidence-verifier.mjs:362-374` | Fresh-image preparation requires explicit topology and installs the Path-1 managed-home service; receipt kind distinguishes allocation-worker service. The rebuild verifier requires `chariox-path1-managed-bootstrap.service` and rejects the shared-host and disposable-worker units. The prior omitted-selector defect is fixed: `upgrade-image.sh` now rejects missing, empty, or invalid topology before touching an image, with focused Node 2/2. The installer also verifies a reused digest-named release under the selected topology, with focused activation 10/10 and one Linux-root signed Path-1 fixture pass. These are source/fixture checks; actual host install, upgrade, systemd selection, and rollback remain live gates. |
-| **Image, containers, Bubblewrap, and host policy** — `deploy/managed-kernel/prepare-hetzner-image.sh:185-187`; `apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh:765-781,857-890`; `apps/kernel/slice-linux-docker/docker/Dockerfile:129-138,196-222`; `deploy/managed-kernel/chariox-rootless-docker.service`; `deploy/managed-kernel/chariox-slice-broker.service` | Bubblewrap runtime-bind probing and slice AppArmor/seccomp/capability policy belong to shared-host or Docker-slice topologies. Checked-in Path-1 service selection does not choose them. No image build, effective host policy, provider ancestry, or live mount/capability inspection was performed; retain those acceptance requirements. |
+| **Managed-home vs disposable-worker service selection** — `deploy/managed-kernel/prepare-worker-image.sh:29-42,123-124`; `deploy/managed-kernel/install-image.sh:16-24,467-476`; `deploy/managed-kernel/upgrade-image.sh:24-40,108-123,602-613`; `deploy/managed-kernel/managed-kernel-upgrade-state.mjs:331-337`; `apps/cli/scripts/live-path1-rebuild-evidence-verifier.mjs:362-374` | Fresh-image preparation requires explicit topology and installs the Path-1 managed-home service; receipt kind distinguishes allocation-worker service. The rebuild verifier requires `chariox-path1-managed-bootstrap.service` and rejects the shared-host and disposable-worker units. The prior omitted-selector defect is fixed: `upgrade-image.sh` now rejects missing, empty, or invalid topology before touching an image, with focused Node 2/2. The installer also verifies a reused digest-named release under the selected topology, with focused activation 10/10 and one Linux-root signed Path-1 fixture pass. These are source/fixture checks; actual host install, upgrade, systemd selection, and rollback remain live gates. |
+| **Image, containers, Bubblewrap, and host policy** — `deploy/managed-kernel/prepare-worker-image.sh:185-187`; `apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh:765-781,857-890`; `apps/kernel/slice-linux-docker/docker/Dockerfile:129-138,196-222`; `deploy/managed-kernel/chariox-rootless-docker.service`; `deploy/managed-kernel/chariox-slice-broker.service` | Bubblewrap runtime-bind probing and slice AppArmor/seccomp/capability policy belong to shared-host or Docker-slice topologies. Checked-in Path-1 service selection does not choose them. No image build, effective host policy, provider ancestry, or live mount/capability inspection was performed; retain those acceptance requirements. |
 | **Signed release and shutdown policy** — `apps/kernel/src/managed_bootstrap/release.rs:1-65,285-345`; `deploy/managed-kernel/install-image.sh:397-476`; `deploy/managed-kernel/upgrade-image.sh:620-654`; `apps/kernel/src/runtime/managed_kernel_activity.rs:19-120`; `apps/cli/scripts/managed-ordinary-parity-matrix.mjs:108-127,277-289` | Signed digest verification, atomic activation, and rollback are deployment differences; release-ordering/recovery assertions are in `deploy/managed-kernel/managed-release-activation.test.mjs`. The stale installer-call assertion and the missing topology verification on reused releases were corrected, and the full Node suite passes 10/10. Mandatory Cloud shutdown remains an allowed policy difference. OSS reports activity and policy, but Cloud timer/reconciliation execution was not inspected here. Run all triggers, including last-agent-finish timing, disabled/keep-running, restart, manual stop, and deployment reconciliation, on the rebuilt worker before closing MP-09. |
 | **Prior parity inventory** — `docs/MANAGED_ORDINARY_KERNEL_PARITY_INVENTORY.md:12-39,112-145` | Its former fixed-root statement is now correctly qualified as the default `/home/chariox/<basename>`; the machine-level trusted root may select another absolute path, and Cloud/bootstrap/receipt/worker/Web must carry one authoritative value. The existing document correctly keeps source assertions separate from live capture. |
 
@@ -2051,3 +2080,63 @@ RED diagnostics and cleanup are retained under
 Opted-in mirror-v2 viewers receive the reset DOM/CSS and its positive native-font requirements before font resource bytes. The existing handover readiness check remains required; the native view stays in place while fonts hydrate. Legacy viewers retain first-packet fonts. The next resource credits prioritize fonts across all document slots before images, and a completed frame-bound font response avoids unrelated renderer image/load queries. Packet budgets, credential-free fallback gates, document/policy checks and input authority stay in the shared kernel path. Deferred packets also pin the browser, connection and session; retaining the same loader string cannot re-admit a retired owner. No serialized protocol shape changes.
 
 Supplementary regressions cover a blocked font response, legacy behavior, main/child font ordering, and response ownership. Real built-client new-tab first-packet, typography/handover, public-site, quiet timing and soak acceptance remain required; source checks alone do not close these items.
+
+## MP-08 / MP-09 / MP-10 / MP-11 kernel browser downloads (937/386)
+
+BROWSER07 uses the ordinary host browser/controller path on every placement.
+`state.downloads` lists the observed download ID, Tab, suggested basename, state
+(`in_progress`, `done`, `failed`, `cancelled`), received bytes and a nullable path.
+Only `done` publishes a verified readable file. `cancel_download` takes the observed
+Tab, generation and download ID; normal grant, current run and takeover checks apply.
+Unfocused agents see downloads only for Tabs in their retained grant. There is no
+new viewer UI in this change.
+
+Chrome writes GUID filenames into a private spool under the OS user's
+`~/.local/share/chariox/browser-downloads/`. Completed files move into a Room-keyed
+directory there, outside repositories and protected kernel state. Limits are
+256 MiB per file, 1 GiB of reserved/received bytes per Room, 200 retained download
+records per browser, plus the controller's free-space reserve. CDP progress
+cancels oversized streams, including unknown-length responses; partial files are
+removed. Browser stop/recovery removes the transient download tree. A replacement controller
+also removes its stopped predecessor's tree using the stable kernel/profile binding. Room end
+revokes its agents and removes its files; later downloads from its pages are
+cancelled. Files an agent wants to keep must be moved before Room/browser cleanup.
+This lifecycle does not change MP-09 shutdown triggers or prolong activity.
+
+Focused regression: `node --test` on `kernel-browser-downloads.test.mjs`,
+`kernel-browser-host.test.mjs` and `browser-controller-compatibility.test.mjs`
+under the docker controller directory. Real Chrome drill: run
+`kernel-browser-downloads.browser-test.mjs` as an ordinary user with an explicit
+`CHARIOX_BRDL_DRILL_ROOT`, sandboxed `CHARIOX_KERNEL_BROWSER_EXECUTABLE`, isolated
+XDG/TMPDIR and `CHARIOX_KERNEL_BROWSER_HEADLESS=1`. It covers a slow attachment
+navigation, link click, observed progress, readable bytes, cancellation, two Tabs,
+Room cleanup and browser cleanup. Kernel/provider tool acceptance also requires
+those operations through a real authenticated run. These checks alone do not
+close the wider MP-10 parity matrix or the MP-11 security-anchor review.
+
+## MP-08 / MP-09 / MP-10 / MP-11 owner Vault management (2026-11-02)
+
+Protocol 958/407 reconciles owner and agent creation: both persist a canonical
+`VaultUseBinding` in the credential registry and store each value in its own
+ordinary encrypted Vault slot. The owner form sends the same typed Site,
+CommandEnvironment, File or TOTP target; replacement cannot change that binding.
+The duplicate owner catalogue and owner-only inventory protocol are removed.
+`ListCredentials` is the single value-free inventory for both creators.
+
+Owner-only Create/Generate/Reveal/Activity/Replace/Delete remain checked at the
+router and executor. Agents, sudo/KA callers, forwarded Hosts and other users
+cannot reveal values. Owner controls bypass command receipts and client replay;
+Debug, payload redaction and the external response boundary protect values.
+
+Activity lives as a value-free encrypted log in the same Vault. It records owner
+creation, reveal and replacement, plus browser/HTTP agent operations and exact-use
+refusals, attributed to the caller. Agent-created entries also expose their
+creation metadata in Activity. The internal Activity key cannot be resolved or
+changed as a credential and never enters the ordinary value cache. Owner changes
+restore registry and value on failure; Activity also restores post-rename write
+failures. A failed rollback requires explicit recovery.
+
+These paths are common to ordinary and managed kernels. No placement branch,
+provider execution rule, relay admission, signing/trust or managed automatic
+shutdown behavior changes (MP-09). Focused router/storage and hosted owner-to-agent
+drills cover this seam only; they do not close the entire MP-10 comparison matrix.

@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, writeFile, realpath, rm, symlink, readFile, stat } from
 import { tmpdir } from "node:os";
 import path from "node:path";
 import nodeTest from "node:test";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { uploadBrowserFiles } from "./browser-controller-files.mjs";
 import { BrowserUploadStaging, uploadCopyTimeoutMs } from "./browser-controller-upload-staging.mjs";
@@ -12,15 +12,41 @@ import { BrowserUploadStaging, uploadCopyTimeoutMs } from "./browser-controller-
 const test = (name, run) => nodeTest(name, { skip: process.platform !== "linux" }, run);
 const platformFixture = {};
 
+test("owned CDP pipe uploads retain bytes until explicit browser retirement", async t => {
+  const root = await realpath(await mkdtemp(path.join(tmpdir(), "chariox-pipe-upload-")));
+  const child = spawn('python3', ['-c', 'import time; time.sleep(60)', '--remote-debugging-pipe'], { stdio: 'ignore' });
+  const stop = async () => {
+    if (!Number.isSafeInteger(child.pid) || child.pid <= 1) throw Error('invalid fixture PID');
+    if (child.exitCode === null && child.signalCode === null) {
+      const exited = new Promise(resolve => child.once('exit', resolve));
+      process.kill(child.pid, 'SIGTERM');
+      await exited;
+    }
+  };
+  t.after(async () => { await stop(); await rm(root, { recursive: true, force: true }); });
+  const file = path.join(root, 'report.txt'); await writeFile(file, 'approved');
+  const stager = new BrowserUploadStaging({ root: path.join(root, 'staging') });
+  const browserIdentity = 'pipe:11111111-1111-4111-8111-111111111111';
+  const connection = { async send() { return { processInfo: [{ type: 'browser', id: child.pid }] }; } };
+  const upload = await stager.prepare({ files: [file], metadata: [await approvedMetadata(file)], browserIdentity, connection });
+  await upload.markExposed(); await upload.discard();
+  assert.equal(await readFile(upload.files[0], 'utf8'), 'approved');
+  await assert.rejects(stager.retirePipe(browserIdentity), /retirement/);
+  await stop();
+  await stager.retirePipe(browserIdentity);
+  await assert.rejects(readFile(upload.files[0]), { code: 'ENOENT' });
+});
+
 async function ownedBrowser(t, root) {
   const previous = process.env.CHARIOX_BROWSER_LIFECYCLE_ROOT;
   process.env.CHARIOX_BROWSER_LIFECYCLE_ROOT = path.join(root, "lifetimes");
   const lifecycle = fileURLToPath(new URL("./browser-lifecycle.py", import.meta.url));
   const profile = path.join(root, "profile"), portFile = path.join(root, "port");
   const code = `import socket,time\ns=socket.socket();s.bind(("127.0.0.1",0));s.listen()\nopen(${JSON.stringify(portFile)},"w").write(str(s.getsockname()[1]))\ntime.sleep(60)`;
-  const record = JSON.parse(execFileSync("python3", [lifecycle, "start", profile, path.join(root, "browser.log"), "python3", "-c", code, `--user-data-dir=${profile}`], { encoding: "utf8", timeout: 8000 }));
+  const env = { ...process.env, TMPDIR: root };
+  const record = JSON.parse(execFileSync("python3", [lifecycle, "start", profile, path.join(root, "browser.log"), "python3", "-c", code, `--user-data-dir=${profile}`], { env, encoding: "utf8", timeout: 8000 }));
   t.after(async () => {
-    try { execFileSync("python3", [lifecycle, "stop", profile], { timeout: 15000, stdio: "pipe" }); }
+    try { execFileSync("python3", [lifecycle, "stop", profile], { env, timeout: 15000, stdio: "pipe" }); }
     finally {
       if (previous === undefined) delete process.env.CHARIOX_BROWSER_LIFECYCLE_ROOT;
       else process.env.CHARIOX_BROWSER_LIFECYCLE_ROOT = previous;

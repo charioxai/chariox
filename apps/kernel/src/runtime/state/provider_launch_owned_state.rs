@@ -464,15 +464,17 @@ impl KernelRuntimeOwnedState {
                     &request,
                 )?,
             };
-            let provider_credential_env =
-                crate::provider::resolve_provider_account_credentials_for_launch(
+            let provider_credential_env = match crate::app::handed_over_credentials(&request) {
+                Some(credentials) => credentials,
+                None => crate::provider::resolve_provider_account_credentials_for_launch(
                     &config,
                     &self.provider_account_profiles,
                     &account_owner_user_id,
                     &request.provider,
                     &request.account_profile,
                     request.client_interface,
-                )?;
+                )?,
+            };
             request = request.with_provider_credential_env(provider_credential_env);
         }
         Ok(request)

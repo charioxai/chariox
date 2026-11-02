@@ -28,7 +28,7 @@ export async function captureBrowserSnapshot({
     send: async (...args) => redactObservation(await rawConnection.send(...args), protectedValues),
   };
   const options = snapshotLimits(limits);
-  const frames = snapshotFrames(
+  const { frames, truncated: framesTruncated } = snapshotFrames(
     await assertCurrentDocument(connection, sessionId, targetId, documentId),
     options.maxFrames,
   );
@@ -44,7 +44,7 @@ export async function captureBrowserSnapshot({
       sessionId,
     ),
   ]);
-  const currentFrames = snapshotFrames(
+  const { frames: currentFrames } = snapshotFrames(
     await assertCurrentDocument(connection, sessionId, targetId, documentId),
     options.maxFrames,
   );
@@ -61,7 +61,7 @@ export async function captureBrowserSnapshot({
     document_id: documentId,
     snapshot_revision: snapshotRevision,
     accessibility_nodes: accessibility.nodes,
-    accessibility_truncated: accessibility.truncated,
+    accessibility_truncated: accessibility.truncated || framesTruncated,
     ...compactedDom,
   };
 }
@@ -133,18 +133,18 @@ async function assertCurrentDocument(connection, sessionId, targetId, documentId
   return frameTree?.frameTree;
 }
 
+// A page with more frames than the bound is read up to it; `truncated` says that frames were left out.
 function snapshotFrames(frameTree, maxFrames) {
   const pending = [frameTree];
   const frames = [];
+  let truncated = false;
   while (pending.length) {
     const tree = pending.shift();
-    if (frames.length + pending.length >= maxFrames) {
-      throw new BrowserSnapshotError("snapshot_frame_limit", "browser frame tree exceeded its frame bound");
-    }
+    if (frames.length >= maxFrames) { truncated = true; break; }
     frames.push({ id: tree?.frame?.id, loaderId: tree?.frame?.loaderId });
     pending.push(...(tree?.childFrames ?? []));
   }
-  return frames;
+  return { frames, truncated };
 }
 
 // Reports whether it cut the tree at the node bound, since dropped and

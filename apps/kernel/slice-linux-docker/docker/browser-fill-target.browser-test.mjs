@@ -49,7 +49,7 @@ async function waitForClientDocument(connection,sessionId,url) {
 const html = '<!doctype html><body style="margin:0;background:white"><input id=plain style="position:absolute;left:80px;top:70px;width:220px;height:40px;background:magenta;border:0"><input id=password type=password style="position:absolute;left:80px;top:150px;width:220px;height:40px;background:cyan;border:0"><textarea id=area style="position:absolute;left:80px;top:230px"></textarea><div id=editor contenteditable style="position:absolute;left:80px;top:300px;width:220px;height:40px"></div><p>MP11-disposable-fill-value</p><canvas width=200 height=80></canvas>';
 function mirrorHost({browser,connection,sessionId,targetId,documentId,policy,dpr}) {
   const tab={tab_id:'fixture-tab',target_id:targetId,document_id:documentId};
-  return {generation:1,browser,protection:policy,scales:new Map([[tab.tab_id,dpr]]),async target(){return tab},async displayTarget(){return tab},async screenshot(_tab,clip){return {data_base64:await captureProtectedPage(browser,tab,policy.values,policy.targets,async()=> (await connection.send('Page.captureScreenshot',{format:'png',captureBeyondViewport:false,...(clip?{clip}:{})},sessionId)).data,dpr,clip)}}};
+  return {generation:1,browser,viewport:()=>({...hostViewport(false),device_scale_factor:dpr,desktop_pixel_width:1280*dpr,desktop_pixel_height:800*dpr}),protection:policy,scales:new Map([[tab.tab_id,dpr]]),async target(){return tab},async displayTarget(){return tab},async screenshot(_tab,clip){return {data_base64:await captureProtectedPage(browser,tab,policy.values,policy.targets,async()=> (await connection.send('Page.captureScreenshot',{format:'png',captureBeyondViewport:false,...(clip?{clip}:{})},sessionId)).data,dpr,clip)}}};
 }
 async function setup(dpr, run) {
   const root = await mkdtemp(path.join(tmpdir(), 'protxform-fill-'));
@@ -82,6 +82,14 @@ async function setup(dpr, run) {
   }
 }
 for(const dpr of [1,2]) {
+ test(`MP-08/MP-11 DPR${dpr}: ordinary fields matching a Vault value stay visible`,()=>setup(dpr,async({fill,evaluate,collect,capture})=>{
+   await fill('#password');
+   await evaluate("document.querySelector('#plain').value='MP11-disposable-fill-value'");
+   assert.equal((await collect()).length,0,'only the Vault-filled field is protected; password dots remain visible');
+   const frame=await capture('ordinary-matching-value');
+   const offset=((100*dpr)*frame.width+290*dpr)*4;
+   assert.deepEqual([...frame.pixels.subarray(offset,offset+3)],[255,0,255]);
+ }));
  test(`MP-08/MP-11 DPR${dpr}: unproved normalized fill completion retains coverage`,()=>setup(dpr,async({browser,connection,sessionId,targetId,documentId,ref,evaluate,collect,capture})=>{
    const nodeRef=await ref('#plain');
    const target=await recordBrowserFill(connection,{sessionId,targetId,documentId,nodeRef,browserGeneration:browser.browserGeneration},'alpha\nbeta',1);
@@ -489,7 +497,7 @@ for(const dpr of [1,2]) {
    await evaluate(`document.querySelector('#plain').value=${JSON.stringify(value)}`);
    await regions.finishBrowserFill?.(connection,target);
    assert.equal((await collect()).length,1,'MP-11 the completed fill is still masked');
-   const frame=await capture('completed-fill');const i=((90*dpr)*frame.width+100*dpr)*4;
+   const frame=await capture('completed-fill');const i=((100*dpr)*frame.width+290*dpr)*4;
    assert.deepEqual([...frame.pixels.subarray(i,i+3)],[0,0,0]);
    if(frame.video)assert([...frame.video.subarray(i,i+3)].every(channel=>channel<=32),'MP-11 completed fill video is guarded');
    await connection.send('Page.stopScreencast',{},sessionId);
@@ -540,7 +548,7 @@ for(const dpr of [1,2]) {
      assert.equal((await pending).length,1,'MP-11 changed fill lifecycle rechecks the stale read');
      assert.equal((await collect()).length,1,'MP-11 subsequent captures retain the completed target');
      assert(browser.fillTargets.has(`${targetId}:${node_ref}`),'MP-11 stale read cannot prune the completed fill');
-     const frame=await capture('overlap-completed-fill'),i=((90*dpr)*frame.width+100*dpr)*4;
+     const frame=await capture('overlap-completed-fill'),i=((100*dpr)*frame.width+290*dpr)*4;
      assert.deepEqual([...frame.pixels.subarray(i,i+3)],[0,0,0]);
    }finally{release.resolve();connection.send=send;}
  }));
@@ -579,7 +587,7 @@ for(const dpr of [1,2]) {
    await fill('#plain');image=await browser.captureArtifact(request);
    assert.equal(image.redaction,'fill_targets');
    if(process.env.CHARIOX_PROTECTION_TEST_EVIDENCE)await writeFile(path.join(process.env.CHARIOX_PROTECTION_TEST_EVIDENCE,`artifact-dpr${dpr}-plain.json`),JSON.stringify(image));
-   const frame=decodePng(image.data_base64,dpr),index=((90*dpr)*frame.width+100*dpr)*4;
+   const frame=decodePng(image.data_base64,dpr),index=((100*dpr)*frame.width+290*dpr)*4;
    assert.deepEqual([...frame.pixels.subarray(index,index+3)],[0,0,0]);
    await evaluate("document.querySelector('#plain').value=''");
    image=await browser.captureArtifact(request);assert.equal(image.redaction,'none','MP-11 retired/plain and password targets do not claim redaction');
@@ -593,7 +601,7 @@ for(const dpr of [1,2]) {
    const foreign=new URL(url+'frame');foreign.hostname='localhost';
    await connection.send('Runtime.evaluate',{awaitPromise:true,returnByValue:true,expression:`(async()=>{const frame=document.createElement('iframe');frame.id='foreign';frame.style.cssText='position:absolute;left:1000px;top:350px;width:240px;height:300px;border:0';const loaded=new Promise(resolve=>frame.onload=resolve);frame.src=${JSON.stringify(foreign.href)};document.body.append(frame);await loaded;const widget=document.createElement('mp11-widget');widget.style.cssText='position:absolute;display:block;left:1000px;top:70px;width:150px;height:80px';widget.attachShadow({mode:'closed'}).innerHTML='<div style="width:150px;height:80px;background:cyan"></div>';document.body.append(widget);return true})()`},sessionId);
    const tab={tab_id:'t',target_id:targetId,document_id:documentId};
-   const host={generation:1,scales:new Map(),protection:policy,browser,async target(){return tab},async displayTarget(){return tab},async screenshot(_tab,clip){return {data_base64:await captureProtectedPage(browser,tab,policy.values,policy.targets,async()=>(await connection.send('Page.captureScreenshot',{format:'png',...(clip?{clip}:{}),captureBeyondViewport:false},sessionId)).data,dpr,clip),protected_regions:[]}}};
+   const host={generation:1,viewport:()=>({...hostViewport(false),device_scale_factor:dpr,desktop_pixel_width:1280*dpr,desktop_pixel_height:800*dpr}),scales:new Map(),protection:policy,browser,async target(){return tab},async displayTarget(){return tab},async screenshot(_tab,clip){return {data_base64:await captureProtectedPage(browser,tab,policy.values,policy.targets,async()=>(await connection.send('Page.captureScreenshot',{format:'png',...(clip?{clip}:{}),captureBeyondViewport:false},sessionId)).data,dpr,clip),protected_regions:[]}}};
    const service=new MirrorService(host);
    try {
      const sub=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:dpr},'test');
@@ -659,26 +667,11 @@ for(const dpr of [1,2]) {
    await fill('#password');assert.equal((await collect()).length,1,'password dots stay visible');
    await evaluate("document.querySelector('#password').type='text'");assert.equal((await collect()).length,2,'show password checked on every capture');await capture('toggle');
    await evaluate("document.querySelector('#plain').value='user replacement'");assert.equal((await collect()).length,1);
-   await evaluate("document.querySelector('#plain').value='MP11-disposable-fill-value'");assert.equal((await collect()).length,2,'any plain field holding the Vault value is covered');
+   await evaluate("document.querySelector('#plain').value='MP11-disposable-fill-value'");assert.equal((await collect()).length,1,'a user edit retires the original fill even if the same value is typed later');
    await evaluate("document.querySelector('#password').value=''");assert.deepEqual(await collect(),[]);
    await fill('#area');await fill('#editor');assert.equal((await collect()).length,2,'textarea and contenteditable are fill targets');
    await evaluate("document.querySelector('#area').remove();document.querySelector('#editor').remove()");assert.deepEqual(await collect(),[]);
    await connection.send('Page.navigate',{url:'about:blank'},sessionId);assert.deepEqual(await collect(),[],'navigation retires targets');assert.equal(browser.fillTargets.size,0,'MP-11 retired targets leave the tracking registry');
- }));
- test(`MP-08/MP-11 DPR${dpr}: model pixels cover every plain field whose current value is the Vault value`,()=>setup(dpr,async({fill,collect,capture,evaluate})=>{
-   const swap=(text,type='text')=>evaluate(`(()=>{const old=document.querySelector('#password,#swap');const next=document.createElement('input');next.id='swap';next.type=${JSON.stringify(type)};next.style.cssText=old.style.cssText;next.value=${JSON.stringify(text)};old.replaceWith(next);})()`);
-   await fill('#password');assert.deepEqual(await collect(),[],'password dots stay visible');
-   await swap(value);
-   assert.equal((await collect()).length,1,'a replacement holding the value is covered');
-   const frame=await capture('swapped');const pixel=(x,y)=>[...frame.pixels.subarray(((y*dpr)*frame.width+x*dpr)*4,((y*dpr)*frame.width+x*dpr)*4+3)];
-   assert.deepEqual(pixel(100,170),[0,0,0],'the replacement field is covered in the model capture');assert.deepEqual(pixel(400,400),[255,255,255]);
-   await swap(value,'password');assert.deepEqual(await collect(),[],'hidden again: dots only');
-   await swap(value);assert.equal((await collect()).length,1,'later replacements are covered too');
-   await evaluate("(()=>{const copy=document.createElement('input');copy.style.cssText='position:absolute;left:700px;top:600px;width:200px;height:30px';copy.value='MP11-disposable-fill-value';document.body.append(copy);})()");
-   assert.equal((await collect()).length,2,'a copy of the value elsewhere is covered');
-   await evaluate("document.querySelectorAll('input')[document.querySelectorAll('input').length-1].value='something else'");
-   assert.equal((await collect()).length,1,'a field that no longer holds the value is not covered');
-   await swap('something the user typed');assert.deepEqual(await collect(),[],'another value is never covered');
  }));
  test(`MP-08/MP-11 DPR${dpr}: capture cannot retire the fill before insertion completes`,()=>setup(dpr,async({browser,connection,fill,collect})=>{
    const send=connection.send.bind(connection);let intercepted=false;

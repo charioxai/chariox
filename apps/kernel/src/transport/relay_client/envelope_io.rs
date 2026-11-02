@@ -235,6 +235,7 @@ mod tests {
             &outgoing_tx,
             RelayEnvelope::Close {
                 reason: "first".to_string(),
+                kernel_reload: false,
             },
         )
         .expect("first envelope should fit");
@@ -243,6 +244,7 @@ mod tests {
             &outgoing_tx,
             RelayEnvelope::Close {
                 reason: "second".to_string(),
+                kernel_reload: false,
             },
         )
         .expect_err("second envelope should overflow bounded queue");

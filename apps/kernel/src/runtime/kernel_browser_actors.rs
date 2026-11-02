@@ -23,6 +23,8 @@ pub(crate) struct KernelBrowserActors {
     viewport: (u64, u64),
     tabs: TabRegistry,
     actors: BTreeMap<String, EnvironmentActor>,
+    /// When each actor last registered work: a full model retires the longest idle one.
+    seen: BTreeMap<String, Instant>,
     ledger: EnvironmentActionLedger,
     active: BTreeMap<String, Arc<BrowserCancellation>>,
     pointers: BTreeMap<String, EnvironmentPointer>,
@@ -52,6 +54,7 @@ impl Default for KernelBrowserActors {
             viewport: (1280, 800),
             tabs: TabRegistry::new(),
             actors: BTreeMap::new(),
+            seen: BTreeMap::new(),
             ledger: EnvironmentActionLedger::new(256, 0),
             active: BTreeMap::new(),
             pointers: BTreeMap::new(),
@@ -64,17 +67,19 @@ impl Default for KernelBrowserActors {
 impl KernelBrowserActors {
     pub(crate) fn reconcile(&mut self, state: &Value) -> Result<(), String> {
         self.reconcile_inventory(state, &state["_tab_creation_actions"])
+            .map(drop)
     }
+    /// Returns the Tabs this inventory first attributed to the actor whose admitted action opened them.
     pub(crate) fn reconcile_inventory(
         &mut self,
         state: &Value,
         creation_actions: &Value,
-    ) -> Result<(), String> {
+    ) -> Result<Vec<(String, EnvironmentActor)>, String> {
         let Some(generation) = state["generation"].as_u64() else {
-            return Ok(());
+            return Ok(Vec::new());
         };
         let Some(tabs) = state["tabs"].as_array() else {
-            return Ok(());
+            return Ok(Vec::new());
         };
         // MP-08/MP-10/MP-11: concurrent controller reads finish out of order; the
         // controller numbers its observations within a generation.
@@ -83,7 +88,7 @@ impl KernelBrowserActors {
             || generation == self.generation
                 && observation.is_some_and(|observation| observation <= self.observation)
         {
-            return Ok(());
+            return Ok(Vec::new());
         }
         self.observation = observation.unwrap_or(0);
         if generation != self.generation {
@@ -164,10 +169,10 @@ impl KernelBrowserActors {
             }));
         }
         self.host_tabs.retain(|tab, _| retained.contains(tab));
-        for (tab, actor) in discovered {
-            self.opened_tab(actor, &tab);
+        for (tab, actor) in &discovered {
+            self.opened_tab(actor.clone(), tab);
         }
-        Ok(())
+        Ok(discovered)
     }
     // MP-08/MP-10/MP-11: reuse only an already observed exact generation/document.
     // The controller still checks that live document before physical dispatch.
@@ -213,7 +218,16 @@ impl KernelBrowserActors {
     }
     fn register(&mut self, actor: EnvironmentActor) -> Result<(), String> {
         if !self.actors.contains_key(&actor.actor_id) && self.actors.len() >= 64 {
-            return Err("MD-3: browser actor limit reached".into());
+            // A viewer that closed its page over the relay never disconnects: make room by
+            // retiring the longest idle actor that holds no input, action or desktop view.
+            let idle = self
+                .actors
+                .keys()
+                .filter(|id| !self.holds_work(id))
+                .min_by_key(|id| self.seen.get(*id))
+                .cloned()
+                .ok_or("MD-3: browser actor limit reached")?;
+            self.disconnect(&idle);
         }
         if self
             .actors
@@ -222,8 +236,27 @@ impl KernelBrowserActors {
         {
             return Err("MD-3: browser actor kind conflict".into());
         }
+        self.seen.insert(actor.actor_id.clone(), Instant::now());
         self.actors.insert(actor.actor_id.clone(), actor);
         Ok(())
+    }
+    fn holds_work(&self, actor_id: &str) -> bool {
+        self.ledger
+            .ownership()
+            .iter()
+            .any(|owner| owner.actor_id == actor_id)
+            || self
+                .ledger
+                .pending_takeovers()
+                .iter()
+                .any(|pending| pending.human_actor_id == actor_id)
+            || self
+                .desktop_viewers
+                .values()
+                .any(|(actor, _)| actor == actor_id)
+            || self.ledger.actions().iter().any(|action| {
+                action.actor_id == actor_id && self.active.contains_key(&action.action_id)
+            })
     }
     /// MP-08/MP-11: dialog answers cannot reserve the lane held by the action
     /// that opened them, but still honor both active and pending human takeover.
@@ -510,10 +543,29 @@ impl KernelBrowserActors {
         if generation != self.generation {
             return Err("MD-3: stale browser generation".into());
         }
-        let tab = self.tab(host_tab)?;
+        let target = InputTarget::BrowserTab(self.tab(host_tab)?);
+        // The person is one party to the kernel: a viewer that reconnected or reloaded is a new actor, and
+        // returns the control an earlier connection of the same person took. An agent never releases it.
+        let agent_requests = self
+            .actors
+            .get(actor_id)
+            .is_some_and(|actor| actor.kind == EnvironmentActorKind::Agent);
+        let holder = self
+            .ledger
+            .ownership()
+            .into_iter()
+            .find(|owner| {
+                owner.target == target && !agent_requests && self.is_human(&owner.actor_id)
+            })
+            .map_or(actor_id.to_string(), |owner| owner.actor_id);
         self.ledger
-            .release(actor_id, &InputTarget::BrowserTab(tab))
+            .release(&holder, &target)
             .map_err(|_| "MD-3: only the input owner may release takeover".into())
+    }
+    fn is_human(&self, actor_id: &str) -> bool {
+        self.actors
+            .get(actor_id)
+            .is_some_and(|actor| actor.kind == EnvironmentActorKind::Human)
     }
     /// MP-08/MP-11: a human actor's desktop video subscription (lease start).
     pub(crate) fn desktop_viewer(&mut self, actor_id: &str, subscription: &str, now: Instant) {
@@ -618,6 +670,7 @@ impl KernelBrowserActors {
             }
         }
         self.actors.remove(actor_id);
+        self.seen.remove(actor_id);
         self.pointers.remove(actor_id);
         self.pointer_tabs.remove(actor_id);
     }
@@ -630,6 +683,26 @@ impl KernelBrowserActors {
     }
     pub(crate) fn project_tabs(&self, state: &mut Value) {
         self.tab_activity.project(state);
+        let held = self.person_held_tabs();
+        if let Some(tabs) = state["tabs"].as_array_mut() {
+            for tab in tabs {
+                let taken = tab["tab_id"].as_str().is_some_and(|id| held.contains(id));
+                tab["taken_over"] = taken.into();
+            }
+        }
+    }
+    /// The Tabs a person drives after Take over, by controller Tab id: a viewer that reloads reads this back.
+    fn person_held_tabs(&self) -> std::collections::BTreeSet<String> {
+        self.ledger
+            .ownership()
+            .into_iter()
+            .filter_map(|owner| match owner.target {
+                InputTarget::BrowserTab(tab) if self.is_human(&owner.actor_id) => {
+                    Some(self.host_tabs.get(&tab).cloned().unwrap_or(tab))
+                }
+                _ => None,
+            })
+            .collect()
     }
     pub(crate) fn snapshot(&self) -> Value {
         let translate = |target: &mut InputTarget| {
@@ -678,6 +751,45 @@ mod tests {
         json!({"op":"input","tab_id":tab,"generation":1,"input":{"kind":"text","text":"synthetic-private-value"}})
     }
     #[test]
+    fn mp10_takeover_is_listed_on_the_tab_for_a_viewer_that_reloads() {
+        let mut model = ready();
+        let listed = |model: &KernelBrowserActors| {
+            let mut state =
+                json!({"generation":1,"tabs":[{"tab_id":"host-tab-a"},{"tab_id":"host-tab-b"}]});
+            model.project_tabs(&mut state);
+            (
+                state["tabs"][0]["taken_over"].clone(),
+                state["tabs"][1]["taken_over"].clone(),
+            )
+        };
+        assert_eq!(listed(&model), (json!(false), json!(false)));
+        model
+            .takeover(human("terminal:a"), "host-tab-a", 1)
+            .unwrap();
+        assert_eq!(
+            listed(&model),
+            (json!(true), json!(false)),
+            "the person holds Tab a"
+        );
+        model.release("terminal:a", "host-tab-a", 1).unwrap();
+        assert_eq!(listed(&model), (json!(false), json!(false)));
+        model
+            .takeover(human("terminal:a"), "host-tab-a", 1)
+            .unwrap();
+        model.release("terminal:reloaded", "host-tab-a", 1).unwrap();
+        assert_eq!(
+            listed(&model),
+            (json!(false), json!(false)),
+            "the person's reloaded viewer returns the control its earlier connection took"
+        );
+        let (_, _) = model.begin(agent(), &input("host-tab-b")).unwrap();
+        assert_eq!(
+            listed(&model),
+            (json!(false), json!(false)),
+            "an agent acting is not a person's takeover"
+        );
+    }
+    #[test]
     fn mp08_chrome_input_tracks_home_commit_without_retargeting_or_replay() {
         let model = ready();
         let mut params =
@@ -721,6 +833,31 @@ mod tests {
         assert_eq!(model.snapshot()["pointers"][0]["x"], 1919);
         assert_eq!(model.snapshot()["pointers"][0]["y"], 1079);
         model.finish(&action, EnvironmentActionTerminal::Completed);
+    }
+
+    #[test]
+    fn md3_a_full_model_retires_the_longest_idle_actor_and_keeps_busy_ones() {
+        // F-5 (b3, browserfix r5): each relay viewer page is its own actor and never disconnects;
+        // the 65th viewer was refused every browser request.
+        let mut model = ready();
+        model
+            .takeover(human("terminal:busy"), "host-tab-a", 1)
+            .unwrap();
+        for viewer in 0..63 {
+            let id = format!("terminal:{viewer}");
+            let (action, _) = model.begin(human(&id), &input("host-tab-b")).unwrap();
+            model.finish(&action, EnvironmentActionTerminal::Completed);
+        }
+        let (action, _) = model
+            .begin(human("terminal:new"), &input("host-tab-b"))
+            .unwrap();
+        model.finish(&action, EnvironmentActionTerminal::Completed);
+        let actors = model.snapshot()["actors"].to_string();
+        assert!(
+            !actors.contains("\"terminal:0\""),
+            "the longest idle viewer is retired"
+        );
+        assert!(actors.contains("terminal:busy") && actors.contains("terminal:new"));
     }
 
     #[test]
@@ -769,7 +906,7 @@ mod tests {
         assert!(model.begin(agent(), &input("host-tab-a")).is_err());
         model.finish(&action, EnvironmentActionTerminal::Cancelled);
         assert!(model.begin(agent(), &input("host-tab-a")).is_err());
-        assert!(model.release("user:b", "host-tab-a", 1).is_err());
+        assert!(model.release("agent:a", "host-tab-a", 1).is_err());
         assert!(!model
             .snapshot()
             .to_string()

@@ -53,19 +53,6 @@ case "$command" in
     [[ -f "$kernel" && -x "$kernel" ]] || die "$kernel is not an executable file"
     worker=$(dirname -- "$kernel")/chariox-app-wasm-worker
     [[ -f "$worker" && -x "$worker" ]] || die "$worker is missing; an installed kernel cannot run any App without the worker built with it"
-    # The root step must have enrolled exactly this unit's App subtree.
-    python3 - "$(id -u)" <<'PY' || die "ask an administrator to run: install-root.sh install --user $(id -un) ..."
-import json, sys
-uid = int(sys.argv[1])
-expected = f"/sys/fs/cgroup/user.slice/user-{uid}.slice/user@{uid}.service/app.slice/chariox-kernel.service/apps"
-try:
-    owners = json.load(open("/etc/chariox/app-storage.json"))["owners"]
-    json.load(open("/etc/chariox/apps/runtime-enrollment.json"))
-except OSError as error:
-    sys.exit(f"[chariox-install] error: the root install step has not run ({error.filename} is missing)")
-if not any(owner["uid"] == uid and owner["cgroup_root"] == expected for owner in owners):
-    sys.exit(f"[chariox-install] error: uid {uid} is not enrolled for App storage")
-PY
     restart=0
     install -d -m 0700 "$HOME/.chariox" "$HOME/.chariox/logs" "$HOME/.config/chariox"
     put "$worker" "$WORKER" 0555 && restart=1

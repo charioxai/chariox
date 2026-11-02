@@ -33,6 +33,21 @@ fn lane_refusals_rebuild_remediation_at_the_final_socket_boundary() {
     }
 }
 
+// A late or losing answer to a decision tells the holder that it closed, not "withheld".
+#[test]
+fn a_closed_decision_keeps_its_public_code() {
+    let error = project_error(
+        &serde_json::json!({"code":"interaction_closed","message":CANARY,"retryable":false}),
+    );
+    assert_eq!(error.code, "interaction_closed");
+    assert!(
+        error.message.contains("no longer open"),
+        "{}",
+        error.message
+    );
+    assert!(!error.message.contains(CANARY));
+}
+
 fn enum_names(source: &str, declaration: &str) -> Vec<String> {
     source
         .split_once(declaration)

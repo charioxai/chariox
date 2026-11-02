@@ -484,10 +484,12 @@ impl KernelRuntimeOwnedState {
                 node_id: node_id.to_string(),
             })?;
         let full_collaboration = session
-            .collaboration_level_for_user(user_id)
+            .collaboration_level_for_user(
+                &self.room_member_user_id_in(session.owner_user_id(), user_id),
+            )
             .is_some_and(|level| level.can_prompt_agent_directly());
-        if node.owner_user_id() == user_id
-            || node.created_by_user_id() == user_id
+        if self.acts_for_owner_in(session.owner_user_id(), user_id, node.owner_user_id())
+            || self.acts_for_owner_in(session.owner_user_id(), user_id, node.created_by_user_id())
             || full_collaboration
         {
             Ok(())
@@ -512,7 +514,10 @@ impl KernelRuntimeOwnedState {
         let sessions = self.session_store.read();
         let endpoint =
             sessions.resolve_workflow_endpoint_ref(session_id, workflow_ref, endpoint_ref)?;
-        if endpoint.owner_user_id() == user_id {
+        let room_owner = sessions
+            .session_owner_user_id(session_id)
+            .unwrap_or_default();
+        if self.acts_for_owner_in(&room_owner, user_id, endpoint.owner_user_id()) {
             Ok(())
         } else {
             Err(Self::deny_owner(
@@ -567,17 +572,24 @@ impl KernelRuntimeOwnedState {
                 edge_id: edge_id.to_string(),
             })?;
         let full_collaboration = session
-            .collaboration_level_for_user(user_id)
+            .collaboration_level_for_user(
+                &self.room_member_user_id_in(session.owner_user_id(), user_id),
+            )
             .is_some_and(|level| level.can_prompt_agent_directly());
         let can_edit_endpoint = |node_id: &str| {
             workflow.node(node_id).is_some_and(|node| {
-                node.owner_user_id() == user_id || node.created_by_user_id() == user_id
+                self.acts_for_owner_in(session.owner_user_id(), user_id, node.owner_user_id())
+                    || self.acts_for_owner_in(
+                        session.owner_user_id(),
+                        user_id,
+                        node.created_by_user_id(),
+                    )
             })
         };
         if full_collaboration
             || can_edit_endpoint(edge.from_node_id())
             || can_edit_endpoint(edge.to_node_id())
-            || edge.created_by_user_id() == user_id
+            || self.acts_for_owner_in(session.owner_user_id(), user_id, edge.created_by_user_id())
         {
             Ok(())
         } else {

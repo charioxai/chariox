@@ -1,0 +1,7 @@
+# Hosted agent HTTP triggers
+
+MP-08 / MP-09 / MP-10 / MP-11: the runtime ingress process receives public HTTPS HTTP trigger requests, asks the Cloud control plane for binding metadata/admission, then sends a single encrypted invocation to the kernel through the opaque relay. It never replays a request after a lost acceptance. Conversation history stays on the browser-to-kernel encrypted connection.
+
+Build with `pnpm --filter @chariox/server run build`. Start `node apps/server/dist/hosted-agent-trigger-main.js` with `CHARIOX_AGENT_TRIGGER_PUBLIC_ORIGIN=https://your-cloud-origin`, `HOST=127.0.0.1` and `PORT=43110`. The public origin must be exact HTTPS. Optionally use `CHARIOX_AGENT_TRIGGER_CONTROL_ORIGIN=http://127.0.0.1:3000` for a local control API. The edge must route `/agent-triggers` and `/agent-triggers/*` to this service, preserving the original Host and forwarding HTTPS protocol. `/ready` probes the process. No database or provider account is needed here.
+
+Cloud admission receives authentication and deployment metadata only, never original request bodies or query values. The kernel enforces the original 65536-byte serialized application-payload budget independently from the preserved HTTP byte envelope (at most65536 decoded bytes). The HTTP body limit remains65536 bytes. A 30000-character JSON value or30000-byte plain-text body continues to fit. Invalid encoding or either exceeded budget returns `payload_too_large`.

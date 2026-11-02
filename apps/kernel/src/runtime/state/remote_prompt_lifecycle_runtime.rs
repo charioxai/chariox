@@ -5,6 +5,11 @@
 use super::remote_prompt_worker_submission_runtime::remote_prompt_error_should_refresh_binding;
 use super::*;
 
+/// How long a cancelled leased turn waits for a worker that does not answer
+/// before home ends it; the same bound as an unconfirmed inbox delivery.
+pub(super) const REMOTE_CANCEL_WORKER_ANSWER_DEADLINE: std::time::Duration =
+    std::time::Duration::from_secs(120);
+
 impl KernelRuntimeState {
     pub(super) async fn cancel_remote_agent_prompt_if_remote(
         &self,
@@ -458,6 +463,78 @@ impl KernelRuntimeState {
         Ok(Some(submission))
     }
 
+    /// Ctrl+C on a leased turn whose worker no longer answers. The cancel cannot
+    /// reach the worker, so after [`REMOTE_CANCEL_WORKER_ANSWER_DEADLINE`] of silence
+    /// the home ends the turn as Cancelled and says why, rather than waiting forever.
+    pub(super) fn end_remote_cancellation_the_worker_never_answered(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<bool, DaemonError> {
+        let session = self.owned.session_store.get_session(session_id)?;
+        let Some(prompt) = self
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, agent_id)
+            .filter(|prompt| prompt.status() == crate::session::PromptStatus::Cancelling)
+        else {
+            return Ok(false);
+        };
+        let Some(binding) = self
+            .owned
+            .agent_store
+            .get_agent(agent_id)?
+            .remote_execution()
+            .cloned()
+        else {
+            return Ok(false);
+        };
+        let message = format!(
+            "{}: Worker kernel `{}` did not answer for {} s, so the cancel could not reach it. \
+             Chariox cancelled this turn here; anything the worker still does for it is not shown.",
+            self.agent_notice_name(agent_id),
+            binding.worker_kernel_id,
+            REMOTE_CANCEL_WORKER_ANSWER_DEADLINE.as_secs(),
+        );
+        crate::logging::warn_with_fields(
+            "daemon.remote_prompt_dispatch",
+            "worker never answered a remote prompt cancellation; cancelled at home",
+            serde_json::json!({
+                "session_id": session_id,
+                "agent_id": agent_id,
+                "worker_kernel_id": binding.worker_kernel_id,
+                "leased_agent_id": binding.leased_agent_id,
+                "prompt_id": prompt.id(),
+            }),
+        );
+        if let Some(run) = prompt.durable_delivery_provider_run_id() {
+            let projected =
+                crate::provider::projected_leased_provider_run_id(&binding.leased_agent_id, run);
+            self.owned.end_open_provider_tools(
+                session_id,
+                &projected,
+                agent_id,
+                crate::app::ProviderToolEnding::Cancelled,
+            )?;
+            self.end_lost_leased_provider_run(session_id, &projected)?;
+        }
+        self.owned.record_notice_for_agent(
+            session_id,
+            None,
+            Some(agent_id),
+            self.owned
+                .attachment_store
+                .list_session_attachment_ids(session_id),
+            message,
+        );
+        self.finalize_remote_prompt_cancellation_and_advance(
+            session_id,
+            agent_id,
+            prompt.source_attachment_id(),
+        )?;
+        Ok(true)
+    }
+
     pub(super) fn finalize_remote_prompt_cancellation_and_advance(
         &self,
         session_id: &str,
@@ -501,7 +578,7 @@ impl KernelRuntimeState {
         completed: &crate::session::PromptQueueItem,
         leased_agent_id: &str,
         worker_provider_run_id: &str,
-        failure: Option<&str>,
+        failure: Option<&crate::provider::TurnOutcome>,
     ) {
         let run = crate::provider::projected_leased_provider_run_id(
             leased_agent_id,
@@ -546,9 +623,9 @@ impl KernelRuntimeState {
                 }
             }
             match failure {
-                Some(reason) => self
+                Some(outcome) => self
                     .owned
-                    .end_failed_agent_task(session_id, agent_id, completed, &run, reason),
+                    .end_failed_agent_task(session_id, agent_id, completed, &run, outcome),
                 None => self.owned.settle_agent_task_answered_by(
                     session_id,
                     agent_id,
@@ -561,7 +638,8 @@ impl KernelRuntimeState {
         })();
         let settled = match settlement {
             Ok(settlement) => {
-                Box::pin(self.finish_agent_task_settlement(settlement, completed)).await
+                Box::pin(self.finish_failed_agent_task_settlement(settlement, completed, failure))
+                    .await
             }
             Err(error) => Err(error),
         };
@@ -657,6 +735,13 @@ impl KernelRuntimeState {
             }
             Ok(())
         };
+        let completion_worker_run_id = remote_execution
+            .active_worker_provider_run_id
+            .clone()
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "complete remote prompt",
+                message: "the worker provider run is not bound yet; retry completion".to_string(),
+            })?;
         let completion_response = self
             .with_app_side_effect(|app| {
                 self.authorize_prompt_command(authority)?;
@@ -671,6 +756,8 @@ impl KernelRuntimeState {
                         },
                         RelayPeerRequest::CompleteLeasedPrompt {
                             leased_agent_id: remote_execution.leased_agent_id.clone(),
+                            home_prompt_id: completion_prompt.id().to_string(),
+                            worker_provider_run_id: completion_worker_run_id,
                         },
                         std::time::Duration::from_millis(relay_config.relay_request_timeout_ms),
                         || self.authorize_prompt_command(authority),
@@ -726,6 +813,25 @@ impl KernelRuntimeState {
                         provider_diagnostic,
                         provider_termination,
                     )
+                }
+                Err(error) if error.is_leased_prompt_run_changed() => {
+                    // The same prompt still runs on the worker; the home settles nothing until it
+                    // follows the successor run and the completion names it.
+                    crate::logging::warn_with_fields(
+                        "daemon.remote_prompt_dispatch",
+                        "remote prompt completion names a provider run the worker left",
+                        serde_json::json!({
+                            "session_id": session_id,
+                            "agent_id": target_agent_id,
+                            "worker_kernel_id": remote_execution.worker_kernel_id,
+                            "leased_agent_id": remote_execution.leased_agent_id,
+                            "error": error.to_string(),
+                        }),
+                    );
+                    return Err(DaemonError::LocalTransport {
+                        operation: "complete remote prompt",
+                        message: "the worker prompt moved to another provider run; retry the completion once the home follows it".to_string(),
+                    });
                 }
                 Err(error) if remote_prompt_completion_should_treat_as_settled(&error) => {
                     crate::logging::warn_with_fields(
@@ -842,21 +948,22 @@ impl KernelRuntimeState {
             Some((prompt_id, remote_execution)),
         )?;
         // A10: home alone commits the leased task outcome.
+        let task_failure = provider_failure.clone().or_else(|| {
+            provider_termination.as_ref().map(|termination| {
+                crate::provider::TurnOutcome::new(
+                    crate::provider::TurnOutcomeKind::ProviderCrashed,
+                    true,
+                    &termination.reason,
+                )
+            })
+        });
         self.settle_leased_agent_task(
             session_id,
             target_agent_id,
             &completion.completed,
             &remote_execution.leased_agent_id,
             remote_provider_run_id,
-            provider_termination
-                .as_ref()
-                .map(|termination| termination.reason.as_str())
-                .or_else(|| {
-                    provider_failure
-                        .as_ref()
-                        .map(|failure| failure.reason.as_str())
-                })
-                .or(provider_diagnostic.as_deref()),
+            task_failure.as_ref(),
         )
         .await;
         if completion.completed.workflow_run_id().is_some() {
@@ -990,7 +1097,7 @@ pub(super) struct RemotePromptReceipt<'a> {
 // MP-08 / MP-09 / MP-10 / MP-11 A10/G03: this worker has lost the
 // exact lease whose cancellation we verified. Release cancelled work only;
 // a missing lease remains insufficient evidence for successful completion.
-fn remote_prompt_cancellation_should_treat_as_settled(error: &DaemonError) -> bool {
+pub(super) fn remote_prompt_cancellation_should_treat_as_settled(error: &DaemonError) -> bool {
     remote_prompt_completion_should_treat_as_settled(error)
         || matches!(
             error,
@@ -1004,6 +1111,9 @@ fn remote_prompt_cancellation_should_treat_as_settled(error: &DaemonError) -> bo
 }
 
 fn remote_prompt_completion_should_treat_as_settled(error: &DaemonError) -> bool {
+    if error.is_leased_prompt_not_current() {
+        return true;
+    }
     match error {
         DaemonError::NoActivePrompt { .. } => true,
         DaemonError::RelayTransport {
@@ -1196,6 +1306,38 @@ mod tests {
                 message: "worker reports no active prompt".to_string(),
                 retryable: false,
             }
+        ));
+        // A completion naming a prompt the worker no longer runs: the home's prompt settled there.
+        assert!(remote_prompt_completion_should_treat_as_settled(
+            &DaemonError::RelayTransport {
+                operation: "read temporary relay peer response",
+                code: "leased_prompt_not_current".to_string(),
+                message: "worker is running another prompt".to_string(),
+                retryable: false,
+            }
+        ));
+        assert!(!remote_prompt_completion_should_treat_as_settled(
+            &DaemonError::RelayTransport {
+                operation: "read temporary relay peer response",
+                code: "leased_prompt_not_current".to_string(),
+                message: "worker is running another prompt".to_string(),
+                retryable: true,
+            }
+        ));
+        // The same home prompt still runs on the worker, on another provider run: not settled.
+        let run_changed = DaemonError::RelayTransport {
+            operation: "read temporary relay peer response",
+            code: "leased_prompt_run_changed".to_string(),
+            message: "the prompt is still running on another provider run".to_string(),
+            retryable: false,
+        };
+        assert!(run_changed.is_leased_prompt_run_changed());
+        assert!(!run_changed.is_leased_prompt_not_current());
+        assert!(!remote_prompt_completion_should_treat_as_settled(
+            &run_changed
+        ));
+        assert!(!remote_prompt_cancellation_should_treat_as_settled(
+            &run_changed
         ));
         for error in [
             DaemonError::LocalTransport {

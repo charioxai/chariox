@@ -8,7 +8,7 @@ use super::item::normalize_codex_item_type;
 use super::tool_state::normalize_merge_key;
 use crate::provider::codex_runtime::CodexOutputChunk;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub(in crate::provider::codex_runtime) struct CodexTextTranscriptState {
     emitted: String,
     kind: Option<TerminalOutputKind>,

@@ -100,7 +100,7 @@ impl Link {
                             Ok(RelayEnvelope::ClientConnected {
                                 daemon_public_key, ..
                             }) => return Ok(daemon_public_key),
-                            Ok(RelayEnvelope::Close { reason }) => {
+                            Ok(RelayEnvelope::Close { reason, .. }) => {
                                 return Err(relay_failure("connect_refused", reason))
                             }
                             Ok(RelayEnvelope::ClientResponse {

@@ -160,15 +160,10 @@ impl KernelRuntimeOwnedState {
         operation: &'static str,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
         let agent = self.agent_store.get_agent(agent_id)?;
-        if agent.owner_user_id() == user_id {
+        if self.acts_for_owner(agent.session_id(), user_id, agent.owner_user_id()) {
             Ok(agent)
         } else {
-            Err(DaemonError::OwnershipAccessDenied {
-                user_id: user_id.to_string(),
-                owner_user_id: agent.owner_user_id().to_string(),
-                resource: format!("agent `{agent_id}`"),
-                operation,
-            })
+            Err(agent_owner_denied(&agent, user_id, operation))
         }
     }
 
@@ -187,7 +182,7 @@ impl KernelRuntimeOwnedState {
             });
         }
 
-        if session.can_prompt_agent_owned_by(user_id, agent.owner_user_id()) {
+        if self.can_prompt_agent_owned_by(&session, user_id, agent.owner_user_id()) {
             Ok(agent)
         } else {
             Err(DaemonError::OwnershipAccessDenied {
@@ -209,7 +204,7 @@ impl KernelRuntimeOwnedState {
             .agent_store
             .get_agent(agent_ref)
             .or_else(|_| self.agent_store.get_agent_by_ref(agent_ref))?;
-        if agent.owner_user_id() == user_id {
+        if self.acts_for_owner(agent.session_id(), user_id, agent.owner_user_id()) {
             Ok(agent)
         } else {
             Err(DaemonError::OwnershipAccessDenied {
@@ -344,7 +339,7 @@ impl KernelRuntimeOwnedState {
             .or_else(|_| self.agent_store.get_agent_by_ref(agent_ref))?;
         if agent.remote_execution().is_some() {
             let session = self.session_store.get_session(agent.session_id())?;
-            if session.owner_user_id() == user_id {
+            if self.acts_for_owner(session.id(), user_id, session.owner_user_id()) {
                 return Ok(agent);
             }
             return Err(DaemonError::OwnershipAccessDenied {
@@ -441,23 +436,33 @@ impl KernelRuntimeOwnedState {
         caller_user_id: &str,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
         let mut sessions = self.session_store.write();
-        if !sessions.get_session(session_id)?.has_member(caller_user_id) {
+        // The session store is write-locked here: the owner rule is applied with the room owner
+        // already read, never through the lookup that takes the store's read lock.
+        let session = sessions.get_session(session_id)?;
+        if !self.is_room_member(&session, caller_user_id) {
             return Err(DaemonError::SessionAccessDenied {
                 session_id: session_id.to_string(),
                 user_id: caller_user_id.to_string(),
             });
         }
-        if !self
+        let Some(agent) = self
             .agent_store
             .get_agent(agent_id)
-            .is_ok_and(|agent| agent.session_id() == session_id && !agent.archived())
-        {
+            .ok()
+            .filter(|agent| agent.session_id() == session_id && !agent.archived())
+        else {
             return Err(DaemonError::AgentNotInSession {
                 session_id: session_id.to_string(),
                 agent_id: agent_id.to_string(),
             });
+        };
+        if !self.acts_for_owner_in(
+            session.owner_user_id(),
+            caller_user_id,
+            agent.owner_user_id(),
+        ) {
+            return Err(agent_owner_denied(&agent, caller_user_id, "focus agent"));
         }
-        self.ensure_agent_owner(agent_id, caller_user_id, "focus agent")?;
         let agent = self
             .agent_store
             .focus_agent(session_id, agent_id, &mut sessions)?;
@@ -514,6 +519,19 @@ impl KernelRuntimeOwnedState {
             }
         }
         Ok(agent)
+    }
+}
+
+fn agent_owner_denied(
+    agent: &crate::agent::AgentInstance,
+    user_id: &str,
+    operation: &'static str,
+) -> DaemonError {
+    DaemonError::OwnershipAccessDenied {
+        user_id: user_id.to_string(),
+        owner_user_id: agent.owner_user_id().to_string(),
+        resource: format!("agent `{}`", agent.id()),
+        operation,
     }
 }
 

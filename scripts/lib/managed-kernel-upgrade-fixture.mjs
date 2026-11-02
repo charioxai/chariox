@@ -98,15 +98,13 @@ async function effectiveCharioxIdentity() {
   return { uid: 0, gid: 0 }
 }
 
-async function makeRelease(root, label, protocol, privateKey, publicKey, transitionPolicy = null, includeWorkerService = false, builderKeys = null, manifestSchema = 3, includeAppArtifacts = true) {
+async function makeRelease(root, label, protocol, privateKey, publicKey, transitionPolicy = null, includeWorkerService = false, builderKeys = null, manifestSchema = 3, includeAppArtifacts = true, unitLabel = label) {
   const rootfs = join(root, `image-${label}`)
   const kernel = join(rootfs, "usr/local/bin/chariox-kernel")
   const supervisor = join(rootfs, "usr/local/bin/chariox-managed-bootstrap")
   // Releases built before Apps carry no App binaries or App storage unit.
   const appPackage = join(rootfs, "usr/local/bin/chariox-app-package")
-  const appStorage = join(rootfs, "usr/libexec/chariox-app-storage")
   const appWasmWorker = join(rootfs, "usr/local/bin/chariox-app-wasm-worker")
-  const appStorageService = join(rootfs, "etc/systemd/system/chariox-app-storage.service")
   const managedService = join(rootfs, `etc/systemd/system/${serviceName}`)
   const rootlessService = join(rootfs, "etc/systemd/system/chariox-rootless-docker.service")
   const brokerService = join(rootfs, "etc/systemd/system/chariox-slice-broker.service")
@@ -121,13 +119,11 @@ async function makeRelease(root, label, protocol, privateKey, publicKey, transit
   await put(supervisor, `#!/bin/sh\necho supervisor-${label}\n`, 0o755)
   if (includeAppArtifacts) {
     await put(appPackage, `#!/bin/sh\necho app-package-${label}\n`, 0o755)
-    await put(appStorage, `#!/bin/sh\necho app-storage-${label}\n`, 0o755)
     await put(appWasmWorker, `#!/bin/sh\necho app-wasm-worker-${label}\n`, 0o755)
-    await put(appStorageService, await readFile(join(repositoryRoot, "deploy/managed-kernel/chariox-app-storage.service")))
   }
-  await put(managedService, `[Service]\nExecStart=/usr/local/bin/chariox-managed-bootstrap\n# ${label}\n`)
-  await put(rootlessService, `[Service]\n# rootless ${label}\n`)
-  await put(brokerService, `[Service]\n# broker ${label}\n`)
+  await put(managedService, `[Service]\nExecStart=/usr/local/bin/chariox-managed-bootstrap\n# ${unitLabel}\n`)
+  await put(rootlessService, `[Service]\n# rootless ${unitLabel}\n`)
+  await put(brokerService, `[Service]\n# broker ${unitLabel}\n`)
   await put(join(context, "apps/kernel/slice-linux-docker/runtime.txt"), `${label}\n`)
   if (transitionPolicy) {
     await put(
@@ -160,7 +156,6 @@ async function makeRelease(root, label, protocol, privateKey, publicKey, transit
         { name: "chariox-relay", sha256: await sha256File(relay) },
         ...(includeAppArtifacts ? [
           { name: "chariox-app-package", sha256: await sha256File(appPackage) },
-          { name: "chariox-app-storage", sha256: await sha256File(appStorage) },
           { name: "chariox-app-wasm-worker", sha256: await sha256File(appWasmWorker) },
         ] : []),
       ],
@@ -188,9 +183,7 @@ async function makeRelease(root, label, protocol, privateKey, publicKey, transit
   if (includeAppArtifacts) {
     artifactSpecs.push(
       ["chariox-app-package", "/usr/local/bin/chariox-app-package", appPackage, "file"],
-      ["chariox-app-storage", "/usr/libexec/chariox-app-storage", appStorage, "file"],
       ["chariox-app-wasm-worker", "/usr/local/bin/chariox-app-wasm-worker", appWasmWorker, "file"],
-      ["chariox-app-storage.service", "/etc/systemd/system/chariox-app-storage.service", appStorageService, "file"],
     )
   }
   const artifacts = []
@@ -252,6 +245,7 @@ async function makeHarness(context, {
   currentManifestSchema = 3,
   targetManifestSchema = 3,
   currentAppArtifacts = true,
+  runtimeUnitsChange = true,
   updaterPath = upgrade,
 } = {}) {
   const root = await mkdtemp(join(tmpdir(), "chariox-managed-upgrade-"))
@@ -269,10 +263,11 @@ async function makeHarness(context, {
   const current = await makeRelease(
     root, "current", currentProtocol, privateKey, publicKey, currentTransitionPolicy,
     path1Release || workerCapableCurrent || receiptKind === "allocation_worker", builderKeys, currentManifestSchema,
-    currentAppArtifacts,
+    currentAppArtifacts, runtimeUnitsChange ? "current" : "units",
   )
   const target = await makeRelease(
     root, "target", targetProtocol, privateKey, publicKey, targetTransitionPolicy, true, targetBuilderKeys, targetManifestSchema,
+    true, runtimeUnitsChange ? "target" : "units",
   )
   const installRoot = join(root, "host")
   if (path1Release) {
@@ -294,6 +289,12 @@ async function makeHarness(context, {
   await chmod(dirname(releases), 0o755)
   await chmod(releases, 0o755)
   await cp(current.rootfs, currentRelease, { recursive: true, preserveTimestamps: true })
+  if (!runtimeUnitsChange) {
+    // As upgrade-image.sh stages every release it installs.
+    for (const unit of ["chariox-rootless-docker", "chariox-slice-disk-quota-allocator"]) {
+      await mkdir(join(currentRelease, `etc/systemd/system/${unit}.service.d`), { mode: 0o755 })
+    }
+  }
   await symlink(`releases/${current.digest.slice("sha256:".length)}`, join(installRoot, "usr/lib/chariox/current"))
   await symlink("current/usr/lib/chariox/slice-build-context", join(installRoot, "usr/lib/chariox/slice-build-context"))
   if (path1Release) {
@@ -430,9 +431,6 @@ exec /usr/bin/install "\${arguments[@]}"
   await put(join(bin, "systemctl"), `#!/bin/sh
 set -eu
 printf '%s\n' "$*" >> "$HARNESS_STATE/systemctl.log"
-if [ "$1" = disable ] && [ "\${3:-}" = chariox-app-storage.service ]; then
-  [ -f "$CHARIOX_MANAGED_UPGRADE_ROOT/etc/systemd/system/chariox-app-storage.service" ] || exit 1
-fi
 if [ "$1" = "show" ]; then
   case "$*" in
     *--property=NeedDaemonReload*chariox-path1-managed-bootstrap.service)
@@ -491,9 +489,14 @@ if [ "$1" = "start" ] && [ "$2" = "chariox-rootless-docker.service" ] \
   && [ "\${CHARIOX_MANAGED_PROVIDER_TOPOLOGY:-}" = path1 ]; then
   touch "$HARNESS_STATE/data-volume-mounted"
 fi
+if [ "$1" = reload ] && [ -f "$HARNESS_STATE/refuse-reload-once" ]; then
+  # The running kernel refuses to replace itself and keeps running.
+  rm -f -- "$HARNESS_STATE/refuse-reload-once"
+  exit 0
+fi
 case "\${2:-}" in
   chariox-managed-bootstrap.service|chariox-path1-managed-bootstrap.service|chariox-disposable-worker-bootstrap.service)
-if [ "$1" = "start" ]; then
+if [ "$1" = "start" ] || [ "$1" = reload ]; then
   if [ -f "$HARNESS_STATE/rebind-grant-once" ]; then
     rm -f -- "$HARNESS_STATE/rebind-grant-once"
     printf '{"schemaVersion":2}\n' > "$CHARIOX_MANAGED_UPGRADE_ROOT/var/lib/chariox/managed/bootstrap-grant-binding.json"
@@ -619,18 +622,7 @@ if [ "\${1##*/}" = "managed-kernel-home-migration.mjs" ] \
   kill -KILL "$PPID"
   exit 1
 fi
-if [ "\${1##*/}" = "managed-kernel-upgrade-state.mjs" ] \
-  && [ "\${2:-}" = "atomic-symlink" ] \
-  && [ "\${4##*/}" = current ] \
-  && [ -f "$HARNESS_STATE/crash-after-pre-apps-current" ]; then
-  "${process.execPath}" "$@"
-  if [ ! -f "$CHARIOX_MANAGED_UPGRADE_ROOT/usr/lib/chariox/current/usr/libexec/chariox-app-storage" ]; then
-    rm -f "$HARNESS_STATE/crash-after-pre-apps-current"
-    kill -KILL "$PPID"
-    exit 1
-  fi
-  exit 0
-fi
+
 if [ "\${1##*/}" = "managed-kernel-upgrade-state.mjs" ] \
   && [ "\${2:-}" = "atomic-symlink" ] \
   && [ -f "$HARNESS_STATE/crash-before-symlink" ]; then

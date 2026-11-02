@@ -5,7 +5,7 @@
 //
 //   release-bundle.mjs slice-context --source-root DIR --source-commit SHA --output DIR
 //   release-bundle.mjs assemble --platform linux-x64|darwin-arm64 --version V
-//       --source-commit SHA --executables DIR --runtime DIR --runtime-public-key HEX
+//       --source-commit SHA --executables DIR
 //       --slice-build-context DIR [--macos-signing-receipt FILE] [--source-root DIR]
 //       --output DIR
 //   release-bundle.mjs sign --bundle DIR --signing-key PEM
@@ -17,25 +17,22 @@
 // image from) and every local Dockerfile input, in the repository layout.
 // `assemble` copies already built (and, on macOS, already codesigned and
 // notarized) artifacts into the bundle layout and writes manifest.json: the
-// version, platform, source commit, the signed App runtime's inventory digest
-// and key, and every file's size, mode and SHA-256. `sign` signs the exact
+// version, platform, source commit, and every file's size, mode and SHA-256. `sign` signs the exact
 // manifest bytes with the release key (Ed25519, hex in manifest.sig). `verify`
 // checks that signature against a key from the release authority, then every
 // file's size and SHA-256, refuses any file the manifest does not name, and
-// re-verifies the App runtime's own signed inventory.
+// verifies the WASM App worker like every other release binary.
 import { spawnSync } from 'node:child_process';
 import { createPrivateKey, createPublicKey, sign as signBytes, verify as verifyBytes } from 'node:crypto';
 import { chmod, copyFile, lstat, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { relativeFile, sha256, stableJson } from './app-runtime-bundle-files.mjs';
+import { relativeFile, sha256, stableJson } from './release-files.mjs';
 import { SLICE_DOCKERFILE, sliceDockerfileInputs, sliceInputRoot, validateSliceBuildContext } from './slice-build-context.mjs';
 
 export const SCHEMA = 'chariox.release-bundle.v1';
 const MACOS_RECEIPT_SCHEMA = 'chariox.macos-release-signing.v1';
-const RUNTIME_SCHEMA = 'chariox.app-runtime-inventory.v1';
-const RUNTIME_CONTROL = ['runtime-inventory.json', 'runtime-inventory.sig', '.runtime-lease'];
 // Release kernels look for this beside their bin/ (apps/kernel/src/slice/local_docker.rs).
 export const SLICE_CONTEXT = 'share/chariox/slice-build-context';
 const SLICE_ROOTS = 'apps/kernel/slice-linux-docker/runtime-source-roots.txt';
@@ -49,13 +46,12 @@ const rustBinaries = ['chariox-kernel', 'chariox-relay', 'chariox-app-package', 
 export const PLATFORMS = {
   'linux-x64': {
     bin: ['chariox', ...rustBinaries],
-    // The App storage helper is Linux only.
-    libexec: ['chariox-app-storage', 'chariox-app-runtime-install'],
+    libexec: [],
     linuxInstaller: true,
   },
   'darwin-arm64': {
     bin: ['chariox', ...rustBinaries],
-    libexec: ['chariox-app-runtime-install'],
+    libexec: [],
     linuxInstaller: false,
   },
 };
@@ -102,26 +98,6 @@ async function regularFile(path, what) {
   return metadata;
 }
 
-/** Verifies a signed App runtime release directory; returns its identity. */
-export async function verifyRuntime(directory, keyHex, platform, sourceCommit) {
-  const inventoryBytes = await readFile(join(directory, 'runtime-inventory.json'));
-  verifySignature(inventoryBytes, await readFile(join(directory, 'runtime-inventory.sig')), keyHex, 'runtime inventory');
-  const inventory = JSON.parse(inventoryBytes.toString('utf8'));
-  if (inventory.schema !== RUNTIME_SCHEMA) fail(`runtime inventory schema must be ${RUNTIME_SCHEMA}`);
-  if (inventory.target !== platform) fail(`runtime target ${inventory.target} is not ${platform}`);
-  if (inventory.sourceCommit !== sourceCommit) fail(`runtime source ${inventory.sourceCommit} is not ${sourceCommit}`);
-  const expected = new Map(inventory.files.map(file => [relativeFile(file.path), file]));
-  const present = await files(directory);
-  for (const path of present) {
-    if (RUNTIME_CONTROL.includes(path)) continue;
-    const entry = expected.get(path) ?? fail(`runtime file ${path} is not in the signed inventory`);
-    const bytes = await readFile(join(directory, path));
-    if (bytes.length !== entry.size || sha256(bytes) !== entry.sha256) fail(`runtime file ${path} does not match the signed inventory`);
-    expected.delete(path);
-  }
-  if (expected.size) fail(`runtime is missing ${[...expected.keys()].join(', ')}`);
-  return { inventorySha256: sha256(inventoryBytes), publicKeyHex: keyHex };
-}
 
 function git(sourceRoot, args, maxBuffer = 1 << 20) {
   const result = spawnSync('git', ['-C', sourceRoot, ...args], { maxBuffer, env: {
@@ -172,7 +148,6 @@ function verifyMacosReceipt(receipt, digests) {
 }
 
 function modeOf(path, sourceMode) {
-  if (path.startsWith('runtime/')) return sourceMode & 0o555; // the signed runtime is read-only
   if (path.startsWith('bin/') || path.startsWith('libexec/') || path === 'install.sh') return 0o755;
   return sourceMode & 0o111 ? 0o755 : 0o644;
 }
@@ -202,7 +177,6 @@ export async function assemble(options) {
   const output = resolve(options.output ?? fail('--output is required'));
   if (await lstat(output).then(() => true, () => false)) fail(`${output} already exists`);
   const sourceRoot = resolve(options.sourceRoot ?? repositoryRoot);
-  const runtime = await verifyRuntime(resolve(options.runtime), options.runtimePublicKey, options.platform, options.sourceCommit);
 
   // --executables has the bundle's bin/ and libexec/ layout, the layout the macOS
   // signing tool keeps, so its receipt names the same paths.
@@ -232,8 +206,7 @@ export async function assemble(options) {
     for (const path of await files(local)) installer.push([join(local, path), `deploy/local-linux/${path}`]);
     // install-root.sh installs these units from ../managed-kernel.
     const units = join(sourceRoot, 'deploy/managed-kernel');
-    await regularFile(join(units, 'chariox-app-storage.service'), 'deploy/managed-kernel/chariox-app-storage.service');
-    for (const name of ['chariox-app-storage.service', 'chariox-docker-admission-locks.service']) {
+    for (const name of ['chariox-docker-admission-locks.service']) {
       if (await lstat(join(units, name)).then(() => true, () => false)) installer.push([join(units, name), `deploy/managed-kernel/${name}`]);
     }
     installer.push([join(sourceRoot, 'deploy/release-bundle/install.sh'), 'install.sh']);
@@ -249,15 +222,14 @@ export async function assemble(options) {
       await regularFile(source, path);
       await place(source, output, path);
     }
-    for (const path of await files(resolve(options.runtime))) await place(join(resolve(options.runtime), path), output, `runtime/${path}`);
     for (const path of await files(sliceContext)) await place(join(sliceContext, path), output, `${SLICE_CONTEXT}/${path}`);
     await validateSliceBuildContext(join(output, SLICE_CONTEXT));
     const manifest = await writeManifest(output, {
       name: 'chariox', version: options.version, platform: options.platform, sourceCommit: options.sourceCommit,
-      runtime, macosSigning,
+      macosSigning,
     });
     return { output, version: manifest.version, platform: manifest.platform, files: manifest.files.length,
-      manifestSha256: sha256(await readFile(join(output, 'manifest.json'))), runtime };
+      manifestSha256: sha256(await readFile(join(output, 'manifest.json'))), };
   } catch (error) {
     await rm(output, { recursive: true, force: true });
     throw error;
@@ -286,12 +258,9 @@ async function checkContents(directory, manifestBytes, signed) {
     listed.delete(path);
   }
   if (listed.size) fail(`bundle is missing ${[...listed.keys()].join(', ')}`);
-  await verifyRuntime(join(directory, 'runtime'), manifest.runtime.publicKeyHex, manifest.platform, manifest.sourceCommit);
-  if (manifest.runtime.inventorySha256 !== sha256(await readFile(join(directory, 'runtime/runtime-inventory.json'))))
-    fail('the runtime inventory digest does not match the manifest');
   await validateSliceBuildContext(join(directory, SLICE_CONTEXT));
   return { version: manifest.version, platform: manifest.platform, sourceCommit: manifest.sourceCommit,
-    files: manifest.files.length, manifestSha256: sha256(manifestBytes), runtime: manifest.runtime };
+    files: manifest.files.length, manifestSha256: sha256(manifestBytes) };
 }
 
 export async function signBundle(bundle, signingKey) {
@@ -310,7 +279,7 @@ export async function signBundle(bundle, signingKey) {
 
 const COMMANDS = {
   'slice-context': ['source-root', 'source-commit', 'output'],
-  assemble: ['platform', 'version', 'source-commit', 'executables', 'runtime', 'runtime-public-key', 'slice-build-context', 'macos-signing-receipt', 'source-root', 'output'],
+  assemble: ['platform', 'version', 'source-commit', 'executables', 'slice-build-context', 'macos-signing-receipt', 'source-root', 'output'],
   sign: ['bundle', 'signing-key'],
   verify: ['bundle', 'public-key'],
 };

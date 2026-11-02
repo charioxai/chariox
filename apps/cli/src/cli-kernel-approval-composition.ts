@@ -76,9 +76,9 @@ export function createCliKernelApprovalComposition(deps: {
     onOpen: opened,
     onClose: closed,
     scroll: popupSurface.scroll,
-    respond: (prompt, choiceId, proof) =>
-      prompt.session_id === "kernel-access" && (prompt.kind === "access_grant" || prompt.kind === "access_extension")
-        ? respondToKernelAccessDecision(deps.client, prompt.interaction_id, choiceId, proof)
+    respond: (prompt, choiceId, proof, reply) =>
+      prompt.session_id === "kernel-access" && (prompt.kind === "access_grant" || prompt.kind === "access_extension" || prompt.kind === "vault_secret")
+        ? respondToKernelAccessDecision(deps.client, prompt.interaction_id, choiceId, proof, reply)
         : prompt.session_id === ""
           ? respondUserPrompt(prompt.interaction_id, choiceId, proof)
           : respondToInteraction(deps.client, prompt.session_id, prompt.interaction_id, choiceId, null, proof),
@@ -154,6 +154,7 @@ export function createCliKernelApprovalComposition(deps: {
   // windows with Extend (fresh passkey popup) and Revoke.
   const report = (failure: unknown) => deps.notify(failure instanceof Error ? failure.message : String(failure))
   const band = createSudoWindowBand(deps.renderer, {
+    focusChanged: (focused) => { if (focused) opened(); else closed() },
     extend: (window) => {
       const attachment = deps.attachmentId()
       if (!attachment) return
@@ -213,8 +214,8 @@ export function createCliKernelApprovalComposition(deps: {
     assignBanner(value: BoxRenderable) { surface.assignBanner(value); controller.sync() },
     assignSudoBand(value: BoxRenderable) { band.assign(value); renderBand() },
     /** The popup takes keys first: it sits over the panel. */
-    handleKey: (event: KernelApprovalKey) => popup.handleKey(event) || controller.handleKey(event),
-    ownsInput: () => popup.ownsInput() || controller.ownsInput(),
+    handleKey: (event: KernelApprovalKey) => popup.handleKey(event) || (!controller.ownsInput() && band.handleKey(event)) || controller.handleKey(event),
+    ownsInput: () => popup.ownsInput() || band.ownsInput() || controller.ownsInput(),
     assignBox(value: BoxRenderable) { surface.assign(value); controller.sync() },
     assignPopupBanner(value: BoxRenderable) { popupSurface.assignBanner(value); popupSurface.render(popup.view(), deps.dimensions()) },
     assignPopupBox(value: BoxRenderable) { popupSurface.assign(value); popupSurface.render(popup.view(), deps.dimensions()) },

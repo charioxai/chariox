@@ -26,8 +26,6 @@ pub(super) const PROTECTED_MANAGED_BOOTSTRAP_PATH: &str =
     "/etc/chariox/bootstrap/managed-bootstrap.json";
 pub(super) const PROTECTED_DISPOSABLE_WORKER_BOOTSTRAP_PATH: &str =
     "/etc/chariox/bootstrap/disposable-worker-bootstrap.json";
-const MIN_HETZNER_VOLUME_SIZE_GB: u32 = 10;
-const MAX_HETZNER_VOLUME_SIZE_GB: u32 = 10_000;
 const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -331,9 +329,9 @@ impl ManagedBootstrapEnvelope {
             .map_err(|_| state_error("managed bootstrap expiry is invalid"))
     }
 
-    fn validate(&self, protected_storage_input: bool) -> Result<(), DaemonError> {
+    pub(super) fn validate(&self, protected_storage_input: bool) -> Result<(), DaemonError> {
         if !(matches!(self.schema_version, 1 | 2) && !protected_storage_input
-            || self.schema_version == 3 && protected_storage_input)
+            || matches!(self.schema_version, 3 | 4) && protected_storage_input)
             || !valid_identifier(&self.environment_id)
             || !valid_secret(&self.token, "mkboot_")
             || !valid_digest(&self.runtime_release_digest)
@@ -538,7 +536,7 @@ impl ManagedBootstrapGrantBinding {
 
     fn validate(&self) -> Result<(), DaemonError> {
         if !matches!(self.schema_version, 1 | RECEIPT_BINDING_SCHEMA)
-            || self.envelope_schema_version != 3
+            || !matches!(self.envelope_schema_version, 3 | 4)
             || !valid_digest(&self.grant_binding_digest)
             || !valid_digest(&self.exchange_identity_digest)
             || match (self.generation, self.receipt_binding_digest.as_deref()) {
@@ -637,7 +635,7 @@ impl BootstrapReceipt {
             }
             _ => false,
         };
-        if !matches!(self.schema_version, 1..=3)
+        if !matches!(self.schema_version, 1..=4)
             || !valid_identifier(&self.environment_id)
             || !valid_identifier(&self.machine_id)
             || !valid_identifier(&self.kernel_id)
@@ -692,7 +690,7 @@ pub(super) fn managed_repository_root_for_schema(
 ) -> Result<String, DaemonError> {
     match (schema_version, value) {
         (1, None) => Ok(DEFAULT_MANAGED_REPOSITORY_ROOT.to_string()),
-        (2 | 3, Some(value)) => {
+        (2..=4, Some(value)) => {
             let normalized = normalize_managed_repository_root(value)?;
             if normalized != value {
                 return Err(state_error("managed repository root must be normalized"));
@@ -788,11 +786,7 @@ pub(super) fn validate_volume_binding_for_schema(
                 number > 0 && number <= MAX_SAFE_INTEGER && number.to_string() == value
             })
     });
-    if !valid_serial
-        || !size_gb.is_some_and(|value| {
-            (MIN_HETZNER_VOLUME_SIZE_GB..=MAX_HETZNER_VOLUME_SIZE_GB).contains(&value)
-        })
-    {
+    if !valid_serial || size_gb.is_none_or(|value| value == 0) {
         return Err(state_error("data-volume bootstrap binding is invalid"));
     }
     Ok(())
@@ -1211,6 +1205,6 @@ mod tests {
             managed_repository_root_for_schema(3, Some("/srv/workspaces")).unwrap(),
             "/srv/workspaces"
         );
-        assert!(managed_repository_root_for_schema(4, Some("/srv/workspaces")).is_err());
+        assert!(managed_repository_root_for_schema(5, Some("/srv/workspaces")).is_err());
     }
 }

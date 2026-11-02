@@ -1,0 +1,21 @@
+{
+  "local_protocol": 960,
+  "peer_protocol": 409,
+  "request": {
+    "KernelBrowser": {
+      "command": {
+        "op": "paste_secret",
+        "credential_id": "login",
+        "tab_id": "t",
+        "generation": 2
+      }
+    }
+  },
+  "response": {
+    "KernelBrowser": {
+      "result": {
+        "inserted": true
+      }
+    }
+  }
+}

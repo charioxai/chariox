@@ -116,13 +116,17 @@ impl KernelRuntimeOwnedState {
                 }
                 if !self.publication_activation.required
                     && (publication.id() != request.publication_id
-                        || session.owner_user_id() != caller_user_id
+                        || !self.acts_for_owner(
+                            session.id(),
+                            caller_user_id,
+                            session.owner_user_id(),
+                        )
                         || !requested.contains(&binding.key))
                 {
                     continue;
                 }
                 if publication.id() != request.publication_id
-                    || session.owner_user_id() != caller_user_id
+                    || !self.acts_for_owner(session.id(), caller_user_id, session.owner_user_id())
                     || prepared.get(&(
                         publication.id().to_string(),
                         caller_user_id.to_string(),

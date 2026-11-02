@@ -243,6 +243,12 @@ pub(super) fn prepare_claude_native_tui_files(
         "statusLine": {
             "type": "command",
             "command": usage_capture.command()
+        },
+        // A command waiting for room still counts against the Bash tool's
+        // timeout (2 minutes by default): give it the time a queued build needs.
+        "env": {
+            "BASH_DEFAULT_TIMEOUT_MS": "1800000",
+            "BASH_MAX_TIMEOUT_MS": "7200000"
         }
     });
     let settings =
@@ -503,6 +509,8 @@ mod tests {
         )
         .expect("settings should be valid JSON");
         assert_eq!(settings["statusLine"]["type"], "command");
+        assert_eq!(settings["env"]["BASH_DEFAULT_TIMEOUT_MS"], "1800000");
+        assert_eq!(settings["env"]["BASH_MAX_TIMEOUT_MS"], "7200000");
         assert!(settings["statusLine"]["command"]
             .as_str()
             .is_some_and(|command| command.contains("usage-handler.mjs")));

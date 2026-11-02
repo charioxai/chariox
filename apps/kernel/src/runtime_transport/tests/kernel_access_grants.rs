@@ -12,6 +12,9 @@ const SESSION: &str = "access-session";
 mod cover;
 mod credential_authority;
 mod outbound_credentials;
+mod standing;
+mod vault_secret;
+mod waiter;
 
 #[test]
 #[ignore = "subprocess entry point"]
@@ -181,7 +184,9 @@ fn kernel_access_child_server() {
                     }
                 }
             });
-            std::fs::write(root.join("ready"), addr.to_string()).unwrap();
+            // Renamed into place: a client reading a half-written address got an empty URI.
+            std::fs::write(root.join("ready.tmp"), addr.to_string()).unwrap();
+            std::fs::rename(root.join("ready.tmp"), root.join("ready")).unwrap();
             run_kernel_websocket_server_with_bound_listeners(
                 router,
                 adopt_std_listener(tcp, "tcp").unwrap(),
@@ -596,6 +601,13 @@ impl Kernel {
         Self::start_with_fixture(false, true).await
     }
     async fn start_with_fixture(sudo: bool, credential_session: bool) -> Self {
+        Self::start_with_env(sudo, credential_session, &[]).await
+    }
+    async fn start_with_env(
+        sudo: bool,
+        credential_session: bool,
+        extra_env: &[(&str, &Path)],
+    ) -> Self {
         // Keep macOS's 104-byte sockaddr_un limit, including the temporary prefix.
         let root = std::env::temp_dir().join(format!("a{:08x}", rand::random::<u32>()));
         std::fs::create_dir(&root).unwrap();
@@ -611,6 +623,7 @@ impl Kernel {
             )
             .env("CHARIOX_HOME", root.join("state"))
             .env("HOME", root.join("home"))
+            .envs(extra_env.iter().copied())
             .env_remove("CLAUDE_CONFIG_DIR")
             .env_remove("CODEX_HOME")
             .stdout(Stdio::null())
@@ -1595,6 +1608,30 @@ async fn a_grant_holder_moves_a_file_in_chunks_and_a_bad_request_says_what_to_do
             .unwrap()
             .contains("start it with /"),
         "{missing}"
+    );
+}
+
+// A grant holder that copies the kernel id from an event record into `--kernel` means the
+// kernel it is talking to: the answer is the local one, as when the name is omitted.
+#[tokio::test]
+async fn naming_this_kernels_own_id_is_the_local_kernel() {
+    let mut kernel = Kernel::start().await;
+    let mut holder = Client::start(&kernel.root);
+    grant(&mut kernel, &mut holder).await;
+    let status = holder.request(serde_json::json!({"RelayStatus":{}}));
+    let own = status["response"]["RelayStatus"]["status"]["daemon_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{status}"))
+        .to_string();
+    let local = holder.request_on(
+        &own,
+        serde_json::json!({"GetSessionState":{"session_id":SESSION}}),
+    );
+    assert!(local["error"].is_null(), "{local}");
+    assert!(local["kernel"].is_null(), "answered locally: {local}");
+    assert!(
+        local["response"]["SessionState"].is_object(),
+        "the session state of this kernel: {local}"
     );
 }
 
