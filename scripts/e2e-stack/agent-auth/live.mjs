@@ -68,6 +68,7 @@ const result = { MP: ['MP-08', 'MP-09', 'MP-10', 'MP-11'], status: 'FAIL', start
   client: 'apps/web terminal-os hosted (real application entry)', cloud_origin: origin, scenarios: [],
 }
 let service, browser, page, client, sessionId, ownsRoot = false
+function stage(value) { result.stage = value; console.log(JSON.stringify({ stage: value })) }
 const children = [], logs = [], privateValues = [passphrase]
 function absent(text) {
   service?.assertAbsent(text)
@@ -143,6 +144,7 @@ try {
   await mkdir(evidence, { recursive: true, mode: 0o700 })
   for (const name of ['os-home', 'home', 'tmp', 'config', 'state', 'data', 'cache', 'logs']) await mkdir(`${root}/${name}`, { mode: 0o700 })
   await writeFile(`${root}/home/config.toml`, `version = 1\n[history.archive]\nmode = "disabled"\n[credential_vault]\nbackend = "chariox_encrypted"\npath = "${root}/home/vault.json"\nunlock_policy = "kernel_init"\nagent_management = "allow"\n`, { mode: 0o600 })
+  stage('kernel startup')
   service = await createAuthService()
   start(options['kernel-bin'], {}, 'kernel')
   await writeFile(`${root}/started-pids.json`, JSON.stringify(children.map(child => child.pid)), { mode: 0o600 })
@@ -159,21 +161,27 @@ try {
     const text = parts.join(' ')
     try { absent(text); diagnostics.push(text.slice(0, 2000)) } catch { diagnostics.push('Protected browser diagnostic suppressed') }
   })
+  stage('hosted device enrollment')
   const relayStatus = variant(await client.send({ RelayStatus: null }), 'RelayStatus').status
   const login = variant(await client.send({ StartCloudRelayLogin: { api_url: origin, client_id: 'authmd-live', client_alias: 'Authmd drill', machine_id: relayStatus.machine_id, machine_alias: 'Authmd owned drill' } }), 'CloudRelayLoginStarted').login
   privateValues.push(login.device_code)
   if (new URL(login.verification_url).origin !== origin) throw new Error('Device approval left the owned hosted stack')
   await page.goto(login.verification_url)
+  await capture('device-approval')
   const approve = page.getByRole('button', { name: /approve|allow|connect/i })
-  if (await approve.count() === 1) await approve.click()
+  await approve.waitFor({ timeout: 30000 })
+  await approve.click()
+  await capture('device-approved')
   let enrolled = false
   for (let attempt = 0; attempt < 30; attempt++) {
+    if (stopping) throw new Error('Drill stopped by its owner')
     await delay(Math.max(5000, (login.interval_seconds ?? 5) * 1000))
     const poll = variant(await client.send({ PollCloudRelayLogin: { api_url: origin, device_code: login.device_code } }), 'CloudRelayLoginPolled').result
     if (poll.status === 'approved') { enrolled = true; break }
     if (poll.status !== 'pending' && poll.status !== 'authorization_pending') throw new Error(`Device enrollment: ${poll.status}`)
   }
   if (!enrolled) throw new Error('Hosted device enrollment timed out')
+  stage('hosted relay connection')
   await client.send({ ConnectCloudRelay: null })
   await until(async () => {
     const status = variant(await client.send({ RelayStatus: null }), 'RelayStatus').status
@@ -190,12 +198,14 @@ try {
     session = variant(await client.send(requests.getSessionStateRequest(sessionId)), 'SessionState').session
   }
   const agentId = session.agents[0].id
+  stage('new UI room navigation')
   await page.goto(`${origin}/waiting-room?ui=os`)
   await page.locator('.terminal-os').waitFor()
   await page.locator(`[data-room-id="${sessionId}"] [data-action="open-room"]`).click({ timeout: 60000 })
   await page.locator('[data-prompt-input]').waitFor()
   await capture('new-ui-room')
   for (const flow of ['anonymous', 'service_auth']) {
+    stage(`provider ${flow}`)
     const before = service.counts.accepted
     const args = { request_id: `live-${flow}`, resource_url: `${service.origin}/`, ...(flow === 'service_auth' ? { email: 'owner@example.test' } : {}) }
     const prompt = `/sudo MP-08 / MP-09 / MP-10 / MP-11 AU-15. Register this owner-authorized local test account. Use Chariox MCP tools only. Call chariox.agent_auth.register with exactly ${JSON.stringify(args)}. Then call chariox.http_request_with_credential with its returned credential_id, method GET and url ${service.origin}/api/check. Do not use shell, files or raw network tools. Never print a credential value. Report HTTP status and end with AU15_${flow}_DONE.`
