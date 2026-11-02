@@ -46,7 +46,7 @@ async function texts(directory) {
   }
   return output
 }
-let kernel, client, browser, browserServer, viewer, site, page, browserRoot, sessionId
+let kernel, client, browser, browserServer, viewer, site, page, context, browserRoot, sessionId
 let rawKernelLog = ''
 let stateEnvironment, workspace
 let ownsRoot = false, ownsWorkspace = false
@@ -150,7 +150,7 @@ try {
   viewer = trackOwnedProcess(browserServer.process())
   results.viewerPid = viewer.pid
   browser = await chromium.connect(browserServer.wsEndpoint())
-  const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: dpr,
+  context = await browser.newContext({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: dpr,
     recordVideo: { dir: path.join(evidence, 'video'), size: { width: 1440, height: 900 } } })
   for (const permission of ['local-network-access', 'local-network', 'loopback-network']) { try { await context.grantPermissions([permission], { origin }) } catch {} }
   page = await context.newPage()
@@ -336,6 +336,22 @@ try {
   if (client && sessionId) await deadline(client.send({ EndSession: { session_id: sessionId } })).catch(() => {})
   if (client) await deadline(client.send({ DisconnectCloudRelay: null })).catch(() => {})
   if (client) await deadline(client.close()).catch(() => {})
+  if (context) {
+    const video = page?.video()
+    await deadline(context.close()).catch(() => {})
+    if (video) {
+      try {
+        const videoFile = path.join(evidence, 'video', 'owner-flow.webm')
+        await deadline(video.saveAs(videoFile), 20_000)
+        results.videoSaved = (await readFile(videoFile)).length > 0
+      } catch { results.videoSaved = false }
+    }
+    if (results.passed && !results.videoSaved) {
+      results.passed = false
+      results.failure = 'owner video export failed'
+      process.exitCode = 1
+    }
+  }
   if (browser) await deadline(browser.close()).catch(() => {})
   if (browserServer) await deadline(browserServer.close()).catch(() => {})
   for (const handle of viewerHandles) { try { signalOwnedProcess(handle, 'SIGKILL') } catch {} }
