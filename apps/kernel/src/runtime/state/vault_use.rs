@@ -92,6 +92,21 @@ impl KernelRuntimeState {
         Ok(())
     }
 
+    /// Invalid requests never ask for an unlock. Rejections can be encrypted in
+    /// Activity only while the Vault is already open; no value is read on this path.
+    pub(super) fn record_vault_refusal(
+        &self,
+        id: &str,
+        target: &VaultUseTarget,
+        actor: &str,
+    ) -> Result<(), DaemonError> {
+        if self.require_unlocked_vault().is_ok() {
+            self.home_runtime_secret_service()?
+                .record_vault_activity(id, &format!("Use refused for {target:?} by {actor}"))?;
+        }
+        Ok(())
+    }
+
     /// No consent for ordinary values. Cards receive one owner decision per use.
     /// Call before reading a value, then recheck the binding under the use barrier.
     pub(super) async fn authorize_vault_use(
@@ -111,10 +126,7 @@ impl KernelRuntimeState {
                 )
             })?;
         if let Err(error) = binding.require(target) {
-            self.home_runtime_secret_service()?.record_vault_activity(
-                &credential.id,
-                &format!("Use refused for {target:?} by {actor}"),
-            )?;
+            self.record_vault_refusal(&credential.id, target, actor)?;
             return Err(error);
         }
         if binding.value_kind == VaultValueKind::PaymentCard {

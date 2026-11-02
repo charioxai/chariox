@@ -234,13 +234,20 @@ impl KernelRuntimeState {
                     operation: "runtime_tool_http_request_with_credential",
                     message: format!("invalid tool arguments: {error}"),
                 })?;
-                let _vault_unlock = self
-                    .ensure_vault_unlocked_for_provider_run(
-                        provider_run,
-                        "runtime_tool_http_request_with_credential",
-                    )
-                    .await?;
-                let credential = service.credential(&args.credential_id)?;
+                let (credential, _) =
+                    match service.validate_http_request_target(&args.credential_id, &args.url) {
+                        Ok(target) => target,
+                        Err(error) => {
+                            if service.credential(&args.credential_id).is_ok() {
+                                self.record_vault_refusal(
+                                    &args.credential_id,
+                                    &crate::config::VaultUseTarget::site(&args.url)?,
+                                    provider_run.agent_instance_id().unwrap_or("agent"),
+                                )?;
+                            }
+                            return Err(error);
+                        }
+                    };
                 let vault_actor = if credential
                     .metadata
                     .as_ref()
@@ -259,6 +266,12 @@ impl KernelRuntimeState {
                 } else {
                     None
                 };
+                let _vault_unlock = self
+                    .ensure_vault_unlocked_for_provider_run(
+                        provider_run,
+                        "runtime_tool_http_request_with_credential",
+                    )
+                    .await?;
                 let approval = if vault_actor.is_some() {
                     Some(
                         self.authorize_vault_use(

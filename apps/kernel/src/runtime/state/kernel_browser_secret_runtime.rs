@@ -202,13 +202,26 @@ impl KernelRuntimeState {
             .kernel_browser_secret_target_url(user, &admission, &args)
             .await?;
         check_authority()?;
+        let service = self.home_runtime_secret_service()?;
+        let credential = service.credential(&args.credential_id)?.clone();
+        if let Err(error) =
+            service.validate_browser_secret_input_for_target_url(&args.credential_id, &url)
+        {
+            self.record_vault_refusal(
+                &args.credential_id,
+                &crate::config::VaultUseTarget::site(&url)?,
+                agent.id(),
+            )?;
+            return Err(error);
+        }
+        let protection = &self.owned.kernel_browser_secret_observations;
+        let scope = KernelBrowserHost::profile_key(user);
+        // Discovery fixes the protection epoch before either unlock or card consent.
+        let epoch = protection.revision(&scope)?;
         let _unlock = self
             .ensure_vault_unlocked_for_agent(session, agent.id(), "kernel_browser_paste_secret")
             .await?;
-        let credential = self
-            .home_runtime_secret_service()?
-            .credential(&args.credential_id)?
-            .clone();
+        check_authority()?;
         let approval = if credential
             .metadata
             .as_ref()
@@ -226,10 +239,6 @@ impl KernelRuntimeState {
         } else {
             None
         };
-        let protection = &self.owned.kernel_browser_secret_observations;
-        let scope = KernelBrowserHost::profile_key(user);
-        // MP-11 A06: discovery fixes the protection epoch the fill relies on.
-        let epoch = protection.revision(&scope)?;
         check_authority()?;
         let (service, _vault_guard) = self
             .scoped_secret_input_service(protection, &scope, &args.credential_id)
