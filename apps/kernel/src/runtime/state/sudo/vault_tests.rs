@@ -999,3 +999,34 @@ async fn vaudit_s3_fill_field_fills_plain_targets_on_the_exact_origin() {
         .unwrap()
         .is_empty());
 }
+
+#[tokio::test]
+async fn vault_token_and_run_tools_share_owner_policy_during_sudo() {
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    unlock(&f);
+    elevated(&f);
+    let mut config = f.state.owned.config_projection.snapshot();
+    config.user_config.credential_vault.agent_management =
+        crate::config::CredentialVaultAgentManagementPolicy::Deny;
+    f.state.owned.config_projection.update(config);
+    for (tool, args) in [
+        (
+            VAULT_GENERATE,
+            json!({"request_id":"shared-policy","origin":SITE}),
+        ),
+        (crate::runtime::state::resource_register::LIST, json!({})),
+    ] {
+        let failure = call(&f, tool, args).await.unwrap_err();
+        assert!(
+            failure
+                .to_string()
+                .contains("the owner's Vault is not available"),
+            "{tool}: {failure}"
+        );
+    }
+    assert!(crate::credential::load_user_credentials()
+        .unwrap()
+        .is_empty());
+    f.state.shutdown_cleanup().await.unwrap();
+}

@@ -209,7 +209,6 @@ pub enum UserCredentialUse {
     Computer,
     Mcp,
     Provider,
-    Env,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
