@@ -3,6 +3,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import os from "node:os";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { PortableEncoder } from "./kernel-browser-display.mjs";
+import { CompositorSource } from "./kernel-browser-compositor.mjs";
 import { PassThrough } from "node:stream";
 import readline from "node:readline";
 import { BrowserCdpClient } from "./browser-controller-cdp.mjs";
@@ -2658,4 +2662,42 @@ test('MP-08/MP-10 protocol933 portable header follows Chromium without a native 
  assert.equal(state.chrome_window,null);assert.equal(state.active_tab_id,second.tab_id);
  const tab=state.tabs.find(t=>t.tab_id===second.tab_id);assert.equal(tab.can_go_back,true);assert.equal(tab.can_go_forward,false);assert.equal(tab.favicon_png_base64,png);
  assert(state.tabs.some(t=>t.tab_id===first.tab_id));
+}));
+
+
+test('MP-08/MP-09/MP-10/MP-11 unsubscribe answers before slow helpers exit and stop reaps them', {timeout:10000}, () => using(async ({host, connection}) => {
+  const previous=process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;
+  process.env.CHARIOX_KERNEL_BROWSER_DISPLAY='1';
+  const children=[];
+  try {
+    const tab=await host.request({op:'open',url:'about:blank'});
+    const opened=await host.request({op:'display_subscribe',tab_id:tab.tab_id,generation:tab.generation,codecs:['png'],bitrate:8000000,device_scale_factor:1});
+    const stream=host.displays.get(opened.subscription_id);
+    const encoders=[];
+    for(let i=0;i<2;i++){
+      const child=spawn(process.execPath,['-e',"process.on('SIGTERM',()=>{});process.stdin.resume();process.stdin.on('end',()=>{});setInterval(()=>{},1000);console.log('ready')"],{stdio:['pipe','pipe','ignore']});
+      children.push(child);await once(child.stdout,'data');
+      const encoder=new PortableEncoder();encoder.child=child;encoders.push(encoder);
+    }
+    stream.encoder=encoders[0];
+    const source=new CompositorSource({connection,sessionId:'fixture',tab,scale:1,policy:{},hasher:encoders[1],allowed:()=>true});
+    host.compositors.set(tab.tab_id,{source,ready:Promise.resolve(source)});
+    const started=performance.now();
+    const reply=await host.request({op:'unsubscribe',subscription_id:opened.subscription_id,generation:tab.generation});
+    assert.equal(reply.unsubscribed,true);
+    assert.ok(performance.now()-started<250,'unsubscribe must answer within 250ms while slow helpers still run');
+    assert.equal(host.displays.has(opened.subscription_id),false);
+    assert.equal(host.compositors.has(tab.tab_id),false,'detach the old compositor before a replacement viewer attaches');
+    assert.equal(source.closed,true,'a detached compositor cannot capture more frames');
+    assert.ok(children.every(child=>child.exitCode===null&&child.signalCode===null),'answer does not wait for helper exit');
+    const stopped=host.stop();
+    await new Promise(resolve=>setTimeout(resolve,30));
+    assert.ok(children.some(child=>child.exitCode===null&&child.signalCode===null),'teardown remains owned while stop waits');
+    await stopped;
+    assert.ok(children.every(child=>child.signalCode==='SIGKILL'),'stop waits for every stubborn helper to be reaped');
+    assert.ok(performance.now()-started<1800,'helper grace periods run concurrently');
+  } finally {
+    if(previous===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY=previous;
+    for(const child of children)if(child.exitCode===null&&child.signalCode===null){assert.ok(Number.isSafeInteger(child.pid)&&child.pid>1);child.kill('SIGKILL');await once(child,'exit');}
+  }
 }));
