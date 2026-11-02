@@ -428,8 +428,8 @@ async function secureFillElement(connection, sessionId, objectId, action) {
         if (!ownerWindow || ownerWindow.location.href !== expectedDocumentUrl) {
           return { ok: false, reason: "target_url_changed" };
         }
-        // MP-08 / MP-10 / MP-11: owner codes may use ordinary editable
-        // fields. Mask before focus/value handlers; Vault fills remain password-only.
+        // MP-08 / MP-11: the controller registers Vault fill identity before
+        // dispatch. Page fields keep their native appearance; observations mask them.
         const inputPrototype = ownerWindow.HTMLInputElement?.prototype;
         const textareaPrototype = ownerWindow.HTMLTextAreaElement?.prototype;
         const elementPrototype = ownerWindow.Element?.prototype;
@@ -443,6 +443,8 @@ async function secureFillElement(connection, sessionId, objectId, action) {
           String(getAttribute.call(this, "aria-readonly") || "false").toLowerCase() !== "true";
         const isMaskedEditableInput = () => {
           if (!editable()) return false;
+          if (!maskCodeInput) return isTextarea || this.isContentEditable || isInput &&
+            ["text", "password", "search", "tel", "url", "email", "number"].includes(String(getAttribute.call(this, "type") || "text").toLowerCase());
           if (isInput) return String(getAttribute.call(this, "type") || "text").toLowerCase() === "password";
           if (!maskCodeInput || !isTextarea || typeof ownerWindow.getComputedStyle !== "function") return false;
           return ownerWindow.getComputedStyle(this).getPropertyValue("-webkit-text-security") === "disc";
