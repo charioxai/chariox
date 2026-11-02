@@ -10,21 +10,26 @@ fn relay_status_control_capabilities_are_versioned_and_hashed() {
         LOCAL_DAEMON_PROTOCOL_VERSION,
         crate::test_support::expected_local_protocol_version()
     );
-    let legacy = serde_json::json!({
+    let snapshot = serde_json::json!({
+        "local_daemon_protocol_version": 950,
         "configured": false, "connected": false, "relay_url": null,
         "relay_token_configured": false, "daemon_id": "kernel-1",
         "daemon_alias": null, "machine_id": "machine-1", "machine_alias": null
     });
-    let mut status: crate::local::RelayStatus = serde_json::from_value(legacy).unwrap();
+    let mut status: crate::local::RelayStatus = serde_json::from_value(snapshot).unwrap();
     assert!(
         status.capabilities.is_empty(),
-        "old kernels must not gain implied support"
+        "an absent capability advertisement must not imply support"
     );
     status.capabilities = crate::local::RUNTIME_CONTROL_CAPABILITIES
         .iter()
         .map(|value| (*value).to_string())
         .collect();
     let response = serde_json::to_value(LocalDaemonResponse::RelayStatus { status }).unwrap();
+    assert_eq!(
+        response["RelayStatus"]["status"]["local_daemon_protocol_version"],
+        950
+    );
     assert_eq!(
         response["RelayStatus"]["status"]["capabilities"],
         serde_json::json!([
@@ -47,7 +52,7 @@ fn relay_status_control_capabilities_are_versioned_and_hashed() {
             "{:x}",
             Sha256::digest(serde_json::to_string(&response).unwrap().as_bytes())
         ),
-        "a9ff50eb8eefc2f26cbe377157e66d63562a84ef8b708147d3aad5575f25ce7f"
+        "4a667d8723b4b2767e55460b300b42158de9edc4ffe97ad2e8e68bf18abd6fe0"
     );
 }
 
@@ -184,12 +189,13 @@ fn relay_status_native_process_identity_is_versioned_and_hashed() {
         LOCAL_DAEMON_PROTOCOL_VERSION,
         crate::test_support::expected_local_protocol_version()
     );
-    let legacy = serde_json::json!({
+    let snapshot = serde_json::json!({
+        "local_daemon_protocol_version": 950,
         "configured": false, "connected": false, "relay_url": null,
         "relay_token_configured": false, "daemon_id": "kernel-1",
         "daemon_alias": null, "machine_id": "machine-1", "machine_alias": null
     });
-    let mut status: crate::local::RelayStatus = serde_json::from_value(legacy).unwrap();
+    let mut status: crate::local::RelayStatus = serde_json::from_value(snapshot).unwrap();
     assert!(status.runtime_process_identity.is_none());
     status.runtime_process_identity = Some(crate::local::KernelRuntimeProcessIdentity {
         pid: 4321,
@@ -197,6 +203,10 @@ fn relay_status_native_process_identity_is_versioned_and_hashed() {
         start_time_ticks: "7712345".to_string(),
     });
     let response = serde_json::to_value(LocalDaemonResponse::RelayStatus { status }).unwrap();
+    assert_eq!(
+        response["RelayStatus"]["status"]["local_daemon_protocol_version"],
+        950
+    );
     assert_eq!(
         response["RelayStatus"]["status"]["runtime_process_identity"]["pid"],
         4321
@@ -206,7 +216,7 @@ fn relay_status_native_process_identity_is_versioned_and_hashed() {
             "{:x}",
             Sha256::digest(serde_json::to_string(&response).unwrap().as_bytes())
         ),
-        "c3dfd43214945bfdc036638d58c9724d9d572cb00267c90aef7bb975241e8cef"
+        "f381ca6abd2db0ecbbf771c64020ee267e65da3134f353ba17c72e2c4d438f94"
     );
 }
 
@@ -240,6 +250,7 @@ fn kernel_cloud_ownership_status_and_connect_never_serialize_credentials() {
     }
     let connected = serde_json::to_value(LocalDaemonResponse::CloudRelayConnected {
         status: serde_json::from_value(serde_json::json!({
+            "local_daemon_protocol_version": 950,
             "configured": true, "connected": true, "relay_url": "wss://relay.example",
             "relay_token_configured": true, "daemon_id": "kernel-a",
             "daemon_alias": null, "machine_id": "machine-a", "machine_alias": null

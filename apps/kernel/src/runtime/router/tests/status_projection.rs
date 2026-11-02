@@ -603,6 +603,11 @@ async fn relay_status_uses_config_projection_without_app_lock() {
 
     match response {
         LocalDaemonResponse::RelayStatus { status } => {
+            assert_eq!(
+                serde_json::to_value(&status).unwrap()["local_daemon_protocol_version"],
+                serde_json::json!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION),
+                "MP-08/MP-10/MP-11 self-hosted clients must learn the actual kernel protocol"
+            );
             assert!(status.configured);
             assert_eq!(status.relay_url.as_deref(), Some("ws://127.0.0.1:9"));
             assert!(status.relay_token_configured);

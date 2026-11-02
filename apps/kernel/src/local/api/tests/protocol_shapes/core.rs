@@ -72,6 +72,7 @@ fn local_daemon_protocol_waiting_room_git_credentials_shape_is_versioned() {
             external_provider_sessions_has_more: false,
             external_provider_sessions_next_cursor: None,
             relay_status: RelayStatus {
+                local_daemon_protocol_version: crate::local::LOCAL_DAEMON_PROTOCOL_VERSION,
                 runtime_process_identity: None,
                 capabilities: Vec::new(),
                 configured: true,

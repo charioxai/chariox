@@ -6315,3 +6315,13 @@ Vault must be unlocked. Agents keep the observed-node MCP fill; this command
 is admitted only through the human terminal adapter. Responses contain only
 `inserted: true`. Browser display audience comes from the home kernel; model
 observations stay protected even when the owner's display is unmasked.
+
+## MP-08 / MP-09 / MP-10 / MP-11 shared client protocol discovery (950/399)
+
+`RelayStatus.status.local_daemon_protocol_version` is the answering kernel's
+`LOCAL_DAEMON_PROTOCOL_VERSION`. Local IPC, direct and encrypted relay callers
+read the same status projection. Hosted and self-hosted Web links read it before
+becoming ready, including reconnects, instead of depending on a Cloud heartbeat.
+The pairing-only link still joins before making any other request. This field
+advertises support; every request retains its kernel-owned authorization checks.
+The managed upgrade policy keeps current and previous releases 636 and 629 plus target 950.
