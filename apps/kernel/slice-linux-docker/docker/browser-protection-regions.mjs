@@ -179,9 +179,7 @@ export async function measurePageProtection(connection,sessionId,targetId,policy
   const lifecycles=new Map(targets.map(target=>[fillKey(target),filling.get(connection)?.get(fillKey(target))]));
   // MP-11: preserve the pending state observed before awaiting the snapshot.
   const pendingAtSnapshot=new Map([...lifecycles].map(([key,lifecycle])=>[key,lifecycle?.pending]));
-  // Every known Vault value, also of targets that retired: a page can move the value into another field.
-  const known=new Set((policy.targets??[]).filter(t=>typeof t.value_hash==='string').map(t=>t.value_hash)),exact=[];
-  if(!known.size)return page;
+  if(!targets.length)return page;
   await withBrowserFrames(connection,sessionId,targetId,top.frame.loaderId,async frames=>{
     const seen=new Set(),transforms=new Map([[frames[0],point=>point]]);
     const toViewport=async entry=>{
@@ -210,7 +208,7 @@ export async function measurePageProtection(connection,sessionId,targetId,policy
       await assertFramePaint(parent,parentFrame);
       checkedFramePaint.add(frame.id);
     };
-    // The covered box of one field: shared by the recorded fill target and by exact-value matches.
+    // The covered box of the recorded Vault fill target.
     const maskField=async(entry,raw,frame,frameId,backendNodeId,state)=>{
       // MP-08/MP-11: DOMSnapshot includes retained non-rendered fields. Only
       // confirmed absence of layout for the entire field subtree permits
@@ -264,7 +262,6 @@ export async function measurePageProtection(connection,sessionId,targetId,policy
     for(const entry of frames) {
       const candidates=targets.filter(t=>t.document_id===top.frame.loaderId&&targetNode(t,entry));
       const snapshot=await connection.send('DOMSnapshot.captureSnapshot',{computedStyles:[]},entry.sessionId);
-      const handled=new Set();
       for(const target of candidates) {
         const key=fillKey(target),backendNodeId=targetNode(target,entry);
         const raw=snapshot.documents?.find(doc=>doc.nodes?.backendNodeId?.includes(backendNodeId));
@@ -277,25 +274,10 @@ export async function measurePageProtection(connection,sessionId,targetId,policy
         // pending fill still owns protection; refuse pixels until it is measurable.
         if(inFlight&&(!state.exists||!state.editable))throw Error('MP-11: pending fill target unavailable');
         if(!inFlight&&(!state.exists||state.changed||!state.editable||!state.value || digest(state.value)!==target.value_hash)) {dead.add(key);continue;}
-        handled.add(backendNodeId);
         if(state.password)continue; // Rechecked even for a previously plain field.
         await maskField(entry,raw,frame,frameId,backendNodeId,state);
       }
-      // Whatever the page did with the field (replace, clone, copy), an input or textarea whose current value is a known Vault
-      // value is covered. Exact value only: no identity guessing, no echo in text, attributes or media.
-      for(const raw of snapshot.documents??[]) {
-        const frameId=snapshot.strings[raw.frameId],frame=visit(entry.tree,frameId);
-        if(!frame)continue;
-        for(const rare of [raw.nodes.inputValue,raw.nodes.textValue])rare?.index?.forEach((nodeIndex,i)=>{
-          const value=snapshot.strings[rare.value[i]],backendNodeId=raw.nodes.backendNodeId[nodeIndex];
-          if(value&&known.has(digest(value))&&!handled.has(backendNodeId)){handled.add(backendNodeId);exact.push([entry,raw,frame,frameId,backendNodeId]);}
-        });
-      }
-      for(const [at,doc,owner,id,backendNodeId] of exact.splice(0)) {
-        const state=await fieldState(connection,at,{frameId:id},backendNodeId);
-        if(!state.exists||!state.editable||state.password||!known.has(digest(state.value)))continue; // dots stay dots; a changed value is no longer the secret
-        await maskField(at,doc,owner,id,backendNodeId,state);
-      }
+
     }
     for(const target of targets)if(!seen.has(fillKey(target))){const key=fillKey(target);if(lifecycles.get(key)!==filling.get(connection)?.get(key))throw Error('MP-11: fill changed during protection measurement');if(pendingAtSnapshot.get(key)||lifecycles.get(key)?.pending)throw Error('MP-11: pending fill target unavailable');dead.add(key);}
     await assertBrowserFramesUnchanged(connection,frames);

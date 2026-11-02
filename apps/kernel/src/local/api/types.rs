@@ -449,4 +449,5 @@ pub use workspace::*;
 /// Browser downloads 937 adds bounded Room artifacts and cancellation.
 /// MP-08/MP-10/MP-11: 938 lets the kernel pick an access holder from the peer's host ancestry, own
 /// `--no-wait` requests and report one holder's status (`GetKernelAccessStatus`; peer 387).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 938;
+/// MP-08/MP-10/MP-11: 941 adds person Vault fill and audience-specific display masking (peer 390).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 941;

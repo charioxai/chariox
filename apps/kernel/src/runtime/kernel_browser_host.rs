@@ -258,6 +258,29 @@ impl KernelBrowserHost {
         let backend = backend.lock().ok()?;
         backend.direct_frames()
     }
+
+    pub(crate) fn update_protection_if_running(
+        &self,
+        user: &str,
+        policy: Value,
+    ) -> Result<(), String> {
+        let backend = self
+            .inner
+            .lock()
+            .map_err(|_| "MD-2: browser host lock poisoned")?
+            .browsers
+            .get(user)
+            .cloned();
+        if let Some(backend) = backend {
+            let mut backend = backend.lock().map_err(|_| "MD-2: browser lock poisoned")?;
+            if backend.host_is_live()? {
+                backend
+                    .protect_host(policy)
+                    .map_err(|_| "MD-5: display audience update failed")?;
+            }
+        }
+        Ok(())
+    }
     fn backend(
         &self,
         user: &str,

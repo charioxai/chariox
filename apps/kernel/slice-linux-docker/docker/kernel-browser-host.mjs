@@ -156,8 +156,9 @@ export class KernelBrowserHost {
   }
   async protect(policy) {
     if (!Array.isArray(policy.values) || policy.values.length > 256 || policy.values.some(value => typeof value !== "string" || !value) || !Array.isArray(policy.targets)) throw new Error("MD-5: invalid protection policy");
+    if (policy.display_masked !== undefined && typeof policy.display_masked !== 'boolean') throw new Error('MD-5: invalid display audience');
     // The kernel's JSON has its own key order: compare the fields, or the first request would retire every bound stream.
-    const fields = ({ values, targets, unknown }) => JSON.stringify([values, targets, unknown]);
+    const fields = ({ values, targets, unknown, display_masked }) => JSON.stringify([values, targets, unknown, display_masked]);
     if (fields(policy) === fields(this.protection)) return {};
     const before = this.protection, changed = (a, b) => Number(JSON.stringify(a) !== JSON.stringify(b));
     // Counts only: which part of the policy replaced every bound stream.
@@ -736,8 +737,8 @@ export class KernelBrowserHost {
   async displayScreenshot(tab,clip=null,optimizeForSpeed=true){
     return captureProtectedDisplay(this,tab,clip,optimizeForSpeed);
   }
-  screenshot(tab, clip = null, protectedCapture = false, format = "png", optimizeForSpeed = true) {
-    return capturePageScreenshot(this, tab, clip, protectedCapture, format, optimizeForSpeed);
+  screenshot(tab, clip = null, protectedCapture = false, format = "png", optimizeForSpeed = true, mask = true) {
+    return capturePageScreenshot(this, tab, clip, protectedCapture, format, optimizeForSpeed, mask);
   }
   armDisplayExpiry(stream) {
     clearTimeout(stream.timer);
@@ -1093,7 +1094,7 @@ export class KernelBrowserHost {
       // A frame laid out at the viewer's size (protocol 560/168) is the whole page; any other size is a crop of it.
       const hint=command._capture_viewport,scale=this.scales.get(tab.tab_id)??this.viewport().device_scale_factor,page=this.layouts.get(tab.tab_id)??geometry;
       const crop=hint&&(hint.width!==page.width*scale||hint.height!==page.height*scale);
-      const frame = command._capture_protection===true?(crop?await captureVisiblePage(this,tab,hint,scope):await this.screenshot(tab,null,true)):await this.displayScreenshot(tab);
+      const frame = command._capture_protection===true||command._agent_input===true?(crop?await captureVisiblePage(this,tab,hint,scope):await this.screenshot(tab,null,true)):await this.displayScreenshot(tab);
       // MD-3: explicit binding is an internal display/MCP seam. Legacy 417
       // still emits its existing frame shape until the coordinator adapter lands.
       if (!command.focused_agent && !command.bound_frames) delete frame.document_id;

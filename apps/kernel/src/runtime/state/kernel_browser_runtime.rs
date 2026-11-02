@@ -111,7 +111,8 @@ fn browser_tool_params(arguments: serde_json::Value) -> Result<serde_json::Value
         .map_err(|error| host_error(super::kernel_browser_command_error::public_reason(&error)))?;
     if matches!(
         &request.command,
-        KernelBrowserCommand::GrantLeasedComputer { .. }
+        KernelBrowserCommand::PasteSecret { .. }
+            | KernelBrowserCommand::GrantLeasedComputer { .. }
             | KernelBrowserCommand::RevokeLeasedComputer { .. }
             | KernelBrowserCommand::GrantRoomComputer { .. }
             | KernelBrowserCommand::ListGrants
@@ -203,6 +204,16 @@ impl KernelRuntimeState {
         caller: &crate::runtime::command::KernelCommand,
         command: KernelBrowserCommand,
     ) -> Result<serde_json::Value, DaemonError> {
+        if let KernelBrowserCommand::PasteSecret {
+            credential_id,
+            tab_id,
+            generation,
+        } = command
+        {
+            return self
+                .kernel_browser_terminal_paste_secret(caller, credential_id, tab_id, generation)
+                .await;
+        }
         if let KernelBrowserCommand::Unsubscribe {
             subscription_id,
             generation,

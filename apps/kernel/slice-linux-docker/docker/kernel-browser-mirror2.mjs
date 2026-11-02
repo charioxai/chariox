@@ -289,6 +289,7 @@ export class Mirror2 {
   // are `backend:N`, child-frame refs `frame:<id>:<loader>:backend:N` (prefix).
   async protectTargets(world, tab, policy, prefix = '', patience) {
     await this.evaluate(world, `${world.ref}.resetTargets()`, false, patience?.());
+    if (policy.display_masked === false) return;
     for (const target of policy.targets) {
       if (target.kind !== 'browser' || target.target_id !== tab.target_id || typeof target.node_ref !== 'string') continue;
       if (prefix ? !target.node_ref.startsWith(prefix) : target.node_ref.startsWith('frame:') || target.document_id && target.document_id !== tab.document_id) continue;

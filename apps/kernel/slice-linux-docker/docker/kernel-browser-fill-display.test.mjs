@@ -2,7 +2,21 @@
 // Exact native/CDP fill fences are supplementary to real live drills.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {captureRegionMasks, captureProtectionFence, NativeRegionProtection} from './kernel-browser-region-protection.mjs';
+import {captureRegionMasks, captureProtectionFence, NativeRegionProtection, hasProtectedTarget} from './kernel-browser-region-protection.mjs';
+
+test('MP-08/MP-11 the home display audience never disables the model capture fence',async()=>{
+ const policy={display_masked:false,targets:[{kind:'browser'}],values:['synthetic']};
+ const browser={fillTargets:new Map([['fill',{}]])};
+ assert.equal(hasProtectedTarget(policy,browser),false);
+ assert.deepEqual(await new NativeRegionProtection(null,'S',{policy,browser}).measure(),[]);
+ const display=await captureRegionMasks(null,'S',{policy});
+ assert.deepEqual(await display.afterCapture({width:1280,height:800}),[]);
+ let calls=0;
+ const model=await captureProtectionFence(null,'S','T',policy,{measure:async()=>{calls++;return page([[10,20,30,40]]);}});
+ assert.deepEqual(await model.afterCapture({width:1280,height:800}),[{x:10,y:20,width:30,height:40}]);
+ assert.equal(calls,2,'model captures always measure the Vault target');
+ assert.equal(hasProtectedTarget({...policy,display_masked:true},browser),true);
+});
 
 test('MP-11 display has no independent generic field, frame or shadow masks', async () => {
   const calls=[];

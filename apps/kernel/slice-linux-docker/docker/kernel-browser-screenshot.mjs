@@ -10,7 +10,7 @@ const staleSurface=(data,width,height)=>{
   const header=Buffer.from(String(data).slice(0,44),'base64');
   return header.length>=24&&header.readUInt32BE(12)===0x49484452&&(header.readUInt32BE(16)!==width||header.readUInt32BE(20)!==height);
 };
-export async function capturePageScreenshot(host,tab,clip=null,protectedCapture=false,format='png',optimizeForSpeed=true) {
+export async function capturePageScreenshot(host,tab,clip=null,protectedCapture=false,format='png',optimizeForSpeed=true,mask=true) {
     const started = timestamp();
     const scale = host.scales.get(tab.tab_id) ?? host.viewport().device_scale_factor;
     const browser = host.browser, owner = captureDocumentOwner(browser, tab);
@@ -23,11 +23,10 @@ export async function capturePageScreenshot(host,tab,clip=null,protectedCapture=
     const page = host.layouts?.get(tab.tab_id) ?? geometry;
     const width = Math.round((clip?.width ?? page.width) * scale * (clip?.scale ?? 1));
     const height = Math.round((clip?.height ?? page.height) * scale * (clip?.scale ?? 1));
-    const regionMasks = protectedCapture ? host.protection.targets.length || host.browser.fillTargets?.size
+    const regionMasks = protectedCapture ? !mask ? {async afterCapture(){return [];}} : host.protection.targets.length || host.browser.fillTargets?.size
       ? await captureProtectionFence(connection,sessionId,tab.target_id,{...host.protection,targets:[...host.protection.targets,...(host.browser.fillTargets?.values()??[])]},{ record: reason => host.timing('region_frame_masked ' + reason, timestamp()) })
       : {async afterCapture(){return [];}} : null;
-    const data = await captureProtectedPage(host.browser, tab, host.protection.values,
-      host.protection.targets.filter(target => target.kind === "browser"), async () => {
+    const capture = async () => {
         const at = timestamp();
         const sample = async () => {
           const compositor=host.compositors.get(tab.tab_id)?.source;
@@ -46,7 +45,9 @@ export async function capturePageScreenshot(host,tab,clip=null,protectedCapture=
         const {data}=await (!protectedCapture&&!clip&&!policy.unknown&&!policy.values.length&&!policy.targets.length ? sample() : host.sampleLane(tab).run("capture",sample));
         host.timing(clip?.scale < 1 ? 'cdp_preview' : clip ? 'cdp_crop' : 'cdp_capture', at);
         return data;
-      }, scale, clip);
+      };
+    const data = mask ? await captureProtectedPage(host.browser, tab, host.protection.values,
+      host.protection.targets.filter(target => target.kind === "browser"), capture, scale, clip) : await capture();
     await current();
     const protected_regions = protectedCapture ? await regionMasks.afterCapture({ width, height }) : undefined;
     host.timing('protected_capture', started);

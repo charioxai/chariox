@@ -4,8 +4,8 @@
     "MP-10",
     "MP-11"
   ],
-  "local_protocol": 938,
-  "peer_protocol": 387,
+  "local_protocol": 941,
+  "peer_protocol": 390,
   "allocation": "coordinator-allocated local 920 / relay peer 371: a mirror reset carries the page's document mode; pointer_cursor reads the CSS cursor at a point",
   "pointer_cursor": {
     "KernelBrowser": {
