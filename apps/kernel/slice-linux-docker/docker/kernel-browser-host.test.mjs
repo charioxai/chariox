@@ -2704,3 +2704,18 @@ test("MP-11: the kernel's policy with its own key order is the same policy and k
   await host.protect(JSON.parse('{"targets":[],"unknown":false,"values":["synthetic-protected-value"]}'));
   assert.equal(invalidated, 1);
 });
+test("MD-2: the host process exits after its shutdown reply even when a handle is left open", async () => {
+  const { spawn } = await import("node:child_process");
+  const root = await mkdtemp(path.join(os.tmpdir(), "host-shutdown-"));
+  try {
+    // A leftover handle (a helper socket, a timer) must not keep the process alive: the kernel waits for its exit.
+    const child = spawn(process.execPath, ["--import", "data:text/javascript,setInterval(()=>{},1000)", path.join(import.meta.dirname, "kernel-browser-host.mjs"), "stdio", root], { stdio: ["pipe", "pipe", "inherit"] });
+    const reply = new Promise(resolve => readline.createInterface({ input: child.stdout }).once("line", resolve));
+    const exited = new Promise(resolve => child.once("exit", resolve));
+    child.stdin.write(JSON.stringify({ id: 1, method: "shutdown", params: {} }) + "\n");
+    assert.equal(JSON.parse(await reply).ok, true);
+    const outcome = await Promise.race([exited.then(() => "exited"), new Promise(resolve => setTimeout(resolve, 3000, "still running"))]);
+    if (outcome !== "exited") child.kill("SIGKILL");
+    assert.equal(outcome, "exited");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});

@@ -1224,4 +1224,6 @@ if (process.argv[2] === "stdio" && process.argv[1] && import.meta.url === pathTo
   process.on("SIGTERM", stop);
   process.on("SIGINT", stop);
   await new BrowserControllerStdioServer(timedHostRequests(host, request => scheduleHostRequest(request, host.browser, host.viewport(), Boolean(host.chromium.desktop?.binding?.())))).run().finally(() => host.stop());
+  // The kernel waits for this process after "shutdown": a leftover helper handle must not keep it alive.
+  process.exit(0);
 }
