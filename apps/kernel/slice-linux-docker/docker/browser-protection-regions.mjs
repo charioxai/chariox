@@ -97,7 +97,7 @@ async function fieldState(connection,entry,document,backendNodeId) {
           unprovedPaint ||= style.filter!=='none'||style.webkitBoxReflect!=='none';
         }
         return {exists:this.isConnected,editable,unprovedPaint,contenteditable:this.isContentEditable,changed:globalThis.__charioxFilledFields?.get(this)?.changed===true,password:this.localName==='input'&&this.type==='password',
-          textShadow:this.ownerDocument.defaultView.getComputedStyle(this).textShadow,value:editable?String(this.isContentEditable?this.textContent:this.value):''}; }`},entry.sessionId);
+          textShadow:this.ownerDocument.defaultView.getComputedStyle(this).textShadow,value:editable?String(this.isContentEditable?this.textContent:this.value):String(this.innerText??this.textContent??'').trim()}; }`},entry.sessionId);
     if(exceptionDetails||!result?.value)throw Error('MP-11: fill state unavailable');
     return result.value;
   } finally {await connection.send('Runtime.releaseObject',{objectId:object.objectId},entry.sessionId).catch(()=>{});}
@@ -276,7 +276,8 @@ export async function measurePageProtection(connection,sessionId,targetId,policy
         // Actionability may wait while an editor is temporarily disabled. Its
         // pending fill still owns protection; refuse pixels until it is measurable.
         if(inFlight&&(!state.exists||!state.editable))throw Error('MP-11: pending fill target unavailable');
-        if(!inFlight&&(!state.exists||state.changed||!state.editable||!state.value || digest(state.value)!==target.value_hash)) {dead.add(key);continue;}
+        // VAUDIT S3: a captured value shown as page text (a revealed key) masks its element while it shows the value.
+        if(!inFlight&&(!state.exists||state.changed||!state.value || digest(state.value)!==target.value_hash)) {dead.add(key);continue;}
         handled.add(backendNodeId);
         if(state.password)continue; // Rechecked even for a previously plain field.
         await maskField(entry,raw,frame,frameId,backendNodeId,state);

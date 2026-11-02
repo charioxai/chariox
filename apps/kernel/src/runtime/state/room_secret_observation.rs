@@ -404,8 +404,7 @@ impl RoomSecretObservations {
         command: &Command,
     ) -> Result<(), DaemonError> {
         if let Some(secret) = command_secret(command) {
-            self.register(room, secret)?;
-            let mut target = match command {
+            let target = match command {
                 Command::Action {
                     target_id,
                     document_id,
@@ -430,33 +429,60 @@ impl RoomSecretObservations {
                 } => serde_json::json!({"kind":"native", "target":expected_target}),
                 _ => return Err(protection_error()),
             };
-            let room = self.room_key(room);
-            let mut rooms = self.rooms.lock().map_err(|_| protection_error())?;
-            let protection = rooms.get_mut(room).ok_or_else(protection_error)?;
-            target["value_hash"] =
-                serde_json::json!(format!("{:x}", Sha256::digest(secret.as_bytes())));
-            target["fill_revision"] = serde_json::json!(protection.revision);
-            protection.targets.retain(|previous| {
-                if previous["kind"] != target["kind"] {
-                    return true;
-                }
-                if target["kind"] == "browser" {
-                    previous["target_id"] != target["target_id"]
-                        || (previous["document_id"] == target["document_id"]
-                            && previous["node_ref"] != target["node_ref"])
-                } else {
-                    previous["target"] != target["target"]
-                }
-            });
-            if !protection.targets.contains(&target) {
-                if protection.targets.len() >= 256 {
-                    return Err(protection_error());
-                }
-                protection.targets.push(target);
-            }
-            self.persist_registry(room, protection)?;
+            self.register_target(room, secret, target)?;
         }
         Ok(())
+    }
+
+    // VAUDIT S3: a value the kernel read from a page node (a revealed key) is
+    // protected like a fill of that node, under the same exclusive barrier.
+    pub(super) fn register_capture(
+        &self,
+        room: &str,
+        target_id: &str,
+        document_id: &str,
+        node_ref: &str,
+        value: &str,
+    ) -> Result<(), DaemonError> {
+        self.register_target(
+            room,
+            value,
+            serde_json::json!({"kind":"browser", "target_id":target_id, "document_id":document_id, "node_ref":node_ref}),
+        )
+    }
+
+    fn register_target(
+        &self,
+        room: &str,
+        secret: &str,
+        mut target: serde_json::Value,
+    ) -> Result<(), DaemonError> {
+        self.register(room, secret)?;
+        let room = self.room_key(room);
+        let mut rooms = self.rooms.lock().map_err(|_| protection_error())?;
+        let protection = rooms.get_mut(room).ok_or_else(protection_error)?;
+        target["value_hash"] =
+            serde_json::json!(format!("{:x}", Sha256::digest(secret.as_bytes())));
+        target["fill_revision"] = serde_json::json!(protection.revision);
+        protection.targets.retain(|previous| {
+            if previous["kind"] != target["kind"] {
+                return true;
+            }
+            if target["kind"] == "browser" {
+                previous["target_id"] != target["target_id"]
+                    || (previous["document_id"] == target["document_id"]
+                        && previous["node_ref"] != target["node_ref"])
+            } else {
+                previous["target"] != target["target"]
+            }
+        });
+        if !protection.targets.contains(&target) {
+            if protection.targets.len() >= 256 {
+                return Err(protection_error());
+            }
+            protection.targets.push(target);
+        }
+        self.persist_registry(room, protection)
     }
 
     pub(super) fn capture_policy(&self, room: &str) -> Result<Zeroizing<String>, DaemonError> {

@@ -7,6 +7,7 @@ import { recordBrowserFill, finishBrowserFill } from './browser-protection-regio
 import { createHash } from "node:crypto";
 import { artifactBytes, BrowserArtifactError, BrowserPassiveCapture, readCompletedDownload, withUploadArtifacts } from "./browser-controller-artifacts.mjs";
 import { captureProtectedBrowserImage } from "./browser-controller-image.mjs";
+import { captureBrowserValue } from "./browser-controller-capture.mjs";
 import { observeBrowserNote } from "./browser-controller-notes.mjs";
 import { readPointerCursor } from "./browser-controller-cursor.mjs";
 import { redactObservation } from "./browser-controller-snapshot.mjs";
@@ -1094,6 +1095,29 @@ export class BrowserCdpClient {
     } catch (error) {
       throw normalizeControllerError(error);
     }
+  }
+
+  // VAUDIT S3: the kernel holds its observation barrier across this call and
+  // registers the returned value before any later frame or snapshot.
+  async captureValue(rawRequest, { signal } = {}) {
+    const targetId = requiredIdentity(rawRequest?.target_id, "target_id");
+    const documentId = requiredIdentity(rawRequest?.document_id, "document_id");
+    const { connection, sessionId } = await this.resolvePageTarget(targetId);
+    const value = await captureBrowserValue({
+      connection,
+      sessionId,
+      targetId,
+      documentId,
+      nodeRef: rawRequest?.node_ref,
+      revealNodeRef: rawRequest?.reveal_node_ref ?? null,
+      read: rawRequest?.read ?? "node",
+      expectedDocumentUrl: rawRequest?.expected_document_url,
+      signal,
+      click: (nodeRef) => this.performAction({ target_id: targetId, document_id: documentId, node_ref: nodeRef,
+        action: { kind: "click", expected_document_url: rawRequest.expected_document_url }, timeout_ms: 10_000 }, { signal }),
+    }).catch((error) => { throw normalizeControllerError(error); });
+    this.protectedValues.add(value);
+    return value;
   }
 
   async navigate(rawRequest, { signal } = {}) {

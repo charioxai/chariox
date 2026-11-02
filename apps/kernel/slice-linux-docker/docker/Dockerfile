@@ -239,6 +239,7 @@ COPY --from=rust-builder --chown=slice:slice /opt/chariox-runtime-bin/chariox-re
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-cdp.mjs /opt/chariox-slice/browser-cdp.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/install-display-codec.py apps/kernel/slice-linux-docker/docker/display-codec-pin.json /opt/chariox-slice/
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-actions.mjs /opt/chariox-slice/browser-controller-actions.mjs
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-capture.mjs /opt/chariox-slice/browser-controller-capture.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-input.mjs /opt/chariox-slice/browser-controller-input.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-notes.mjs /opt/chariox-slice/browser-controller-notes.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-focus-world.mjs /opt/chariox-slice/browser-focus-world.mjs
@@ -309,6 +310,7 @@ COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/validate-screen.s
 
 RUN chmod +x /opt/chariox-slice/browser-cdp.mjs \
     /opt/chariox-slice/browser-controller-actions.mjs \
+    /opt/chariox-slice/browser-controller-capture.mjs \
     /opt/chariox-slice/browser-controller-input.mjs \
     /opt/chariox-slice/browser-focus-world.mjs \
     /opt/chariox-slice/browser-controller-cursor.mjs \

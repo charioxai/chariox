@@ -1094,6 +1094,18 @@ export class KernelBrowserHost {
     if (app && drives && agent && command._app_view_tab !== tab.tab_id) throw new UserDomainRefusal("not_granted");
     return { app, agent };
   }
+  // VAUDIT S3: reveal and read in one call; the value goes to the kernel only.
+  async captureSecret(params, { signal }) {
+    await this.start({ signal });
+    if (this.protection.unknown) throw new Error("MD-5: observation registry unavailable");
+    const tab = await this.target(params);
+    if (tab.document_id !== params.document_id) throw new UserDomainRefusal("stale_reference");
+    const { app, agent } = this.appAgent(tab, params, true);
+    if (app && agent) this.browser.appTabs.noteAgent(tab.target_id, agent);
+    return this.sampleLane(tab).run("input", () => this.browser.captureValue({ target_id: tab.target_id, document_id: tab.document_id,
+      node_ref: params.node_ref, reveal_node_ref: params.reveal_node_ref ?? null, read: params.read ?? "node",
+      expected_document_url: params.expected_document_url }, { signal }));
+  }
   async handle(request, { signal } = {}) {
     if (request.method === "host.downloads.cleanup") {
       if (!this.browser) await this.downloads.close();
@@ -1111,6 +1123,9 @@ export class KernelBrowserHost {
         for(const owner of owners){await this.nativeComputer.retire(owner);for(const observer of this.nativeAccessibility.observers.keys())if(observer.startsWith(owner+':'))this.nativeAccessibility.retire(observer);}
         return { id: request.id, ok: true, result: { revoked: true } };
       }
+      if (request.method === "host.secret" && request.params.op === "capture") {
+        return { id: request.id, ok: true, result: { value: await this.captureSecret(request.params, { signal }) } };
+      }
       if (request.method === "host.secret") {
         // MP-08 / MP-10 / MP-11: this internal owner-only flag does not
         // loosen ordinary Vault secret insertion into password fields.
@@ -1127,7 +1142,8 @@ export class KernelBrowserHost {
         // recorded before the field's input/change handlers can run.
         const { app, agent } = this.appAgent(tab, request.params, true);
         if (app && agent) this.browser.appTabs.noteAgent(tab.target_id, agent);
-        const action = codeInput ? { ...request.params.action, mask_code_input: true } : request.params.action;
+        const action = codeInput ? { ...request.params.action, mask_code_input: true }
+          : request.params.plain_target === true ? { ...request.params.action, plain_target: true } : request.params.action;
         await this.sampleLane(tab).run("input", () => this.browser.performAction({ target_id: tab.target_id, document_id: tab.document_id,
           node_ref: request.params.node_ref, action, timeout_ms: 10_000 }, { signal }));
         await this.save();
