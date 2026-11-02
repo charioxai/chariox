@@ -184,6 +184,7 @@ while IFS= read -r request; do
   id=${id%%,*}
   case "$request" in
     *'"method":"health"'*) printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s,"diagnostic_code":null}}\n' "$id" "$$" ;;
+    *'"method":"health"'*) printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s,"diagnostic_code":null}}\n' "$id" "$$" ;;
     *'"method":"browser.app.inspect"'*) case "$request" in *'"target_id":"inspection-target"'*|*'"target_id":"focused-target"'*) ;; *) exit 1 ;; esac; printf '{"id":%s,"ok":true,"result":{"registrations":[{"name":"add","description":"Add","inputSchema":{"type":"object"},"effect":"write"}],"state":{"ok":true,"value":{"count":1}},"controls":[{"control":"button#missing","action":null}]}}\n' "$id" ;;
     *'"method":"shutdown"'*) printf '{"id":%s,"ok":true,"result":{"state":"stopped","process_id":null,"diagnostic_code":null}}\n' "$id"; exit 0 ;;
     *) exit 1 ;;
@@ -269,6 +270,7 @@ done
 while IFS= read -r request; do
   id=${request#*:}; id=${id%%,*}
   case "$request" in
+    *'"method":"health"'*) printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s,"diagnostic_code":null}}\n' "$id" "$$" ;;
     *'"method":"browser.app.inspect"'*) printf '{"id":%s,"ok":true,"result":{"registrations":[],"state":{"ok":true,"value":{"native":true}},"controls":[]}}\n' "$id" ;;
     *) printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
   esac
@@ -279,6 +281,17 @@ done
         .runtime_state
         .kernel_browser_host_for_test()
         .install_fixture_backend("alice", &native_controller, &scratch.0);
+    router
+        .runtime_state
+        .kernel_browser_host_for_test()
+        .protected_request(
+            "alice",
+            None,
+            "host.browser",
+            serde_json::json!({"op":"start"}),
+            serde_json::json!({"values":[],"targets":[],"unknown":false}),
+        )
+        .unwrap();
     let native_inspection = |target: &str| {
         LocalDaemonRequest::InspectAppView(crate::local::InspectAppViewRequest {
             session_id: rooms[0].clone(),
