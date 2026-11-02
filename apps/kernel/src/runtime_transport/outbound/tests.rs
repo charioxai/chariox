@@ -425,3 +425,23 @@ fn account_copy_refusals_are_constant_at_public_error_boundary() {
         assert!(!error.message.contains(CANARY));
     }
 }
+
+#[test]
+fn control_plane_refusals_keep_their_codes_without_service_diagnostics() {
+    for code in [
+        "control_plane_grant_required",
+        "control_plane_unavailable",
+        "control_plane_authorization_denied",
+        "control_plane_binding_invalid",
+    ] {
+        let error =
+            project_error(&serde_json::json!({"code":code,"message":CANARY,"retryable":false}));
+        assert_eq!(error.code, code);
+        assert_eq!(
+            error.message,
+            crate::error::actionable_refusal_message(code).unwrap()
+        );
+        assert!(!error.message.contains(CANARY));
+        assert!(!error.retryable);
+    }
+}
