@@ -243,7 +243,9 @@ schedule is one absolute UTC instant, not a new cron interpreter: gate code may
 compute it with a pinned pure calendar library. Require the instant strictly
 after evaluation and before every member's deadline. Group identity is
 `(owner, session, workflow_revision, endpoint, binding_id, binding_revision,
-module_sha256, key)`. Thus different bindings/callers/authorities cannot accidentally
+authenticated_caller_digest, module_sha256, key)`. The kernel computes the caller
+digest from authenticated dispatch context, never guest input. Thus different
+bindings/callers/authorities cannot accidentally
 coalesce. The first item fixes the flush instant; later items must return that
 same instant or a different key. Conflicting times fail the new entry without
 changing the existing batch. There is no sliding debounce hidden in the kernel.
