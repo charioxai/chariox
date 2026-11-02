@@ -62,6 +62,11 @@ pub trait AegsProvider: Send + Sync {
 
     fn provider_slug(&self) -> &'static str;
 
+    /// Validate provider-specific subscription inputs before any desired state is stored.
+    fn validate_subscription(&self, _subscription: &SubscriptionClaim) -> Result<(), String> {
+        Ok(())
+    }
+
     fn authorization_configured(&self) -> bool {
         false
     }

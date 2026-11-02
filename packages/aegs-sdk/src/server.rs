@@ -314,6 +314,14 @@ impl AegsServer {
                         ),
                     );
                 }
+                for subscription in &reconcile.subscriptions {
+                    if !subscription.active {
+                        continue;
+                    }
+                    if let Err(message) = self.provider.validate_subscription(subscription) {
+                        return error(StatusCode::BAD_REQUEST, "invalid_subscription", message);
+                    }
+                }
                 let allowed_connection_owners = match &authorization {
                     ManagementAuthorization::Signed(claims) => Some(claims.owner_ids.as_slice()),
                     ManagementAuthorization::Static => None,
@@ -2418,6 +2426,16 @@ mod mp11_delivery_http_tests {
         owner: &'static str,
         body: serde_json::Value,
     ) -> (u16, serde_json::Value) {
+        management_request(server, "POST", path, owner, body).await
+    }
+
+    async fn management_request(
+        server: &Arc<AegsServer>,
+        method: &'static str,
+        path: &'static str,
+        owner: &'static str,
+        body: serde_json::Value,
+    ) -> (u16, serde_json::Value) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}{path}", listener.local_addr().unwrap());
         let server = server.clone();
@@ -2436,7 +2454,7 @@ mod mp11_delivery_http_tests {
                 .unwrap();
         });
         let response = tokio::task::spawn_blocking(move || {
-            let request = ureq::post(&url)
+            let request = ureq::request(method, &url)
                 .set("authorization", "Bearer management-token")
                 .set("x-chariox-owner-id", owner)
                 .set("connection", "close");
@@ -2453,6 +2471,8 @@ mod mp11_delivery_http_tests {
         serving.await.unwrap();
         response
     }
+
+    mod polling;
 
     #[tokio::test]
     async fn owner_sees_received_events_and_replays_one_that_never_reached_aeds() {

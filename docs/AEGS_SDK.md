@@ -213,6 +213,28 @@ subscription match and AEDS publication path as a real webhook.
 
 ## Durable webhook inbox
 
+Polling generators use the same durable publication path. Validate their public
+subscription filters in `AegsProvider::validate_subscription`; the management
+server calls it for every active claim before committing any reconciliation.
+Inactive claims can still be retired after a provider changes its filter rules.
+Keep consumer inventories and version relevance outside the generator: coarse
+package/ecosystem filters use the ordinary metadata matcher.
+
+After a successful source poll, atomically persist its cursor, observed fact
+revisions, and an outbox in the generator's own store. A first successful poll
+establishes a quiet baseline. Hand each subsequent fact to
+`AegsStore::record_inbox_event` with a stable delivery ID, then remove the
+generator outbox row. Retrying this handoff after a crash is safe: the SDK stores
+each delivery ID once. Do not advance a source cursor on a partial or failed
+poll. The ordinary SDK worker selects authorized matching interests and owns
+publication, retry, replay, and revocation fencing. Polling implementations must
+run that worker through `run_from_environment`, rather than publishing around it.
+
+`AegsStore::inbox_metrics` supplies payload-free pending-event, pending-delivery,
+failed-delivery, and unmatched-event counts for an operator health command.
+These are SDK-local diagnostics and introduce no event-delivery or kernel
+protocol change.
+
 The SDK server stores every webhook that passed `normalize_webhook` (signature checked)
 before it answers `202`, then publishes to AEDS from the stored copy: once inline, then
 from a retry worker with exponential backoff (5 s doubling to 10 min, 8 attempts). AEDS
