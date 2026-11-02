@@ -17,6 +17,10 @@ use super::input_backlog::PtyInputBacklog;
 use crate::error::DaemonError;
 use crate::provider::RuntimeProviderRun;
 
+#[cfg(all(test, unix))]
+#[path = "spawn_failure_tests.rs"]
+mod spawn_failure_tests;
+
 const PTY_OUTPUT_QUEUE_LIMIT: usize = 1024;
 const PTY_INPUT_QUEUE_LIMIT: usize = 64;
 const PTY_DIAGNOSTIC_TAIL_LIMIT: usize = 8 * 1024;
