@@ -41,9 +41,12 @@ async function texts(directory) {
   for (const entry of await readdir(directory, { withFileTypes: true }).catch(() => [])) {
     const file = path.join(directory, entry.name)
     if (entry.isDirectory()) output += await texts(file)
-    else if (/\.(jsonl|log)$/.test(entry.name)) output += await readFile(file, 'utf8')
+    else if (/\.(jsonl|log|ndjson|db(?:-wal)?)$/.test(entry.name)) output += await readFile(file, 'utf8')
   }
   return output
+}
+async function recordedChannels() {
+  return await texts(path.join(root, 'history')) + await texts(path.join(root, 'home', 'history')) + await texts(path.join(root, 'home', 'logs'))
 }
 let kernel, client, browser, browserServer, viewer, site, page, context, browserRoot, sessionId
 let rawKernelLog = ''
@@ -268,7 +271,7 @@ try {
   await page.locator('[data-action="open-room-view"]').last().click()
   await page.locator('[data-open-room-view="browser"]').click()
   await page.locator('[data-room-browser]').waitFor({ timeout: 60_000 })
-  await submit('/sudo Complete this local 2FA test using Chariox browser tools. First call chariox.request_credential_secret with ' + request('authenticator', { kind: 'totp' }, 'TOTP enrollment key') + '. Then load the kernel browser tools and navigate to ' + site.origin + '/enable. Find the observed Authentication code input and fill it only using chariox.kernel_browser_paste_secret credential_id=authenticator, submit=false. Take a browser snapshot and screenshot BEFORE clicking enable; verify the filled field is redacted. Click the observed enable button and verify Two-factor authentication enabled. Log out. Wait at least 31 seconds using a shell sleep (do not calculate or read any codes). Sign in by filling the observed Authentication code field with the same credential handle; click login and verify Signed in. Log out, wait at least another 31 seconds, then repeat sign in in another period. Never read/echo any key or code, never use page evaluation or direct HTTP to submit a code. Use fresh observed node_ref/document_id/generation for every fill. After both TOTP sign-ins succeeded, call chariox.request_credential_secret with ' + request('recovery', { kind: 'backup_codes' }, 'TOTP recovery codes') + '. Then log out and sign in once more by filling the observed Backup code field only with chariox.kernel_browser_paste_secret credential_id=recovery and clicking login. Keep tools moving until both TOTP sign-ins and the backup-code sign-in succeeded; report TOTP_TWO_PERIODS_DONE. Do not finish early.')
+  await submit('/sudo Complete this local 2FA test using Chariox browser tools. First call chariox.request_credential_secret with ' + request('authenticator', { kind: 'totp' }, 'TOTP enrollment key') + '. Then load the kernel browser tools and navigate to ' + site.origin + '/enable. Find the observed Authentication code input and fill it only using chariox.kernel_browser_paste_secret credential_id=authenticator, submit=false. Take a browser snapshot and screenshot BEFORE clicking enable; verify the filled field is redacted. Take a fresh snapshot AFTER that screenshot, then click the observed enable button using the new snapshot and its current document_id at the tool top level; verify Two-factor authentication enabled. A user_domain_stale_reference means observe state and snapshot again and retry the button with current document_id/coordinates, up to three times; it is not a reason to stop or ask for a grant. If a code expires, fill a fresh one from the handle before clicking again. Log out. Wait at least 31 seconds using a shell sleep (do not calculate or read any codes). Sign in by filling the observed Authentication code field with the same credential handle; click login and verify Signed in. Log out, wait at least another 31 seconds, then repeat sign in in another period. Never read/echo any key or code, never use page evaluation or direct HTTP to submit a code. Use fresh observed node_ref/document_id/generation for every fill. After both TOTP sign-ins succeeded, call chariox.request_credential_secret with ' + request('recovery', { kind: 'backup_codes' }, 'TOTP recovery codes') + '. Then log out and sign in once more by filling the observed Backup code field only with chariox.kernel_browser_paste_secret credential_id=recovery and clicking login. Keep tools moving until both TOTP sign-ins and the backup-code sign-in succeeded; report TOTP_TWO_PERIODS_DONE. Do not finish early.')
   console.log('MP-08 / MP-09 / MP-10 / MP-11: submitted sudo TOTP drill')
   await until(async () => {
     await answerOwnerInput()
@@ -303,7 +306,7 @@ try {
   }
   assert.ok(blobs.some(blob => blob.entries.length > 0), 'absence check requires actual public history entries')
   const publicHistory = JSON.stringify({ outline, blobs })
-  const transcript = publicHistory + await texts(path.join(root, 'history'))
+  const transcript = publicHistory + await recordedChannels()
   const visible = await page.locator(`[data-room-pane="${agent.id}"]`).innerText()
   const publicText = transcript + visible + rawKernelLog
   assert.ok(site.checkAbsence(publicText), 'seed/code absence check failed')
@@ -329,7 +332,7 @@ try {
   if (page) {
     if (site) {
       const visible = (await page.locator('.agent-pane').allInnerTexts().catch(() => [])).join('\n')
-      const transcript = visible + await texts(path.join(root, 'history')) + rawKernelLog
+      const transcript = visible + await recordedChannels() + rawKernelLog
       results.failureAbsencePassed = site.checkAbsence(transcript) && !transcript.includes(passphrase)
       if (results.failureAbsencePassed) await writeFile(path.join(evidence, 'failure-public-pane.txt'), visible, { mode: 0o600 })
       await retainObservations().catch(() => { results.observationAbsenceFailed = true })
