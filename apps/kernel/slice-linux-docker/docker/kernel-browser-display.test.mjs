@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import { randomBytes } from 'node:crypto';
-import { DisplayStream, PortableEncoder, safeChildPid, dirtyTiles } from './kernel-browser-display.mjs';
+import { DisplayStream, PortableEncoder, safeChildPid, closeDisplayChild, dirtyTiles } from './kernel-browser-display.mjs';
 import { encodePng, decodePng, maskPng, displayMaskRegions } from './kernel-browser-pixels.mjs';
 import { BrowserEncoder } from './kernel-browser-webcodecs.mjs';
 function fixture(value = 255) {
@@ -504,5 +505,41 @@ test('MD-DISPLAY and MP-08 are on when neither variable is set; only \"0\" is a 
   } finally {
     if (saved.m === undefined) delete process.env.CHARIOX_KERNEL_BROWSER_MIRROR; else process.env.CHARIOX_KERNEL_BROWSER_MIRROR = saved.m;
     if (saved.d === undefined) delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY; else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY = saved.d;
+  }
+});
+
+
+test('MP-08/MP-10/MP-11 helper shutdown has one bounded EOF TERM KILL deadline',async context=>{
+  context.mock.timers.enable({apis:['setTimeout']});
+  const calls=[],child=Object.assign(new EventEmitter(),{pid:42,exitCode:null,signalCode:null,stdin:{end(){calls.push('EOF')}},kill(signal){calls.push(signal)}});
+  const closing=assert.rejects(closeDisplayChild(child),/owned helper did not exit after SIGKILL/);
+  assert.deepEqual(calls,['EOF']);
+  context.mock.timers.tick(500);await Promise.resolve();
+  assert.deepEqual(calls,['EOF','SIGTERM']);
+  context.mock.timers.tick(500);await Promise.resolve();
+  assert.deepEqual(calls,['EOF','SIGTERM','SIGKILL']);
+  context.mock.timers.tick(2000);await closing;
+  assert.equal(child.listenerCount('exit'),0);
+});
+
+
+test('MP-08/MP-10/MP-11 closing an encoder drains the active raster request before releasing it',async()=>{
+  const {mkdtemp,writeFile,rm}=await import('node:fs/promises');
+  const {tmpdir}=await import('node:os');
+  const {join}=await import('node:path');
+  const root=await mkdtemp(join(tmpdir(),'chariox-display-drain-')),helper=join(root,'helper.mjs');
+  await writeFile(helper,`#!${process.execPath}\nimport readline from 'node:readline';readline.createInterface({input:process.stdin}).on('line',()=>setTimeout(()=>console.log(JSON.stringify({data_base64:'YWJj',key:true,backend:'vp9'})),100));`,{mode:0o700});
+  const previous=process.env.CHARIOX_BROWSER_DISPLAY_PYTHON;process.env.CHARIOX_BROWSER_DISPLAY_PYTHON=helper;
+  const encoder=new PortableEncoder();
+  try {
+    const active=encoder.encode(fixture().data_base64,2000000);
+    const closing=encoder.close();
+    const result=await active;
+    assert.equal(result.data_base64,'YWJj','graceful close must not reject and release an active raster early');
+    await closing;
+    assert.equal(encoder.child,null);
+  } finally {
+    await encoder.close();if(previous===undefined)delete process.env.CHARIOX_BROWSER_DISPLAY_PYTHON;else process.env.CHARIOX_BROWSER_DISPLAY_PYTHON=previous;
+    await rm(root,{recursive:true,force:true});
   }
 });

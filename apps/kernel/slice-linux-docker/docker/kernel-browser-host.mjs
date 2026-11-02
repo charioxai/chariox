@@ -116,6 +116,8 @@ export class KernelBrowserHost {
     this.tabs = new Map();
     this.popupEvidence = new BrowserPopupEvidence(TAB_LIMIT);
     this.displays = new Map();
+    this.displayTeardowns = new Set();
+    this.displayTeardownErrors = [];
     this.displaySessions = new DisplaySessions(this);
     this.scales = new Map();
     this.layouts = new Map();
@@ -217,6 +219,8 @@ export class KernelBrowserHost {
     // MP-08/MP-10: settle the last durable tab snapshot before replacing CDP.
     await this.saving?.catch(() => {});
     await this.desktopDisplay.close();
+    await Promise.all([...this.displays.values()].map(stream=>this.removeDisplay(stream)));
+    await Promise.all(this.displayTeardowns);
     await this.closeCompositors();
     this.foreground.reset();
     this.sampleLanes.clear();this.inputChangedAt.clear();this.scrolling.clear();
@@ -227,12 +231,12 @@ export class KernelBrowserHost {
     try { await this.nativeComputer.close(); }
     catch { preserveDesktop = false; } // a failed physical release still resets the owned display
     finally { await this.chromium.stop(undefined, { preserveDesktop }); this.nativeAccessibility.clear(); }
-    for (const stream of this.displays.values()) await stream.close();
     this.mirror.clear();
     this.displays.clear(); this.scales.clear(); this.inputEpochs.clear();
     this.tabGroups?.close?.();this.tabGroups=null;
     await this.browser?.close();
     this.browser = null;
+    if(this.displayTeardownErrors.length)throw new AggregateError(this.displayTeardownErrors.splice(0),'MD-DISPLAY: owned display teardown failed');
     this.tabs.clear();this.header.clear();this.layouts.clear();this.layoutRevisions.clear();this.windowLayout=null;this.resizeSettled=null;
     this.popupEvidence.clear();
     this.observed = ++this.observations;
@@ -395,9 +399,12 @@ export class KernelBrowserHost {
     try{await this.browser.clearViewport(tab.target_id);}catch{}
   }
   async closeCompositors(tabId) {
-    for(const [id,entry] of this.compositors) if(tabId===undefined||id===tabId){
-      this.compositors.delete(id);await entry.ready.catch(()=>null);await entry.source?.close().catch(()=>{});
-    }
+    const entries=[];
+    for(const [id,entry] of this.compositors)if(tabId===undefined||id===tabId){this.compositors.delete(id);entries.push(entry);}
+    await Promise.all(entries.map(async entry=>{
+      await entry.ready.catch(()=>null);
+      await entry.source?.close().catch(error=>{this.displayTeardownErrors.push(error);this.timing('display_teardown_failed',timestamp());});
+    }));
   }
   // MP-08/MP-10: one fixed-label diagnostic per change of native refusal scope.
   nativeScope(reason){if(this.nativeScopeReason!==reason){this.nativeScopeReason=reason;if(reason)this.timing('native_unavailable_scope '+reason,timestamp());}}
@@ -462,6 +469,8 @@ export class KernelBrowserHost {
     }
     this.busyInputs.retireAll(); // a stopped browser is not relaunched by an input that waited for its renderer
     await this.desktopDisplay.close();
+    await Promise.all([...this.displays.values()].map(stream=>this.removeDisplay(stream)));
+    await Promise.all(this.displayTeardowns);
     this.displayDocuments.clear();
     this.lockdownOff?.(); this.lockdownOff = null;
     this.stateSignal.notify();
@@ -474,13 +483,14 @@ export class KernelBrowserHost {
     // owned desktop before acknowledging stop.
     await this.nativeComputer.close().catch(() => { preserveDesktop = false; });
     await this.chromium.stop(this.browser?.connection, { preserveDesktop });
-    for (const stream of this.displays.values()) await stream.close();
     this.mirror.clear();
     this.displays.clear(); this.scales.clear();
     this.tabGroups?.close?.();this.tabGroups=null;
     await this.browser?.close();
     this.browser = null;
     this.timing.flush?.();
+    const errors=this.displayTeardownErrors.splice(0);
+    if(errors.length)throw new AggregateError(errors,'MD-DISPLAY: owned display teardown failed');
     return { state: "stopped", generation: this.generation, tabs: [] };
   }
   // MP-08/MP-10/MP-11: reconciles can overlap (a state poll beside input). They
@@ -715,11 +725,16 @@ export class KernelBrowserHost {
     clearTimeout(stream.timer);
     if(stream.source_kind==='desktop')return this.desktopDisplay.remove(stream);
     this.displays.delete(stream.subscription_id);
-    const displayed=()=>[...this.displays.values()].some(s=>s.tab_id===stream.tab_id);
-    // The Tab's compositor serves only its displays: stop its captures before the stream's slower close.
-    if(!displayed())await this.closeCompositors(stream.tab_id);
-    await stream.close();
-    if(!displayed())await this.releaseTabScale(stream.tab_id);
+    const last=![...this.displays.values()].some(s=>s.tab_id===stream.tab_id);
+    // Detachment ends delivery immediately; the host owns reaping until stop.
+    // The Tab's compositor serves only its displays: its captures stop alongside the stream's slower close, never behind it.
+    const closing=Promise.allSettled([last?this.closeCompositors(stream.tab_id):undefined,stream.close()]).then(results=>{
+      for(const result of results)if(result.status==='rejected'){
+        this.displayTeardownErrors.push(result.reason);this.timing('display_teardown_failed',timestamp());
+      }
+    }).finally(()=>this.displayTeardowns.delete(closing));
+    this.displayTeardowns.add(closing);
+    if(last)await this.releaseTabScale(stream.tab_id);
   }
   async displayResumeBinding(stream,signal) {
     assertNotCancelled(signal);

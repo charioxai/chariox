@@ -3,6 +3,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import os from "node:os";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { PortableEncoder } from "./kernel-browser-display.mjs";
+import { CompositorSource } from "./kernel-browser-compositor.mjs";
 import { PassThrough } from "node:stream";
 import readline from "node:readline";
 import { BrowserCdpClient } from "./browser-controller-cdp.mjs";
@@ -434,13 +438,16 @@ test('MP-08/MP-10 a credit for a removed display starts no compositor',()=>using
  assert.equal(host.compositors.has(tab.tab_id),false,'no compositor is left for the removed display');
  assert.equal(sent.filter(c=>c.method==='Page.startScreencast').length,screencasts,'no screencast starts');
 }));
-test('MP-08/MP-10 removing the last display stops the compositor before the stream closes',()=>using(async({host})=>{
+test('MP-08/MP-10 removing the last display stops the compositor without waiting for the stream close',()=>using(async({host})=>{
  const opened=await host.request({op:'open',url:'about:blank'}),tab=host.tabs.get(opened.tab_id),order=[];
- const source={close:async()=>{order.push('compositor')}};
+ let streamClosed;const source={close:async()=>{order.push('compositor')}};
  host.compositors.set(tab.tab_id,{source,ready:Promise.resolve(source)});
- const stream={subscription_id:'host-display-last',tab_id:tab.tab_id,close:async()=>{order.push('stream')}};host.displays.set(stream.subscription_id,stream);
- await host.removeDisplay(stream);
- assert.deepEqual(order,['compositor','stream']);assert.equal(host.compositors.has(tab.tab_id),false);
+ // The stream's close is slow (encoder helpers): the compositor's captures must not wait behind it.
+ const stream={subscription_id:'host-display-last',tab_id:tab.tab_id,close:()=>new Promise(resolve=>{streamClosed=resolve;})};host.displays.set(stream.subscription_id,stream);
+ await host.removeDisplay(stream);assert.equal(host.compositors.has(tab.tab_id),false);
+ await new Promise(resolve=>setTimeout(resolve,10));
+ assert.deepEqual(order,['compositor']);
+ streamClosed();await Promise.all(host.displayTeardowns);
 }));
 test('MP-11 overlapping saves serialize the shared tabs.json.new writer',()=>using(async({host},root)=>{
  await host.request({op:'open',url:'about:blank'});
@@ -450,7 +457,7 @@ test('MP-11 overlapping saves serialize the shared tabs.json.new writer',()=>usi
 test('MP-11 a compositor close rejected by a dead connection cannot abort stop',()=>using(async({host,chromium})=>{
  const opened=await host.request({op:'open',url:'about:blank'});
  host.compositors.set(opened.tab_id,{ready:Promise.resolve(null),source:{close:async()=>{throw Error('connection closed')}}});
- assert.equal((await host.request({op:'stop'})).state,'stopped');assert.equal(chromium.child,null);
+ await assert.rejects(host.request({op:'stop'}),/owned display teardown failed/);assert.equal(chromium.child,null);
 }));
 test("MD-5: metadata scrubs echoes and never persists a secret-bearing restore URL", () => using(async ({ host }, root) => {
   const opened = await host.request({ op: "open", url: "https://example.com/?q=synthetic-protected-value" });
@@ -2719,3 +2726,55 @@ test("MD-2: the host process exits after its shutdown reply even when a handle i
     assert.equal(outcome, "exited");
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+
+test('MP-08/MP-09/MP-10/MP-11 unsubscribe answers before slow helpers exit and stop reaps them', {timeout:10000}, () => using(async ({host, connection}) => {
+  const previous=process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;
+  process.env.CHARIOX_KERNEL_BROWSER_DISPLAY='1';
+  const children=[];
+  try {
+    const tab=await host.request({op:'open',url:'about:blank'});
+    const opened=await host.request({op:'display_subscribe',tab_id:tab.tab_id,generation:tab.generation,codecs:['png'],bitrate:8000000,device_scale_factor:1});
+    const stream=host.displays.get(opened.subscription_id);
+    const encoders=[];
+    for(let i=0;i<2;i++){
+      const child=spawn(process.execPath,['-e',"process.on('SIGTERM',()=>{});process.stdin.resume();process.stdin.on('end',()=>{});setInterval(()=>{},1000);console.log('ready')"],{stdio:['pipe','pipe','ignore']});
+      children.push(child);await once(child.stdout,'data');
+      const encoder=new PortableEncoder();encoder.child=child;encoders.push(encoder);
+    }
+    stream.encoder=encoders[0];
+    const source=new CompositorSource({connection,sessionId:'fixture',tab,scale:1,policy:{},hasher:encoders[1],allowed:()=>true});
+    host.compositors.set(tab.tab_id,{source,ready:Promise.resolve(source)});
+    const started=performance.now();
+    const reply=await host.request({op:'unsubscribe',subscription_id:opened.subscription_id,generation:tab.generation});
+    assert.equal(reply.unsubscribed,true);
+    assert.ok(performance.now()-started<250,'unsubscribe must answer within 250ms while slow helpers still run');
+    assert.equal(host.displays.has(opened.subscription_id),false);
+    assert.equal(host.compositors.has(tab.tab_id),false,'detach the old compositor before a replacement viewer attaches');
+    assert.equal(source.closed,true,'a detached compositor cannot capture more frames');
+    assert.ok(children.every(child=>child.exitCode===null&&child.signalCode===null),'answer does not wait for helper exit');
+    const stopped=host.stop();
+    await new Promise(resolve=>setTimeout(resolve,30));
+    assert.ok(children.some(child=>child.exitCode===null&&child.signalCode===null),'teardown remains owned while stop waits');
+    await stopped;
+    assert.ok(children.every(child=>child.signalCode==='SIGKILL'),'stop waits for every stubborn helper to be reaped');
+    assert.ok(performance.now()-started<1800,'helper grace periods run concurrently');
+  } finally {
+    if(previous===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY=previous;
+    for(const child of children)if(child.exitCode===null&&child.signalCode===null){assert.ok(Number.isSafeInteger(child.pid)&&child.pid>1);child.kill('SIGKILL');await once(child,'exit');}
+  }
+}));
+
+
+test('MP-08/MP-10/MP-11 a background display failure is reported after stopping Chromium', () => using(async ({host,chromium}) => {
+  const previous=process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;process.env.CHARIOX_KERNEL_BROWSER_DISPLAY='1';
+  try {
+    const tab=await host.request({op:'open',url:'about:blank'});
+    const sub=await host.request({op:'display_subscribe',tab_id:tab.tab_id,generation:tab.generation,codecs:['png'],bitrate:8000000,device_scale_factor:1});
+    host.displays.get(sub.subscription_id).encoder={close:async()=>{throw Error('owned helper did not exit')}};
+    assert.equal((await host.request({op:'unsubscribe',subscription_id:sub.subscription_id,generation:sub.generation})).unsubscribed,true);
+    await assert.rejects(host.stop(),/owned display teardown failed/);
+    assert.equal(chromium.child,null,'a teardown failure cannot skip Chromium shutdown');
+    assert.equal(host.displayTeardowns.size,0);
+  } finally {if(previous===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY=previous;}
+}));

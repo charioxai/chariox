@@ -13,7 +13,7 @@ import {NativeRegionProtection,regionProtectionChanged,hasProtectedTarget} from 
 import {assertCurrentDocument} from './browser-controller-actions.mjs';
 import {NativeWorkerControl,nativeWorkerResource} from './kernel-browser-native-worker.mjs';
 import {displayMaskRegions} from './kernel-browser-pixels.mjs';
-import {safeChildPid} from './kernel-browser-display.mjs';
+import {closeDisplayChild} from './kernel-browser-display.mjs';
 import {fitNativeViewport} from './kernel-browser-native-viewport.mjs';
 export async function selectNativeCapture({platform=process.platform,display,create,refused=()=>{}}){
  if(platform!=='linux'||!ownsDisplay(display)){refused(platform!=='linux'?'platform':'display_not_owned');return null;}
@@ -339,12 +339,7 @@ export class LinuxCapture {
  async close(){this.fence();return this.closing}
  async cleanup(){
   this.off?.();this.nativeWorker?.close();const child=this.child;this.child=null;
-  if(child&&child.pid!==undefined){
-   safeChildPid(child);child.stdin.end();
-   for(let n=0;n<50&&child.exitCode===null&&child.signalCode===null;n++)await delay(20);
-   if(child.exitCode===null&&child.signalCode===null){child.kill('SIGTERM');for(let n=0;n<50&&child.exitCode===null&&child.signalCode===null;n++)await delay(20)}
-   if(child.exitCode===null&&child.signalCode===null){child.kill('SIGKILL');await new Promise(r=>child.once('exit',r))}
-  }
+  await closeDisplayChild(child,1000);
   if(this.poolRoot){await rm(this.poolRoot,{recursive:true,force:true});this.poolRoot=null}
  }
 }
