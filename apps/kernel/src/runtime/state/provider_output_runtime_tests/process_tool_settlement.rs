@@ -356,10 +356,27 @@ async fn stopped_from_health_ends_cancelled(via_liveness: bool) {
             .await
             .unwrap();
     }
-    runtime.flush_provider_history(run.id()).await.unwrap();
-    let state = runtime.owned.session_snapshot(session.id()).unwrap();
+    assert_stopped_from_health_read_plainly(
+        &runtime,
+        session.id(),
+        agent.id(),
+        attachment.id(),
+        run.id(),
+    )
+    .await;
+}
+
+async fn assert_stopped_from_health_read_plainly(
+    runtime: &KernelRuntimeState,
+    session_id: &str,
+    agent_id: &str,
+    attachment_id: &str,
+    run_id: &str,
+) {
+    runtime.flush_provider_history(run_id).await.unwrap();
+    let state = runtime.owned.session_snapshot(session_id).unwrap();
     let activity = runtime.agent_activity_for_session(&state);
-    let turn = activity[agent.id()].last_completed_turn.as_ref().unwrap();
+    let turn = activity[agent_id].last_completed_turn.as_ref().unwrap();
     assert!(
         turn.settlement_status == crate::git_observer::CompletedTurnSettlementStatus::Cancelled,
         "a stop from Health ends the turn cancelled, not failed"
@@ -376,14 +393,14 @@ async fn stopped_from_health_ends_cancelled(via_liveness: bool) {
     let shown = runtime
         .owned
         .terminal_stream
-        .drain_output_records(session.id(), attachment.id())
+        .drain_output_records(session_id, attachment_id)
         .iter()
         .map(|record| String::from_utf8_lossy(&record.bytes).into_owned())
         .chain(
             runtime
                 .owned
                 .operational_history_store
-                .load_session_events(session.id(), Some(agent.id()))
+                .load_session_events(session_id, Some(agent_id))
                 .unwrap()
                 .into_iter()
                 .filter_map(|event| event.content),
@@ -396,6 +413,7 @@ async fn stopped_from_health_ends_cancelled(via_liveness: bool) {
         "Provider terminal diagnostic",
         "codex_app_server",
         "ended unexpectedly",
+        "liveness reconciliation",
         "Request not carried out",
     ] {
         assert!(
@@ -413,4 +431,87 @@ async fn stopped_from_health_ends_cancelled_through_the_output_pump() {
 #[tokio::test]
 async fn stopped_from_health_ends_cancelled_through_liveness() {
     stopped_from_health_ends_cancelled(true).await;
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11: the stop from Health marks the tree before the
+// provider's process is reaped, and liveness removes the run (and with it that
+// mark) before it settles the turn. The settlement must still read the stop.
+async fn stopped_from_health_run_exit_ends_cancelled(provider_ended_first: bool) {
+    let worktree = crate::test_support::TestWorktree::new("stop-from-health-exit");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "stop-exit-client",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .unwrap();
+    let run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "claude-code",
+                "default",
+                "test",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .unwrap();
+    app.submit_prompt(
+        session.id(),
+        attachment.id(),
+        Some(agent.id()),
+        "run a command",
+        Vec::new(),
+    )
+    .unwrap();
+    crate::runtime::process_resources::stop_for_key(run.id(), None)
+        .expect("the run's process tree should stop from Health");
+    assert!(crate::runtime::process_resources::outside_ended_for_key(
+        run.id()
+    ));
+    if provider_ended_first {
+        let ended = app
+            .providers_mut()
+            .mark_run_ended_provider_only(session.id(), run.id())
+            .unwrap()
+            .into_run();
+        app.update_provider_run_projection(ended);
+    }
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !runtime
+        .reconcile_provider_run_exit(session.id(), run.id())
+        .await
+        .unwrap()
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the stopped run's exit should be reconciled"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert_stopped_from_health_read_plainly(
+        &runtime,
+        session.id(),
+        agent.id(),
+        attachment.id(),
+        run.id(),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn stopped_from_health_ends_cancelled_when_the_run_was_already_ended() {
+    stopped_from_health_run_exit_ends_cancelled(true).await;
+}
+
+#[tokio::test]
+async fn stopped_from_health_ends_cancelled_when_liveness_reaps_the_process() {
+    stopped_from_health_run_exit_ends_cancelled(false).await;
 }
