@@ -272,6 +272,8 @@ try {
   console.log('MP-08 / MP-09 / MP-10 / MP-11: submitted sudo TOTP drill')
   await until(async () => {
     await answerOwnerInput()
+    const fixtureTab = page.locator('[data-room-browser] button[role="tab"]').filter({ hasText: 'TOTP test site' }).first()
+    if (await fixtureTab.count() && await fixtureTab.getAttribute('aria-selected') !== 'true') await fixtureTab.click()
     const stats = site.stats()
     if (JSON.stringify(results.site) !== JSON.stringify(stats)) {
       results.site = stats
@@ -286,6 +288,9 @@ try {
     await answerOwnerInput()
     return (await page.locator(`[data-room-pane="${agent.id}"]`).innerText()).includes('TOTP_TWO_PERIODS_DONE')
   }, 'provider completion after two sign-ins', 120_000)
+  await page.frameLocator('[data-room-browser] .kernel-browser-layer:not([inert]) .kernel-browser-mirror iframe')
+    .getByRole('heading', { name: 'Signed in', exact: true }).waitFor({ timeout: 30_000 })
+  results.ownerVisibleSignedIn = true
   await screenshot('03-two-period-sign-in')
   const outline = variant(await client.send({ GetSessionHistoryOutline: { session_id: sessionId, agent_ids: [agent.id], latest_prompt_count: 10, cursor: null } }), 'SessionHistoryOutline')
   const blobs = []
