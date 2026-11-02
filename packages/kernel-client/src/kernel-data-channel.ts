@@ -126,6 +126,7 @@ export class DataChannelSocket extends EventTarget {
     channel.addEventListener("message", (event) => {
       if (channel.readyState === "open") opened()
       this.lastReceivedMs = Date.now(); this.receive(event.data)
+      if (this.readyState === DataChannelSocket.OPEN) this.dispatchEvent(new Event("activity"))
     })
     channel.addEventListener("close", () => this.finish(1006, "direct data channel closed"))
     channel.addEventListener("error", () => this.fail("direct data channel failed"))
