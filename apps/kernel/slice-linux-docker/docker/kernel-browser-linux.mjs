@@ -77,9 +77,12 @@ export function rootPolicyNamespaceAvailable(user, run = spawnSync, launcher = n
   const target = user.command('/bin/true',[]);
   return run(launcher,['--mount','--propagation','private','--',target.binary,...target.args],{stdio:'ignore',timeout:5000}).status === 0;
 }
-export function rootPolicyLaunch(layer, temporary, binary, args, user, launcher = namespaceLauncher()) {
+export function rootPolicyLaunch(layer, temporary, binary, args, user, workspace, launcher = namespaceLauncher()) {
   if (![user?.uid,user?.gid].every(n=>Number.isSafeInteger(n)&&n>0)) throw new Error('MP-11: invalid browser user');
-  const rootScript = script.replace('exec "$launcher" --user --map-user="$uid" --map-group="$gid" -- "$@"',
-    'exec /usr/bin/setpriv --reuid="$uid" --regid="$gid" --clear-groups --inh-caps=-all --ambient-caps=-all -- "$@"');
-  return {command:launcher,args:['--mount','--propagation','private','--','/bin/sh','-c',rootScript,'chariox-browser','unused',layer,temporary,String(user.uid),String(user.gid),appStorageRoot,binary,...args]};
+  const rootScript = script
+    .replace('storage=$6; shift 6', 'storage=$6; workspace=$7; shift 7')
+    .replaceAll('$temporary/.root', '$workspace/.root')
+    .replace('exec "$launcher" --user --map-user="$uid" --map-group="$gid" -- "$@"',
+      'exec /usr/bin/setpriv --reuid="$uid" --regid="$gid" --clear-groups --inh-caps=-all --ambient-caps=-all -- "$@"');
+  return {command:launcher,args:['--mount','--propagation','private','--','/bin/sh','-c',rootScript,'chariox-browser','unused',layer,temporary,String(user.uid),String(user.gid),appStorageRoot,workspace,binary,...args]};
 }

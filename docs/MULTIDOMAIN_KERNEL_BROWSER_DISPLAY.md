@@ -35,6 +35,12 @@ with supplementary groups cleared and Chromium's sandbox enabled. The kernel
 keeps control, Vault handling and capture workers under its own identity. CDP
 uses inherited private pipes; it never opens a debugging TCP port.
 
+The privileged mount-construction workspace stays in the kernel's private
+profile-state directory, mode 0700 owned by root. It is never constructed under
+the browser-owned display runtime; that runtime is only bound as `/tmp` after
+the private root and policy mount are ready. Stop removes the construction
+workspace after the owned process tree settles.
+
 Root browser files live under `/var/lib/chariox-browser/<profile-root-hash>/`;
 the profile and browser home are private to that account. The root kernel's home
 and Vault remain private. Uploads expose only validated workspace copies through

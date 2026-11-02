@@ -3,7 +3,7 @@ import {displayGeometry as geometry, pageLimit, chromeBandHeight, featureOn} fro
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { retirePipeBrowserUploads } from './browser-controller-upload-staging.mjs';
-import { access, mkdir, readlink, open } from "node:fs/promises";
+import { access, mkdir, readlink, open, mkdtemp, rm } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import {OwnedDisplay} from "./kernel-browser-owned-display.mjs";
@@ -173,8 +173,11 @@ export class HostChromium {
     const args = launchArguments(profile,
       headlessLaunch(process.platform, environment), featureOn("CHARIOX_KERNEL_BROWSER_DISPLAY",environment) || featureOn("CHARIOX_KERNEL_BROWSER_MIRROR",environment), this.desktop?.binding() ? 1 : this.scale, platformPolicy(process.platform).videoDecodeArguments(environment));
     this.policy = (this.browserUser || process.platform === "linux" && linux.policyNamespaceAvailable()) ? "managed" : "unavailable";
+    // Root's mount construction must never write through a browser-writable
+    // parent. Chromium only receives the separate owned /tmp bind afterwards.
+    if(this.browserUser)this.namespaceRoot=await mkdtemp(path.join(this.root,'browser-namespace-'));
     const launch = this.browserUser
-      ? linux.rootPolicyLaunch(await writePolicyLayer(this.root, this.environment), temporary, binary, args, this.browserUser)
+      ? linux.rootPolicyLaunch(await writePolicyLayer(this.root, this.environment), temporary, binary, args, this.browserUser, this.namespaceRoot)
       : this.policy === "managed" ? linux.policyLaunch(await writePolicyLayer(this.root, this.environment), temporary, binary, args) : { command: binary, args };
     const command = this.desktop?.binding() ? desktopCommand(launch.command, launch.args) : { binary: launch.command, args: launch.args };
     const child = spawn(command.binary, command.args, {
@@ -221,6 +224,7 @@ export class HostChromium {
       if (child?.pid !== undefined) throw new Error("MD-2: refusing unsafe browser process ID");
       if (keepDesktop) await this.desktop.stopBrowser(); else await this.desktop?.stop();
       await this.temporaryDirectory?.close(); this.temporaryDirectory = null;
+      await this.retireNamespace();
       return;
     }
     if (connection?.isOpen()) await connection.send("Browser.close").catch(() => {});
@@ -240,5 +244,10 @@ export class HostChromium {
     if (keepDesktop) await this.desktop.stopBrowser(); else { await this.desktop?.stop(); this.display = null; }
     await retirePipeBrowserUploads(connection);
     await this.temporaryDirectory?.close(); this.temporaryDirectory = null;
+    await this.retireNamespace();
+  }
+  async retireNamespace() {
+    if(this.namespaceRoot)await rm(this.namespaceRoot,{recursive:true,force:true});
+    this.namespaceRoot=null;
   }
 }

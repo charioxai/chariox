@@ -24,8 +24,14 @@ test('MP-08/MP-10/MP-11 real kernel browser has a sandbox and private files unde
   assert(uid>0,'Chromium must never run as root');
   if(process.geteuid()===0){
    assert.equal(uid,host.chromium.browserUser.uid);
+   const workspace=await stat(host.chromium.namespaceRoot);
+   assert.equal(workspace.uid,0);
+   assert.equal(workspace.mode&0o777,0o700);
+   assert(host.chromium.namespaceRoot.startsWith(root+path.sep));
    assert.equal((await stat(path.join(host.chromium.filesRoot,'profile'))).mode&0o777,0o700);
-   await assert.rejects(execute('/usr/bin/setpriv',[`--reuid=${uid}`,`--regid=${host.chromium.browserUser.gid}`,'--clear-groups','--','/usr/bin/test','-r',privateFile]));
+   const asBrowser=[`--reuid=${uid}`,`--regid=${host.chromium.browserUser.gid}`,'--clear-groups','--','/usr/bin/test'];
+   await assert.rejects(execute('/usr/bin/setpriv',[...asBrowser,'-r',privateFile]));
+   await assert.rejects(execute('/usr/bin/setpriv',[...asBrowser,'-w',host.chromium.namespaceRoot]));
    for(const process of (await host.chromium.desktop.ownedProcesses())){
     const name=await readFile(`/proc/${process.pid}/comm`,'utf8').catch(()=>null);
     if(name&&/^(Xvfb|openbox|dbus-daemon)\n$/.test(name))assert.equal((await stat(`/proc/${process.pid}`)).uid,uid,name);
@@ -45,16 +51,22 @@ test('MP-08/MP-10/MP-11 real kernel browser has a sandbox and private files unde
   assert.match(sandbox,/(?:PID namespaces|Namespace sandbox)\s+Yes/);
   assert.match(sandbox,/(?:Network namespaces|Namespace sandbox)\s+Yes/);
   await connection.send('Target.closeTarget',{targetId:target.targetId});
-  const state=await host.request({op:'state'});
-  const tab=state.tabs.find(tab=>tab.tab_id===opened.tab_id);assert(tab);
-  const capture=await host.request({op:'screenshot',tab_id:tab.tab_id,generation:state.generation});
+  let capture;
+  for(let tries=0;tries<5;tries++){
+   const state=await host.request({op:'state'});
+   const tab=state.tabs.find(tab=>tab.tab_id===opened.tab_id);assert(tab);
+   try{capture=await host.request({op:'screenshot',tab_id:tab.tab_id,generation:state.generation});break;}
+   catch(error){if(error.code!=='stale_document_reference'||tries===4)throw error;await delay(100);}
+  }
   assert(capture.data_base64?.length>100,'real capture must return pixels');
   if(process.env.CHARIOX_ROOT_BROWSER_EVIDENCE){
    await writeFile(path.join(process.env.CHARIOX_ROOT_BROWSER_EVIDENCE,`browser-uid${process.getuid()}.png`),Buffer.from(capture.data_base64,'base64'));
    await writeFile(path.join(process.env.CHARIOX_ROOT_BROWSER_EVIDENCE,`sandbox-uid${process.getuid()}.txt`),sandbox);
   }
  }finally{
+  const namespace=host.chromium.namespaceRoot;
   await host.stop();
+  if(namespace)await assert.rejects(stat(namespace),{code:'ENOENT'});
   if(host.chromium.browserUser)await rm(host.chromium.browserUser.root,{recursive:true,force:true});
   await rm(root,{recursive:true,force:true});
  }

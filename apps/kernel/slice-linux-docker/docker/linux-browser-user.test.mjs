@@ -30,7 +30,7 @@ test('MP-11 root browser environment has its own home and no inherited secrets o
  assert(command.args.includes('--reuid=991'));
 });
 test('MP-08 root owns policy mounts and drops uid before sandboxed Chrome inherits CDP pipes',()=>{
- const launch=rootPolicyLaunch('/private/policy','/browser/runtime','/usr/bin/chrome',['--remote-debugging-pipe'],{uid:991,gid:990});
+ const launch=rootPolicyLaunch('/private/policy','/browser/runtime','/usr/bin/chrome',['--remote-debugging-pipe'],{uid:991,gid:990},'/kernel/private-namespace');
  assert.match(launch.command,/unshare$/);
  assert.equal(launch.args[0],'--mount');assert(!launch.args.includes('--user'));
  assert(launch.args[6].includes('exec /usr/bin/setpriv --reuid="$uid"'));
@@ -48,4 +48,12 @@ test('MP-11 a host must support private mounts and actually use the dedicated ui
  assert(observed.args.includes('--reuid=991'));assert(observed.args.includes('--clear-groups'));
  assert.equal(observed.options.timeout,5000);
  assert.equal(rootPolicyNamespaceAvailable(user,()=>({status:0}),'/installed/unshare'),true);
+});
+
+test('MP-11 privileged mount construction never writes through the browser-owned temporary directory',()=>{
+ const launch=rootPolicyLaunch('/kernel/policy','/browser/runtime','/usr/bin/chrome',[],{uid:991,gid:990},'/kernel/private-namespace');
+ assert.match(launch.command,/unshare$/);
+ assert(launch.args.includes('/kernel/private-namespace'));
+ assert(launch.args[6].includes('new=$workspace/.root'));
+ assert(!launch.args[6].includes('$temporary/.root'));
 });
