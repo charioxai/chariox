@@ -61,6 +61,37 @@ struct WriterRefused {
     errno: i32,
 }
 
+#[test]
+fn openpty_resource_refusals_keep_formatted_errno_out_of_the_client() {
+    for errno in [libc::EMFILE, libc::ENFILE, libc::EAGAIN, libc::ENOMEM] {
+        // portable-pty 0.8.1 formats openpty's IO error rather than retaining it.
+        let error = anyhow::anyhow!(
+            "failed to openpty: {:?}",
+            std::io::Error::from_raw_os_error(errno)
+        );
+        let refusal = spawn_failed("private-run", &*error);
+        let public = crate::transport::kernel_protocol::map_kernel_error(&refusal);
+        assert_eq!(
+            public.code,
+            match errno {
+                libc::EMFILE | libc::ENFILE => "too_many_open_files",
+                _ => "terminal_refused",
+            }
+        );
+        assert!(public.message.contains("close a terminal and try again"));
+        assert!(!public.message.contains("openpty"));
+        assert!(!public.message.contains("private-run"));
+    }
+    let error = anyhow::anyhow!(
+        "failed to openpty: {:?}",
+        std::io::Error::from_raw_os_error(libc::ENOENT)
+    );
+    assert!(matches!(
+        spawn_failed("missing", &*error),
+        DaemonError::PtySpawn { .. }
+    ));
+}
+
 impl MasterPty for WriterRefused {
     fn resize(&self, size: PtySize) -> anyhow::Result<()> {
         self.master.resize(size)

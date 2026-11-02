@@ -43,6 +43,7 @@ report.kernel_pid = kernel.pid
 closeSync(log)
 const client = new LocalIpcClient(`ws://127.0.0.1:${ports[0]}/kernel`, { timeoutMs: 10000, localAuthEnvironment: env, controlRequestRetryDeadlineMs: 1000 })
 const clients = []
+const pressureClients = []
 const fds = () => readdirSync(`/proc/${kernel.pid}/fd`).length
 async function until(check, label, ms = 30000) {
   const end = Date.now() + ms
@@ -129,6 +130,18 @@ try {
     await delay(300)
     report.samples.push({ before, after: fds(), refusal })
   }
+  // One free descriptor cannot allocate a PTY pair. Real client connections
+  // exercise portable-pty's allocation failure, before a child can be spawned.
+  while (fds() < 319 && pressureClients.length < 8) {
+    const extra = new LocalIpcClient(`ws://127.0.0.1:${ports[0]}/kernel`, { timeoutMs: 10000, localAuthEnvironment: env })
+    pressureClients.push(extra)
+    await extra.send({ RelayStatus: null })
+  }
+  report.fds_at_allocation = fds()
+  assert(report.fds_at_allocation >= 319, 'did not reach PTY pair allocation pressure')
+  try { await term(session, { operation: 'open', cols: 80, rows: 24, title: 'allocation' }); throw new Error('unexpected successful allocation') }
+  catch (error) { report.allocation_refusal = { code: error.code, message: error.message } }
+  report.fds_after_allocation = fds()
   await delay(3000)
   report.witnesses = []
   for (let i = 0; i < witnesses.length; i++) {
@@ -139,6 +152,7 @@ try {
     report.witnesses.push({ terminal_id: w.terminal_id, echoes, status: snapshot.snapshot.status })
   }
   save()
+  await Promise.all(pressureClients.map(c => c.close()))
   for (const t of report.terminals.slice(10, 20)) await term(t.session, { operation: 'close', terminal_id: t.terminal_id })
   await delay(1000)
   const recovered = cli(session, ['new', 'recovered'])
@@ -149,12 +163,14 @@ try {
   report.actionable = report.refusal.message.includes('too many open files in this kernel; close a terminal and try again')
   report.no_fd_growth = report.samples.every(s => s.after <= report.samples[0].before)
   report.retry_refusals_actionable = report.samples.every(s => s.refusal.code === 'too_many_open_files' && s.refusal.message.includes('too many open files in this kernel; close a terminal and try again'))
-  report.pass = report.actionable && report.retry_refusals_actionable && report.no_fd_growth && report.witness_checkpoints.every(w => w.echoes) && report.witnesses.length === 10 && report.witnesses.every(w => w.echoes) && report.recovered
+  report.allocation_refusal_actionable = report.allocation_refusal.code === 'too_many_open_files' && report.allocation_refusal.message.includes('close a terminal and try again') && report.fds_after_allocation <= report.fds_at_allocation
+  report.pass = report.actionable && report.retry_refusals_actionable && report.allocation_refusal_actionable && report.no_fd_growth && report.witness_checkpoints.every(w => w.echoes) && report.witnesses.length === 10 && report.witnesses.every(w => w.echoes) && report.recovered
   console.log(JSON.stringify({ opened: report.terminals.length, refusal: report.refusal, witnesses_echoing: report.witnesses.filter(w => w.echoes).length, recovered: report.recovered, no_fd_growth: report.no_fd_growth, pass: report.pass }))
   process.exitCode = report.pass ? 0 : 1
 } catch (error) {
   report.error = String(error); process.exitCode = 1; console.error(report.error)
 } finally {
+  await Promise.all(pressureClients.map(c => c.close()))
   for (const h of clients) if (!exited(h)) {
     await detach(h).catch(async () => {
       assert(Number.isInteger(h.child.pid) && h.child.pid > 1)
