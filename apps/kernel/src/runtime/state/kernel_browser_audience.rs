@@ -53,10 +53,16 @@ impl KernelRuntimeState {
 
     pub(super) async fn refresh_kernel_browser_audience(
         &self,
-        session: &str,
+        attachment: &crate::attachment::RuntimeAttachment,
     ) -> Result<(), DaemonError> {
-        let session = self.owned.session_store.get_session(session)?;
+        let session = self
+            .owned
+            .session_store
+            .get_session(attachment.session_id())?;
         let user = self.provider_account_authority_owner_user_id(session.owner_user_id());
+        if self.provider_account_authority_owner_user_id(attachment.owner_user_id()) == user {
+            return Ok(());
+        }
         let scope = KernelBrowserHost::profile_key(&user);
         let protection = &self.owned.kernel_browser_secret_observations;
         let _barrier = protection.barrier(&scope)?.write_owned().await;
