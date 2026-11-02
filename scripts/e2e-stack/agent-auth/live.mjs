@@ -45,7 +45,7 @@ async function files(directory) {
 let stopping = false
 for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => { stopping = true })
 async function until(predicate, timeout = 240000) {
-  const deadline = Date.now() + timeout
+  const deadline = Date.now() + Number(options['timeout-ms'] ?? timeout)
   while (Date.now() < deadline) {
     if (stopping) throw new Error('Drill stopped by its owner')
     if (await predicate()) return
@@ -93,6 +93,7 @@ async function capture(name) {
   absent((await page.locator('body').innerText()) + fields)
   await page.screenshot({ path: `${evidence}/${name}.png` })
 }
+const diagnostics = []
 const claimed = new Set()
 async function interact() {
   // Every answer goes through the actual new UI's controls.
@@ -159,6 +160,7 @@ try {
     await client.send(requests.spawnAgentRequest(sessionId, 'codex', 'authmd', 'gpt-6-luna', repository, 'low', 'build', 'yolo', undefined, undefined, undefined, 'default'))
     session = variant(await client.send(requests.getSessionStateRequest(sessionId)), 'SessionState').session
   }
+  const agentId = session.agents[0].id
   const pairing = variant(await client.send({ CreateTerminalPairingLink: { terminal_type: 'web', alias: 'authmd new UI', expires_in_ms: 600000 } }), 'TerminalPairingLinkCreated').pairing
   privateValues.push(pairing.pairing_link, pairing.pairing_code)
   staticServer = http.createServer(async (request, response) => {
@@ -173,6 +175,12 @@ try {
   await new Promise(resolve => staticServer.listen(0, '127.0.0.1', resolve))
   browser = await chromium.launch({ headless: true, executablePath: options['chrome-bin'] ?? '/opt/google/chrome/chrome', args: ['--no-sandbox', '--disable-dev-shm-usage'] })
   page = await browser.newPage({ viewport: { width: 1440, height: 1000 }, deviceScaleFactor: Number(options.dpr ?? 1) })
+  page.on('console', async message => {
+    if (message.type() !== 'error') return
+    const parts = await Promise.all(message.args().map(handle => handle.evaluate(value => value instanceof Error ? value.message : String(value)).catch(() => 'Unreadable browser diagnostic')))
+    const text = parts.join(' ')
+    try { absent(text); diagnostics.push(text.slice(0, 2000)) } catch { diagnostics.push('Protected browser diagnostic suppressed') }
+  })
   await page.goto(`http://127.0.0.1:${staticServer.address().port}`)
   await page.locator('#pairing-link').fill(pairing.pairing_link)
   await page.locator('form.settings-add-kernel button[type="submit"]').click()
@@ -187,7 +195,14 @@ try {
     await page.locator('[data-prompt-input]').press('Enter')
     await until(async () => {
       await interact()
-      return service.counts.accepted > before && (await page.locator('body').innerText()).includes(`AU15_${flow}_DONE`)
+      const refusal = diagnostics.find(message => message.includes('prompt-bar.send'))
+      if (refusal) throw new Error(refusal)
+      const state = variant(await client.send(requests.getSessionStateRequest(sessionId)), 'SessionState').session
+      const promptState = state.prompt_states?.[agentId] ?? {}
+      const active = promptState.active_prompt ?? (state.active_prompt?.target_agent_id === agentId ? state.active_prompt : null)
+      const queued = promptState.queued_prompts ?? (state.queued_prompts ?? []).filter(prompt => prompt.target_agent_id === agentId)
+      const agent = state.agents.find(agent => agent.id === agentId)
+      return service.counts.accepted > before && !active && !queued.length && agent && !agent.is_processing && agent.state !== 'Working'
     })
     const text = await page.locator('body').innerText()
     absent(text)
@@ -213,6 +228,7 @@ try {
     result.absence = { checked_files: checked, service_values_absent: true }
   } catch { result.status = 'FAIL'; result.failure = 'Protected value found in kernel/provider history or logs' }
   result.counts = service?.counts
+  result.browser_diagnostics = diagnostics
   if (service) await service.close()
   if (staticServer) await new Promise(resolve => staticServer.close(resolve))
   result.finished = new Date().toISOString()
