@@ -39,7 +39,7 @@ async function makeFixture(
 ) {
   const home = path.join(root, "home/chariox");
   const account = path.join(home, ".provider-account/default");
-  const workspace = await mkdtemp(path.join(os.tmpdir(), "chariox-wrapper-workspace-"));
+  const workspace = await mkdtemp(path.join(process.geteuid?.() === 0 ? "/run" : "/dev/shm", "chariox-wrapper-workspace-"));
   const maskedSliceState = path.join(root, "home/slice/.chariox");
   const deniedRoot = deniedPath ? path.join(root, deniedPath) : "";
   const wrapper = path.join(root, "wrapper.sh");

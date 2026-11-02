@@ -37,7 +37,8 @@ test('MP-08/MP-10/MP-11 a pinned popup-free extension cannot receive native agen
   const {uid,gid}=await ensureBrowserAccount();
   await ownedBrowserDirectory(root,uid,gid,0o700);
   try{
-   const child=spawn(process.execPath,['--test',fileURLToPath(import.meta.url)],{uid,gid,env:{...process.env,TMPDIR:root},stdio:['ignore','inherit','inherit'],timeout:55000});
+   const env={...process.env,TMPDIR:root};delete env.NODE_TEST_CONTEXT;
+   const child=spawn(process.execPath,['--test',fileURLToPath(import.meta.url)],{uid,gid,env,stdio:['ignore','inherit','inherit'],timeout:55000});
    assert.equal(await new Promise((resolve,reject)=>{child.once('error',reject);child.once('exit',resolve)}),0,'unprivileged native extension drill');
   }finally{await rm(root,{recursive:true,force:true})}
   return;
