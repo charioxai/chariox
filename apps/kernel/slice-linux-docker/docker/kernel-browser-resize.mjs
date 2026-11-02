@@ -9,17 +9,20 @@ export async function resizeBrowserPage(host,tab,command,signal){
  if(host.generation!==command.generation||host.tabs.get(tab.tab_id)?.target_id!==tab.target_id)throw Error('browser resize target retired; refresh the browser view and try again');
  const previous=host.pageSize(tab.tab_id);
  const browser=host.browser,{connection,sessionId}=await browser.resolvePageTarget(tab.target_id);
- const {windowId,bounds}=await connection.send('Browser.getWindowForTarget',{targetId:tab.target_id});
  const current=()=>{assertNotCancelled(signal);if(host.browser!==browser||host.generation!==command.generation||host.tabs.get(tab.tab_id)?.target_id!==tab.target_id)throw Error('browser resize target retired; refresh the browser view and try again');};
  current();
- if(bounds?.windowState!=='normal')throw Error('restore the browser window before resizing');
  let page;
  if(host.chromium?.desktop?.binding?.()){
-  let window;try{window=host.chromeWindows.current().tabbed}catch{await host.chromeWindows.resolve();window=host.chromeWindows.current().tabbed}
+  // A native viewport resize can leave the page binding valid but its rectangle stale.
+  // Refresh it before combining it with the current CDP window bounds.
+  await host.chromeWindows.resolve();current();
+  const window=host.chromeWindows.current().tabbed;
   page={width:window.page_rect.width/window.scale,height:window.page_rect.height/window.scale};
  }else{
   const metrics=await connection.send('Page.getLayoutMetrics',{},sessionId);page={width:metrics.cssLayoutViewport?.clientWidth,height:metrics.cssLayoutViewport?.clientHeight};
  }
+ const {windowId,bounds}=await connection.send('Browser.getWindowForTarget',{targetId:tab.target_id});current();
+ if(bounds?.windowState!=='normal')throw Error('restore the browser window before resizing');
  const inset={width:bounds.width-page.width,height:bounds.height-page.height};
  if(![inset.width,inset.height].every(Number.isSafeInteger)||inset.width<0||inset.width>64||inset.height<0||inset.height>256)throw Error('browser window geometry unavailable; refresh the browser view and resize again');
  const outer={width:width+inset.width,height:height+inset.height};
