@@ -6296,6 +6296,16 @@ its subscriptions; the last lane closes the physical connection. Distinct
 identities never share a carrier. The wire frames, pinned grant proof, lease
 renewal interval and physical silence deadlines are unchanged.
 
+MP-08/MP-09/MP-10/MP-11 (TR-02): directory links keep presence, inventory
+and catalog reads on their ordinary relay lanes. They may join an already
+admitted direct carrier of the exact same target and identity, without waiting
+for a discovery in progress or minting another lease. Room subscriptions,
+display registration and foreground requests ask for direct proof beside the
+current relay work. The existing pending-command guard and staged carrier
+switch move them after proof; the first user action does not wait for ICE.
+Direct only remains an explicit request for discovery. Carrier framing,
+subscription heartbeats, silence deadlines and lease policy are unchanged.
+
 Protocol 951 RTC fragments use kinds 4 (last) and 5 (more) for CXL1
 encrypted replies and events. CXL1 is four magic bytes, a big-endian u32
 header length, the UTF-8 JSON header and raw AES-GCM ciphertext including

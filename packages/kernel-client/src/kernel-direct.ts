@@ -49,6 +49,8 @@ export type LocalDirectGrant = {
 }
 
 export type OpenLocalSocketInput = DirectSocketInput & {
+  /** A background link can join an admitted carrier without creating or waiting for one. */
+  readonly reuseOnly?: boolean
   readonly signal?: AbortSignal
   /** Keep automatic discovery from delaying the ordinary relay attachment. */
   readonly onDiscoveryPending?: () => void
@@ -196,7 +198,27 @@ export class KernelDirect<TIdentity> {
     if (this.closed || !kernelRef || (input.localDaemonProtocolVersion ?? 0) < dataChannelMinimumProtocolVersion
       || !this.consented(kernelRef) || !this.deps.requestLease
       || !(this.deps.createDataChannelOffer || dataChannelSupported())) return null
-    return this.openDataChannel(input, kernelRef)
+    return input.reuseOnly ? this.openExistingCarrier(input, kernelRef) : this.openDataChannel(input, kernelRef)
+  }
+
+  private async openExistingCarrier(input: OpenLocalSocketInput, kernelRef: string): Promise<WebSocket | null> {
+    const state = this.kernels.get(kernelRef)
+    if (!state || state.blockedReason || state.cooldownUntilMs > this.nowMs()) return null
+    const target = JSON.stringify([input.target.daemon_id ?? null, input.target.daemon_alias ?? null])
+    const carriers = this.carriers.get(target)
+    if (!carriers) return null
+    const keypair = await this.deps.bindingKeypair(kernelRef)
+    const pending = carriers.get(keypair)
+    if (!pending) return null
+    // A background link joins a proven channel without waiting for discovery.
+    const carrier = await Promise.race([pending, Promise.resolve(null)])
+    if (!carrier?.open || this.closed || input.signal?.aborted) return null
+    const lane = carrier.openLane(input.signal)
+    state.proven = true
+    this.setStatus(state, "local")
+    try { this.deps.attach(lane, carrier.daemonPublicKey, input) }
+    catch (error) { lane.close(); throw error }
+    return lane
   }
 
   private lease(kernelRef: string): KernelLease<TIdentity> {

@@ -1,5 +1,17 @@
 # Managed Path-1 parity inventory (MP-11)
 
+## MP-08 / MP-09 / MP-10 / MP-11 background carrier demand
+
+Presence/catalog links keep their authenticated relay subscriptions until Room
+work needs a direct carrier. They can reuse an admitted carrier of the same
+exact target and key without creating or waiting for one. Foreground demand
+starts the existing staged proof and replay path beside live relay work. Both
+placements retain the same kernel dispatch, identity/key pins, replay cursors,
+heartbeat and silence deadlines, 10-second renewals and 30-second lease bound.
+The shared native/Web engine also permits cold discovery and proof four seconds
+inside the five-second fallback budget. No managed shutdown or wire shape changes.
+
+
 ## MP-08 / MP-09 / MP-10 / MP-11 provider account references (2026-10-28)
 
 Local 770 / peer 320 projects account identity, authentication state and configured
