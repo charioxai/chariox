@@ -83,6 +83,7 @@ const INPUT_DOCUMENT_WAIT_MS = 1500;
 const withinMs = (promise, ms) => { let timer; return Promise.race([promise, new Promise(resolve => { timer = setTimeout(resolve, ms, null); })]).finally(() => clearTimeout(timer)); };
 const TIMED_OPS = new Set(['start', 'state', 'open', 'close', 'navigate', 'mirror_subscribe', 'display_subscribe']);
 const inputKinds = { click: 1, text: 2, key: 3, scroll: 4 };
+const disablesWebBotAuth = value => value === null || (value && typeof value === "object" && value.disabled === true);
 function restorationUrl(url) {
   try { return navigationUrl(url); } catch { return "about:blank"; }
 }
@@ -862,9 +863,9 @@ export class KernelBrowserHost {
       await this.start({ signal });
       const tab = this.tabs.get(command.tab_id);
       const result = await this.browser.configureWebBotAuth(command.tab_id, command.signer, tab?.target_id);
-      if (command.signer === null) this.webBotAuthProjects.delete(command.tab_id);
+      if (disablesWebBotAuth(command.signer)) this.webBotAuthProjects.delete(command.tab_id);
       else if (this.browser.webBotAuth?.byTab.has(command.tab_id)) this.webBotAuthProjects.set(command.tab_id, command.signer.project_id);
-      await this.resumeWebBotAuthRestore(command.tab_id, { allowUnsigned: command.signer === null });
+      await this.resumeWebBotAuthRestore(command.tab_id, { allowUnsigned: disablesWebBotAuth(command.signer) });
       await this.save();
       return result;
     }
@@ -1206,9 +1207,9 @@ export class KernelBrowserHost {
         if (tab.document_id !== params.document_id) throw new UserDomainRefusal("stale_reference");
         if (webBotAuth !== undefined) {
           await this.browser.configureWebBotAuth(params.tab_id, webBotAuth, tab.target_id);
-          if (webBotAuth === null) this.webBotAuthProjects.delete(params.tab_id);
+          if (disablesWebBotAuth(webBotAuth)) this.webBotAuthProjects.delete(params.tab_id);
           else if (this.browser.webBotAuth?.byTab.has(params.tab_id)) this.webBotAuthProjects.set(params.tab_id, webBotAuth.project_id);
-          await this.resumeWebBotAuthRestore(params.tab_id, { allowUnsigned: webBotAuth === null });
+          await this.resumeWebBotAuthRestore(params.tab_id, { allowUnsigned: disablesWebBotAuth(webBotAuth) });
         }
         // MP-08/MP-11: a Vault fill is the agent's input to an App Tab too,
         // recorded before the field's input/change handlers can run.
@@ -1296,10 +1297,10 @@ export class KernelBrowserHost {
           if (typeof params.tab_id === "string") {
             const tab = this.tabs.get(params.tab_id);
             await this.browser.configureWebBotAuth(params.tab_id, webBotAuth, tab?.target_id);
-            if (webBotAuth === null) this.webBotAuthProjects.delete(params.tab_id);
+            if (disablesWebBotAuth(webBotAuth)) this.webBotAuthProjects.delete(params.tab_id);
             else if (this.browser.webBotAuth?.byTab.has(params.tab_id)) this.webBotAuthProjects.set(params.tab_id, webBotAuth.project_id);
             if (params.op !== "navigate") {
-              await this.resumeWebBotAuthRestore(params.tab_id, { allowUnsigned: webBotAuth === null });
+              await this.resumeWebBotAuthRestore(params.tab_id, { allowUnsigned: disablesWebBotAuth(webBotAuth) });
             }
           }
         }

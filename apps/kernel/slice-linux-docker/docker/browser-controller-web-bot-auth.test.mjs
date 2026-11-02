@@ -154,13 +154,13 @@ test("signer accepts only secure or loopback origins and short validity windows"
   loopback.destroy();
 });
 
-test("opt-out disables Fetch without waiting on a pending continue command", async () => {
+test("opt-out retires signing without disabling Fetch or waiting on a pending continue command", async () => {
   const sent = [];
   let releaseContinue;
   const connection = {
     async send(method, params, sessionId) {
       sent.push({ method, params, sessionId });
-      if (method === "Fetch.continueRequest") await new Promise((resolve) => { releaseContinue = resolve; });
+      if (method === "Fetch.continueRequest" && params.requestId === "inflight") await new Promise((resolve) => { releaseContinue = resolve; });
       return {};
     },
   };
@@ -176,12 +176,18 @@ test("opt-out disables Fetch without waiting on a pending continue command", asy
   assert.equal(typeof releaseContinue, "function");
   const optedOut = await browser.webBotAuth.configureTab("tab-optout", null);
   assert.deepEqual(optedOut, { configured: true });
-  assert.ok(sent.some((entry) => entry.method === "Fetch.disable"));
+  assert.equal(sent.some((entry) => entry.method === "Fetch.disable"), false);
   assert.ok(signer.seed.every((byte) => byte === 0));
   const continued = sent.find((entry) => entry.method === "Fetch.continueRequest");
   assert.ok(continued.params.headers.some(({ name }) => name === "Signature"), "in-flight request was signed before retiring the seed");
   releaseContinue();
   await browser.webBotAuth.waitForSession("session-optout");
+  browser.recordConnectionEvent({ method: "Fetch.requestPaused", sessionId: "session-optout", params: {
+    requestId: "after-optout", request: { method: "GET", url: "https://example.test/after", headers: {} },
+  } });
+  await browser.webBotAuth.waitForSession("session-optout");
+  const unsigned = sent.find((entry) => entry.method === "Fetch.continueRequest" && entry.params.requestId === "after-optout");
+  assert.equal(unsigned.params.headers, undefined, "the attached Fetch handler continues later requests unsigned");
   await browser.webBotAuth.clearAll();
 });
 
@@ -228,6 +234,9 @@ test("an App tab keeps its exclusive Fetch handler when WBA is configured", asyn
   assert.deepEqual(sent.map((entry) => entry.method), ["Fetch.fulfillRequest"]);
   await browser.configureWebBotAuth("app-tab", null, "app-target");
   assert.equal(sent.some((entry) => entry.method === "Fetch.disable"), false, "WBA opt-out leaves App Fetch enabled");
+  await browser.configureWebBotAuth("app-tab", { disabled: true, policy_revision: 1 }, "app-target");
+  assert.equal(sent.some((entry) => entry.method === "Fetch.disable"), false, "disabled policy marker leaves App Fetch enabled");
+  assert.equal(browser.webBotAuth.bySession.size, 0, "disabled marker does not claim the App-owned Fetch session");
   appTabs.unsubscribe?.();
 });
 
@@ -291,6 +300,116 @@ test("stale signer material cannot re-enable a project after a newer policy revi
   disabled.policy_revision = 4;
   await assert.rejects(browser.webBotAuth.configureTab("disabled-tab", disabled), /project is not enabled/);
   assert.equal(browser.webBotAuth.byTab.has("disabled-tab"), false);
+  await browser.webBotAuth.clearAll();
+});
+
+test("stale disabled marker cannot clear a signer installed at a newer policy revision", async () => {
+  const sent = [];
+  const connection = { isOpen: () => true, async send(method, params, sessionId) { sent.push({ method, params, sessionId }); return {}; } };
+  const browser = new BrowserCdpClient({ connectionFactory: async () => connection });
+  browser.connection = connection;
+  browser.webBotAuth.applyProjectPolicy(["project-a"], false, 8);
+  const active = signerInput();
+  active.project_id = "project-a";
+  active.policy_revision = 8;
+  await browser.webBotAuth.configureTab("tab-disabled-race", active);
+  await browser.webBotAuth.attachTab("tab-disabled-race", "session-disabled-race");
+  const currentSigner = browser.webBotAuth.byTab.get("tab-disabled-race");
+  const disableCount = sent.filter(({ method }) => method === "Fetch.disable").length;
+
+  await assert.rejects(browser.webBotAuth.configureTab("tab-disabled-race", { disabled: true, policy_revision: 7 }), /policy changed/);
+  assert.equal(browser.webBotAuth.byTab.get("tab-disabled-race"), currentSigner);
+  assert.equal(browser.webBotAuth.bySession.get("session-disabled-race"), currentSigner);
+  assert.equal(sent.filter(({ method }) => method === "Fetch.disable").length, disableCount);
+
+  assert.deepEqual(await browser.webBotAuth.configureTab("tab-disabled-race", { disabled: true, policy_revision: 9 }), { configured: true });
+  assert.equal(browser.webBotAuth.byTab.has("tab-disabled-race"), false);
+  assert.equal(browser.webBotAuth.bySession.has("session-disabled-race"), false);
+  assert.ok(browser.webBotAuth.unsignedSessions.has("session-disabled-race"), "Fetch stays enabled for unsigned continuation without a disable gap");
+  assert.equal(sent.filter(({ method }) => method === "Fetch.disable").length, disableCount);
+  assert.deepEqual(await browser.webBotAuth.configureTab("new-tab", { disabled: true, policy_revision: 10 }), { configured: true },
+    "a new controller accepts the current disabled marker without key material");
+  await browser.webBotAuth.clearAll();
+});
+
+test("a newer disabled marker retires signers on every tab before project policy RPC arrives", async () => {
+  const sent = [];
+  const connection = { isOpen: () => true, async send(method, params, sessionId) { sent.push({ method, params, sessionId }); return {}; } };
+  const browser = new BrowserCdpClient({ connectionFactory: async () => connection });
+  browser.connection = connection;
+  for (const [tabId, sessionId, projectId] of [
+    ["tab-policy-new", "session-policy-new", "project-new"],
+    ["tab-policy-other", "session-policy-other", "project-other"],
+  ]) {
+    const signer = signerInput();
+    signer.project_id = projectId;
+    signer.policy_revision = 1;
+    await browser.webBotAuth.configureTab(tabId, signer);
+    await browser.webBotAuth.attachTab(tabId, sessionId);
+  }
+  const oldOtherSigner = browser.webBotAuth.byTab.get("tab-policy-other");
+
+  await browser.webBotAuth.configureTab("tab-policy-new", { disabled: true, policy_revision: 2 });
+  assert.equal(browser.webBotAuth.byTab.size, 0);
+  assert.ok(oldOtherSigner.seed.every((byte) => byte === 0));
+  assert.equal(browser.webBotAuth.bySession.size, 0);
+  assert.ok(browser.webBotAuth.unsignedSessions.has("session-policy-other"));
+  browser.recordConnectionEvent({ method: "Fetch.requestPaused", sessionId: "session-policy-other", params: {
+    requestId: "revision-disabled-other", request: { method: "GET", url: "https://example.test/other", headers: {} },
+  } });
+  await browser.webBotAuth.waitForSession("session-policy-other");
+  const continued = sent.find((entry) => entry.method === "Fetch.continueRequest" && entry.params.requestId === "revision-disabled-other");
+  assert.equal(continued.params.headers, undefined, "the other project's request cannot use its pre-revision key");
+  await browser.webBotAuth.clearAll();
+});
+
+test("enabled material at a newer policy revision retires old tab signers before installing the new one", async () => {
+  const sent = [];
+  const connection = { isOpen: () => true, async send(method, params, sessionId) { sent.push({ method, params, sessionId }); return {}; } };
+  const browser = new BrowserCdpClient({ connectionFactory: async () => connection });
+  browser.connection = connection;
+  for (const [tabId, sessionId, projectId] of [
+    ["tab-enabled-new", "session-enabled-new", "project-new"],
+    ["tab-enabled-old", "session-enabled-old", "project-old"],
+  ]) {
+    const signer = signerInput();
+    signer.project_id = projectId;
+    signer.policy_revision = 1;
+    await browser.webBotAuth.configureTab(tabId, signer);
+    await browser.webBotAuth.attachTab(tabId, sessionId);
+  }
+  const oldSigner = browser.webBotAuth.byTab.get("tab-enabled-old");
+  const next = signerInput();
+  next.project_id = "project-new";
+  next.policy_revision = 2;
+  await browser.webBotAuth.configureTab("tab-enabled-new", next);
+  assert.equal(browser.webBotAuth.byTab.get("tab-enabled-new").policyRevision, 2);
+  assert.equal(browser.webBotAuth.byTab.has("tab-enabled-old"), false);
+  assert.ok(oldSigner.seed.every((byte) => byte === 0));
+  assert.ok(browser.webBotAuth.unsignedSessions.has("session-enabled-old"));
+  browser.recordConnectionEvent({ method: "Fetch.requestPaused", sessionId: "session-enabled-old", params: {
+    requestId: "revision-enabled-old", request: { method: "GET", url: "https://example.test/old", headers: {} },
+  } });
+  await browser.webBotAuth.waitForSession("session-enabled-old");
+  const continued = sent.find((entry) => entry.method === "Fetch.continueRequest" && entry.params.requestId === "revision-enabled-old");
+  assert.equal(continued.params.headers, undefined, "the old tab is unsigned after newer material advances revision");
+  await browser.webBotAuth.clearAll();
+});
+
+test("legacy null opt-out has no asynchronous gap before a replacement signer is installed", async () => {
+  const sent = [];
+  const connection = { isOpen: () => true, async send(method, params, sessionId) { sent.push({ method, params, sessionId }); return {}; } };
+  const browser = new BrowserCdpClient({ connectionFactory: async () => connection });
+  browser.connection = connection;
+  await browser.webBotAuth.configureTab("tab-legacy-race", signerInput());
+  await browser.webBotAuth.attachTab("tab-legacy-race", "session-legacy-race");
+  const optingOut = browser.webBotAuth.configureTab("tab-legacy-race", null);
+  assert.equal(browser.webBotAuth.byTab.has("tab-legacy-race"), false, "null clears signing synchronously");
+  await browser.webBotAuth.configureTab("tab-legacy-race", signerInput());
+  const replacement = browser.webBotAuth.byTab.get("tab-legacy-race");
+  await optingOut;
+  assert.equal(browser.webBotAuth.byTab.get("tab-legacy-race"), replacement);
+  assert.equal(sent.some(({ method }) => method === "Fetch.disable"), false, "the session remains attached with no disable/re-enable race");
   await browser.webBotAuth.clearAll();
 });
 

@@ -64,7 +64,7 @@ impl KernelRuntimeState {
                     "not_before": signer.public_jwk().nbf,
                     "expires_at": signer.public_jwk().exp,
                 }),
-                None => serde_json::Value::Null,
+                None => serde_json::json!({"policy_revision": revision, "disabled": true}),
             },
         )
     }

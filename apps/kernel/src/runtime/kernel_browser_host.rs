@@ -1283,17 +1283,22 @@ mod tests {
         let host = KernelBrowserHost::new(root.clone());
         let revision = host.web_bot_auth_revision();
         host.update_web_bot_auth_policy(&[], false).unwrap();
-        let error = host
-            .protected_request(
-                "owner",
-                None,
-                "host.browser",
-                serde_json::json!({"op": "open", "url": "https://example.com",
-                    "_web_bot_auth": {"policy_revision": revision}}),
-                Value::Null,
-            )
-            .unwrap_err();
-        assert!(error.to_string().contains("Web Bot Auth policy changed"));
+        for material in [
+            serde_json::json!({"policy_revision": revision}),
+            serde_json::json!({"policy_revision": revision, "disabled": true}),
+        ] {
+            let error = host
+                .protected_request(
+                    "owner",
+                    None,
+                    "host.browser",
+                    serde_json::json!({"op": "open", "url": "https://example.com",
+                        "_web_bot_auth": material}),
+                    Value::Null,
+                )
+                .unwrap_err();
+            assert!(error.to_string().contains("Web Bot Auth policy changed"));
+        }
         drop(host);
         std::fs::remove_dir_all(root).unwrap();
     }

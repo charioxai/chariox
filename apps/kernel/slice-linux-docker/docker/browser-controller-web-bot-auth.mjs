@@ -142,28 +142,60 @@ export class BrowserWebBotAuth {
     this.allowedProjects = null;
   }
 
+  acceptPolicyRevision(revision) {
+    if (this.policyRevision > 0 && revision === undefined) {
+      throw new Error("Web Bot Auth policy changed; retry the browser operation");
+    }
+    if (revision !== undefined) {
+      if (!Number.isSafeInteger(revision) || revision < 0 || revision < this.policyRevision) {
+        throw new Error("Web Bot Auth policy changed; retry the browser operation");
+      }
+      if (revision > this.policyRevision) {
+        this.policyRevision = revision;
+        this.allowedProjects = null;
+        this.retireAllSigners();
+      }
+    }
+  }
+
+  retireAllSigners() {
+    for (const [tabId, signer] of this.byTab) {
+      signer.active = false;
+      const sessionId = this.sessionByTab.get(tabId);
+      if (sessionId) {
+        if (this.bySession.get(sessionId) === signer) this.bySession.delete(sessionId);
+        this.unsignedSessions.add(sessionId);
+      }
+      if (this.byTab.get(tabId) === signer) this.byTab.delete(tabId);
+      signer.destroy();
+    }
+  }
+
   async configureTab(tabId, input) {
     if (typeof tabId !== "string" || !tabId) throw badConfig();
     const previous = this.byTab.get(tabId);
-    if (input === null) {
-      if (!previous) return { configured: true };
-      previous.active = false;
+    const disabledMarker = input && typeof input === "object" && input.disabled === true;
+    if (disabledMarker) {
+      this.acceptPolicyRevision(input.policy_revision);
+      if (previous) previous.active = false;
       const sessionId = this.sessionByTab.get(tabId);
       if (sessionId) {
+        if (this.bySession.get(sessionId) === previous) this.bySession.delete(sessionId);
         this.unsignedSessions.add(sessionId);
-        this.bySession.delete(sessionId);
-        this.sessionByTab.delete(tabId);
-        try {
-          await this.connectionProvider()?.send("Fetch.disable", {}, sessionId);
-          this.unsignedSessions.delete(sessionId);
-        } finally {
-          previous.destroy();
-          this.byTab.delete(tabId);
-        }
-      } else {
-        previous.destroy();
-        this.byTab.delete(tabId);
       }
+      if (this.byTab.get(tabId) === previous) this.byTab.delete(tabId);
+      previous?.destroy();
+      return { configured: true };
+    }
+    if (input === null) {
+      if (previous) previous.active = false;
+      const sessionId = this.sessionByTab.get(tabId);
+      if (sessionId) {
+        if (this.bySession.get(sessionId) === previous) this.bySession.delete(sessionId);
+        this.unsignedSessions.add(sessionId);
+      }
+      if (this.byTab.get(tabId) === previous) this.byTab.delete(tabId);
+      previous?.destroy();
       return { configured: true };
     }
 
@@ -173,21 +205,8 @@ export class BrowserWebBotAuth {
       signer.destroy();
       throw new Error("Web Bot Auth signing key is not currently valid");
     }
-    if (this.policyRevision > 0 && signer.policyRevision === undefined) {
-      signer.destroy();
-      throw new Error("Web Bot Auth policy changed; retry the browser operation");
-    }
-    if (signer.policyRevision !== undefined) {
-      if (!Number.isSafeInteger(signer.policyRevision) || signer.policyRevision < 0
-          || signer.policyRevision < this.policyRevision) {
-        signer.destroy();
-        throw new Error("Web Bot Auth policy changed; retry the browser operation");
-      }
-      if (signer.policyRevision > this.policyRevision) {
-        this.policyRevision = signer.policyRevision;
-        this.allowedProjects = null;
-      }
-    }
+    try { this.acceptPolicyRevision(signer.policyRevision); }
+    catch (error) { signer.destroy(); throw error; }
     if ((this.allowedProjects !== null && (signer.projectId === undefined
           || !this.allowedProjects.has(signer.projectId)))) {
       signer.destroy();
@@ -216,30 +235,36 @@ export class BrowserWebBotAuth {
   async configureIgnoredTab(tabId, input) {
     if (typeof tabId !== "string" || !tabId) throw badConfig();
     const previous = this.byTab.get(tabId);
+    const disabledMarker = input && typeof input === "object" && input.disabled === true;
+    let ignoredKid;
+    if (disabledMarker) this.acceptPolicyRevision(input.policy_revision);
+    else if (input !== null) {
+      const signer = createWebBotAuthSigner(input);
+      const now = Math.floor(Date.now() / 1000);
+      try {
+        if (now < signer.notBefore || now >= signer.expiresAt) throw new Error("Web Bot Auth signing key is not currently valid");
+        this.acceptPolicyRevision(signer.policyRevision);
+        if (this.allowedProjects !== null && (signer.projectId === undefined || !this.allowedProjects.has(signer.projectId))) {
+          throw new Error("Web Bot Auth project is not enabled by the current policy");
+        }
+        ignoredKid = signer.keyId;
+      } catch (error) { signer.destroy(); throw error; }
+      signer.destroy();
+    }
     const sessionId = this.sessionByTab.get(tabId);
     if (sessionId) {
       this.bySession.delete(sessionId);
       this.sessionByTab.delete(tabId);
       this.unsignedSessions.delete(sessionId);
     }
-    if (input === null) {
+    if (input === null || disabledMarker) {
       previous?.destroy();
       this.byTab.delete(tabId);
       return { configured: true };
     }
-    const signer = createWebBotAuthSigner(input);
-    const now = Math.floor(Date.now() / 1000);
-    if (now < signer.notBefore || now >= signer.expiresAt) {
-      signer.destroy();
-      previous?.destroy();
-      this.byTab.delete(tabId);
-      throw new Error("Web Bot Auth signing key is not currently valid");
-    }
-    const kid = signer.keyId;
-    signer.destroy();
     previous?.destroy();
     this.byTab.delete(tabId);
-    return { configured: true, kid };
+    return { configured: true, ...(ignoredKid ? { kid: ignoredKid } : {}) };
   }
 
   async attachTab(tabId, sessionId) {

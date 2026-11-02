@@ -70,7 +70,7 @@ function fixture(root) {
   };
   const chromium = { child: null, start: async () => { chromium.child = { exitCode: null, signalCode: null }; return "http://127.0.0.1:1"; }, stop: async () => { chromium.child = null; } };
   const webBotAuth={byTab:new Map()};
-  const browserFactory = () => ({ connection, webBotAuth, configureWebBotAuth:async(tabId,signer)=>{if(signer===null)webBotAuth.byTab.delete(tabId);else webBotAuth.byTab.set(tabId,signer);return{configured:true,kid:'fixture-kid'};}, attachWebBotAuth:async(_tabId,_targetId,session)=>{await connection.send('Fetch.enable',{patterns:[{urlPattern:'*',requestStage:'Request'}]},session);},clearWebBotAuth:async(tabId)=>webBotAuth.byTab.delete(tabId), ensureConnection: async () => connection,ensureTargetSession:async (_connection,target)=>`session-${target}`, close: async () => {},
+  const browserFactory = () => ({ connection, webBotAuth, configureWebBotAuth:async(tabId,signer)=>{if(signer===null||signer?.disabled===true)webBotAuth.byTab.delete(tabId);else webBotAuth.byTab.set(tabId,signer);return{configured:true,kid:'fixture-kid'};}, attachWebBotAuth:async(_tabId,_targetId,session)=>{await connection.send('Fetch.enable',{patterns:[{urlPattern:'*',requestStage:'Request'}]},session);},clearWebBotAuth:async(tabId)=>webBotAuth.byTab.delete(tabId), ensureConnection: async () => connection,ensureTargetSession:async (_connection,target)=>`session-${target}`, close: async () => {},
     reconcile: async viewport => { connection.density=viewport.device_scale_factor; return { tabs: [...pages].map(([target_id, tab]) => ({ target_id, document_id: `doc-${target_id}`, title: "fixture", ...tab })) }; },
     manageTab: async ({ target_id }) => pages.delete(target_id),
     navigate: async ({ target_id, url }) => { pages.set(target_id, { url }); },
@@ -143,6 +143,27 @@ test("MP-08/MP-09/MP-10/MP-11 project WBA policy acknowledges without signer dat
   assert.equal(response.ok, true);
   assert.deepEqual(response.result, { updated: true });
   assert.equal(JSON.stringify(response).includes("private_key"), false);
+}));
+
+test("MP-08/MP-09/MP-10/MP-11 a disabled signer marker reaches CDP and clears project bookkeeping", () => using(async ({ host }) => {
+  const opened = await host.request({ op: "open", url: "https://example.test/" });
+  const tabId = opened.tabs[0].tab_id;
+  host.webBotAuthProjects.set(tabId, "project-a");
+  host.browser.webBotAuth.byTab.set(tabId, { projectId: "project-a" });
+  let received;
+  const configure = host.browser.configureWebBotAuth;
+  host.browser.configureWebBotAuth = async (id, marker, targetId) => {
+    received = marker;
+    return configure(id, marker, targetId);
+  };
+  const marker = { disabled: true, policy_revision: 9 };
+  const response = await host.handle({ id: 703, method: "host.browser", params: {
+    op: "state", tab_id: tabId, generation: host.generation, _web_bot_auth: marker,
+  } });
+  assert.equal(response.ok, true, JSON.stringify(response));
+  assert.equal(received, marker, "the revision marker is forwarded intact to CDP");
+  assert.equal(host.webBotAuthProjects.has(tabId), false);
+  assert.equal(host.browser.webBotAuth.byTab.has(tabId), false);
 }));
 
 test("MP-08/MP-09/MP-10/MP-11 a dialog without Chrome chrome is shared and answerable while its renderer is blocked", () => using(async ({ host }) => {
