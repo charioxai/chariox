@@ -1163,6 +1163,26 @@ test("VAUDIT S3: a captured value shown as page text is a mask in the mirror", (
     assert(!wire.includes(value) && wire.includes("API keys"), "VAUDIT S3: the value never travels; the rest of the page does");
   }));
 
+test("VAUDIT S3 / AU-03: the kernel-named owner audience sees captured and filled values; every other stream stays masked", () => mirrored(
+  '<p>API keys</p><code id="k">sk_test_51VaudOwnerView</code><input id="v" value="whsec_VaudOwnerFill">', async ({ next, host, subscribe }) => {
+    const tab = [...host.tabs.values()][0], { connection, sessionId } = await host.browser.resolvePageTarget(tab.target_id);
+    const { root } = await connection.send("DOM.getDocument", { depth: 0 }, sessionId), targets = [];
+    for (const [id, value] of [["k", "sk_test_51VaudOwnerView"], ["v", "whsec_VaudOwnerFill"]]) {
+      const { nodeId } = await connection.send("DOM.querySelector", { nodeId: root.nodeId, selector: `#${id}` }, sessionId);
+      const { node } = await connection.send("DOM.describeNode", { nodeId }, sessionId);
+      targets.push({ kind: "browser", target_id: tab.target_id, document_id: tab.document_id, node_ref: `backend:${node.backendNodeId}`, value_hash: createHash("sha256").update(value).digest("hex"), fill_revision: 1 });
+    }
+    await host.protect({ values: ["sk_test_51VaudOwnerView", "whsec_VaudOwnerFill"], targets });
+    const masked = JSON.stringify(await next(0, true));
+    for (const value of ["sk_test_51VaudOwnerView", "whsec_VaudOwnerFill"]) assert(!masked.includes(value), `AU-03: ${value} never reaches a masked stream`);
+    const owner = await subscribe({ audience: "owner" });
+    const shown = JSON.stringify(await owner.next(0, true));
+    for (const value of ["sk_test_51VaudOwnerView", "whsec_VaudOwnerFill"]) assert(shown.includes(value), `AU-03: the owner's view shows ${value} as the page does`);
+    const again = JSON.stringify(await next(0, true));
+    assert(!again.includes("sk_test_51VaudOwnerView"), "AU-03: an owner stream never unmasks another stream");
+    await assert.rejects(subscribe({ audience: "viewer" }), /kernel-owned/);
+  }));
+
 // Decision G (GitHub ref picker): the click's focus must not leave in a packet of its own ahead of the overlay the
 // click renders a frame later; one packet carries both.
 test("MP-10: a click that focuses a button and renders its overlay a frame later reaches the viewer as one packet", () => mirrored(
