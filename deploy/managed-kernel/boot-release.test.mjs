@@ -55,3 +55,10 @@ test('HTTP, credentials, fragments, mutable redirects and excessive bodies are r
   await assert.rejects(installBootRelease({ ...f.options, fetcher: async () => new Response(Buffer.alloc(65537)) }))
   assert.equal(f.activated(), 0)
 })
+
+test('the common VM unit supplies the existing Path-1 trust and protected-input contract', async () => {
+  const unit = await readFile(new URL('./chariox-vm-bootstrap.service', import.meta.url), 'utf8')
+  assert.match(unit, /^Environment=CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY=\/etc\/chariox\/boot\/release-public-key$/m)
+  assert.match(unit, /^Environment=CHARIOX_MANAGED_BOOTSTRAP_PATH=\/etc\/chariox\/bootstrap\/managed-bootstrap.json$/m)
+  assert.match(unit, /^ExecStart=\/usr\/local\/bin\/chariox-managed-bootstrap$/m)
+})
