@@ -27,9 +27,7 @@ impl KernelRuntimeState {
             .as_deref()
             .filter(|tab| tab.starts_with("host-tab-"))
         {
-            return self
-                .inspect_user_browser_app(&owner, &request.session_id, tab)
-                .await;
+            return self.inspect_user_browser_app(&owner, tab).await;
         }
         let tab = match &request.target_id {
             Some(target) if !target.is_empty() && target.len() <= 256 => target.clone(),
@@ -60,7 +58,7 @@ impl KernelRuntimeState {
             ));
         }
         let (development, declared) = self
-            .check_inspected_release(&request.session_id, &binding)
+            .check_inspected_release(Some(&request.session_id), &binding)
             .await?;
         let observation: ViewObservation = self
             .app_view_command(
@@ -75,7 +73,7 @@ impl KernelRuntimeState {
                 "The App view changed during inspection; retry /app actions",
             ));
         }
-        self.check_inspected_release(&request.session_id, &binding)
+        self.check_inspected_release(Some(&request.session_id), &binding)
             .await?;
         let catalog = ViewCatalog::from_observation(&declared, observation).map_err(error)?;
         Ok(LocalDaemonResponse::AppViewInspected {
@@ -91,7 +89,6 @@ impl KernelRuntimeState {
     async fn inspect_user_browser_app(
         &self,
         owner: &str,
-        room: &str,
         tab: &str,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         use super::app_view_host::{AppViewHost, KernelBrowserAppViewHost};
@@ -119,7 +116,7 @@ impl KernelRuntimeState {
         let target = views
             .browser_target(owner, &view.view_id)
             .ok_or_else(|| error("The App view is reloading; retry after opening it"))?;
-        let (development, declared) = self.check_inspected_release(room, binding).await?;
+        let (development, declared) = self.check_inspected_release(None, binding).await?;
         let value = KernelBrowserAppViewHost {
             state: self,
             owner,
@@ -139,7 +136,7 @@ impl KernelRuntimeState {
                 "The App view changed during inspection; retry /app actions",
             ));
         }
-        self.check_inspected_release(room, binding).await?;
+        self.check_inspected_release(None, binding).await?;
         let catalog = ViewCatalog::from_observation(&declared, observation).map_err(error)?;
         Ok(LocalDaemonResponse::AppViewInspected {
             installation_id: binding.installation.clone(),
@@ -153,17 +150,20 @@ impl KernelRuntimeState {
 
     async fn check_inspected_release(
         &self,
-        room: &str,
+        room: Option<&str>,
         binding: &AppViewBinding,
     ) -> Result<(bool, Vec<chariox_app_package::v2::UiActionDeclaration>), DaemonError> {
         let store = self.owned.durable_state_store.clone();
         let binding = binding.clone();
-        let room = room.to_owned();
+        let room = room.map(str::to_owned);
         tokio::task::spawn_blocking(move || {
             let record = store
                 .get_app_installation(&binding.owner, &binding.installation)
                 .map_err(|_| error("The App installation is unavailable; check /app status"))?;
-            if !record.visible_in_room(Some(&room)) {
+            if room
+                .as_deref()
+                .is_some_and(|room| !record.visible_in_room(Some(room)))
+            {
                 return Err(error("The DEV installation belongs to another Room"));
             }
             let release = store
