@@ -2,6 +2,15 @@
 
 use super::*;
 
+fn already_ended_termination(stopped_from_health: bool) -> crate::provider::ProviderRunTermination {
+    let at_ms = crate::session::unix_epoch_ms();
+    if stopped_from_health {
+        crate::provider::ProviderRunTermination::outside_end(at_ms)
+    } else {
+        crate::provider::ProviderRunTermination::exit_unobserved(at_ms)
+    }
+}
+
 impl KernelRuntimeState {
     pub(super) async fn reconcile_provider_run_exit(
         &self,
@@ -35,6 +44,9 @@ impl KernelRuntimeState {
             None,
         )? {
             owned.withdraw_stale_agent_interactions();
+            // The mark goes with the run's process, so read it first.
+            let stopped_from_health =
+                crate::runtime::process_resources::outside_ended_for_key(provider_run_id);
             let (_, process_key) = self
                 .with_app_side_effect(|app| {
                     crate::app::ProviderLaunchProcessRuntime::new(app).remove_run(provider_run_id)
@@ -49,9 +61,7 @@ impl KernelRuntimeState {
             let terminal_diagnostic = exit.ended_run.terminal_diagnostic().map(str::to_string);
             if let Some(diagnostic) = terminal_diagnostic.as_deref() {
                 if owned.provider_run_has_active_prompt(session_id, &exit.ended_run)? {
-                    let termination = crate::provider::ProviderRunTermination::exit_unobserved(
-                        crate::session::unix_epoch_ms(),
-                    );
+                    let termination = already_ended_termination(stopped_from_health);
                     self.settle_unexpected_provider_run_exit_with_diagnostic(
                         session_id,
                         provider_run_id,
@@ -80,9 +90,7 @@ impl KernelRuntimeState {
             let session_outcome = if owned
                 .provider_run_has_active_prompt(session_id, &exit.ended_run)?
             {
-                let termination = crate::provider::ProviderRunTermination::exit_unobserved(
-                    crate::session::unix_epoch_ms(),
-                );
+                let termination = already_ended_termination(stopped_from_health);
                 let diagnosed = owned
                     .provider_store
                     .record_terminal_diagnostic(provider_run_id, termination.reason.clone())?;
@@ -103,7 +111,10 @@ impl KernelRuntimeState {
                 self.settle_owned_provider_prompt(session_id, provider_run_id, false, false, true)
                     .await?
             };
-            if session_outcome.had_active_prompt && !session_outcome.cancelled_prompt {
+            if session_outcome.had_active_prompt
+                && !session_outcome.cancelled_prompt
+                && !stopped_from_health
+            {
                 let recipients = owned
                     .attachment_store
                     .list_session_attachment_ids(session_id);

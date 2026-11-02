@@ -827,6 +827,12 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             } else if event_name == "StopFailure" {
                 outcome.terminal_failure = crate::provider::claude_native_stop_failure(&event);
                 return Ok(outcome);
+            } else if event_name == "SessionEnd"
+                && crate::runtime::process_resources::outside_ended_for_key(provider_run_id)
+            {
+                // Claude shuts down because a stop from Health ended its tree,
+                // not because the turn finished: the process exit settles it.
+                continue;
             } else if matches!(event_name, "Stop" | "SessionEnd") {
                 // Stop is the authoritative settlement signal for every
                 // managed Claude interface. Drain now and once more after a

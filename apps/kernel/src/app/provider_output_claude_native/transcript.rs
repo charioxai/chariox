@@ -341,6 +341,9 @@ fn claude_assistant_transcript_chunks(
     chunks
 }
 
+/// Claude closes a call that a stopped session left open with a result of its own on resume.
+const CLAUDE_RESUME_REPAIR_RESULT_PREFIX: &str = "[Tool call interrupted:";
+
 fn claude_tool_result_transcript_chunks(
     value: &Value,
     pending_tool_calls: &mut BTreeMap<String, ClaudeToolCall>,
@@ -355,6 +358,13 @@ fn claude_tool_result_transcript_chunks(
         .filter_map(|block| {
             let tool_use_id = block.get("tool_use_id").and_then(Value::as_str)?;
             let result = block.get("content");
+            if result
+                .and_then(Value::as_str)
+                .is_some_and(|text| text.starts_with(CLAUDE_RESUME_REPAIR_RESULT_PREFIX))
+            {
+                pending_tool_calls.remove(tool_use_id);
+                return None;
+            }
             let content = match result {
                 Some(Value::String(value)) => value.to_string(),
                 Some(Value::Array(_)) => crate::provider::bounded_result(result),
