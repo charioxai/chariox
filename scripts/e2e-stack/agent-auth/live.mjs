@@ -65,7 +65,8 @@ const result = { MP: ['MP-08', 'MP-09', 'MP-10', 'MP-11'], status: 'FAIL', start
   head: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repository, encoding: 'utf8' }).trim(),
   kernel_sha256: createHash('sha256').update(await readFile(options['kernel-bin'])).digest('hex'),
   kernel_source_head: options['kernel-source-head'], web_source_head: options['web-source-head'],
-  client: 'apps/web terminal-os hosted (real application entry)', cloud_origin: origin, scenarios: [],
+  client: 'apps/web terminal-os hosted (real application entry)', cloud_origin: origin, dpr: Number(options.dpr ?? 1),
+  provider: 'official Codex CLI, gpt-6-luna, low', scenarios: [],
 }
 let service, browser, page, client, sessionId, ownsRoot = false
 function stage(value) { result.stage = value; console.log(JSON.stringify({ stage: value })) }
