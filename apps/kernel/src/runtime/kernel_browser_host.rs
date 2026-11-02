@@ -24,6 +24,7 @@ use std::time::Duration;
 pub(crate) struct KernelBrowserHost {
     inner: Arc<Mutex<HostState>>,
     root: PathBuf,
+    app_storage_root: PathBuf,
     /// Counts ownership changes, taken under the actor lock, so the browser host can order their input retirements.
     authority_epoch: Arc<AtomicU64>,
     web_bot_auth_revision: Arc<AtomicU64>,
@@ -135,14 +136,21 @@ impl KernelBrowserAdmission {
 }
 
 impl KernelBrowserHost {
+    #[cfg(test)]
     pub(crate) fn new(root: PathBuf) -> Self {
-        Self {
+        Self::for_database(root.clone(), &root.join("kernel.db")).expect("test database path")
+    }
+    pub(crate) fn for_database(root: PathBuf, database: &std::path::Path) -> std::io::Result<Self> {
+        let app_storage_root = chariox_app_runtime::worker_process::wasm::storage::root(database)
+            .map_err(std::io::Error::other)?;
+        Ok(Self {
             inner: Arc::new(Mutex::new(HostState::default())),
             root: root.join("kernel-browser"),
+            app_storage_root,
             authority_epoch: Arc::default(),
             web_bot_auth_revision: Arc::default(),
             terminal_leases: Arc::default(),
-        }
+        })
     }
     // MD-DISPLAY-04: queued credits wait asynchronously, away from the
     // controller mutex. Input can enter between captures rather than behind
@@ -342,6 +350,7 @@ impl KernelBrowserHost {
                     script.display().to_string(),
                     "stdio".into(),
                     self.profile_root(user).display().to_string(),
+                    self.app_storage_root.display().to_string(),
                 ],
                 Duration::from_secs(20),
             )

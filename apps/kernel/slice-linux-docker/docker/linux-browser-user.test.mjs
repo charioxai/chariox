@@ -30,14 +30,14 @@ test('MP-11 root browser environment has its own home and no inherited secrets o
  assert(command.args.includes('--reuid=991'));
 });
 test('MP-08 root owns policy mounts and drops uid before sandboxed Chrome inherits CDP pipes',()=>{
- const launch=rootPolicyLaunch('/private/policy','/browser/runtime','/usr/bin/chrome',['--remote-debugging-pipe'],{uid:991,gid:990},'/kernel/private-namespace');
+ const launch=rootPolicyLaunch('/private/policy','/browser/runtime','/usr/bin/chrome',['--remote-debugging-pipe'],{uid:991,gid:990},'/kernel/private-namespace',undefined,'/fixture/app-wasm-state-test');
  assert.match(launch.command,/unshare$/);
  assert.equal(launch.args[0],'--mount');assert(!launch.args.includes('--user'));
  assert(launch.args[6].includes('exec /usr/bin/setpriv --reuid="$uid"'));
  assert(!launch.args.some(arg=>/--no-sandbox|--disable-setuid-sandbox/.test(arg)));
  assert(launch.args.includes('--remote-debugging-pipe'));
  assert.doesNotThrow(()=>launchEnvironment({},0));
- assert.throws(()=>rootPolicyLaunch('/a','/b','/c',[],{uid:0,gid:0}),/invalid browser user/);
+ assert.throws(()=>rootPolicyLaunch('/a','/b','/c',[],{uid:0,gid:0},undefined,undefined,'/fixture/app-wasm-state-test'),/invalid browser user/);
 });
 
 test('MP-11 a host must support private mounts and actually use the dedicated uid',()=>{
@@ -51,9 +51,16 @@ test('MP-11 a host must support private mounts and actually use the dedicated ui
 });
 
 test('MP-11 privileged mount construction never writes through the browser-owned temporary directory',()=>{
- const launch=rootPolicyLaunch('/kernel/policy','/browser/runtime','/usr/bin/chrome',[],{uid:991,gid:990},'/kernel/private-namespace');
+ const launch=rootPolicyLaunch('/kernel/policy','/browser/runtime','/usr/bin/chrome',[],{uid:991,gid:990},'/kernel/private-namespace',undefined,'/fixture/app-wasm-state-test');
  assert.match(launch.command,/unshare$/);
  assert(launch.args.includes('/kernel/private-namespace'));
  assert(launch.args[6].includes('new=$workspace/.root'));
  assert(!launch.args[6].includes('$temporary/.root'));
+});
+
+test('MP-11 browser namespace excludes the configured WASM App data root', () => {
+ const storage='/home/owner/.chariox/state/app-wasm-state-database';
+ const launch=rootPolicyLaunch('/kernel/policy','/browser/runtime','/usr/bin/chrome',[],{uid:991,gid:990},'/kernel/private-namespace','/usr/bin/unshare',storage);
+ assert.ok(launch.args.includes(storage));
+ assert.ok(!launch.args.includes('/var/lib/chariox-app-storage'));
 });

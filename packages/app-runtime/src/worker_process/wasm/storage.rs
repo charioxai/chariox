@@ -2,7 +2,7 @@
 //! preparation and deletion; a live worker's directory can never be erased.
 use super::*;
 
-pub(super) fn root(database: &Path) -> Result<PathBuf, WorkerError> {
+pub fn root(database: &Path) -> Result<PathBuf, WorkerError> {
     let release =
         crate::release_store::root_for_database(database).map_err(|_| WorkerError::Preparation)?;
     let name = release

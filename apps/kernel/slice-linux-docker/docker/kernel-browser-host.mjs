@@ -98,7 +98,7 @@ export function navigationUrl(raw) {
 }
 
 export class KernelBrowserHost {
-  constructor(root, { chromium = new HostChromium(root), browserFactory = connection => new BrowserCdpClient({ connectionFactory: () => connection, permissionRequests: true, focusWorldSource: mirror2ObserverExpression() }) } = {}) {
+  constructor(root, { appStorageRoot, chromium = new HostChromium(root, { appStorageRoot }), browserFactory = connection => new BrowserCdpClient({ connectionFactory: () => connection, permissionRequests: true, focusWorldSource: mirror2ObserverExpression() }) } = {}) {
     this.root = root;
     this.timing = displayTiming(root);
     this.visitedLinks = new VisitedLinks();
@@ -1409,7 +1409,7 @@ export class KernelBrowserHost {
 }
 
 if (process.argv[2] === "stdio" && process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
-  const host = new KernelBrowserHost(process.argv[3]);
+  const host = new KernelBrowserHost(process.argv[3], { appStorageRoot: process.argv[4] });
   let closing = false;
   const stop = async () => { if (closing) return; closing = true; await host.stop(); process.exit(0); };
   process.on("SIGTERM", stop);

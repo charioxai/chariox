@@ -79,8 +79,9 @@ export function ownedBrowserPid(processInfo, owned) {
 }
 
 export class HostChromium {
-  constructor(root, { environment = process.env } = {}) {
+  constructor(root, { environment = process.env, appStorageRoot } = {}) {
     this.root = root;
+    this.appStorageRoot = appStorageRoot;
     this.environment = environment;
     this.child = null;
     this.browserPid = null;
@@ -173,12 +174,13 @@ export class HostChromium {
     const args = launchArguments(profile,
       headlessLaunch(process.platform, environment), featureOn("CHARIOX_KERNEL_BROWSER_DISPLAY",environment) || featureOn("CHARIOX_KERNEL_BROWSER_MIRROR",environment), this.desktop?.binding() ? 1 : this.scale, platformPolicy(process.platform).videoDecodeArguments(environment));
     this.policy = (this.browserUser || process.platform === "linux" && linux.policyNamespaceAvailable()) ? "managed" : "unavailable";
+    if (process.platform === "linux" && this.appStorageRoot && this.policy !== "managed") throw new Error("MP-11: browser isolation unavailable; run Chariox browser Setup to enable private namespaces");
     // Root's mount construction must never write through a browser-writable
     // parent. Chromium only receives the separate owned /tmp bind afterwards.
     if(this.browserUser)this.namespaceRoot=await mkdtemp(path.join(this.root,'browser-namespace-'));
     const launch = this.browserUser
-      ? linux.rootPolicyLaunch(await writePolicyLayer(this.root, this.environment), temporary, binary, args, this.browserUser, this.namespaceRoot)
-      : this.policy === "managed" ? linux.policyLaunch(await writePolicyLayer(this.root, this.environment), temporary, binary, args) : { command: binary, args };
+      ? linux.rootPolicyLaunch(await writePolicyLayer(this.root, this.environment), temporary, binary, args, this.browserUser, this.namespaceRoot, undefined, this.appStorageRoot)
+      : this.policy === "managed" ? linux.policyLaunch(await writePolicyLayer(this.root, this.environment), temporary, binary, args, undefined, undefined, undefined, this.appStorageRoot) : { command: binary, args };
     const command = this.desktop?.binding() ? desktopCommand(launch.command, launch.args) : { binary: launch.command, args: launch.args };
     const child = spawn(command.binary, command.args, {
       stdio: ['ignore', 'ignore', 'pipe', 'pipe', 'pipe'], env: environment,

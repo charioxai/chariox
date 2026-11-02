@@ -405,9 +405,15 @@ impl DaemonApp {
             active_turns: ActiveTurnStore::default(),
             prompt_activity: PromptActivityStore::default(),
             runtime_tool_call_activity: crate::runtime::state::RuntimeToolCallActivity::default(),
-            kernel_browser_host: crate::runtime::kernel_browser_host::KernelBrowserHost::new(
-                config.private_runtime_state_root(),
-            ),
+            kernel_browser_host:
+                crate::runtime::kernel_browser_host::KernelBrowserHost::for_database(
+                    config.private_runtime_state_root(),
+                    config.durable_state_path(),
+                )
+                .map_err(|_| DaemonError::InvalidConfig {
+                    field: "durable_state_path",
+                    message: "must be an absolute file path for private App storage",
+                })?,
             dictation: crate::dictation::DictationService::new(
                 config.private_runtime_state_root().join("dictation"),
             ),

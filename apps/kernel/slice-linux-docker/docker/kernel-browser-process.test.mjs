@@ -3,6 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {mkdtemp,readdir,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
+import path from 'node:path';
 import {LinuxOwnedDesktop} from './linux-owned-desktop.mjs';
 import {HostChromium} from './kernel-browser-process.mjs';
 import {OwnedDisplay,ownsDisplay} from './kernel-browser-owned-display.mjs';
@@ -20,7 +21,7 @@ const chromium=process.env.CHARIOX_TEST_CHROMIUM;
 test('MP-08/MP-11 managed Chromium starts with its singleton in the held private directory',
  {skip:!chromium||process.platform!=='linux'||process.getuid()===0||!policyNamespaceAvailable()?'needs CHARIOX_TEST_CHROMIUM, a non-root Linux user and the policy namespace':false},async()=>{
  const root=await mkdtemp(tmpdir()+'/chariox-managed-launch-');
- const host=new HostChromium(root,{environment:{...process.env,CHARIOX_KERNEL_BROWSER_EXECUTABLE:chromium,CHARIOX_KERNEL_BROWSER_HEADLESS:'1'}});
+ const host=new HostChromium(root,{appStorageRoot:path.join(root,"app-wasm-state-test"),environment:{...process.env,CHARIOX_KERNEL_BROWSER_EXECUTABLE:chromium,CHARIOX_KERNEL_BROWSER_HEADLESS:'1'}});
  try{
   const connection=await host.start();
   assert.equal(host.policy,'managed');
@@ -39,7 +40,7 @@ test('MP-08/MP-11 native window ownership selects the CDP browser only from veri
 test('MP-08/MP-10 production Chromium exposes its shared desktop to native capture',async()=>{
  const root=await mkdtemp(tmpdir()+'/chariox-desktop-native-binding-'),getuid=process.getuid;
  process.getuid=()=>1000;
- const host=new HostChromium(root,{environment:{CHARIOX_KERNEL_BROWSER_EXECUTABLE:'/bin/false'}});
+ const host=new HostChromium(root,{appStorageRoot:path.join(root,"app-wasm-state-test"),environment:{CHARIOX_KERNEL_BROWSER_EXECUTABLE:'/bin/false'}});
  let linked=false;
  const desktop={runtime:root,binding:()=>({environment:{PATH:process.env.PATH}}),start:async()=>({environment:{PATH:process.env.PATH}}),
   recordOwned:async()=>{linked=host.display===desktop},stop:async()=>{},close:async()=>{}};
@@ -49,7 +50,7 @@ test('MP-08/MP-10 production Chromium exposes its shared desktop to native captu
 });
 test('MD-DISPLAY recovering an exited browser closes the previous X server before a failed restart',async()=>{
  const root=await mkdtemp(tmpdir()+'/chariox-md-recovery-');
- const host=new HostChromium(root,{environment:{CHARIOX_KERNEL_BROWSER_EXECUTABLE:'/nonexistent/md-browser',CHARIOX_KERNEL_BROWSER_DISPLAY:'1'}});
+ const host=new HostChromium(root,{appStorageRoot:path.join(root,"app-wasm-state-test"),environment:{CHARIOX_KERNEL_BROWSER_EXECUTABLE:'/nonexistent/md-browser',CHARIOX_KERNEL_BROWSER_DISPLAY:'1'}});
  const displays=[];
  try{
   for(let n=0;n<3;n++){
@@ -111,7 +112,7 @@ test('MP-11 headed mirror refuses an unavailable private display before spawning
  const start=LinuxOwnedDesktop.prototype.start,uid=process.getuid;
  process.getuid=()=>2100; // Supplementary policy seam; no real browser is launched.
  LinuxOwnedDesktop.prototype.start=async()=>{throw Error('MD-DISPLAY: owned X server unavailable')};
- const host=new HostChromium(root,{environment:{CHARIOX_KERNEL_BROWSER_EXECUTABLE:'/bin/true',CHARIOX_KERNEL_BROWSER_MIRROR:'1',CHARIOX_KERNEL_BROWSER_DISPLAY:'0',CHARIOX_KERNEL_BROWSER_HEADLESS:'0',DISPLAY:':77',XAUTHORITY:'/ambient',WAYLAND_DISPLAY:'wayland-0'}});
+ const host=new HostChromium(root,{appStorageRoot:path.join(root,"app-wasm-state-test"),environment:{CHARIOX_KERNEL_BROWSER_EXECUTABLE:'/bin/true',CHARIOX_KERNEL_BROWSER_MIRROR:'1',CHARIOX_KERNEL_BROWSER_DISPLAY:'0',CHARIOX_KERNEL_BROWSER_HEADLESS:'0',DISPLAY:':77',XAUTHORITY:'/ambient',WAYLAND_DISPLAY:'wayland-0'}});
  try{await assert.rejects(host.start(),/owned X server unavailable/);assert.equal(host.child,null,'ambient display must not launch a browser');assert.equal(host.display,null);}
  finally{LinuxOwnedDesktop.prototype.start=start;process.getuid=uid;await host.stop();await rm(root,{recursive:true,force:true})}
 });
