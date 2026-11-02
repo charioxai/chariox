@@ -529,8 +529,19 @@ impl KernelRuntimeState {
         }
         // Refuse here, while the sender can still react: a message the peer's account cannot
         // start would otherwise stay durable and pending behind the sender's goal.
-        self.owned
-            .require_agent_account_authenticated(target, None, "send agent message")?;
+        if let Err(error) =
+            self.owned
+                .require_agent_account_authenticated(target, None, "send agent message")
+        {
+            // The refusal is definite: a delegate that cannot start never completes, so nothing
+            // may keep the sender's turn waiting on it.
+            self.owned.settle_failed_delegate_start(
+                session.id(),
+                target.id(),
+                &error.to_string(),
+            )?;
+            return Err(error);
+        }
         // Room admission precedes resource lookup; no cross-room discovery.
         let id = args
             .idempotency_key

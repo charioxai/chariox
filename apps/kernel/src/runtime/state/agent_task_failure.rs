@@ -1,4 +1,5 @@
 //! MP-08 / MP-10 / MP-11: retain the cause when an admitted provider dispatch fails.
+//! A delegate that cannot start fails the delegate obligation and every reply awaiting it.
 
 use super::*;
 use crate::durable_state::agent_lifecycle::{ExecutionState, Operation};
@@ -20,10 +21,15 @@ impl KernelRuntimeOwnedState {
             }),
         );
         self.durable_state_store
-            .agent_lifecycle(Operation::DelegateUnavailable {
+            .agent_lifecycle(Operation::SourceOutcome {
                 room: room.into(),
-                agent: agent.into(),
-                reason: crate::durable_state::agent_lifecycle::DelegateGoneReason::FailedStart,
+                source: agent.into(),
+                occurrence: "failed-start".into(),
+                success: false,
+                public_answer: Some(
+                    crate::durable_state::agent_lifecycle::DelegateGoneReason::FailedStart
+                        .answer(agent),
+                ),
                 now: crate::session::unix_epoch_ms(),
             })?;
         Ok(())
