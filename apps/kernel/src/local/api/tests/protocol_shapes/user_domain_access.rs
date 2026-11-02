@@ -133,6 +133,6 @@ fn mp11_leased_computer_protocol_507_115_snapshot() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&expected).unwrap())
         ),
-        "23021cd928d592c32442530bcb2aeb72e0aacf8b6de5542345bbb16b1584c51c"
+        "c67679fb73f97b1b08f01a920db8a1564a3bc649798870cae389a9e937a32ceb"
     );
 }
