@@ -68,12 +68,10 @@ impl KernelRuntimeState {
         _kind: &str,
     ) -> Result<Authority, DaemonError> {
         self.authorize_current_external_command()?;
-        let turn = self
-            .vault_elevation(
-                super::sudo::VaultCaller::ProviderRun(run_id),
-                "resource register",
-            )
-            .map_err(|_| error("resource register requires a live sudo window"))?;
+        let turn = self.vault_elevation(
+            super::sudo::VaultCaller::ProviderRun(run_id),
+            "resource register",
+        )?;
         let session = self.owned.session_store.get_session(&turn.session_id)?;
         Ok(Authority {
             authorization_id: turn.entry_id,

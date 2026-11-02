@@ -661,6 +661,13 @@ pub(super) fn require_vault_owner(user: &str) -> Result<(), DaemonError> {
     }
     Ok(())
 }
+
+struct SecretFillContext<'a> {
+    actor: Option<&'a str>,
+    signing_material: Value,
+    plain: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -880,10 +887,4 @@ mod tests {
             "benign"
         );
     }
-}
-
-struct SecretFillContext<'a> {
-    actor: Option<&'a str>,
-    signing_material: Value,
-    plain: bool,
 }

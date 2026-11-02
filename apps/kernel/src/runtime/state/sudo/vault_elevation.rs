@@ -1,4 +1,4 @@
-//! MP-08 / MP-09 / MP-10 / MP-11: one elevation seam for agent factor capture/use.
+//! MP-08 / MP-09 / MP-10 / MP-11: shared elevation for agent Vault operations.
 use super::{error, KernelRuntimeState, KernelSudoTurn};
 use crate::config::{UserCredentialConfig, UserCredentialInjectionConfig};
 use crate::error::DaemonError;
