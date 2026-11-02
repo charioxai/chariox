@@ -2114,3 +2114,36 @@ fn a_hot_reload_tells_a_direct_browser_it_is_a_reload() {
         }
     });
 }
+
+#[test]
+fn mp08_webrtc_application_replies_replace_redundant_keepalives() {
+    large_stack(async {
+        let kernel = Kernel::new();
+        let browser = Browser::new();
+        let (mut client, offer) = RtcClient::offer();
+        let issued = kernel.mint_rtc(&browser, &offer).await;
+        client.accept(issued["answer"].as_str().unwrap());
+        let grant = issued["grant"].as_str().unwrap().to_owned();
+        let verdict = rtc_handshake(&kernel, &browser, &mut client, &issued, &grant).await;
+        assert_eq!(verdict["kind"], "local_connected");
+        let before = client.pings;
+        for index in 0..12 {
+            let id = format!("activity-{index}");
+            client.send_json(serde_json::json!({
+                "kind":"client_request", "request_id":id,
+                "target":{"daemon_id":kernel.daemon_id},
+                "encrypted_request":proof(&browser, &kernel, serde_json::json!({"KernelPing":null})),
+            })).await;
+            assert_eq!(client.next_json().await["request_id"], id);
+            let until = std::time::Instant::now() + Duration::from_millis(300);
+            while std::time::Instant::now() < until {
+                client.step().await;
+            }
+        }
+        assert_eq!(
+            client.pings, before,
+            "replies already prove kernel freshness"
+        );
+        client.pump(|client| client.pings > before).await;
+    });
+}

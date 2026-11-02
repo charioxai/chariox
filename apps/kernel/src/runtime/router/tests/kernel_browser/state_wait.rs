@@ -48,13 +48,21 @@ fn mp08_state_wait_parks_until_the_state_differs_and_never_polls_the_host() {
                 started.elapsed() >= std::time::Duration::from_millis(350),
                 "idle waits last their deadline"
             );
-            assert_eq!(idle["revision"], revision.as_str());
+            assert_eq!(
+                idle,
+                serde_json::json!({"unchanged":true,"revision":revision})
+            );
 
             // A signal without a content change (a wake that read the same state) keeps it parked.
             std::fs::write(root.join("signal"), "1").unwrap();
             let started = std::time::Instant::now();
             let spurious = wait(&router, &revision, 400).await;
             assert!(started.elapsed() >= std::time::Duration::from_millis(350));
+            assert_eq!(spurious["unchanged"], true);
+            assert!(
+                spurious.get("tabs").is_none(),
+                "unchanged replies carry no projection"
+            );
             let revision = spurious["revision"].as_str().unwrap().to_string();
 
             // A signal and a changed Tab: answered promptly with a new revision.

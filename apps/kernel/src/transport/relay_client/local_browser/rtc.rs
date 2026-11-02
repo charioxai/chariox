@@ -443,11 +443,13 @@ struct OpenChannel {
     pending: VecDeque<Vec<u8>>,
     reassembly: Vec<u8>,
     session_done: bool,
-    last_ping: std::time::Instant,
+    last_write: std::time::Instant,
     /// When the browser last sent a frame or acknowledged queued data.
     last_heard: std::time::Instant,
     /// SCTP bytes queued when last looked at; less now means acknowledged.
     buffered: usize,
+    /// Whether those bytes contain application data rather than only keepalives.
+    buffered_application: bool,
 }
 
 /// Reads one socket until the driver retires it; STUN answers go to their
@@ -672,9 +674,10 @@ fn open_channel(peer: &mut Peer, id: ChannelId, wake: &Arc<Notify>) {
         pending: VecDeque::new(),
         reassembly: Vec::new(),
         session_done: false,
-        last_ping: std::time::Instant::now(),
+        last_write: std::time::Instant::now(),
         last_heard: std::time::Instant::now(),
         buffered: 0,
+        buffered_application: false,
     });
     let socket = ChannelSocket {
         incoming,
@@ -775,17 +778,17 @@ fn keep_alive(peer: &mut Peer) -> Option<std::time::Instant> {
         peer.rtc.disconnect();
         return None;
     }
-    if channel.last_ping.elapsed() >= KEEPALIVE_INTERVAL {
+    if channel.last_write.elapsed() >= KEEPALIVE_INTERVAL {
         channel.pending.push_front(vec![FRAME_PING]);
-        channel.last_ping = std::time::Instant::now();
+        channel.last_write = std::time::Instant::now();
     }
-    Some((channel.last_ping + KEEPALIVE_INTERVAL).min(channel.last_heard + SILENCE_LIMIT))
+    Some((channel.last_write + KEEPALIVE_INTERVAL).min(channel.last_heard + SILENCE_LIMIT))
 }
 
 /// Counts SCTP data the browser acknowledged since the last look as hearing
 /// from it while more data is still queued, since a keepalive may wait behind
 /// that data. Only acknowledgements shrink the buffered amount; once all is
-/// acknowledged the browser has the keepalive and must answer it.
+/// acknowledged, the next quiet interval sends a keepalive instead.
 fn note_acknowledged(peer: &mut Peer) {
     let Some(channel) = peer.channel.as_mut() else {
         return;
@@ -794,8 +797,11 @@ fn note_acknowledged(peer: &mut Peer) {
         return;
     };
     let buffered = writer.buffered_amount();
-    if buffered < channel.buffered && buffered > 0 {
+    if buffered < channel.buffered && (buffered > 0 || channel.buffered_application) {
         channel.last_heard = std::time::Instant::now();
+    }
+    if buffered == 0 {
+        channel.buffered_application = false;
     }
     channel.buffered = buffered;
 }
@@ -828,6 +834,10 @@ fn flush_outgoing(peer: &mut Peer) {
         }
         match writer.write(true, fragment) {
             Ok(true) => {
+                // Any authenticated application frame already proves kernel freshness.
+                channel.last_write = std::time::Instant::now();
+                channel.buffered_application |= matches!(fragment[0], FRAME_LAST | FRAME_MORE);
+                channel.buffered = writer.buffered_amount();
                 channel.pending.pop_front();
             }
             Ok(false) => break,

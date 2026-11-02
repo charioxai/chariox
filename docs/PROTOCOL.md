@@ -6304,3 +6304,15 @@ Terminal identities retain their existing relay-authorized short lease over a
 longer-lived pairing token; Browser identities still require the short Cloud
 lease token. Every renewal goes through the relay with its one-use sequence.
 Neither direct reachability nor a local discovery record adds authority.
+
+
+MP-08/MP-09/MP-10/MP-11 (951/400): an unchanged `KernelBrowser state_wait`
+answers `{unchanged:true, revision}` at its deadline, without repeating Tabs,
+window access or activity projections. A changed state still wakes the parked
+read and returns the full projection. The viewer retains its last projection
+only for a matching live binding and updates the opaque cursor. Direct RTC
+application frames reset the existing one-second keepalive deadline; idle peers
+still receive keepalives and silence detection is unchanged. Browser direct
+lease authorization reuses its relay socket, renewing the same key/target-bound
+authority with `client_connect` before the next batch. It never extends a lease
+without fresh relay authority and closes on a changed kernel key or target.

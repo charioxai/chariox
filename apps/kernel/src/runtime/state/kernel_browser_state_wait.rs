@@ -95,7 +95,10 @@ impl KernelRuntimeState {
             }
             let current = revision(&state, signal);
             let changed = known.is_none_or(|(digest, _)| !current.starts_with(digest));
-            if changed || Instant::now() >= deadline {
+            if !changed && Instant::now() >= deadline {
+                return Ok(serde_json::json!({"unchanged": true, "revision": current}));
+            }
+            if changed {
                 state["revision"] = current.into();
                 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
                 self.restore_user_app_tabs(&user);

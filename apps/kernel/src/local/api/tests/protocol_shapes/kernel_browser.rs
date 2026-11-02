@@ -739,3 +739,22 @@ fn mp08_mp10_download_cancellation_937_shape() {
     let command: Command = serde_json::from_value(wire.clone()).unwrap();
     assert_eq!(serde_json::to_value(command).unwrap(), wire);
 }
+
+#[test]
+fn mp08_browser_state_unchanged_951_snapshot() {
+    const {
+        assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 951);
+    };
+    let bytes = include_bytes!("browser-state-unchanged-951.json");
+    let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    let response: LocalDaemonResponse =
+        serde_json::from_value(snapshot["response"].clone()).unwrap();
+    assert_eq!(
+        serde_json::to_value(response).unwrap(),
+        snapshot["response"]
+    );
+    assert_eq!(
+        format!("{:x}", Sha256::digest(bytes)),
+        "ac57c5f4e4093b792148ae69d1041fa390be86424ddf5c3384f7adcc78599635"
+    );
+}
