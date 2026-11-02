@@ -147,8 +147,9 @@ try {
   if (!exited(recovered)) await detach(recovered)
   report.fds_after_closing = fds()
   report.actionable = report.refusal.message.includes('too many open files in this kernel; close a terminal and try again')
-  report.no_fd_growth = report.samples.every(s => s.after <= report.samples[0].before && s.refusal.code === 'too_many_open_files')
-  report.pass = report.actionable && report.no_fd_growth && report.witness_checkpoints.every(w => w.echoes) && report.witnesses.length === 10 && report.witnesses.every(w => w.echoes) && report.recovered
+  report.no_fd_growth = report.samples.every(s => s.after <= report.samples[0].before)
+  report.retry_refusals_actionable = report.samples.every(s => s.refusal.code === 'too_many_open_files' && s.refusal.message.includes('too many open files in this kernel; close a terminal and try again'))
+  report.pass = report.actionable && report.retry_refusals_actionable && report.no_fd_growth && report.witness_checkpoints.every(w => w.echoes) && report.witnesses.length === 10 && report.witnesses.every(w => w.echoes) && report.recovered
   console.log(JSON.stringify({ opened: report.terminals.length, refusal: report.refusal, witnesses_echoing: report.witnesses.filter(w => w.echoes).length, recovered: report.recovered, no_fd_growth: report.no_fd_growth, pass: report.pass }))
   process.exitCode = report.pass ? 0 : 1
 } catch (error) {
