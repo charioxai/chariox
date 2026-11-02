@@ -252,10 +252,12 @@ pub(crate) enum Refusal {
     CoverOutside,
     /// The grant already covers as many processes by name as it may.
     CoverLimit,
+    /// A status request named a pid that is neither the caller nor one of its OS ancestors.
+    HolderOutside,
 }
 
 impl Refusal {
-    pub(crate) const ALL: [Self; 15] = [
+    pub(crate) const ALL: [Self; 16] = [
         Self::HumanOnly,
         Self::NotCovered,
         Self::Ended,
@@ -271,6 +273,7 @@ impl Refusal {
         Self::CoverKernelProcess,
         Self::CoverOutside,
         Self::CoverLimit,
+        Self::HolderOutside,
     ];
 
     pub(crate) fn code(self) -> &'static str {
@@ -290,6 +293,8 @@ impl Refusal {
             Self::CoverKernelProcess => "kernel_access_cover_kernel_process",
             Self::CoverOutside => "kernel_access_cover_outside",
             Self::CoverLimit => "kernel_access_cover_limit",
+            // Same answer as for an uncovered caller: nothing about another process leaks.
+            Self::HolderOutside => "kernel_access_not_covered",
         }
     }
 
@@ -310,6 +315,7 @@ impl Refusal {
             Self::CoverKernelProcess => "The kernel and the programs it starts can't be covered.",
             Self::CoverOutside => "Only a process your access already reaches can be covered: the agent you approved, the programs it starts, and processes it covered before.",
             Self::CoverLimit => "Access already covers as many background processes as it may. Stop one first.",
+            Self::HolderOutside => "That pid is not this process or one of its OS ancestors: `chariox access status` reports only your own access. Run it without --holder-pid.",
         }
     }
 

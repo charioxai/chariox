@@ -259,12 +259,8 @@ async fn status_reports_the_named_holder_and_refuses_pids_outside_the_callers_ch
     for pid in [unrelated.holder, unrelated.requester, 99_999_999] {
         let refused = state
             .kernel_access_status(&requester, Some(pid))
-            .unwrap_err()
-            .to_string();
-        assert!(
-            refused.contains("not this process or one of its OS ancestors"),
-            "{refused}"
-        );
+            .unwrap_err();
+        assert_eq!(Refusal::exact(&refused), Some(Refusal::HolderOutside));
     }
     let outsider = process::inspect(unrelated.requester).unwrap().0;
     assert!(state

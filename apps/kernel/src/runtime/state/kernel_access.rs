@@ -715,12 +715,7 @@ impl KernelRuntimeState {
         holder_pid: Option<u32>,
     ) -> Result<KernelAccessStatus, DaemonError> {
         let holder = match holder_pid {
-            Some(pid) => process::holder(peer, pid).map_err(|_| {
-                error(format!(
-                    "pid {pid} is not this process or one of its OS ancestors; access status \
-                     reports only your own holder: run it without --holder-pid"
-                ))
-            })?,
+            Some(pid) => process::holder(peer, pid).map_err(|_| Refusal::HolderOutside.error())?,
             None => self.access_holder(peer, None)?,
         };
         self.sweep_kernel_access();
