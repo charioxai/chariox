@@ -3029,3 +3029,21 @@ test("MP-08/MP-09/MP-10/MP-11 signed Vault fills retain factor and plain target 
     assert.equal(order.at(-1).mask_code_input, false);
   }
 }));
+
+test('MP-08/MP-11 a same-size window resize retires an in-flight native fit', {timeout:20000}, t=>using(async({host})=>{
+ const {LinuxCapture}=await import('./kernel-browser-native.mjs');
+ const {OwnedDisplay}=await import('./kernel-browser-owned-display.mjs');
+ const display=new OwnedDisplay(os.tmpdir());await display.start();
+ const start=LinuxCapture.prototype.start,close=LinuxCapture.prototype.close;
+ try{
+  const opened=await host.request({op:'open',url:'about:blank'}),tab=host.tabs.get(opened.tab_id);
+  host.chromium.display=display;host.chromeWindows.resolve=async()=>{};
+  LinuxCapture.prototype.start=async function(){return this};LinuxCapture.prototype.close=async function(){this.closed=true};
+  const stream={subscription_id:'native-fit',codec:'avc1.420033',device_scale_factor:1,tab_id:tab.tab_id,close:async()=>{}};host.displays.set(stream.subscription_id,stream);
+  const source=await host.compositorFor(tab,stream);assert(source instanceof LinuxCapture);assert(source.allowed(host.protection));
+  const revision=host.layoutRevision(tab.tab_id);
+  host.windowLayout={...host.pageSize(tab.tab_id)};
+  assert.equal(host.layoutRevision(tab.tab_id),revision,'same CSS size retains its page revision');
+  assert.equal(source.allowed(host.protection),false,'the resize owns the shared window even without a CSS-size change');
+ }finally{await host.closeCompositors();LinuxCapture.prototype.start=start;LinuxCapture.prototype.close=close;await display.close()}
+}));
