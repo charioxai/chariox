@@ -40,14 +40,19 @@ only after validating the factor handle and registers the target before input.
 The owner's field keeps its original type; model snapshots and screenshots
 mask the Vault-filled target. Other credential kinds keep their existing
 input rules.
-`RuntimeSecretService::environment_secret_input` is the resolver for S2's
-env executor; the env execution tool is supplied by S2, not this slice.
+MP-08 / MP-09 / MP-10 / MP-11: factor capture and input use the authenticated
+agent's ordinary Vault context, without sudo. The kernel rechecks the provider,
+submitting prompt, destination and observation protection after waits. Ending
+the prompt still cancels its operation. Payment-card entries require a fresh
+owner decision for each use.
 
-Factor capture and input require a live sudo window for the exact current
-agent task. `vault_elevation_allows` is the single policy seam for replacing
-this check with project-mandate-or-sudo authorization when S1 lands. The
-kernel checks again after waits and at the final browser/terminal input and
-storage boundaries. Owner credential storage does not need agent elevation.
+Owner-created 2FA entries use the same seed normalization and computed-code
+resolver. Owner command and file entries use the existing Env and File injection
+kinds. `chariox.vault.use_env` declares the service `origin`; the kernel checks
+an entry's exact environment name or stdin destination. File writes check the
+resolved absolute path. Ordinary entries use the canonical registry without a
+second consent gate; bound entries cannot use a generic resolver to bypass their
+declared destination.
 
 Store recovery codes under a separate handle with `injection.kind` set to
 `backup_codes`. Enter one code per line or a JSON array of strings through the

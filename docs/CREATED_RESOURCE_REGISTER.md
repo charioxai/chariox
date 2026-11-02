@@ -16,11 +16,11 @@ Listing uses creation order, with resource ID as the stable tie-breaker.
   revoke method while active or failed. It preserves creation provenance.
 - `chariox.mandate.revoke_resource`: execute the stored revoke method.
 
-All four tools use one elevation helper, `resource_register_authority`. It
-currently resolves a live, task-bound sudo window. This is the integration point
-for S1's mandate-or-sudo authority. Arguments cannot select a project or creator.
+All four tools use `resource_register_authority` to resolve their authenticated
+provider or leased Room origin, owner, project and submitting prompt. They do not
+require sudo. Arguments cannot select a project or creator.
 Leased agents forward to their home kernel through the existing authenticated
-lease transport; the home rechecks the lease, exact prompt and elevation. HTTP
+lease transport; the home rechecks the lease, provider epoch and exact prompt. HTTP
 revocation checks the actual stored request URL, including after Vault unlock
 and immediately before network dispatch, rather than trusting the service label.
 

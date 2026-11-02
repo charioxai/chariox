@@ -41,7 +41,10 @@ async fn au15_ended_agent_is_refused_before_any_network_or_vault_write() {
         json!({"request_id":"denied", "resource_url":"http://127.0.0.1:1"}),
     )
     .await;
-    assert!(result.unwrap_err().to_string().contains("no longer"));
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("authenticated provider run"));
     assert!(crate::credential::load_user_credentials()
         .unwrap()
         .is_empty());

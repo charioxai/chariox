@@ -1095,15 +1095,13 @@ fn owner_factor(f: &Fixture) {
 }
 
 #[tokio::test]
-async fn totp_browser_fill_requires_live_elevation_and_masks_the_computed_code() {
+async fn ordinary_totp_browser_fill_masks_the_computed_code() {
     crate::test_support::isolated_env_test!();
     let login = login_room().await;
     let f = &login.f;
     unlock(f);
     owner_factor(f);
-    assert!(call(f, PASTE, paste_args("service-totp")).await.is_err());
-    assert!(inserted(&login).is_none());
-    let turn = elevated(f);
+    assert!(f.state.owned.sudo_turns.lock().unwrap().is_empty());
     let result = call(f, PASTE, paste_args("service-totp")).await.unwrap();
     assert_eq!(
         std::fs::read_to_string(login.root.path().join("factor_input"))
@@ -1125,14 +1123,12 @@ async fn totp_browser_fill_requires_live_elevation_and_masks_the_computed_code()
     assert!(!snapshot
         .to_string()
         .contains("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"));
-    f.state
-        .revoke_sudo(Some("local"), Some(&turn.entry_id), "explicit_revoke")
-        .unwrap();
-    assert!(call(f, PASTE, paste_args("service-totp")).await.is_err());
+    assert!(f.state.owned.sudo_turns.lock().unwrap().is_empty());
+    f.state.shutdown_cleanup().await.unwrap();
 }
 
 #[tokio::test]
-async fn totp_browser_fill_rechecks_elevation_after_vault_unlock() {
+async fn totp_browser_fill_rechecks_prompt_lifetime_after_vault_unlock() {
     crate::test_support::isolated_env_test!();
     let login = login_room().await;
     let f = &login.f;
@@ -1152,7 +1148,7 @@ async fn totp_browser_fill_rechecks_elevation_after_vault_unlock() {
 }
 
 #[tokio::test]
-async fn totp_terminal_rechecks_credential_kind_after_vault_unlock() {
+async fn terminal_secret_rechecks_credential_kind_after_vault_unlock() {
     crate::test_support::isolated_env_test!();
     let f = fixture();
     unlock(&f);
@@ -1185,9 +1181,7 @@ async fn totp_terminal_rechecks_credential_kind_after_vault_unlock() {
         json!({"credential_id":"changing-factor","append_newline":false}),
     );
     let unlock = owner_unlocks(&f, &f.request.session_id, || {
-        credential.injection = crate::config::UserCredentialInjectionConfig::Totp(
-            crate::config::TotpConfig::default(),
-        );
+        credential.injection = crate::config::UserCredentialInjectionConfig::Browser;
         registry.upsert(credential).unwrap();
     });
     let (result, ()) = tokio::join!(send, unlock);
@@ -1195,11 +1189,11 @@ async fn totp_terminal_rechecks_credential_kind_after_vault_unlock() {
         matches!(
             result,
             Err(DaemonError::LocalTransport {
-                operation: "vault_elevation",
+                operation: "credential_policy",
                 ..
             })
         ),
-        "the current factor definition must require elevation before terminal delivery"
+        "the current credential definition must be validated before terminal delivery"
     );
     f.state.shutdown_cleanup().await.unwrap();
 }

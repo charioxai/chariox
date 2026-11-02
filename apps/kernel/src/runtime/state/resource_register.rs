@@ -32,7 +32,7 @@ pub(super) fn specs() -> Vec<RuntimeToolSpec> {
         RuntimeToolSpec { name: RECORD.into(), description: "Record an external resource you created in this Room's project. Metadata only: reference Vault handles, never secret values. request_id makes retries idempotent. Store an HTTP revoke request using a Vault credential, an owner settings URL, or the reason no revoke method is available.".into(),
             input_schema: json!({"type":"object","required":["request_id","service","kind","name","revoke"],"properties":{
                 "request_id":text(),"service":text(),"kind":text(),"name":text(),"url":text(),"credential_id":text(),"revoke":revoke.clone()},"additionalProperties":false}) },
-        RuntimeToolSpec { name: SET_REVOKE.into(), description: "Set the revoke method on an existing resource, including automatic Vault or SSH entries. Requires elevation in the resource project. Metadata and Vault handles only; cannot change provenance or a revocation in progress.".into(),
+        RuntimeToolSpec { name: SET_REVOKE.into(), description: "Set the revoke method on an existing resource in this Room's project, including automatic Vault or SSH entries. Metadata and Vault handles only; cannot change provenance or a revocation in progress.".into(),
             input_schema: json!({"type":"object","required":["resource_id","revoke"],"properties":{"resource_id":text(),"revoke":revoke},"additionalProperties":false}) },
         RuntimeToolSpec { name: LIST.into(), description: "List resources created for this Room's project, including Vault handle links, provenance and revoke methods. Returns metadata only.".into(),
             input_schema: json!({"type":"object","properties":{},"additionalProperties":false}) },
@@ -43,12 +43,11 @@ pub(super) fn specs() -> Vec<RuntimeToolSpec> {
 
 #[derive(Clone, PartialEq, Eq)]
 struct Authority {
-    authorization_id: String,
     owner_user_id: String,
     session_id: String,
     project_id: String,
     agent_id: String,
-    prompt_id: String,
+    prompt_id: Option<String>,
     provider_run_id: String,
 }
 
@@ -67,19 +66,42 @@ impl KernelRuntimeState {
         _kind: &str,
     ) -> Result<Authority, DaemonError> {
         self.authorize_current_external_command()?;
-        let run = self.owned.provider_store.get_run(run_id)?;
-        let turn = self.vault_agent_context_for_run(&run)?;
-        let session = self.owned.session_store.get_session(&turn.session_id)?;
+        let agent = match &self.room_provider_origin {
+            Some((actor, origin)) => {
+                if origin != run_id {
+                    return Err(error("resource register provider origin changed"));
+                }
+                self.authorize_room_provider_epoch(Some(actor), Some(origin))?;
+                self.owned.agent_store.get_agent(actor)?
+            }
+            None => {
+                let run = self.owned.provider_store.get_run(run_id)?;
+                let context = self.vault_agent_context_for_run(&run)?;
+                self.owned.agent_store.get_agent(&context.agent_id)?
+            }
+        };
+        let session = self.owned.session_store.get_session(agent.session_id())?;
+        let prompt = self
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, agent.id());
+        if prompt.as_ref().is_some_and(|p| {
+            matches!(
+                p.status(),
+                crate::session::PromptStatus::Cancelling
+                    | crate::session::PromptStatus::Cancelled
+                    | crate::session::PromptStatus::Completed
+            )
+        }) {
+            return Err(error("the resource operation's submitting prompt ended"));
+        }
         Ok(Authority {
-            authorization_id: turn.run.id().into(),
-            owner_user_id: turn.owner_user_id,
-            session_id: turn.session_id,
+            owner_user_id: session.owner_user_id().into(),
+            session_id: session.id().into(),
             project_id: session.project_id().into(),
-            agent_id: turn.agent_id,
-            prompt_id: turn
-                .prompt_id
-                .ok_or_else(|| error("resource register requires a running prompt"))?,
-            provider_run_id: turn.run.id().into(),
+            agent_id: agent.id().into(),
+            prompt_id: prompt.map(|p| p.id().to_owned()),
+            provider_run_id: run_id.into(),
         })
     }
 
