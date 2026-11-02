@@ -119,17 +119,23 @@ try {
   }
   assert(report.refusal, 'never reached descriptor refusal')
   // Repeated failed opens must release their descriptors.
-  for (let i = 0; i < 10; i++) {
+  for (let attempt = 0; report.samples.length < 10 && attempt < 20; attempt++) {
     const before = fds()
     let refusal
-    try { await term(session, { operation: 'open', cols: 80, rows: 24, title: 'retry' }); throw new Error('unexpected successful retry') }
+    try {
+      // The refused CLI closes its connection, which may free enough to admit
+      // one more terminal. Keep that real terminal and fill to refusal again.
+      const opened = await term(session, { operation: 'open', cols: 80, rows: 24, title: `retry-${attempt}` })
+      report.terminals.push({ session, terminal_id: opened.terminal.terminal_id })
+      continue
+    }
     catch (error) {
-      if (String(error).includes('unexpected successful retry')) throw error
       refusal = { code: error.code, message: error.message }
     }
     await delay(300)
     report.samples.push({ before, after: fds(), refusal })
   }
+  assert.equal(report.samples.length, 10, 'did not reach ten refused opens')
   // One free descriptor cannot allocate a PTY pair. Real client connections
   // exercise portable-pty's allocation failure, before a child can be spawned.
   while (fds() < 319 && pressureClients.length < 8) {
