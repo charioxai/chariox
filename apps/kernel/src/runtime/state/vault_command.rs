@@ -26,14 +26,29 @@ fn command_timeout(seconds: Option<u64>) -> Result<Duration, DaemonError> {
     }
 }
 
+impl KernelRuntimeState {
+    fn recheck_vault_command_context(
+        &self,
+        context: &VaultAgentContext,
+    ) -> Result<(), DaemonError> {
+        self.recheck_vault_agent(context)?;
+        self.watched_process_run(context.run.id())?;
+        Ok(())
+    }
+}
+
 /// Runs the command off the async runtime; it may take minutes.
 async fn run_command(
     state: &KernelRuntimeState,
-    run: crate::provider::RuntimeProviderRun,
+    context: VaultAgentContext,
     command: super::agent_process_watch::KernelCommand,
 ) -> Result<super::agent_process_watch::KernelCommandOutput, DaemonError> {
     let state = state.clone();
-    tokio::task::spawn_blocking(move || state.run_kernel_command(&run, command))
-        .await
-        .map_err(|_| error("the command runner stopped unexpectedly"))?
+    tokio::task::spawn_blocking(move || {
+        state.recheck_vault_command_context(&context)?;
+        let run = state.watched_process_run(context.run.id())?;
+        state.run_kernel_command(&run, command)
+    })
+    .await
+    .map_err(|_| error("the command runner stopped unexpectedly"))?
 }

@@ -50,6 +50,7 @@ impl KernelRuntimeState {
         arguments: serde_json::Value,
     ) -> Result<RuntimeToolResult, DaemonError> {
         let context = self.vault_agent_context(token)?;
+        self.recheck_vault_command_context(&context)?;
         let args: UseArgs = serde_json::from_value(arguments)
             .map_err(|e| error(format!("invalid Vault use arguments: {e}")))?;
         if args.env.is_empty() && args.stdin.is_none() {
@@ -87,7 +88,7 @@ impl KernelRuntimeState {
         let _unlock = self
             .ensure_vault_unlocked_for_agent(&turn.session_id, &turn.agent_id, "vault_use_env")
             .await?;
-        self.recheck_vault_agent(&context)?;
+        self.recheck_vault_command_context(&context)?;
         let mut env = Vec::new();
         for (name, id) in &args.env {
             env.push((
@@ -103,7 +104,7 @@ impl KernelRuntimeState {
             ),
             None => None,
         };
-        self.recheck_vault_agent(&context)?;
+        self.recheck_vault_command_context(&context)?;
         let mut masks = args
             .env
             .values()
@@ -115,7 +116,7 @@ impl KernelRuntimeState {
         masks.sort_by_key(|(_, value)| std::cmp::Reverse(value.len()));
         let output = run_command(
             self,
-            context.run.clone(),
+            context.clone(),
             super::super::agent_process_watch::KernelCommand {
                 argv,
                 cwd,

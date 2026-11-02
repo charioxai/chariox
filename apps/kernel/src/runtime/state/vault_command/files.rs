@@ -82,6 +82,7 @@ impl KernelRuntimeState {
         arguments: serde_json::Value,
     ) -> Result<RuntimeToolResult, DaemonError> {
         let context = self.vault_agent_context(token)?;
+        self.recheck_vault_command_context(&context)?;
         let args: CaptureFileArgs = serde_json::from_value(arguments)
             .map_err(|e| error(format!("invalid Vault capture arguments: {e}")))?;
         if args.request_id.trim().is_empty() || args.request_id.len() > 128 {
@@ -106,7 +107,7 @@ impl KernelRuntimeState {
         let _unlock = self
             .ensure_vault_unlocked_for_agent(&turn.session_id, &turn.agent_id, "vault_capture")
             .await?;
-        self.recheck_vault_agent(&context)?;
+        self.recheck_vault_command_context(&context)?;
         let mut result = self
             .store_captured(
                 &context,
@@ -149,6 +150,7 @@ impl KernelRuntimeState {
         arguments: serde_json::Value,
     ) -> Result<RuntimeToolResult, DaemonError> {
         let context = self.vault_agent_context(token)?;
+        self.recheck_vault_command_context(&context)?;
         let args: WriteFileArgs = serde_json::from_value(arguments)
             .map_err(|e| error(format!("invalid Vault file arguments: {e}")))?;
         if args.values.is_empty() || args.values.len() > MAX_PLACEHOLDERS {
@@ -178,7 +180,7 @@ impl KernelRuntimeState {
         let _unlock = self
             .ensure_vault_unlocked_for_agent(&turn.session_id, &turn.agent_id, "vault_write_file")
             .await?;
-        self.recheck_vault_agent(&context)?;
+        self.recheck_vault_command_context(&context)?;
         let mut content = Zeroizing::new(args.template.clone());
         for (name, id) in &args.values {
             let value = self
@@ -186,7 +188,7 @@ impl KernelRuntimeState {
                 .await?;
             content = Zeroizing::new(content.replace(&format!("{{{{{name}}}}}"), &value));
         }
-        self.recheck_vault_agent(&context)?;
+        self.recheck_vault_command_context(&context)?;
         if new_workspace_file(&context.run, &args.path)? != path {
             return Err(error(
                 "the destination changed while waiting; retry the file write",

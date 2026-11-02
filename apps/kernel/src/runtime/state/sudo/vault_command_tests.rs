@@ -396,3 +396,35 @@ async fn s4_capture_file_and_write_file_move_values_through_the_kernel() {
     assert!(!workspace(&f).join("late.env").exists());
     f.state.shutdown_cleanup().await.unwrap();
 }
+
+#[tokio::test]
+async fn ordinary_vault_capture_retains_the_provider_command_mode() {
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    unlock(&f);
+    f.state
+        .owned
+        .provider_store
+        .update_run_execution_config(
+            f.run.id(),
+            crate::provider::AgentExecutionMode::Plan,
+            crate::provider::AgentPermissionLevel::Yolo,
+        )
+        .unwrap();
+    let marker = workspace(&f).join("must-not-execute-in-plan");
+    let argv = json!([
+        "/bin/sh",
+        "-c",
+        format!("touch '{}'; printf '%s' '{SECRET}'", marker.display())
+    ]);
+    let failure = capture(&f, "plan-capture", argv, json!({"kind":"stdout"}))
+        .await
+        .unwrap_err();
+    assert!(failure.to_string().contains("unrestricted build run"));
+    assert!(!marker.exists());
+    assert!(crate::credential::load_user_credentials()
+        .unwrap()
+        .is_empty());
+    assert!(f.state.owned.sudo_turns.lock().unwrap().is_empty());
+    f.state.shutdown_cleanup().await.unwrap();
+}

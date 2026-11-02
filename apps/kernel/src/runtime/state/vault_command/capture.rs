@@ -75,6 +75,7 @@ impl KernelRuntimeState {
         arguments: serde_json::Value,
     ) -> Result<RuntimeToolResult, DaemonError> {
         let context = self.vault_agent_context(token)?;
+        self.recheck_vault_command_context(&context)?;
         let args: CaptureArgs = serde_json::from_value(arguments)
             .map_err(|e| error(format!("invalid Vault capture arguments: {e}")))?;
         if args.request_id.trim().is_empty() || args.request_id.len() > 128 {
@@ -99,10 +100,10 @@ impl KernelRuntimeState {
         let _unlock = self
             .ensure_vault_unlocked_for_agent(&turn.session_id, &turn.agent_id, "vault_capture")
             .await?;
-        self.recheck_vault_agent(&context)?;
+        self.recheck_vault_command_context(&context)?;
         let output = run_command(
             self,
-            context.run.clone(),
+            context.clone(),
             super::super::agent_process_watch::KernelCommand {
                 argv,
                 cwd,
@@ -188,6 +189,7 @@ impl KernelRuntimeState {
             }),
         };
         let _mutation = self.vault_observation_mutation_guard().await;
+        self.recheck_vault_command_context(context)?;
         self.upsert_vault_credential_locked_for_agent(
             &self.home_runtime_secret_service()?,
             registry,
