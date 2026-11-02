@@ -824,6 +824,8 @@ impl KernelRuntimeState {
             agent.id(),
         ) {
             tools.push(super::kernel_browser_secret_runtime::paste_spec());
+            tools.push(super::kernel_browser_vault_capture::capture_spec());
+            tools.push(super::kernel_browser_vault_capture::fill_spec());
             tools.extend(self.owner_handoff_tool_spec());
             if self.room_agent_tools_enabled() {
                 tools.push(RuntimeToolSpec { name: SHARE.into(),
@@ -852,6 +854,8 @@ impl KernelRuntimeState {
             LOADER,
             BROWSER,
             PASTE,
+            super::kernel_browser_vault_capture::CAPTURE,
+            super::kernel_browser_vault_capture::FILL,
             SHARE,
             super::owner_handoff_runtime::HANDOFF,
         ]
@@ -911,18 +915,36 @@ impl KernelRuntimeState {
                 .kernel_browser_handoff(&agent, arguments, admission)
                 .await;
         }
-        if name == PASTE {
+        if [
+            PASTE,
+            super::kernel_browser_vault_capture::CAPTURE,
+            super::kernel_browser_vault_capture::FILL,
+        ]
+        .contains(&name)
+        {
             let scope = crate::runtime::kernel_browser_host::KernelBrowserHost::profile_key(
                 &self.provider_account_authority_owner_user_id(agent.owner_user_id()),
             );
-            return self
-                .kernel_browser_paste_secret(run.session_id(), &agent, arguments, admission)
-                .await
-                .map_err(|error| {
-                    self.owned
-                        .kernel_browser_secret_observations
-                        .scrub_error(&scope, error)
-                });
+            let session = run.session_id();
+            let result = match name {
+                super::kernel_browser_vault_capture::CAPTURE => {
+                    self.kernel_browser_capture(token, session, &agent, arguments, admission)
+                        .await
+                }
+                super::kernel_browser_vault_capture::FILL => {
+                    self.kernel_browser_fill_field(token, session, &agent, arguments, admission)
+                        .await
+                }
+                _ => {
+                    self.kernel_browser_paste_secret(session, &agent, arguments, admission, false)
+                        .await
+                }
+            };
+            return result.map_err(|error| {
+                self.owned
+                    .kernel_browser_secret_observations
+                    .scrub_error(&scope, error)
+            });
         }
         let mut params = browser_tool_params(arguments)?;
         if matches!(params["op"].as_str(), Some("open" | "navigate" | "input")) {

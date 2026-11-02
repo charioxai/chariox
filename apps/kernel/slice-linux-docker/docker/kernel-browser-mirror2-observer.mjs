@@ -289,11 +289,13 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     const textBox = node => { const range = node.ownerDocument.createRange(); range.selectNodeContents(node); const r = range.getBoundingClientRect(); return [r.x, r.y, r.width, r.height]; };
     // Every non-password input counts, as on the pixel path (a filled month/date shows its value too).
     const plainText = node => node.localName === 'input' ? node.type !== 'password' : node.localName === 'textarea' || node.isContentEditable;
-    const secretElement = node => targets.has(node) && plainText(node) && fills.get(node)?.state !== 'retired';
+    // VAUDIT S3: a captured target may be page text (a revealed key): masked while it shows the value.
+    const shownText = node => node.localName !== 'input' && node.localName !== 'textarea' && !node.isContentEditable;
+    const secretElement = node => targets.has(node) && (plainText(node) || shownText(node)) && fills.get(node)?.state !== 'retired';
     // A target's fill state follows its value (sampled every drain; input events wake one).
     const verify = node => {
       const fill = fills.get(node); if (!fill?.hash || fill.state === 'retired' || !node.isConnected) return;
-      const held = sha256(node.isContentEditable ? node.textContent : String(node.value ?? '')) === fill.hash;
+      const held = sha256(shownText(node) ? String(node.innerText ?? node.textContent ?? '').trim() : node.isContentEditable ? node.textContent : String(node.value ?? '')) === fill.hash;
       if (held) fill.state = 'filled'; else if (fill.state === 'filled') fill.state = 'retired';
     };
     const listened = new WeakSet(), listening = new AbortController();

@@ -46,23 +46,17 @@ pub(crate) fn vault_generate_spec() -> RuntimeToolSpec {
 }
 
 impl KernelRuntimeState {
-    pub(crate) async fn vault_generate(
+    /// The one elevation gate for agent Vault writes (generate, capture, fill).
+    /// Today a live sudo window elevates; the project mandate (VAUDIT S1) joins
+    /// here as mandate-or-sudo.
+    pub(crate) fn vault_elevation(
         &self,
         token: &str,
-        arguments: serde_json::Value,
-    ) -> Result<RuntimeToolResult, DaemonError> {
+        operation: &str,
+    ) -> Result<KernelSudoTurn, DaemonError> {
         let turn = self
             .sudo_for_auth_token(token)
-            .map_err(|_| error("Vault generation requires a live sudo window"))?;
-        let args: GenerateArgs = serde_json::from_value(arguments)
-            .map_err(|_| error("invalid Vault generation arguments"))?;
-        if args.request_id.trim().is_empty() || args.request_id.len() > 128 {
-            return Err(error("request_id must be 1-128 characters"));
-        }
-        if !(16..=128).contains(&args.length) {
-            return Err(error("generated password length must be 16-128"));
-        }
-        let origin = generation_origin(&args.origin)?;
+            .map_err(|_| error(format!("{operation} requires a live sudo window")))?;
         // An enrolled kernel's owner acts as its Cloud user; map it as MD-5 does.
         if self.provider_account_authority_owner_user_id(&turn.owner_user_id)
             != crate::session::DEFAULT_LOCAL_USER_ID
@@ -77,6 +71,40 @@ impl KernelRuntimeState {
         {
             return Err(error("the owner's Vault is not available to this agent"));
         }
+        Ok(turn)
+    }
+
+    /// The Vault unlock wait can outlast, revoke or replace the window.
+    pub(crate) fn recheck_vault_elevation(
+        &self,
+        token: &str,
+        turn: &KernelSudoTurn,
+    ) -> Result<(), DaemonError> {
+        if self
+            .sudo_for_auth_token(token)
+            .ok()
+            .is_none_or(|current| current.entry_id != turn.entry_id)
+        {
+            return Err(error("sudo window ended during the Vault wait"));
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn vault_generate(
+        &self,
+        token: &str,
+        arguments: serde_json::Value,
+    ) -> Result<RuntimeToolResult, DaemonError> {
+        let turn = self.vault_elevation(token, "Vault generation")?;
+        let args: GenerateArgs = serde_json::from_value(arguments)
+            .map_err(|_| error("invalid Vault generation arguments"))?;
+        if args.request_id.trim().is_empty() || args.request_id.len() > 128 {
+            return Err(error("request_id must be 1-128 characters"));
+        }
+        if !(16..=128).contains(&args.length) {
+            return Err(error("generated password length must be 16-128"));
+        }
+        let origin = generation_origin(&args.origin)?;
         let handle = generated_handle(&turn, &args.request_id);
         let registry = crate::credential::CharioxCredentialRegistry::user()?;
         if let Some(existing) = registry.get(&handle)? {
@@ -87,14 +115,7 @@ impl KernelRuntimeState {
         let _unlock = self
             .ensure_vault_unlocked_for_agent(&turn.session_id, &turn.agent_id, "vault_generate")
             .await?;
-        // The unlock wait can outlast, revoke or replace the window.
-        if self
-            .sudo_for_auth_token(token)
-            .ok()
-            .is_none_or(|current| current.entry_id != turn.entry_id)
-        {
-            return Err(error("sudo window ended during the Vault wait"));
-        }
+        self.recheck_vault_elevation(token, &turn)?;
         let now = crate::session::unix_epoch_ms();
         let credential = UserCredentialConfig {
             id: handle.clone(),
@@ -187,7 +208,7 @@ pub(super) fn generated_handle(turn: &KernelSudoTurn, request_id: &str) -> Strin
 }
 
 /// HTTPS origins, or HTTP on loopback only; login binds the canonical origin.
-fn generation_origin(raw: &str) -> Result<String, DaemonError> {
+pub(crate) fn generation_origin(raw: &str) -> Result<String, DaemonError> {
     let url = url::Url::parse(raw.trim()).map_err(|_| error("origin must be a URL"))?;
     let host = url.host_str().unwrap_or_default().to_string();
     let loopback = host == "localhost"
