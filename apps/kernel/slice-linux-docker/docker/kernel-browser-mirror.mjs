@@ -112,9 +112,9 @@ export class MirrorService {
     for(const id of command.drift_nodes)stream.fallback.add(id);
     // MP-08/MP-11: use the screenshot collector's live field identity/type check.
     // Bind nodes in the mirror world rather than comparing different coordinate spaces.
-    const targets=policy.targets.filter(t=>t.kind==='browser'&&t.target_id===tab.target_id);
+    const targets=policy.display_masked===false?[]:policy.targets.filter(t=>t.kind==='browser'&&t.target_id===tab.target_id);
     await this.evaluate(world,'globalThis.__charioxMirror.resetFillTargets()');
-    if(targets.length||this.host.browser.fillTargets?.size)await locateBrowserRegions(targets,this.host.browser,policy.values,{contentTarget:tab.target_id,contentScale:this.host.scales.get(tab.tab_id)??1,onPlainField:async field=>{
+    if(policy.display_masked!==false&&(targets.length||this.host.browser.fillTargets?.size))await locateBrowserRegions(targets,this.host.browser,policy.values,{contentTarget:tab.target_id,contentScale:this.host.scales.get(tab.tab_id)??1,onPlainField:async field=>{
       // Foreign renderer descendants are compositor tiles, not mirrored nodes.
       if(field.sessionId!==world.sessionId)return;
       const {object}=await world.connection.send('DOM.resolveNode',{backendNodeId:field.backendNodeId,executionContextId:world.contextId},world.sessionId);
@@ -171,7 +171,7 @@ export class MirrorService {
     source.fonts=source.fonts.flatMap(f=>{const resource=material.mapped.get(f.resource);return resource?[{...f,resource}]:[];});
     const sourceRevision=source.revision??0;
     delete source.resources;delete source.revision;source.selection??=null;
-    if(sanitizeMirrorTree(source,policy.values)){stream.fullFallback=true;source=videoSnapshot();delete source.resources;}
+    if(sanitizeMirrorTree(source,policy.display_masked===false?[]:policy.values)){stream.fullFallback=true;source=videoSnapshot();delete source.resources;}
     const compositingNodes=new Map(source.nodes.map(n=>[n.id,n]));
     const unsupportedTile=source.nodes.some(n=>{if(n.kind!=='tile')return false;for(let e=n;e;e=compositingNodes.get(e.parent)){const style=e.style??{};if(['transform','filter','backdrop-filter','perspective'].some(key=>style[key]&&style[key]!=='none')||style.opacity&&style.opacity!=='1')return true;}return false;});
     if(unsupportedTile){stream.fullFallback=true;source=videoSnapshot();delete source.resources;fallbackReason='tile_under_transform';}

@@ -584,6 +584,7 @@ pub(crate) use vault_secret_request::{SecretRequest, VAULT_SECRET_OPERATION};
 mod vault_unlock_request;
 mod vault_unlock_requests;
 pub(crate) use slice_runtime_state::SliceAgentRelaunchManifest;
+mod kernel_browser_audience;
 mod kernel_browser_command_error;
 mod kernel_browser_mirror;
 mod kernel_browser_receipts;

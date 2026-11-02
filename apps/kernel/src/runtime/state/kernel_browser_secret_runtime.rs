@@ -113,8 +113,7 @@ impl KernelRuntimeState {
         let scope = KernelBrowserHost::profile_key(user);
         let policy = if protect {
             protection.require(&scope, false)?;
-            serde_json::from_str(&protection.capture_policy(&scope)?)
-                .map_err(|_| host_error("MD-5: invalid observation policy".into()))?
+            self.kernel_browser_capture_policy(user)?
         } else {
             Value::Null
         };

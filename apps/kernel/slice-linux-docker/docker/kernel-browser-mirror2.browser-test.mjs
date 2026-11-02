@@ -2024,6 +2024,34 @@ test('MP-10/MP-11 M2: a published subtree moved into an unvisited parent during 
 // maskleak r3 (MP-11): a Vault fill into a password field that the page then flips to type=text must never put the
 // value on the mirror wire: every packet from the first snapshot on is scanned for the secret (plain, UTF-16, base64).
 const secretForms = secret => { const utf16 = Buffer.from(secret, "utf16le"); return [secret, utf16.toString("latin1"), Buffer.from(secret).toString("base64").replace(/=+$/, ""), utf16.toString("base64").replace(/=+$/, ""), Buffer.from(secret).toString("hex")]; };
+test('MP-08/MP-11 owner-alone display reveals the filled field and shared display masks it again', () => mirrored(
+  '<input id="f" type="password"><input id="ordinary" value="ordinary text">', async ({host, evaluate, next, subscribe}) => {
+    const tab = [...host.tabs.values()][0], {connection, sessionId} = await host.browser.resolvePageTarget(tab.target_id);
+    const {root} = await connection.send('DOM.getDocument', {}, sessionId);
+    const {nodeId} = await connection.send('DOM.querySelector', {nodeId:root.nodeId, selector:'#f'}, sessionId);
+    const node_ref = `backend:${(await connection.send('DOM.describeNode', {nodeId}, sessionId)).node.backendNodeId}`;
+    const secret = 'vfill-owner-display-canary', value_hash = createHash('sha256').update(secret).digest('hex');
+    const policy = {values:[secret], targets:[{kind:'browser',target_id:tab.target_id,document_id:tab.document_id,node_ref,value_hash}]};
+    await host.protect({...policy, display_masked:false});
+    await host.browser.performAction({target_id:tab.target_id,document_id:tab.document_id,node_ref,action:{kind:'fill',text:secret,expected_document_url:tab.url}});
+    await evaluate("f.type='text';true");
+    const owner = JSON.stringify(await next(0,true));
+    assert(owner.includes(secret), 'the owner sees their revealed Vault-filled field');
+    assert(owner.includes('ordinary text'), 'ordinary fields stay visible');
+    const model = await host.request({op:'screenshot',tab_id:tab.tab_id,generation:host.generation,_agent_input:true});
+    assert(model.protected_regions.length > 0, 'the model capture still masks the revealed field while the owner sees it');
+    const image = decodePng(model.data_base64), region = model.protected_regions[0];
+    const offset = (Math.floor(region.y + region.height / 2) * image.width + Math.floor(region.x + region.width / 2)) * 4;
+    assert.deepEqual([...image.pixels.subarray(offset, offset + 3)], [0,0,0]);
+    await host.protect({...policy, display_masked:true});
+    const shared = JSON.stringify(await next(0,true));
+    assert(!shared.includes(secret), 'a non-owner watching masks the shared display');
+    assert(shared.includes('ordinary text'), 'sharing masks only the filled field');
+    const late = await subscribe();
+    assert(!JSON.stringify(await late.next()).includes(secret), 'a late viewer receives the masked policy');
+    await host.protect({...policy, display_masked:false});
+    assert(JSON.stringify(await next(0,true)).includes(secret), 'the owner sees the field again after the viewer leaves');
+  }));
 for (const [name, html, fillAndFlip] of [
   ["the page flips the field after the fill", '<form><input id="f" type="password"><p>after</p></form>', async (fill, evaluate) => { await fill(); await evaluate("f.type='text';true"); }],
   ["the page flips the field in the fill's own task", '<form><input id="f" type="password"><p>after</p></form>', async (fill, evaluate, secret) => { await evaluate(`f.value=${JSON.stringify(secret)};f.dispatchEvent(new Event('input',{bubbles:true}));f.type='text';true`); }],
