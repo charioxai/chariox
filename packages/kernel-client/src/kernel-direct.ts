@@ -116,7 +116,9 @@ export class KernelDirect<TIdentity> {
   enable(kernelRef: string): void {
     this.preferences.set(kernelRef, true)
     this.storage()?.setItem(consentStoragePrefix + kernelRef, "granted")
-    this.kernels.set(kernelRef, freshState())
+    const state = this.kernels.get(kernelRef) ?? freshState()
+    Object.assign(state, freshState())
+    this.kernels.set(kernelRef, state)
     this.notifyConsent(kernelRef, true)
   }
 
@@ -273,13 +275,16 @@ export class KernelDirect<TIdentity> {
       this.notify()
       input.signal?.throwIfAborted()
       const keypair = await abortable(this.deps.bindingKeypair(kernelRef), input.signal!)
-      let carriers = this.carriers.get(kernelRef)
-      if (!carriers) { carriers = new Map(); this.carriers.set(kernelRef, carriers) }
+      const carrierTarget = JSON.stringify([input.target.daemon_id ?? null, input.target.daemon_alias ?? null])
+      let carriers = this.carriers.get(carrierTarget)
+      if (!carriers) { carriers = new Map(); this.carriers.set(carrierTarget, carriers) }
       let existing: Promise<KernelDirectCarrier | null> | undefined
       while ((existing = carriers.get(keypair))) {
         const carrier = await abortable(existing, input.signal!)
         if (carrier?.open) {
           const lane = carrier.openLane(input.signal)
+          state.proven = true
+          this.setStatus(state, "local")
           this.deps.attach(lane, carrier.daemonPublicKey, input)
           return lane
         }
