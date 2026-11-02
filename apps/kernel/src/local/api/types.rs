@@ -450,4 +450,5 @@ pub use workspace::*;
 /// MP-08/MP-10/MP-11: 938 lets the kernel pick an access holder from the peer's host ancestry, own
 /// `--no-wait` requests and report one holder's status (`GetKernelAccessStatus`; peer 387).
 /// MP-08/MP-10/MP-11: 941 adds person Vault fill and audience-specific display masking (peer 390).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 941;
+/// MP-08 / MP-09 / MP-10 / MP-11: 954 adds nullable cumulative process disk I/O (peer403).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 954;

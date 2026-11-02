@@ -824,3 +824,31 @@ fn a_missing_ps_ends_the_tree_it_watches() {
         std::thread::sleep(Duration::from_millis(50));
     }
 }
+
+// MP-08 / MP-09 / MP-10 / MP-11: disk is active-process I/O, never filesystem capacity.
+#[cfg(target_os = "linux")]
+#[test]
+fn disk_io_sample_reports_real_owned_process_writes() {
+    use std::io::Write;
+    let file = std::env::temp_dir().join(format!("machines-disk-{:016x}", rand::random::<u64>()));
+    let mut child = std::process::Command::new("python3")
+        .args(["-c", "import os,sys; f=open(sys.argv[1],'wb'); f.write(b'x'*1048576); f.flush(); os.fsync(f.fileno()); print('ready',flush=True); sys.stdin.readline()"])
+        .arg(&file).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).spawn().unwrap();
+    use std::io::BufRead;
+    let mut ready = String::new();
+    std::io::BufReader::new(child.stdout.take().unwrap())
+        .read_line(&mut ready)
+        .unwrap();
+    let rows = sample_until_listed(&mut sampling::ProcessTree::new(child.id()), child.id());
+    child.stdin.take().unwrap().write_all(b"done\n").unwrap();
+    child.wait().unwrap();
+    std::fs::remove_file(file).unwrap();
+    let row = rows.iter().find(|row| row.pid == child.id()).unwrap();
+    let wire = serde_json::to_value(row).unwrap();
+    assert!(
+        wire["disk_io_bytes"]
+            .as_u64()
+            .is_some_and(|bytes| bytes >= 1048576),
+        "the shared process sample carries actual disk I/O: {wire}"
+    );
+}

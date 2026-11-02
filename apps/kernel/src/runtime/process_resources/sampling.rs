@@ -9,6 +9,8 @@ pub struct ProcessSample {
     pub resident_set_bytes: u64,
     /// CPU usage in thousandths of one core.
     pub cpu_millis: u64,
+    /// Cumulative bytes read from and written to storage; null when unavailable.
+    pub disk_io_bytes: Option<u64>,
     pub sampled_at_ms: u64,
     pub age_ms: u64,
 }
@@ -265,6 +267,8 @@ impl ProcessTree {
                 command: row.command,
                 resident_set_bytes: row.rss,
                 cpu_millis: row.cpu,
+                disk_io_bytes: super::admission::disk_io(row.pid)
+                    .and_then(|(read, written)| read.checked_add(written)),
                 age_ms: row.age_ms,
                 sampled_at_ms: row.sampled_at_ms,
             })
