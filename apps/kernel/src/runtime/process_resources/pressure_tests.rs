@@ -164,12 +164,62 @@ impl Workload {
     }
 }
 impl Drop for Workload {
-    // The domain, dropped after this, ends what the root left running.
+    // The domain, dropped after this, ends what the root left running, but it
+    // may not have sampled a command yet, and one admission stopped outlives
+    // the root: it reparents to PID 1 and, for a writer, fills the disk. So
+    // the whole tree goes with the root, `SIGKILL` being the only signal a
+    // stopped process obeys.
     fn drop(&mut self) {
+        let tree = super::session_sweep::descendants(self.child.id() as i32);
         let _ = self.child.kill();
         let _ = self.child.wait();
+        for pid in &tree {
+            // SAFETY: a positive PID read from the process table a moment ago.
+            unsafe { libc::kill(*pid, libc::SIGKILL) };
+        }
         let _ = std::fs::remove_dir_all(&self.dir);
+        if !std::thread::panicking() {
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            while tree
+                .iter()
+                .any(|pid| crate::test_support::process_alive(*pid))
+            {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "a workload's commands outlived it: {tree:?}"
+                );
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
     }
+}
+
+/// Commands admission stopped, under a root that waits on them: what a
+/// disk-limit cell leaves behind when its workload is dropped.
+#[cfg(unix)]
+#[test]
+fn dropping_a_workload_ends_the_commands_admission_stopped() {
+    let pool = pool(768);
+    let workload = Workload::run(
+        domain(&pool, "stopped", false),
+        &[("job", "sh -c 'sleep 60 & wait'".into())],
+    );
+    let tree = super::session_sweep::descendants(workload.child.id() as i32);
+    assert!(tree.len() >= 2, "the command did not start: {tree:?}");
+    for pid in &tree {
+        // SAFETY: a positive PID of this test's own process tree.
+        unsafe { libc::kill(*pid, libc::SIGSTOP) };
+    }
+    drop(workload);
+    std::thread::sleep(Duration::from_millis(500));
+    let left = tree
+        .iter()
+        .filter(|pid| crate::test_support::process_alive(**pid))
+        .collect::<Vec<_>>();
+    assert!(
+        left.is_empty(),
+        "stopped commands outlived the workload: {left:?}"
+    );
 }
 
 pub(super) fn pool(ceiling_mib: u64) -> Arc<pool::Pool> {
