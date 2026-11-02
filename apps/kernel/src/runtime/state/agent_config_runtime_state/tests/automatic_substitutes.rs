@@ -437,7 +437,7 @@ async fn an_exhausted_chain_fails_the_turn_visibly() {
 
     turn.fail_run(&turn.failed_run_id, SERVER_OVERLOADED).await;
     let substitute = turn.assert_rerun_on(0, SUBSTITUTE_A);
-    turn.fail_run(&substitute, "The provider's usage limit was reached.")
+    turn.fail_run(&substitute, "You have exceeded your usage limit.")
         .await;
 
     turn.assert_turn_failed();
