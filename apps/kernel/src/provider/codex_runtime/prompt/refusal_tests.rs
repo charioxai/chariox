@@ -133,3 +133,48 @@ fn a_codex_connection_fault_stays_a_protocol_fault() {
     drop(state);
     server.join().expect("join Codex fixture");
 }
+
+#[test]
+fn ea2_75_dispatch_preserves_structured_codex_failure_codes() {
+    use crate::provider::{TurnOutcome, TurnOutcomeKind::*};
+    for (code, kind, retryable) in [
+        ("serverOverloaded", Overloaded, true),
+        ("usageLimitExceeded", UsageLimit, false),
+        ("rateLimitExceeded", UsageLimit, true),
+        ("unauthorized", SignInRequired, false),
+        ("flexUnavailable", Overloaded, true),
+        ("policyCapacityUnavailable", Overloaded, true),
+    ] {
+        let (endpoint, server) = codex_server("turn/start", Some(json!({
+            "code": -32000, "message": "Request rejected",
+            "data": {"codexErrorInfo": code}
+        })));
+        let (result, mut state) = submit_to_codex(&endpoint, false);
+        result.expect("refusal is drained as a provider error");
+        let drained = drain_codex_events(&run(), &mut state, None).unwrap();
+        let failure = TurnOutcome::classify("codex", drained.terminal_failure.as_deref().unwrap());
+        drop(state);
+        server.join().unwrap();
+        assert_eq!((failure.kind, failure.retryable), (kind, retryable), "{code}");
+    }
+}
+
+#[test]
+fn ea2_75_exact_capacity_diagnostic_is_typed_and_kept_out_of_person_facing_text() {
+    use crate::provider::{TurnOutcome, TurnOutcomeKind};
+    let (endpoint, server) = codex_server("turn/start", Some(json!({
+        "code": -32000,
+        "message": "Codex error [server_overloaded]: Selected model is at capacity. Please try a different model."
+    })));
+    let (result, mut state) = submit_to_codex(&endpoint, false);
+    result.unwrap();
+    let drained = drain_codex_events(&run(), &mut state, None).unwrap();
+    let failure = TurnOutcome::classify("codex", drained.terminal_failure.as_deref().unwrap());
+    drop(state);
+    server.join().unwrap();
+    assert_eq!(failure.kind, TurnOutcomeKind::Overloaded);
+    assert!(failure.retryable);
+    assert_eq!(failure.reason, "The provider is at capacity.");
+    assert!(!failure.notice().contains(REFUSAL));
+    assert!(failure.notice().contains("another model"));
+}
