@@ -168,6 +168,7 @@ async fn delegate_reply_failed_start_settles_without_deletion() {
         .unwrap();
     f.request("logged-out-profile");
     f.request("also-waiting");
+    let capture = crate::logging::capture::start();
     let error = f
         .runtime
         .deliver_agent_inbox(&f.room, &f.child)
@@ -176,6 +177,14 @@ async fn delegate_reply_failed_start_settles_without_deletion() {
     assert!(
         matches!(error, DaemonError::ProviderProfileRefused { .. }),
         "{error}"
+    );
+    assert!(
+        capture
+            .records()
+            .iter()
+            .any(|record| record.contains("delegate could not start its requested turn")
+                && record.contains("not authenticated")),
+        "a failed start must log why the delegate did not start"
     );
     f.runtime.sweep_agent_lifecycle().await.unwrap();
     f.assert_gone(2);

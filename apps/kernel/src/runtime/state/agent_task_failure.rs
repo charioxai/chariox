@@ -8,7 +8,17 @@ impl KernelRuntimeOwnedState {
         &self,
         room: &str,
         agent: &str,
+        diagnostic: &str,
     ) -> Result<(), DaemonError> {
+        crate::logging::warn_with_fields(
+            "daemon.agent_task",
+            "delegate could not start its requested turn",
+            serde_json::json!({
+                "session_id": room,
+                "agent_id": agent,
+                "reason": crate::provider::sanitize_provider_diagnostic(diagnostic),
+            }),
+        );
         self.durable_state_store
             .agent_lifecycle(Operation::DelegateUnavailable {
                 room: room.into(),
@@ -47,7 +57,7 @@ impl KernelRuntimeOwnedState {
                 .agent_event_for_prompt(room, agent, prompt)?
             {
                 if event.reply_requested {
-                    self.settle_failed_delegate_start(room, agent)?;
+                    self.settle_failed_delegate_start(room, agent, diagnostic)?;
                 }
             }
             let diagnostic = crate::provider::sanitize_provider_diagnostic(diagnostic);
