@@ -1,5 +1,17 @@
 # Managed Path-1 parity inventory (MP-11)
 
+## MP-08 / MP-09 / MP-10 / MP-11 process disk telemetry (2026-11-02)
+
+Local954 / peer403 adds nullable `disk_io_bytes` to the existing session process
+sample. It is the cumulative storage reads plus writes of each active process,
+read from Linux process I/O or macOS process rusage. Unavailable counters remain
+null. Ordinary and managed kernels use the same launch-owned sampling and
+session feed; process ownership, admission, Start now and stop authority are
+unchanged. Machines sums these counters upward and keeps unknown totals unknown.
+The focused real-write regression is
+`runtime::process_resources::tests::disk_io_sample_reports_real_owned_process_writes`.
+Hosted UI acceptance is recorded separately by the machinesui lane.
+
 ## MP-08 / MP-09 / MP-10 / MP-11 provider account references (2026-10-28)
 
 Local 770 / peer 320 projects account identity, authentication state and configured

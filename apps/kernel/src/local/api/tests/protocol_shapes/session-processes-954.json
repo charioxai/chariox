@@ -1,6 +1,6 @@
 {
-  "protocol_version": 950,
-  "relay_peer_protocol_version": 399,
+  "protocol_version": 954,
+  "relay_peer_protocol_version": 403,
   "shapes": [
     {
       "event": "session_processes_changed",
@@ -20,7 +20,8 @@
           "process_id": "process-issued-1",
           "state": {
             "kind": "running"
-          }
+          },
+          "disk_io_bytes": 4096
         },
         {
           "owner": {
@@ -41,7 +42,8 @@
             "need_bytes": 6442450944,
             "free_bytes": 2147483648,
             "command_line": "cargo build --release"
-          }
+          },
+          "disk_io_bytes": 4096
         },
         {
           "owner": {
@@ -59,7 +61,8 @@
             "kind": "paused",
             "reason": "disk",
             "command_line": "pnpm test"
-          }
+          },
+          "disk_io_bytes": 4096
         }
       ]
     },
@@ -102,7 +105,7 @@
     },
     {
       "category": "outside_end",
-      "reason": "Stopped from Health.",
+      "reason": "Stopped from Machines.",
       "timestamp_ms": 10000,
       "failure": {
         "kind": "cancelled",

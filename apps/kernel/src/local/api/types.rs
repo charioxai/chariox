@@ -457,4 +457,5 @@ pub use workspace::*;
 /// Vault TOTP 945 adds computed factor input and sibling backup-code credentials.
 /// VAUDIT S3 948 adds the kernel-browser Vault capture_browser and fill_field tools.
 /// Protocol 950 advertises the answering kernel protocol in RelayStatus.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 950;
+/// MP-08 / MP-09 / MP-10 / MP-11: 954 adds nullable cumulative process disk I/O (peer403).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 954;

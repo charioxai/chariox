@@ -172,13 +172,14 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// MP-08/MP-10/MP-11: 385 pairs the embedded local union with local 936 (non-blocking task-owned questions).
 /// Browser downloads 386 carries local 937 download state and cancellation.
 /// MP-08/MP-10/MP-11: 387 pairs the embedded local union with local 938 (kernel-resolved access holder).
+/// MP-08 / MP-09 / MP-10 / MP-11: 403 carries local954 process disk I/O.
 /// MP-08/MP-10/MP-11: peer 390 carries Vault fill audience masking.
 /// MP-08/MP-09/MP-10/MP-11: 392 carries local 943 `env` and `file` credentials.
 /// Resource register 393 carries local 944 resource metadata and tool calls.
 /// Vault TOTP 394 carries local 945 factor credential metadata.
 /// VAUDIT S3 397 carries local 948 (kernel-browser Vault capture and fill).
 /// Peer 399 carries the shared RelayStatus local protocol field (local 950).
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 399;
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 403;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;

@@ -13,7 +13,7 @@ update("fixtures/protocol-versions.json", JSON.stringify({ local: localProtocolV
 const historyPath = "fixtures/historical-workflow-protocol.json"
 const history = JSON.parse(readFileSync(new URL(historyPath, repositoryRoot), "utf8"))
 update(historyPath, JSON.stringify({ ...history, local: localProtocolVersion, relayPeer: relayPeerProtocolVersion }, null, 2) + "\n")
-const processPath = "apps/kernel/src/local/api/tests/protocol_shapes/session-processes-800.json"
+const processPath = "apps/kernel/src/local/api/tests/protocol_shapes/session-processes-954.json"
 const processes = JSON.parse(readFileSync(new URL(processPath, repositoryRoot), "utf8"))
 update(processPath, JSON.stringify({ ...processes, protocol_version: localProtocolVersion, relay_peer_protocol_version: relayPeerProtocolVersion }, null, 2) + "\n")
 const clientPath = "packages/kernel-client/src/kernel-types.ts"

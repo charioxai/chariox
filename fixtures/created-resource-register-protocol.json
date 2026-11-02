@@ -1,6 +1,6 @@
 {
-  "local": 950,
-  "relayPeer": 399,
+  "local": 954,
+  "relayPeer": 403,
   "tools": [
     "chariox.mandate.record_resource",
     "chariox.mandate.set_resource_revoke",

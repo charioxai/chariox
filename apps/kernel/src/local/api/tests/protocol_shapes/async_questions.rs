@@ -3,7 +3,7 @@ use super::*;
 use sha2::{Digest, Sha256};
 
 #[test]
-fn async_popup_returns_protocol_941_390_snapshot_and_hash() {
+fn async_popup_returns_protocol_954_403_snapshot_and_hash() {
     let snapshot: serde_json::Value = serde_json::from_str(include_str!(
         "../../../../../../../fixtures/async-questions-protocol.json"
     ))
@@ -36,7 +36,7 @@ fn async_popup_returns_protocol_941_390_snapshot_and_hash() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "94c40a33fe4598adc7cbbbd121ff5df8fbd64324fc4c949ae6ad6e06b7cf8b79"
+        "a8f29dff35c89f232749806c0f6b46e6f6f360975ab5e8c9cf12adb22a608727"
     );
     // An old client ignores the additive ownership field; its answer uses
     // exactly the pre-existing request shape.
