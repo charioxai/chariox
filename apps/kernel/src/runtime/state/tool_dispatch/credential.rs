@@ -293,13 +293,10 @@ impl KernelRuntimeState {
                         "runtime_tool_send_secret_to_terminal",
                     )
                     .await?;
-                self.vault_elevation_allows(
-                    provider_run.session_id(),
-                    provider_run.agent_instance_id().unwrap_or_default(),
-                    service.validate_terminal_secret_input(&args.credential_id)?,
-                )?;
                 let provider_run_id = provider_run.id().to_string();
                 self.with_app_side_effect(|app| {
+                    // Unlock can wait while the owner changes this handle's kind or scope.
+                    let service = self.home_runtime_secret_service()?;
                     self.vault_elevation_allows(
                         provider_run.session_id(),
                         provider_run.agent_instance_id().unwrap_or_default(),
@@ -616,10 +613,22 @@ impl KernelRuntimeState {
                 "home_credential_secret_resolve",
             )
             .await?;
-        self.vault_elevation_allows(&context.home_session_id, agent.id(), credential)?;
         let secret_input = self
             .with_app_side_effect(|_| {
                 self.authorize_home_credential_context(&context)?;
+                let service = self.home_runtime_secret_service()?;
+                let credential = match &injection {
+                    crate::transport::relay_peer::RemoteCredentialSecretInjection::Browser {
+                        target_url,
+                    } => service
+                        .validate_browser_secret_input_for_target_url(&credential_id, target_url)?,
+                    crate::transport::relay_peer::RemoteCredentialSecretInjection::Pty => {
+                        service.validate_terminal_secret_input(&credential_id)?
+                    }
+                    crate::transport::relay_peer::RemoteCredentialSecretInjection::Computer => {
+                        unreachable!("unbound Computer resolution was rejected before unlock")
+                    }
+                };
                 self.vault_elevation_allows(&context.home_session_id, agent.id(), credential)?;
                 let secret_input = self.with_forwarded_binding_operation(|| match injection {
                     crate::transport::relay_peer::RemoteCredentialSecretInjection::Browser {

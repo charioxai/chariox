@@ -18,7 +18,8 @@ const binary = required('CHARIOX_TOTP_KERNEL')
 const profile = required('CHARIOX_TOTP_PROFILE')
 const root = required('CHARIOX_TOTP_STATE')
 const evidence = required('CHARIOX_TOTP_EVIDENCE')
-const origin = process.env.CHARIOX_TOTP_ORIGIN ?? 'https://val.51-255-87-178.sslip.io'
+const origin = process.env.CHARIOX_TOTP_ORIGIN
+assert.ok(origin?.startsWith('https://pr') && origin.includes('vtotp.'), 'use this lane’s owned hosted new-UI stack')
 const dpr = Number(process.env.DPR ?? 1)
 assert.ok([1, 2].includes(dpr))
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
@@ -53,8 +54,12 @@ try {
   await mkdir(evidence, { recursive: true, mode: 0o700 })
   await mkdir(root, { mode: 0o700 })
   ownsRoot = true
-  results.head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: tree, encoding: 'utf8' }).trim()
+  results.driverHead = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: tree, encoding: 'utf8' }).trim()
   results.kernelSha256 = createHash('sha256').update(await readFile(binary)).digest('hex')
+  const provenance = JSON.parse(await readFile(path.join(path.dirname(binary), 'PROVENANCE.json'), 'utf8'))
+  assert.equal(provenance['chariox-kernel'], results.kernelSha256, 'kernel provenance must match the executable')
+  results.head = provenance.head
+  results.worktree = provenance.worktree
   results.localProtocol = Number(execFileSync(binary, ['--print-local-daemon-protocol-version'], { encoding: 'utf8' }).trim())
   assert.equal(results.localProtocol, 945, 'use the S8 kernel; the base has no TOTP kind')
   workspace = process.env.CHARIOX_TOTP_WORKSPACE ?? `/root/work/agent-vtotp-drill-${dpr}-${process.pid}`
@@ -66,14 +71,14 @@ try {
   const config = path.join(root, 'config')
   await mkdir(path.join(config, 'chariox'), { recursive: true })
   await mkdir(home)
-  await writeFile(path.join(config, 'chariox/config.toml'), `version = 1\n[credential_vault]\nbackend = "chariox_encrypted"\npath = "${home}/vault/vault.json"\nunlock_policy = "kernel_init"\nagent_management = "allow"\n`, { mode: 0o600 })
+  await writeFile(path.join(home, 'config.toml'), `version = 1\n[history.operational]\npath = "${home}/history/operational.db"\n[credential_vault]\nbackend = "chariox_encrypted"\npath = "${home}/vault/vault.json"\nunlock_policy = "kernel_init"\nagent_management = "allow"\n`, { mode: 0o600 })
   const ports = await Promise.all(Array.from({ length: 4 }, freePort))
   stateEnvironment = { ...process.env, CHARIOX_HOME: home, XDG_CONFIG_HOME: config,
     XDG_STATE_HOME: path.join(root, 'state'), XDG_CACHE_HOME: path.join(root, 'cache'),
     CHARIOX_KERNEL_PORT: String(ports[0]), CHARIOX_MCP_PORT: String(ports[1]),
     CHARIOX_OPENCODE_PORT: String(ports[2]), CHARIOX_CODEX_PORT: String(ports[3]),
     CHARIOX_DAEMON_SOCKET: path.join(root, 'kernel.sock'), CHARIOX_SESSION_HISTORY_DIR: path.join(root, 'history'),
-    CHARIOX_DAEMON_ID: name, TMPDIR: process.env.TMPDIR,
+    CHARIOX_DAEMON_ID: name, CHARIOX_DAEMON_ALIAS: name, CHARIOX_MACHINE_ALIAS: name, CODEX_HOME: profile, TMPDIR: process.env.TMPDIR,
     CHARIOX_KERNEL_BROWSER_DISPLAY: '1', CHARIOX_KERNEL_BROWSER_MIRROR: '1' }
   if (process.getuid?.() === 0) {
     // The real host adapter and pinned Chromium run as a normal Unix user.
@@ -107,7 +112,8 @@ try {
     const candidate = new LocalIpcClient(url, { localAuthEnvironment: stateEnvironment, timeoutMs: 2000 })
     try { await candidate.send({ ListSessions: null }); client = candidate; return true } catch { await candidate.close(); return false }
   }, 'kernel ready')
-  const linked = variant(await client.send({ LinkProviderAccountProfile: { provider: 'codex', label: name, path: profile } }), 'ProviderAccountProfile').profile
+  const profiles = variant(await client.send({ ListProviderAccountProfiles: { provider: 'codex' } }), 'ProviderAccountProfilesListed').profiles
+  const linked = profiles.find(entry => entry.provider === 'codex' && entry.is_default) ?? variant(await client.send({ LinkProviderAccountProfile: { provider: 'codex', label: name, path: profile } }), 'ProviderAccountProfile').profile
   await client.send({ SetDefaultProviderAccountProfile: { provider: 'codex', account_profile: linked.profile_id } })
   await client.send({ RefreshProviderAccountProfile: { provider: 'codex', account_profile: linked.profile_id } })
   console.log('MP-08 / MP-09 / MP-10 / MP-11: own kernel and linked provider ready')
@@ -124,6 +130,7 @@ try {
   await page.goto(login.verification_url)
   await page.getByRole('button', { name: /approve|allow|connect/i }).first().click()
   await until(async () => {
+    await sleep(Math.max(5000, (login.interval_seconds ?? 5) * 1000))
     const result = variant(await client.send({ PollCloudRelayLogin: { api_url: origin, device_code: login.device_code } }), 'CloudRelayLoginPolled').result
     if (result.status === 'denied') throw Error('device enrollment denied')
     return result.status === 'approved'
@@ -136,6 +143,7 @@ try {
   async function chooseRow(row) {
     const selector = page.locator(`[data-new-room] [data-row="${row}"]`)
     if (!await selector.count()) return
+    if ((await selector.innerText()).includes(name)) return
     await selector.click()
     const choices = page.locator('[data-new-room-choices] [role^="menuitem"]')
     await choices.first().waitFor({ timeout: 30_000 })
@@ -154,7 +162,9 @@ try {
   const session = await until(async () => variant(await client.send({ ListSessions: null }), 'SessionsListed').sessions.find(entry => entry.alias === name), 'new-UI Room')
   sessionId = session.id
   const agent = variant(await client.send({ SpawnAgent: { session_id: sessionId, provider: 'codex', account_profile: linked.profile_id, alias: 'TOTP', model: 'gpt-6-luna', effort: 'low', execution_mode: 'build', permission_level: 'yolo', worktree_id: null, kernel_ref: null, worktree_placement: null } }), 'AgentSpawned').agent
-  await page.locator('[data-room-agent]').filter({ hasText: 'TOTP' }).first().click()
+  await page.locator(`[data-room-agent="${agent.id}"]`).click()
+  await page.locator(`[data-room-pane="${agent.id}"]`).click()
+  await until(() => page.locator(`[data-room-agent="${agent.id}"]`).getAttribute('aria-pressed').then(value => value === 'true'), 'select Luna agent')
   await screenshot('01-new-ui-room')
   console.log('MP-08 / MP-09 / MP-10 / MP-11: new-UI Room ready')
   site = await startTotpSite()
@@ -192,23 +202,33 @@ try {
   }
   const request = (id, injection, title) => JSON.stringify({ credential: { id, allowed_hosts: [new URL(site.origin).host], allowed_uses: ['browser'], injection }, prompt: { title, message: 'Enter the disposable local test-site value in the protected field.', timeout_sec: 180 }, overwrite: false })
   await submit('Use chariox.request_credential_secret with ' + request('bootstrap', { kind: 'browser' }, 'TOTP bootstrap') + '. This creates the disposable test Vault. Do not use shell/file tools or ask for the value in chat. After storage reply BOOTSTRAP_READY.')
-  await until(async () => { await answerOwnerInput(); return (await page.locator('.agent-pane').filter({ hasText: 'TOTP' }).first().innerText()).split('BOOTSTRAP_READY').length > 2 }, 'protected Vault bootstrap', 240_000)
+  await until(async () => { await answerOwnerInput(); return (await page.locator(`[data-room-pane="${agent.id}"]`).innerText()).split('BOOTSTRAP_READY').length > 2 }, 'protected Vault bootstrap', 240_000)
   await screenshot('02-protected-bootstrap')
   await page.locator('[data-action="open-room-view"]').last().click()
   await page.locator('[data-open-room-view="browser"]').click()
-  await page.locator('.kernel-browser-omnibox').first().waitFor({ timeout: 60_000 })
-  await submit('/sudo Complete this local 2FA test using Chariox browser tools. First call chariox.request_credential_secret with ' + request('authenticator', { kind: 'totp' }, 'TOTP enrollment key') + '. Then load the kernel browser tools and navigate to ' + site.origin + '/enable. Find the observed Authentication code input and fill it only using chariox.kernel_browser_paste_secret credential_id=authenticator, submit=false. Take a browser snapshot and screenshot BEFORE clicking enable; verify the filled field is redacted. Click the observed enable button and verify Two-factor authentication enabled. Log out. Wait at least 31 seconds using a shell sleep (do not calculate or read any codes). Sign in by filling the observed Authentication code field with the same credential handle; click login and verify Signed in. Log out, wait at least another 31 seconds, then repeat sign in in another period. Never read/echo any key or code, never use page evaluation or direct HTTP to submit a code. Use fresh observed node_ref/document_id/generation for every fill. Keep tools moving until both sign-ins succeeded; report TOTP_TWO_PERIODS_DONE. Do not finish early.')
-  await until(async () => { await answerOwnerInput(); const stats = site.stats(); return stats.enrollmentSuccesses === 1 && stats.loginSuccesses >= 2 }, 'agent enrollment and two-period sign-in', 480_000)
+  await page.locator('[data-room-browser]').waitFor({ timeout: 60_000 })
+  await submit('/sudo Complete this local 2FA test using Chariox browser tools. First call chariox.request_credential_secret with ' + request('authenticator', { kind: 'totp' }, 'TOTP enrollment key') + '. Then load the kernel browser tools and navigate to ' + site.origin + '/enable. Find the observed Authentication code input and fill it only using chariox.kernel_browser_paste_secret credential_id=authenticator, submit=false. Take a browser snapshot and screenshot BEFORE clicking enable; verify the filled field is redacted. Click the observed enable button and verify Two-factor authentication enabled. Log out. Wait at least 31 seconds using a shell sleep (do not calculate or read any codes). Sign in by filling the observed Authentication code field with the same credential handle; click login and verify Signed in. Log out, wait at least another 31 seconds, then repeat sign in in another period. Never read/echo any key or code, never use page evaluation or direct HTTP to submit a code. Use fresh observed node_ref/document_id/generation for every fill. After both TOTP sign-ins succeeded, call chariox.request_credential_secret with ' + request('recovery', { kind: 'backup_codes' }, 'TOTP recovery codes') + '. Then log out and sign in once more by filling the observed Backup code field only with chariox.kernel_browser_paste_secret credential_id=recovery and clicking login. Keep tools moving until both TOTP sign-ins and the backup-code sign-in succeeded; report TOTP_TWO_PERIODS_DONE. Do not finish early.')
+  await until(async () => { await answerOwnerInput(); const stats = site.stats(); return stats.enrollmentSuccesses === 1 && stats.loginSuccesses >= 2 && stats.backupSuccesses === 1 }, 'agent enrollment and two-period sign-in', 480_000)
   await until(async () => {
     await answerOwnerInput()
-    return (await page.locator('.agent-pane').filter({ hasText: 'TOTP' }).first().innerText()).split('TOTP_TWO_PERIODS_DONE').length > 2
+    return (await page.locator(`[data-room-pane="${agent.id}"]`).innerText()).split('TOTP_TWO_PERIODS_DONE').length > 2
   }, 'provider completion after two sign-ins', 120_000)
   await screenshot('03-two-period-sign-in')
-  const transcript = await texts(path.join(root, 'history'))
-  const visible = await page.locator('.agent-pane').filter({ hasText: 'TOTP' }).first().innerText()
+  const outline = variant(await client.send({ GetSessionHistoryOutline: { session_id: sessionId, agent_ids: [agent.id], latest_prompt_count: 10, cursor: null } }), 'SessionHistoryOutline')
+  const blobs = []
+  for (const entry of outline.agents) {
+    const ids = [...new Set(entry.turns.flatMap(turn => turn.blobs.map(blob => blob.blob_id)))]
+    if (ids.length) blobs.push(...variant(await client.send({ GetSessionHistoryBlobContents: { session_id: sessionId, agent_id: entry.agent_id, blob_ids: ids } }), 'SessionHistoryBlobContents').blobs)
+  }
+  assert.ok(blobs.some(blob => blob.entries.length > 0), 'absence check requires actual public history entries')
+  const publicHistory = JSON.stringify({ outline, blobs })
+  const transcript = publicHistory + await texts(path.join(root, 'history'))
+  const visible = await page.locator(`[data-room-pane="${agent.id}"]`).innerText()
   assert.ok(site.checkAbsence(transcript + visible + rawKernelLog), 'seed/code absence check failed')
   assert.ok(!transcript.includes(passphrase) && !transcript.includes(bootstrapSecret), 'protected input absence check failed')
   results.absencePassed = true
+  results.publicHistoryEntries = blobs.reduce((sum, blob) => sum + blob.entries.length, 0)
+  await writeFile(path.join(evidence, 'public-history.json'), publicHistory, { mode: 0o600 })
   results.site = site.stats()
   results.passed = true
   results.note = 'Real kernel/provider/new-UI local fixture drill; real-service AU-10 remains separate.'

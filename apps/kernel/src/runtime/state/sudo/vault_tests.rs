@@ -809,3 +809,56 @@ async fn totp_browser_fill_rechecks_elevation_after_vault_unlock() {
     assert!(result.is_err());
     assert!(inserted(&login).is_none());
 }
+
+#[tokio::test]
+async fn totp_terminal_rechecks_credential_kind_after_vault_unlock() {
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    unlock(&f);
+    let registry = crate::credential::CharioxCredentialRegistry::user().unwrap();
+    let mut credential = UserCredentialConfig {
+        id: "changing-factor".into(),
+        description: None,
+        source: crate::config::UserCredentialSourceConfig::Vault {
+            key: "changing-factor".into(),
+        },
+        allowed_hosts: vec![],
+        allowed_uses: vec![crate::config::UserCredentialUse::Pty],
+        injection: crate::config::UserCredentialInjectionConfig::Pty,
+        metadata: None,
+    };
+    f.state
+        .home_runtime_secret_service()
+        .unwrap()
+        .upsert_vault_backed_credential_with_secret(
+            &registry,
+            credential.clone(),
+            "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ",
+            false,
+        )
+        .unwrap();
+    crate::secret::lock_chariox_encrypted_vault(vault_path(&f)).unwrap();
+    let send = call(
+        &f,
+        "chariox.send_secret_to_terminal",
+        json!({"credential_id":"changing-factor","append_newline":false}),
+    );
+    let unlock = owner_unlocks(&f, &f.request.session_id, || {
+        credential.injection = crate::config::UserCredentialInjectionConfig::Totp(
+            crate::config::TotpConfig::default(),
+        );
+        registry.upsert(credential).unwrap();
+    });
+    let (result, ()) = tokio::join!(send, unlock);
+    assert!(
+        matches!(
+            result,
+            Err(DaemonError::LocalTransport {
+                operation: "vault_elevation",
+                ..
+            })
+        ),
+        "the current factor definition must require elevation before terminal delivery"
+    );
+    f.state.shutdown_cleanup().await.unwrap();
+}

@@ -16,6 +16,7 @@ different periods. No TUI or old web UI is used.
 
 ```sh
 DPR=1 \
+CHARIOX_TOTP_ORIGIN=https://pr0-vtotp.val.example \
 CHARIOX_TOTP_KERNEL=/absolute/owned/chariox-kernel \
 CHARIOX_TOTP_PROFILE=/absolute/product-linked/codex \
 CHARIOX_TOTP_STATE=/absolute/lane/state-dpr1 \
@@ -23,8 +24,8 @@ CHARIOX_TOTP_EVIDENCE=/absolute/evidence/dpr1 \
 node scripts/e2e-stack/totp/live.mjs
 ```
 
-Repeat with `DPR=2` and distinct state/evidence paths. The optional
-`CHARIOX_TOTP_ORIGIN` defaults to the private hosted validation stack. Run node,
+Repeat with `DPR=2` and distinct state/evidence paths. The required
+`CHARIOX_TOTP_ORIGIN` must name this lane’s owned hosted stack with a built new-UI bundle. Run node,
 Bun and Chromium under the lane's required memory scope. The driver never
 copies provider credentials. On the root builder, it copies only browser source
 assets into its own scratch and runs the real browser host as `ubuntu`, with
