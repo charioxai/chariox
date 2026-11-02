@@ -16,12 +16,15 @@ const expected=process.env.VOPEN_EXPECT ?? 'allowed'
 assert.ok(['allowed','requires-sudo'].includes(expected))
 const dpr=Number(process.env.VOPEN_DPR ?? 1), marker=`VOPEN_${Date.now()}`
 await mkdir(output,{recursive:true})
-const browser=await chromium.launch({headless:true,executablePath:process.env.VOPEN_CHROME ?? '/opt/google/chrome/chrome',
+let browser, page
+const sockets=[], dialogs=[], checks=[]
+try{
+browser=await chromium.launch({headless:true,executablePath:process.env.VOPEN_CHROME ?? '/opt/google/chrome/chrome',
  args:['--no-sandbox','--disable-dev-shm-usage'],
  ...(process.env.SHAPE_PROXY?{proxy:{server:process.env.SHAPE_PROXY,bypass:''}}:{})})
 const context=await browser.newContext({viewport:{width:1440,height:1000},deviceScaleFactor:dpr,
  recordVideo:{dir:output+'/video',size:{width:1440,height:1000}}})
-const page=await context.newPage(), sockets=[], dialogs=[], checks=[]
+page=await context.newPage()
 page.on('websocket',socket=>sockets.push(new URL(socket.url()).origin))
 page.on('dialog',async dialog=>{dialogs.push(dialog.type());await dialog.dismiss()})
 const check=(name,ok)=>{checks.push({name,ok:Boolean(ok)});assert.ok(ok,name)}
@@ -53,7 +56,6 @@ async function navigate(url){
   try{return f.offsetWidth>0&&f.style.visibility!=='hidden'&&f.contentDocument?.body?.innerText.includes(host)}catch{return false}
  }),new URL(url).hostname==='github.com'?'Sign in to GitHub':'GitLab',{timeout:60000})
 }
-try{
  await page.goto(origin+'/validation/ready')
  await page.goto(origin+'/terminal?ui=os',{waitUntil:'domcontentloaded'})
  await page.locator('[data-feature-new=room]').waitFor({state:'attached',timeout:60000})
@@ -85,7 +87,7 @@ try{
  await writeFile(output+'/result.json',JSON.stringify({expected,dpr,room,marker,checks,sockets,carriers,dialogs},null,2))
  console.log('PASS',expected,room,'DPR'+dpr)
 }catch(error){
- await shot('failure').catch(()=>{})
+ await page?.screenshot({path:output+'/failure.png'}).catch(()=>{})
  await writeFile(output+'/result.json',JSON.stringify({expected,dpr,room,marker,checks,sockets,dialogs,error:error.message},null,2))
  throw error
-}finally{await browser.close()}
+}finally{await browser?.close()}
