@@ -94,9 +94,17 @@ test('MP-08/MP-10/MP-11 a pinned popup-free extension cannot receive native agen
    };
    const page=(await cdp.send('Target.getTargets')).targetInfos.find(target=>target.type==='page'&&target.url.startsWith('https://en.wikipedia.org/'));assert(page);
    const {sessionId:pageSession}=await cdp.send('Target.attachToTarget',{targetId:page.targetId,flatten:true});
+   const pageDeadline=Date.now()+15000;let pageReady=false;
+   while(Date.now()<pageDeadline){
+    const observation=await cdp.send('Runtime.evaluate',{expression:"location.href.startsWith('https://en.wikipedia.org/')&&document.readyState==='complete'",returnByValue:true},pageSession).catch(()=>null);
+    if(observation?.result?.value){pageReady=true;break}await delay(100);
+   }
+   assert(pageReady,'public page navigation completed before installing click observation');
    await cdp.send('Runtime.evaluate',{expression:"window.mp11NativeClicks=0;window.addEventListener('click',()=>window.mp11NativeClicks++)"},pageSession);
    await click({x:500,y:500},true);
-   assert.equal((await cdp.send('Runtime.evaluate',{expression:'window.mp11NativeClicks',returnByValue:true},pageSession)).result.value,1,'ordinary page native fallback remains admitted');
+   let pageClicks=0;const clickDeadline=Date.now()+3000;
+   while(Date.now()<clickDeadline&&(pageClicks=(await cdp.send('Runtime.evaluate',{expression:'window.mp11NativeClicks',returnByValue:true},pageSession)).result.value)!==1)await delay(100);
+   assert.equal(pageClicks,1,'ordinary page native fallback remains admitted');
    await cdp.send('Target.detachFromTarget',{sessionId:pageSession});
    assert.equal(await count(),0);
    action=await control('MP11 Popup Free Action',node=>node.name==='MP11 Popup Free Action');
