@@ -405,6 +405,23 @@ async fn who_owns(
         .clone()
         .unwrap();
     // The pid files are named in the inputs through `{dir}`.
+    // A shell without marks can run foreground programs from its login files.
+    // Prove it has read a command before testing who owns subsequent input.
+    assert!(
+        type_as(
+            &service,
+            &id,
+            &TerminalActor::User,
+            "printf 'READY-%s\\n' 42\r"
+        )
+        .await
+        .accepted
+    );
+    until("the shell to read input", || {
+        screen_has(&service, &id, "READY-42")
+    })
+    .await;
+    let sampling = crate::runtime::process_resources::pause_sampling_for_key(&run_id);
     let dir = root.path().display().to_string();
     for (actor, input) in inputs {
         let mut input = input.replace("{dir}", &dir);
@@ -424,7 +441,6 @@ async fn who_owns(
             "an input was refused, so the race did not happen"
         );
     }
-    let mut owners = Vec::new();
     let mut pids = Vec::new();
     for name in pid_files {
         let file = root.path().join(name);
@@ -435,7 +451,17 @@ async fn who_owns(
         };
         until("the command to be launched", || async { pid().is_some() }).await;
         let pid = pid().unwrap();
+        assert!(pid > 1 && i32::try_from(pid).is_ok(), "a child PID");
+        assert_eq!(
+            crate::runtime::process_resources::command_holdable_for_key(&run_id, pid),
+            None,
+            "the sampler must not see the job before the next submission"
+        );
         pids.push(pid);
+    }
+    drop(sampling);
+    let mut owners = Vec::new();
+    for &pid in &pids {
         let deadline = Instant::now() + Duration::from_secs(15);
         let owner = loop {
             if let Some(holdable) =
@@ -703,24 +729,21 @@ async fn an_agents_command_stays_the_agents_in_a_shell_that_reports_no_marks() {
 }
 
 /// Without marks, an agent's job and a person's next Enter, which lands once
-/// the job runs and before the sampler first sees it. Repeated: the sampler
-/// may win the race, never lose it.
+/// the job runs and before the paused sampler first sees it.
 async fn who_owns_a_job_in_a_shell_without_marks(first: &TerminalActor, second: &TerminalActor) {
-    for round in 0..5 {
-        assert_eq!(
-            who_owns(
-                Some("/bin/dash"),
-                &[
-                    (first, "sleep 120 & echo $! > '{dir}/job'\r".to_string()),
-                    (second, "{after job}true\r".to_string()),
-                ],
-                &["job"]
-            )
-            .await,
-            [*first != TerminalActor::User],
-            "round {round}: the job went to the later submitter"
-        );
-    }
+    assert_eq!(
+        who_owns(
+            Some("/bin/dash"),
+            &[
+                (first, "sleep 120 & echo $! > '{dir}/job'\r".to_string()),
+                (second, "{after job}true\r".to_string()),
+            ],
+            &["job"]
+        )
+        .await,
+        [*first != TerminalActor::User],
+        "the job went to the later submitter"
+    );
 }
 
 #[tokio::test]
