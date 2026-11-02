@@ -47,6 +47,16 @@ test('a backup code can be used once as a sibling sign-in credential', async t =
   assert.equal(site.stats().backupSuccesses, 1)
 })
 
+test('absence checks cover factor values even before a successful submission', async t => {
+  const now = 1_800_000_000_000
+  const site = await startTotpSite({ now: () => now })
+  t.after(() => site.close())
+  const code = totpAt(Buffer.from(decodeBase32(site.supplySeedToOwner())), now)
+  assert.equal(site.checkAbsence(code), false)
+  assert.equal(site.checkAbsence(site.backupCodeForOwner()), false)
+  assert.equal(site.checkAbsence('ordinary public tool output'), true)
+})
+
 function decodeBase32(text) {
   const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'
   let bits = 0, value = 0

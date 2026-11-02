@@ -9,7 +9,7 @@ import net from 'node:net'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { LocalIpcClient } from '../../../packages/kernel-client/dist/ipc.js'
-import { spawnOwned, signalOwnedProcess, ownedProcessHandles } from '../../../apps/kernel/slice-linux-docker/owned-process-signals.mjs'
+import { spawnOwned, signalOwnedProcess, ownedProcessHandles, trackOwnedProcess } from '../../../apps/kernel/slice-linux-docker/owned-process-signals.mjs'
 import { startTotpSite } from './site.mjs'
 
 const tree = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..')
@@ -31,6 +31,8 @@ const record = async () => writeFile(path.join(evidence, 'result.json'), JSON.st
 const variant = (value, key) => { assert.ok(value[key], `expected ${key}, received ${Object.keys(value).join(',')}`); return value[key] }
 const freePort = () => new Promise((resolve, reject) => { const server = net.createServer(); server.on('error', reject); server.listen(0, '127.0.0.1', () => { const value = server.address().port; server.close(() => resolve(value)) }) })
 async function until(check, label, timeout = 60_000) {
+  results.phase = label
+  await record()
   const end = Date.now() + timeout
   while (Date.now() < end) { const value = await check(); if (value) return value; await sleep(500) }
   throw Error(`timed out: ${label}`)
@@ -44,16 +46,22 @@ async function texts(directory) {
   }
   return output
 }
-let kernel, client, browser, site, page, browserRoot, sessionId
+let kernel, client, browser, browserServer, viewer, site, page, browserRoot, sessionId
 let rawKernelLog = ''
 let stateEnvironment, workspace
 let ownsRoot = false, ownsWorkspace = false
-async function screenshot(step) { await page.screenshot({ path: path.join(evidence, `${step}.png`) }) }
+async function deadline(promise, ms = 5000) {
+  let timer
+  try { return await Promise.race([promise, new Promise((_, reject) => { timer = setTimeout(() => reject(Error('owned cleanup deadline')), ms) })]) } finally { clearTimeout(timer) }
+}
+async function screenshot(step) { await page.screenshot({ path: path.join(evidence, `${step}.png`), timeout: 5000 }) }
 
 try {
   await mkdir(evidence, { recursive: true, mode: 0o700 })
   await mkdir(root, { mode: 0o700 })
   ownsRoot = true
+  results.driverSha256 = createHash('sha256').update(await readFile(fileURLToPath(import.meta.url))).digest('hex')
+  results.fixtureSha256 = createHash('sha256').update(await readFile(new URL('./site.mjs', import.meta.url))).digest('hex')
   results.driverHead = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: tree, encoding: 'utf8' }).trim()
   results.kernelSha256 = createHash('sha256').update(await readFile(binary)).digest('hex')
   const provenance = JSON.parse(await readFile(path.join(path.dirname(binary), 'PROVENANCE.json'), 'utf8'))
@@ -73,7 +81,9 @@ try {
   await mkdir(home)
   await writeFile(path.join(home, 'config.toml'), `version = 1\n[history.operational]\npath = "${home}/history/operational.db"\n[credential_vault]\nbackend = "chariox_encrypted"\npath = "${home}/vault/vault.json"\nunlock_policy = "kernel_init"\nagent_management = "allow"\n`, { mode: 0o600 })
   const ports = await Promise.all(Array.from({ length: 4 }, freePort))
-  stateEnvironment = { ...process.env, CHARIOX_HOME: home, XDG_CONFIG_HOME: config,
+  const inheritedEnvironment = { ...process.env }
+  for (const key of Object.keys(inheritedEnvironment)) { if (key.startsWith('CHARIOX_') || ['CODEX_THREAD_ID', 'CODEX_SESSION_ID'].includes(key)) delete inheritedEnvironment[key] }
+  stateEnvironment = { ...inheritedEnvironment, CHARIOX_HOME: home, XDG_CONFIG_HOME: config,
     XDG_STATE_HOME: path.join(root, 'state'), XDG_CACHE_HOME: path.join(root, 'cache'),
     CHARIOX_KERNEL_PORT: String(ports[0]), CHARIOX_MCP_PORT: String(ports[1]),
     CHARIOX_OPENCODE_PORT: String(ports[2]), CHARIOX_CODEX_PORT: String(ports[3]),
@@ -83,7 +93,8 @@ try {
   if (process.getuid?.() === 0) {
     // The real host adapter and pinned Chromium run as a normal Unix user.
     // Never disable Chromium's sandbox or change permissions on shared paths.
-    browserRoot = await mkdtemp('/var/tmp/vtotp-browser-')
+    browserRoot = await mkdtemp('/opt/vtotp-browser-')
+    results.browserScratch = browserRoot
     await chmod(browserRoot, 0o755)
     const assets = path.join(browserRoot, 'assets'), owned = path.join(browserRoot, 'owned')
     await cp(path.join(tree, 'apps/kernel/slice-linux-docker/docker'), assets, { recursive: true })
@@ -97,7 +108,7 @@ try {
     assert.ok(results.sourceBrowserVersion.includes('155.0.8059.79'), 'use product-pinned Chrome for Testing')
     const wrapper = path.join(browserRoot, 'node-host')
     const quote = value => "'" + value.replaceAll("'", "'\\''") + "'"
-    await writeFile(wrapper, `#!/bin/sh\nset -eu\n[ "$#" -eq 3 ] && [ "$2" = stdio ]\nexec /usr/sbin/runuser -u ubuntu -- /usr/bin/env -i PATH=/usr/local/bin:/usr/bin:/bin HOME=/home/ubuntu TMPDIR=${quote(owned)} CHARIOX_KERNEL_BROWSER_EXECUTABLE=${quote(sourceChrome)} CHARIOX_KERNEL_BROWSER_DISPLAY=1 CHARIOX_KERNEL_BROWSER_MIRROR=1 /usr/bin/node "$1" stdio ${quote(owned)}\n`, { mode: 0o700 })
+    await writeFile(wrapper, `#!/bin/sh\nset -eu\n[ "$#" -eq 3 ] && [ "$2" = stdio ]\nexec /usr/bin/setpriv --reuid=${uid} --regid=${gid} --clear-groups /usr/bin/env -i PATH=/usr/local/bin:/usr/bin:/bin HOME=${quote(owned)} TMPDIR=${quote(owned)} CHARIOX_KERNEL_BROWSER_EXECUTABLE=${quote(sourceChrome)} CHARIOX_KERNEL_BROWSER_DISPLAY=1 CHARIOX_KERNEL_BROWSER_MIRROR=1 /usr/bin/node "$1" stdio ${quote(owned)}\n`, { mode: 0o700 })
     stateEnvironment.CHARIOX_BROWSER_CONTROLLER_NODE = wrapper
     stateEnvironment.CHARIOX_KERNEL_BROWSER_SCRIPT = path.join(assets, 'kernel-browser-host.mjs')
     results.browserAdapter = 'real host adapter as ubuntu; sandbox enabled; headed pinned Chromium'
@@ -105,21 +116,28 @@ try {
   const log = createWriteStream(path.join(evidence, 'kernel.private.log'), { mode: 0o600 })
   kernel = spawnOwned(binary, [], { cwd: workspace, env: stateEnvironment, stdio: ['ignore', 'pipe', 'pipe'], detached: true })
   results.kernelPid = kernel.pid
+  results.workspace = workspace
+  await record()
   for (const output of [kernel.stdout, kernel.stderr]) output.on('data', chunk => { rawKernelLog += chunk.toString(); log.write(chunk) })
   const url = `ws://127.0.0.1:${ports[0]}`
   await until(async () => {
     if (kernel.exitCode !== null) throw Error('owned kernel exited')
-    const candidate = new LocalIpcClient(url, { localAuthEnvironment: stateEnvironment, timeoutMs: 2000 })
+    const candidate = new LocalIpcClient(url, { localAuthEnvironment: stateEnvironment, controlRequestRetryDeadlineMs: 2000, controlResponseStallMs: 2000 })
     try { await candidate.send({ ListSessions: null }); client = candidate; return true } catch { await candidate.close(); return false }
   }, 'kernel ready')
   const profiles = variant(await client.send({ ListProviderAccountProfiles: { provider: 'codex' } }), 'ProviderAccountProfilesListed').profiles
   const linked = profiles.find(entry => entry.provider === 'codex' && entry.is_default) ?? variant(await client.send({ LinkProviderAccountProfile: { provider: 'codex', label: name, path: profile } }), 'ProviderAccountProfile').profile
   await client.send({ SetDefaultProviderAccountProfile: { provider: 'codex', account_profile: linked.profile_id } })
-  await client.send({ RefreshProviderAccountProfile: { provider: 'codex', account_profile: linked.profile_id } })
+  const refreshed = variant(await client.send({ RefreshProviderAccountProfile: { provider: 'codex', account_profile: linked.profile_id } }), 'ProviderAccountProfile').profile
+  results.providerAuthState = refreshed.auth_state
+  assert.equal(refreshed.auth_state, 'authenticated', 'linked official provider must be signed in')
   console.log('MP-08 / MP-09 / MP-10 / MP-11: own kernel and linked provider ready')
   const { chromium } = await import(process.env.CHARIOX_TOTP_PLAYWRIGHT ?? '/w/valenv/tools/node_modules/playwright-core/index.mjs')
   // This is only the test viewer. The source browser above retains its sandbox.
-  browser = await chromium.launch({ headless: true, executablePath: '/opt/google/chrome/chrome', args: ['--no-sandbox', '--disable-dev-shm-usage'] })
+  browserServer = await chromium.launchServer({ headless: true, executablePath: '/opt/google/chrome/chrome', args: ['--no-sandbox', '--disable-dev-shm-usage'] })
+  viewer = trackOwnedProcess(browserServer.process())
+  results.viewerPid = viewer.pid
+  browser = await chromium.connect(browserServer.wsEndpoint())
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: dpr })
   for (const permission of ['local-network-access', 'local-network', 'loopback-network']) { try { await context.grantPermissions([permission], { origin }) } catch {} }
   page = await context.newPage()
@@ -136,6 +154,11 @@ try {
     return result.status === 'approved'
   }, 'own kernel enrollment', 120_000)
   console.log('MP-08 / MP-09 / MP-10 / MP-11: hosted enrollment approved')
+  const afterEnrollment = variant(await client.send({ ListProviderAccountProfiles: { provider: 'codex' } }), 'ProviderAccountProfilesListed').profiles
+  results.postEnrollmentAccounts = afterEnrollment.map(entry => ({ provider: entry.provider, auth_state: entry.auth_state, is_default: entry.is_default }))
+  const catalog = variant(await client.send({ GetProviderCatalog: { provider: 'codex', account_profiles: { codex: linked.profile_id } } }), 'ProviderCatalog').catalog
+  results.providerCatalog = { connected: catalog.connected, providerCount: catalog.all?.length }
+  await record()
   await page.goto(origin + '/terminal?ui=os', { waitUntil: 'domcontentloaded' })
   await page.locator('[data-feature-new="room"]').waitFor({ timeout: 60_000 })
   await page.locator('[data-feature-new="room"]').click()
@@ -154,6 +177,15 @@ try {
   }
   await chooseRow('machine')
   await chooseRow('kernel')
+  async function chooseSetting(row, label) {
+    await page.locator(`[data-new-room] [data-row="${row}"]`).click()
+    const choice = page.locator('[data-new-room-choices] [role="menuitemradio"]').filter({ hasText: label }).first()
+    await choice.click()
+  }
+  await until(() => page.locator('[data-new-room] [data-row="provider"]').innerText().then(text => /Codex/i.test(text)), 'new-UI provider catalog')
+  await chooseSetting('model', /GPT-6-Luna/i)
+  await chooseSetting('variant', /^Low$/i)
+  results.agentCreation = 'terminal-os New Room form; Luna and low selected in UI'
   await page.locator('[data-new-room] [data-row="alias"]').click()
   await page.locator('[data-new-room] input[aria-label="Alias"]').fill(name)
   await page.keyboard.press('Enter')
@@ -161,7 +193,10 @@ try {
   await page.locator('[data-prompt-input]').waitFor({ timeout: 60_000 })
   const session = await until(async () => variant(await client.send({ ListSessions: null }), 'SessionsListed').sessions.find(entry => entry.alias === name), 'new-UI Room')
   sessionId = session.id
-  const agent = variant(await client.send({ SpawnAgent: { session_id: sessionId, provider: 'codex', account_profile: linked.profile_id, alias: 'TOTP', model: 'gpt-6-luna', effort: 'low', execution_mode: 'build', permission_level: 'yolo', worktree_id: null, kernel_ref: null, worktree_placement: null } }), 'AgentSpawned').agent
+  const agent = variant(await client.send({ GetSessionState: { session_id: sessionId } }), 'SessionState').session.agents[0]
+  assert.ok(agent?.id, 'new-UI Room created its agent')
+  results.agentId = agent.id
+  await record()
   await page.locator(`[data-room-agent="${agent.id}"]`).click()
   await page.locator(`[data-room-pane="${agent.id}"]`).click()
   await until(() => page.locator(`[data-room-agent="${agent.id}"]`).getAttribute('aria-pressed').then(value => value === 'true'), 'select Luna agent')
@@ -180,8 +215,19 @@ try {
       else if (/TOTP bootstrap/.test(title)) value = bootstrapSecret
       else if (/TOTP enrollment key/.test(title)) value = `otpauth://totp/Local:fixture?secret=${site.supplySeedToOwner()}&issuer=Local`
       else if (/TOTP recovery codes/.test(title)) value = JSON.stringify([site.backupCodeForOwner()])
-      else if (/Authorize sudo window/.test(title)) value = passphrase
+      else if (/Authorize sudo window|Run one sudo task/.test(title)) value = passphrase
+      else if (title === 'Agent needs your action') throw Error('agent requested owner action before completing the browser drill')
       else continue
+      const card = page.locator('.ap-ask').filter({ has: page.getByText(title, { exact: true }) }).first()
+      if (await card.isVisible().catch(() => false)) {
+        await card.locator('input[type="password"]').fill(value)
+        await card.getByRole('button', { name: /approve|send/i }).first().click()
+        answered.add(interaction.id)
+        results.interactions.push({ title, kind: interaction.kind, answeredIn: 'terminal-os masked card' })
+        console.log('MP-08 / MP-09 / MP-10 / MP-11: answered protected owner interaction ' + title)
+        await record()
+        continue
+      }
       let popup = page.locator('[data-passkey-prompt]').first()
       if (!await popup.isVisible().catch(() => false)) {
         const stripe = page.locator('[data-passkey-stripe]').first()
@@ -197,21 +243,29 @@ try {
       answered.add(interaction.id)
       console.log('MP-08 / MP-09 / MP-10 / MP-11: answered protected owner interaction ' + title)
       results.interactions.push({ title, kind: interaction.kind, answeredIn: 'terminal-os masked field' })
+      await record()
       await sleep(300)
     }
   }
   const request = (id, injection, title) => JSON.stringify({ credential: { id, allowed_hosts: [new URL(site.origin).host], allowed_uses: ['browser'], injection }, prompt: { title, message: 'Enter the disposable local test-site value in the protected field.', timeout_sec: 180 }, overwrite: false })
   await submit('Use chariox.request_credential_secret with ' + request('bootstrap', { kind: 'browser' }, 'TOTP bootstrap') + '. This creates the disposable test Vault. Do not use shell/file tools or ask for the value in chat. After storage reply BOOTSTRAP_READY.')
-  await until(async () => { await answerOwnerInput(); return (await page.locator(`[data-room-pane="${agent.id}"]`).innerText()).split('BOOTSTRAP_READY').length > 2 }, 'protected Vault bootstrap', 240_000)
+  await until(async () => {
+    await answerOwnerInput()
+    const registered = variant(await client.send({ ListCredentials: null }), 'CredentialsListed').credentials.some(credential => credential.id === 'bootstrap')
+    const working = await page.locator(`[data-room-agent="${agent.id}"]`).getAttribute('data-status') === 'working'
+    return registered && !working
+  }, 'protected Vault bootstrap', 240_000)
+  console.log('MP-08 / MP-09 / MP-10 / MP-11: protected bootstrap completed')
   await screenshot('02-protected-bootstrap')
   await page.locator('[data-action="open-room-view"]').last().click()
   await page.locator('[data-open-room-view="browser"]').click()
   await page.locator('[data-room-browser]').waitFor({ timeout: 60_000 })
   await submit('/sudo Complete this local 2FA test using Chariox browser tools. First call chariox.request_credential_secret with ' + request('authenticator', { kind: 'totp' }, 'TOTP enrollment key') + '. Then load the kernel browser tools and navigate to ' + site.origin + '/enable. Find the observed Authentication code input and fill it only using chariox.kernel_browser_paste_secret credential_id=authenticator, submit=false. Take a browser snapshot and screenshot BEFORE clicking enable; verify the filled field is redacted. Click the observed enable button and verify Two-factor authentication enabled. Log out. Wait at least 31 seconds using a shell sleep (do not calculate or read any codes). Sign in by filling the observed Authentication code field with the same credential handle; click login and verify Signed in. Log out, wait at least another 31 seconds, then repeat sign in in another period. Never read/echo any key or code, never use page evaluation or direct HTTP to submit a code. Use fresh observed node_ref/document_id/generation for every fill. After both TOTP sign-ins succeeded, call chariox.request_credential_secret with ' + request('recovery', { kind: 'backup_codes' }, 'TOTP recovery codes') + '. Then log out and sign in once more by filling the observed Backup code field only with chariox.kernel_browser_paste_secret credential_id=recovery and clicking login. Keep tools moving until both TOTP sign-ins and the backup-code sign-in succeeded; report TOTP_TWO_PERIODS_DONE. Do not finish early.')
-  await until(async () => { await answerOwnerInput(); const stats = site.stats(); return stats.enrollmentSuccesses === 1 && stats.loginSuccesses >= 2 && stats.backupSuccesses === 1 }, 'agent enrollment and two-period sign-in', 480_000)
+  console.log('MP-08 / MP-09 / MP-10 / MP-11: submitted sudo TOTP drill')
+  await until(async () => { await answerOwnerInput(); const stats = site.stats(); if (JSON.stringify(results.site) !== JSON.stringify(stats)) { results.site = stats; await record() }; return stats.enrollmentSuccesses === 1 && stats.loginSuccesses >= 2 && stats.backupSuccesses === 1 }, 'agent enrollment and two-period sign-in', 480_000)
   await until(async () => {
     await answerOwnerInput()
-    return (await page.locator(`[data-room-pane="${agent.id}"]`).innerText()).split('TOTP_TWO_PERIODS_DONE').length > 2
+    return (await page.locator(`[data-room-pane="${agent.id}"]`).innerText()).includes('TOTP_TWO_PERIODS_DONE')
   }, 'provider completion after two sign-ins', 120_000)
   await screenshot('03-two-period-sign-in')
   const outline = variant(await client.send({ GetSessionHistoryOutline: { session_id: sessionId, agent_ids: [agent.id], latest_prompt_count: 10, cursor: null } }), 'SessionHistoryOutline')
@@ -235,20 +289,34 @@ try {
   console.log('PASS MP-08 / MP-09 / MP-10 / MP-11 local TOTP drill, DPR' + dpr)
 } catch (error) {
   results.passed = false
+  results.failurePhase = results.phase
+  if (site) results.site = site.stats()
   const message = String(error.message)
   const safe = !message.includes(passphrase) && !message.includes(bootstrapSecret) && (!site || site.checkAbsence(message))
   results.failure = safe ? message : 'private-value absence check failed'
-  if (page) await screenshot('failure').catch(() => {})
+  if (page) {
+    if (site) {
+      const visible = (await page.locator('.agent-pane').allInnerTexts().catch(() => [])).join('\n')
+      const transcript = visible + await texts(path.join(root, 'history')) + rawKernelLog
+      results.failureAbsencePassed = site.checkAbsence(transcript) && !transcript.includes(passphrase) && !transcript.includes(bootstrapSecret)
+      if (results.failureAbsencePassed) await writeFile(path.join(evidence, 'failure-public-pane.txt'), visible, { mode: 0o600 })
+    }
+    await screenshot('failure').catch(() => {})
+  }
   console.error('FAIL MP-08 / MP-09 / MP-10 / MP-11 local TOTP drill; see result.json')
   process.exitCode = 1
 } finally {
-  if (client && sessionId) await client.send({ EndSession: { session_id: sessionId } }).catch(() => {})
-  if (client) await client.send({ DisconnectCloudRelay: null }).catch(() => {})
-  await client?.close().catch(() => {})
-  await browser?.close().catch(() => {})
-  await site?.close().catch(() => {})
+  console.log('MP-08 / MP-09 / MP-10 / MP-11: cleaning owned drill processes')
+  const handles = kernel ? ownedProcessHandles(kernel) : []
+  const viewerHandles = viewer ? ownedProcessHandles(viewer) : []
+  if (client && sessionId) await deadline(client.send({ EndSession: { session_id: sessionId } })).catch(() => {})
+  if (client) await deadline(client.send({ DisconnectCloudRelay: null })).catch(() => {})
+  if (client) await deadline(client.close()).catch(() => {})
+  if (browser) await deadline(browser.close()).catch(() => {})
+  if (browserServer) await deadline(browserServer.close()).catch(() => {})
+  for (const handle of viewerHandles) { try { signalOwnedProcess(handle, 'SIGKILL') } catch {} }
+  if (site) await deadline(site.close()).catch(() => {})
   if (kernel) {
-    const handles = ownedProcessHandles(kernel)
     if (kernel.exitCode === null && kernel.signalCode === null) signalOwnedProcess(kernel, 'SIGTERM')
     await until(() => kernel.exitCode !== null || kernel.signalCode !== null, 'own kernel exit', 20_000).catch(() => {})
     for (const handle of handles) { try { signalOwnedProcess(handle, 'SIGKILL') } catch {} }

@@ -44,9 +44,10 @@ export async function startTotpSite({ now = () => Date.now() } = {}) {
   const sessions = new Map()
   let lastAcceptedCounter = -1
   let enabled = false
-  const injectedValues = new Set([seedText])
+  const startCounter = Math.floor(now() / 30_000)
   const stats = { enrollmentSuccesses: 0, loginSuccesses: 0, rejectedCodes: 0, replayRejections: 0, backupSuccesses: 0 }
   const backupCodes = new Set(Array.from({ length: 8 }, () => randomBytes(6).toString('hex')))
+  const injectedValues = new Set([seedText, ...backupCodes])
   const parseCookies = (header = '') => Object.fromEntries(header.split(';').map(part => part.trim().split('=').map(decodeURIComponent)))
   const send = (res, status, body, cookie) => {
     res.writeHead(status, { 'content-type': 'text/html; charset=utf-8', ...(cookie ? { 'set-cookie': cookie } : {}) })
@@ -115,6 +116,13 @@ export async function startTotpSite({ now = () => Date.now() } = {}) {
     // The caller may present this value in an owner-controlled setup interaction; never log or persist it.
     supplySeedToOwner: () => seedText,
     backupCodeForOwner: () => [...backupCodes][0],
-    checkAbsence: text => [...injectedValues].every(value => !text.includes(value)),
+    checkAbsence: text => {
+      if ([...injectedValues].some(value => text.includes(value))) return false
+      const counter = Math.floor(now() / 30_000)
+      for (let period = Math.min(startCounter, counter) - 1; period <= Math.max(startCounter, counter) + 1; period++) {
+        if (text.includes(hotp(seed, period))) return false
+      }
+      return true
+    },
   }
 }
