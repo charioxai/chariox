@@ -112,6 +112,15 @@ async fn cancelling_preparing_head_promotes_the_surviving_prompt_without_new_sub
 
 #[tokio::test]
 async fn readiness_while_the_starting_promoter_exits_cannot_strand_the_head() {
+    readiness_while_the_starting_promoter_exits(false).await;
+}
+
+#[tokio::test]
+async fn launch_completion_does_not_bypass_queue_promotion_owner() {
+    readiness_while_the_starting_promoter_exits(true).await;
+}
+
+async fn readiness_while_the_starting_promoter_exits(complete_launch: bool) {
     let (_root, app, mut runtime, session, agent, old) = compact_fixture().await;
     runtime
         .owned
@@ -204,14 +213,34 @@ async fn readiness_while_the_starting_promoter_exits_cannot_strand_the_head() {
         .owned
         .prompt_state_owner
         .has_idle_queue_promotion(&session, &agent));
-    starting.mark_running();
-    runtime
-        .owned
-        .provider_store
-        .write()
-        .insert_run_for_test(starting.clone());
-    // This is the readiness decision in finish_provider_launch_success: the
-    // held claim suppresses its advance. It must be recovered by the promoter.
+    if complete_launch {
+        runtime
+            .finish_provider_launch(
+                &crate::app::StartedProviderLaunch {
+                    run: starting.clone(),
+                    previous_active_run_id: None,
+                    provider_credential_env: Default::default(),
+                },
+                None,
+            )
+            .await;
+        assert!(
+            runtime
+                .owned
+                .prompt_state_owner
+                .active_prompt_for_agent(&snapshot, &agent)
+                .is_none(),
+            "launch completion must leave the head to the promoter preparing its provider"
+        );
+    } else {
+        starting.mark_running();
+        runtime
+            .owned
+            .provider_store
+            .write()
+            .insert_run_for_test(starting.clone());
+    }
+    // Readiness while the claim is held must be recovered by the promoter.
     assert!(runtime
         .owned
         .prompt_state_owner

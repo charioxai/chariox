@@ -618,22 +618,6 @@ impl KernelRuntimeState {
             match result {
                 Ok(run) => {
                     if let Some(agent_id) = run.agent_instance_id() {
-                        match owned.advance_next_queued_prompt_dispatch(
-                            run.session_id(),
-                            agent_id,
-                            run.id(),
-                        ) {
-                            Ok(Some(dispatch)) => {
-                                if let Err(error) = self.enqueue_prompt_dispatch(&dispatch).await {
-                                    let _ = self.fail_prompt_dispatch(dispatch, error).await;
-                                }
-                            }
-                            Ok(None) => {}
-                            Err(error) => {
-                                self.fail_provider_launch_in_lane(started, &error).await;
-                                return;
-                            }
-                        }
                         match owned.retry_pending_metaagent_event_prompts_for_provider_run(&run) {
                             Ok(dispatches) => {
                                 retry_metaagent_event_dispatches = dispatches;
@@ -643,6 +627,12 @@ impl KernelRuntimeState {
                                 return;
                             }
                         }
+                        // The queue promoter owns preparation as well as activation.
+                        // A readiness wake must not consume its head against the old run
+                        // while it is preparing a fresh workflow provider context.
+                        retry_metaagent_event_dispatches
+                            .project_queue_promotions
+                            .push((run.session_id().to_string(), agent_id.to_string()));
                         let _ = owned.session_snapshot(run.session_id());
                     }
                 }
