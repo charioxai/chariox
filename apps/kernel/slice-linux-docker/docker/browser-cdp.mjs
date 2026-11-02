@@ -72,7 +72,7 @@ async function closeBrowser() {
     const { fileURLToPath } = await import("node:url");
     const client = new BrowserCdpClient({ requestTimeoutMs: 1500 });
     try {
-      const connection = await client.openConnection();
+      const connection = await client.ensureConnection();
       const processes = await connection.send("SystemInfo.getProcessInfo");
       const pid = processes.processInfo?.find(process => process.type === "browser")?.id;
       if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error("owned browser PID is unavailable");

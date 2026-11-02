@@ -1,0 +1,3 @@
+# MP-08/MP-10/MP-11: exercise the selected OpenH264 backend as well as x264/VPx.
+# The 16.1.0 wheel omits libopenh264; an encoder substitution defeats that test.
+av==16.0.1

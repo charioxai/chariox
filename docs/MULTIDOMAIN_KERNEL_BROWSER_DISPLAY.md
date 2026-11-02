@@ -172,6 +172,15 @@ normal host browser still requires a non-root Unix user and sandbox-capable
 Chromium. Its existing per-user profile, focused runtime MCP tools, tab registry,
 input cancellation and Vault observation barrier remain authoritative.
 
+MP-08/MP-10/MP-11 browser regression tests require the software codecs, including
+OpenH264. Install `apps/kernel/slice-linux-docker/docker/browser-test-requirements.txt`
+in a disposable virtual environment and set `CHARIOX_BROWSER_DISPLAY_PYTHON` to
+its absolute `bin/python` path when running the Node browser suites. PyAV 16.1.0
+wheels omit `libopenh264`; those cannot validate the explicitly selected backend.
+The encoder must report refusal rather than silently substitute x264.
+The installed-controller regression resolves Chromium through the product's
+executable discovery, including `CHARIOX_KERNEL_BROWSER_EXECUTABLE` overrides.
+
 The experimental software video adapter needs Python 3 and operator-installed
 PyAV with `libvpx-vp9`. `CHARIOX_BROWSER_DISPLAY_PYTHON` may select an absolute
 interpreter or operator-owned wrapper. This selector and the display flag cross
