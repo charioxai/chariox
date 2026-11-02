@@ -313,3 +313,20 @@ test('MP-08/MP-10/MP-11 naming a visible page input target needs no renderer rea
  assert.deepEqual(await regionInputTarget(host(stream(()=>true)),command,'terminal:a'),{tab_id:'t',document_id:'d'});
  await assert.rejects(regionInputTarget(host(stream(()=>false)),command,'terminal:a'));
 });
+
+test('MP-08/MP-10/MP-11 region capture and encoder drain concurrently before releasing the lease',async()=>{
+ const f=fixture(),result=await subscribeRegion(f.host,f.command,'terminal:a',undefined,{Capture:f.Capture});
+ const stream=f.host.displays.get(result.subscription_id),release=Promise.withResolvers(),sourceStarted=Promise.withResolvers();
+ let leaseClosed=false;
+ stream.encoder.close=()=>release.promise;
+ stream.regionSource.close=async()=>{sourceStarted.resolve(true);await release.promise;};
+ stream.regionLease.close=async()=>{leaseClosed=true;};
+ const closing=stream.close();
+ let timer;
+ try {
+  const concurrent=await Promise.race([sourceStarted.promise,new Promise(resolve=>{timer=setTimeout(()=>resolve(false),100);})]);
+  assert.equal(concurrent,true,'source shutdown must start while encoder shutdown is waiting');
+  assert.equal(leaseClosed,false,'the source lease remains owned until both helpers settle');
+ } finally {clearTimeout(timer);release.resolve();await closing;}
+ assert.equal(leaseClosed,true);
+});

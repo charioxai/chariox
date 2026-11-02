@@ -769,7 +769,8 @@ its grace period, then SIGKILL after a second grace period. Reaping has a final
 2-second bound. Portable encoders use 500 ms per grace period; native capture
 uses 1 second. Exit events end each wait immediately. Active producer/refiner
 work is retired before encoder shutdown, and all close results settle before
-teardown completes.
+teardown completes. Region capture and encoder shutdown also overlap; the
+window/document lease remains held until both settle.
 
 Required focused scenarios (acceptance area `multidomain-base`):
 
