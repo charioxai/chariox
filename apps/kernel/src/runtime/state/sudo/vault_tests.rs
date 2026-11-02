@@ -203,7 +203,10 @@ async fn a06_elevated_generation_commits_one_handle_and_never_returns_the_value(
         .revoke_sudo(Some("local"), Some(&turn.entry_id), "explicit_revoke")
         .unwrap();
     assert!(names(&f).iter().any(|name| name == VAULT_GENERATE));
-    assert!(generate(&f, "after-revoke", SITE).await.is_ok());
+    assert!(
+        generate(&f, "after-revoke", SITE).await.is_err(),
+        "revoking sudo cancels its originating prompt through the normal lifecycle"
+    );
 }
 
 #[tokio::test]
@@ -436,10 +439,6 @@ async fn vopen_ordinary_agent_fills_only_the_bound_origin_without_a_prompt() {
     // An unfocused holder of the grant is not refused for lack of focus.
     let ordinary = call(f, PASTE, paste_args("gen-unknown")).await.unwrap_err();
     assert!(!needs_focus(ordinary));
-    let turn = elevated(f);
-    f.state
-        .revoke_sudo(Some("local"), Some(&turn.entry_id), "explicit_revoke")
-        .unwrap();
     let handle = generate(f, "signup", SITE).await.unwrap()["credential_id"]
         .as_str()
         .unwrap()
@@ -780,7 +779,7 @@ async fn vopen_cards_ask_each_time_and_never_resolve_without_approval() {
                         .pending_interactions
                         .write()
                         .values()
-                        .filter_map(|pending| pending.kernel_wide_interaction.as_ref())
+                        .filter_map(|pending| pending.user_domain_interaction.as_ref())
                         .find(|interaction| interaction.id().starts_with("vault-card-"))
                         .map(|interaction| interaction.id().to_owned());
                     if let Some(id) = id {
@@ -793,7 +792,7 @@ async fn vopen_cards_ask_each_time_and_never_resolve_without_approval() {
             .unwrap();
             f.state
                 .resolve_terminal_runtime_interaction(
-                    crate::runtime::kernel_access::ACCESS_INTERACTION_SCOPE,
+                    "",
                     &id,
                     if allow { "allow" } else { "cancel" },
                     None,

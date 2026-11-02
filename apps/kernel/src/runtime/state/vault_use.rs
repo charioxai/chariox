@@ -112,11 +112,22 @@ impl KernelRuntimeState {
         binding.require(target)?;
         if binding.value_kind == VaultValueKind::PaymentCard {
             let id = format!("vault-card-{:016x}", rand::random::<u64>());
+            let destination = match target {
+                VaultUseTarget::Site { origin }
+                | VaultUseTarget::CommandStdin { origin }
+                | VaultUseTarget::Totp { origin }
+                | VaultUseTarget::WebAuthn { origin, .. } => origin.clone(),
+                VaultUseTarget::CommandEnvironment { name, origin } => {
+                    format!("{name} for {origin}")
+                }
+                VaultUseTarget::File { path } => path.clone(),
+            };
+            let label = credential.description.as_deref().unwrap_or(&credential.id);
             let interaction = crate::session::RuntimeInteraction::for_kernel_operation(
                 &id,
                 &id,
                 "Use payment card",
-                "Allow this payment card to be used for its declared destination?",
+                format!("Allow {label} to be used at {destination}?"),
                 vec![
                     crate::session::RuntimeInteractionChoice::new(
                         "allow",
@@ -130,7 +141,7 @@ impl KernelRuntimeState {
                 ],
             )
             .with_timeout_sec(300);
-            let scope = crate::runtime::kernel_access::ACCESS_INTERACTION_SCOPE;
+            let scope = "";
             let receiver = self
                 .create_kernel_operation_interaction(scope, owner, interaction)
                 .await?;
