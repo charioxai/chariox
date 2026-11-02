@@ -21,6 +21,9 @@ pub use state::{OpenCodeAssistantCompletion, OpenCodeOutputChunk};
 use transcript::ToolTranscriptUpdate;
 
 #[cfg(test)]
+pub(crate) use tests::assert_native_non_retryability;
+
+#[cfg(test)]
 mod tests {
     use std::sync::mpsc;
 
@@ -1820,6 +1823,3 @@ mod tests {
             .all(|chunk| chunk.merge_key.as_deref() == Some("part-1")));
     }
 }
-
-#[cfg(test)]
-pub(crate) use tests::assert_native_non_retryability;

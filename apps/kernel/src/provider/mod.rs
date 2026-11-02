@@ -510,6 +510,9 @@ pub(crate) use workspace_write_fence::{
 };
 
 #[cfg(test)]
+pub(crate) use opencode_runtime::assert_native_non_retryability as assert_opencode_native_non_retryability;
+
+#[cfg(test)]
 mod tests {
     use super::{
         adapter_key_for_provider, canonical_provider_family,
@@ -822,6 +825,3 @@ mod tests {
         )
     }
 }
-
-#[cfg(test)]
-pub(crate) use opencode_runtime::assert_native_non_retryability as assert_opencode_native_non_retryability;
