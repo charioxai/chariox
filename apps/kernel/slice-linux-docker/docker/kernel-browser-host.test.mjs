@@ -517,6 +517,27 @@ test("MD-4 reviewer R3: discovery and legacy restoration stay within the durable
 }));
 
 
+test("F-5 a restarted browser opens at the size its last viewer gave the window, before any viewer attaches", () => using(async ({ host, chromium, connection }, root) => {
+  const opened = await host.request({ op: "open", url: "https://example.com/kept" });
+  const send = connection.send, bounds = { width: 1280, height: 888, windowState: "normal" }, moves = [];
+  connection.send = async (method, params, session) => {
+    if (method === "Browser.getWindowForTarget") return { windowId: 7, bounds: { ...bounds } };
+    if (method === "Browser.setWindowBounds") { moves.push(params.bounds); Object.assign(bounds, params.bounds); return {}; }
+    if (method === "Page.getLayoutMetrics") return { cssVisualViewport: { scale: 1, zoom: 1, pageX: 0, pageY: 0 }, cssLayoutViewport: { clientWidth: bounds.width, clientHeight: bounds.height - 88 } };
+    return send(method, params, session);
+  };
+  const tab = opened.tabs.find(entry => entry.url === "https://example.com/kept");
+  await host.request({ op: "resize", tab_id: tab.tab_id, generation: opened.generation, width: 900, height: 600 });
+  assert.deepEqual(host.pageSize(tab.tab_id), { width: 900, height: 600 });
+  assert.deepEqual(JSON.parse(await readFile(path.join(root, "tabs.json"), "utf8")).window_layout, { width: 900, height: 600 });
+  // The restarted Chrome window opens at its default size.
+  Object.assign(bounds, { width: 1280, height: 888 }); moves.length = 0;
+  chromium.child.exitCode = 1;
+  const recovered = await host.request({ op: "start" });
+  assert.deepEqual(host.pageSize(recovered.tabs.find(entry => entry.url === "https://example.com/kept").tab_id), { width: 900, height: 600 }, "the page has the viewer's size before a viewer attaches");
+  assert.deepEqual(moves, [{ width: 900, height: 688 }]);
+}));
+
 test("MD-3 b220: cancelled pending input never inserts text", () => using(async ({ host, sent, connection }) => {
   const opened = await host.request({ op: "open", url: "about:blank" });
   const entered = Promise.withResolvers(), release = Promise.withResolvers();

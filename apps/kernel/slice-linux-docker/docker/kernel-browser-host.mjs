@@ -187,6 +187,7 @@ export class KernelBrowserHost {
     ])].slice(0, TAB_LIMIT);
     data.active_tab_id = this.pendingActive?.tab_id ?? active?.tab_id ?? null;
     data.active_app_origin = this.pendingActive?.app_origin ?? appRestoreOrigin(active?.url) ?? null;
+    data.window_layout = this.resizeSettled ? { width: this.resizeSettled.width, height: this.resizeSettled.height } : null;
     const serialized = JSON.stringify(data);
     if (serialized === this.lastSaved) return;
     await writeFile(`${name}.new`, serialized, { mode: 0o600 });
@@ -302,6 +303,7 @@ export class KernelBrowserHost {
       await this.syncTabGroups(this.savedGroups,{restore:true});
       await this.save();
       await this.rebindWindows();
+      await this.restoreWindowLayout(saved.window_layout, signal);
       this.recovery.watch(connection);
       this.stateSignal.notify();
     } catch (error) { await this.stop({ recovering: true, preserveDesktop }); throw error; }
@@ -377,6 +379,16 @@ export class KernelBrowserHost {
     await this.browser.setLayout?.(tab.target_id, layout);
     if (layout) this.layouts.set(tab.tab_id, { ...layout, subscriptionId }); else this.layouts.delete(tab.tab_id);
     this.noteLayout(tab.tab_id, before);
+  }
+
+  // A restarted browser opens at its default size. The viewer that sized it before would resize it again right after it
+  // attached, and that re-snapshots the page it is typing into. Give the window that size again before anyone attaches.
+  async restoreWindowLayout(layout, signal) {
+    const tab = this.tabs.values().next().value;
+    if (!tab || !Number.isSafeInteger(layout?.width) || !Number.isSafeInteger(layout?.height)) return;
+    // Not restoring it changes nothing but speed: the next viewer resizes the window as it always did.
+    try { await resizeBrowserPage(this, tab, { width: layout.width, height: layout.height, generation: this.generation }, signal); }
+    catch { this.timing('window_layout_restore_failed', timestamp()); }
   }
 
   releaseLayout(tabId, subscriptionId) {
