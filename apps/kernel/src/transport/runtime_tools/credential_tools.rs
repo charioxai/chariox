@@ -588,7 +588,7 @@ fn credential_creation_schema() -> Value {
                 "type": "array",
                 "items": {
                     "type": "string",
-                    "enum": ["http", "pty", "connector", "browser", "computer", "mcp"]
+                    "enum": ["http", "pty", "env", "file", "connector", "browser", "computer", "mcp"]
                 }
             },
             "injection": {
@@ -597,7 +597,7 @@ fn credential_creation_schema() -> Value {
                 "properties": {
                     "kind": {
                         "type": "string",
-                        "enum": ["header", "query", "basic", "hmac", "pty", "browser", "computer"]
+                        "enum": ["header", "query", "basic", "hmac", "pty", "env", "file", "browser", "computer"]
                     },
                     "name": {"type": "string"},
                     "value": {"type": "string"},

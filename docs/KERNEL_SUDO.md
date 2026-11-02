@@ -184,6 +184,51 @@ protection did not change meanwhile. An elevated fill also requires a
 credential bound to its site. Ending the window withdraws a pending unlock
 prompt. Focused (human-approved) fills keep working without sudo.
 
+## Vault capture and use by command and file (VAUDIT S2, S4)
+
+MP-08 / MP-09 / MP-10 / MP-11. A live window also brings two command tools.
+Both run argv (no shell) in the agent's workspace on the watched-process
+launch path (managed isolation, the agent's resource domain, its own process
+session, settled at kernel shutdown) and wait for the command, 120 s by
+default and at most 240 s, after which it is stopped.
+
+- `chariox.vault.capture_command {request_id, argv, cwd?, host, label?,
+  extract?, timeout_seconds?}` stores a secret the command prints into the
+  owner's Vault: the whole trimmed stdout, a JSON Pointer into stdout JSON, or
+  a regex group. The credential is bound to `host`, allows only `env` use and
+  injection, and records `created_by_kind = vault_capture` with the session,
+  agent and provider run. The result is `{credential_id, label, host, length,
+  created}`; stdout never leaves the kernel, and a failure says what went
+  wrong ("nothing was stored") with at most a sanitized stderr tail. The same
+  `request_id` returns the committed handle without running the command again.
+- `chariox.vault.use_env {argv, cwd?, env?: {NAME: credential_id}, stdin?,
+  timeout_seconds?}` injects `env` credentials into the command's environment
+  (added after isolation, never as arguments) and/or writes one to its stdin.
+  It returns `{status, exit_code, stdout, stderr, truncated}`; in this
+  command's output every injected value reads `[vault:<credential_id>]`. Later
+  reads elsewhere are not scrubbed: what the agent does with the command's
+  effects is its own action. Captured credentials stay in their session.
+
+Two file tools complete the set:
+
+- `chariox.vault.capture_file {request_id, path, host, label?, extract?,
+  replace_with_handle?}` stores a secret a tool already wrote into a workspace
+  file (`.env.local`, a downloaded key; at most 1 MiB) with the same
+  extraction (`whole`, JSON Pointer, regex group). With `replace_with_handle`
+  the value in the file becomes `${chariox:<credential_id>}`.
+- `chariox.vault.write_file {path, template, values: {NAME: credential_id},
+  mode?}` writes a workspace file (atomically, mode `600` by default) with
+  every `{{NAME}}` replaced by its Vault value and returns only the path, size
+  and placeholder names. The agent's own later read of that file is its own
+  action and is not scrubbed.
+
+Captured credentials allow the kernel-local uses `env` and `file` (injection
+`env` from a command, `file` from a file); either injection serves either use.
+Elevation goes through one gate (`vault_elevation_allows`): a live window
+today; the project mandate joins it as mandate-or-sudo. Owner-made
+credentials work here when they allow `env` or `file` use with an `env` or
+`file` injection.
+
 Run `scripts/kernel-access-sudo-drill.sh` on the Linux builder for the source
 regression drill; real acceptance uses the built TUI, kernel and an official
 provider (see the lane evidence).

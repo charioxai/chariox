@@ -196,6 +196,10 @@ impl KernelRuntimeState {
                 input_schema: serde_json::json!({"type":"object","required":["request"],"properties":{"request":{"type":"object"}},"additionalProperties":false}),
             });
             specs.push(super::sudo::vault_generate_spec());
+            specs.push(super::vault_command::capture_command_spec());
+            specs.push(super::vault_command::use_env_spec());
+            specs.push(super::vault_command::capture_file_spec());
+            specs.push(super::vault_command::write_file_spec());
         }
         if self.meta_runtime_tool_specs_enabled_for_auth_token(auth_token) {
             let room_tools = self.room_agent_tools_enabled();
@@ -367,6 +371,18 @@ impl KernelRuntimeState {
         }
         if tool_name == super::sudo::VAULT_GENERATE {
             return Box::pin(self.vault_generate(auth_token, arguments)).await;
+        }
+        if tool_name == super::vault_command::VAULT_CAPTURE_COMMAND {
+            return Box::pin(self.vault_capture_command(auth_token, arguments)).await;
+        }
+        if tool_name == super::vault_command::VAULT_USE_ENV {
+            return Box::pin(self.vault_use_env(auth_token, arguments)).await;
+        }
+        if tool_name == super::vault_command::VAULT_CAPTURE_FILE {
+            return Box::pin(self.vault_capture_file(auth_token, arguments)).await;
+        }
+        if tool_name == super::vault_command::VAULT_WRITE_FILE {
+            return Box::pin(self.vault_write_file(auth_token, arguments)).await;
         }
         {
             let owned = &self.owned;

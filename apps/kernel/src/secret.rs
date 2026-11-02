@@ -333,6 +333,15 @@ impl RuntimeSecretService {
                     ),
                 ));
             }
+            UserCredentialInjectionConfig::Env | UserCredentialInjectionConfig::File => {
+                return Err(secret_error(
+                    "http_request_with_credential",
+                    format!(
+                        "credential `{}` is configured for workspace commands and files",
+                        credential.id
+                    ),
+                ));
+            }
             UserCredentialInjectionConfig::Browser => {
                 return Err(secret_error(
                     "http_request_with_credential",
@@ -403,6 +412,36 @@ impl RuntimeSecretService {
 
     pub fn terminal_secret_input(&self, credential_id: &str) -> Result<String, DaemonError> {
         let credential = self.validate_terminal_secret_input(credential_id)?;
+        self.resolve_secret(credential)
+    }
+
+    /// A value the kernel injects into a command's environment or stdin.
+    pub fn command_secret_input(&self, credential_id: &str) -> Result<String, DaemonError> {
+        self.workspace_secret_input(credential_id, UserCredentialUse::Env)
+    }
+
+    /// A value the kernel writes into a file in the agent's workspace.
+    pub fn file_secret_input(&self, credential_id: &str) -> Result<String, DaemonError> {
+        self.workspace_secret_input(credential_id, UserCredentialUse::File)
+    }
+
+    /// Env and file are the kernel-local kinds: either injection serves either use.
+    fn workspace_secret_input(
+        &self,
+        credential_id: &str,
+        requested: UserCredentialUse,
+    ) -> Result<String, DaemonError> {
+        let credential = self.credential(credential_id)?;
+        self.ensure_use_allowed(credential, requested)?;
+        if !matches!(
+            credential.injection,
+            UserCredentialInjectionConfig::Env | UserCredentialInjectionConfig::File
+        ) {
+            return Err(secret_error(
+                "credential_policy",
+                format!("credential `{credential_id}` is not configured for workspace commands or files"),
+            ));
+        }
         self.resolve_secret(credential)
     }
 
@@ -907,6 +946,8 @@ fn injection_kind(injection: &UserCredentialInjectionConfig) -> &'static str {
         UserCredentialInjectionConfig::Basic { .. } => "basic",
         UserCredentialInjectionConfig::Hmac { .. } => "hmac",
         UserCredentialInjectionConfig::Pty => "pty",
+        UserCredentialInjectionConfig::Env => "env",
+        UserCredentialInjectionConfig::File => "file",
         UserCredentialInjectionConfig::Browser => "browser",
         UserCredentialInjectionConfig::Computer => "computer",
         UserCredentialInjectionConfig::Provider => "provider",
