@@ -413,9 +413,6 @@ impl KernelRuntimeState {
                     .is_some_and(|owner| owner.starts_with(&workflow_claim_owner_prefix))
                 && claim.operation == "workflow_node_dispatch"
         });
-        let mut workflow_dispatches = owned.workflow_maybe_start_next_queued_prompt(session_id);
-        workflow_dispatches.extend(owned.workflow_retry_blocked_claims());
-        self.spawn_workflow_prompt_dispatches(workflow_dispatches);
         let session = owned.session_store.get_session(session_id)?;
         let active_agents = owned
             .agent_store
@@ -458,6 +455,12 @@ impl KernelRuntimeState {
             self.cancel_workflow_agent_tasks(session_id, &workflow_run_id)
                 .await?;
         }
+        // Capture cancellation against the interrupted turn's provider before
+        // promotion can prepare a replacement provider for the shared agent.
+        // A cancelling prompt keeps its successor queued until abort settlement.
+        let mut workflow_dispatches = owned.workflow_maybe_start_next_queued_prompt(session_id);
+        workflow_dispatches.extend(owned.workflow_retry_blocked_claims());
+        self.spawn_workflow_prompt_dispatches(workflow_dispatches);
         Ok((workflow_run, owned.session_snapshot(session_id)?))
     }
 
