@@ -64,17 +64,19 @@ impl Default for KernelBrowserActors {
 impl KernelBrowserActors {
     pub(crate) fn reconcile(&mut self, state: &Value) -> Result<(), String> {
         self.reconcile_inventory(state, &state["_tab_creation_actions"])
+            .map(drop)
     }
+    /// Returns the Tabs this inventory first attributed to the actor whose admitted action opened them.
     pub(crate) fn reconcile_inventory(
         &mut self,
         state: &Value,
         creation_actions: &Value,
-    ) -> Result<(), String> {
+    ) -> Result<Vec<(String, EnvironmentActor)>, String> {
         let Some(generation) = state["generation"].as_u64() else {
-            return Ok(());
+            return Ok(Vec::new());
         };
         let Some(tabs) = state["tabs"].as_array() else {
-            return Ok(());
+            return Ok(Vec::new());
         };
         // MP-08/MP-10/MP-11: concurrent controller reads finish out of order; the
         // controller numbers its observations within a generation.
@@ -83,7 +85,7 @@ impl KernelBrowserActors {
             || generation == self.generation
                 && observation.is_some_and(|observation| observation <= self.observation)
         {
-            return Ok(());
+            return Ok(Vec::new());
         }
         self.observation = observation.unwrap_or(0);
         if generation != self.generation {
@@ -164,10 +166,10 @@ impl KernelBrowserActors {
             }));
         }
         self.host_tabs.retain(|tab, _| retained.contains(tab));
-        for (tab, actor) in discovered {
-            self.opened_tab(actor, &tab);
+        for (tab, actor) in &discovered {
+            self.opened_tab(actor.clone(), tab);
         }
-        Ok(())
+        Ok(discovered)
     }
     // MP-08/MP-10/MP-11: reuse only an already observed exact generation/document.
     // The controller still checks that live document before physical dispatch.
