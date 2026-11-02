@@ -11,7 +11,6 @@ import { KernelBrowserHost } from './kernel-browser-host.mjs';
 
 test('native snapshot upload submits matching names, sizes and hashes, refusing an outside file', async () => {
   assert(process.env.CHARIOX_KERNEL_BROWSER_EXECUTABLE, 'explicit installed Chromium required');
-  assert(process.getuid() !== 0, 'run as a normal Unix user');
   const root = await mkdtemp(path.join(tmpdir(), 'kernel-upload-native-'));
   const workspace = path.join(root, 'workspace'); await mkdir(workspace);
   const expected = [];
@@ -65,12 +64,13 @@ test('native snapshot upload submits matching names, sizes and hashes, refusing 
     }
     console.log('MP-08/MP-09/MP-10/MP-11 native form echo:', JSON.stringify(echoed));
     const connection = host.browser.connection;
-    const staging = path.join(tmpdir(), `chariox-browser-uploads-${process.getuid()}`, 'ledger.json');
+    const staging = path.join(connection.uploadStaging?.root ?? path.join(tmpdir(), `chariox-browser-uploads-${process.getuid()}`), 'ledger.json');
     assert(connection.hasStagedUploads);
     await host.stop();
     assert.equal((JSON.parse(await readFile(staging, 'utf8'))).filter(entry => entry.owner.pid === process.pid).length, 0);
   } finally {
     await host.stop();
+    if (host.chromium.browserUser) await rm(host.chromium.browserUser.root, { recursive: true, force: true });
     await new Promise(resolve => server.close(resolve));
     await rm(root, { recursive: true, force: true });
   }

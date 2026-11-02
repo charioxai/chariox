@@ -51,13 +51,16 @@ def process_state(owner):
         return "dead"
 
 
-def browser_owner(pid, port, pipe=False):
+def browser_owner(pid, port, pipe=False, uid=None):
     if pipe:
         if not isinstance(pid, int) or pid <= 1:
             return None
         try:
             owner = lifecycle.identity(pid)
-            if owner["uid"] != os.getuid() or b"--remote-debugging-pipe" not in Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0"):
+            command = Path(f"/proc/{pid}/cmdline").read_bytes()
+            # Chrome's SUID sandbox can flatten its process title. An exact
+            # switch still needs the verified uid and ancestry below.
+            if owner["uid"] != (os.getuid() if uid is None else uid) or not re.search(rb"(?:^|[\0 ])--remote-debugging-pipe(?:$|[\0 ])", command):
                 return None
             parent = pid
             for _ in range(32):
@@ -185,7 +188,15 @@ def prune_receipts(ledger):
 def transact(root, request):
     root.mkdir(mode=0o700, exist_ok=True)
     info = root.lstat()
-    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o777 != 0o700 or root.resolve() != root:
+    browser_uid, browser_gid = request.get('browserUid'), request.get('browserGid')
+    shared = (os.getuid() == 0 and type(browser_uid) is int and browser_uid > 0 and
+              type(browser_gid) is int and browser_gid > 0)
+    if (browser_uid is not None or browser_gid is not None) and not shared:
+        raise RuntimeError('invalid browser identity')
+    mode = 0o710 if shared else 0o700
+    if shared and info.st_gid != browser_gid:
+        raise RuntimeError('invalid browser staging group')
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o777 != mode or root.resolve() != root:
         raise RuntimeError("upload staging root must be canonical, private and user-owned")
     if (root / "lock").exists():
         raise RuntimeError("legacy upload lock has no verifiable owner; reconciliation required")
@@ -227,7 +238,7 @@ def transact(root, request):
                 raise RuntimeError("invalid upload reservation")
             if len(ledger) >= 128 or sum(item["bytes"] for item in ledger) + entry["bytes"] > min(request["maximumBytes"], MAX_BYTES) or sum(item["count"] for item in ledger) + entry["count"] > min(request["maximumFiles"], MAX_FILES):
                 raise RuntimeError("upload staging quota is full; browser retirement proof is required")
-            lifetime = browser_owner(request.get("browserPid"), request.get("browserPort"), request.get("browserPipe") is True)
+            lifetime = browser_owner(request.get("browserPid"), request.get("browserPort"), request.get("browserPipe") is True, browser_uid if shared else None)
             if lifetime is None:
                 raise RuntimeError("upload requires an owned browser lifetime")
             entry.update(phase="preparing", owner=lifecycle.identity(os.getppid()), lifetime=lifetime)

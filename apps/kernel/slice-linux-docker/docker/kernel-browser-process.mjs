@@ -3,7 +3,7 @@ import {displayGeometry as geometry, pageLimit, chromeBandHeight, featureOn} fro
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { retirePipeBrowserUploads } from './browser-controller-upload-staging.mjs';
-import { access, mkdir, readlink, open } from "node:fs/promises";
+import { access, mkdir, readlink, open, mkdtemp, rm } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import {OwnedDisplay} from "./kernel-browser-owned-display.mjs";
@@ -16,6 +16,7 @@ import { writePolicyLayer } from './kernel-browser-policy.mjs';
 import { browserLaunchFailureReason } from './kernel-browser-error-label.mjs';
 import { isOwnedAlive, validOwnedPid } from './linux-owned-process.mjs';
 import { requireBrowserMemory } from './browser-memory.mjs';
+import { rootBrowserUser, browserUserFailure } from './linux-browser-user.mjs';
 
 function platformPolicy(platform) {
   if (platform === "linux") return linux;
@@ -121,8 +122,17 @@ export class HostChromium {
     // MP-08/MP-11: settle a previously owned display before failed recovery.
     requireBrowserMemory();
     if (!keepDesktop) { await this.display?.close(); this.display = null; }
-    let environment = platformPolicy(process.platform).launchEnvironment(this.environment);
-    const profile = path.join(this.root, "profile");
+    this.browserUser ??= this.desktop?.browserUser ?? await rootBrowserUser(this.root);
+    if(this.browserUser && !linux.rootPolicyNamespaceAvailable(this.browserUser))throw browserUserFailure();
+    const filesRoot = this.browserUser?.root ?? this.root;
+    this.filesRoot = filesRoot;
+    if (this.browserUser && this.desktop) {
+      this.desktop.browserUser = this.browserUser;
+      this.desktop.root = filesRoot;
+      this.desktop.uid = this.browserUser.uid;
+    }
+    let environment = platformPolicy(process.platform).launchEnvironment(this.browserUser ? this.browserUser.environment(this.environment) : this.environment);
+    const profile = this.browserUser ? await this.browserUser.directory('profile') : path.join(this.root, "profile");
     await mkdir(profile, { recursive: true, mode: 0o700 });
     // Refuse a live profile owner before launching Chromium. Never
     // adopt an existing Chromium, delete singleton locks, or steal its profile.
@@ -155,15 +165,20 @@ export class HostChromium {
       try{environment={...environment,...await this.display.start()};}
       catch(error){await this.display.close();this.display=null;throw error;}
     }
-    const temporary = this.desktop?.runtime ?? this.root;
-    if (process.platform === 'linux') {
+    const temporary = this.desktop?.runtime ?? (this.browserUser ? await this.browserUser.directory('temporary') : this.root);
+    if (process.platform === 'linux' && !this.browserUser) {
       this.temporaryDirectory = await open(temporary, 'r');
       environment = chromiumTemporaryEnvironment(environment, this.temporaryDirectory.fd);
     }
     const args = launchArguments(profile,
       headlessLaunch(process.platform, environment), featureOn("CHARIOX_KERNEL_BROWSER_DISPLAY",environment) || featureOn("CHARIOX_KERNEL_BROWSER_MIRROR",environment), this.desktop?.binding() ? 1 : this.scale, platformPolicy(process.platform).videoDecodeArguments(environment));
-    this.policy = process.platform === "linux" && linux.policyNamespaceAvailable() ? "managed" : "unavailable";
-    const launch = this.policy === "managed" ? linux.policyLaunch(await writePolicyLayer(this.root, this.environment), temporary, binary, args) : { command: binary, args };
+    this.policy = (this.browserUser || process.platform === "linux" && linux.policyNamespaceAvailable()) ? "managed" : "unavailable";
+    // Root's mount construction must never write through a browser-writable
+    // parent. Chromium only receives the separate owned /tmp bind afterwards.
+    if(this.browserUser)this.namespaceRoot=await mkdtemp(path.join(this.root,'browser-namespace-'));
+    const launch = this.browserUser
+      ? linux.rootPolicyLaunch(await writePolicyLayer(this.root, this.environment), temporary, binary, args, this.browserUser, this.namespaceRoot)
+      : this.policy === "managed" ? linux.policyLaunch(await writePolicyLayer(this.root, this.environment), temporary, binary, args) : { command: binary, args };
     const command = this.desktop?.binding() ? desktopCommand(launch.command, launch.args) : { binary: launch.command, args: launch.args };
     const child = spawn(command.binary, command.args, {
       stdio: ['ignore', 'ignore', 'pipe', 'pipe', 'pipe'], env: environment,
@@ -178,6 +193,7 @@ export class HostChromium {
     connection.browserInstanceId = `pipe:${randomUUID()}`;
     if (this.desktop?.binding()) fenceScreenshotPresentation(connection);
     this.connection = connection;
+    connection.browserUser = this.browserUser;
     child.once('error', error => { spawnCode=error.code; void connection.close(); });
     child.once('exit', () => { void connection.close(); });
     try {
@@ -208,6 +224,7 @@ export class HostChromium {
       if (child?.pid !== undefined) throw new Error("MD-2: refusing unsafe browser process ID");
       if (keepDesktop) await this.desktop.stopBrowser(); else await this.desktop?.stop();
       await this.temporaryDirectory?.close(); this.temporaryDirectory = null;
+      await this.retireNamespace();
       return;
     }
     if (connection?.isOpen()) await connection.send("Browser.close").catch(() => {});
@@ -227,5 +244,10 @@ export class HostChromium {
     if (keepDesktop) await this.desktop.stopBrowser(); else { await this.desktop?.stop(); this.display = null; }
     await retirePipeBrowserUploads(connection);
     await this.temporaryDirectory?.close(); this.temporaryDirectory = null;
+    await this.retireNamespace();
+  }
+  async retireNamespace() {
+    if(this.namespaceRoot)await rm(this.namespaceRoot,{recursive:true,force:true});
+    this.namespaceRoot=null;
   }
 }

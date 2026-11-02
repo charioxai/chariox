@@ -25,7 +25,6 @@ export function videoDecodeArguments(environment, fs) {
 }
 export const headless = environment => environment.CHARIOX_KERNEL_BROWSER_HEADLESS === "1";
 export function launchEnvironment(environment, uid = process.getuid?.()) {
-  if (uid === 0) throw new Error("MD-2: run the kernel browser as a normal Unix user; root Chromium is unsupported");
   return environment;
 }
 // MP-11: Chromium reads managed policies only from its compiled /etc path. Run it
@@ -70,4 +69,20 @@ export function policyNamespaceAvailable(run = spawnSync, launcher = namespaceLa
 export function policyLaunch(layer, temporary, binary, args, uid = process.getuid(), gid = process.getgid(), launcher = namespaceLauncher(), storage = appStorageRoot) {
   if (!Number.isSafeInteger(uid) || uid <= 0 || !Number.isSafeInteger(gid) || gid < 0) throw new Error("MP-11: invalid browser user");
   return { command: launcher, args: ["--user", "--map-root-user", "--mount", "--", "/bin/sh", "-c", script, "chariox-browser", launcher, layer, temporary, String(uid), String(gid), storage, binary, "--disable-setuid-sandbox", ...args] };
+}
+
+// Root owns the policy mount, then irrevocably drops to the browser account.
+// Chromium creates its normal renderer sandbox; no sandbox-disabling switch.
+export function rootPolicyNamespaceAvailable(user, run = spawnSync, launcher = namespaceLauncher()) {
+  const target = user.command('/bin/true',[]);
+  return run(launcher,['--mount','--propagation','private','--',target.binary,...target.args],{stdio:'ignore',timeout:5000}).status === 0;
+}
+export function rootPolicyLaunch(layer, temporary, binary, args, user, workspace, launcher = namespaceLauncher()) {
+  if (![user?.uid,user?.gid].every(n=>Number.isSafeInteger(n)&&n>0)) throw new Error('MP-11: invalid browser user');
+  const rootScript = script
+    .replace('storage=$6; shift 6', 'storage=$6; workspace=$7; shift 7')
+    .replaceAll('$temporary/.root', '$workspace/.root')
+    .replace('exec "$launcher" --user --map-user="$uid" --map-group="$gid" -- "$@"',
+      'exec /usr/bin/setpriv --reuid="$uid" --regid="$gid" --clear-groups --inh-caps=-all --ambient-caps=-all -- "$@"');
+  return {command:launcher,args:['--mount','--propagation','private','--','/bin/sh','-c',rootScript,'chariox-browser','unused',layer,temporary,String(user.uid),String(user.gid),appStorageRoot,workspace,binary,...args]};
 }

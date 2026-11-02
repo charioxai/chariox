@@ -69,8 +69,8 @@ const fixedReasons=new Map([
  ['MP-11: frame observer unavailable','mirror_frame_observer_unavailable'],
  ['MP-11: mirror observation unavailable','mirror_observation_unavailable'],
  ['MP-11: closed-root frame snapshot unavailable','mirror_frame_snapshot_unavailable'],
+ ['MP-08: cannot use the unprivileged browser account; install useradd/getent/setpriv/unshare and allow root to create chariox-browser and private mount namespaces, then retry','browser_user_unavailable'],
  ['MD-2: install native Chromium or set CHARIOX_KERNEL_BROWSER_EXECUTABLE','browser_executable_unavailable'],
- ['MD-2: run the kernel browser as a normal Unix user; root Chromium is unsupported','browser_root_user_unsupported'],
  ['MD-2: browser profile is already owned by a live process','browser_profile_in_use'],
  ['MD-2: host tab limit reached','browser_tab_limit'],
  ['MD-2: frame exceeds limit','browser_frame_limit'],
@@ -116,6 +116,7 @@ export function hostErrorLabel(error) {
 // Keep kernel_browser_failed as the outer code; no serialized contract changes.
 // Existing Web clients match this sentence when retrying a read; append the cause.
 export function hostFailureMessage(error) {
+ if(fixedReasons.get(error?.message)==='browser_user_unavailable')return error.message;
  const label=hostErrorLabel(error);
  return 'MD-2: host browser operation failed; refresh state or check host browser readiness ('+(label.startsWith('host_error ')?label.slice('host_error '.length):label)+')';
 }

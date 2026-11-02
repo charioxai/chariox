@@ -54,12 +54,22 @@ export class BrowserUploadStaging {
       || !Number.isSafeInteger(this.maximumFiles) || this.maximumFiles < 1) throw denied("invalid upload staging limits");
   }
 
+  async shareDirectory(directory) {
+    if(!this.browserUser)return;
+    const file=await open(directory,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);
+    try{await file.chown(process.getuid(),this.browserUser.gid);await file.chmod(0o710);}finally{await file.close();}
+  }
+
   async directory() {
     const root = this.root ?? path.join(await realpath(tmpdir()), `chariox-browser-uploads-${process.getuid()}`);
-    await mkdir(root, { mode: 0o700 }).catch(error => { if (error.code !== "EEXIST") throw error; });
+    await mkdir(root, { mode: this.browserUser ? 0o710 : 0o700 }).catch(error => { if (error.code !== "EEXIST") throw error; });
+    if(this.browserUser){
+      const directory=await open(root,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);
+      try{await directory.chown(process.getuid(),this.browserUser.gid);await directory.chmod(0o710);}finally{await directory.close();}
+    }
     const status = await lstat(root);
     if (!status.isDirectory() || status.isSymbolicLink() || status.uid !== process.getuid()
-      || (status.mode & 0o777) !== 0o700 || await realpath(root) !== root) {
+      || (status.mode & 0o777) !== (this.browserUser ? 0o710 : 0o700) || await realpath(root) !== root) {
       throw denied("upload staging root must be a canonical private user-owned directory");
     }
     return root;
@@ -76,7 +86,7 @@ export class BrowserUploadStaging {
             : "upload staging transaction unavailable; retained data requires reconciliation"));
         });
       child.stdin.on("error", () => {});
-      child.stdin.end(JSON.stringify(request));
+      child.stdin.end(JSON.stringify({...request,...(this.browserUser?{browserUid:this.browserUser.uid,browserGid:this.browserUser.gid}:{})}));
     });
     return root;
   }
@@ -113,7 +123,8 @@ export class BrowserUploadStaging {
       await this.transaction({ action: "discard", id });
     };
     try {
-      await mkdir(leaseRoot, { mode: 0o700 });
+      await mkdir(leaseRoot, { mode: this.browserUser ? 0o750 : 0o700 });
+      await this.shareDirectory(leaseRoot);
       const staged = [];
       for (let index = 0; index < files.length; index += 1) {
         check();
@@ -131,6 +142,7 @@ export class BrowserUploadStaging {
             || before.ctimeNs !== approved.ctimeNs) throw denied("upload source changed after authorization");
           const slot = path.join(leaseRoot, String(index));
           await mkdir(slot, { mode: 0o700 });
+          await this.shareDirectory(slot);
           const destination = path.join(slot, path.basename(files[index]));
           const output = await open(destination, "wx", 0o400);
           try {
@@ -156,6 +168,7 @@ export class BrowserUploadStaging {
             check();
             await preserveTimestamp(output, approved.mtimeNs);
             check();
+            if(this.browserUser){await output.chown(process.getuid(),this.browserUser.gid);await output.chmod(0o440);}
             await output.sync();
           } finally { await output.close(); }
           staged.push(destination);
@@ -182,13 +195,20 @@ export class BrowserUploadStaging {
 
 const defaultStaging = new BrowserUploadStaging();
 export const stageBrowserUploadFiles = async options => {
-  const result = await defaultStaging.prepare(options);
+  let staging=options.connection?.uploadStaging ?? defaultStaging;
+  const user=options.connection?.browserUser;
+  if(user && !options.connection.uploadStaging){
+    staging=new BrowserUploadStaging({root:await user.directory('uploads',{uid:0,gid:user.gid,mode:0o710})});
+    staging.browserUser=user;
+    options.connection.uploadStaging=staging;
+  }
+  const result = await staging.prepare(options);
   if (options.browserIdentity.startsWith('pipe:')) options.connection.hasStagedUploads = true;
   return result;
 };
 export const retirePipeBrowserUploads = async connection => {
   if (connection?.hasStagedUploads) {
-    await defaultStaging.retirePipe(connection.browserInstanceId);
+    await (connection.uploadStaging ?? defaultStaging).retirePipe(connection.browserInstanceId);
     connection.hasStagedUploads = false;
   }
 };
