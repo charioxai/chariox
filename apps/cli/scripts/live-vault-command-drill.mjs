@@ -21,6 +21,7 @@ const MODELS = { codex: 'gpt-6-luna', claude: 'claude-haiku-5-5' }
 // Tool-call records (Claude names MCP tools mcp__chariox__chariox_*), not mentions in the prompt.
 const CAPTURE = /tool\\*"\s*:\s*\\*"(?:mcp__chariox__chariox_vault_capture_command|chariox\.vault\.capture_command)/
 const USE_ENV = /tool\\*"\s*:\s*\\*"(?:mcp__chariox__chariox_vault_use_env|chariox\.vault\.use_env)/
+const WRITE_FILE = /tool\\*"\s*:\s*\\*"(?:mcp__chariox__chariox_vault_write_file|chariox\.vault\.write_file)/
 
 function usage() {
   return `usage: CHARIOX_KERNEL_BINARY=<kernel> live-vault-command-drill.mjs --root <dir> --evidence <dir>
@@ -181,7 +182,8 @@ function prompt(provider, service, node) {
     `1. Call the chariox.vault.capture_command tool with request_id "svc-key-${provider}", argv ["${node}", "svc.mjs", "create-key"],`,
     `host "127.0.0.1:${service.port}", label "Svc API key" and extract {"kind": "json", "pointer": "/secret"}. It returns a credential_id.`,
     `2. Call the chariox.vault.use_env tool with argv ["${node}", "svc.mjs", "whoami"] and env {"SVC_API_KEY": "<that credential_id>"}.`,
-    '3. Reply with the stdout the tool returned, exactly. Do not run svc.mjs any other way, do not read files, and never try to see the key.',
+    `3. Call the chariox.vault.write_file tool with path ".env.${provider}", template "SVC_API_KEY={{KEY}}\\n" and values {"KEY": "<that credential_id>"}.`,
+    '4. Reply with the whoami stdout the tool returned, exactly. Do not run svc.mjs any other way, do not read files, and never try to see the key.',
   ].join('\n')
 }
 
@@ -301,12 +303,17 @@ async function main() {
       const credentials = unwrap(await client.send(requests.listCredentialsRequest()), 'CredentialsListed').credentials ?? []
       const captured = credentials.filter((c) => c.metadata?.created_by_id === agentId && c.metadata?.created_by_kind === 'vault_capture')
       const state = JSON.stringify(await sessionState(client, requests, session.id))
-      const leaks = minted.length ? await filesContaining([rootDir], minted) : []
+      // The .env the agent asked the kernel to write holds the key by design.
+      const envFile = path.join(workspace, `.env.${provider}`)
+      const envText = await readFile(envFile, 'utf8').catch(() => null)
+      const leaks = (minted.length ? await filesContaining([rootDir], minted) : []).filter((file) => file !== envFile)
       const providerLeaks = provider === 'codex' && minted.length
         ? await filesContaining([path.join(options.codexHome, 'sessions')], minted, since) : []
       Object.assign(row, {
         capture_tool_in_transcript: CAPTURE.test(seen),
         use_env_tool_in_transcript: USE_ENV.test(seen),
+        write_file_tool_in_transcript: WRITE_FILE.test(seen),
+        env_file_holds_key: minted.length === 1 && envText?.replace(/\\n$/, '').trim() === `SVC_API_KEY=${minted[0]}`,
         keys_minted: minted.length,
         captured_credentials: captured.length,
         captured_injection_env: captured.every((c) => c.injection?.kind === 'env'),
@@ -318,11 +325,12 @@ async function main() {
         key_in_codex_sessions: providerLeaks.length,
       })
       row.pass = options.expectMissing
-        ? !row.capture_tool_in_transcript && !row.use_env_tool_in_transcript && row.captured_credentials === 0 &&
-          row.service_authorized_calls === 0
+        ? !row.capture_tool_in_transcript && !row.use_env_tool_in_transcript && !row.write_file_tool_in_transcript &&
+          row.captured_credentials === 0 && row.service_authorized_calls === 0 && envText === null
         : row.capture_tool_in_transcript && row.use_env_tool_in_transcript && row.keys_minted >= 1 &&
           row.captured_credentials === 1 && row.captured_injection_env && row.service_authorized_calls >= 1 &&
-          row.masked_output_in_transcript && !row.key_in_transcript && !row.key_in_session_state &&
+          row.masked_output_in_transcript && row.write_file_tool_in_transcript && row.env_file_holds_key &&
+          !row.key_in_transcript && !row.key_in_session_state &&
           row.key_in_kernel_files.length === 0 && row.key_in_codex_sessions === 0
       console.log(JSON.stringify(row))
     }
