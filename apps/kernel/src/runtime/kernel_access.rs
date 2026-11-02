@@ -281,7 +281,7 @@ impl Refusal {
     pub(crate) fn message(self) -> &'static str {
         match self {
             Self::HumanOnly => "Only you can do this, in a Chariox terminal. An external agent can't.",
-            Self::NotCovered => "This process has no access. Only the agent you approved, and the programs it starts, are covered.",
+            Self::NotCovered => "This process has no access. Only the agent you approved, and the programs it starts, are covered. To cover a background process you started, run `chariox access cover --pid <its pid>` right after starting it; to get access for a new agent, run `chariox access request --until-exit`.",
             Self::Ended => "Access ended. Ask for new access if you still need it.",
             Self::EndedExpired => "Access ended because its time ran out. Ask for new access to continue.",
             Self::EndedHolderExited => "Access ended because the program that held it exited. Ask for new access from the program you are running now.",
@@ -389,5 +389,12 @@ mod tests {
             clock: Some(GrantClock::new(30, 5)),
         };
         assert_eq!(grant.ended_reason(Instant::now()), Some("expiry"));
+    }
+
+    #[test]
+    fn a_refused_process_is_told_how_to_get_covered() {
+        let message = Refusal::NotCovered.message();
+        assert!(message.contains("chariox access cover --pid"), "{message}");
+        assert!(message.contains("chariox access request"), "{message}");
     }
 }
