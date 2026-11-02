@@ -4,8 +4,10 @@ use sha2::{Digest, Sha256};
 
 #[test]
 fn vault_use_956_405_snapshot_and_hash() {
-    assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 956);
-    assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 405);
+    const {
+        assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 956);
+        assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 405);
+    }
     let expected: serde_json::Value =
         serde_json::from_str(include_str!("vault-use-956.json")).unwrap();
     let bindings: Vec<crate::config::VaultUseBinding> =
