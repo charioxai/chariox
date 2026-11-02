@@ -39,6 +39,7 @@ struct HostState {
     access: UserDomainAccess,
     actors: BTreeMap<String, Arc<Mutex<KernelBrowserActors>>>,
     loaded: BTreeSet<(String, String, KernelBrowserCapability)>,
+    download_sessions: BTreeMap<String, BTreeSet<String>>,
     expiry_wake: Option<Arc<tokio::sync::Notify>>,
 }
 #[derive(
@@ -153,6 +154,43 @@ impl KernelBrowserHost {
             .or_insert_with(|| Arc::new(super::kernel_browser_display_gate::DisplayGate::default()))
             .clone()
     }
+    pub(crate) fn cleanup_session_downloads(&self, session: &str) -> Result<(), String> {
+        let backends: Vec<_> = {
+            let state = self
+                .inner
+                .lock()
+                .map_err(|_| "browser host lock poisoned")?;
+            state
+                .download_sessions
+                .get(session)
+                .into_iter()
+                .flatten()
+                .filter_map(|user| state.browsers.get(user).cloned())
+                .collect()
+        };
+        for backend in backends {
+            let mut backend = backend
+                .lock()
+                .map_err(|_| "browser backend lock poisoned")?;
+            if !backend.host_is_live()? {
+                // The controller retires its stopped predecessor's artifacts without launching Chrome.
+                backend.start()?;
+            }
+            backend
+                .host_request_classified(
+                    "host.downloads.cleanup",
+                    serde_json::json!({"session_id": session}),
+                )
+                .map_err(|error| error.to_string())?;
+        }
+        self.inner
+            .lock()
+            .map_err(|_| "browser host lock poisoned")?
+            .download_sessions
+            .remove(session);
+        Ok(())
+    }
+
     pub(crate) fn profile_root(&self, user: &str) -> PathBuf {
         self.root.join(Self::profile_key(user))
     }
@@ -446,6 +484,19 @@ impl KernelBrowserHost {
         self.require_running()?;
         self.check_admission(admission)?;
         self.scope_browser_request(admission, method, &params)?;
+        if method == "host.browser"
+            && matches!(params["op"].as_str(), Some("open" | "navigate" | "input"))
+        {
+            if let Some(session) = params["_download_session"].as_str() {
+                self.inner
+                    .lock()
+                    .map_err(|_| "browser host lock poisoned")?
+                    .download_sessions
+                    .entry(session.into())
+                    .or_default()
+                    .insert(user.into());
+            }
+        }
         if method == "host.browser" && params["op"] == "stop" {
             let model = self.actor_model(user)?;
             let (id, cancellation) = {
@@ -604,7 +655,9 @@ impl KernelBrowserHost {
                     params["op"].as_str(),
                     Some("open" | "close" | "navigate" | "resize" | "input")
                 ));
-        if method == "host.browser" && params["op"] == "dialog" {
+        if method == "host.browser"
+            && matches!(params["op"].as_str(), Some("dialog" | "cancel_download"))
+        {
             let ledger = model.lock().map_err(|_| "MD-3: actor lock poisoned")?;
             if admission.is_some_and(|admission| admission.revoked_in_actor_lock()) {
                 return Err("MP-11: not_granted: browser authority revoked".into());
@@ -839,7 +892,7 @@ impl KernelBrowserHost {
                 }
                 if state.access.focused(user) != Some(agent) {
                     let grant = state.access.grant(user, agent)?;
-                    for field in ["tabs", "dialogs"] {
+                    for field in ["tabs", "dialogs", "downloads"] {
                         if let Some(tabs) = payload.get_mut(field).and_then(Value::as_array_mut) {
                             tabs.retain(|tab| {
                                 tab["tab_id"].as_str().is_some_and(|id| {

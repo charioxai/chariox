@@ -170,6 +170,7 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// MP-08/MP-10/MP-11: 384 binds `CompleteLeasedPrompt` to the exact home prompt and worker provider run, so a late
 /// completion cannot end the prompt that replaced it; it pairs with local 935.
 /// MP-08/MP-10/MP-11: 385 pairs the embedded local union with local 936 (non-blocking task-owned questions).
+/// Browser downloads 386 carries local 937 download state and cancellation.
 /// MP-08/MP-10/MP-11: 387 pairs the embedded local union with local 938 (kernel-resolved access holder).
 pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 387;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,

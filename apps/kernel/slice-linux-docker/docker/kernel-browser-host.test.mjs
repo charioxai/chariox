@@ -1032,7 +1032,7 @@ test("MP-08 completed agent input cannot attribute a later native popup on the s
   assert.equal(state._tab_openers?.[human.tab_id], undefined, "opener alone carries no actor evidence");
   assert.equal(state._tab_creation_actions?.[agent.tab_id], "action-agent");
   assert.equal(state._tab_creation_actions?.[human.tab_id], undefined);
-  assert.equal(handlers.size, 3, "activation, lockdown and recovery observers remain until host shutdown");
+  assert.equal(handlers.size, 4, "activation, downloads, lockdown and recovery observers remain until host shutdown");
 }));
 
 // MP-08/MP-10/MP-11: shared viewers observe one canonical tab, never change
@@ -1288,7 +1288,7 @@ test('MP-11 the host allows downloads and closes Tabs on blocked schemes only', 
   await host.request({ op: 'open', url: 'about:blank' });
   // Miguel 2026-10-15: no CDP download deny (r8 live drill: it also cancelled the Web Store package
   // of an extension the person adds); Chrome's settings/internal pages and DevTools stay open.
-  assert(!sent.some(call => call.method === 'Browser.setDownloadBehavior'), 'no CDP download deny');
+  assert(!sent.some(call => call.method === 'Browser.setDownloadBehavior' && call.params.behavior === 'deny'), 'downloads stay allowed in the managed spool');
   const send = connection.send;
   connection.send = async (method, params, session) => method === 'DOM.getDocument'
     ? { root: { nodeId: 1, documentURL: session === 'refused' ? 'chrome-error://chromewebdata/' : params.url } }
@@ -1445,8 +1445,8 @@ test('MP-11 agents cannot reach extension management; the person can', () => usi
 
 // MP-08/MP-10/MP-11 (protocol 530/138): the public Browser state keys are the hashed
 // Rust fixture's; a new key needs a protocol bump and a new fixture.
-test('MP-08 public Browser state keys match the protocol 933 fixture', () => using(async ({ host }) => {
-  const fixture = JSON.parse(await readFile(new URL('../../src/local/api/tests/protocol_shapes/browser-header-933.json', import.meta.url), 'utf8'));
+test('MP-08 public Browser state keys match the protocol 937 fixture', () => using(async ({ host }) => {
+  const fixture = JSON.parse(await readFile(new URL('../../src/local/api/tests/protocol_shapes/browser-header-937.json', import.meta.url), 'utf8'));
   const display = process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;
   process.env.CHARIOX_KERNEL_BROWSER_DISPLAY = '1';
   try {
@@ -1600,7 +1600,7 @@ test('MP-11 the host allows downloads and closes Tabs on blocked schemes only', 
   await host.request({ op: 'open', url: 'about:blank' });
   // Miguel 2026-10-15: no CDP download deny (r8 live drill: it also cancelled the Web Store package
   // of an extension the person adds); Chrome's settings/internal pages and DevTools stay open.
-  assert(!sent.some(call => call.method === 'Browser.setDownloadBehavior'), 'no CDP download deny');
+  assert(!sent.some(call => call.method === 'Browser.setDownloadBehavior' && call.params.behavior === 'deny'), 'downloads stay allowed in the managed spool');
   const send = connection.send;
   connection.send = async (method, params, session) => method === 'DOM.getDocument'
     ? { root: { nodeId: 1, documentURL: session === 'refused' ? 'chrome-error://chromewebdata/' : params.url } }
@@ -1865,11 +1865,11 @@ test('MP-08/MP-10/MP-11 a native key reads the active Tab live on a snapshot mis
 // MP-08/MP-10/MP-11: failed extension startup and browser recovery release observers.
 test('MP-08/MP-10/MP-11 native owner observers retire on recovery and shutdown',()=>using(async({host,chromium,handlers,connection})=>{
  const {ChromeTabGroups}=await import('./kernel-browser-tab-groups.mjs');
- await host.request({op:'open',url:'about:blank'});assert.equal(host.tabGroups,null);assert.equal(handlers.size,2,'failed extension load leaves lockdown and recovery');
- const groups=new ChromeTabGroups(connection);await groups.nativeState.attach('worker-session');host.tabGroups=groups;assert.equal(handlers.size,3);
+ await host.request({op:'open',url:'about:blank'});assert.equal(host.tabGroups,null);assert.equal(handlers.size,3,'failed extension load leaves downloads, lockdown and recovery');
+ const groups=new ChromeTabGroups(connection);await groups.nativeState.attach('worker-session');host.tabGroups=groups;assert.equal(handlers.size,4);
  chromium.child.exitCode=1;await host.request({op:'start'});
  assert.equal(groups.nativeState.closed,true);assert.equal(groups.nativeState.off,null);assert.equal(host.tabGroups,null);
- assert.equal(handlers.size,2,'lockdown and recovery remain; the retired native observer is gone');
+ assert.equal(handlers.size,3,'downloads, lockdown and recovery remain; the retired native observer is gone');
  await host.request({op:'stop'});assert.equal(handlers.size,0);
 }));
 
@@ -2658,4 +2658,21 @@ test('MP-08/MP-10 protocol933 portable header follows Chromium without a native 
  assert.equal(state.chrome_window,null);assert.equal(state.active_tab_id,second.tab_id);
  const tab=state.tabs.find(t=>t.tab_id===second.tab_id);assert.equal(tab.can_go_back,true);assert.equal(tab.can_go_forward,false);assert.equal(tab.favicon_png_base64,png);
  assert(state.tabs.some(t=>t.tab_id===first.tab_id));
+}));
+
+test('MP-08/MP-09/MP-10/MP-11 host state, cancellation and Room cleanup use the shared download registry', () => using(async ({host,handlers}) => {
+  const opened=await host.request({op:'open',url:'about:blank',_download_session:'room-a'});
+  const tab=host.tabs.get(opened.tab_id); host.browser.targetsByFrame=new Map([['download-frame',tab.target_id]]);
+  const emit=(method,params)=>{for(const handler of handlers)handler({method,params});};
+  emit('Browser.downloadWillBegin',{guid:'download-a',frameId:'download-frame',suggestedFilename:'test.txt'});
+  let state=await host.request({op:'state'}); assert.equal(state.downloads[0].state,'in_progress');
+  await assert.rejects(host.request({op:'cancel_download',generation:opened.generation+1,tab_id:tab.tab_id,download_id:'download-a'}));
+  state=await host.request({op:'cancel_download',generation:opened.generation,tab_id:tab.tab_id,download_id:'download-a'});
+  assert.equal(state.downloads[0].state,'in_progress');
+  emit('Browser.downloadProgress',{guid:'download-a',state:'canceled',receivedBytes:0}); await host.downloads.settle();
+  assert.equal((await host.request({op:'state'})).downloads[0].state,'cancelled');
+  const reply=await host.handle({id:1,method:'host.downloads.cleanup',params:{session_id:'room-a'}});
+  assert.equal(reply.ok,true); assert.deepEqual((await host.request({op:'state'})).downloads,[]);
+  const directory=host.downloads.root; await host.stop();
+  const {access}=await import('node:fs/promises'); await assert.rejects(access(directory));
 }));

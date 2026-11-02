@@ -78,6 +78,7 @@ while IFS= read -r request; do
  case "$request" in
   *'"method":"health"'*) printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s,"diagnostic_code":null}}\n' "$id" "$$" ;;
   *'"method":"host.revoke_subscriptions"'*) printf 'revoked\n' > "$1/subscriptions-revoked"; printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
+  *'"method":"host.downloads.cleanup"'*) printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
   *'"method":"host.protect"'*) printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
   *'"op":"state_signal"'*) after=${request#*'"after":'}; after=${after%%,*}; ms=${request#*'"wait_ms":'}; ms=${ms%%[!0-9]*}; ( n=0; while test "$(cat "$1/signal" 2>/dev/null || echo 0)" = "$after" && test "$n" -lt $((ms / 10)); do sleep 0.01; n=$((n+1)); done; printf '{"id":%s,"ok":true,"result":{"signal":%s}}\n' "$id" "$(cat "$1/signal" 2>/dev/null || echo 0)" ) & ;;
   *'"state_wait":true'*) printf '{"id":%s,"ok":true,"result":{"generation":1,"tabs":[{"tab_id":"host-tab-fixture","document_id":"document","title":"%s"}],"_state_signal":%s}}\n' "$id" "$(cat "$1/title" 2>/dev/null || echo first)" "$(cat "$1/signal" 2>/dev/null || echo 0)" ;;

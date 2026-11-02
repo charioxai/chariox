@@ -6,6 +6,7 @@
     "browser_lockdown",
     "chrome_window",
     "dialogs",
+    "downloads",
     "generation",
     "state",
     "tabs",
@@ -55,7 +56,8 @@
           "device_scale_factor": 2
         },
         "chrome_window": null,
-        "browser_lockdown": "unavailable"
+        "browser_lockdown": "unavailable",
+        "downloads": []
       }
     }
   }

@@ -217,6 +217,12 @@ pub enum KernelBrowserCommand {
         x: u32,
         y: u32,
     },
+    /// Cancel an observed download in the current host generation (937/386).
+    CancelDownload {
+        tab_id: String,
+        generation: u64,
+        download_id: String,
+    },
     Input {
         tab_id: String,
         generation: u64,

@@ -436,6 +436,12 @@ impl KernelRuntimeOwnedState {
         for agent in self.agent_store.get_session_agents(session_id) {
             self.kernel_browser_host.revoke_agent(agent.id());
         }
+        self.kernel_browser_host
+            .cleanup_session_downloads(session_id)
+            .map_err(|message| DaemonError::LocalTransport {
+                operation: "clean up browser downloads",
+                message,
+            })?;
         self.cancel_owned_agent_wakes(session_id, None);
         self.withdraw_agent_interactions(session_id, None)?;
 

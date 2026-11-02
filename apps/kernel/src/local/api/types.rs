@@ -446,6 +446,7 @@ pub use workspace::*;
 /// MP-08/MP-10/MP-11: 935 binds the leased prompt completion to its exact prompt and worker run (peer 384).
 /// MP-08/MP-10/MP-11: 936 adds non-blocking task-owned questions (`asking_task_id` on interactions, answered
 /// through `RespondToInteraction`; peer 385).
+/// Browser downloads 937 adds bounded Room artifacts and cancellation.
 /// MP-08/MP-10/MP-11: 938 lets the kernel pick an access holder from the peer's host ancestry, own
 /// `--no-wait` requests and report one holder's status (`GetKernelAccessStatus`; peer 387).
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 938;
