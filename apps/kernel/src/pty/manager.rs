@@ -815,7 +815,7 @@ impl PtyManager {
         let writer_process_key = process_key.clone();
         let writer_output_signal = self.output_signal.clone();
         let writer_thread = thread::Builder::new()
-            .name(format!("chariox-pty-writer-{}", provider_run_id))
+            .name(format!("chariox-pty-writer-{provider_run_id}"))
             .stack_size(PTY_WRITER_STACK_BYTES)
             .spawn(move || {
                 run_pty_writer(
@@ -854,7 +854,7 @@ impl PtyManager {
         let reader_gate = Arc::new(ReaderGate::default());
         let gate = Arc::clone(&reader_gate);
         let reader_thread = thread::Builder::new()
-            .name(format!("chariox-pty-reader-{}", provider_run_id))
+            .name(format!("chariox-pty-reader-{provider_run_id}"))
             .stack_size(PTY_READER_STACK_BYTES)
             .spawn(move || {
                 let mut buffer = [0_u8; 4096];

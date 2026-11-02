@@ -786,7 +786,7 @@ pub(super) fn validate_volume_binding_for_schema(
                 number > 0 && number <= MAX_SAFE_INTEGER && number.to_string() == value
             })
     });
-    if !valid_serial || !size_gb.is_some_and(|value| value > 0) {
+    if !valid_serial || size_gb.is_none_or(|value| value == 0) {
         return Err(state_error("data-volume bootstrap binding is invalid"));
     }
     Ok(())
