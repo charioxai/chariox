@@ -18,8 +18,9 @@ import { fileURLToPath } from 'node:url'
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const repoRoot = path.resolve(scriptDir, '..', '..', '..')
 const MODELS = { codex: 'gpt-6-luna', claude: 'claude-haiku-5-5' }
-const CAPTURE = /vault[._]capture_command/
-const USE_ENV = /vault[._]use_env/
+// Tool-call records (Claude names MCP tools mcp__chariox__chariox_*), not mentions in the prompt.
+const CAPTURE = /tool\\*"\s*:\s*\\*"(?:mcp__chariox__chariox_vault_capture_command|chariox\.vault\.capture_command)/
+const USE_ENV = /tool\\*"\s*:\s*\\*"(?:mcp__chariox__chariox_vault_use_env|chariox\.vault\.use_env)/
 
 function usage() {
   return `usage: CHARIOX_KERNEL_BINARY=<kernel> live-vault-command-drill.mjs --root <dir> --evidence <dir>
@@ -317,7 +318,8 @@ async function main() {
         key_in_codex_sessions: providerLeaks.length,
       })
       row.pass = options.expectMissing
-        ? row.captured_credentials === 0 && row.service_authorized_calls === 0
+        ? !row.capture_tool_in_transcript && !row.use_env_tool_in_transcript && row.captured_credentials === 0 &&
+          row.service_authorized_calls === 0
         : row.capture_tool_in_transcript && row.use_env_tool_in_transcript && row.keys_minted >= 1 &&
           row.captured_credentials === 1 && row.captured_injection_env && row.service_authorized_calls >= 1 &&
           row.masked_output_in_transcript && !row.key_in_transcript && !row.key_in_session_state &&
