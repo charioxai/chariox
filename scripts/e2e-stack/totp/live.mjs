@@ -46,11 +46,13 @@ async function texts(directory) {
 let kernel, client, browser, site, page, browserRoot, sessionId
 let rawKernelLog = ''
 let stateEnvironment, workspace
+let ownsRoot = false, ownsWorkspace = false
 async function screenshot(step) { await page.screenshot({ path: path.join(evidence, `${step}.png`) }) }
 
 try {
-  await mkdir(root, { recursive: true, mode: 0o700 })
   await mkdir(evidence, { recursive: true, mode: 0o700 })
+  await mkdir(root, { mode: 0o700 })
+  ownsRoot = true
   results.head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: tree, encoding: 'utf8' }).trim()
   results.kernelSha256 = createHash('sha256').update(await readFile(binary)).digest('hex')
   results.localProtocol = Number(execFileSync(binary, ['--print-local-daemon-protocol-version'], { encoding: 'utf8' }).trim())
@@ -58,6 +60,7 @@ try {
   workspace = process.env.CHARIOX_TOTP_WORKSPACE ?? `/root/work/agent-vtotp-drill-${dpr}-${process.pid}`
   assert.ok(workspace.startsWith('/root/work/agent-vtotp-drill-'), 'use an owned drill workspace outside runtime state')
   await mkdir(workspace)
+  ownsWorkspace = true
   execFileSync('git', ['init', '-q', '-b', 'totp-drill', workspace])
   const home = path.join(root, 'home')
   const config = path.join(root, 'config')
@@ -83,12 +86,16 @@ try {
     const uid = Number(execFileSync('id', ['-u', 'ubuntu'], { encoding: 'utf8' }).trim())
     const gid = Number(execFileSync('id', ['-g', 'ubuntu'], { encoding: 'utf8' }).trim())
     await chown(owned, uid, gid)
+    const sourceChrome = process.env.CHARIOX_TOTP_SOURCE_CHROME ?? '/usr/lib/chariox/browser/chromium/155.0.8059.79/chrome-linux64/chrome'
+    assert.ok(sourceChrome.startsWith('/'), 'source Chromium must be an absolute path')
+    results.sourceBrowserVersion = execFileSync(sourceChrome, ['--version'], { encoding: 'utf8' }).trim()
+    assert.ok(results.sourceBrowserVersion.includes('155.0.8059.79'), 'use product-pinned Chrome for Testing')
     const wrapper = path.join(browserRoot, 'node-host')
     const quote = value => "'" + value.replaceAll("'", "'\\''") + "'"
-    await writeFile(wrapper, `#!/bin/sh\nset -eu\n[ "$#" -eq 3 ] && [ "$2" = stdio ]\nexec /usr/sbin/runuser -u ubuntu -- /usr/bin/env -i PATH=/usr/local/bin:/usr/bin:/bin HOME=/home/ubuntu TMPDIR=${quote(owned)} CHARIOX_KERNEL_BROWSER_HEADLESS=1 CHARIOX_KERNEL_BROWSER_DISPLAY=1 CHARIOX_KERNEL_BROWSER_MIRROR=1 /usr/bin/node "$1" stdio ${quote(owned)}\n`, { mode: 0o700 })
+    await writeFile(wrapper, `#!/bin/sh\nset -eu\n[ "$#" -eq 3 ] && [ "$2" = stdio ]\nexec /usr/sbin/runuser -u ubuntu -- /usr/bin/env -i PATH=/usr/local/bin:/usr/bin:/bin HOME=/home/ubuntu TMPDIR=${quote(owned)} CHARIOX_KERNEL_BROWSER_EXECUTABLE=${quote(sourceChrome)} CHARIOX_KERNEL_BROWSER_DISPLAY=1 CHARIOX_KERNEL_BROWSER_MIRROR=1 /usr/bin/node "$1" stdio ${quote(owned)}\n`, { mode: 0o700 })
     stateEnvironment.CHARIOX_BROWSER_CONTROLLER_NODE = wrapper
     stateEnvironment.CHARIOX_KERNEL_BROWSER_SCRIPT = path.join(assets, 'kernel-browser-host.mjs')
-    results.browserAdapter = 'real host adapter as ubuntu; sandbox enabled; headless pinned Chromium'
+    results.browserAdapter = 'real host adapter as ubuntu; sandbox enabled; headed pinned Chromium'
   }
   const log = createWriteStream(path.join(evidence, 'kernel.private.log'), { mode: 0o600 })
   kernel = spawnOwned(binary, [], { cwd: workspace, env: stateEnvironment, stdio: ['ignore', 'pipe', 'pipe'], detached: true })
@@ -102,6 +109,8 @@ try {
   }, 'kernel ready')
   const linked = variant(await client.send({ LinkProviderAccountProfile: { provider: 'codex', label: name, path: profile } }), 'ProviderAccountProfile').profile
   await client.send({ SetDefaultProviderAccountProfile: { provider: 'codex', account_profile: linked.profile_id } })
+  await client.send({ RefreshProviderAccountProfile: { provider: 'codex', account_profile: linked.profile_id } })
+  console.log('MP-08 / MP-09 / MP-10 / MP-11: own kernel and linked provider ready')
   const { chromium } = await import(process.env.CHARIOX_TOTP_PLAYWRIGHT ?? '/w/valenv/tools/node_modules/playwright-core/index.mjs')
   // This is only the test viewer. The source browser above retains its sandbox.
   browser = await chromium.launch({ headless: true, executablePath: '/opt/google/chrome/chrome', args: ['--no-sandbox', '--disable-dev-shm-usage'] })
@@ -119,6 +128,7 @@ try {
     if (result.status === 'denied') throw Error('device enrollment denied')
     return result.status === 'approved'
   }, 'own kernel enrollment', 120_000)
+  console.log('MP-08 / MP-09 / MP-10 / MP-11: hosted enrollment approved')
   await page.goto(origin + '/terminal?ui=os', { waitUntil: 'domcontentloaded' })
   await page.locator('[data-feature-new="room"]').waitFor({ timeout: 60_000 })
   await page.locator('[data-feature-new="room"]').click()
@@ -146,6 +156,7 @@ try {
   const agent = variant(await client.send({ SpawnAgent: { session_id: sessionId, provider: 'codex', account_profile: linked.profile_id, alias: 'TOTP', model: 'gpt-6-luna', effort: 'low', execution_mode: 'build', permission_level: 'yolo', worktree_id: null, kernel_ref: null, worktree_placement: null } }), 'AgentSpawned').agent
   await page.locator('[data-room-agent]').filter({ hasText: 'TOTP' }).first().click()
   await screenshot('01-new-ui-room')
+  console.log('MP-08 / MP-09 / MP-10 / MP-11: new-UI Room ready')
   site = await startTotpSite()
   async function submit(prompt) { await page.locator('[data-prompt-input]').fill(prompt); await page.locator('[data-prompt-input]').press('Enter') }
   const answered = new Set()
@@ -174,19 +185,24 @@ try {
       if (await popup.locator('[data-passkey-popup-approve]').count()) await popup.locator('[data-passkey-popup-approve]').click()
       else await popup.locator('button.work-editor-save').first().click()
       answered.add(interaction.id)
+      console.log('MP-08 / MP-09 / MP-10 / MP-11: answered protected owner interaction ' + title)
       results.interactions.push({ title, kind: interaction.kind, answeredIn: 'terminal-os masked field' })
       await sleep(300)
     }
   }
   const request = (id, injection, title) => JSON.stringify({ credential: { id, allowed_hosts: [new URL(site.origin).host], allowed_uses: ['browser'], injection }, prompt: { title, message: 'Enter the disposable local test-site value in the protected field.', timeout_sec: 180 }, overwrite: false })
   await submit('Use chariox.request_credential_secret with ' + request('bootstrap', { kind: 'browser' }, 'TOTP bootstrap') + '. This creates the disposable test Vault. Do not use shell/file tools or ask for the value in chat. After storage reply BOOTSTRAP_READY.')
-  await until(async () => { await answerOwnerInput(); return (await page.locator('.agent-pane').filter({ hasText: 'TOTP' }).first().innerText()).includes('BOOTSTRAP_READY') }, 'protected Vault bootstrap', 240_000)
+  await until(async () => { await answerOwnerInput(); return (await page.locator('.agent-pane').filter({ hasText: 'TOTP' }).first().innerText()).split('BOOTSTRAP_READY').length > 2 }, 'protected Vault bootstrap', 240_000)
   await screenshot('02-protected-bootstrap')
   await page.locator('[data-action="open-room-view"]').last().click()
   await page.locator('[data-open-room-view="browser"]').click()
   await page.locator('.kernel-browser-omnibox').first().waitFor({ timeout: 60_000 })
   await submit('/sudo Complete this local 2FA test using Chariox browser tools. First call chariox.request_credential_secret with ' + request('authenticator', { kind: 'totp' }, 'TOTP enrollment key') + '. Then load the kernel browser tools and navigate to ' + site.origin + '/enable. Find the observed Authentication code input and fill it only using chariox.kernel_browser_paste_secret credential_id=authenticator, submit=false. Take a browser snapshot and screenshot BEFORE clicking enable; verify the filled field is redacted. Click the observed enable button and verify Two-factor authentication enabled. Log out. Wait at least 31 seconds using a shell sleep (do not calculate or read any codes). Sign in by filling the observed Authentication code field with the same credential handle; click login and verify Signed in. Log out, wait at least another 31 seconds, then repeat sign in in another period. Never read/echo any key or code, never use page evaluation or direct HTTP to submit a code. Use fresh observed node_ref/document_id/generation for every fill. Keep tools moving until both sign-ins succeeded; report TOTP_TWO_PERIODS_DONE. Do not finish early.')
   await until(async () => { await answerOwnerInput(); const stats = site.stats(); return stats.enrollmentSuccesses === 1 && stats.loginSuccesses >= 2 }, 'agent enrollment and two-period sign-in', 480_000)
+  await until(async () => {
+    await answerOwnerInput()
+    return (await page.locator('.agent-pane').filter({ hasText: 'TOTP' }).first().innerText()).split('TOTP_TWO_PERIODS_DONE').length > 2
+  }, 'provider completion after two sign-ins', 120_000)
   await screenshot('03-two-period-sign-in')
   const transcript = await texts(path.join(root, 'history'))
   const visible = await page.locator('.agent-pane').filter({ hasText: 'TOTP' }).first().innerText()
@@ -219,7 +235,7 @@ try {
     results.cleanup = { kernelPid: kernel.pid, exitCode: kernel.exitCode, signal: kernel.signalCode }
   }
   await record()
-  await rm(root, { recursive: true, force: true })
+  if (ownsRoot) await rm(root, { recursive: true, force: true })
   if (browserRoot) await rm(browserRoot, { recursive: true, force: true })
-  if (workspace) await rm(workspace, { recursive: true, force: true })
+  if (ownsWorkspace) await rm(workspace, { recursive: true, force: true })
 }
