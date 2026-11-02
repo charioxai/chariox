@@ -408,7 +408,7 @@ impl DaemonApp {
             kernel_browser_host:
                 crate::runtime::kernel_browser_host::KernelBrowserHost::for_database(
                     config.private_runtime_state_root(),
-                    config.durable_state_path(),
+                    &config.durable_state_path(),
                 )
                 .map_err(|_| DaemonError::InvalidConfig {
                     field: "durable_state_path",
