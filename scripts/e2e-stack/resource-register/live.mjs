@@ -79,10 +79,15 @@ function objects(value, result = []) {
 }
 async function approve() {
   const passkey = page.locator('[data-passkey-popup-input]')
-  if (await passkey.count() && await passkey.isVisible() && await passkey.isEnabled()) {
-    await passkey.fill(fixture.passphrase)
-    await page.locator('[data-passkey-popup-approve]').click()
+  const ready = () => passkey.evaluateAll(fields => fields.length === 1 && !fields[0].disabled && fields[0].getClientRects().length > 0)
+  if (!await ready()) return
+  try {
+    await passkey.fill(fixture.passphrase, { timeout: 1500 })
+    await page.locator('[data-passkey-popup-approve]').click({ timeout: 1500 })
     report.owner_interactions.push({ kind: 'sudo', client: 'terminal-os', at: new Date().toISOString() })
+  } catch (error) {
+    // A pending popup can be replaced or dismissed between observation and input.
+    if (await ready()) throw error
   }
 }
 async function storeKey(key, handle) {
