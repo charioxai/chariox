@@ -6280,3 +6280,14 @@ managed-upgrade list is [629, 636, 911, 923, 934]. Focused checks:
 
 Landing 3 carries local 934 to 937 / relay peer 383 to 386 on top of the Landing 2 release at
 local 933 / peer 382, so the managed-upgrade list is [629, 636, 911, 923, 933, 936, 937].
+
+
+## MP-08 / MP-09 / MP-10 / MP-11 shared client protocol discovery (950/399)
+
+`RelayStatus.status.local_daemon_protocol_version` is the answering kernel's
+`LOCAL_DAEMON_PROTOCOL_VERSION`. Local IPC, direct and encrypted relay callers
+read the same status projection. Hosted and self-hosted Web links read it before
+becoming ready, including reconnects, instead of depending on a Cloud heartbeat.
+The pairing-only link still joins before making any other request. This field
+advertises support; every request retains its kernel-owned authorization checks.
+The managed upgrade policy keeps predecessors 936 and 937 plus target 950.

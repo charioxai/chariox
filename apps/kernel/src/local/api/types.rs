@@ -447,4 +447,5 @@ pub use workspace::*;
 /// MP-08/MP-10/MP-11: 936 adds non-blocking task-owned questions (`asking_task_id` on interactions, answered
 /// through `RespondToInteraction`; peer 385).
 /// Browser downloads 937 adds bounded Room artifacts and cancellation.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 937;
+/// Protocol 950 advertises the answering kernel protocol in RelayStatus.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 950;
