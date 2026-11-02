@@ -1,7 +1,7 @@
 // MP-08/MP-10/MP-11: a mutation of the owned Tab, not a new observation attachment.
 import {assertNotCancelled} from './browser-controller-actions.mjs';
 import {withWindowGeometry} from './kernel-browser-window-geometry.mjs';
-import {pageLimit} from './kernel-browser-geometry.mjs';
+import {displayGeometry,pageLimit} from './kernel-browser-geometry.mjs';
 export async function resizeBrowserPage(host,tab,command,signal){
  const {width,height}=command;
  if(!Number.isSafeInteger(width)||!Number.isSafeInteger(height)||width<320||height<200||width>pageLimit.width||height>pageLimit.height)throw Error('browser resize needs a viewport between 320x200 and 1920x1080; adjust the browser area');
@@ -9,7 +9,7 @@ export async function resizeBrowserPage(host,tab,command,signal){
  assertNotCancelled(signal);
  if(host.generation!==command.generation||host.tabs.get(tab.tab_id)?.target_id!==tab.target_id)throw Error('browser resize target retired; refresh the browser view and try again');
  const previous=host.pageSize(tab.tab_id);
- const browser=host.browser,{connection,sessionId}=await browser.resolvePageTarget(tab.target_id);
+ const browser=host.browser,{connection}=await browser.resolvePageTarget(tab.target_id);
  const current=()=>{assertNotCancelled(signal);if(host.browser!==browser||host.generation!==command.generation||host.tabs.get(tab.tab_id)?.target_id!==tab.target_id)throw Error('browser resize target retired; refresh the browser view and try again');};
  current();
  const measure=async()=>{
@@ -22,7 +22,9 @@ export async function resizeBrowserPage(host,tab,command,signal){
   const window=host.chromeWindows.current().tabbed;
   page={width:window.page_rect.width/window.scale,height:window.page_rect.height/window.scale};
  }else{
-  const metrics=await connection.send('Page.getLayoutMetrics',{},sessionId);page={width:metrics.cssLayoutViewport?.clientWidth,height:metrics.cssLayoutViewport?.clientHeight};
+  // Headless Tabs can retain different emulated layouts. Only the shared
+  // window's last size (or its launch size) describes its actual content area.
+  page=host.windowLayout??displayGeometry;
  }
  const {windowId,bounds}=await connection.send('Browser.getWindowForTarget',{targetId:tab.target_id});current();
  if(bounds?.windowState!=='normal')throw Error('restore the browser window before resizing');
