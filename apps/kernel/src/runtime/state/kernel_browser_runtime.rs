@@ -1245,6 +1245,21 @@ mod document_tests {
         assert!(serde_json::from_value::<crate::local::KernelBrowserRequest>(serde_json::json!({"command":{"op":"input","tab_id":"host-tab-a","generation":1,"document_id":"caller-cannot-inject-private-fields","input":{"kind":"click","x":1,"y":2}}})).is_err());
     }
     #[test]
+    fn mcp_download_cancel_uses_an_observed_download_without_a_renderer_document() {
+        let params = browser_tool_params(serde_json::json!({"command":{
+            "op":"cancel_download","tab_id":"tab","generation":7,"download_id":"download-a"
+        }}))
+        .unwrap();
+        assert_eq!(params["download_id"], "download-a");
+        assert_eq!(params["focused_agent"], true);
+        assert!(params.get("document_id").is_none());
+        assert!(browser_tool_params(serde_json::json!({"command":{
+            "op":"cancel_download","tab_id":"tab","generation":7
+        }}))
+        .is_err());
+    }
+
+    #[test]
     fn provider_tools_cannot_open_a_live_stream() {
         // Agents read with state, snapshot and screenshot; a stream is only for a person watching.
         for command in [

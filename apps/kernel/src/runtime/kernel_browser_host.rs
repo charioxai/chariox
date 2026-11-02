@@ -39,6 +39,7 @@ struct HostState {
     access: UserDomainAccess,
     actors: BTreeMap<String, Arc<Mutex<KernelBrowserActors>>>,
     loaded: BTreeSet<(String, String, KernelBrowserCapability)>,
+    download_sessions: BTreeMap<String, BTreeSet<String>>,
     expiry_wake: Option<Arc<tokio::sync::Notify>>,
 }
 #[derive(
@@ -154,14 +155,19 @@ impl KernelBrowserHost {
             .clone()
     }
     pub(crate) fn cleanup_session_downloads(&self, session: &str) -> Result<(), String> {
-        let backends: Vec<_> = self
-            .inner
-            .lock()
-            .map_err(|_| "browser host lock poisoned")?
-            .browsers
-            .values()
-            .cloned()
-            .collect();
+        let backends: Vec<_> = {
+            let state = self
+                .inner
+                .lock()
+                .map_err(|_| "browser host lock poisoned")?;
+            state
+                .download_sessions
+                .get(session)
+                .into_iter()
+                .flatten()
+                .filter_map(|user| state.browsers.get(user).cloned())
+                .collect()
+        };
         for backend in backends {
             let mut backend = backend
                 .lock()
@@ -175,6 +181,11 @@ impl KernelBrowserHost {
                     .map_err(|error| error.to_string())?;
             }
         }
+        self.inner
+            .lock()
+            .map_err(|_| "browser host lock poisoned")?
+            .download_sessions
+            .remove(session);
         Ok(())
     }
 
@@ -471,6 +482,19 @@ impl KernelBrowserHost {
         self.require_running()?;
         self.check_admission(admission)?;
         self.scope_browser_request(admission, method, &params)?;
+        if method == "host.browser"
+            && matches!(params["op"].as_str(), Some("open" | "navigate" | "input"))
+        {
+            if let Some(session) = params["_download_session"].as_str() {
+                self.inner
+                    .lock()
+                    .map_err(|_| "browser host lock poisoned")?
+                    .download_sessions
+                    .entry(session.into())
+                    .or_default()
+                    .insert(user.into());
+            }
+        }
         if method == "host.browser" && params["op"] == "stop" {
             let model = self.actor_model(user)?;
             let (id, cancellation) = {

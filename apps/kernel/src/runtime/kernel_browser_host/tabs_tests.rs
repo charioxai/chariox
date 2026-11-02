@@ -139,3 +139,76 @@ done
         assert_eq!(after, before);
     }
 }
+
+#[test]
+fn mp08_mp10_mp11_downloads_follow_retained_tab_grants_and_session_cleanup() {
+    let root = std::env::temp_dir().join(format!(
+        "chariox-download-grant-{:032x}",
+        rand::random::<u128>()
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let script = root.join("controller.sh");
+    std::fs::write(&script, r#"set -eu
+root=$1
+while IFS= read -r request; do
+ id=${request#*:}; id=${id%%,*}
+ case "$request" in
+ *'"method":"health"'*) printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s,"diagnostic_code":null}}\n' "$id" "$$" ;;
+ *'"method":"host.protect"'*) printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
+ *'"method":"host.downloads.cleanup"'*) printf cleaned > "$root/cleaned"; printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
+ *'"method":"host.browser"'*) printf '{"id":%s,"ok":true,"result":{"generation":1,"tab_id":"mine","tabs":[{"tab_id":"mine","document_id":"d"},{"tab_id":"other","document_id":"x"}],"downloads":[{"download_id":"a","tab_id":"mine","state":"done","path":"/private/room-a/a"},{"download_id":"b","tab_id":"other","state":"done","path":"/private/room-b/b"}]}}\n' "$id" ;;
+ *'"method":"shutdown"'*) printf '{"id":%s,"ok":true,"result":{"state":"stopped","process_id":null,"diagnostic_code":null}}\n' "$id"; exit 0 ;;
+ esac
+done
+"#).unwrap();
+    let host = KernelBrowserHost::new(root.clone());
+    host.install_fixture_backend("alice", &script, &root);
+    host.backend("alice")
+        .unwrap()
+        .lock()
+        .unwrap()
+        .start()
+        .unwrap();
+    host.set_focus("alice", Some("mara"));
+    host.load("alice", "mara").unwrap();
+    let policy = json!({"values":[],"targets":[],"unknown":false});
+    host.protected_request(
+        "alice",
+        Some("mara"),
+        "host.browser",
+        json!({"op":"open","url":"https://example.com","_download_session":"room-a"}),
+        policy.clone(),
+    )
+    .unwrap();
+    host.set_focus("alice", Some("otto"));
+    let state = host
+        .protected_request(
+            "alice",
+            Some("mara"),
+            "host.browser",
+            json!({"op":"state"}),
+            policy.clone(),
+        )
+        .unwrap();
+    assert_eq!(state["downloads"].as_array().unwrap().len(), 1);
+    assert_eq!(state["downloads"][0]["download_id"], "a");
+    assert!(!state.to_string().contains("/private/room-b"));
+    assert!(host
+        .protected_request(
+            "alice",
+            Some("mara"),
+            "host.browser",
+            json!({"op":"cancel_download","tab_id":"other","generation":1,"download_id":"b"}),
+            policy
+        )
+        .is_err());
+    host.cleanup_session_downloads("unrelated-room").unwrap();
+    assert!(!root.join("cleaned").exists());
+    host.cleanup_session_downloads("room-a").unwrap();
+    assert_eq!(
+        std::fs::read_to_string(root.join("cleaned")).unwrap(),
+        "cleaned"
+    );
+    host.shutdown().unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
