@@ -122,61 +122,16 @@ existing service namespace. The dedicated Ubuntu24.04 storage drill covers
 that seam; its first execution and the Ubuntu26.04 full image gate remain
 required validation.
 
-## Disposable Hetzner builder
+## Image preparation and installed runtime consumers
 
-Create one x86 Hetzner server from the `ubuntu-26.04` system image. Give the
-server, its temporary SSH key, and its temporary SSH firewall the label
-`chariox.dev/managed-image-builder=true`. Limit inbound TCP 22 to the operator's
-current address. Do not attach the final outbound-only managed-machine firewall
-to this builder.
+New reusable images use Cloud's preinstall recipe and snapshot lifecycle, followed
+by the [authenticated boot installer](AUTHENTICATED_KERNEL_BOOT.md) on each
+allocation. No release root filesystem or kernel version is installed in the
+base image. The old disposable builder marker, topology selector and preparation
+command are removed.
 
-Before copying release files, write this exact marker on the disposable server:
-
-```text
-managed-remote-kernels-image-builder-v1
-```
-
-Store it at `/.chariox-managed-image-builder`. Copy the release root filesystem,
-the trusted public key, and `deploy/managed-kernel/` to a task directory. The
-image topology is a required caller-provided validation input. The production
-managed image is the shared-host topology, so pass `shared_host` explicitly;
-omitting it or using an unknown value fails closed instead of silently skipping
-the Bubblewrap/provider-bind validation. A disposable Path-1 worker image must
-likewise opt in explicitly with `path1`.
-
-Run the production/shared-host preparation path with:
-
-```sh
-# New allocation boot: see AUTHENTICATED_KERNEL_BOOT.md.
-```
-
-For a disposable-VM Path-1 image, replace `shared_host` with `path1` and set
-`CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY=<external-pinned-builder-public-key>` in
-the `sudo env` command. Keep that file root-owned with mode `0600` for upgrades.
-The key path must be outside the release rootfs;
-omitting it fails before package installation or image mutation. Use the same
-external pin for Path-1 `upgrade-image.sh` and parity collection's
-`--kernel-builder-public-key` argument. The shared-host rollback path does not
-require the new builder pin.
-
-The preparation script refuses an unmarked host or the wrong OS and
-architecture. It installs Node.js 22, Docker, Git and GitHub tooling, the exact
-pinned Codex, OpenCode, and Claude Code releases, and the signed Chariox
-release. It disables and masks the rootful Docker units, verifies both are
-inactive, rejects any live owner or unexpected file at the rootful socket path,
-and removes only the stale socket inode Ubuntu 26.04 can leave behind after
-shutdown. It then validates a rootless daemon owned by the separate
-`chariox-docker` principal. Neither the kernel nor its
-provider and shell descendants can open that daemon socket. At boot the
-bootstrap supervisor claims a single broker connection before any provider can
-start. The broker socket is owned by `chariox-docker:chariox-slice`, has mode
-`0660`, and lives below the setgid, non-listable
-`/var/lib/chariox-slice-share/.broker-private/control` directory. The broker
-immediately removes its listener after the bootstrap claim and accepts only
-bounded slice operations and host paths under `/var/lib/chariox-slice-share`.
-The credential vault remains under the private `chariox` home. Docker and the
-broker are soft dependencies: kernel bootstrap still runs if either is
-unavailable, while slice operations report Docker as unavailable.
+The remaining broker and update notes describe installed runtime consumers.
+They are not a second recipe for building new managed VM base images.
 
 The broker runs as `chariox-docker` inside the rootless Docker daemon's user,
 mount, and network namespaces. Its mount namespace contains RootlessKit's
