@@ -16,7 +16,7 @@ impl KernelRuntimeState {
             .agent_tasks(Some(&continuation.session_id), Some(&continuation.agent_id))?
             .into_iter()
             .find(|task| continuation.source_prompt_id.as_deref() == Some(task.prompt_id.as_str()));
-        let Some(task) = source_task else {
+        let Some(mut task) = source_task else {
             // MP-08/MP-10/MP-11: a worker cannot mint a home task or
             // replay an unbound prompt. Surface the lost intent through
             // the existing terminal/history projection instead of silence.
@@ -25,6 +25,16 @@ impl KernelRuntimeState {
                 "catalog continuation home-owned task intent is missing",
             ));
         };
+        // The Claude Stop hook ends a turn without the managed settlement, so the
+        // loader turn's task may still be unsettled when its idle agent gets here.
+        if task.state == crate::durable_state::agent_lifecycle::ExecutionState::Working {
+            task = self.owned.prepare_catalog_continuation(
+                &continuation.session_id,
+                &continuation.agent_id,
+                &task.prompt_id,
+                task.provider_run_id.as_deref().unwrap_or_default(),
+            )?;
+        }
         if task.state == crate::durable_state::agent_lifecycle::ExecutionState::Working
             && task.wait.is_none()
             && task.pending_prompt_id.as_deref()

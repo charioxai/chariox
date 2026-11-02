@@ -194,6 +194,46 @@ fn claude_permission_recent_appends_every_drain_as_received() {
 }
 
 #[test]
+fn the_models_own_reply_on_the_recent_frame_is_not_a_provider_failure() {
+    let root = std::env::temp_dir().join(format!(
+        "chariox-claude-recent-reply-test-{}-{}",
+        std::process::id(),
+        timestamp_millis()
+    ));
+    fs::create_dir_all(&root).expect("test root should be created");
+    let context_file = root.join("context.json");
+    let events_file = root.join("events.jsonl");
+    let run = startup_readiness_run(
+        "session",
+        "agent",
+        "run-recent-reply",
+        &context_file,
+        &events_file,
+        "true".into(),
+    );
+    let recent = claude_permission_recent_file(&context_file.display().to_string()).unwrap();
+
+    // The reply of the previous turn, drawn on the terminal with dropped
+    // characters, merely talks about limits.
+    fs::write(
+        &recent,
+        "apshot was t o large to read n full, the page said it was rate limited\n",
+    )
+    .unwrap();
+    assert!(claude_native_recent_terminal_failure(&run).is_none());
+
+    // The provider's own limit dialog is still a failure.
+    fs::write(
+        &recent,
+        "You've hit your session limit · resets 3:50am (Europe/Madrid)\n",
+    )
+    .unwrap();
+    assert!(claude_native_recent_terminal_failure(&run)
+        .is_some_and(|failure| failure.contains("substitutable resource limit")));
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn claude_permission_detection_bridges_every_permission_request() {
     let mcp_permission = serde_json::json!({
         "hook_event_name": "PermissionRequest",

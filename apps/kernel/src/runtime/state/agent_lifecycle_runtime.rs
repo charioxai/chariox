@@ -322,6 +322,31 @@ impl KernelRuntimeOwnedState {
                 .map(|ended| (ended, false)),
         )
     }
+    /// Binds the loader turn's task to the continuation it was promised. An
+    /// already prepared, blocked, waiting or finished task comes back unchanged.
+    pub(super) fn prepare_catalog_continuation(
+        &self,
+        room: &str,
+        agent: &str,
+        prompt: &str,
+        run: &str,
+    ) -> Result<AgentTaskExecution, DaemonError> {
+        match self
+            .durable_state_store
+            .agent_lifecycle(Operation::PrepareCatalogContinuation {
+                room: room.into(),
+                agent: agent.into(),
+                prompt: prompt.into(),
+                run: run.into(),
+                next_prompt: format!("task-catalog:{prompt}"),
+                now: crate::session::unix_epoch_ms(),
+            })? {
+            Outcome::Task(task) => Ok(task),
+            _ => Err(crate::durable_state::agent_lifecycle::error(
+                "catalog continuation returned no task",
+            )),
+        }
+    }
     pub(super) fn settle_agent_task_answered_by(
         &self,
         room: &str,
@@ -358,22 +383,12 @@ impl KernelRuntimeOwnedState {
                 });
             if catalog_handoff {
                 let next_prompt = format!("task-catalog:{}", prompt.id());
-                if let Outcome::Task(task) = self.durable_state_store.agent_lifecycle(
-                    Operation::PrepareCatalogContinuation {
-                        room: room.into(),
-                        agent: agent.into(),
-                        prompt: prompt.id().into(),
-                        run: run.into(),
-                        next_prompt: next_prompt.clone(),
-                        now: crate::session::unix_epoch_ms(),
-                    },
-                )? {
-                    if task.state == ExecutionState::Blocked
-                        || (task.state == ExecutionState::Working
-                            && task.pending_prompt_id.as_ref() == Some(&next_prompt))
-                    {
-                        return Ok(Some((task, false)));
-                    }
+                let task = self.prepare_catalog_continuation(room, agent, prompt.id(), run)?;
+                if task.state == ExecutionState::Blocked
+                    || (task.state == ExecutionState::Working
+                        && task.pending_prompt_id.as_ref() == Some(&next_prompt))
+                {
+                    return Ok(Some((task, false)));
                 }
             }
         }

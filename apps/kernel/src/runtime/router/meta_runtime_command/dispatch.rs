@@ -645,10 +645,7 @@ impl CommandRouter {
             created_slice = Some(slice);
         }
 
-        let same_provider = spawn
-            .provider
-            .as_deref()
-            .is_none_or(|p| p == metaagent.provider());
+        let same_provider = spawns_same_provider(spawn.provider.as_deref(), metaagent);
         let request = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
             no_subscribe: false,
             session_id: session.id().to_string(),

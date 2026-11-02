@@ -215,7 +215,9 @@ pub(crate) fn claude_native_recent_terminal_failure(
         .get("CHARIOX_CLAUDE_NATIVE_CONTEXT")?;
     let recent_failure_file = claude_permission_recent_file(context_file)?;
     let recent_failure = fs::read_to_string(recent_failure_file).ok()?;
-    crate::provider::classify_provider_terminal_failure_text(
+    // The recent frame holds the model's own replies too: only a provider
+    // error frame or limit dialog counts, never prose that mentions a limit.
+    crate::provider::classify_provider_terminal_failure_output_text(
         provider_run.adapter_key(),
         &recent_failure,
     )

@@ -47,6 +47,19 @@ fn shell_quote_for_meta_command(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
+/// A child started in another mode of the parent's provider (`claude` under
+/// `claude-headless`) keeps the parent's account, model and effort.
+pub(super) fn spawns_same_provider(
+    spawn_provider: Option<&str>,
+    metaagent: &crate::agent::AgentInstance,
+) -> bool {
+    spawn_provider.is_none_or(|provider| {
+        crate::provider::canonical_provider_family(provider).is_some_and(|family| {
+            Some(family) == crate::provider::canonical_provider_family(metaagent.provider())
+        }) || provider == metaagent.provider()
+    })
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct MetaAgentSpawnArgs {
     pub(super) alias: Option<String>,
