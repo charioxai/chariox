@@ -166,6 +166,7 @@ fn paused_by_the_previous_program(writer: &Workload) -> admission::HeldCommand {
         wait: Some(admission::Wait::Paused(WaitReason::Disk)),
         admitted: true,
         forced: false,
+        stopped: true,
         paused_rate: 4 * MIB,
         peak: admission::Peak::default(),
         arrived: 1,
@@ -242,6 +243,35 @@ fn a_command_admission_paused_is_still_listed_and_startable_after_a_hot_reload()
     );
     settle(1);
     assert!(!writer.waiting("write"), "Start now did not start it");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_command_the_person_started_now_still_never_waits_after_a_hot_reload() {
+    let (writer, _free, pool) = paused_writer();
+    let key = format!("admission-{:016x}", rand::random::<u64>());
+    writer.domain.bind_key(&key);
+    let process_id = samples_for_key(&key)
+        .into_iter()
+        .find(|sample| sample.pid == writer.pid("write") as u32)
+        .unwrap()
+        .process_id;
+    assert_eq!(
+        start_now_for_key(&key, process_id.clone()),
+        Ok(vec![process_id])
+    );
+    settle(2);
+    assert!(!writer.waiting("write"), "Start now did not start it");
+    // The disk stays below the floor across the reload.
+    let handed_over: Vec<admission::HeldCommand> =
+        serde_json::from_slice(&serde_json::to_vec(&pool.held_commands()).unwrap()).unwrap();
+    assert_eq!(handed_over.len(), 1, "the override was not handed over");
+    reload(&writer, handed_over);
+    settle(4);
+    assert!(
+        !writer.waiting("write"),
+        "the reload paused the command the person started now"
+    );
 }
 
 /// How the terminal's shell found the line that started the writer.
