@@ -84,10 +84,8 @@ test('MP-08/MP-10/MP-11 a pinned popup-free extension cannot receive native agen
     while(Date.now()<deadline){const found=(await controls(label)).find(match);if(found)return found;await delay(200)}
     assert.fail('Chrome accessibility control ready: '+label+'; visible fixture controls: '+JSON.stringify((await controls('')).map(node=>node.name)));
    };
-   const menu=await control('Extensions menu',node=>node.name==='Extensions menu');await click(menu);
-   const pin=await control('Pin',node=>node.name.includes('MP11'));await click(pin);
-   await adapter.request({op:'input',surface_id:base.surface_id,generation:base.generation,input:{kind:'key',key:'Escape'}},{});await delay(200);
-   const action=(await controls('MP11')).find(node=>node.name==='MP11 Popup Free Action');assert(action);
+   // The pinned Chromium developer loader exposes the action on the toolbar.
+   const action=await control('MP11 Popup Free Action',node=>node.name==='MP11 Popup Free Action');
    const worker=async()=> (await cdp.send('Target.getTargets')).targetInfos.find(target=>target.type==='service_worker'&&target.url===`chrome-extension://${id}/background.js`);
    const count=async()=>{
     let target;for(let i=0;i<50&&!target;i++){target=await worker();if(!target)await delay(100)}assert(target);const {sessionId}=await cdp.send('Target.attachToTarget',{targetId:target.targetId,flatten:true});
