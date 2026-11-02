@@ -288,7 +288,7 @@ export class KernelBrowserHost {
       // Attribution UI only: a browser without the component extension still works.
       this.tabGroups = new ChromeTabGroups(connection, () => this.stateSignal.notify());
       this.browser.nativeViewport = target => this.tabGroups?.viewport(target) ?? null;
-      try { await this.tabGroups.load(await writeTabGroupsExtension(this.root)); } catch { this.tabGroups?.close?.();this.tabGroups = null; this.timing('tab_groups_unavailable', timestamp()); }
+      try { await this.tabGroups.load(await writeTabGroupsExtension(this.chromium.filesRoot ?? this.root)); } catch { this.tabGroups?.close?.();this.tabGroups = null; this.timing('tab_groups_unavailable', timestamp()); }
       const { targetInfos = [] } = await connection.send("Target.getTargets");
       // Headed Chromium exits when its last page closes. Keep one internal blank
       // target so startup and closing the last user tab never stop the browser.

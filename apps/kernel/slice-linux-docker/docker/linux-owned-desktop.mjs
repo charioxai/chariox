@@ -1,11 +1,12 @@
 // MP-08 / MP-11: one lazy owned desktop per kernel user, never the login session.
 import { spawn } from 'node:child_process';
-import { access, mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { access, mkdtemp, mkdir, rm, open } from 'node:fs/promises';
 import { randomBytes, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import os from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
+import { rootBrowserUser } from './linux-browser-user.mjs';
 import { desktopApplication } from './desktop-applications.mjs';
 import { processIdentity, settleOwned, descendants, observedDescendants } from './linux-owned-process.mjs';
 const readyDesktops = new WeakSet();
@@ -50,10 +51,10 @@ export class LinuxOwnedDesktop {
   isLive() { return readyDesktops.has(this) && Boolean(this.current) && !this.children.some(({child,core})=>core&&(child.exitCode!==null||child.signalCode!==null)); }
   get child() { return this.children.find(item => item.name === 'bwrap')?.child ?? null; }
   get environment() { return this.current?.environment; }
-  async launch(name, args, env, stdio = ['ignore', 'ignore', 'ignore']) {
+  async launch(name, args, env, stdio = ['ignore', 'ignore', 'ignore'], { supervisor = false } = {}) {
     const core = ['Xvfb', 'bwrap', 'openbox', 'dbus-daemon'].includes(name);
-    const command = core ? desktopCommand(this.commands[name] ?? name, args)
-      : { binary: this.commands[name] ?? name, args };
+    const target = this.browserUser && !supervisor ? this.browserUser.command(this.commands[name] ?? name, args) : {binary:this.commands[name] ?? name,args};
+    const command = core ? desktopCommand(target.binary, target.args) : target;
     const child = spawn(command.binary, command.args, { env, stdio });
     // Attach before the first asynchronous boundary to prevent unhandled spawn errors.
     child.on('error', () => {});
@@ -76,8 +77,9 @@ export class LinuxOwnedDesktop {
     if(!binding)throw Error('MP-08: native desktop unavailable');
     const app=await desktopApplication({op:'resolve',application_id:applicationId},binding.environment,signal);
     if(signal?.aborted || this.current!==binding)throw Error('MP-11: application launch cancelled');
-    const command=desktopCommand(app.argv[0],app.argv.slice(1));
-    const child=await this.launch(command.binary,command.args,binding.environment);
+    const target=this.browserUser?this.browserUser.command(app.argv[0],app.argv.slice(1)):{binary:app.argv[0],args:app.argv.slice(1)};
+    const command=desktopCommand(target.binary,target.args);
+    const child=await this.launch(command.binary,command.args,binding.environment,undefined,{supervisor:true});
     const record=this.children.find(item=>item.child===child);
     const stop=()=>void settleOwned([record]);
     signal?.addEventListener('abort',stop,{once:true});
@@ -136,6 +138,10 @@ export class LinuxOwnedDesktop {
     try { return await this.starting; } finally { this.starting = null; }
   }
   async create() {
+    if(this.uid===0 && !this.browserUser){
+      this.browserUser=await rootBrowserUser(this.root);
+      this.root=this.browserUser.root; this.uid=this.browserUser.uid;
+    }
     desktopEnvironment(this.source, this.root, this.uid);
     // MP-08/MP-10/MP-11: the Python supervisor otherwise hides a missing
     // executable behind a child-readiness exit. Name only fixed prerequisites,
@@ -152,9 +158,18 @@ export class LinuxOwnedDesktop {
     await mkdir(this.root, { recursive: true, mode: 0o700 });
     this.runtime = await mkdtemp(path.join(this.root, 'desktop-'));
     try {
-      const env = desktopEnvironment(this.source, this.runtime, this.uid);
+      if(this.browserUser){
+        const directory=await open(this.runtime,'r');
+        try{await directory.chown(this.browserUser.uid,this.browserUser.gid);}finally{await directory.close();}
+      }
+      const env = desktopEnvironment(this.browserUser ? {...this.source,...this.browserUser.environment(this.source)} : this.source, this.runtime, this.uid);
+      if(this.browserUser)env.CHARIOX_OWNED_DESKTOP_UID=String(this.browserUser.uid);
       const cookie = randomBytes(16);
-      await writeFile(env.XAUTHORITY, authorityCookie(cookie), { mode: 0o600, flag: 'wx' });
+      let display;
+      const authority=await open(env.XAUTHORITY,'wx',0o600);
+      try {
+      await authority.writeFile(authorityCookie(cookie));
+      if(this.browserUser)await authority.chown(this.browserUser.uid,this.browserUser.gid);
       // MP-08 / MP-11: Xvfb hardcodes /tmp for sockets and compiled keymaps,
       // ignoring TMPDIR. Bind only its owned runtime there; no global temp
       // permissions are required. Keep the network/IPC namespaces shared so
@@ -165,10 +180,13 @@ export class LinuxOwnedDesktop {
         this.commands.Xvfb ?? 'Xvfb', '-displayfd', '3', '-screen', '0', `${this.size.width}x${this.size.height}x24`,
         '-auth', '/tmp/Xauthority', '-nolisten', 'tcp', '-noreset',
       ], { ...env, TMPDIR: '/tmp', XAUTHORITY: '/tmp/Xauthority' }, ['ignore', 'ignore', 'ignore', 'pipe']);
-      const display = await firstLine(x.stdio[3], x);
+      display = await firstLine(x.stdio[3], x);
       x.stdio[3].destroy();
       if (!/^\d{1,5}$/.test(display)) throw new Error('MP-11: invalid owned display');
-      await writeFile(env.XAUTHORITY, authorityCookie(cookie, display), { mode: 0o600 });
+      await authority.truncate(0);
+      const readyCookie=authorityCookie(cookie,display);
+      await authority.write(readyCookie,0,readyCookie.length,0);
+      } finally {await authority.close();}
       cookie.fill(0);
       env.DISPLAY = `:${display}`;
       // Filesystem socket paths fail for long kernel state roots; AT-SPI's

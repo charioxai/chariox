@@ -28,6 +28,28 @@ resize and window inventory run through its worker. Without the runtime display
 libraries those operations are unavailable; ordinary kernel and DOM browser
 operations remain available. Featureless builds refuse every native resize.
 
+MP-08 / MP-09 / MP-10 / MP-11: a Linux kernel running as root lazily creates
+and validates the locked system account `chariox-browser` using `useradd`.
+Chromium, Xvfb, the desktop buses and graphical applications run as that user,
+with supplementary groups cleared and Chromium's sandbox enabled. The kernel
+keeps control, Vault handling and capture workers under its own identity. CDP
+uses inherited private pipes; it never opens a debugging TCP port.
+
+Root browser files live under `/var/lib/chariox-browser/<profile-root-hash>/`;
+the profile and browser home are private to that account. The root kernel's home
+and Vault remain private. Uploads expose only validated workspace copies through
+read-only group access; the quota ledger stays root-only. Chromium writes to an
+owned incoming download directory, and the controller moves completed files to
+the kernel user's existing browser-downloads path. Stop retires incoming files,
+upload leases and the owned desktop; the browser profile persists. Non-root
+Linux kernels and macOS retain their existing paths and identities.
+
+The root path requires `getent`, `useradd`, `setpriv` and usable private mount
+namespaces. A host that cannot provision or use the account returns
+`browser_user_unavailable` with recovery instructions. Setup's pinned Chromium
+and AppArmor profiles remain required on hosts restricting unprivileged user
+namespaces; disabling Chromium's sandbox is never a recovery step.
+
 OpenH264, x264 and libavcodec/libavutil are also loaded at runtime. The codec uses
 public `AVCodecContext`, `AVFrame`, `AVPacket` and `AVHWFramesContext` fields:
 FFmpeg majors 58, 59, 60 and 61 do **not** share those struct layouts. Only the

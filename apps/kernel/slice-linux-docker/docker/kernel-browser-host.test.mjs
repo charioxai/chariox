@@ -479,7 +479,7 @@ test("MD-5: metadata scrubs echoes and never persists a secret-bearing restore U
   const offscreen = macEnvironment({ ...environment, CHARIOX_KERNEL_BROWSER_HEADLESS: "0" });
   assert(launchArguments("/private/drill/profile", offscreen.CHARIOX_KERNEL_BROWSER_HEADLESS === "1", true).includes("--headless=new"), "Browser does not create native windows on the owner's Mac desktop");
   assert.equal(environment.DISPLAY, ":99");
-  assert.throws(() => linuxEnvironment({}, 0), /normal Unix user/);
+  assert.deepEqual(linuxEnvironment({}, 0), {});
   assert.deepEqual(linuxEnvironment({ DISPLAY: ":99" }, 501), { DISPLAY: ":99" });
   const args = launchArguments("/private/drill/profile", false);
   assert(!args.some(arg => /headless|no-sandbox|password-store|mock-keychain/.test(arg)));
