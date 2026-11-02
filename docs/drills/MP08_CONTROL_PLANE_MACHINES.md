@@ -5,12 +5,13 @@ service capability; compute catalogs, limits, billing and policies stay in Cloud
 The approved Machines window is maintained by the Machines UI lane. This drill
 adds no Health placement or alternative UI.
 
-1. Build the base and use its real client to send `ListManagedEnvironmentCatalog`.
-   Retain the `client_cloud_authority_required` refusal as the red control.
-2. Sign the owner's actual client into an isolated hosted Cloud stack and connect
-   it to a separately enrolled home kernel. A client relay-token issuance binds
-   that kernel's active enrollment generation to the authenticated owner session.
-   Kernel enrollment or a Room invitation by itself confers no rental authority.
+1. Build the base and use a real enrolled home agent after the owner's client
+   disconnects and signs out. Retain the base's absent capability or refused
+   acquire as the red control for enrollment-based machine authority.
+2. Enroll a separate home kernel in an isolated hosted Cloud stack as its owner.
+   The kernel's enrollment credential supplies Cloud authority; no human session
+   bearer is transferred to the kernel or agent. A Room invitation alone grants
+   no rental authority.
 3. Start a real official provider on the home machine and approve its normal
    Chariox process grant. It sends `ControlPlane` requests with `chariox request`:
 
@@ -35,9 +36,12 @@ adds no Health placement or alternative UI.
    are Cloud record identities, never raw provider snapshot identifiers. Cloud
    reuses the same lifecycle, generation and idempotency fences as the window.
 6. Refuse another account, a Room member lacking the grant, an ended grant,
-   stale capability/revision, and a mismatched enrolled target/key. Sign the
-   connected client out, then prove subsequent requests cannot dispatch. Normal
-   session refresh must preserve the binding; a new login requires reconnection.
+   stale capability/revision, and a mismatched enrolled target/key. Fully
+   disconnect and sign the owner's client out, then acquire, use and release a
+   VM through the same home agent grant. Unenroll/revoke the home kernel in Cloud
+   and prove subsequent requests cannot dispatch. Existing account allowance
+   and quota refusals remain actionable; client session expiry or deletion does
+   not end enrollment authority.
    Also approve a grant before Cloud login: after enrollment the owner must still
    see and revoke it, and the next agent gateway request must be refused.
 7. Use the identical OSS binary self-hosted. Discovery is empty and forged rents

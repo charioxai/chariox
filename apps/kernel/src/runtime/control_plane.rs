@@ -14,7 +14,7 @@ pub(crate) async fn execute(
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let capabilities = matches!(request, ControlPlaneRequest::Capabilities {});
     // The same process-bound grant used for Rooms, exec and the gateway. A Room
-    // invite or a provider bearer alone can never spend the owner's Cloud session.
+    // invite or provider bearer alone cannot use the owner's kernel enrollment.
     if let Some(grant) = command.external_grant_id() {
         state.authorize_external_request(
             &grant,
@@ -52,7 +52,7 @@ pub(crate) async fn execute(
     ).await.map_err(|error| {
         match crate::runtime::cloud_api_client::cloud_error_code(&error) {
             Some("authorization_denied" | "session_invalid" | "client_revoked" | "identity_revoked") =>
-                unavailable("control_plane_authorization_denied", "Reconnect the owner's signed-in client and refresh machine capabilities"),
+                unavailable("control_plane_authorization_denied", "Check this kernel's owner enrollment and refresh machine capabilities"),
             _ => error,
         }
     })?;

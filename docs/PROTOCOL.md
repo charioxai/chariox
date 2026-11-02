@@ -5058,6 +5058,18 @@ grants or draw the popup need 568.
 Relay peer 176 carries the same shapes. The Rust hash test
 `local_kernel_access_protocol_451_has_no_session_scope_or_bearer` pins them.
 
+Optional machine capabilities (local 959 / peer 408; MP-08 / MP-09 / MP-10 /
+MP-11). `ControlPlane` uses the same process-bound owner grant as the ordinary
+kernel gateway. The kernel authenticates to Cloud with its enrollment
+credential, never a human session bearer. Cloud validates that current
+enrollment and its owner's account role and allowance on every operation.
+Closing a client, disconnecting or signing out does not remove machine
+authority. Revoking/unenrolling the kernel, ending the agent grant, or
+exhausting the account's existing allowance prevents further operations.
+Room membership alone is insufficient. Capability revisions bind to the kernel
+enrollment generation and current catalog, independently of client sessions.
+See [the real drill](drills/MP08_CONTROL_PLANE_MACHINES.md).
+
 Kernel gateway (same provisional 568/176). A grant holder names another kernel and the local kernel
 forwards the request over the relay, as a terminal-class client of the target kernel; the target stays the
 authority for its own sessions, agents, terminals and files.
