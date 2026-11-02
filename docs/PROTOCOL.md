@@ -6277,3 +6277,6 @@ required `acknowledged_projection_sequence`; `leased_runtime_projection_drained`
 optional `projection_sequence` of the event it retains. Both kernels must speak peer 383. The
 managed-upgrade list is [629, 636, 911, 923, 934]. Focused checks:
 `cargo test -p chariox-kernel --lib protocol_shapes` and `pnpm protocol:conformance`.
+
+Landing 3 carries local 934, 935 and 936 / relay peer 383, 384 and 385 on top of the Landing 2
+release at local 933 / peer 382, so the managed-upgrade list is [629, 636, 911, 923, 933, 936].
