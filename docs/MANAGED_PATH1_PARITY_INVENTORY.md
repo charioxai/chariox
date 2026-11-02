@@ -2032,3 +2032,36 @@ RED diagnostics and cleanup are retained under
 Opted-in mirror-v2 viewers receive the reset DOM/CSS and its positive native-font requirements before font resource bytes. The existing handover readiness check remains required; the native view stays in place while fonts hydrate. Legacy viewers retain first-packet fonts. The next resource credits prioritize fonts across all document slots before images, and a completed frame-bound font response avoids unrelated renderer image/load queries. Packet budgets, credential-free fallback gates, document/policy checks and input authority stay in the shared kernel path. Deferred packets also pin the browser, connection and session; retaining the same loader string cannot re-admit a retired owner. No serialized protocol shape changes.
 
 Supplementary regressions cover a blocked font response, legacy behavior, main/child font ordering, and response ownership. Real built-client new-tab first-packet, typography/handover, public-site, quiet timing and soak acceptance remain required; source checks alone do not close these items.
+
+## MP-08 / MP-09 / MP-10 / MP-11 kernel browser downloads (937/386)
+
+BROWSER07 uses the ordinary host browser/controller path on every placement.
+`state.downloads` lists the observed download ID, Tab, suggested basename, state
+(`in_progress`, `done`, `failed`, `cancelled`), received bytes and a nullable path.
+Only `done` publishes a verified readable file. `cancel_download` takes the observed
+Tab, generation and download ID; normal grant, current run and takeover checks apply.
+Unfocused agents see downloads only for Tabs in their retained grant. There is no
+new viewer UI in this change.
+
+Chrome writes GUID filenames into a private spool under the OS user's
+`~/.local/share/chariox/browser-downloads/`. Completed files move into a Room-keyed
+directory there, outside repositories and protected kernel state. Limits are
+256 MiB per file, 1 GiB of reserved/received bytes per Room, 200 retained download
+records per browser, plus the controller's free-space reserve. CDP progress
+cancels oversized streams, including unknown-length responses; partial files are
+removed. Browser stop/recovery removes the transient download tree. A replacement controller
+also removes its stopped predecessor's tree using the stable kernel/profile binding. Room end
+revokes its agents and removes its files; later downloads from its pages are
+cancelled. Files an agent wants to keep must be moved before Room/browser cleanup.
+This lifecycle does not change MP-09 shutdown triggers or prolong activity.
+
+Focused regression: `node --test` on `kernel-browser-downloads.test.mjs`,
+`kernel-browser-host.test.mjs` and `browser-controller-compatibility.test.mjs`
+under the docker controller directory. Real Chrome drill: run
+`kernel-browser-downloads.browser-test.mjs` as an ordinary user with an explicit
+`CHARIOX_BRDL_DRILL_ROOT`, sandboxed `CHARIOX_KERNEL_BROWSER_EXECUTABLE`, isolated
+XDG/TMPDIR and `CHARIOX_KERNEL_BROWSER_HEADLESS=1`. It covers a slow attachment
+navigation, link click, observed progress, readable bytes, cancellation, two Tabs,
+Room cleanup and browser cleanup. Kernel/provider tool acceptance also requires
+those operations through a real authenticated run. These checks alone do not
+close the wider MP-10 parity matrix or the MP-11 security-anchor review.

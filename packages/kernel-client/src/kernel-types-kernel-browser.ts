@@ -45,6 +45,7 @@ export type KernelBrowserCommand =
   | { op: "resize"; tab_id: string; generation: number; width: number; height: number }
   | { op: "navigate"; tab_id: string; generation: number; url: string }
   | { op: "input"; tab_id: string; generation: number; input: KernelBrowserInput }
+  | { op: "cancel_download"; tab_id: string; generation: number; download_id: string }
   | { op: "dialog"; tab_id: string; generation: number; document_id: string; dialog_id: string; action: "accept" | "dismiss"; prompt_text?: string }
   | { op: "unsubscribe"; subscription_id: string; generation: number }
 export type KernelBrowserRequest = { KernelBrowser: { command: KernelBrowserCommand } }
@@ -82,7 +83,13 @@ export type KernelBrowserDialog = {
   dialog_id: string; tab_id: string; generation: number; document_id: string;
   kind: "alert" | "confirm" | "prompt" | "beforeunload" | "permission"; message: string; origin: string; default_prompt?: string
 }
+export type KernelBrowserDownload = {
+  download_id: string; tab_id: string; name: string;
+  state: "in_progress" | "done" | "failed" | "cancelled"; bytes: number;
+  path: string | null; reason?: string
+}
 export type KernelBrowserResult = {
+  downloads?: KernelBrowserDownload[];
   active_tab_id?: string | null;
   generation?: number; state?: "ready" | "stopped"; tabs?: KernelBrowserTab[]; agent_activity?: KernelBrowserAgentActivity | null;
   tab_id?: string; subscription_id?: string; frame?: KernelBrowserFrame | null;

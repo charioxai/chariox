@@ -105,3 +105,9 @@ test("legacy compatibility calls reject unsafe inputs and stale documents", asyn
     (error) => error instanceof BrowserCompatibilityError && error.code === "stale_document_reference",
   );
 });
+
+test('MP-08/MP-10 Content-Disposition navigation starts a download and keeps the observed document', async () => {
+  const connection={send:async method=>method==='Page.getFrameTree'?{frameTree:{frame:{loaderId:'current'}}}:{isDownload:true,errorText:'net::ERR_ABORTED'}};
+  const result=await navigateBrowser({connection,sessionId:'s',targetId:'t',documentId:'current',url:'https://example.test/report'});
+  assert.equal(result.download_started,true); assert.equal(result.document_id,'current');
+});

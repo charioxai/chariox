@@ -578,7 +578,7 @@ fn mp08_mp10_mp11_mirror_completion_550_158_snapshot_hash() {
     let bytes = include_bytes!("browser-mirror2-completion-550.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "e7e84e55ec14fe61f769c13c703ee40a624633de6300206f6d36a1ead1d5e6b3"
+        "ef291d3c85fde5bf3dfee076519551f1914754a7bd9888294586cc51806671b6"
     );
     let value: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(value["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
@@ -681,7 +681,7 @@ fn browser_resize_protocol629_snapshot() {
     let bytes = include_bytes!("browser-resize-629.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "cce712b7deb6af9f28576481dece57e18f50e341b870806f9b2378c8b8bc595b"
+        "a45d98e5bae00fe35e8a967779a15f35eea7d4e637ba3508a005f5f87b5591a5"
     );
     let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     let request: LocalDaemonRequest = serde_json::from_value(snapshot["request"].clone()).unwrap();
@@ -712,17 +712,17 @@ fn browser_dialog_protocol630_snapshot() {
 
 // MP-08/MP-10: coordinator-allocated portable Browser header, including no-band clients.
 #[test]
-fn mp08_mp10_browser_header_933_shape_and_hash() {
+fn mp08_mp10_browser_header_937_shape_and_hash() {
     const {
         assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 933);
     }
     const {
         assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 382);
     }
-    let bytes = include_bytes!("browser-header-933.json");
+    let bytes = include_bytes!("browser-header-937.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "ebebe4c05c5f264b0caf1fd6193e19f37995db8f6ab3cc307a30a57c0275e084"
+        "a44a8f1693358f4d9b631f8973fe62c72848dcab8cb3fdf3b399eb6a03d33f1e"
     );
     let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     let response: LocalDaemonResponse =
@@ -731,4 +731,11 @@ fn mp08_mp10_browser_header_933_shape_and_hash() {
         serde_json::to_value(response).unwrap(),
         snapshot["response"]
     );
+}
+
+#[test]
+fn mp08_mp10_download_cancellation_937_shape() {
+    let wire = serde_json::json!({"op":"cancel_download","tab_id":"t","generation":7,"download_id":"download-a"});
+    let command: Command = serde_json::from_value(wire.clone()).unwrap();
+    assert_eq!(serde_json::to_value(command).unwrap(), wire);
 }

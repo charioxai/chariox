@@ -299,6 +299,10 @@ const ASSETS: &[(&str, &[u8])] = &[
         include_bytes!("../../slice-linux-docker/docker/kernel-browser-mirror-resources.mjs"),
     ),
     (
+        "kernel-browser-downloads.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-downloads.mjs"),
+    ),
+    (
         "kernel-browser-cdp-pipe.mjs",
         include_bytes!("../../slice-linux-docker/docker/kernel-browser-cdp-pipe.mjs"),
     ),
