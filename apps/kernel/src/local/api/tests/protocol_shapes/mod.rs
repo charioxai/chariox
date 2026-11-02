@@ -22,6 +22,7 @@ mod cloud_relay;
 mod computer_hold;
 mod core;
 mod credential_enrollment;
+mod credential_env;
 mod daemon_health;
 mod dictation;
 mod display_resumption;
