@@ -11,6 +11,8 @@ import {setTimeout as delay} from 'node:timers/promises';
 import {LinuxOwnedDesktop} from './linux-owned-desktop.mjs';
 import {CdpConnection} from './browser-controller-cdp.mjs';
 import {NativeComputer} from './native-computer.mjs';
+import {ensureBrowserAccount,ownedBrowserDirectory} from './linux-browser-user.mjs';
+import {executable} from './kernel-browser-process.mjs';
 
 // Only the fixture's public control labels/geometry are returned. No page text.
 const findControl=`import pyatspi,json,sys
@@ -29,8 +31,17 @@ while pending and seen<12000:
  except Exception:pass
 print(json.dumps(out))`;
 
-test('MP-08/MP-10/MP-11 a pinned popup-free extension cannot receive native agent clicks with an empty clipboard', {timeout:45000}, async()=>{
+test('MP-08/MP-10/MP-11 a pinned popup-free extension cannot receive native agent clicks with an empty clipboard', {timeout:60000}, async()=>{
  const root=await mkdtemp(path.join(os.tmpdir(),'native-extension-'));
+ if(process.geteuid?.()===0){
+  const {uid,gid}=await ensureBrowserAccount();
+  await ownedBrowserDirectory(root,uid,gid,0o700);
+  try{
+   const child=spawn(process.execPath,['--test',fileURLToPath(import.meta.url)],{uid,gid,env:{...process.env,TMPDIR:root},stdio:['ignore','inherit','inherit'],timeout:55000});
+   assert.equal(await new Promise((resolve,reject)=>{child.once('error',reject);child.once('exit',resolve)}),0,'unprivileged native extension drill');
+  }finally{await rm(root,{recursive:true,force:true})}
+  return;
+ }
  const desktop=new LinuxOwnedDesktop(root,{environment:{PATH:process.env.PATH,HOME:root,LANG:'C.UTF-8'}});
  let cdp,adapter;
  try {
@@ -42,7 +53,7 @@ test('MP-08/MP-10/MP-11 a pinned popup-free extension cannot receive native agen
   // Reuse the production bounded socket path for a long external TMPDIR.
   const {open}=await import('node:fs/promises');const held=await open(desktop.runtime);
   try {
-   const child=await desktop.launch(process.env.CHARIOX_KERNEL_BROWSER_EXECUTABLE??'/opt/google/chrome/chrome',[
+   const child=await desktop.launch(await executable(),[
     '--user-data-dir='+profile,'--remote-debugging-port=0','--enable-unsafe-extension-debugging','--force-renderer-accessibility=basic',
     '--no-first-run','--no-default-browser-check','--password-store=basic','--disable-dev-shm-usage','--window-size=1280,800','https://en.wikipedia.org/wiki/Ada_Lovelace',
    ],{...environment,TMPDIR:`/proc/${process.pid}/fd/${held.fd}`});

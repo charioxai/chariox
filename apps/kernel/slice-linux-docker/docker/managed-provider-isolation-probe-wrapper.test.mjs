@@ -39,7 +39,7 @@ async function makeFixture(
 ) {
   const home = path.join(root, "home/chariox");
   const account = path.join(home, ".provider-account/default");
-  const workspace = await mkdtemp(path.join("/dev/shm", "chariox-wrapper-workspace-"));
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "chariox-wrapper-workspace-"));
   const maskedSliceState = path.join(root, "home/slice/.chariox");
   const deniedRoot = deniedPath ? path.join(root, deniedPath) : "";
   const wrapper = path.join(root, "wrapper.sh");
@@ -92,7 +92,10 @@ async function makeFixture(
 
 async function runFixture(fixture) {
   try {
-    const output = await execFileAsync(fixture.wrapper, [], {
+    // The provider's permission probes must obey mode bits under a root runner.
+    const root = process.geteuid?.() === 0;
+    const output = await execFileAsync(root ? "/usr/bin/setpriv" : fixture.wrapper,
+      root ? ["--bounding-set=-dac_override,-dac_read_search", "--inh-caps=-all", "--ambient-caps=-all", "--", fixture.wrapper] : [], {
       cwd: fixture.workspace,
       env: fixture.env,
       maxBuffer: 32 * 1024,
