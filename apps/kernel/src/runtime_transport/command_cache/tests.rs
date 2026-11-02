@@ -5,6 +5,26 @@ use crate::local::{
     RespondToInteractionRequest, UninstallAppRequest,
 };
 
+#[test]
+fn owner_vault_responses_never_enter_command_caches() {
+    for action in [
+        serde_json::json!({"action":"list"}),
+        serde_json::json!({"action":"create","name":"fixture","kind":"Password","usage":"example.test","value":"fixture"}),
+        serde_json::json!({"action":"generate","name":"fixture","kind":"Password","usage":"example.test"}),
+        serde_json::json!({"action":"reveal","id":"fixture"}),
+        serde_json::json!({"action":"activity","id":"fixture"}),
+        serde_json::json!({"action":"replace","id":"fixture","value":"fixture"}),
+        serde_json::json!({"action":"delete","id":"fixture"}),
+    ] {
+        let request: LocalDaemonRequest =
+            serde_json::from_value(serde_json::json!({"OwnerVault":action})).unwrap();
+        assert!(!request_is_cacheable(&request));
+        assert!(!should_persist_completed_result(
+            &CommandResultCache::fingerprint_for_test(&request)
+        ));
+    }
+}
+
 /// A replay of these runs them again (no cache entry, no request-id ledger),
 /// so the kernel client never resends one once written. Its list and this one
 /// must name the same requests.
@@ -28,6 +48,7 @@ fn requests_a_replay_runs_again_are_the_ones_the_kernel_client_never_resends() {
         serde_json::json!({"CreateTerminalPairingLink":{}}),
         // MP-11 A07: owner hand-off input is physical and never replayed.
         serde_json::json!({"RespondToHandoff":{"session_id":"s","interaction_id":"handoff-o","action":{"kind":"enter_value","value":"fixture"}}}),
+        serde_json::json!({"OwnerVault":{"action":"reveal","id":"fixture"}}),
     ] {
         let request: LocalDaemonRequest = serde_json::from_value(request).unwrap();
         assert!(!request_is_cacheable(&request));
@@ -52,7 +73,8 @@ fn requests_a_replay_runs_again_are_the_ones_the_kernel_client_never_resends() {
             "OpenUserAppView",
             "CallUserAppView",
             "RespondToHandoff",
-            "CreateTerminalPairingLink"
+            "CreateTerminalPairingLink",
+            "OwnerVault"
         ]
     );
 }
