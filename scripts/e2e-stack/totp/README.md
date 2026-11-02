@@ -13,6 +13,12 @@ own disposable kernel through the hosted validation fixture, creates the Room
 in **the new terminal-os web UI**, and drives protected entry there. A real
 Codex `gpt-6-luna` / `low` agent enrolls the authenticator and signs in twice in
 different periods. No TUI or old web UI is used.
+The owner initializes the disposable Vault through `ManageCredentialVault`
+and enters its passphrase in the new UI's protected interaction before the
+agent starts. Manual-key and recovery-code capture use the agent's normal
+protected requests. Completion requires the provider's completed history
+entry and the client's visible Signed in page. History export batches at the
+API's 64-blob limit; absence checks include operational history and NDJSON logs.
 
 ```sh
 DPR=1 \
