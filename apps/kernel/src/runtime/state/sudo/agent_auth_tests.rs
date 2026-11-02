@@ -143,7 +143,7 @@ impl Service {
                             if mode == "missing_claim" {
                                 json!({"registration_id":"reg-local","claim_token":claim_value})
                             } else {
-                                json!({"registration_id":"reg-local","claim_token":claim_value,"claim":{"user_code":"123456","verification_uri":format!("{host}/claim"),"expires_in":if mode=="expiry" {1} else {30},"interval":1}})
+                                json!({"registration_id":"reg-local","claim_token":claim_value,"claim":{"user_code":"123456","verification_uri":format!("{host}/claim"),"expires_in":if mode=="expiry" {1} else {60},"interval":if mode=="revoke_long" {30} else {1}}})
                             }
                         } else if mode == "direct" {
                             json!({"registration_id":"reg-local","credential_type":"api_key","credential":key})
@@ -398,13 +398,11 @@ async fn au15_service_auth_has_one_owner_card_and_polls_until_claimed() {
 #[tokio::test]
 async fn au15_claim_cancel_expiry_and_lost_authority_never_store() {
     crate::test_support::isolated_env_test!();
-    for mode in ["cancel", "expiry", "revoke"] {
+    for mode in ["cancel", "expiry", "revoke", "revoke_long"] {
         let f = fixture();
         let turn = elevated(&f);
         let service = Service::start().await;
-        if mode == "expiry" {
-            service.mode("expiry");
-        }
+        service.mode(mode);
         let args =
             json!({"request_id":mode,"resource_url":service.origin,"email":"owner@example.test"});
         let work = call(&f, args);
@@ -425,7 +423,7 @@ async fn au15_claim_cancel_expiry_and_lost_authority_never_store() {
                 .await
                 .unwrap();
         }
-        if mode == "revoke" {
+        if mode.starts_with("revoke") {
             f.state
                 .owned
                 .sudo_turns

@@ -84,10 +84,15 @@ pub(super) async fn complete(
     let mut interval = ceremony.interval.unwrap_or(5).clamp(1, 3600);
     let mut wait = interval;
     loop {
-        tokio::select! {
-            _ = &mut resolution => return Err(error("auth.md claim was cancelled or expired; restart registration when ready")),
-            _ = tokio::time::sleep_until(deadline) => return Err(error("auth.md claim expired; restart registration for a new code")),
-            _ = tokio::time::sleep(Duration::from_secs(wait)) => {}
+        let poll_at = tokio::time::Instant::now() + Duration::from_secs(wait);
+        loop {
+            tokio::select! {
+                _ = &mut resolution => return Err(error("auth.md claim was cancelled or expired; restart registration when ready")),
+                _ = tokio::time::sleep_until(deadline) => return Err(error("auth.md claim expired; restart registration for a new code")),
+                _ = tokio::time::sleep_until(poll_at) => break,
+                // A service's long poll delay must not keep a revoked owner card alive.
+                _ = tokio::time::sleep(Duration::from_secs(1)) => authority.check()?,
+            }
         }
         if tokio::time::Instant::now() >= deadline {
             return Err(error(
