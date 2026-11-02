@@ -255,8 +255,11 @@ impl KernelRuntimeState {
                 | super::super::resource_register::SET_REVOKE
                 | super::super::resource_register::REVOKE
         ) {
-            return self
-                .with_room_provider_origin(Some(&context.home_agent_id), Some(&run))
+            // Resource provenance must survive forwarding even when Room tools
+            // are disabled. The peer admission above owns this origin.
+            let mut state = self.clone();
+            state.room_provider_origin = Some((context.home_agent_id.clone(), run.clone()));
+            return state
                 .resource_register_for_run(&run, &tool_name, arguments)
                 .await;
         }
