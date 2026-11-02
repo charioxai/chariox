@@ -19,6 +19,8 @@ const codexScope = options.has('--codex-scope') ? required('--codex-scope') : nu
 const stack = options.get('--stack')
 if (!stack || !/^[a-z0-9-]+$/.test(stack)) throw new Error('set --stack to your owned valenv stack name')
 const expectedRed = options.get('--expected-red') === 'yes'
+const dprs = options.has('--dprs') ? options.get('--dprs').split(',').map(Number) : expectedRed ? [1] : [1,2]
+if (!dprs.length || dprs.some(dpr => ![1,2].includes(dpr))) throw new Error('--dprs accepts 1,2')
 const providers = (options.get('--providers') ?? 'codex,claude-p').split(',')
 if (providers.some(provider => !['codex','claude-p'].includes(provider))) throw new Error('validation providers are codex and claude-p')
 if (providers.includes('codex') && !codexScope) throw new Error('set --codex-scope for Codex')
@@ -184,7 +186,7 @@ try {
   report.web_sha256 = createHash('sha256').update(await readFile(path.join(stackRoot, 'web-dist/assets', webAsset))).digest('hex')
   report.kernel_sha256 = createHash('sha256').update(await readFile(kernelBinary)).digest('hex')
   let sequence = 0
-  for (const provider of providers) for (const dpr of (expectedRed ? [1] : [1,2])) {
+  for (const provider of providers) for (const dpr of dprs) {
     ++sequence
     const model = provider === 'codex' ? 'gpt-6-luna' : 'claude-haiku-5-5'
     const profile = provider === 'codex' ? codex : claude

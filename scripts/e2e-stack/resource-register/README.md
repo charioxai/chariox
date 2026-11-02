@@ -19,6 +19,10 @@ provider turns per round; count retries too.
 
 Run with node through the lane's boundrun.sh, supplying absolute paths:
 
+Video capture needs Playwright's ffmpeg installed in a lane-owned cache. Set
+`PLAYWRIGHT_BROWSERS_PATH` to that cache for both installation and the driver.
+Use `--providers claude-p --dprs 2` for a focused rerun without repeating other cells.
+
 ```sh
 node scripts/e2e-stack/resource-register/live.mjs \
   --home /own/chariox/dev/drill-state \
