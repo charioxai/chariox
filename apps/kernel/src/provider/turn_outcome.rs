@@ -177,19 +177,30 @@ impl TurnOutcome {
         }
     }
 
-    /// The transcript line every client shows, including recovery. Never render
-    /// a native diagnostic here: older stored outcomes can still contain one.
+    /// The transcript line every client shows. Adapter diagnostics enter only
+    /// through classification; kernel-authored reasons can name a missing workspace.
     pub fn notice(&self) -> String {
-        format!("{}. {}", self.kind.headline(), self.recovery())
+        let reason = if self.reason.is_empty() {
+            format!("{}.", self.kind.headline())
+        } else {
+            self.reason.clone()
+        };
+        format!("{reason} {}", self.recovery())
             .trim_end()
             .to_string()
     }
 
-    pub(crate) fn new(kind: TurnOutcomeKind, retryable: bool, diagnostic: &str) -> Self {
-        tracing::info!(
-            diagnostic = %crate::secret_redaction::redact_secrets(diagnostic),
-            "provider turn outcome"
-        );
+    /// A kernel-authored explanation, such as a removed workspace or worker.
+    pub(crate) fn new(kind: TurnOutcomeKind, retryable: bool, reason: &str) -> Self {
+        Self::of(
+            kind,
+            retryable,
+            &crate::secret_redaction::redact_secrets(reason),
+        )
+    }
+
+    /// Provider text belongs in the log, never in the public explanation.
+    pub(crate) fn provider_failure(kind: TurnOutcomeKind, retryable: bool) -> Self {
         let reason = match kind {
             TurnOutcomeKind::Completed | TurnOutcomeKind::Cancelled => "",
             TurnOutcomeKind::InterruptedByRestart => "The kernel restarted during this turn.",
@@ -219,7 +230,7 @@ impl TurnOutcome {
             super::prompt_signals::split_coded_failure(text)
         {
             let mut failure = if let Some((cause, retryable)) = failure_for_code(code, message) {
-                Self::new(cause, retryable, message)
+                Self::provider_failure(cause, retryable)
             } else {
                 Self::classify_words(adapter_key, message)
             };
@@ -288,7 +299,7 @@ impl TurnOutcome {
         } else {
             (TurnOutcomeKind::Other, false)
         };
-        Self::new(cause, retryable, message)
+        Self::provider_failure(cause, retryable)
     }
 }
 
@@ -441,15 +452,11 @@ mod tests {
     }
 
     #[test]
-    fn even_stored_native_diagnostics_do_not_render_in_notices() {
-        let outcome = TurnOutcome {
-            kind: TurnOutcomeKind::Overloaded,
-            retryable: true,
-            reason: "raw upstream diagnostic".repeat(100),
-        };
+    fn provider_failure_notice_has_an_explanation_and_recovery() {
+        let outcome = TurnOutcome::provider_failure(TurnOutcomeKind::Overloaded, true);
         assert_eq!(
             outcome.notice(),
-            "Provider overloaded. Try again in a moment or choose another model."
+            "The provider is at capacity. Try again in a moment or choose another model."
         );
     }
 }

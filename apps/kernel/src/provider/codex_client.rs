@@ -1315,9 +1315,10 @@ mod tests {
             ),
         ];
         for (error, kind, retryable, message) in cases {
+            assert!(error_text(error.clone()).contains(message));
             assert_eq!(
                 TurnOutcome::classify("codex", &error_text(error.clone())),
-                TurnOutcome::new(kind, retryable, message),
+                TurnOutcome::provider_failure(kind, retryable),
                 "{error}"
             );
         }

@@ -81,7 +81,7 @@ mod tests {
         };
         assert_eq!(
             user_facing_dispatch_failure(&error),
-            "Provider overloaded. Try again in a moment or choose another model."
+            "The provider is at capacity. Try again in a moment or choose another model."
         );
     }
 

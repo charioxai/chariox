@@ -268,7 +268,7 @@ mod failure_cause_tests {
     #[test]
     fn opencode_errors_are_typed_from_name_and_status() {
         let expected =
-            |kind, retryable, diagnostic: &str| TurnOutcome::new(kind, retryable, diagnostic);
+            |kind, retryable, _diagnostic: &str| TurnOutcome::provider_failure(kind, retryable);
         assert_eq!(
             session_error(serde_json::json!({
                 "name": "ProviderAuthError",

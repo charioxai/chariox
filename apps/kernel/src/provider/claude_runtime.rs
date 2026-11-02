@@ -1497,7 +1497,7 @@ done
             TurnOutcome::classify("claude", &batch.terminal_failure.expect("failure"))
         };
         let expected =
-            |kind, retryable, diagnostic: &str| TurnOutcome::new(kind, retryable, diagnostic);
+            |kind, retryable, _diagnostic: &str| TurnOutcome::provider_failure(kind, retryable);
         assert_eq!(
             result_error("Not logged in · Please run /login"),
             expected(SignInRequired, false, "Not logged in · Please run /login")

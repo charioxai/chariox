@@ -400,7 +400,7 @@ async fn provider_crash_mid_turn_reruns_the_turn_on_the_substitute() {
         turn.rerun_notices(),
         vec![format!(
             "This turn runs on {SUBSTITUTE_A} because {PRIMARY_MODEL} failed: \
-             The provider process stopped unexpectedly."
+             provider process exited with status 1."
         )]
     );
 }
@@ -424,7 +424,7 @@ async fn a_failing_substitute_hands_the_same_turn_to_the_next_one() {
         Some(
             format!(
                 "This turn runs on {SUBSTITUTE_B} because {SUBSTITUTE_A} failed: \
-                 OpenCode error: upstream request failed."
+                 The provider could not complete this request."
             )
             .as_str()
         )
@@ -437,14 +437,14 @@ async fn an_exhausted_chain_fails_the_turn_visibly() {
 
     turn.fail_run(&turn.failed_run_id, SERVER_OVERLOADED).await;
     let substitute = turn.assert_rerun_on(0, SUBSTITUTE_A);
-    turn.fail_run(&substitute, "You have exceeded your usage limit.")
+    turn.fail_run(&substitute, "The provider's usage limit was reached.")
         .await;
 
     turn.assert_turn_failed();
     assert!(turn.live_run().is_none());
     assert!(turn.notices().contains(&format!(
         "No substitute is left for this turn: {SUBSTITUTE_A} failed: \
-         You have exceeded your usage limit."
+         The provider's usage limit was reached."
     )));
     let agent = turn
         .runtime
@@ -1163,7 +1163,7 @@ async fn substitute_notices_never_carry_provider_credentials() {
             .iter()
             .filter(|notice| notice.starts_with("This turn runs on ")
                 || notice.starts_with("No substitute is left"))
-            .all(|notice| notice.contains("upstream failed · retry later")),
+            .all(|notice| notice.contains("The provider could not complete this request")),
         "the notices stay readable: {notices:?}"
     );
 }

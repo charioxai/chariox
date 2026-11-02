@@ -160,10 +160,9 @@ pub use opencode_client::{
 };
 pub use process_info::{ProviderProcessInfo, ProviderProcessStatus};
 pub(crate) use prompt_signals::{
-    classify_provider_substitutable_failure_text, classify_provider_terminal_failure_output_text,
-    classify_provider_terminal_failure_text, claude_native_stop_failure,
-    provider_coded_failure_text, provider_retry_status, provider_turn_failure_reason,
-    text_reports_resource_limit, PROVIDER_CONNECTION_RETRY_MERGE_KEY,
+    classify_provider_terminal_failure_output_text, classify_provider_terminal_failure_text,
+    claude_native_stop_failure, provider_coded_failure_text, provider_retry_status,
+    provider_turn_failure_reason, text_reports_resource_limit, PROVIDER_CONNECTION_RETRY_MERGE_KEY,
 };
 pub use prompt_signals::{
     ProviderAssistantCompletion, ProviderPromptChunk, ProviderPromptSignalBatch,
@@ -183,7 +182,7 @@ pub use service::{ProviderProcessService, ProviderProcessServiceStore};
 pub(crate) use service::{ProviderRunLivenessReconciliation, ProviderRuntimeBinding};
 pub(crate) use termination::{
     provider_exit_before_delivery_message, provider_launch_failure_diagnostic,
-    redact_provider_diagnostic, sanitize_provider_diagnostic,
+    sanitize_provider_diagnostic,
 };
 pub use termination::{ProviderRunTermination, ProviderRunTerminationCategory};
 pub use turn_outcome::{TurnOutcome, TurnOutcomeKind};

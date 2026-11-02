@@ -367,7 +367,7 @@ mod tests {
                 "",
                 Some(&ProviderRunTermination::process_exit(1, 1))
             ),
-            "The provider process stopped unexpectedly"
+            "provider process exited with status 1"
         );
     }
 

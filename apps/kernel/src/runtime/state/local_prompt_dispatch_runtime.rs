@@ -4809,7 +4809,10 @@ pub(in crate::runtime::state) mod tests {
 
         let entries = not_carried_out_entries(&runtime, &session_id, &observer_id);
         assert_eq!(entries.len(), 1, "{entries:?}");
-        assert!(entries[0].contains("rejected"), "{entries:?}");
+        assert!(
+            entries[0].contains("The provider could not complete this request"),
+            "{entries:?}"
+        );
         assert!(entries[0].ends_with("It was dropped; send it again to retry."));
         let failed = failed_requests(&runtime, &agent_id);
         assert_eq!(failed.len(), 1);
