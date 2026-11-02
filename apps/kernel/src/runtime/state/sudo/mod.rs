@@ -30,6 +30,8 @@ pub(crate) use window::sudo_window_minutes;
 #[cfg(test)]
 pub(crate) use window::SUDO_WINDOW_LENGTH_FOR_TEST;
 #[cfg(test)]
+mod agent_auth_tests;
+#[cfg(test)]
 mod catalog_tests;
 #[cfg(test)]
 mod forgotten_machine_tests;

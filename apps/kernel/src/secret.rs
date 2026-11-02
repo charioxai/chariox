@@ -765,21 +765,20 @@ impl RuntimeSecretService {
         credential: &UserCredentialConfig,
         target: &url::Url,
     ) -> Result<(), DaemonError> {
-        // MP-08/MP-10/MP-11 A06: generated credentials authorize one exact
-        // origin, including scheme and effective port. Legacy host-only generated
-        // entries fail closed; the owner can regenerate for the intended origin.
+        // MP-08/MP-10/MP-11 A06/AU-15: generated and auth.md credentials
+        // authorize one exact origin, including scheme and effective port.
         if credential
             .metadata
             .as_ref()
             .and_then(|metadata| metadata.created_by_kind.as_deref())
-            == Some("vault_generate")
+            .is_some_and(|kind| matches!(kind, "vault_generate" | "agent_auth"))
         {
             return if credential.allowed_hosts == [target.origin().ascii_serialization()] {
                 Ok(())
             } else {
                 Err(secret_error(
                     "credential_policy",
-                    "generated credential is not allowed for this origin".into(),
+                    "credential is not allowed for this origin".into(),
                 ))
             };
         }

@@ -30,6 +30,7 @@ use crate::session::{SessionStateOwner, SessionStateStore};
 use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
 use chariox_relay::protocol::ClientTarget;
 
+mod agent_auth;
 mod workspace_live_sync;
 use workspace_live_sync::*;
 mod workspace_live_sync_workspace_context;
@@ -234,6 +235,7 @@ struct KernelRuntimeOwnedState {
     passkey_prompts: Arc<passkey_prompts::PasskeyPromptBoard>,
     kernel_access: crate::runtime::kernel_access::AccessStore,
     sudo_turns: sudo::SudoStore,
+    agent_auth_registrations: agent_auth::RegistrationClaims,
     /// Window timer proof of life: entry -> (armed revision, alerted revision).
     sudo_timers: Arc<std::sync::Mutex<BTreeMap<String, (u64, u64)>>>,
     sudo_timer_changes: Arc<RuntimeChangeSignal>,
@@ -1023,6 +1025,7 @@ impl KernelRuntimeState {
                 passkey_prompts: Arc::default(),
                 kernel_access: Default::default(),
                 sudo_turns: sudo_windows.store(),
+                agent_auth_registrations: Default::default(),
                 sudo_timers: Default::default(),
                 sudo_timer_changes: Default::default(),
                 sudo_verified_at: Default::default(),

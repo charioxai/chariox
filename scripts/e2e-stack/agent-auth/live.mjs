@@ -1,0 +1,222 @@
+// MP-08 / MP-09 / MP-10 / MP-11 AU-15: new terminal-os self-hosted shell,
+// real kernel, encrypted relay and official Codex against the local service.
+import { randomBytes, createHash } from 'node:crypto'
+import { readFile, writeFile, mkdir, rm, readdir, stat } from 'node:fs/promises'
+import { createWriteStream } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+import path from 'node:path'
+import net from 'node:net'
+import http from 'node:http'
+import { spawnOwned, signalOwnedProcess } from '../../../apps/kernel/slice-linux-docker/owned-process-signals.mjs'
+import { createAuthService } from './service.mjs'
+
+const repository = fileURLToPath(new URL('../../../', import.meta.url))
+const options = {}
+for (let index = 2; index < process.argv.length; index += 2) options[process.argv[index].replace(/^--/, '')] = process.argv[index + 1]
+for (const name of ['kernel-bin', 'relay-bin', 'web-root', 'playwright-module', 'home', 'evidence']) {
+  if (!options[name] || !path.isAbsolute(options[name])) throw new Error(`--${name} requires an absolute path`)
+}
+const root = options.home, evidence = options.evidence
+const contains = (parent, child) => { const relative = path.relative(parent, child); return !relative || (!relative.startsWith('..') && !path.isAbsolute(relative)) }
+if ([root, evidence].some(value => contains(repository, value)) || contains(root, evidence) || contains(evidence, root)) throw new Error('Use separate external state and evidence directories')
+if (!process.env.CODEX_HOME?.includes('/provider-accounts/')) throw new Error('CODEX_HOME must name an existing Chariox-linked Codex profile')
+const { LocalIpcClient } = await import('../../../packages/kernel-client/dist/ipc.js')
+const requests = await import('../../../packages/kernel-client/dist/ipc-requests.js')
+const { chromium } = await import(pathToFileURL(options['playwright-module']).href)
+const delay = ms => new Promise(resolve => setTimeout(resolve, ms))
+const variant = (response, name) => { if (!response[name]) throw new Error(`Expected ${name}`); return response[name] }
+async function freePort() {
+  const server = net.createServer()
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+  const port = server.address().port
+  await new Promise(resolve => server.close(resolve))
+  return port
+}
+async function files(directory) {
+  const result = []
+  for (const entry of await readdir(directory, { withFileTypes: true }).catch(() => [])) {
+    const name = path.join(directory, entry.name)
+    if (entry.isDirectory()) result.push(...await files(name))
+    else if (entry.isFile()) result.push(name)
+  }
+  return result
+}
+let stopping = false
+for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => { stopping = true })
+async function until(predicate, timeout = 240000) {
+  const deadline = Date.now() + timeout
+  while (Date.now() < deadline) {
+    if (stopping) throw new Error('Drill stopped by its owner')
+    if (await predicate()) return
+    await delay(250)
+  }
+  throw new Error('auth.md live drill timed out')
+}
+const passphrase = randomBytes(32).toString('base64url'), relayToken = randomBytes(32).toString('base64url')
+const ports = await Promise.all(Array.from({ length: 5 }, freePort))
+const env = { PATH: process.env.PATH, LANG: 'C.UTF-8', SHELL: '/bin/bash', CODEX_HOME: process.env.CODEX_HOME,
+  HOME: `${root}/os-home`, CHARIOX_HOME: `${root}/home`, TMPDIR: `${root}/tmp`, XDG_CONFIG_HOME: `${root}/config`, XDG_STATE_HOME: `${root}/state`, XDG_DATA_HOME: `${root}/data`, XDG_CACHE_HOME: `${root}/cache`,
+  CHARIOX_DAEMON_SOCKET: `${root}/kernel.sock`, CHARIOX_KERNEL_PORT: String(ports[0]), CHARIOX_MCP_PORT: String(ports[1]), CHARIOX_CODEX_PORT: String(ports[2]), CHARIOX_OPENCODE_PORT: String(ports[3]),
+  CHARIOX_SESSION_HISTORY_DIR: `${root}/history`, CHARIOX_LOG_DIR: `${root}/logs`, CHARIOX_DAEMON_ALIAS: 'authmd-live', NODE_OPTIONS: '--max-old-space-size=4096', RUST_MIN_STACK: '16777216',
+}
+const result = { MP: ['MP-08', 'MP-09', 'MP-10', 'MP-11'], status: 'FAIL', started: new Date().toISOString(),
+  head: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repository, encoding: 'utf8' }).trim(),
+  kernel_sha256: createHash('sha256').update(await readFile(options['kernel-bin'])).digest('hex'),
+  client: 'apps/web terminal-os selfhosted (real application entry)', scenarios: [],
+}
+let service, staticServer, browser, page, client, sessionId, ownsRoot = false
+const children = [], logs = [], privateValues = [passphrase, relayToken]
+function absent(text) {
+  service?.assertAbsent(text)
+  if (privateValues.some(value => text.includes(value))) throw new Error('Protected runtime value appeared in evidence')
+}
+function start(binary, extraEnv, name) {
+  const child = spawnOwned(binary, [], { cwd: repository, env: { ...env, ...extraEnv }, stdio: ['ignore', 'pipe', 'pipe'] })
+  children.push(child)
+  const log = createWriteStream(`${root}/${name}.private.log`, { mode: 0o600 })
+  logs.push(`${root}/${name}.private.log`)
+  child.stdout.pipe(log); child.stderr.pipe(log)
+  return child
+}
+async function stop(child) {
+  if (child.exitCode !== null || child.signalCode !== null) return
+  signalOwnedProcess(child, 'SIGTERM')
+  for (let count = 0; count < 60 && child.exitCode === null && child.signalCode === null; count++) await delay(250)
+  if (child.exitCode === null && child.signalCode === null) {
+    signalOwnedProcess(child, 'SIGKILL')
+    await new Promise(resolve => child.once('exit', resolve))
+  }
+}
+async function capture(name) {
+  const fields = await page.locator('input:not([type="password"]), textarea').evaluateAll(elements => elements.map(element => element.value).join('\n'))
+  absent((await page.locator('body').innerText()) + fields)
+  await page.screenshot({ path: `${evidence}/${name}.png` })
+}
+const claimed = new Set()
+async function interact() {
+  // Every answer goes through the actual new UI's controls.
+  const passkey = page.locator('[data-passkey-prompt]')
+  if (await passkey.count()) {
+    const approve = passkey.locator('[data-passkey-popup-approve]')
+    if (await approve.isEnabled()) {
+      await passkey.locator('[data-passkey-popup-input]').fill(passphrase)
+      await capture('owner-decision')
+      await approve.click()
+    }
+    return
+  }
+  const secretDetail = page.locator('[data-interaction-detail]:has(input[type="password"])')
+  if (await secretDetail.count()) {
+    await secretDetail.locator('input[type="password"]').fill(passphrase)
+    await secretDetail.locator('button.work-editor-save').click()
+    return
+  }
+  const secretReply = page.locator('[data-interaction-id] [data-action="reply-interaction"]')
+  if (await secretReply.count()) { await secretReply.first().click(); return }
+  const claim = page.locator('[data-interaction-id^="agent-auth-claim-"]')
+  if (await claim.count()) {
+    const id = await claim.first().getAttribute('data-interaction-id')
+    if (claimed.has(id)) return
+    const message = await claim.first().innerText()
+    const link = message.match(/https?:\/\/\S+/)?.[0], code = message.match(/code (\d{6})/)?.[1]
+    if (!link || !code) throw new Error('Claim card has no link or user code')
+    await capture('claim-card')
+    const owner = await browser.newPage()
+    try {
+      await owner.goto(link)
+      await owner.getByLabel('Account email').fill('owner@example.test')
+      await owner.getByLabel('Code').fill(code)
+      await owner.getByRole('button', { name: 'Claim account' }).click()
+      await owner.getByText('Account claimed.').waitFor()
+      await owner.screenshot({ path: `${evidence}/service-claimed.png` })
+    } finally { await owner.close() }
+    claimed.add(id)
+  }
+}
+try {
+  await mkdir(path.dirname(root), { recursive: true })
+  await mkdir(root, { mode: 0o700 }); ownsRoot = true
+  await mkdir(evidence, { recursive: true, mode: 0o700 })
+  for (const name of ['os-home', 'home', 'tmp', 'config', 'state', 'data', 'cache', 'logs']) await mkdir(`${root}/${name}`, { mode: 0o700 })
+  await writeFile(`${root}/home/config.toml`, `version = 1\n[history.archive]\nmode = "disabled"\n[credential_vault]\nbackend = "chariox_encrypted"\npath = "${root}/home/vault.json"\nunlock_policy = "kernel_init"\nagent_management = "allow"\n`, { mode: 0o600 })
+  service = await createAuthService()
+  start(options['relay-bin'], { CHARIOX_RELAY_HOST: '127.0.0.1', CHARIOX_RELAY_PORT: String(ports[4]), CHARIOX_RELAY_TOKEN: relayToken }, 'relay')
+  start(options['kernel-bin'], {}, 'kernel')
+  await writeFile(`${root}/started-pids.json`, JSON.stringify(children.map(child => child.pid)), { mode: 0o600 })
+  const kernelUrl = `ws://127.0.0.1:${ports[0]}/kernel`
+  await until(async () => {
+    const next = new LocalIpcClient(kernelUrl, { timeoutMs: 2000, localAuthEnvironment: env })
+    try { await next.send(requests.listSessionsRequest()); client = next; return true } catch { await next.close(); return false }
+  }, 60000)
+  await client.send({ ConfigureRelay: { relay_url: `ws://127.0.0.1:${ports[4]}`, relay_token: relayToken } })
+  await until(async () => variant(await client.send({ RelayStatus: null }), 'RelayStatus').status.connected, 30000)
+  // Administrative fixture setup uses public owner APIs; the scenario itself is driven through the new UI.
+  const created = variant(await client.send(requests.createSessionRequest(repository, repository, 'authmd drill', { provider: 'codex', model: 'gpt-6-luna', effort: 'low', account_profile: 'default', execution_mode: 'build', permission_level: 'yolo' }, undefined, 'unrestricted')), 'SessionCreated')
+  sessionId = created.session.id
+  let session = variant(await client.send(requests.getSessionStateRequest(sessionId)), 'SessionState').session
+  if (!session.agents.length) {
+    await client.send(requests.spawnAgentRequest(sessionId, 'codex', 'authmd', 'gpt-6-luna', repository, 'low', 'build', 'yolo', undefined, undefined, undefined, 'default'))
+    session = variant(await client.send(requests.getSessionStateRequest(sessionId)), 'SessionState').session
+  }
+  const pairing = variant(await client.send({ CreateTerminalPairingLink: { terminal_type: 'web', alias: 'authmd new UI', expires_in_ms: 600000 } }), 'TerminalPairingLinkCreated').pairing
+  privateValues.push(pairing.pairing_link, pairing.pairing_code)
+  staticServer = http.createServer(async (request, response) => {
+    try {
+      const requested = path.resolve(options['web-root'], '.' + decodeURIComponent(new URL(request.url, 'http://localhost').pathname))
+      if (!contains(options['web-root'], requested)) { response.writeHead(403); response.end(); return }
+      const target = (await stat(requested)).isDirectory() ? path.join(requested, 'index.html') : requested
+      response.setHeader('content-type', target.endsWith('.js') ? 'text/javascript' : target.endsWith('.css') ? 'text/css' : target.endsWith('.woff2') ? 'font/woff2' : 'text/html')
+      response.end(await readFile(target))
+    } catch { response.writeHead(404); response.end() }
+  })
+  await new Promise(resolve => staticServer.listen(0, '127.0.0.1', resolve))
+  browser = await chromium.launch({ headless: true, executablePath: options['chrome-bin'] ?? '/opt/google/chrome/chrome', args: ['--no-sandbox', '--disable-dev-shm-usage'] })
+  page = await browser.newPage({ viewport: { width: 1440, height: 1000 }, deviceScaleFactor: Number(options.dpr ?? 1) })
+  await page.goto(`http://127.0.0.1:${staticServer.address().port}`)
+  await page.locator('#pairing-link').fill(pairing.pairing_link)
+  await page.locator('form.settings-add-kernel button[type="submit"]').click()
+  await page.locator(`[data-room-id="${sessionId}"] [data-action="open-room"]`).click({ timeout: 60000 })
+  await page.locator('[data-prompt-input]').waitFor()
+  await capture('new-ui-room')
+  for (const flow of ['anonymous', 'service_auth']) {
+    const before = service.counts.accepted
+    const args = { request_id: `live-${flow}`, resource_url: `${service.origin}/`, ...(flow === 'service_auth' ? { email: 'owner@example.test' } : {}) }
+    const prompt = `/sudo MP-08 / MP-09 / MP-10 / MP-11 AU-15. Register this owner-authorized local test account. Use Chariox MCP tools only. Call chariox.agent_auth.register with exactly ${JSON.stringify(args)}. Then call chariox.http_request_with_credential with its returned credential_id, method GET and url ${service.origin}/api/check. Do not use shell, files or raw network tools. Never print a credential value. Report HTTP status and end with AU15_${flow}_DONE.`
+    await page.locator('[data-prompt-input]').fill(prompt)
+    await page.locator('[data-prompt-input]').press('Enter')
+    await until(async () => {
+      await interact()
+      return service.counts.accepted > before && (await page.locator('body').innerText()).includes(`AU15_${flow}_DONE`)
+    })
+    const text = await page.locator('body').innerText()
+    absent(text)
+    await capture(`${flow}-http-200`)
+    result.scenarios.push({ flow, status: 'PASS', http_status: 200 })
+  }
+  const listed = variant(await client.send(requests.listCredentialsRequest()), 'CredentialsListed').credentials
+  if (listed.filter(value => value.metadata?.created_by_kind === 'agent_auth').length !== 2) throw new Error('Expected two auth.md Vault handles')
+  absent(JSON.stringify(listed))
+  result.status = 'PASS'
+} catch (error) {
+  // Framework errors may quote a protected field argument. Only a safe classification leaves the drill.
+  const message = String(error?.message ?? error)
+  try { absent(message); result.failure = message } catch { result.failure = 'Protected value in failure diagnostics' }
+  if (page) await capture('failure').catch(() => {})
+} finally {
+  if (browser) await browser.close()
+  if (client) { if (sessionId) await client.send(requests.endSessionRequest(sessionId)).catch(() => {}); await client.close() }
+  for (const child of children.reverse()) await stop(child)
+  let checked = 0
+  try {
+    for (const file of [...await files(`${root}/history`), ...logs]) { absent(await readFile(file, 'utf8')); checked++ }
+    result.absence = { checked_files: checked, service_values_absent: true }
+  } catch { result.status = 'FAIL'; result.failure = 'Protected value found in kernel/provider history or logs' }
+  result.counts = service?.counts
+  if (service) await service.close()
+  if (staticServer) await new Promise(resolve => staticServer.close(resolve))
+  result.finished = new Date().toISOString()
+  if (ownsRoot) { await writeFile(`${evidence}/result.json`, JSON.stringify(result, null, 2) + '\n', { mode: 0o600 }); await rm(root, { recursive: true, force: true }) }
+}
+console.log(JSON.stringify({ MP: result.MP, status: result.status, evidence: `${evidence}/result.json` }))
+if (result.status !== 'PASS') process.exitCode = 1
