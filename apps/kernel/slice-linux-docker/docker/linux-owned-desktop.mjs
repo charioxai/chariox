@@ -17,6 +17,8 @@ export function desktopEnvironment(source, runtime, uid = process.getuid?.()) {
   if (!Number.isInteger(uid) || uid <= 0) throw new Error('MP-11: owned desktop requires a non-root kernel user');
   const env = {};
   for (const key of ['PATH', 'HOME', 'USER', 'LOGNAME', 'LANG', 'LC_ALL', 'TMPDIR', 'CHARIOX_KERNEL_BROWSER_EXECUTABLE', 'CHARIOX_KERNEL_BROWSER_HEADLESS', 'CHARIOX_KERNEL_BROWSER_DISPLAY', 'CHARIOX_KERNEL_BROWSER_MIRROR', 'CHARIOX_BROWSER_DISPLAY_PYTHON', 'CHARIOX_BROWSER_DISPLAY_TIMING', 'CHARIOX_BROWSER_DISPLAY_OPENH264', 'CHARIOX_BROWSER_DISPLAY_SOFTWARE_ENCODER', 'CHARIOX_BROWSER_DISPLAY_SOFTWARE', 'LIBVA_DRIVER_NAME', 'CHARIOX_BROWSER_DISPLAY_STRIPE_WORKERS']) if (source[key] !== undefined) env[key] = source[key];
+  // Root capture/supervisor helpers share the browser HOME, which cannot supply Python startup code.
+  if (process.geteuid?.() === 0) env.PYTHONNOUSERSITE = '1';
   // MP-08 / MP-11: Chromium's native ATK bridge has a separate enablement
   // check from renderer accessibility. Keep both on this owned desktop.
   return { ...env, CHARIOX_OWNED_VIRTUAL_DISPLAY: '1', TMPDIR: runtime, XAUTHORITY: path.join(runtime, 'Xauthority'), XDG_RUNTIME_DIR: runtime, NO_AT_BRIDGE: '0', GTK_A11Y: 'always', ACCESSIBILITY_ENABLED: '1' };

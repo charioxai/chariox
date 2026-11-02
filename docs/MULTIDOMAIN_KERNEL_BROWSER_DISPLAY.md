@@ -34,6 +34,8 @@ Chromium, Xvfb, the desktop buses and graphical applications run as that user,
 with supplementary groups cleared and Chromium's sandbox enabled. The kernel
 keeps control, Vault handling and capture workers under its own identity. CDP
 uses inherited private pipes; it never opens a debugging TCP port.
+Root desktop helpers disable Python user-site loading because their shared
+browser home is writable by the unprivileged account.
 
 The privileged mount-construction workspace stays in the kernel's private
 profile-state directory, mode 0700 owned by root. It is never constructed under
