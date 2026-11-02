@@ -56,6 +56,29 @@ async function navigate(url){
   try{return f.offsetWidth>0&&f.style.visibility!=='hidden'&&f.contentDocument?.body?.innerText.includes(host)}catch{return false}
  }),new URL(url).hostname==='github.com'?'Sign in to GitHub':'GitLab',{timeout:60000})
 }
+async function prepareBrowser(){
+ const ready=marker+'_BROWSER_READY',failed=marker+'_BROWSER_SETUP_FAILED'
+ const field=page.locator('[data-prompt-input]')
+ await field.fill(`MP-08 / MP-09 / MP-10 / MP-11 setup only: I want you to use my currently displayed kernel browser this turn. Call chariox.load_kernel_browser exactly once, using necessary discovery wrappers, then get browser state. I will approve ordinary browser access if requested. Do not request sudo or use any Vault tool. Finish with exactly ${ready}, or ${failed} if setup fails.`)
+ await field.press('Enter')
+ const deadline=Date.now()+240000
+ for(;;){
+  const cards=page.locator('section[data-kernel-interaction-id]')
+  for(let i=0;i<await cards.count();i++){
+   const card=cards.nth(i),text=await card.innerText()
+   assert.ok(/Chariox resource access/i.test(text)&&/browser/i.test(text)&&!/(?:sudo|payment card)/i.test(text),'only ordinary browser admission is approved during setup')
+   await shot('browser-admission-before-vault-cell')
+   await card.locator('button[data-kernel-interaction-choice="allow"]').click()
+  }
+  const replies=await page.locator('.pane-transcript-reply').allInnerTexts()
+  assert.ok(!replies.some(r=>r.includes(failed)),'browser admission setup succeeded')
+  if(replies.some(r=>r.includes(ready)))break
+  assert.ok(Date.now()<deadline,'browser admission setup completed')
+  await page.waitForTimeout(250)
+ }
+ check('ordinary browser access prepared before Vault cell',await page.locator('section[data-kernel-interaction-id]').count()===0)
+ await shot('browser-ready-before-vault-cell')
+}
  await page.goto(origin+'/validation/ready')
  await page.goto(origin+'/terminal?ui=os',{waitUntil:'domcontentloaded'})
  await page.locator('[data-feature-new=room]').waitFor({state:'attached',timeout:60000})
@@ -71,6 +94,7 @@ async function navigate(url){
   await submit(`MP-08 / MP-09 / MP-10 / MP-11 regression drill: call chariox.vault.generate exactly once with request_id ${marker} and origin https://github.com. Use the necessary tool-discovery/dispatch wrapper if the tool is deferred. Do not request sudo, approval, or a plan. Do not infer the outcome: actually call the generation tool exactly once. If the actual tool result refuses generation because it needs a sudo window, finish with exactly ${marker}_REQUIRES_SUDO. Otherwise finish with exactly ${marker}_UNEXPECTED. Never print or read secret values.`,marker+'_REQUIRES_SUDO',marker+'_UNEXPECTED')
   await shot('base-sudo-refusal')
  }else{
+  await prepareBrowser()
   await submit(`MP-08 / MP-09 / MP-10 / MP-11 live drill: generate a password with chariox.vault.generate, request_id ${marker}, origin https://github.com. Retry that same request once and verify the same credential_id. Use the Chariox kernel Browser tools on the existing GitHub sign-in tab: get a fresh snapshot, fill only the Password input with that handle using chariox.kernel_browser_paste_secret and submit=false. Do not sign in, submit, request sudo, approval, a plan, or read/copy/re-display any secret. Get a fresh model snapshot and screenshot to verify the password stays masked. Remember the credential_id for the next turn. Finish with exactly ${marker}_FILLED if both generation and fill succeeded; otherwise exactly ${marker}_FAILED.`,marker+'_FILLED',marker+'_FAILED')
   const fields=await page.evaluate(()=>[...document.querySelectorAll('.desktop iframe')].filter(f=>f.offsetWidth>0&&f.style.visibility!=='hidden').map(f=>{
    const input=f.contentDocument?.querySelector('#password');return {found:!!input,type:input?.type,
