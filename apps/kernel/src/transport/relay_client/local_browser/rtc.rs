@@ -64,6 +64,8 @@ const FRAME_LAST: u8 = 0;
 const FRAME_MORE: u8 = 1;
 const FRAME_PING: u8 = 2;
 const FRAME_PONG: u8 = 3;
+const FRAME_BINARY_LAST: u8 = 4;
+const FRAME_BINARY_MORE: u8 = 5;
 
 /// The kernel's UDP sockets, one per usable interface address (a socket bound
 /// to one address knows the destination str0m matches candidates against).
@@ -815,7 +817,12 @@ fn flush_outgoing(peer: &mut Peer) {
     loop {
         if channel.pending.is_empty() {
             match channel.outgoing.try_recv() {
-                Ok(message) => encode(message, &mut channel.pending),
+                Ok(message) => {
+                    if !encode(message, &mut channel.pending) {
+                        peer.rtc.disconnect();
+                        return;
+                    }
+                }
                 Err(channel_mpsc::TryRecvError::Closed) => {
                     channel.session_done = true;
                     break;
@@ -836,7 +843,10 @@ fn flush_outgoing(peer: &mut Peer) {
             Ok(true) => {
                 // Any authenticated application frame already proves kernel freshness.
                 channel.last_write = std::time::Instant::now();
-                channel.buffered_application |= matches!(fragment[0], FRAME_LAST | FRAME_MORE);
+                channel.buffered_application |= matches!(
+                    fragment[0],
+                    FRAME_LAST | FRAME_MORE | FRAME_BINARY_LAST | FRAME_BINARY_MORE
+                );
                 channel.buffered = writer.buffered_amount();
                 channel.pending.pop_front();
             }
@@ -851,31 +861,40 @@ fn flush_outgoing(peer: &mut Peer) {
     note_acknowledged(peer);
 }
 
-fn encode(message: Message, pending: &mut VecDeque<Vec<u8>>) {
-    let text = match message {
-        Message::Text(text) => text,
+fn encode(message: Message, pending: &mut VecDeque<Vec<u8>>) -> bool {
+    let (bytes, binary) = match message {
+        Message::Text(text) => match super::rtc_frame::compact(&text) {
+            Ok(Some(bytes)) => (bytes, true),
+            Ok(None) => (text.as_bytes().to_vec(), false),
+            Err(_) => return false,
+        },
         Message::Ping(_) => {
             pending.push_back(vec![FRAME_PING]);
-            return;
+            return true;
         }
-        _ => return,
+        _ => return true,
     };
-    let bytes = text.as_bytes();
     let mut chunks = bytes.chunks(FRAGMENT_BYTES).peekable();
     if chunks.peek().is_none() {
-        pending.push_back(vec![FRAME_LAST]);
-    }
-    while let Some(chunk) = chunks.next() {
-        let kind = if chunks.peek().is_some() {
-            FRAME_MORE
+        pending.push_back(vec![if binary {
+            FRAME_BINARY_LAST
         } else {
             FRAME_LAST
+        }]);
+    }
+    while let Some(chunk) = chunks.next() {
+        let kind = match (binary, chunks.peek().is_some()) {
+            (true, false) => FRAME_BINARY_LAST,
+            (true, true) => FRAME_BINARY_MORE,
+            (false, false) => FRAME_LAST,
+            (false, true) => FRAME_MORE,
         };
         let mut fragment = Vec::with_capacity(chunk.len() + 1);
         fragment.push(kind);
         fragment.extend_from_slice(chunk);
         pending.push_back(fragment);
     }
+    true
 }
 
 #[cfg(test)]

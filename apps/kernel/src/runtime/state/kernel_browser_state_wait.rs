@@ -8,7 +8,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::time::{Duration, Instant};
 
-const MAX_WAIT_MS: u32 = 2_000;
+const MAX_WAIT_MS: u32 = 10_000;
 /// A woken read repeats no sooner than this, so a busy page cannot turn the wait into a poll.
 const MIN_GAP: Duration = Duration::from_millis(100);
 const NO_SIGNAL_POLL: Duration = Duration::from_millis(250);

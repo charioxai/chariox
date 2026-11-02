@@ -22,6 +22,7 @@ use super::*;
 mod admission;
 mod leases;
 mod rtc;
+mod rtc_frame;
 mod session;
 #[cfg(test)]
 mod tests;

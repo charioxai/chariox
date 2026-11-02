@@ -6290,6 +6290,23 @@ its subscriptions; the last lane closes the physical connection. Distinct
 identities never share a carrier. The wire frames, pinned grant proof, lease
 renewal interval and physical silence deadlines are unchanged.
 
+Protocol 951 RTC fragments use kinds 4 (last) and 5 (more) for CXL1
+encrypted replies and events. CXL1 is four magic bytes, a big-endian u32
+header length, the UTF-8 JSON header and raw AES-GCM ciphertext including
+its tag. A reply header is `{r:request_id,n:nonce}`; an event header is
+`{s:subscription_id,e:event_id,n:nonce}`. Nonces retain their existing
+base64 encoding. The sender key is the kernel key proved in that physical
+connection's grant handshake. Clients restore the ordinary encrypted relay
+envelope before its existing authentication and correlation checks. Headers
+are bounded to 4096 bytes, IDs to 1024 UTF-8 bytes, and extra fields are
+rejected. Text handshake and refusal frames retain kinds 0/1. The raw-frame
+snapshot and SHA256 are pinned in `direct-compact-951.json`.
+
+MP-08/MP-09/MP-10/MP-11: protocol 951 permits `state_wait` up to 10000 ms.
+A content change wakes it immediately; its timeout carries the compact
+unchanged cursor. This is a parked observation read, with no change to grant
+leases, RTC keepalives, or silence detection.
+
 MP-08 / MP-09 / MP-10 / MP-11: `{"KernelPing":null}` answers with
 `{"KernelPong":{}}` through ordinary authenticated dispatch. It takes no health
 snapshot and does not update semantic session activity or managed shutdown

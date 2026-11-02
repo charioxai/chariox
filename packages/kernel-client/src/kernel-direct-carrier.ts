@@ -1,4 +1,5 @@
 import { parseFrame, type RelayCloseFrame } from "./kernel-direct-types.js"
+import { expandDirectFrame } from "./kernel-direct-frame.js"
 
 /** Lanes of one identity share the authenticated channel, with socket-local routing. */
 export class KernelDirectCarrier {
@@ -64,6 +65,10 @@ export class KernelDirectCarrier {
   }
 
   private receive(data: unknown): void {
+    if (data instanceof ArrayBuffer) {
+      try { data = expandDirectFrame(data, this.daemonPublicKey) }
+      catch { this.socket.close(1002, "invalid compact direct frame"); return }
+    }
     const frame = parseFrame<{ kind: string; request_id?: string; subscription_id?: string }>(data)
     if (!frame) { this.socket.close(1002, "invalid direct carrier frame"); return }
     if (frame.kind === "client_response" && frame.request_id) {

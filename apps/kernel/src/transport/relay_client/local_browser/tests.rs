@@ -1584,6 +1584,8 @@ struct RtcClient {
     frames: std::collections::VecDeque<serde_json::Value>,
     partial: Vec<u8>,
     pings: usize,
+    compact_frames: usize,
+    kernel_key: String,
     answer_pings: bool,
     /// Bytes per second the client's downlink delivers, like a slow link;
     /// later datagrams wait in the socket buffer or are lost there.
@@ -1621,6 +1623,8 @@ impl RtcClient {
             frames: Default::default(),
             partial: Vec::new(),
             pings: 0,
+            compact_frames: 0,
+            kernel_key: String::new(),
             answer_pings: true,
             downlink: None,
         };
@@ -1666,8 +1670,34 @@ impl RtcClient {
                             self.partial.extend_from_slice(payload);
                             if kind == 0 {
                                 let frame = std::mem::take(&mut self.partial);
-                                self.frames
-                                    .push_back(serde_json::from_slice(&frame).unwrap());
+                                let value: serde_json::Value =
+                                    serde_json::from_slice(&frame).unwrap();
+                                if let Some(key) =
+                                    value.get("daemon_public_key").and_then(|v| v.as_str())
+                                {
+                                    self.kernel_key = key.to_string();
+                                }
+                                self.frames.push_back(value);
+                            }
+                        }
+                        4 | 5 => {
+                            self.partial.extend_from_slice(payload);
+                            if kind == 4 {
+                                let bytes = std::mem::take(&mut self.partial);
+                                assert_eq!(&bytes[..4], b"CXL1");
+                                let size =
+                                    u32::from_be_bytes(bytes[4..8].try_into().unwrap()) as usize;
+                                let h: serde_json::Value =
+                                    serde_json::from_slice(&bytes[8..8 + size]).unwrap();
+                                let encrypted = serde_json::json!({"sender_public_key": self.kernel_key, "nonce": h["n"],
+                                  "ciphertext": base64::engine::general_purpose::STANDARD.encode(&bytes[8+size..])});
+                                let value = if h.get("r").is_some() {
+                                    serde_json::json!({"kind":"client_response","request_id":h["r"],"error":null,"encrypted_response":encrypted})
+                                } else {
+                                    serde_json::json!({"kind":"client_event","subscription_id":h["s"],"event_id":h["e"],"encrypted_event":encrypted})
+                                };
+                                self.compact_frames += 1;
+                                self.frames.push_back(value);
                             }
                         }
                         2 => {
@@ -1861,6 +1891,10 @@ fn mp08_webrtc_offer_admits_a_data_channel_that_dispatches_through_the_relay_pat
                 .unwrap();
         let response: serde_json::Value = serde_json::from_slice(&response.plaintext).unwrap();
         assert!(response.get("SessionsListed").is_some(), "{response}");
+        assert!(
+            client.compact_frames > 0,
+            "successful RTC replies must use compact frames"
+        );
     });
 }
 

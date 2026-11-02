@@ -16,6 +16,8 @@ const frameLast = 0
 const frameMore = 1
 const framePing = 2
 const framePong = 3
+const frameBinaryLast = 4
+const frameBinaryMore = 5
 const fragmentBytes = 16 * 1024
 /** The kernel sends a response as one text frame: the relay's largest message, base64-wrapped in JSON. */
 const maxMessageBytes = Math.ceil(relayMaxMessageBytes / 3) * 4 + 64 * 1024
@@ -100,6 +102,7 @@ export class DataChannelSocket extends EventTarget {
   private pendingText: string | null = null
   private parts: Uint8Array[] = []
   private partBytes = 0
+  private partBinary: boolean | null = null
   private connectTimer: ReturnType<typeof setTimeout> | undefined
   private graceTimer: ReturnType<typeof setTimeout> | undefined
   private silenceTimer: ReturnType<typeof setTimeout> | undefined
@@ -173,16 +176,25 @@ export class DataChannelSocket extends EventTarget {
     const kind = bytes[0]
     if (kind === framePing) { if (this.readyState === DataChannelSocket.OPEN) this.channel.send(new Uint8Array([framePong])); return }
     if (kind === framePong) { this.dispatchEvent(new Event("pong")); return }
-    if (kind !== frameMore && kind !== frameLast) { this.fail("direct carrier sent an unknown frame"); return }
+    const binary = kind === frameBinaryLast || kind === frameBinaryMore
+    if (!binary && kind !== frameMore && kind !== frameLast) { this.fail("direct carrier sent an unknown frame"); return }
+    if (this.partBinary !== null && this.partBinary !== binary) { this.fail("direct carrier changed fragment type"); return }
+    this.partBinary = binary
     this.parts.push(bytes.subarray(1))
     this.partBytes += bytes.length - 1
     if (this.partBytes > maxMessageBytes) { this.fail("direct carrier frame is too large"); return }
-    if (kind === frameMore) return
+    if (kind === frameMore || kind === frameBinaryMore) return
     const whole = new Uint8Array(this.partBytes)
     let offset = 0
     for (const part of this.parts) { whole.set(part, offset); offset += part.length }
     this.parts = []
     this.partBytes = 0
+    this.partBinary = null
+    if (binary) {
+      if (this.readyState !== DataChannelSocket.OPEN) { this.fail("direct carrier sent binary before opening"); return }
+      this.dispatchEvent(new MessageEvent("message", { data: whole.buffer }))
+      return
+    }
     let text: string
     try { text = this.decoder.decode(whole) } catch { this.fail("direct carrier frame is not text"); return }
     // SCTP implementations can deliver the challenge before the DCEP open acknowledgement.

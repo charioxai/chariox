@@ -8,8 +8,36 @@ class Socket extends EventTarget {
   readonly sent: unknown[] = []
   send(data: string): void { this.sent.push(JSON.parse(data)) }
   receive(data: unknown): void { this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(data) })) }
+  receiveBytes(data: ArrayBuffer): void { this.dispatchEvent(new MessageEvent("message", { data })) }
   close(): void { this.readyState = 3; this.dispatchEvent(Object.assign(new Event("close"), { code: 1006, reason: "lost" })) }
 }
+
+test("MP-08/MP-11 compact frames retain routing and the authenticated kernel key", () => {
+  const socket = new Socket()
+  const carrier = new KernelDirectCarrier(socket as unknown as WebSocket, "pinned-key", () => {})
+  const lane = carrier.openLane(), received: unknown[] = []
+  lane.addEventListener("message", event => received.push(JSON.parse((event as MessageEvent).data)))
+  lane.send(JSON.stringify({ kind: "client_request", request_id: "r" }))
+  const header = new TextEncoder().encode(JSON.stringify({ r: "r", n: "AAAAAAAAAAAAAAAA" }))
+  const frame = new Uint8Array(8 + header.length + 16)
+  frame.set([67, 88, 76, 49]); new DataView(frame.buffer).setUint32(4, header.length)
+  frame.set(header, 8)
+  socket.receiveBytes(frame.buffer)
+  assert.deepEqual(received, [{ kind: "client_response", request_id: "r", error: null,
+    encrypted_response: { sender_public_key: "pinned-key", nonce: "AAAAAAAAAAAAAAAA", ciphertext: "AAAAAAAAAAAAAAAAAAAAAA==" } }])
+  lane.close()
+})
+
+test("MP-11 compact frames cannot replace the pinned key or smuggle routing fields", () => {
+  for (const header of [{ r: "r", n: "AAAAAAAAAAAAAAAA", sender_public_key: "other" }, { r: "r", s: "s", n: "AAAAAAAAAAAAAAAA" }, { s: "s", e: -1, n: "AAAAAAAAAAAAAAAA" }, { r: "r", n: "invalid" }]) {
+    const socket = new Socket(), carrier = new KernelDirectCarrier(socket as unknown as WebSocket, "pinned", () => {})
+    const lane = carrier.openLane()
+    const encoded = new TextEncoder().encode(JSON.stringify(header)), frame = new Uint8Array(8 + encoded.length + 16)
+    frame.set([67, 88, 76, 49]); new DataView(frame.buffer).setUint32(4, encoded.length); frame.set(encoded, 8)
+    socket.receiveBytes(frame.buffer)
+    assert.equal(lane.readyState, 3)
+  }
+})
 
 test("MP-08/MP-11 shared carrier isolates replies, subscriptions and lane retirement", () => {
   const socket = new Socket()
