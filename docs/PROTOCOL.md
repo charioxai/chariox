@@ -6109,6 +6109,12 @@ the STUN Binding responder every relay runs on UDP 3478 of its host
 sockets, the browser passes `stun:<relay host>:3478` as its ICE server. STUN only
 reflects addresses; no TURN, and a pair that cannot connect stays on the relay.
 
+MP-08/MP-10/MP-11 (TR-13/TR-15): discovery, ICE gathering, the relay-issued
+single-use grant and the key proof share a four-second attempt budget. This
+leaves cold native handshakes time to finish and still yields to the relay
+inside five seconds. Receiving keepalives cannot extend this budget. The
+admitted-channel silence deadlines below are independent of discovery.
+
 ### Direct data channel liveness — local 926 / relay peer 377
 
 No frame changes; the data channel's ping/pong become a contract (TR-16). The kernel

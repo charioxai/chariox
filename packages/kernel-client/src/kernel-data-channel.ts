@@ -24,11 +24,13 @@ const maxMessageBytes = Math.ceil(relayMaxMessageBytes / 3) * 4 + 64 * 1024
 const gatherTimeoutMs = 1_500
 /**
  * A symmetric NAT never connects: the lane gives way to the relay well inside
- * 5 s (TR-15). The shaped hosted path (60 ms RTT) connects in under 1.5 s. The
- * budget covers the whole attempt (lease, ICE gathering, grant, connect), and
- * the channel itself gets as long to connect once it exists.
+ * 5 s (TR-15). ICE gathering and the relay-authorized grant can consume most of three
+ * seconds on a cold native client. Leave time for the live key proof while
+ * keeping relay fallback inside its five-second budget. This cap covers the
+ * whole attempt (lease, ICE gathering, grant, connect) and also bounds a
+ * channel used on its own.
  */
-export const directAttemptBudgetMs = 3_000
+export const directAttemptBudgetMs = 4_000
 /** ICE "disconnected" this long means the path is gone; the lane falls back. */
 const disconnectedGraceMs = 2_500
 /**

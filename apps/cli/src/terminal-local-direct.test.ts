@@ -22,7 +22,7 @@ type Fixture = { client: LocalIpcClient; origins: string[]; grants: number; admi
 
 // Mirrors the kernel and relay seams: the direct session closes on any frame
 // that is not a client request, and the relay refuses an expired bearer.
-async function fixture(t: TestContext, token: (thumbprint: string) => string, _protocolVersion = 951): Promise<Fixture> {
+async function fixture(t: TestContext, token: (thumbprint: string) => string, _protocolVersion = 951, handshakeDelayMs = 0): Promise<Fixture> {
   const root = mkdtempSync(join(tmpdir(), "chariox-terminal-direct-"))
   const previous = process.env.CHARIOX_HOME
   process.env.CHARIOX_HOME = root
@@ -52,8 +52,10 @@ async function fixture(t: TestContext, token: (thumbprint: string) => string, _p
         const send = (text: string) => channel.send(new Uint8Array([0, ...Buffer.from(text)]))
         let parts: Buffer[] = []
         channel.addEventListener("open", () => {
-          send(JSON.stringify({ kind: "local_challenge", kernel_id: "home-1", endpoint_epoch: "epoch", challenge: "challenge" }))
+          const challenge = () => { if (channel.readyState === "open") send(JSON.stringify({ kind: "local_challenge", kernel_id: "home-1", endpoint_epoch: "epoch", challenge: "challenge" })) }
           keepalives.push(setInterval(() => { if (channel.readyState === "open") channel.send(new Uint8Array([2])) }, 500))
+          if (handshakeDelayMs) keepalives.push(setTimeout(challenge, handshakeDelayMs))
+          else challenge()
         })
         channel.addEventListener("close", () => { state.directCloses++ })
         channel.addEventListener("message", event => {
@@ -118,6 +120,13 @@ test("MP-08 native terminal uses the shared authenticated WebRTC carrier without
   assert.equal(state.grants, 1, "must request the explicit short terminal lease")
   assert.equal(state.admitted, 1, "must use authenticated direct transport automatically")
   assert.deepEqual(state.origins, ["https://cloud.example.test"])
+})
+
+test("MP-08 TR-13 native terminal admits a live handshake delayed within the five-second fallback budget", async t => {
+  const state = await fixture(t, () => "fixture", 951, 3_100)
+  assert.deepEqual(await state.client.send({ ListSessions: {} }), { Sessions: [] })
+  assert.equal(state.admitted, 1, "a live channel must get enough time to prove the kernel")
+  assert.equal(state.client.isLocalDirectTransport(), true)
 })
 
 test("MP-08/MP-11 relay authorization renewal keeps the direct carrier and its relay-renewed lease", async (t) => {
