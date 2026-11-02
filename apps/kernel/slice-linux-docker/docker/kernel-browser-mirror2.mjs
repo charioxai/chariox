@@ -265,6 +265,7 @@ export class Mirror2 {
   // The observation consumed the page's pending changes: a refused packet retires the stream base, so the next credit re-snapshots.
   layoutMoved(stream, tab, layoutKey) {
     if (this.layoutKey(tab.tab_id) === layoutKey) return;
+    this.host.timing?.event?.('mirror2_layout_moved', {});
     stream.policy = null; throw new Error('MP-11: mirror layout changed during observation');
   }
   invalidate(stream) { stream.policy = null; stream.early = null; stream.replies = null; stream.history = null; stream.historyBytes = 0; stream.resources.clear(); }
