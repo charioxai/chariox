@@ -25,10 +25,9 @@ async function listen(server) {
   return `http://127.0.0.1:${server.address().port}`
 }
 
-function signedHeaders(url, directoryUrl, { method = 'GET', body, alterBase = base => base, created: suppliedCreated, expires: suppliedExpires } = {}) {
+function signedHeaders(url, directoryUrl, { method = 'GET', body, nonce = b64url(randomBytes(24)), alterBase = base => base, created: suppliedCreated, expires: suppliedExpires } = {}) {
   const created = suppliedCreated ?? Math.floor(Date.now() / 1000)
   const expires = suppliedExpires ?? created + 60
-  const nonce = b64url(randomBytes(24))
   const components = ['"@method"', '"@target-uri"', '"@authority"', '"signature-agent";key="sig1"']
   const rows = [
     `"@method": ${method}`,
@@ -63,6 +62,10 @@ test('MP-08/09/10/11 local Web Bot Auth verifier accepts signed requests and rej
     const accepted = await fetch(validUrl, { headers: validHeaders })
     assert.equal(accepted.status, 200)
     assert.deepEqual(await accepted.json(), { accepted: true })
+    const paddedNonceUrl = `${origin}/api?source=padded-nonce`
+    const paddedNonce = randomBytes(32).toString('base64')
+    assert.ok(paddedNonce.endsWith('='), 'test nonce uses padded standard Base64 as the kernel signer does')
+    assert.equal((await fetch(paddedNonceUrl, { headers: signedHeaders(paddedNonceUrl, directoryUrl, { nonce: paddedNonce }) })).status, 200)
     const replayed = await fetch(validUrl, { headers: validHeaders })
     assert.equal(replayed.status, 403)
 
@@ -126,16 +129,16 @@ test('MP-08/09/10/11 local Web Bot Auth verifier accepts signed requests and rej
       assert.equal(response.status, 200)
     }
     const apiEvents = await verifier.events()
-    assert.equal(apiEvents.verified, 6)
+    assert.equal(apiEvents.verified, 7)
     assert.equal(apiEvents.denied, 11)
     assert.deepEqual(apiEvents.routes, {
       '/': { verified: 1, denied: 0 },
-      '/api': { verified: 3, denied: 11 },
+      '/api': { verified: 4, denied: 11 },
       '/assets/*': { verified: 2, denied: 0 },
     })
     const logs = await readFile(eventLog, 'utf8')
     assert.doesNotMatch(logs, /synthetic-secret|credential=changed|Signature-Agent|signature-input/i)
-    assert.equal((await verifier.close()).verified, 6)
+    assert.equal((await verifier.close()).verified, 7)
   } finally {
     await verifier.close().catch(() => undefined)
     await new Promise(resolve => directoryServer.close(resolve))

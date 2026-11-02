@@ -179,8 +179,11 @@ function parseSignatureInput(value) {
   const parameterParts = splitOutsideQuotes(rest.slice(end + 1).replace(/^;/, ''), ';')
   const parameters = Object.create(null)
   for (const part of parameterParts) {
-    const [name, raw] = part.split('=', 2)
-    if (!name || raw === undefined || Object.hasOwn(parameters, name)) throw new Error('invalid signature parameter')
+    const separator = part.indexOf('=')
+    if (separator < 1) throw new Error('invalid signature parameter')
+    const name = part.slice(0, separator).trim()
+    const raw = part.slice(separator + 1).trim()
+    if (!name || !raw || Object.hasOwn(parameters, name)) throw new Error('invalid signature parameter')
     if (['created', 'expires'].includes(name)) {
       if (!/^\d+$/.test(raw)) throw new Error('invalid timestamp parameter')
       parameters[name] = Number(raw)
