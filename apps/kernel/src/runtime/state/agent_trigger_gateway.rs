@@ -159,13 +159,47 @@ async fn launch_gateway(
                 .owned
                 .config_projection
                 .snapshot()
-                .kernel_websocket_url(),
+                .kernel_websocket_origin(),
         )
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .kill_on_drop(true)
         .env("CHARIOX_PUBLICATION_EXIT_ON_STDIN_CLOSE", "1");
+    // A kernel that requires its host's token has no laptop token file for the
+    // gateway to find: it gets the host token in a file it reads once.
+    let credential = crate::runtime_transport::configured_kernel_local_auth_token()
+        .map(|token| {
+            super::workflow_publication_runtime_lifecycle::write_one_shot_private_file(
+                "chariox-agent-trigger-auth",
+                ".token",
+                token.as_bytes(),
+            )
+        })
+        .transpose()
+        .map_err(|e| {
+            http_error(format!(
+                "cannot hand the kernel credential to the gateway: {e}"
+            ))
+        })?;
+    if let Some(path) = &credential {
+        command.env(
+            crate::runtime_transport::KERNEL_LOCAL_AUTH_TOKEN_FILE_ENV,
+            path,
+        );
+    }
+    let started = start_gateway(command, port, ingress).await;
+    if let Some(path) = credential {
+        let _ = std::fs::remove_file(path);
+    }
+    started
+}
+
+async fn start_gateway(
+    mut command: Command,
+    port: u16,
+    ingress: &str,
+) -> Result<Child, DaemonError> {
     let mut child = command
         .spawn()
         .map_err(|e| http_error(format!("cannot start local HTTP gateway: {e}")))?;

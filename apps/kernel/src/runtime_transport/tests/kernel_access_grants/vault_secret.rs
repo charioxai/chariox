@@ -68,6 +68,30 @@ impl Kernel {
         .unwrap()
     }
 
+    /// Waits until the owner's feed shows a frame without the prompt `interaction_id`.
+    async fn secret_prompt_gone(&mut self, interaction_id: &str) {
+        timeout(Duration::from_secs(10), async {
+            while let Some(message) = self.popups.next().await {
+                if let Ok(Message::Text(text)) = message {
+                    let frame: Value = serde_json::from_str(&text).unwrap();
+                    let event = &frame["event"];
+                    if event["event"] == "passkey_prompts_changed"
+                        && !event["prompts"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .any(|prompt| prompt["interaction_id"] == interaction_id)
+                    {
+                        return;
+                    }
+                }
+            }
+            panic!("popup socket closed");
+        })
+        .await
+        .unwrap_or_else(|_| panic!("the prompt {interaction_id} stayed on the owner's screen"));
+    }
+
     /// The hosts the stored handle is bound to, read from the Vault registry.
     async fn credential_allowed_hosts(&mut self, id: &str) -> Vec<String> {
         self.control(&format!("credential-hosts:{id}")).await;
@@ -653,4 +677,57 @@ async fn a_default_port_binding_is_accepted_and_usable_on_that_port_only() {
             "{url}"
         );
     }
+}
+
+/// Starts a secret request for an agent that has access and returns its prompt id.
+async fn pending_request(kernel: &mut Kernel, holder: &mut Client) -> (String, String) {
+    let grant_id = grant(kernel, holder).await;
+    let set = serde_json::json!({"SetUserConfigValue":{"path":"secret_link.page_url","value":"https://page.test"}});
+    assert!(kernel.request(set).await["error"].is_null());
+    unlock(kernel).await;
+    let started = holder.request(request("drill_key", false));
+    let interaction_id = started["response"]["VaultSecretRequested"]["interaction_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{started}"))
+        .to_owned();
+    kernel.secret_popup(&interaction_id).await;
+    (grant_id, interaction_id)
+}
+
+#[tokio::test]
+async fn a_revoked_requester_leaves_no_prompt_and_a_late_answer_is_refused() {
+    let mut kernel = Kernel::start().await;
+    let mut holder = Client::start(&kernel.root);
+    let (grant_id, interaction_id) = pending_request(&mut kernel, &mut holder).await;
+
+    let revoked = kernel
+        .request(
+            serde_json::to_value(LocalDaemonRequest::RevokeKernelAccessGrant(
+                crate::local::RevokeKernelAccessGrantRequest {
+                    grant_id: Some(grant_id),
+                },
+            ))
+            .unwrap(),
+        )
+        .await;
+    assert!(revoked["error"].is_null(), "{revoked}");
+    kernel.secret_prompt_gone(&interaction_id).await;
+
+    let late = kernel
+        .request(answer(&interaction_id, "secret", Some(CANARY)))
+        .await;
+    assert!(
+        late["error"].is_object(),
+        "a prompt of a revoked requester took the owner's value: {late}"
+    );
+}
+
+#[tokio::test]
+async fn a_killed_requester_leaves_no_prompt_behind() {
+    let mut kernel = Kernel::start().await;
+    let mut holder = Client::start(&kernel.root);
+    let (_, interaction_id) = pending_request(&mut kernel, &mut holder).await;
+
+    holder.child.kill().unwrap();
+    kernel.secret_prompt_gone(&interaction_id).await;
 }

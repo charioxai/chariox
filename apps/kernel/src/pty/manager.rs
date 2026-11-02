@@ -167,6 +167,32 @@ fn discard_unread_input(_terminal: Option<&std::fs::File>) -> std::io::Result<()
     Err(std::io::Error::other("PTY input flush is unavailable"))
 }
 
+/// A spawn that failed because the kernel has no file descriptors left says so
+/// in plain words: the descriptor numbers and run ids of the failure are internal.
+fn spawn_failed(provider_run_id: &str, error: &(dyn std::error::Error + 'static)) -> DaemonError {
+    let out_of_files = std::iter::successors(Some(error), |error| error.source())
+        .filter_map(|error| error.downcast_ref::<std::io::Error>())
+        .filter_map(std::io::Error::raw_os_error)
+        .any(is_out_of_files);
+    if out_of_files {
+        return DaemonError::TooManyOpenFiles;
+    }
+    DaemonError::PtySpawn {
+        provider_run_id: provider_run_id.to_string(),
+        message: error.to_string(),
+    }
+}
+
+#[cfg(unix)]
+fn is_out_of_files(errno: i32) -> bool {
+    matches!(errno, libc::EMFILE | libc::ENFILE)
+}
+
+#[cfg(not(unix))]
+fn is_out_of_files(_errno: i32) -> bool {
+    false
+}
+
 #[cfg(unix)]
 fn disable_pty_input_echo(
     master: &dyn MasterPty,
@@ -669,10 +695,7 @@ impl PtyManager {
                 pixel_width: 0,
                 pixel_height: 0,
             })
-            .map_err(|error| DaemonError::PtySpawn {
-                provider_run_id: request.provider_run_id.clone(),
-                message: error.to_string(),
-            })?;
+            .map_err(|error| spawn_failed(&request.provider_run_id, &*error))?;
         if !keep_input_echo {
             disable_pty_input_echo(pair.master.as_ref(), &request.provider_run_id)?;
         }
@@ -685,10 +708,7 @@ impl PtyManager {
                     agent.agent_id.as_str()
                 }),
         )
-        .map_err(|error| DaemonError::PtySpawn {
-            provider_run_id: request.provider_run_id.clone(),
-            message: error.to_string(),
-        })?;
+        .map_err(|error| spawn_failed(&request.provider_run_id, &error))?;
         #[cfg(unix)]
         let inner_program = request.program.clone();
         let (program, args) = prepared.command(request.program, request.args);
@@ -725,19 +745,12 @@ impl PtyManager {
             command.get_cwd().map(std::path::Path::new),
             command.get_env("PATH"),
         )
-        .map_err(|error| DaemonError::PtySpawn {
-            provider_run_id: request.provider_run_id.clone(),
-            message: error.to_string(),
-        })?;
+        .map_err(|error| spawn_failed(&request.provider_run_id, &error))?;
 
         // portable-pty calls setsid before exec on Unix, including sandbox
         // wrappers. Keep its controlling-terminal and isolation setup intact.
-        let mut child = crate::process_spawn::spawn_pty(pair.slave, command).map_err(|error| {
-            DaemonError::PtySpawn {
-                provider_run_id: request.provider_run_id.clone(),
-                message: error.to_string(),
-            }
-        })?;
+        let mut child = crate::process_spawn::spawn_pty(pair.slave, command)
+            .map_err(|error| spawn_failed(&request.provider_run_id, &error))?;
 
         let resources = match child
             .process_id()
@@ -748,10 +761,7 @@ impl PtyManager {
             Err(error) => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err(DaemonError::PtySpawn {
-                    provider_run_id: request.provider_run_id.clone(),
-                    message: error.to_string(),
-                });
+                return Err(spawn_failed(&request.provider_run_id.clone(), &error));
             }
         };
 
@@ -793,17 +803,11 @@ impl PtyManager {
                 });
             }
         };
-        let mut reader =
-            PtyOutputSource::new(master.as_ref()).map_err(|error| DaemonError::PtySpawn {
-                provider_run_id: provider_run_id.clone(),
-                message: error.to_string(),
-            })?;
+        let mut reader = PtyOutputSource::new(master.as_ref())
+            .map_err(|error| spawn_failed(&provider_run_id, &error))?;
         let writer = master
             .take_writer()
-            .map_err(|error| DaemonError::PtySpawn {
-                provider_run_id: provider_run_id.clone(),
-                message: error.to_string(),
-            })?;
+            .map_err(|error| spawn_failed(&provider_run_id, &*error))?;
         let (input_tx, input_rx) = mpsc::sync_channel(PTY_INPUT_QUEUE_LIMIT);
         let backlog = Arc::new(PtyInputBacklog::default());
         let writer_backlog = backlog.clone();

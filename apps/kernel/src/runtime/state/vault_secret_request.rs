@@ -218,6 +218,35 @@ impl KernelRuntimeState {
             .insert(interaction_id.to_owned(), request);
     }
 
+    /// The requester's access ended (revoked, expired or its process exited): its pending
+    /// prompts go from every client at once and the requests end `cancelled`, so no value
+    /// the owner could still type is stored for a requester that no longer has access.
+    pub(super) fn withdraw_secret_requests(&self, grant_id: &str) {
+        let withdrawn = {
+            let mut access = self
+                .owned
+                .kernel_access
+                .lock()
+                .expect("access state poisoned");
+            access
+                .secret_requests
+                .iter_mut()
+                .filter(|(_, known)| {
+                    known.grant_id == grant_id && known.status == VaultSecretStatus::Pending
+                })
+                .map(|(interaction_id, known)| {
+                    known.status = VaultSecretStatus::Cancelled;
+                    interaction_id.clone()
+                })
+                .collect::<Vec<_>>()
+        };
+        for interaction_id in withdrawn {
+            let _ = self
+                .owned
+                .timeout_runtime_interaction(ACCESS_INTERACTION_SCOPE, &interaction_id);
+        }
+    }
+
     fn finish_secret_request(&self, interaction_id: &str, status: VaultSecretStatus) {
         if let Some(known) = self
             .owned
@@ -226,6 +255,7 @@ impl KernelRuntimeState {
             .expect("access state poisoned")
             .secret_requests
             .get_mut(interaction_id)
+            .filter(|known| known.status == VaultSecretStatus::Pending)
         {
             known.status = status;
             known.expires_at_ms = known.expires_at_ms.min(crate::session::unix_epoch_ms());

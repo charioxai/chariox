@@ -1,6 +1,6 @@
 {
-  "protocol_version": 932,
-  "relay_peer_protocol_version": 381,
+  "protocol_version": 933,
+  "relay_peer_protocol_version": 382,
   "shapes": [
     {
       "event": "session_processes_changed",
@@ -102,12 +102,12 @@
     },
     {
       "category": "outside_end",
-      "reason": "provider process tree stopped by a session controller",
+      "reason": "Stopped from Health.",
       "timestamp_ms": 10000,
       "failure": {
-        "kind": "other",
+        "kind": "cancelled",
         "retryable": false,
-        "reason": "provider process tree stopped by a session controller"
+        "reason": ""
       }
     },
     {

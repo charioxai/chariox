@@ -165,7 +165,8 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// Allocated 386 carries the local 932 HTTP agent trigger variants with the `http` prompt origin.
 /// Landing union 381 pairs the embedded local union with local 932; it carries peers 375 to 380 and
 /// takes 381 for the HTTP trigger variants (allocated as 386).
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 381;
+/// Browser header 382 carries the local 933 header state.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 382;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;

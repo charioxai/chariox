@@ -132,7 +132,15 @@ impl KernelRuntimeState {
                 message,
             })?;
             if let SessionProcessOwner::Agent(agent_id) = owner {
-                self.owned.record_notice_for_agent(session_id, None, Some(&agent_id), self.owned.attachment_store.list_session_attachment_ids(session_id), format!("Process outside end: {} owned process(es) stopped by a session controller.", ids.len()));
+                self.owned.record_notice_for_agent(
+                    session_id,
+                    None,
+                    Some(&agent_id),
+                    self.owned
+                        .attachment_store
+                        .list_session_attachment_ids(session_id),
+                    "Stopped from Health.".to_string(),
+                );
             }
             stopped.extend(ids);
         }

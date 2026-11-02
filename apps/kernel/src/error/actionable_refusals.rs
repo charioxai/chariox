@@ -25,6 +25,7 @@ pub(crate) fn message(code: &str) -> Option<&'static str> {
         "secret_request_invalid" => "the credential id is letters, digits, - and _ separated by dots, the label is one line of 1 to 80 characters, and the key needs the API host(s) that may receive it, for example `--host api.example.com` (an existing handle keeps the hosts it has)",
         "secret_request_denied" => "the user's settings do not let agents create Vault credentials on this kernel",
         "secret_request_unknown" => "this agent has no such secret request; use the interaction_id that chariox secret request printed",
+        "too_many_open_files" => "too many open files in this kernel; close a terminal and try again",
         "agent_deadline_reached" => "agent deadline reached; this agent cannot start another turn. Start a new agent for new work",
         "agent_deadline_requires_executor" => "arm an agent deadline on its executing kernel; an agent with a deadline cannot move to a leased worker without worker enforcement",
         "agent_deadline_extension_refused" => "an agent deadline cannot be extended; start a new agent for new work",

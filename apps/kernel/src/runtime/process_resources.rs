@@ -11,6 +11,12 @@ pub(crate) use control::{
 };
 pub use control::{ProcessControlOutcome, ProcessControlResult, ProcessControlTarget};
 pub(crate) use handover::{adopt_released, hand_over_released, ReleasedJobs};
+
+/// The commands whose admission has stopped them, for a kernel that replaces
+/// its program in place.
+pub(crate) fn hand_over_admission() -> Vec<HeldCommand> {
+    pool::Pool::shared().held_commands()
+}
 mod admission;
 mod handover;
 mod pool;
@@ -20,6 +26,7 @@ mod session_sweep;
 mod submissions;
 #[cfg(test)]
 pub(crate) use admission::WaitReason;
+pub(crate) use admission::{adopt_admission, HeldCommand};
 #[cfg(test)]
 pub(crate) use projection::released_keys_for_session;
 #[cfg(test)]
@@ -38,6 +45,8 @@ mod tests;
 
 pub use sampling::ProcessSample;
 const MIB: u64 = 1024 * 1024;
+/// A kernel short of descriptors for long says so once per this interval.
+const SHORT_LOG_INTERVAL: Duration = Duration::from_secs(60);
 const INTERVAL: Duration = Duration::from_millis(250);
 
 #[cfg(unix)]
@@ -272,24 +281,16 @@ impl PreparedDomain {
         let (stop, stopped) = mpsc::channel();
         state.lock().unwrap_or_else(|e| e.into_inner()).control = Some(stop.clone());
         let mut released = handed_over;
+        // When the monitor last said it is waiting for the kernel's resources.
+        let mut short_logged: Option<std::time::Instant> = None;
         // Per command: process-table time, resident and written bytes, and
         // their growth per second.
         let mut previous = std::collections::BTreeMap::<u32, Rates>::new();
         let worker = std::thread::Builder::new()
             .name("chariox-process-resources".into())
             .spawn(move || loop {
-                let samples = match tree.sample() {
-                    Ok(samples) => samples,
-                    Err(error) => {
-                        crate::logging::error_with_fields(
-                            "process_resources.monitor",
-                            "process resource sampling failed; stopping its owned tree",
-                            serde_json::json!({"pid": root, "error": error}),
-                        );
-                        tree.terminate();
-                        break;
-                    }
-                };
+                let ended = match tree.sample() {
+                    Ok(samples) => {
                 // A job that left soon after its parent may not be observed yet;
                 // its cgroup still holds it, and ending the watch would kill it.
                 // Without one, only a fresh process table can tell.
@@ -364,7 +365,33 @@ impl PreparedDomain {
                 #[cfg(not(target_os = "linux"))]
                 let unit_charged = None;
                 self.pool.enforce(&watched, unit_charged);
-                admit(&tree, &watched);
+                        admit(&tree, &watched);
+                        ended
+                    }
+                    // The kernel is short of descriptors or memory for a
+                    // moment, which says nothing of the tree: leave it and
+                    // what was last sampled alone, and read again next tick.
+                    Err(sampling::SamplingError::Short(errno)) => {
+                        if short_logged.is_none_or(|at| at.elapsed() >= SHORT_LOG_INTERVAL) {
+                            short_logged = Some(std::time::Instant::now());
+                            crate::logging::warn_with_fields(
+                                "process_resources.monitor",
+                                "process resource sampling is waiting for the kernel to get descriptors or memory back",
+                                serde_json::json!({"pid": root, "errno": errno}),
+                            );
+                        }
+                        false
+                    }
+                    Err(error) => {
+                        crate::logging::error_with_fields(
+                            "process_resources.monitor",
+                            "process resource sampling failed; stopping its owned tree",
+                            serde_json::json!({"pid": root, "error": error.to_string()}),
+                        );
+                        tree.terminate();
+                        break;
+                    }
+                };
                 if ended {
                     break;
                 }

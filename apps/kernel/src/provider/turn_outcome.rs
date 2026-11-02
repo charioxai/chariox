@@ -122,6 +122,16 @@ impl TurnOutcome {
         )
     }
 
+    /// How a turn that ends with this outcome is settled: a turn a person
+    /// stopped is cancelled, not failed.
+    pub(crate) fn settlement_status(&self) -> crate::git_observer::CompletedTurnSettlementStatus {
+        if self.is_error() {
+            crate::git_observer::CompletedTurnSettlementStatus::Failed
+        } else {
+            crate::git_observer::CompletedTurnSettlementStatus::Cancelled
+        }
+    }
+
     fn of(kind: TurnOutcomeKind, retryable: bool, reason: &str) -> Self {
         Self {
             kind,
@@ -184,6 +194,8 @@ impl TurnOutcome {
             format!(" {message}.")
         };
         format!("{headline}.{reason} {}", self.recovery())
+            .trim_end()
+            .to_string()
     }
 
     pub(crate) fn new(kind: TurnOutcomeKind, retryable: bool, reason: &str) -> Self {

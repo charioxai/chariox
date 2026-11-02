@@ -293,3 +293,124 @@ async fn concurrent_process_exit_reports_one_diagnostic() {
         crate::provider::ProviderRunTerminationCategory::OutsideEnd
     );
 }
+
+// MP-08 / MP-09 / MP-10 / MP-11: a stop from Health is a deliberate stop, so the
+// turn ends cancelled and the agent history reads in plain words, whichever of the
+// two settlement entries (output pump or liveness) sees the tree end.
+async fn stopped_from_health_ends_cancelled(via_liveness: bool) {
+    let worktree = crate::test_support::TestWorktree::new("stop-from-health");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "stop-client",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .unwrap();
+    let run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "claude-code",
+                "default",
+                "test",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .unwrap();
+    app.submit_prompt(
+        session.id(),
+        attachment.id(),
+        Some(agent.id()),
+        "run a command",
+        Vec::new(),
+    )
+    .unwrap();
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let termination = ProviderRunTermination::outside_end(crate::session::unix_epoch_ms());
+    if via_liveness {
+        runtime
+            .settle_unexpected_provider_run_exit_with_diagnostic(
+                session.id(),
+                run.id(),
+                agent.id(),
+                termination,
+                Some("ERROR codex_app_server: tree stopped"),
+            )
+            .await
+            .unwrap();
+    } else {
+        runtime
+            .fail_owned_provider_prompt_with_termination(
+                session.id(),
+                run.id(),
+                "provider process tree stopped by a session controller",
+                true,
+                Some(termination),
+            )
+            .await
+            .unwrap();
+    }
+    runtime.flush_provider_history(run.id()).await.unwrap();
+    let state = runtime.owned.session_snapshot(session.id()).unwrap();
+    let activity = runtime.agent_activity_for_session(&state);
+    let turn = activity[agent.id()].last_completed_turn.as_ref().unwrap();
+    assert!(
+        turn.settlement_status == crate::git_observer::CompletedTurnSettlementStatus::Cancelled,
+        "a stop from Health ends the turn cancelled, not failed"
+    );
+    assert!(
+        turn.outcome.as_ref().unwrap().kind == crate::provider::TurnOutcomeKind::Cancelled,
+        "the turn outcome is cancelled"
+    );
+    assert!(
+        turn.provider_termination.as_ref().unwrap().category
+            == crate::provider::ProviderRunTerminationCategory::OutsideEnd,
+        "the stop stays recorded as the termination evidence"
+    );
+    let shown = runtime
+        .owned
+        .terminal_stream
+        .drain_output_records(session.id(), attachment.id())
+        .iter()
+        .map(|record| String::from_utf8_lossy(&record.bytes).into_owned())
+        .chain(
+            runtime
+                .owned
+                .operational_history_store
+                .load_session_events(session.id(), Some(agent.id()))
+                .unwrap()
+                .into_iter()
+                .filter_map(|event| event.content),
+        )
+        .collect::<Vec<_>>()
+        .join("\n");
+    for internal in [
+        "Provider error",
+        "session controller",
+        "Provider terminal diagnostic",
+        "codex_app_server",
+        "ended unexpectedly",
+        "Request not carried out",
+    ] {
+        assert!(
+            !shown.contains(internal),
+            "the person must not read {internal:?}: {shown}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn stopped_from_health_ends_cancelled_through_the_output_pump() {
+    stopped_from_health_ends_cancelled(false).await;
+}
+
+#[tokio::test]
+async fn stopped_from_health_ends_cancelled_through_liveness() {
+    stopped_from_health_ends_cancelled(true).await;
+}

@@ -5,6 +5,7 @@
 //! Waiting commands start by themselves, in turn across owners, once their
 //! room is free. Light commands never wait.
 use super::*;
+use crate::runtime::kernel_access::process::inspect;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -30,7 +31,7 @@ pub enum WaitReason {
     Disk,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(super) enum Wait {
     /// Stopped before it grew: it waits for room for its expected peak.
     Held(WaitReason),
@@ -128,6 +129,80 @@ impl Entry {
     }
 }
 
+/// A command the previous kernel program's admission had stopped (or was
+/// resuming) when it handed its processes over: the next program keeps it
+/// waiting and controllable, and resumes it when room frees.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) struct HeldCommand {
+    pub(super) identity: crate::runtime::kernel_access::process::ProcessIdentity,
+    pub(super) wait: Option<Wait>,
+    pub(super) admitted: bool,
+    pub(super) forced: bool,
+    pub(super) paused_rate: u64,
+    pub(super) peak: Peak,
+    pub(super) arrived: u64,
+}
+
+impl HeldCommand {
+    /// What a hot reload must carry for `pid`: a command admission has
+    /// stopped, or has resumed but not yet continued.
+    pub(super) fn of(pid: u32, entry: &Entry) -> Option<Self> {
+        if entry.wait.is_none() && !entry.stopped {
+            return None;
+        }
+        Some(Self {
+            identity: inspect(pid).ok()?.0,
+            wait: entry.wait,
+            admitted: entry.admitted,
+            forced: entry.forced,
+            paused_rate: entry.paused_rate,
+            peak: entry.peak,
+            arrived: entry.arrived,
+        })
+    }
+
+    /// Admission's view of the command in the program that adopts it: stopped,
+    /// so that whatever resumes it also continues the process.
+    fn into_entry(self) -> Entry {
+        Entry {
+            arrived: self.arrived,
+            wait: self.wait,
+            admitted: self.admitted,
+            forced: self.forced,
+            holdable: true,
+            stopped: true,
+            paused_rate: self.paused_rate,
+            peak: self.peak,
+            ..Entry::default()
+        }
+    }
+}
+
+/// What the previous program handed over, until the watch of the adopted
+/// process registers the command it names.
+static ADOPTED: std::sync::Mutex<BTreeMap<u32, HeldCommand>> =
+    std::sync::Mutex::new(BTreeMap::new());
+
+/// Remembers the commands the previous program's admission had stopped. Their
+/// watches are started after this, for the processes the handover names.
+pub(crate) fn adopt_admission(held: Vec<HeldCommand>) {
+    ADOPTED
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .extend(held.into_iter().map(|held| (held.identity.pid, held)));
+}
+
+/// The handed-over command at `pid`, unless the PID now names another process.
+fn take_adopted(pid: u32) -> Option<HeldCommand> {
+    let held = ADOPTED
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&pid)?;
+    inspect(pid)
+        .is_ok_and(|(current, _)| sampling::same_birth(&current, &held.identity))
+        .then_some(held)
+}
+
 /// The machine-wide part of admission, under the pool.
 pub(super) struct Ledger {
     arrivals: u64,
@@ -197,16 +272,29 @@ impl Ledger {
             let entry = match observation.admission.entry(command.pid) {
                 std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
                 std::collections::btree_map::Entry::Vacant(vacant) => {
-                    // Who started it is not known yet: asked again next sample.
-                    let Some(holdable) = submissions.claim(command.pid, command.group, now) else {
-                        continue;
-                    };
-                    self.arrivals += 1;
-                    vacant.insert(Entry {
-                        arrived: self.arrivals,
-                        holdable,
-                        ..Entry::default()
-                    })
+                    if let Some(held) = take_adopted(command.pid) {
+                        // Still stopped from the previous program: it waits on.
+                        self.arrivals = self.arrivals.max(held.arrived);
+                        let entry = vacant.insert(held.into_entry());
+                        entry.seen = recognise(command.effective);
+                        entry.expected = entry
+                            .seen
+                            .as_ref()
+                            .and_then(|seen| self.peaks.get(&seen.key));
+                        entry
+                    } else {
+                        // Who started it is not known yet: asked again next sample.
+                        let Some(holdable) = submissions.claim(command.pid, command.group, now)
+                        else {
+                            continue;
+                        };
+                        self.arrivals += 1;
+                        vacant.insert(Entry {
+                            arrived: self.arrivals,
+                            holdable,
+                            ..Entry::default()
+                        })
+                    }
                 }
             };
             entry.resident = command.resident;
