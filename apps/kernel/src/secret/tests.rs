@@ -7,6 +7,7 @@ use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::sync::{Arc, Mutex};
 use std::thread;
+mod web_bot_auth;
 
 #[derive(Debug, Default)]
 struct MemoryVaultStore {

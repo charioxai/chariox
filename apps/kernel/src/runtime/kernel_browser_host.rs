@@ -26,6 +26,7 @@ pub(crate) struct KernelBrowserHost {
     root: PathBuf,
     /// Counts ownership changes, taken under the actor lock, so the browser host can order their input retirements.
     authority_epoch: Arc<AtomicU64>,
+    web_bot_auth_revision: Arc<AtomicU64>,
     terminal_leases: terminal_lease::TerminalLeases,
 }
 #[derive(Default)]
@@ -139,6 +140,7 @@ impl KernelBrowserHost {
             inner: Arc::new(Mutex::new(HostState::default())),
             root: root.join("kernel-browser"),
             authority_epoch: Arc::default(),
+            web_bot_auth_revision: Arc::default(),
             terminal_leases: Arc::default(),
         }
     }
@@ -195,6 +197,38 @@ impl KernelBrowserHost {
 
     pub(crate) fn profile_root(&self, user: &str) -> PathBuf {
         self.root.join(Self::profile_key(user))
+    }
+    pub(crate) fn update_web_bot_auth_policy(
+        &self,
+        projects: &[String],
+        reset: bool,
+    ) -> Result<(), String> {
+        let revision = self.web_bot_auth_revision.fetch_add(1, Ordering::SeqCst) + 1;
+        let browsers = self
+            .inner
+            .lock()
+            .map_err(|_| "browser host lock poisoned")?
+            .browsers
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        for browser in browsers {
+            let mut backend = browser
+                .lock()
+                .map_err(|_| "browser operation lock poisoned")?;
+            if backend.health()?.state
+                == super::browser_controller_process::BrowserControllerProcessState::Ready
+            {
+                backend.host_request(
+                    "host.web_bot_auth_policy",
+                    serde_json::json!({"projects": projects, "reset": reset, "revision": revision}),
+                )?;
+            }
+        }
+        Ok(())
+    }
+    pub(crate) fn web_bot_auth_revision(&self) -> u64 {
+        self.web_bot_auth_revision.load(Ordering::SeqCst)
     }
     pub(crate) fn profile_key(user: &str) -> String {
         format!("{:x}", Sha256::digest(user.as_bytes()))
@@ -508,6 +542,11 @@ impl KernelBrowserHost {
         crate::transport::kernel_browser_display::slow("rust_backend_queue", &op_label, queued);
         self.require_running()?;
         self.check_admission(admission)?;
+        if let Some(revision) = params["_web_bot_auth"]["policy_revision"].as_u64() {
+            if revision != self.web_bot_auth_revision() {
+                return Err("Web Bot Auth policy changed; retry the browser operation".into());
+            }
+        }
         self.scope_browser_request(admission, method, &params)?;
         if method == "host.browser"
             && matches!(params["op"].as_str(), Some("open" | "navigate" | "input"))
@@ -1260,6 +1299,32 @@ fn require_loaded(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn web_bot_auth_policy_change_rejects_material_prepared_before_a_browser_started() {
+        let root = std::env::temp_dir().join(format!("wba-policy-{:032x}", rand::random::<u128>()));
+        let host = KernelBrowserHost::new(root.clone());
+        let revision = host.web_bot_auth_revision();
+        host.update_web_bot_auth_policy(&[], false).unwrap();
+        for material in [
+            serde_json::json!({"policy_revision": revision}),
+            serde_json::json!({"policy_revision": revision, "disabled": true}),
+        ] {
+            let error = host
+                .protected_request(
+                    "owner",
+                    None,
+                    "host.browser",
+                    serde_json::json!({"op": "open", "url": "https://example.com",
+                        "_web_bot_auth": material}),
+                    Value::Null,
+                )
+                .unwrap_err();
+            assert!(error.to_string().contains("Web Bot Auth policy changed"));
+        }
+        drop(host);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     /// A hot reload keeps the user-domain tools a running agent loaded, for
     /// its live grant, though the user has since focused another agent (who

@@ -220,6 +220,9 @@ impl KernelRuntimeState {
         let _unlock = self
             .ensure_vault_unlocked_for_agent(session, agent.id(), "kernel_browser_paste_secret")
             .await?;
+        let signing_material = self
+            .web_bot_auth_browser_material(session, agent.id())
+            .await?;
         check_authority()?;
         let (service, _vault_guard) = self
             .scoped_secret_input_service(protection, &scope, &args.credential_id)
@@ -259,7 +262,7 @@ impl KernelRuntimeState {
         let admission = admission.with_authority(move || {
             state.vault_credential_elevation_allows(&session_id, &agent_id, &credential).is_ok()
         });
-        self.insert_kernel_browser_secret(user, &admission, &args, &service, url, None)
+        self.insert_kernel_browser_secret(user, &admission, &args, &service, url, None, signing_material)
             .await?;
         Ok(RuntimeToolResult {
             ok: true,
@@ -328,7 +331,7 @@ impl KernelRuntimeState {
         let url = self
             .kernel_browser_secret_target_url_bound(&user, &admission, &args)
             .await?;
-        self.insert_kernel_browser_secret(&user, &admission, &args, &service, url, Some(&actor))
+        self.insert_kernel_browser_secret(&user, &admission, &args, &service, url, Some(&actor), Value::Null)
             .await?;
         Ok(json!({"inserted":true}))
     }
@@ -341,6 +344,7 @@ impl KernelRuntimeState {
         service: &crate::secret::RuntimeSecretService,
         url: String,
         actor: Option<&str>,
+        signing_material: Value,
     ) -> Result<(), DaemonError> {
         let protection = &self.owned.kernel_browser_secret_observations;
         let scope = KernelBrowserHost::profile_key(user);
@@ -387,6 +391,7 @@ impl KernelRuntimeState {
                 | crate::config::UserCredentialInjectionConfig::BackupCodes
         )
         .into();
+        params["_web_bot_auth"] = signing_material;
         // MP-08/MP-11: the fill is the agent's input to an App Tab too.
         if admission.is_agent() {
             self.claim_app_view_tab(user, admission, &mut params)?;

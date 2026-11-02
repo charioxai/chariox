@@ -182,6 +182,7 @@ impl KernelBrowserHost {
         let inner = Arc::downgrade(&self.inner);
         let root = self.root.clone();
         let terminal_leases = self.terminal_leases.clone();
+        let web_bot_auth_revision = self.web_bot_auth_revision.clone();
         handle.spawn(async move {
             loop {
                 let Some(inner) = inner.upgrade() else {
@@ -191,6 +192,7 @@ impl KernelBrowserHost {
                     inner,
                     root: root.clone(),
                     authority_epoch: Arc::default(),
+                    web_bot_auth_revision: web_bot_auth_revision.clone(),
                     terminal_leases: terminal_leases.clone(),
                 };
                 if host.inner.lock().unwrap_or_else(|e| e.into_inner()).stopped {

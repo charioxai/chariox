@@ -21,6 +21,44 @@ impl KernelRuntimeState {
             &user_config.credential_vault,
         )?;
         match tool_name {
+            crate::transport::runtime_tools::HTTP_REQUEST_TOOL => {
+                let args =
+                    serde_json::from_value::<crate::transport::runtime_tools::HttpRequestArgs>(
+                        arguments,
+                    )
+                    .map_err(|_| DaemonError::LocalTransport {
+                        operation: "http_request",
+                        message: "invalid HTTP request arguments".into(),
+                    })?;
+                let agent_id = provider_run.agent_instance_id().ok_or_else(|| {
+                    DaemonError::LocalTransport {
+                        operation: "http_request",
+                        message: "an agent-scoped run is required".into(),
+                    }
+                })?;
+                let signer = self
+                    .web_bot_auth_signer(provider_run.session_id(), agent_id)
+                    .await?;
+                let response = tokio::task::spawn_blocking(move || {
+                    crate::secret::RuntimeSecretService::prepare_plain_http_request(args)?
+                        .with_web_bot_auth(signer.as_deref())?
+                        .execute()
+                })
+                .await
+                .map_err(|_| DaemonError::LocalTransport {
+                    operation: "http_request",
+                    message: "HTTP request task failed".into(),
+                })??;
+                Ok(crate::transport::runtime_tools::RuntimeToolResult {
+                    ok: true,
+                    payload: serde_json::to_value(response).map_err(|_| {
+                        DaemonError::LocalTransport {
+                            operation: "http_request",
+                            message: "HTTP response encoding failed".into(),
+                        }
+                    })?,
+                })
+            }
             crate::transport::runtime_tools::LIST_CREDENTIAL_HANDLES_TOOL => {
                 Ok(crate::transport::runtime_tools::RuntimeToolResult {
                     ok: true,
@@ -256,8 +294,20 @@ impl KernelRuntimeState {
                     timeout_ms: args.timeout_ms,
                     max_response_bytes: args.max_response_bytes,
                 };
+                let agent_id = provider_run.agent_instance_id().ok_or_else(|| {
+                    DaemonError::LocalTransport {
+                        operation: "web_bot_auth",
+                        message: "an agent-scoped run is required".into(),
+                    }
+                })?;
+                let signer = self
+                    .web_bot_auth_signer(provider_run.session_id(), agent_id)
+                    .await?;
                 let response = tokio::task::spawn_blocking(move || {
-                    service.http_request_with_credential(request)
+                    service
+                        .prepare_http_request_with_credential(request)?
+                        .with_web_bot_auth(signer.as_deref())?
+                        .execute()
                 })
                 .await
                 .map_err(|error| DaemonError::LocalTransport {
@@ -410,13 +460,18 @@ impl KernelRuntimeState {
         service: crate::secret::RuntimeSecretService,
         request: crate::secret::CredentialHttpRequest,
     ) -> Result<crate::secret::CredentialHttpResponse, DaemonError> {
+        let signer = self
+            .web_bot_auth_signer(&context.home_session_id, &context.home_agent_id)
+            .await?;
         let state = self.clone();
         let preparation_context = context.clone();
         let prepared = self
             .with_app_side_effect_blocking(move |_| {
                 state.authorize_home_credential_context(&preparation_context)?;
                 state.with_forwarded_binding_operation(|| {
-                    service.prepare_http_request_with_credential(request)
+                    service
+                        .prepare_http_request_with_credential(request)?
+                        .with_web_bot_auth(signer.as_deref())
                 })
             })
             .await?;
@@ -442,6 +497,18 @@ impl KernelRuntimeState {
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
         let agent = self.authorize_home_credential_context(&context)?;
         match tool_name.as_str() {
+            crate::transport::runtime_tools::HTTP_REQUEST_TOOL => {
+                let args = serde_json::from_value::<crate::transport::runtime_tools::HttpRequestArgs>(arguments)
+                    .map_err(|_| DaemonError::LocalTransport { operation: "http_request", message: "invalid HTTP request arguments".into() })?;
+                let signer = self.web_bot_auth_signer(&context.home_session_id, agent.id()).await?;
+                self.authorize_home_credential_context(&context)?;
+                let response = tokio::task::spawn_blocking(move || {
+                    crate::secret::RuntimeSecretService::prepare_plain_http_request(args)?
+                        .with_web_bot_auth(signer.as_deref())?.execute()
+                }).await.map_err(|_| DaemonError::LocalTransport { operation: "http_request", message: "HTTP request task failed".into() })??;
+                self.authorize_home_credential_context(&context)?;
+                Ok(crate::transport::runtime_tools::RuntimeToolResult { ok: true, payload: serde_json::to_value(response).map_err(|_| DaemonError::LocalTransport { operation: "http_request", message: "HTTP response encoding failed".into() })? })
+            }
             crate::transport::runtime_tools::LIST_CREDENTIAL_HANDLES_TOOL => {
                 let service = self.home_runtime_secret_service()?;
                 Ok(crate::transport::runtime_tools::RuntimeToolResult {

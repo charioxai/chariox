@@ -925,6 +925,11 @@ impl KernelRuntimeState {
                 });
         }
         let mut params = browser_tool_params(arguments)?;
+        if matches!(params["op"].as_str(), Some("open" | "navigate" | "input")) {
+            params["_web_bot_auth"] = self
+                .web_bot_auth_browser_material(run.session_id(), agent.id())
+                .await?;
+        }
         if params["input"]["kind"] == "upload" {
             params["_upload_roots"] =
                 serde_json::json!([self.room_project_directory(run.session_id())?]);

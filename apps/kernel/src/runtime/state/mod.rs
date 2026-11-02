@@ -185,6 +185,7 @@ mod room_terminal_runtime_state;
 mod runtime_tool_call_activity;
 mod usage_snapshot;
 mod visible_region_capture;
+mod web_bot_auth_runtime;
 pub(crate) use runtime_tool_call_activity::RuntimeToolCallActivity;
 
 #[derive(Clone)]
@@ -246,6 +247,7 @@ struct KernelRuntimeOwnedState {
     /// Home side of A10: windows whose first worker fence was confirmed.
     leased_sudo_fenced: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
     config_projection: crate::runtime::projection::DaemonConfigProjectionStore,
+    web_bot_auth: Arc<web_bot_auth_runtime::WebBotAuthState>,
     session_store: SessionStateStore,
     agent_store: AgentServiceStore,
     attachment_store: AttachmentServiceStore,
@@ -1034,6 +1036,7 @@ impl KernelRuntimeState {
                 leased_sudo_grants: Default::default(),
                 leased_sudo_fenced: Default::default(),
                 config_projection,
+                web_bot_auth: Default::default(),
                 session_store,
                 agent_store,
                 attachment_store,

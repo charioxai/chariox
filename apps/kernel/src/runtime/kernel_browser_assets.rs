@@ -411,6 +411,10 @@ const ASSETS: &[(&str, &[u8])] = &[
         include_bytes!("../../slice-linux-docker/docker/browser-controller-apps.mjs"),
     ),
     (
+        "browser-controller-web-bot-auth.mjs",
+        include_bytes!("../../slice-linux-docker/docker/browser-controller-web-bot-auth.mjs"),
+    ),
+    (
         "browser-controller-artifacts.mjs",
         include_bytes!("../../slice-linux-docker/docker/browser-controller-artifacts.mjs"),
     ),

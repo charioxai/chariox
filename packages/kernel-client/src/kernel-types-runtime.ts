@@ -390,6 +390,10 @@ export type CharioxUserConfig = {
     default_ttl_minutes?: number
     max_ttl_minutes?: number
   }
+  web_bot_auth?: {
+    projects?: string[]
+    signature_agent?: string
+  }
 }
 
 export type CharioxUserConfigPayload = {

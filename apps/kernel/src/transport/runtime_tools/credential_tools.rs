@@ -47,6 +47,23 @@ pub struct RequestCredentialSecretPromptArgs {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HttpRequestArgs {
+    pub url: String,
+    #[serde(default = "default_http_method")]
+    pub method: String,
+    #[serde(default)]
+    pub headers: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    pub body_text: Option<String>,
+    #[serde(default)]
+    pub body_json: Option<serde_json::Value>,
+    #[serde(default = "default_http_timeout_ms")]
+    pub timeout_ms: u64,
+    #[serde(default = "default_http_max_response_bytes")]
+    pub max_response_bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HttpRequestWithCredentialArgs {
     pub credential_id: String,
     pub url: String,
@@ -555,6 +572,20 @@ pub fn credential_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
             }),
         },
     ];
+    let mut canonical = canonical;
+    let mut plain = canonical
+        .iter()
+        .find(|spec| spec.name == HTTP_REQUEST_WITH_CREDENTIAL_TOOL)
+        .expect("credential HTTP tool is registered")
+        .clone();
+    plain.name = HTTP_REQUEST_TOOL.to_string();
+    plain.description = "Perform a kernel HTTP request. Projects opted into Web Bot Auth identify their operator with a fresh HTTP Message Signature. Returns the status and bounded response body; redirects must be requested explicitly.".to_string();
+    plain.input_schema["required"] = serde_json::json!(["url"]);
+    plain.input_schema["properties"]
+        .as_object_mut()
+        .expect("HTTP schema properties")
+        .remove("credential_id");
+    canonical.push(plain);
     let aliases = canonical
         .iter()
         .filter_map(credential_alias_spec)
@@ -620,6 +651,7 @@ fn credential_alias_spec(spec: &RuntimeToolSpec) -> Option<RuntimeToolSpec> {
         LIST_CREDENTIAL_HANDLES_TOOL => LIST_CREDENTIAL_HANDLES_TOOL_ALIAS,
         REQUEST_CREDENTIAL_SECRET_TOOL => REQUEST_CREDENTIAL_SECRET_TOOL_ALIAS,
         HTTP_REQUEST_WITH_CREDENTIAL_TOOL => HTTP_REQUEST_WITH_CREDENTIAL_TOOL_ALIAS,
+        HTTP_REQUEST_TOOL => HTTP_REQUEST_TOOL_ALIAS,
         SEND_SECRET_TO_TERMINAL_TOOL => SEND_SECRET_TO_TERMINAL_TOOL_ALIAS,
         PASTE_SECRET_TO_SLICE_TOOL => PASTE_SECRET_TO_SLICE_TOOL_ALIAS,
         PASTE_SECRET_TO_COMPUTER_TOOL => PASTE_SECRET_TO_COMPUTER_TOOL_ALIAS,
@@ -635,6 +667,11 @@ fn credential_alias_spec(spec: &RuntimeToolSpec) -> Option<RuntimeToolSpec> {
 
 pub fn canonical_credential_tool_name(tool_name: &str) -> Option<&'static str> {
     match tool_name {
+        HTTP_REQUEST_TOOL
+        | HTTP_REQUEST_TOOL_ALIAS
+        | "chariox_http_request"
+        | "mcp__chariox__http_request"
+        | "mcp__chariox__chariox_http_request" => Some(HTTP_REQUEST_TOOL),
         LIST_CREDENTIAL_HANDLES_TOOL
         | LIST_CREDENTIAL_HANDLES_TOOL_ALIAS
         | "chariox_list_credential_handles"

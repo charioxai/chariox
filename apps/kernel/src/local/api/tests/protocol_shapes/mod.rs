@@ -66,6 +66,7 @@ mod slice_logs;
 mod tab_display;
 mod user_app_views;
 mod user_domain_access;
+mod web_bot_auth;
 mod workflow_code;
 mod workflow_notifications;
 mod workspace_history_external;
