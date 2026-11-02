@@ -754,3 +754,35 @@ amd64 ABI probe does not establish arm64 runtime acceptance. No automatic x264
 fallback is introduced. Ordinary/managed host packaging can call this same
 installer; their target-specific library provisioning remains independently
 validated by those installation lanes.
+
+## MP-08 / MP-09 / MP-10 / MP-11: display unsubscribe teardown
+
+Unsubscribe detaches the stream and its last Tab compositor before replying.
+The host retains every detached teardown until it settles and drains those
+teardowns before stopping or replacing Chromium. A teardown failure is reported
+only after owned Chromium cleanup; recovery must not launch a replacement after
+failed helper cleanup. Viewer surface/capture behavior and mirror limits are
+unchanged. No serialized protocol shape changes.
+
+Stream helpers close concurrently. Each child receives EOF, then SIGTERM after
+its grace period, then SIGKILL after a second grace period. Reaping has a final
+2-second bound. Portable encoders use 500 ms per grace period; native capture
+uses 1 second. Exit events end each wait immediately. Active producer/refiner
+work is retired before encoder shutdown, and all close results settle before
+teardown completes.
+
+Required focused scenarios (acceptance area `multidomain-base`):
+
+- `BROWSER07`: through the host unsubscribe request, two helpers that ignore EOF
+  and SIGTERM cannot delay the answer beyond 250 ms. The stream and compositor
+  are detached and cannot resume delivery.
+- `BROWSER08`: host stop waits for both helpers to be reaped; their 500 ms grace
+  periods overlap (combined teardown below 1.8 seconds). Exercise the final
+  deadline and failure reporting without skipping Chromium cleanup.
+- `BROWSER09`: on measured before/after kernels, record DPR1 unsubscribe answer
+  p50/p95 across 20 real display subscriptions, then exercise Browser view
+  close/reopen through the real hosted client and check owned process cleanup
+  after kernel stop. Keep kernel hashes, source heads and evidence outside git.
+
+The first two scenarios are regression checks; they do not establish hosted
+client acceptance or the broader MP-08 / MP-09 / MP-10 / MP-11 parity matrix.

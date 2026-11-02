@@ -33,6 +33,28 @@ export function safeChildPid(child) {
   if (!Number.isSafeInteger(child?.pid) || child.pid <= 1) throw new Error('MD-DISPLAY: unsafe child PID');
   return child.pid;
 }
+// MP-08/MP-10/MP-11: each owned helper gets EOF, then TERM, then KILL.
+// Exit events avoid charging the grace period after a child has already exited.
+export async function closeDisplayChild(child, graceMs = 500) {
+  if (!child || child.pid === undefined) return;
+  safeChildPid(child);
+  const exited = () => child.exitCode !== null || child.signalCode !== null;
+  const wait = ms => exited() ? Promise.resolve() : new Promise(resolve => {
+    const done = () => { clearTimeout(timer); child.removeListener('exit', done); resolve(); };
+    const timer = setTimeout(done, ms);
+    child.once('exit', done);
+  });
+  if (exited()) return;
+  child.stdin.end();
+  await wait(graceMs);
+  if (exited()) return;
+  child.kill('SIGTERM');
+  await wait(graceMs);
+  if (exited()) return;
+  child.kill('SIGKILL');
+  await wait(2000);
+  if (!exited()) throw new Error('MD-DISPLAY: owned helper did not exit after SIGKILL');
+}
 export class PortableEncoder {
   constructor() { this.child = null; this.pending = null; this.failure = null; this.packets=new Set();this.nativeSession=randomUUID(); }
   async encode(png, bitrate, reset = false, codec = 'vp09.00.10.08', regions = []) {
@@ -184,28 +206,20 @@ export class PortableEncoder {
   }
   retire(){this.nativeRetireState?.(this.nativeSession);this.chainSequence=undefined;this.nativeRetire?.(this.nativeSession);this.nativeRevision=undefined;this.nativeDeliveredRevision=undefined;}
   handedOff(encoded){if(encoded?.packet)this.packets.delete(encoded.packet.name);if(Number.isSafeInteger(encoded?.native_revision)){encoded.native_deliver?.(this.nativeSession,encoded.native_revision);this.nativeDeliveredRevision=encoded.native_revision;}}
-  async close() {
-    try{this.nativeRetireState?.(this.nativeSession);this.nativeRetire?.(this.nativeSession);this.nativeRetire=null;await this.closeChild()}finally{
-      if(this.raster){const {fd,file,directory}=this.raster;this.raster=null;closeSync(fd);unlinkSync(file);rmdirSync(directory);}
-    }
+  close() {
+    return this.closing ??= (async () => {
+      this.failure ??= new Error('MD-DISPLAY: portable encoder closed');
+      // A pending encode keeps its raster lease until the reply or child exit.
+      try{this.nativeRetireState?.(this.nativeSession);this.nativeRetire?.(this.nativeSession);this.nativeRetire=null;await this.closeChild()}finally{
+        if(this.raster){const {fd,file,directory}=this.raster;this.raster=null;closeSync(fd);unlinkSync(file);rmdirSync(directory);}
+      }
+    })();
   }
   async closeChild() {
-    for(const name of [...this.packets])this.discard({packet:{name}});
     const child = this.child; this.child = null;
-    if (!child || child.pid === undefined) return;
-    safeChildPid(child);
-    if (child.exitCode !== null || child.signalCode !== null) return;
-    child.stdin.end();
-    for (let i = 0; i < 20 && child.exitCode === null && child.signalCode === null; i++) await delay(25);
-    if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
-    for (let i = 0; i < 20 && child.exitCode === null && child.signalCode === null; i++) await delay(25);
-    if (child.exitCode === null && child.signalCode === null) {
-      child.kill('SIGKILL');
-      await new Promise((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error('MD-DISPLAY: owned encoder did not exit')), 2000);
-        child.once('exit', () => { clearTimeout(timer); resolve(); });
-      });
-    }
+    await closeDisplayChild(child);
+    // An in-flight helper can publish a packet while draining its final request.
+    for(const name of [...this.packets])this.discard({packet:{name}});
   }
 }
 
@@ -492,5 +506,14 @@ export class DisplayStream {
       const timer = setTimeout(done, ms); waiters.add(done);
     });
   }
-  async close() { clearTimeout(this.timer);this.endLease(); this.park(false); this.park(false, true); this.invalidate(); await this.producer?.close();await this.refiner?.close();await this.pixels.close();await this.encoder.close(); }
+  close() {
+    if(this.closing)return this.closing;
+    clearTimeout(this.timer);this.endLease();this.park(false);this.park(false,true);this.invalidate();
+    // Stop offering work before closing the encoder that releases active work.
+    this.closing=Promise.allSettled([this.producer?.close(),this.refiner?.close(),this.pixels.close(),this.encoder.close()]).then(results=>{
+      const errors=results.filter(result=>result.status==='rejected').map(result=>result.reason);
+      if(errors.length)throw new AggregateError(errors,'MD-DISPLAY: stream teardown failed');
+    });
+    return this.closing;
+  }
 }

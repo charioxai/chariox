@@ -433,7 +433,7 @@ test('MP-11 overlapping saves serialize the shared tabs.json.new writer',()=>usi
 test('MP-11 a compositor close rejected by a dead connection cannot abort stop',()=>using(async({host,chromium})=>{
  const opened=await host.request({op:'open',url:'about:blank'});
  host.compositors.set(opened.tab_id,{ready:Promise.resolve(null),source:{close:async()=>{throw Error('connection closed')}}});
- assert.equal((await host.request({op:'stop'})).state,'stopped');assert.equal(chromium.child,null);
+ await assert.rejects(host.request({op:'stop'}),/owned display teardown failed/);assert.equal(chromium.child,null);
 }));
 test("MD-5: metadata scrubs echoes and never persists a secret-bearing restore URL", () => using(async ({ host }, root) => {
   const opened = await host.request({ op: "open", url: "https://example.com/?q=synthetic-protected-value" });
@@ -2700,4 +2700,18 @@ test('MP-08/MP-09/MP-10/MP-11 unsubscribe answers before slow helpers exit and s
     if(previous===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY=previous;
     for(const child of children)if(child.exitCode===null&&child.signalCode===null){assert.ok(Number.isSafeInteger(child.pid)&&child.pid>1);child.kill('SIGKILL');await once(child,'exit');}
   }
+}));
+
+
+test('MP-08/MP-10/MP-11 a background display failure is reported after stopping Chromium', () => using(async ({host,chromium}) => {
+  const previous=process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;process.env.CHARIOX_KERNEL_BROWSER_DISPLAY='1';
+  try {
+    const tab=await host.request({op:'open',url:'about:blank'});
+    const sub=await host.request({op:'display_subscribe',tab_id:tab.tab_id,generation:tab.generation,codecs:['png'],bitrate:8000000,device_scale_factor:1});
+    host.displays.get(sub.subscription_id).encoder={close:async()=>{throw Error('owned helper did not exit')}};
+    assert.equal((await host.request({op:'unsubscribe',subscription_id:sub.subscription_id,generation:sub.generation})).unsubscribed,true);
+    await assert.rejects(host.stop(),/owned display teardown failed/);
+    assert.equal(chromium.child,null,'a teardown failure cannot skip Chromium shutdown');
+    assert.equal(host.displayTeardowns.size,0);
+  } finally {if(previous===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY=previous;}
 }));

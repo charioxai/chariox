@@ -106,7 +106,10 @@ export class CompositorSource {
   close(){
     if(this.closing)return this.closing;
     this.closed=true;this.attested=false;this.latest=null;this.pendingImage=null;this.off?.();this.off=null;this.listeners.clear();
-    this.closing=(async()=>{await this.connection.send('Page.stopScreencast',{},this.sessionId).catch(()=>{});try{await this.hasher.close()}finally{await this.release?.()}})();
+    this.closing=(async()=>{try{
+      const results=await Promise.allSettled([this.connection.send('Page.stopScreencast',{},this.sessionId).catch(()=>{}),this.hasher.close()]);
+      const failed=results.find(result=>result.status==='rejected');if(failed)throw failed.reason;
+    }finally{await this.release?.()}})();
     return this.closing;
   }
 }
