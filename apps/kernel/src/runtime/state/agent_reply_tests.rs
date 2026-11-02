@@ -179,11 +179,9 @@ async fn delegate_reply_failed_start_settles_without_deletion() {
         "{error}"
     );
     assert!(
-        capture
-            .records()
-            .iter()
-            .any(|record| record.contains("delegate could not start its requested turn")
-                && record.contains("not authenticated")),
+        capture.records().iter().any(|record| record
+            .contains("delegate could not start its requested turn")
+            && record.contains("not authenticated")),
         "a failed start must log why the delegate did not start"
     );
     f.runtime.sweep_agent_lifecycle().await.unwrap();
