@@ -250,6 +250,7 @@ fn kernel_cloud_ownership_status_and_connect_never_serialize_credentials() {
     }
     let connected = serde_json::to_value(LocalDaemonResponse::CloudRelayConnected {
         status: serde_json::from_value(serde_json::json!({
+            "local_daemon_protocol_version": 950,
             "configured": true, "connected": true, "relay_url": "wss://relay.example",
             "relay_token_configured": true, "daemon_id": "kernel-a",
             "daemon_alias": null, "machine_id": "machine-a", "machine_alias": null
