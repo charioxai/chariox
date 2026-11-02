@@ -26,6 +26,7 @@ pub(crate) struct KernelBrowserHost {
     root: PathBuf,
     /// Counts ownership changes, taken under the actor lock, so the browser host can order their input retirements.
     authority_epoch: Arc<AtomicU64>,
+    terminal_leases: terminal_lease::TerminalLeases,
 }
 #[derive(Default)]
 struct HostState {
@@ -137,6 +138,7 @@ impl KernelBrowserHost {
             inner: Arc::new(Mutex::new(HostState::default())),
             root: root.join("kernel-browser"),
             authority_epoch: Arc::default(),
+            terminal_leases: Arc::default(),
         }
     }
     // MD-DISPLAY-04: queued credits wait asynchronously, away from the
@@ -1491,6 +1493,8 @@ mod dialog_tests;
 mod native_input_tests;
 
 mod access;
+mod terminal_lease;
+pub(crate) use terminal_lease::TerminalLease;
 #[cfg(test)]
 mod tabs_tests;
 

@@ -419,7 +419,10 @@ struct ConnectionState {
     // MD-3: generated after admission, stable only for this live connection.
     local_terminal_id: String,
     terminal_lifetime: crate::runtime::command::TerminalLifetime,
-    browser_terminal_contexts: std::collections::BTreeSet<(String, String)>,
+    browser_terminal_contexts: std::collections::BTreeMap<
+        (String, String),
+        crate::runtime::kernel_browser_host::TerminalLease,
+    >,
     subscription: Option<KernelSubscription>,
     watch_task: Option<JoinHandle<()>>,
     outside_wait_requests: std::collections::BTreeSet<String>,
@@ -1171,7 +1174,7 @@ where
             detach_connection_subscription(&router, subscription).await;
         }
     }
-    disconnect_browser_terminal(&router, &connection_state).await;
+    disconnect_browser_terminal(&connection_state).await;
     writer_task.abort();
 
     if let Some(error) = read_error {
@@ -1290,17 +1293,14 @@ fn incoming_frame_decode_error(payload: &[u8], error: &serde_json::Error) -> Ker
     }
 }
 
-async fn disconnect_browser_terminal(router: &CommandRouter, connection: &Mutex<ConnectionState>) {
+/// Ends the connection's browser actors: dropping their leases disconnects each one.
+async fn disconnect_browser_terminal(connection: &Mutex<ConnectionState>) {
     let contexts = {
         let mut state = connection.lock().await;
         state.terminal_lifetime.cancel();
         std::mem::take(&mut state.browser_terminal_contexts)
     };
-    for (user, actor) in contexts {
-        router
-            .runtime_state()
-            .kernel_browser_terminal_disconnected(&user, &actor);
-    }
+    drop(contexts);
 }
 
 struct IncomingConnection<'a> {
@@ -1464,11 +1464,15 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
                 .runtime_state()
                 .kernel_browser_terminal_context(&command)
             {
+                let lease = router
+                    .runtime_state()
+                    .kernel_browser_terminal_lease(&context);
                 connection_state
                     .lock()
                     .await
                     .browser_terminal_contexts
-                    .insert(context);
+                    .entry(context)
+                    .or_insert(lease);
             }
             // Unix admission above checks current peer/grant authority before
             // any receipt lookup. Reconnects from that same authority share a

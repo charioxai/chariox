@@ -10,8 +10,8 @@ mod terminal_lifetime;
 pub(crate) use terminal_lifetime::TerminalLifetime;
 mod local_request_metadata;
 
-pub(crate) use caller::command_caller_user_id;
 pub(crate) use caller::relay_connection_class;
+pub(crate) use caller::{caller_user_id, command_caller_user_id};
 pub use caller::{KernelCaller, KernelCallerKind, KernelCommandSource};
 
 use local_request_metadata::local_request_metadata;

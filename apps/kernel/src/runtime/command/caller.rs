@@ -160,8 +160,11 @@ pub(crate) fn relay_connection_class(
 }
 
 pub(crate) fn command_caller_user_id(command: &KernelCommand) -> String {
-    command
-        .caller
+    caller_user_id(&command.caller)
+}
+
+pub(crate) fn caller_user_id(caller: &KernelCaller) -> String {
+    caller
         .user_id
         .clone()
         .unwrap_or_else(|| DEFAULT_LOCAL_USER_ID.to_string())
