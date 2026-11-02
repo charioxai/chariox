@@ -443,4 +443,5 @@ pub use workspace::*;
 /// Browser header 933 adds the portable active Tab, history bounds and bounded favicon PNGs to the
 /// `KernelBrowser` state (`active_tab_id`, `can_go_back`, `can_go_forward`, `favicon_png_base64`).
 /// MP-08/MP-10/MP-11: 934 acknowledges the leased projection drain (peer 383).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 934;
+/// MP-08/MP-10/MP-11: 935 binds the leased prompt completion to its exact prompt and worker run (peer 384).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 935;

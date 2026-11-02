@@ -80,6 +80,7 @@ use super::{
 
 mod agent_deadline_dispatch;
 mod cloud_kernel_ownership;
+mod leased_backing_session;
 mod protocol_shapes;
 mod provider_prompt_runtime;
 mod remote_inventory;

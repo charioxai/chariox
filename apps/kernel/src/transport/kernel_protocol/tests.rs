@@ -24,6 +24,20 @@ fn credential_vault_locked_uses_a_stable_transport_error_code() {
 }
 
 #[test]
+fn a_leased_backing_session_refusal_keeps_its_own_code_for_clients() {
+    let error = DaemonError::LeasedBackingSessionRefused {
+        session_id: "backing".to_string(),
+        home_session_id: "home".to_string(),
+    };
+
+    let mapped = map_kernel_error(&error);
+
+    assert_eq!(mapped.code, "leased_backing_session_refused");
+    assert!(mapped.message.contains("home"));
+    assert!(!mapped.retryable);
+}
+
+#[test]
 fn relay_transport_errors_keep_the_stable_local_transport_projection() {
     let error = DaemonError::RelayTransport {
         operation: "read relay peer response",
