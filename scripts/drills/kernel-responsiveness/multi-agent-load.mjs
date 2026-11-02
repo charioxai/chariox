@@ -134,7 +134,7 @@ export async function measureMultiAgentLoad({ rpc, connect, root, mcpUrl, pid, s
       tasks.push(paced(o.churnPerMin / 60, () => { if (churning >= 16) return; churning++
         guarded('churn', () => c(async () => {
           const made = (await churn.send({ CreateSession: { workspace_id: work, worktree_id: work } })).SessionCreated
-          const attached = (await churn.send({ AttachToSession: { session_id: made.session.id, client_id: 'churn', capability_level: 'FullTerminal' } })).SessionAttached
+          const attached = (await churn.send({ AttachToSession: { session_id: made.session.id, client_id: `churn-${made.session.id}`, capability_level: 'FullTerminal' } })).SessionAttached
           await churn.send({ RunShellCommand: { session_id: made.session.id, attachment_id: attached.attachment.id, command: '/bin/true', args: [], timeout_ms: 1000 } })
           await churn.send({ DetachFromSession: { session_id: made.session.id, attachment_id: attached.attachment.id } })
           await churn.send({ EndSession: { session_id: made.session.id } })
