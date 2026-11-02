@@ -8,9 +8,8 @@ use crate::local::{
 #[test]
 fn owner_vault_responses_never_enter_command_caches() {
     for action in [
-        serde_json::json!({"action":"list"}),
-        serde_json::json!({"action":"create","name":"fixture","kind":"Password","usage":"example.test","value":"fixture"}),
-        serde_json::json!({"action":"generate","name":"fixture","kind":"Password","usage":"example.test"}),
+        serde_json::json!({"action":"create","name":"fixture","kind":"Password","use_binding":{"target":{"kind":"site","origin":"https://example.test"},"value_kind":"secret"},"value":"fixture"}),
+        serde_json::json!({"action":"generate","name":"fixture","kind":"Password","use_binding":{"target":{"kind":"site","origin":"https://example.test"},"value_kind":"secret"}}),
         serde_json::json!({"action":"reveal","id":"fixture"}),
         serde_json::json!({"action":"activity","id":"fixture"}),
         serde_json::json!({"action":"replace","id":"fixture","value":"fixture"}),

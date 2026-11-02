@@ -202,9 +202,12 @@ impl KernelRuntimeState {
             .kernel_browser_secret_target_url(user, &admission, &args)
             .await?;
         check_authority()?;
+        let _unlock = self
+            .ensure_vault_unlocked_for_agent(session, agent.id(), "kernel_browser_paste_secret")
+            .await?;
         let credential = self
             .home_runtime_secret_service()?
-            .validate_browser_secret_input_for_target_url(&args.credential_id, &url)?
+            .credential(&args.credential_id)?
             .clone();
         let approval = if credential
             .metadata
@@ -214,6 +217,7 @@ impl KernelRuntimeState {
             Some(
                 self.authorize_vault_use(
                     agent.owner_user_id(),
+                    agent.id(),
                     &credential,
                     &crate::config::VaultUseTarget::site(&url)?,
                 )
@@ -226,9 +230,6 @@ impl KernelRuntimeState {
         let scope = KernelBrowserHost::profile_key(user);
         // MP-11 A06: discovery fixes the protection epoch the fill relies on.
         let epoch = protection.revision(&scope)?;
-        let _unlock = self
-            .ensure_vault_unlocked_for_agent(session, agent.id(), "kernel_browser_paste_secret")
-            .await?;
         check_authority()?;
         let (service, _vault_guard) = self
             .scoped_secret_input_service(protection, &scope, &args.credential_id)
@@ -259,8 +260,16 @@ impl KernelRuntimeState {
             .await?;
         check_authority()?;
         service.validate_browser_secret_input_for_target_url(&args.credential_id, &url)?;
+        service.record_vault_activity(
+            &args.credential_id,
+            &format!("Use attempted in browser by {}", agent.id()),
+        )?;
         self.insert_kernel_browser_secret(user, &admission, &args, &service, url, None)
             .await?;
+        service.record_vault_activity(
+            &args.credential_id,
+            &format!("Used in browser by {}", agent.id()),
+        )?;
         Ok(RuntimeToolResult {
             ok: true,
             payload: json!({"inserted":true}),
@@ -313,7 +322,7 @@ impl KernelRuntimeState {
             .await?;
         let credential = self
             .home_runtime_secret_service()?
-            .validate_browser_secret_input_for_target_url(&args.credential_id, &url)?
+            .credential(&args.credential_id)?
             .clone();
         let approval = if credential
             .metadata
@@ -324,6 +333,7 @@ impl KernelRuntimeState {
             Some(
                 self.authorize_vault_use(
                     &owner,
+                    &actor,
                     &credential,
                     &crate::config::VaultUseTarget::site(&url)?,
                 )
@@ -351,8 +361,10 @@ impl KernelRuntimeState {
         let url = self
             .kernel_browser_secret_target_url_bound(&user, &admission, &args)
             .await?;
+        service.record_vault_activity(&args.credential_id, "Use attempted in browser by owner")?;
         self.insert_kernel_browser_secret(&user, &admission, &args, &service, url, Some(&actor))
             .await?;
+        service.record_vault_activity(&args.credential_id, "Used in browser by owner")?;
         Ok(json!({"inserted":true}))
     }
 

@@ -270,7 +270,7 @@ pub use workspace::*;
 /// `primary_model`, `primary_effort`, `primary_account_profile`,
 /// `active_substitute_index` and `last_substitution`. An agent persisted on a
 /// substitute loads on its primary profile.
-/// Version 405 binds native approvals to the originating turn and provider run.
+/// Version 407 binds native approvals to the originating turn and provider run.
 /// Version 407 exposes `AppWorkerPhase::Quarantined` after the supervisor's
 /// restart limit is exhausted. Recovery uses the existing explicit start action.
 /// Version 409 adds owner-mediated App clipboard and link acceptance.
@@ -450,4 +450,4 @@ pub use workspace::*;
 /// MP-08/MP-10/MP-11: 938 lets the kernel pick an access holder from the peer's host ancestry, own
 /// `--no-wait` requests and report one holder's status (`GetKernelAccessStatus`; peer 387).
 /// MP-08/MP-10/MP-11: 941 adds person Vault fill and audience-specific display masking (peer 390).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 956;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 958;

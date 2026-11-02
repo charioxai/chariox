@@ -1,6 +1,6 @@
 {
-  "local_protocol": 956,
-  "peer_protocol": 405,
+  "local_protocol": 958,
+  "peer_protocol": 407,
   "tool_with_image": {
     "tool": "Read",
     "status": "completed",

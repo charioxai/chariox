@@ -2068,27 +2068,27 @@ close the wider MP-10 parity matrix or the MP-11 security-anchor review.
 
 ## MP-08 / MP-09 / MP-10 / MP-11 owner Vault management (2026-11-02)
 
-Protocol 957/406 adds OwnerVault for the owner's Terminal-class connection:
-list, create with name/kind/one opaque use, kernel generation, hold-to-reveal,
-per-entry Activity, replacement and deletion. The owner gate is checked again
-inside the executor. Agents, elevated agents, KA callers, forwarded Host callers
-and other users cannot invoke it; the external response boundary withholds the
-entire response family. Secret wrappers redact Debug and command payloads are
-redacted before history/traces. No event or public state broadcasts the value.
-Owner requests bypass the transport command cache and automatic client replay;
-owner results are also excluded when loading or compacting persisted receipts.
+Protocol 958/407 reconciles owner and agent creation: both persist a canonical
+`VaultUseBinding` in the credential registry and store each value in its own
+ordinary encrypted Vault slot. The owner form sends the same typed Site,
+CommandEnvironment, File or TOTP target; replacement cannot change that binding.
+The duplicate owner catalogue and owner-only inventory protocol are removed.
+`ListCredentials` is the single value-free inventory for both creators.
 
-Owner records and their Activity are one encrypted Vault catalogue, under the
-existing observation mutation guard. New values never enter the credential
-registry with guessed agent-use policy. Integration with vopen's canonical
-single-use schema is required before these owner records become agent-usable.
-Existing registered entries retain their use policy. This owner API changes no
-agent gate, placement branch or managed automatic shutdown behavior (MP-09).
-Router/protocol tests and hosted owner-UI drills establish only these owner
-management paths, not the complete ordinary/managed MP-10 matrix.
-The internal catalogue key is rejected by ordinary credential resolve/read/
-write/delete paths and never enters their cache. Registered-entry changes roll
-back the saved value, registry and Activity if a later write fails. Catalogue
-writes also roll back a failure after rename. An unsuccessful rollback returns
-an explicit recovery result. The generated upgrade predecessor policy retains
-only deployed releases 629/636 and the target, as required in development.
+Owner-only Create/Generate/Reveal/Activity/Replace/Delete remain checked at the
+router and executor. Agents, sudo/KA callers, forwarded Hosts and other users
+cannot reveal values. Owner controls bypass command receipts and client replay;
+Debug, payload redaction and the external response boundary protect values.
+
+Activity lives as a value-free encrypted log in the same Vault. It records owner
+creation, reveal and replacement, plus browser/HTTP agent operations and exact-use
+refusals, attributed to the caller. Agent-created entries also expose their
+creation metadata in Activity. The internal Activity key cannot be resolved or
+changed as a credential and never enters the ordinary value cache. Owner changes
+restore registry and value on failure; Activity also restores post-rename write
+failures. A failed rollback requires explicit recovery.
+
+These paths are common to ordinary and managed kernels. No placement branch,
+provider execution rule, relay admission, signing/trust or managed automatic
+shutdown behavior changes (MP-09). Focused router/storage and hosted owner-to-agent
+drills cover this seam only; they do not close the entire MP-10 comparison matrix.

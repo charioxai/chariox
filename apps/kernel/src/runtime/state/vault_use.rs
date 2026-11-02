@@ -97,6 +97,7 @@ impl KernelRuntimeState {
     pub(super) async fn authorize_vault_use(
         &self,
         owner: &str,
+        actor: &str,
         credential: &UserCredentialConfig,
         target: &VaultUseTarget,
     ) -> Result<crate::secret::VaultUseApproval, DaemonError> {
@@ -109,7 +110,13 @@ impl KernelRuntimeState {
                     "this Vault entry has no declared use; create it for one specific destination",
                 )
             })?;
-        binding.require(target)?;
+        if let Err(error) = binding.require(target) {
+            self.home_runtime_secret_service()?.record_vault_activity(
+                &credential.id,
+                &format!("Use refused for {target:?} by {actor}"),
+            )?;
+            return Err(error);
+        }
         if binding.value_kind == VaultValueKind::PaymentCard {
             let id = format!("vault-card-{:016x}", rand::random::<u64>());
             let destination = match target {

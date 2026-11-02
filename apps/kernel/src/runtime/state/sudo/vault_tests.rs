@@ -946,3 +946,118 @@ async fn vopen_http_card_wait_rechecks_the_live_actor_before_sending() {
     );
     assert!(result.is_err());
 }
+
+// MP-08 / MP-09 / MP-10 / MP-11: owner New secret and ordinary agent use share the actual routers.
+#[tokio::test]
+async fn vrec_owner_created_entry_fills_and_audits_refusal_without_sudo() {
+    crate::test_support::isolated_env_test!();
+    let login = login_room().await;
+    let f = &login.f;
+    unlock(f);
+    let owner = |request| {
+        let request = LocalDaemonRequest::OwnerVault(request);
+        let mut command = crate::runtime::command::KernelCommand::from_local_request(
+            "owner-new-secret",
+            None,
+            None,
+            &request,
+        );
+        command.caller.connection_class = Some(KernelConnectionClass::Terminal);
+        f.router.dispatch(command, request)
+    };
+    let created = owner(crate::local::OwnerVaultRequest::Create {
+        name: "Owner login".into(),
+        kind: "Password".into(),
+        use_binding: crate::config::VaultUseBinding {
+            target: crate::config::VaultUseTarget::site(SITE).unwrap(),
+            value_kind: Default::default(),
+        },
+        value: crate::local::VaultPassphrase::new("vrec-owner-only-value"),
+    })
+    .await
+    .unwrap();
+    let crate::local::LocalDaemonResponse::OwnerVault {
+        result: crate::local::OwnerVaultResult::Saved { id },
+    } = created
+    else {
+        panic!("owner creation failed")
+    };
+    assert!(f.state.owned.sudo_turns.lock().unwrap().is_empty());
+    assert_eq!(
+        call(f, PASTE, paste_args(&id)).await.unwrap(),
+        json!({"inserted":true})
+    );
+    assert!(inserted(&login).as_deref() == Some("vrec-owner-only-value"));
+    let _ = std::fs::remove_file(login.root.path().join("echo"));
+    let registry = crate::credential::CharioxCredentialRegistry::user().unwrap();
+    let mut elsewhere = registry.get(&id).unwrap().unwrap();
+    // A second entry, never a rebind of the first, exercises exact-origin refusal at the MCP boundary.
+    elsewhere.id = "owner-other-site".into();
+    elsewhere.source = crate::config::UserCredentialSourceConfig::Vault {
+        key: elsewhere.id.clone(),
+    };
+    elsewhere
+        .metadata
+        .as_mut()
+        .unwrap()
+        .use_binding
+        .as_mut()
+        .unwrap()
+        .target = crate::config::VaultUseTarget::site("https://other.example").unwrap();
+    f.state
+        .home_runtime_secret_service()
+        .unwrap()
+        .upsert_vault_backed_credential_with_secret(
+            &registry,
+            elsewhere,
+            "other-owner-only-value",
+            false,
+        )
+        .unwrap();
+    assert!(call(f, PASTE, paste_args("owner-other-site"))
+        .await
+        .is_err());
+    assert!(inserted(&login).is_none());
+    let refused = f
+        .state
+        .home_runtime_secret_service()
+        .unwrap()
+        .vault_activity("owner-other-site")
+        .unwrap();
+    assert!(refused
+        .iter()
+        .any(|event| event.event.starts_with("Use refused")));
+    owner(crate::local::OwnerVaultRequest::Reveal { id: id.clone() })
+        .await
+        .unwrap();
+    let events = f
+        .state
+        .home_runtime_secret_service()
+        .unwrap()
+        .vault_activity(&id)
+        .unwrap();
+    assert!(events
+        .iter()
+        .any(|event| event.event.contains("Used in browser by")));
+    assert!(events.iter().any(|event| event.event == "Viewed by owner"));
+    assert!(!serde_json::to_string(&events)
+        .unwrap()
+        .contains("vrec-owner-only-value"));
+    let request = LocalDaemonRequest::OwnerVault(crate::local::OwnerVaultRequest::Reveal { id });
+    let mut agent = crate::runtime::command::KernelCommand::from_local_request(
+        "agent-reveal",
+        None,
+        None,
+        &request,
+    );
+    agent.caller.connection_class = Some(KernelConnectionClass::KernelAgent);
+    assert!(f.router.dispatch(agent, request).await.is_err());
+    assert!(f
+        .state
+        .owned
+        .session_snapshot(&f.request.session_id)
+        .unwrap()
+        .active_interactions()
+        .is_empty());
+    f.state.shutdown_cleanup().await.unwrap();
+}
