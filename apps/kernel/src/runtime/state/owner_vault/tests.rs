@@ -239,8 +239,7 @@ fn owner_factor_command_and_file_entries_use_the_real_injection_channels() {
     let root = std::env::temp_dir().join(format!("owner-channels-{:032x}", rand::random::<u128>()));
     let registry = CharioxCredentialRegistry::new(root.clone());
     let store = Arc::new(Store::default());
-    let service =
-        RuntimeSecretService::with_vault_store(vec![], "owner-channels".into(), store.clone());
+    let service = RuntimeSecretService::with_vault_store(vec![], "owner-channels", store.clone());
     let cases = [
         (
             "2FA code",
@@ -288,11 +287,8 @@ fn owner_factor_command_and_file_entries_use_the_real_injection_channels() {
         )
         .unwrap();
     }
-    let resolver = RuntimeSecretService::with_vault_store(
-        registry.list().unwrap(),
-        "owner-channels".into(),
-        store,
-    );
+    let resolver =
+        RuntimeSecretService::with_vault_store(registry.list().unwrap(), "owner-channels", store);
     let code = resolver
         .browser_secret_input_for_target_url(&ids[0].0, "https://example.org/login")
         .unwrap();

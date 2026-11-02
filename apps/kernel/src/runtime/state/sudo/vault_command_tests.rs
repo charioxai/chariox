@@ -185,6 +185,7 @@ async fn s2_capture_stores_the_printed_value_and_never_returns_it() {
     )
     .await
     .is_err());
+    f.state.shutdown_cleanup().await.unwrap();
 }
 
 #[tokio::test]
@@ -244,6 +245,7 @@ async fn s2_use_env_injects_values_and_masks_this_output() {
     .await
     .is_err());
     assert!(!received.exists());
+    f.state.shutdown_cleanup().await.unwrap();
 }
 
 #[tokio::test]
@@ -392,4 +394,5 @@ async fn s4_capture_file_and_write_file_move_values_through_the_kernel() {
     .await
     .is_err());
     assert!(!workspace(&f).join("late.env").exists());
+    f.state.shutdown_cleanup().await.unwrap();
 }

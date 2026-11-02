@@ -40,6 +40,13 @@ impl KernelRuntimeState {
                 "Vault operations require one authenticated provider run",
             ));
         };
+        self.vault_agent_context_for_run(run)
+    }
+
+    pub(super) fn vault_agent_context_for_run(
+        &self,
+        run: &crate::provider::RuntimeProviderRun,
+    ) -> Result<VaultAgentContext, DaemonError> {
         let agent_id = run
             .agent_instance_id()
             .ok_or_else(|| error("Vault operations require an agent"))?;
@@ -87,11 +94,13 @@ impl KernelRuntimeState {
         &self,
         context: &VaultAgentContext,
     ) -> Result<(), DaemonError> {
-        let token = context
-            .run
-            .runtime_mcp_auth_token()
-            .ok_or_else(|| error("Vault provider authentication ended"))?;
-        let current = self.vault_agent_context(token)?;
+        self.authorize_current_external_command()?;
+        let current = match context.run.runtime_mcp_auth_token() {
+            Some(token) => self.vault_agent_context(token)?,
+            None => self.vault_agent_context_for_run(
+                &self.owned.provider_store.get_run(context.run.id())?,
+            )?,
+        };
         if current.run.id() != context.run.id()
             || current.agent_id != context.agent_id
             || current.session_id != context.session_id

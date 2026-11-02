@@ -1224,13 +1224,7 @@ async fn vaudit_s3_capture_browser_stores_and_protects_a_page_value() {
     assert!(
         names(f).iter().any(|name| name == CAPTURE) && names(f).iter().any(|name| name == FILL)
     );
-    let ordinary = call(f, CAPTURE, capture_args("sk")).await.unwrap_err();
-    assert!(ordinary.to_string().contains("requires a live sudo window"));
-    assert!(
-        !login.root.path().join("capture").exists(),
-        "no reveal without elevation"
-    );
-    elevated(f);
+    // An authenticated ordinary agent captures without a sudo window.
     let result = call(f, CAPTURE, capture_args("sk")).await.unwrap();
     assert!(
         !result.to_string().contains(CAPTURED),
@@ -1329,14 +1323,17 @@ async fn vaudit_s3_fill_field_fills_plain_targets_on_the_exact_origin() {
 }
 
 #[tokio::test]
-async fn vault_tools_and_resource_register_do_not_depend_on_sudo_revocation() {
+async fn vault_tools_and_resource_register_do_not_depend_on_the_sudo_window() {
     crate::test_support::isolated_env_test!();
     let f = fixture();
     unlock(&f);
     let turn = elevated(&f);
     f.state
-        .revoke_sudo(Some("local"), Some(&turn.entry_id), "explicit_revoke")
-        .unwrap();
+        .owned
+        .sudo_turns
+        .lock()
+        .unwrap()
+        .remove(&turn.entry_id);
     generate(&f, "ordinary-after-revoke", SITE).await.unwrap();
     call(
         &f,

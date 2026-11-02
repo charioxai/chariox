@@ -127,10 +127,10 @@ async fn resource_register_forwarded_calls_use_home_state_and_reject_stale_conte
         .await
         .is_err());
     f.state.owned.sudo_turns.lock().unwrap().clear();
-    assert!(state
+    state
         .dispatch_forwarded_meta_runtime_tool_call(context, LIST.into(), json!({}))
         .await
-        .is_err());
+        .unwrap();
 }
 
 #[tokio::test]
@@ -162,12 +162,17 @@ async fn resource_register_record_list_retry_and_owner_url() {
 }
 
 #[tokio::test]
-async fn resource_register_requires_elevation_and_rejects_foreign_rows() {
+async fn resource_register_ordinary_agents_keep_project_scope() {
     crate::test_support::isolated_env_test!();
     let f = fixture();
-    assert!(call(&f, RECORD, resource()).await.is_err());
-    assert!(call(&f, LIST, json!({})).await.is_err());
-    elevate(&f);
+    call(&f, RECORD, resource()).await.unwrap();
+    assert_eq!(
+        call(&f, LIST, json!({})).await.unwrap()["resources"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
     assert!(
         call(&f, REVOKE, json!({"resource_id":"someone-elses-resource"}))
             .await

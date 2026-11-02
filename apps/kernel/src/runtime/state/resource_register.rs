@@ -67,14 +67,8 @@ impl KernelRuntimeState {
         _kind: &str,
     ) -> Result<Authority, DaemonError> {
         self.authorize_current_external_command()?;
-        let run = self.watched_process_run(run_id)?;
-        let token = run
-            .runtime_mcp_auth_token()
-            .ok_or_else(|| error("resource register requires an authenticated provider run"))?;
-        let turn = self.vault_agent_context(token)?;
-        if turn.run.id() != run_id {
-            return Err(error("resource register provider run changed"));
-        }
+        let run = self.owned.provider_store.get_run(run_id)?;
+        let turn = self.vault_agent_context_for_run(&run)?;
         let session = self.owned.session_store.get_session(&turn.session_id)?;
         Ok(Authority {
             authorization_id: turn.run.id().into(),

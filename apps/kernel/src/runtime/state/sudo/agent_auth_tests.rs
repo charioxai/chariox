@@ -28,15 +28,20 @@ async fn call(f: &Fixture, args: Value) -> Result<Value, DaemonError> {
 }
 
 #[tokio::test]
-async fn au15_agent_auth_denies_before_any_network_or_vault_write() {
+async fn au15_ended_agent_is_refused_before_any_network_or_vault_write() {
     crate::test_support::isolated_env_test!();
     let f = fixture();
+    f.state
+        .owned
+        .provider_store
+        .mark_run_ended_provider_only(f.run.session_id(), f.run.id())
+        .unwrap();
     let result = call(
         &f,
         json!({"request_id":"denied", "resource_url":"http://127.0.0.1:1"}),
     )
     .await;
-    assert!(result.unwrap_err().to_string().contains("live sudo window"));
+    assert!(result.unwrap_err().to_string().contains("no longer"));
     assert!(crate::credential::load_user_credentials()
         .unwrap()
         .is_empty());
@@ -143,7 +148,7 @@ impl Service {
                             if mode == "missing_claim" {
                                 json!({"registration_id":"reg-local","claim_token":claim_value})
                             } else {
-                                json!({"registration_id":"reg-local","claim_token":claim_value,"claim":{"user_code":"123456","verification_uri":format!("{host}/claim"),"expires_in":if mode=="expiry" {1} else {60},"interval":if mode=="revoke_long" {30} else {1}}})
+                                json!({"registration_id":"reg-local","claim_token":claim_value,"claim":{"user_code":"123456","verification_uri":format!("{host}/claim"),"expires_in":if mode=="expiry" {1} else {60},"interval":if mode=="ended_long" {30} else {1}}})
                             }
                         } else if mode == "direct" {
                             json!({"registration_id":"reg-local","credential_type":"api_key","credential":key})
@@ -398,7 +403,7 @@ async fn au15_service_auth_has_one_owner_card_and_polls_until_claimed() {
 #[tokio::test]
 async fn au15_claim_cancel_expiry_and_lost_authority_never_store() {
     crate::test_support::isolated_env_test!();
-    for mode in ["cancel", "expiry", "revoke", "revoke_long"] {
+    for mode in ["cancel", "expiry", "ended", "ended_long"] {
         let f = fixture();
         let turn = elevated(&f);
         let service = Service::start().await;
@@ -423,13 +428,12 @@ async fn au15_claim_cancel_expiry_and_lost_authority_never_store() {
                 .await
                 .unwrap();
         }
-        if mode.starts_with("revoke") {
+        if mode.starts_with("ended") {
             f.state
                 .owned
-                .sudo_turns
-                .lock()
-                .unwrap()
-                .remove(&turn.entry_id);
+                .provider_store
+                .mark_run_ended_provider_only(&turn.session_id, f.run.id())
+                .unwrap();
         }
         let failure = tokio::time::timeout(Duration::from_secs(5), work)
             .await
