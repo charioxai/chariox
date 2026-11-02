@@ -574,3 +574,12 @@ fn owners_keep_their_turn_while_commands_resume_one_at_a_time() {
     }
     assert_eq!(started, [1, 4, 2, 3]);
 }
+
+#[test]
+fn a_running_command_nobody_forced_is_not_handed_over() {
+    let mut running = entry(1, scratch(0));
+    running.admitted = true;
+    assert!(HeldCommand::of(std::process::id(), &running).is_none());
+    running.forced = true;
+    assert!(HeldCommand::of(std::process::id(), &running).is_some());
+}
