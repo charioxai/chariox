@@ -236,12 +236,25 @@ impl KernelRuntimeState {
                 })?;
                 let (credential, _) =
                     service.validate_http_request_target(&args.credential_id, &args.url)?;
-                let approval = if credential
+                let vault_actor = if credential
                     .metadata
                     .as_ref()
                     .is_some_and(|m| m.use_binding.is_some())
                 {
-                    self.ensure_agent_can_manage_user_vault(provider_run)?;
+                    let token = provider_run.runtime_mcp_auth_token().ok_or_else(|| {
+                        crate::runtime::kernel_access::error("Vault provider authentication ended")
+                    })?;
+                    let actor = self.vault_agent_context(token)?;
+                    if actor.run.id() != provider_run.id() {
+                        return Err(crate::runtime::kernel_access::error(
+                            "the Vault operation's provider run changed",
+                        ));
+                    }
+                    Some(actor)
+                } else {
+                    None
+                };
+                let approval = if vault_actor.is_some() {
                     Some(
                         self.authorize_vault_use(
                             provider_run.owner_user_id(),
@@ -259,6 +272,9 @@ impl KernelRuntimeState {
                         "runtime_tool_http_request_with_credential",
                     )
                     .await?;
+                if let Some(actor) = &vault_actor {
+                    self.recheck_vault_agent(actor)?;
+                }
                 let service = self.home_runtime_secret_service()?;
                 let service = match approval {
                     Some(approval) => service.with_vault_use_approval(approval),

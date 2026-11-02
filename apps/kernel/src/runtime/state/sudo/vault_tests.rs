@@ -869,3 +869,80 @@ async fn vopen_agent_is_rechecked_after_the_final_storage_barrier() {
         .unwrap()
         .is_empty());
 }
+
+#[tokio::test]
+async fn vopen_http_card_wait_rechecks_the_live_actor_before_sending() {
+    use tokio::io::AsyncWriteExt;
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    unlock(&f);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let credential: UserCredentialConfig = serde_json::from_value(json!({
+        "id":"http-card", "source":{"type":"vault","key":"http-card"},
+        "allowed_hosts":[origin], "allowed_uses":["http"],
+        "injection":{"kind":"header","name":"Authorization","value":"Bearer ${secret}"},
+        "metadata":{"use_binding": {
+            "target":{"kind":"site", "origin":origin}, "value_kind":"payment_card"
+        }}
+    }))
+    .unwrap();
+    let registry = crate::credential::CharioxCredentialRegistry::user().unwrap();
+    f.state
+        .home_runtime_secret_service()
+        .unwrap()
+        .upsert_vault_backed_credential_with_secret(&registry, credential, "fixture-card", false)
+        .unwrap();
+    let answer = async {
+        let id = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let id = f
+                    .state
+                    .owned
+                    .pending_interactions
+                    .write()
+                    .values()
+                    .filter_map(|pending| pending.user_domain_interaction.as_ref())
+                    .find(|interaction| interaction.id().starts_with("vault-card-"))
+                    .map(|interaction| interaction.id().to_owned());
+                if let Some(id) = id {
+                    break id;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        f.state
+            .owned
+            .provider_store
+            .mark_run_ended_provider_only(&f.request.session_id, f.run.id())
+            .unwrap();
+        f.state
+            .resolve_terminal_runtime_interaction("", &id, "allow", None, Some("local"))
+            .await
+            .unwrap();
+    };
+    let receive = async {
+        match tokio::time::timeout(Duration::from_secs(2), listener.accept()).await {
+            Ok(Ok((mut stream, _))) => {
+                let _ = stream
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                    .await;
+                true
+            }
+            _ => false,
+        }
+    };
+    let request = call(
+        &f,
+        "chariox.http_request_with_credential",
+        json!({"credential_id":"http-card", "url":origin}),
+    );
+    let (result, (), sent) = tokio::join!(request, answer, receive);
+    assert!(
+        !sent,
+        "ended provider run sent a credential-authenticated HTTP request"
+    );
+    assert!(result.is_err());
+}
