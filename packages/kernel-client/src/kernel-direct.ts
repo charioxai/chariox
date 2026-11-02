@@ -1,3 +1,4 @@
+import { KernelDirectCarrier } from "./kernel-direct-carrier.js"
 import { LocalDirectSecurityError } from "./kernel-direct-security.js"
 import { LocalBrowserLeaseKeeper } from "./kernel-direct-lease.js"
 import { createDataChannelOffer, dataChannelSupported, DataChannelSocket, directAttemptBudgetMs, relayStunServers, type DataChannelOffer } from "./kernel-data-channel.js"
@@ -89,6 +90,7 @@ export class KernelDirect<TIdentity> {
   private readonly directOnlyPreferences = new Map<string, boolean>()
   private readonly kernels = new Map<string, KernelState>()
   private readonly leases = new Map<string, KernelLease<TIdentity>>()
+  private readonly carriers = new Map<string, Map<TIdentity, Promise<KernelDirectCarrier | null>>>()
   private readonly listeners = new Set<() => void>()
   private readonly consentListeners = new Set<(kernelRef: string, enabled: boolean) => void>()
 
@@ -182,6 +184,7 @@ export class KernelDirect<TIdentity> {
   close(): void {
     this.closed = true
     this.lifetime.abort()
+    this.carriers.clear()
     for (const lease of this.leases.values()) lease.keeper.close()
   }
 
@@ -261,6 +264,8 @@ export class KernelDirect<TIdentity> {
     const budget = new AbortController()
     input = { ...input, signal: AbortSignal.any([...(callerSignal ? [callerSignal] : []), budget.signal, this.lifetime.signal]) }
     let offer: DataChannelOffer | undefined
+    let publish: ((carrier: KernelDirectCarrier | null) => void) | undefined
+    let forget: (() => void) | undefined
     // The lease, ICE gathering and grant all precede the channel's own connect
     // timer; the relay must not wait for them past the budget.
     const yieldToRelay = (this.deps.setTimeout ?? setTimeout)(() => { input.onDiscoveryPending?.(); budget.abort(new Error("direct discovery timed out")) }, directAttemptBudgetMs)
@@ -268,6 +273,23 @@ export class KernelDirect<TIdentity> {
       this.notify()
       input.signal?.throwIfAborted()
       const keypair = await abortable(this.deps.bindingKeypair(kernelRef), input.signal!)
+      let carriers = this.carriers.get(kernelRef)
+      if (!carriers) { carriers = new Map(); this.carriers.set(kernelRef, carriers) }
+      let existing: Promise<KernelDirectCarrier | null> | undefined
+      while ((existing = carriers.get(keypair))) {
+        const carrier = await abortable(existing, input.signal!)
+        if (carrier?.open) {
+          const lane = carrier.openLane(input.signal)
+          this.deps.attach(lane, carrier.daemonPublicKey, input)
+          return lane
+        }
+        if (carriers.get(keypair) === existing) carriers.delete(keypair)
+      }
+      const pending = new Promise<KernelDirectCarrier | null>(resolve => { publish = resolve })
+      carriers.set(keypair, pending)
+      const held = carriers
+      forget = () => { if (held.get(keypair) === pending) held.delete(keypair) }
+
       const relayToken = await abortable(this.leaseToken(kernelRef, input.target), input.signal!)
       const preparing = (this.deps.createDataChannelOffer ?? createDataChannelOffer)(relayStunServers(input.relayUrls)).then(ready => {
         if (input.signal!.aborted) { ready.peer.close(); input.signal!.throwIfAborted() }
@@ -278,7 +300,7 @@ export class KernelDirect<TIdentity> {
       input.signal?.throwIfAborted()
       if (this.closed || !this.consented(kernelRef)) { offer.peer.close(); return null }
       await abortable(offer.peer.setRemoteDescription({ type: "answer", sdp: grant.answer }), input.signal!)
-      const socket = await this.adoptCarrier(input, keypair, grant, state, new DataChannelSocket(offer.peer, offer.channel) as unknown as WebSocket)
+      const socket = await this.adoptCarrier(input, keypair, grant, new DataChannelSocket(offer.peer, offer.channel) as unknown as WebSocket)
       if (this.closed || input.signal?.aborted) { socket.close(); return null }
       this.lease(kernelRef).keeper.add({ socket, grant, input, keypair, sequence: 1, expiresAtMs: grant.expiresAtMs })
       state.cooldownMs = 0
@@ -290,7 +312,15 @@ export class KernelDirect<TIdentity> {
         elapsedMs: this.nowMs() - startedAtMs,
         target: input.targetForLogs,
       })
-      return socket
+      const carrier = new KernelDirectCarrier(socket, grant.daemonPublicKey, close => {
+        if (close?.kernel_reload === true) state.kernelReloadUntilMs = this.nowMs() + kernelReloadWindowMs
+        else this.cooldown(state)
+      })
+      const lane = carrier.openLane(input.signal)
+      this.deps.attach(lane, grant.daemonPublicKey, input)
+      publish!(carrier)
+      publish = undefined
+      return lane
     } catch (error) {
       offer?.peer.close()
       if (callerSignal?.aborted) return null
@@ -311,6 +341,7 @@ export class KernelDirect<TIdentity> {
       })
       return null
     } finally {
+      if (publish) { forget?.(); publish(null) }
       (this.deps.clearTimeout ?? clearTimeout)(yieldToRelay)
       state.opening--
       this.notify()
@@ -342,7 +373,6 @@ export class KernelDirect<TIdentity> {
     input: OpenLocalSocketInput,
     keypair: TIdentity,
     grant: LocalDirectGrant,
-    state: KernelState,
     socket: WebSocket,
   ): Promise<WebSocket> {
     return new Promise<WebSocket>((resolve, reject) => {
@@ -378,24 +408,6 @@ export class KernelDirect<TIdentity> {
           }
           settled = true
           cleanup()
-          this.deps.attach(socket, grant.daemonPublicKey, {
-            ...input,
-            onMessage: (data) => {
-              // A kernel close frame retires the epoch and aborts this signal
-              // before the WebSocket close event. Record recovery first.
-              const close = input.signal?.aborted ? null : parseFrame<RelayCloseFrame>(data)
-              if (close?.kind === "close") {
-                if (close.kernel_reload === true) state.kernelReloadUntilMs = this.nowMs() + kernelReloadWindowMs
-                else this.cooldown(state)
-              }
-              input.onMessage(data)
-            },
-            onClosed: (...args) => {
-              // Observe failure before lifecycle recovery cancels the remaining lanes.
-              if (!input.signal?.aborted) this.cooldown(state)
-              input.onClosed(...args)
-            },
-          })
           resolve(socket)
         }).catch((error: unknown) => fail(error instanceof Error ? error : new Error(String(error))))
       }

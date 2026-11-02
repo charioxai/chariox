@@ -6283,6 +6283,13 @@ local 933 / peer 382, so the managed-upgrade list is [629, 636, 911, 923, 933, 9
 
 ### Kernel liveness and shared terminal carrier — local 951 / relay peer 400
 
+MP-08/MP-09/MP-10/MP-11: lanes using the same kernel and relay identity
+share one admitted RTC connection. Request IDs and subscription IDs route
+responses and events to their owning logical socket. Closing a lane retires
+its subscriptions; the last lane closes the physical connection. Distinct
+identities never share a carrier. The wire frames, pinned grant proof, lease
+renewal interval and physical silence deadlines are unchanged.
+
 MP-08 / MP-09 / MP-10 / MP-11: `{"KernelPing":null}` answers with
 `{"KernelPong":{}}` through ordinary authenticated dispatch. It takes no health
 snapshot and does not update semantic session activity or managed shutdown
