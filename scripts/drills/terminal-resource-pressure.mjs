@@ -34,7 +34,7 @@ const env = { PATH: process.env.PATH, LANG: 'C.UTF-8', SHELL: '/bin/bash', TERM:
   CHARIOX_DAEMON_SOCKET: join(root, 'daemon.sock'), CHARIOX_DAEMON_ALIAS: 'fdexh', CHARIOX_MACHINE_ALIAS: 'fdexh',
   CHARIOX_KERNEL_PORT: String(ports[0]), CHARIOX_MCP_PORT: String(ports[1]), CHARIOX_OPENCODE_PORT: String(ports[2]), CHARIOX_CODEX_PORT: String(ports[3]),
   CHARIOX_ALLOW_VOLATILE_PROCESS_MEMORY_VAULT: '1', IS_SANDBOX: '1' }
-const report = { head: flags.get('--head'), binary_sha256: createHash('sha256').update(readFileSync(binary)).digest('hex'), started_at: new Date().toISOString(), nofile: 320, rooms: [], terminals: [], cli_processes: [], samples: [] }
+const report = { head: flags.get('--head'), binary_sha256: createHash('sha256').update(readFileSync(binary)).digest('hex'), started_at: new Date().toISOString(), nofile: 320, rooms: [], terminals: [], cli_processes: [], samples: [], witness_checkpoints: [] }
 const save = () => writeFileSync(join(evidence, 'result.json'), JSON.stringify(report, null, 2) + '\n')
 const log = openSync(join(evidence, 'kernel.log'), 'w', 0o600)
 const kernel = spawn('/usr/bin/prlimit', ['--nofile=320:320', binary], { env, cwd: root, stdio: ['ignore', log, log] })
@@ -108,6 +108,12 @@ try {
     report.terminals.push(record)
     if (i < 10) { assert(await marker(h, `before-${i}`)); witnesses.push({ h, ...record }) }
     else await detach(h)
+    if (i >= 10 && i % 8 === 0) {
+      for (let j = 0; j < witnesses.length; j++) {
+        const echoes = await marker(witnesses[j].h, `during-${i}-${j}`)
+        report.witness_checkpoints.push({ opened: i + 1, witness: j, echoes })
+      }
+    }
     save()
   }
   assert(report.refusal, 'never reached descriptor refusal')
@@ -138,7 +144,7 @@ try {
   report.fds_after_closing = fds()
   report.actionable = report.refusal.message.includes('too many open files in this kernel; close a terminal and try again')
   report.no_fd_growth = report.samples.every(s => s.after <= report.samples[0].before)
-  report.pass = report.actionable && report.no_fd_growth && report.witnesses.length === 10 && report.witnesses.every(w => w.echoes) && report.recovered
+  report.pass = report.actionable && report.no_fd_growth && report.witness_checkpoints.every(w => w.echoes) && report.witnesses.length === 10 && report.witnesses.every(w => w.echoes) && report.recovered
   console.log(JSON.stringify({ opened: report.terminals.length, refusal: report.refusal, witnesses_echoing: report.witnesses.filter(w => w.echoes).length, recovered: report.recovered, no_fd_growth: report.no_fd_growth, pass: report.pass }))
   process.exitCode = report.pass ? 0 : 1
 } catch (error) {

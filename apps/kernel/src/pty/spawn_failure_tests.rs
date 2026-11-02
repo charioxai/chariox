@@ -1,13 +1,27 @@
 use super::*;
 
+struct SpawnRefused(i32);
+
+impl portable_pty::SlavePty for SpawnRefused {
+    fn spawn_command(
+        &self,
+        _command: CommandBuilder,
+    ) -> anyhow::Result<Box<dyn Child + Send + Sync>> {
+        Err(
+            anyhow::Error::new(std::io::Error::from_raw_os_error(self.0))
+                .context("dup of fd 317 failed"),
+        )
+    }
+}
+
 #[test]
 fn resource_refusals_keep_wrapped_errno_out_of_the_client() {
     for errno in [libc::EMFILE, libc::ENFILE, libc::EAGAIN, libc::ENOMEM] {
-        // The spawn owner wraps portable-pty's contextual error in io::Error.
-        let error = std::io::Error::other(
-            anyhow::Error::new(std::io::Error::from_raw_os_error(errno))
-                .context("dup of fd 317 failed"),
-        );
+        let error = crate::process_spawn::spawn_pty(
+            Box::new(SpawnRefused(errno)),
+            CommandBuilder::new("/bin/cat"),
+        )
+        .unwrap_err();
         let refusal = spawn_failed("private-run", &error);
         let public = crate::transport::kernel_protocol::map_kernel_error(&refusal);
         let expected = match errno {
@@ -17,12 +31,18 @@ fn resource_refusals_keep_wrapped_errno_out_of_the_client() {
             _ => "not enough resources in this kernel to open a terminal; close a terminal and try again",
         };
         assert_eq!(public.message, expected, "errno {errno}");
-        assert!(public.retryable);
+        assert_eq!(
+            public.retryable,
+            matches!(errno, libc::EMFILE | libc::ENFILE)
+        );
         assert!(!public.message.contains("private-run"));
         assert!(!public.message.contains("317"));
     }
     let error = std::io::Error::from_raw_os_error(libc::ENOENT);
-    assert!(matches!(spawn_failed("missing", &error), DaemonError::PtySpawn { .. }));
+    assert!(matches!(
+        spawn_failed("missing", &error),
+        DaemonError::PtySpawn { .. }
+    ));
 }
 
 struct WriterRefused {
@@ -41,8 +61,10 @@ impl MasterPty for WriterRefused {
         self.master.try_clone_reader()
     }
     fn take_writer(&self) -> anyhow::Result<Box<dyn Write + Send>> {
-        Err(anyhow::Error::new(std::io::Error::from_raw_os_error(self.errno))
-            .context("dup of fd 317 failed"))
+        Err(
+            anyhow::Error::new(std::io::Error::from_raw_os_error(self.errno))
+                .context("dup of fd 317 failed"),
+        )
     }
     fn process_group_leader(&self) -> Option<libc::pid_t> {
         self.master.process_group_leader()
@@ -60,20 +82,36 @@ fn failed_attach_releases_descriptors_and_reaps_its_child() {
     let fds = || std::fs::read_dir("/proc/self/fd").unwrap().count();
     let before = fds();
     let mut unreaped = Vec::new();
-    for i in 0..12 {
+    for (i, errno) in [libc::EMFILE, libc::ENFILE, libc::EAGAIN, libc::ENOMEM]
+        .into_iter()
+        .cycle()
+        .take(12)
+        .enumerate()
+    {
         let pair = native_pty_system().openpty(PtySize::default()).unwrap();
-        let child = pair.slave.spawn_command(CommandBuilder::new("/bin/cat")).unwrap();
+        let child = pair
+            .slave
+            .spawn_command(CommandBuilder::new("/bin/cat"))
+            .unwrap();
         drop(pair.slave);
         let pid = child.process_id().unwrap();
         assert!(pid > 1 && pid <= i32::MAX as u32);
-        let resources = crate::runtime::process_resources::PreparedDomain::new("failed-attach")
-            .unwrap().start(pid).unwrap();
+        let resources = crate::runtime::process_resources::PreparedDomain::for_tests()
+            .start(pid)
+            .unwrap();
         let refusal = manager.attach(
-            format!("failed-{i}"), format!("failed-{i}"), None,
-            Box::new(WriterRefused { master: pair.master, errno: libc::EMFILE }),
-            child, resources, None,
+            format!("failed-{i}"),
+            format!("failed-{i}"),
+            None,
+            Box::new(WriterRefused {
+                master: pair.master,
+                errno,
+            }),
+            child,
+            resources,
+            None,
         );
-        assert!(matches!(refusal, Err(DaemonError::TooManyOpenFiles)));
+        assert!(refusal.is_err());
         assert!(manager.processes.is_empty());
         assert!(manager.process_aliases.is_empty());
         // waitpid must say that attach already reaped the child. Reap it here
@@ -83,6 +121,14 @@ fn failed_attach_releases_descriptors_and_reaps_its_child() {
             unreaped.push(pid);
         }
     }
-    assert_eq!(fds(), before, "failed attaches leaked descriptors");
-    assert!(unreaped.is_empty(), "failed attaches left children unreaped: {unreaped:?}");
+    let after = fds();
+    eprintln!(
+        "12 failed attaches: descriptors {before} -> {after}; unreaped {}",
+        unreaped.len()
+    );
+    assert_eq!(after, before, "failed attaches leaked descriptors");
+    assert!(
+        unreaped.is_empty(),
+        "failed attaches left children unreaped: {unreaped:?}"
+    );
 }

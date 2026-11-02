@@ -706,7 +706,7 @@ fn watched_sleep(unit: &str) -> (std::process::Child, ProcessDomain, String) {
 
 #[cfg(unix)]
 #[test]
-fn a_kernel_out_of_descriptors_for_a_moment_keeps_the_tree_it_watches() {
+fn a_kernel_short_of_resources_for_a_moment_keeps_the_tree_it_watches() {
     let (mut child, _domain, key) = watched_sleep("descriptors-short");
     let pid = child.id();
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
@@ -714,28 +714,49 @@ fn a_kernel_out_of_descriptors_for_a_moment_keeps_the_tree_it_watches() {
         assert!(std::time::Instant::now() < deadline, "never sampled");
         std::thread::sleep(Duration::from_millis(50));
     }
-    let failing = PsFailing::with(libc::EMFILE);
-    std::thread::sleep(Duration::from_secs(3));
-    let kept = child.try_wait().unwrap().is_none();
-    drop(failing);
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    while !samples_for_key(&key).iter().any(|sample| sample.pid == pid) {
-        if std::time::Instant::now() >= deadline {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(50));
+    let mut outcomes = Vec::new();
+    for errno in [libc::EMFILE, libc::ENFILE, libc::EAGAIN, libc::ENOMEM] {
+        let failing = PsFailing::with(errno);
+        std::thread::sleep(Duration::from_millis(350));
+        let held = samples_for_key(&key);
+        std::thread::sleep(Duration::from_secs(1));
+        let kept = child.try_wait().unwrap().is_none();
+        let unchanged = samples_for_key(&key) == held;
+        drop(failing);
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let sampled_again = loop {
+            if samples_for_key(&key).iter().any(|sample| {
+                sample.pid == pid
+                    && held.iter().any(|old| {
+                        old.process_id == sample.process_id
+                            && old.sampled_at_ms < sample.sampled_at_ms
+                    })
+            }) {
+                break true;
+            }
+            if std::time::Instant::now() >= deadline {
+                break false;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        outcomes.push((errno, kept, unchanged, sampled_again));
     }
-    let sampled_again = samples_for_key(&key).iter().any(|sample| sample.pid == pid);
     let _ = child.kill();
     let _ = child.wait();
-    assert!(
-        kept,
-        "the sampler ended the tree because ps could not start for a moment"
-    );
-    assert!(
-        sampled_again,
-        "sampling did not resume once descriptors were free"
-    );
+    for (errno, kept, unchanged, sampled_again) in outcomes {
+        assert!(
+            kept,
+            "errno {errno}: sampler ended the tree because ps could not start"
+        );
+        assert!(
+            unchanged,
+            "errno {errno}: last known samples were changed during a shortage"
+        );
+        assert!(
+            sampled_again,
+            "errno {errno}: sampling did not resume with the same process identity"
+        );
+    }
 }
 
 #[cfg(unix)]
