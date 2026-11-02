@@ -53,7 +53,9 @@ struct Authority {
 }
 
 impl Authority {
-    fn same_turn(&self, other: &Self) -> bool { self == other }
+    fn same_turn(&self, other: &Self) -> bool {
+        self == other
+    }
 }
 
 impl KernelRuntimeState {
@@ -76,8 +78,12 @@ impl KernelRuntimeState {
             session_id: turn.session_id,
             project_id: session.project_id().into(),
             agent_id: turn.agent_id,
-            prompt_id: turn.prompt_id.ok_or_else(|| error("resource register requires a running prompt"))?,
-            provider_run_id: turn.provider_run_id.ok_or_else(|| error("resource register requires a running provider"))?,
+            prompt_id: turn
+                .prompt_id
+                .ok_or_else(|| error("resource register requires a running prompt"))?,
+            provider_run_id: turn
+                .provider_run_id
+                .ok_or_else(|| error("resource register requires a running provider"))?,
         })
     }
 
@@ -202,7 +208,9 @@ impl RecordArgs {
                     return Err(error("HTTP revocation requires method DELETE or POST"));
                 }
                 if request.body_text.is_some() && request.body_json.is_some() {
-                    return Err(error("choose either body_text or body_json for the revoke request"));
+                    return Err(error(
+                        "choose either body_text or body_json for the revoke request",
+                    ));
                 }
                 if request.max_response_bytes == 0 {
                     return Err(error("max_response_bytes must be positive"));
@@ -213,9 +221,10 @@ impl RecordArgs {
                     > 16384
                     || request.timeout_ms == 0
                     || request.timeout_ms > 30000
-
                 {
-                    return Err(error("revoke request must fit 16 KiB and timeout_ms must be 1-30000"));
+                    return Err(error(
+                        "revoke request must fit 16 KiB and timeout_ms must be 1-30000",
+                    ));
                 }
                 state
                     .home_runtime_secret_service()?
