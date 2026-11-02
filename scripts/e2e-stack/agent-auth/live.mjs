@@ -70,8 +70,12 @@ const result = { MP: ['MP-08', 'MP-09', 'MP-10', 'MP-11'], status: 'FAIL', start
 let service, browser, page, client, sessionId, ownsRoot = false
 function stage(value) { result.stage = value; console.log(JSON.stringify({ stage: value })) }
 const children = [], logs = [], privateValues = [passphrase]
-function absent(text) {
+function registrationAbsent(text) {
   service?.assertAbsent(text)
+  if (text.includes(passphrase)) throw new Error('Vault passphrase appeared in evidence')
+}
+function absent(text) {
+  registrationAbsent(text)
   if (privateValues.some(value => text.includes(value))) throw new Error('Protected runtime value appeared in evidence')
 }
 function start(binary, extraEnv, name) {
@@ -259,10 +263,31 @@ try {
   let checked = 0
   try {
     const historyFiles = (await files(root)).filter(file => /\/(?:history|sessions|session-history)\//.test(file) || file.endsWith('.jsonl'))
-    for (const file of [...new Set([...historyFiles, ...logs])]) { absent(await readFile(file, 'utf8')); checked++ }
+    let consumedSetupResponses = 0
+    for (const file of [...new Set([...historyFiles, ...logs])]) {
+      let content
+      try { content = await readFile(file, 'utf8') } catch (error) {
+        if (error.code === 'ENOENT') continue // An atomic history write retired its temporary file.
+        throw new Error(`History evidence read failed (${error.code ?? 'unknown'})`)
+      }
+      try {
+        if (file.endsWith('/command-results.jsonl')) registrationAbsent(content)
+        else absent(content)
+        // Enrollment returns its device code to the owner. The private command
+        // journal persists that consumed setup reply; it is not model history.
+        if (file.endsWith('/command-results.jsonl') && privateValues.slice(1).some(value => content.includes(value))) consumedSetupResponses++
+      } catch {
+        const relative = path.relative(root, file)
+        absent(relative)
+        result.absence_failure = { file: relative, kind: service.exposureKind(content) ?? (content.includes(passphrase) ? 'owner passphrase' : 'runtime setup value') }
+        throw new Error('Protected value found in kernel/provider history or logs')
+      }
+      checked++
+    }
     result.history_files_checked = historyFiles.length
+    result.consumed_setup_responses_in_private_journal = consumedSetupResponses
     result.absence = { checked_files: checked, session_state_checked: Boolean(sessionId), service_values_absent: true }
-  } catch { result.status = 'FAIL'; result.failure = 'Protected value found in kernel/provider history or logs' }
+  } catch (error) { result.status = 'FAIL'; result.failure = String(error.message) }
   if (client) { if (sessionId) await client.send(requests.endSessionRequest(sessionId)).catch(() => {}); await client.close() }
   for (const child of children.reverse()) await stop(child)
   try { for (const file of logs) absent(await readFile(file, 'utf8')) } catch { result.status = 'FAIL'; result.failure = 'Protected value found in shutdown logs' }

@@ -100,7 +100,10 @@ export async function createAuthService({ identityOnly = false, expiresIn = 120 
   })
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve) })
   origin = `http://127.0.0.1:${server.address().port}`
-  return { origin, counts, assertAbsent(text) {
+  return { origin, counts, exposureKind(text) {
+    const value = privateValues.find(value => text.includes(value))
+    return value ? value.startsWith('access-') ? 'service access credential' : value.startsWith('claim-') ? 'service claim token' : 'service identity assertion' : null
+  }, assertAbsent(text) {
     if (privateValues.some(value => text.includes(value))) throw new Error('Service credential appeared in model-visible evidence')
   }, async close() { signingKey.fill(0); await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve())) } }
 }
