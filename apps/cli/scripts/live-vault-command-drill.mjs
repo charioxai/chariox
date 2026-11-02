@@ -265,7 +265,10 @@ async function main() {
       const row = { provider, model: MODELS[provider] }
       report.providers.push(row)
       const profile = await linkProvider(client, requests, provider, options)
-      step(`${provider} profile linked`)
+      // The owner's account check verifies the linked login before a run may use it.
+      const auth = Object.values(await client.send(requests.getProviderAuthStatusRequest(provider, profile)))[0]
+      row.auth_state = auth?.status?.auth_state ?? auth?.auth_state ?? null
+      step(`${provider} profile linked (${row.auth_state})`)
       const agent = unwrap(await client.send(requests.spawnAgentRequest(session.id, provider, `s2-${provider}`, MODELS[provider],
         workspace, 'low', 'build', undefined, undefined, undefined, undefined, profile)), 'AgentSpawned')
       const agentId = agent.agent?.id ?? agent.agent_id
