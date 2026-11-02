@@ -59,6 +59,12 @@ test('MP-08/09/10/11 permission requests share state, answer, timeout, session a
     await evaluate('navigator.geolocation.getCurrentPosition(()=>{},()=>{});undefined');
     const isolated=await pending('geolocation',new URL(url.replace('127.0.0.1','localhost')).origin); assert.equal(isolated.origin,new URL(url.replace('127.0.0.1','localhost')).origin);
     await host.request({op:'close',tab_id:tab.tab_id,generation:other.generation});
-    assert.deepEqual(host.browser.pagePermissions.requests.size,0);
+    assert.equal(host.browser.pagePermissions.requests.size,0);
+    await host.stop();
+    const restarted=await host.request({op:'open',url});
+    tab=host.tabs.get(restarted.active_tab_id); ({connection,sessionId}=await host.browser.resolvePageTarget(tab.target_id));
+    assert.equal(await evaluate('navigator.permissions.query({name:"geolocation"}).then(s=>s.state)'), 'prompt');
+    await evaluate('navigator.geolocation.getCurrentPosition(()=>{},()=>{});undefined');
+    await answer(await pending('geolocation'),'dismiss');
   } finally {await host.stop();await new Promise(r=>server.close(r));await rm(home,{recursive:true,force:true});}
 });

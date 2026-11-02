@@ -71,3 +71,29 @@ test('MP-08/09/10/11 binding requests use the CDP execution context origin and r
     assert.deepEqual(f.owner.dialogDefaults.pending(), []);
   } finally { f.permissions.clear(); }
 });
+
+
+test('MP-08/09/10/11 concurrent calls share one dialog and one origin decision', async () => {
+  const f = fixture();
+  try {
+    f.request('geolocation', 'first'); f.request('geolocation', 'second');
+    assert.equal(f.owner.dialogDefaults.pending().length, 1);
+    await f.permissions.answer(f.owner.dialogDefaults.pending()[0], true);
+    assert.equal(f.calls.filter(c => c.method === 'Browser.setPermission').length, 1);
+    const replies = f.calls.filter(c => c.method === 'Runtime.evaluate');
+    assert.equal(replies.length, 2);
+    assert.ok(replies.every(c => c.params.expression.includes('granted')));
+  } finally { f.permissions.clear(); }
+});
+
+
+test('MP-08/09/10/11 failed native grant denies the page and leaves no cached allow', async () => {
+  const f = fixture();
+  try {
+    f.owner.connection.send = async method => { if (method === 'Browser.setPermission') throw new Error('CDP unavailable'); return {}; };
+    f.request('geolocation');
+    await assert.rejects(f.permissions.answer(f.owner.dialogDefaults.pending()[0], true), /CDP unavailable/);
+    assert.deepEqual(f.owner.dialogDefaults.pending(), []);
+    assert.equal(f.permissions.decisions.size, 0);
+  } finally { f.permissions.clear(); }
+});

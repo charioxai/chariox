@@ -36,7 +36,7 @@ export class BrowserPagePermissions {
     else if (method === 'Runtime.executionContextsCleared') {
       for (const [key, c] of this.contexts) if (c.sessionId === sessionId) this.dropContext(key);
     } else if (method === 'Page.frameNavigated') {
-      for (const [id, r] of this.requests) if (r.target === target && (!params.frame?.parentId || r.frameId === params.frame.id)) this.retire(id);
+      for (const [key, c] of this.contexts) if (c.target === target && (!params.frame?.parentId || c.frameId === params.frame.id)) this.dropContext(key);
     } else if (['Target.targetDestroyed', 'Target.targetCrashed', 'Inspector.targetCrashed'].includes(method)) this.dropTarget(target ?? params.targetId);
     else if (method === 'Runtime.bindingCalled' && params.name === permissionBinding) {
       const context = this.contexts.get(`${sessionId}:${params.executionContextId}`);
@@ -49,11 +49,17 @@ export class BrowserPagePermissions {
       const r = {...context, id, permission, documentId};
       const setting = blocked.has(permission) ? 'denied' : this.decisions.get(`${context.origin}:${permission}`);
       if (op === 'query' || setting) { void this.respond(r, setting ?? 'prompt'); return; }
+      const existing = [...this.requests.values()].find(r => r.origin === context.origin && r.permission === permission);
+      if (existing) {
+        if (existing.waiters.length < 64) existing.waiters.push(r);
+        else void this.respond(r, 'denied');
+        return;
+      }
       if (this.requests.size >= 64 || [...this.requests.values()].filter(r => r.target === target).length >= 16) { void this.respond(r, 'denied'); return; }
       const dialogId = randomUUID();
       const dialog = {dialog_id:dialogId, target_id:target, document_id:documentId, kind:'permission', message:permission, origin:context.origin};
       const timer = setTimeout(() => { void this.answer(dialog, false).catch(() => {}); }, this.timeoutMs); timer.unref?.();
-      this.requests.set(dialogId, {...r, timer});
+      this.requests.set(dialogId, {...r, timer, waiters:[r]});
       this.owner.dialogDefaults.permissions.set(dialogId, dialog);
       this.changed();
     }
@@ -68,10 +74,9 @@ export class BrowserPagePermissions {
       await this.owner.connection.send('Browser.setPermission', {permission:{name:r.permission}, setting, origin:r.origin});
       if (this.requests.get(dialog.dialog_id) !== r) throw invalid();
       this.decisions.set(`${r.origin}:${r.permission}`, setting);
-      this.retire(dialog.dialog_id);
-      await this.respond(r, setting);
+      await this.retire(dialog.dialog_id, setting);
     } catch (error) {
-      this.retire(dialog.dialog_id); await this.respond(r, 'denied'); throw error;
+      await this.retire(dialog.dialog_id); throw error;
     }
   }
   async respond(r, setting) {
@@ -79,14 +84,18 @@ export class BrowserPagePermissions {
     if (!this.contexts.has(`${r.sessionId}:${r.contextId}`)) return;
     await this.owner.connection?.send('Runtime.evaluate', {expression:`globalThis[${JSON.stringify(responseName)}]?.(${JSON.stringify(r.id)},${JSON.stringify(setting)})`, contextId:r.contextId, returnByValue:true}, r.sessionId).catch(() => {});
   }
-  retire(id) {
-    const r = this.requests.get(id); if (!r) return;
+  retire(id, setting = 'denied') {
+    const r = this.requests.get(id); if (!r) return Promise.resolve();
     clearTimeout(r.timer); this.requests.delete(id); this.owner.dialogDefaults.permissions.delete(id); this.changed();
+    return Promise.all(r.waiters.map(waiter => this.respond(waiter, setting)));
   }
   dropContext(key) {
     const c = this.contexts.get(key); if (!c) return;
     this.contexts.delete(key);
-    for (const [id, r] of this.requests) if (r.sessionId === c.sessionId && r.contextId === c.contextId) this.retire(id);
+    for (const [id, r] of this.requests) {
+      if (r.sessionId === c.sessionId && r.contextId === c.contextId) void this.retire(id);
+      else r.waiters = r.waiters.filter(w => w.sessionId !== c.sessionId || w.contextId !== c.contextId);
+    }
   }
   dropTarget(target) {
     for (const [key, c] of this.contexts) if (c.target === target) this.dropContext(key);

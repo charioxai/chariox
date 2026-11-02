@@ -11,7 +11,11 @@ export function installPagePermissionShim(bindingName, responseName) {
   const state = name => blocked.has(name) ? 'denied' : states.get(name) ?? 'prompt';
   const update = (name, value) => {
     const old = state(name); states.set(name, value);
-    if (old !== value) for (const status of statuses.get(name) ?? []) status.dispatchEvent(new Event('change'));
+    if (old !== value) for (const ref of statuses.get(name) ?? []) {
+      const status = ref.deref();
+      if (status) status.dispatchEvent(new Event('change'));
+      else statuses.get(name).delete(ref);
+    }
   };
   Object.defineProperty(globalThis, responseName, {value:(id, value) => {
     const item = pending.get(id); if (!item) return;
@@ -34,7 +38,7 @@ export function installPagePermissionShim(bindingName, responseName) {
       const status = await query(descriptor);
       update(descriptor.name, await ask(descriptor.name, 'query'));
       Object.defineProperty(status, 'state', {get:() => state(descriptor.name)});
-      const list = statuses.get(descriptor.name) ?? new Set(); list.add(status); statuses.set(descriptor.name, list);
+      const list = statuses.get(descriptor.name) ?? new Set(); list.add(new WeakRef(status)); statuses.set(descriptor.name, list);
       return status;
     };
   }
@@ -55,7 +59,9 @@ export function installPagePermissionShim(bindingName, responseName) {
     geo.clearWatch = id => { const native = watches.get(id); watches.delete(id); if (native != null) clear(native); };
   }
   if (globalThis.Notification) {
-    Object.defineProperty(Notification, 'permission', {get:() => state('notifications') === 'prompt' ? 'default' : state('notifications')});
+    const nativePermission = Object.getOwnPropertyDescriptor(Notification, 'permission')?.get;
+    Object.defineProperty(Notification, 'permission', {get:() => states.has('notifications') ? state('notifications') === 'prompt' ? 'default' : state('notifications') : nativePermission?.call(Notification) === 'granted' ? 'granted' : 'default'});
+    void ask('notifications', 'query');
     Notification.requestPermission = callback => ask('notifications').then(value => { callback?.(value); return value; });
   }
   if (navigator.clipboard) for (const name of ['read', 'readText']) {
