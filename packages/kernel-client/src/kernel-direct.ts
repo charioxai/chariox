@@ -117,7 +117,7 @@ export class KernelDirect<TIdentity> {
     this.preferences.set(kernelRef, true)
     this.storage()?.setItem(consentStoragePrefix + kernelRef, "granted")
     const state = this.kernels.get(kernelRef) ?? freshState()
-    Object.assign(state, freshState())
+    Object.assign(state, freshState(), { opening: state.opening })
     this.kernels.set(kernelRef, state)
     this.notifyConsent(kernelRef, true)
   }
