@@ -169,7 +169,9 @@ export async function runAccessCommand(argv: string[]): Promise<boolean> {
     console.log(ACCESS_USAGE)
     return true
   }
-  const direct = { request: requestAccess, status: accessStatus, cover: coverProcess }[argv[1] ?? ""]
+  const direct = new Map([
+    ["request", requestAccess], ["status", accessStatus], ["cover", coverProcess],
+  ]).get(argv[1] ?? "")
   try {
     if (direct) await direct(argv.slice(2))
     else await listOrRevoke(argv)

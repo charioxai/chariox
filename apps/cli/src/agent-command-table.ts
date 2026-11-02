@@ -1,5 +1,5 @@
 import {
-  attachToSessionRequest, cancelActivePromptRequest, createSessionRequest, endSessionRequest, getSessionStateRequest,
+  attachToSessionRequest, cancelActivePromptRequest, createSessionRequest, destroyAgentRequest, endSessionRequest, getSessionStateRequest,
   listProjectsRequest, listSessionsRequest, respondToInteractionRequest, searchWorkspaceDirectoriesRequest, spawnAgentRequest, submitPromptRequest,
 } from "./ipc-requests.js"
 
@@ -53,7 +53,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   {
     name: "terminal open",
     flags: [KERNEL, SESSION, HOST_AGENT, { name: "--cols", value: "N" }, { name: "--rows", value: "N" }, { name: "--title", value: "TITLE" }, TIMEOUT, SOCKET],
-    summary: "open a terminal in that Room (a login shell, or the argv after --); it keeps running when you disconnect",
+    summary: "open a terminal in that Room (a login shell, or the argv after --); prints terminal.terminal_id; it keeps running when you disconnect",
   },
   { name: "terminal list", flags: [KERNEL, SESSION, TIMEOUT, SOCKET], summary: "the Room's terminals with their output offsets; a terminal that shows host_agent runs on that agent's machine: pass that id as --host-agent to send, read, wait and close" },
   {
@@ -95,9 +95,10 @@ export const REQUEST_EXAMPLES: readonly { body: object; note: string }[] = [
   { body: createSessionRequest("/PATH", "/PATH"), note: "workspace_id and worktree_id are one such directory path; SessionCreated.session.id" },
   { body: attachToSessionRequest("SESSION_ID", "CLIENT_NAME"), note: "SessionAttached.attachment.id; client_id is any name you pick" },
   { body: getSessionStateRequest("SESSION_ID"), note: "SessionState: agents, prompts, output" },
-  { body: spawnAgentRequest("SESSION_ID", "codex"), note: "provider is claude, codex or opencode; AgentSpawned.agent.id" },
+  { body: { SpawnAgent: { ...spawnAgentRequest("SESSION_ID", "codex").SpawnAgent, account_profile: "PROFILE_ID" } }, note: "provider is claude, codex or opencode; use the chosen profile_id from ListProviderAccountProfiles, and set model and effort; AgentSpawned.agent.id" },
   { body: submitPromptRequest("SESSION_ID", "ATTACHMENT_ID", null, "PROMPT", []), note: "target_agent_id is an agent id, or null for the default agent" },
   { body: cancelActivePromptRequest("SESSION_ID", "ATTACHMENT_ID", null), note: "stops the running prompt" },
+  { body: destroyAgentRequest("SESSION_ID", "AGENT_ID"), note: "removes that agent from the Room; AgentDestroyed" },
   {
     body: { RunShellCommand: { session_id: "SESSION_ID", attachment_id: "ATTACHMENT_ID", command: "ls", args: ["-la"], working_directory: "/PATH", timeout_ms: 60000 } },
     note: "runs on that machine; ShellCommandCompleted.result has exit_code, stdout, stderr",
@@ -221,15 +222,14 @@ export function guideText(): string {
     "Requests for chariox request (replace the UPPERCASE values; ids come from earlier answers):",
     ...REQUEST_EXAMPLES.map(({ body, note }) => `  ${JSON.stringify(body)}  | ${note}`),
     "A request the kernel cannot parse comes back with a message naming the expected variants and fields: read it and fix the request.",
-    "Give every request that changes state (CreateSession, AttachToSession, SpawnAgent, SubmitPrompt, RunShellCommand, EndSession, RequestKernelSudo) its own --command-id ID; reuse one only to retry.",
+    "Give every request that changes state (CreateSession, AttachToSession, SpawnAgent, DestroyAgent, SubmitPrompt, RunShellCommand, EndSession, RequestKernelSudo) its own --command-id ID; reuse one only to retry.",
     "An AttachToSession you make on another kernel is kept alive for you while your access lasts; send DetachFromSession when you are done with it.",
     "",
     "Exec streams raw binary stdout and stderr and returns the remote command's exit code (128 + signal). Other commands print one JSON document on stdout. Errors are JSON on stderr: {\"error\":{\"code\",\"message\",\"kernel\"}}.",
     "Exit codes:",
     ...exits,
     "",
-    "Sudo outcomes: kernel_sudo_refused means the person refused; kernel_sudo_expired means the approval deadline passed; kernel_sudo_room_owner_local means the Room predates enrollment (re-create the Room after enrollment).",
-    "None starts elevation or retries automatically. Submit a new request only when needed and approve it in a Chariox client.",
+    "Sudo outcomes: kernel_sudo_refused means the person refused; kernel_sudo_expired means the approval deadline passed; kernel_sudo_room_owner_local means the Room predates enrollment (re-create the Room after enrollment). None starts elevation or retries automatically. Submit a new request only when needed and approve it in a Chariox client.",
     "Retry rule: on kernel_request_timeout or kernel_connection_lost retry ONCE with the same --command-id. On kernel_outcome_unknown read the state first; never retry blindly.",
     "Human-only, never attempted by you: passkey approvals, grants, sudo approvals, secrets and credentials, relay and pairing configuration.",
   ].join("\n")
