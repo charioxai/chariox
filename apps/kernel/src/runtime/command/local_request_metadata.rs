@@ -610,6 +610,7 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
                 .session(&request.session_id)
                 .agent(&request.metaagent_id)
         }
+        LocalDaemonRequest::KernelPing(_) => LocalRequestMetadata::new("kernel.ping", Normal),
         LocalDaemonRequest::GetDaemonHealth(_) => {
             LocalRequestMetadata::new("daemon.health.get", Normal)
         }
@@ -1230,6 +1231,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         | LocalDaemonRequest::EndSession(_)
         | LocalDaemonRequest::DeleteSession(_)
         | LocalDaemonRequest::DeleteKernel(_)
+        | LocalDaemonRequest::KernelPing(_)
         | LocalDaemonRequest::GetDaemonHealth(_)
         | LocalDaemonRequest::GetKernelResourceTelemetry(_)
         | LocalDaemonRequest::ExportDebugBundle(_)

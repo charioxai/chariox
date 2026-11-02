@@ -1,7 +1,8 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 import WebSocket, { WebSocketServer } from "ws"
-import { LocalIpcClient, RelayClientIdentity } from "./ipc.js"
+import { RelayClientIdentity } from "./ipc.js"
+import { LocalIpcClient } from "./ipc-relay.test-support.js"
 import { createRelayKeypair } from "./relay-crypto.js"
 
 test("MP-08/MP-11 combined relay refusal cannot reopen retained terminal authority", async () => {

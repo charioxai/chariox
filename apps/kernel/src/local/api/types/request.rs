@@ -165,6 +165,8 @@ pub enum LocalDaemonRequest {
     ReadMetaagentEvent(ReadMetaagentEventRequest),
     AckMetaagentEvents(AckMetaagentEventsRequest),
     GetTerminalCommandCatalog(GetTerminalCommandCatalogRequest),
+    /// A bounded reply on the authenticated control lane, without a health projection.
+    KernelPing(()),
     GetDaemonHealth(GetDaemonHealthRequest),
     GetKernelResourceTelemetry(GetKernelResourceTelemetryRequest),
     ExportDebugBundle(ExportDebugBundleRequest),

@@ -1,0 +1,10 @@
+{
+  "local_protocol": 951,
+  "peer_protocol": 400,
+  "request": {
+    "KernelPing": null
+  },
+  "response": {
+    "KernelPong": {}
+  }
+}

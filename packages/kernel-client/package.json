@@ -105,7 +105,9 @@
     "./user-domain-access": "./dist/user-domain-access.js",
     "./browser-mirror": "./dist/browser-mirror.js",
     "./browser-mirror2": "./dist/browser-mirror2.js",
-    "./agent-task-state": "./dist/agent-task-state.js"
+    "./agent-task-state": "./dist/agent-task-state.js",
+    "./kernel-direct": "./dist/kernel-direct.js",
+    "./kernel-data-channel": "./dist/kernel-data-channel.js"
   },
   "types": "./dist/index.d.ts",
   "scripts": {
@@ -116,6 +118,7 @@
   },
   "dependencies": {
     "@chariox/tool-display": "workspace:*",
+    "werift": "0.24.4",
     "ws": "^8.18.3"
   },
   "devDependencies": {

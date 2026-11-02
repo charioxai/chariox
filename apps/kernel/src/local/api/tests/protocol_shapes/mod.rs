@@ -35,6 +35,7 @@ mod kernel_browser;
 mod kernel_computer;
 mod kernel_gateway;
 mod kernel_operation_interactions;
+mod kernel_ping;
 mod managed_activity;
 mod managed_context;
 mod managed_environment;

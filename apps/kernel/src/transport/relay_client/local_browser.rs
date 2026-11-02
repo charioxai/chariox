@@ -145,34 +145,60 @@ impl LocalBrowserDirect {
         self: &Arc<Self>,
         identity: &RelayCallerIdentity,
     ) -> Result<serde_json::Value, RelayError> {
-        self.issue_client_grant(identity, LocalDirectClient::Browser)
-            .await
-    }
-
-    pub(super) async fn issue_terminal_grant(
-        self: &Arc<Self>,
-        identity: &RelayCallerIdentity,
-    ) -> Result<serde_json::Value, RelayError> {
-        self.issue_client_grant(identity, LocalDirectClient::Terminal)
-            .await
-    }
-
-    async fn issue_client_grant(
-        self: &Arc<Self>,
-        identity: &RelayCallerIdentity,
-        client: LocalDirectClient,
-    ) -> Result<serde_json::Value, RelayError> {
         self.watch_authority_once();
-        let (grant, authority) = self.mint_grant(identity, client)?;
+        let (grant, _) = self.mint_grant(identity, LocalDirectClient::Browser)?;
         let endpoint = self
             .ensure_endpoint()
             .await
             .inspect_err(|_| self.forget_grant(&grant.lease_id))?;
-        let mut issued = serde_json::json!({
+        let issued = serde_json::json!({
             "endpoint": format!("ws://127.0.0.1:{}{LOCAL_BROWSER_PATH}", endpoint.port),
             "grant": grant.lease_id,
             "kernel_id": self.router.relay_daemon_id(),
             "endpoint_epoch": endpoint.epoch,
+            "expires_at_ms": grant.expires_at_ms,
+        });
+        Ok(serde_json::json!({"LocalBrowserConnectIssued": issued}))
+    }
+
+    /// Protocol 917: the browser's WebRTC offer, carried by the relay-verified
+    /// identity, earns a grant redeemable only on the data channel it describes.
+    pub(super) async fn issue_rtc_grant(
+        self: &Arc<Self>,
+        identity: &RelayCallerIdentity,
+        offer: &str,
+    ) -> Result<serde_json::Value, RelayError> {
+        self.issue_client_rtc_grant(identity, offer, LocalDirectClient::Browser)
+            .await
+    }
+
+    pub(super) async fn issue_terminal_rtc_grant(
+        self: &Arc<Self>,
+        identity: &RelayCallerIdentity,
+        offer: &str,
+    ) -> Result<serde_json::Value, RelayError> {
+        self.issue_client_rtc_grant(identity, offer, LocalDirectClient::Terminal)
+            .await
+    }
+
+    async fn issue_client_rtc_grant(
+        self: &Arc<Self>,
+        identity: &RelayCallerIdentity,
+        offer: &str,
+        client: LocalDirectClient,
+    ) -> Result<serde_json::Value, RelayError> {
+        self.watch_authority_once();
+        let (grant, authority) = self.mint_grant(identity, client)?;
+        let (answer, epoch) = self
+            .rtc
+            .accept(Arc::downgrade(self), offer, &grant.lease_id)
+            .await
+            .inspect_err(|_| self.forget_grant(&grant.lease_id))?;
+        let mut issued = serde_json::json!({
+            "answer": answer,
+            "grant": grant.lease_id,
+            "kernel_id": self.router.relay_daemon_id(),
+            "endpoint_epoch": epoch,
             "expires_at_ms": grant.expires_at_ms,
         });
         let name = match client {
@@ -183,29 +209,6 @@ impl LocalBrowserDirect {
             }
         };
         Ok(serde_json::json!({name: issued}))
-    }
-
-    /// Protocol 917: the browser's WebRTC offer, carried by the relay-verified
-    /// identity, earns a grant redeemable only on the data channel it describes.
-    pub(super) async fn issue_rtc_grant(
-        self: &Arc<Self>,
-        identity: &RelayCallerIdentity,
-        offer: &str,
-    ) -> Result<serde_json::Value, RelayError> {
-        self.watch_authority_once();
-        let (grant, _) = self.mint_grant(identity, LocalDirectClient::Browser)?;
-        let (answer, epoch) = self
-            .rtc
-            .accept(Arc::downgrade(self), offer, &grant.lease_id)
-            .await
-            .inspect_err(|_| self.forget_grant(&grant.lease_id))?;
-        Ok(serde_json::json!({"LocalBrowserConnectIssued": {
-            "answer": answer,
-            "grant": grant.lease_id,
-            "kernel_id": self.router.relay_daemon_id(),
-            "endpoint_epoch": epoch,
-            "expires_at_ms": grant.expires_at_ms,
-        }}))
     }
 
     /// Checks the caller and stores a fresh single-use grant for it.

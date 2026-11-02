@@ -201,6 +201,9 @@ impl CommandRouter {
             return execute_kernel_resource_telemetry_request(self.config_projection.snapshot())
                 .map(Some);
         }
+        if matches!(request, LocalDaemonRequest::KernelPing(_)) {
+            return Ok(Some(LocalDaemonResponse::KernelPong {}));
+        }
         if matches!(request, LocalDaemonRequest::GetDaemonHealth(_)) {
             return execute_daemon_health_request(
                 &self.daemon_health_cache,

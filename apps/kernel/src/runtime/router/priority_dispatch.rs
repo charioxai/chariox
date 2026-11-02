@@ -238,6 +238,9 @@ impl CommandRouter {
                     .execute_metaagent_task_request(request)
                     .await
             }),
+            LocalDaemonRequest::KernelPing(_) => {
+                boxed_handler(|| async { Ok(LocalDaemonResponse::KernelPong {}) })
+            }
             request @ LocalDaemonRequest::GetDaemonHealth(_) => boxed_handler(|| async move {
                 execute_daemon_health_request(
                     &self.daemon_health_cache,

@@ -805,9 +805,9 @@ fn mp08_mp11_local_browser_wire_is_bound_to_protocol473() {
         "path": LOCAL_BROWSER_PATH,
         "default_port": configured_port(None),
         "request": {"local_browser_connect": {}},
-        "terminal_request": {"local_terminal_connect": {}},
+        "terminal_request": {"local_terminal_connect": {"offer": "sdp-offer"}},
         "terminal_renew_request": {"local_terminal_renew": {"grant": "grant", "sequence": 1}},
-        "terminal_response": ["LocalTerminalConnectIssued", "endpoint", "grant", "kernel_id", "endpoint_epoch", "expires_at_ms", "paired_origin"],
+        "terminal_response": ["LocalTerminalConnectIssued", "answer", "grant", "kernel_id", "endpoint_epoch", "expires_at_ms", "paired_origin"],
         "terminal_renew_response": ["LocalTerminalLeaseRenewed", "expires_at_ms", "next_sequence"],
         "renew_request": {"local_browser_renew": {"grant": "grant", "sequence": 1}},
         "renew_response": ["LocalBrowserLeaseRenewed", "expires_at_ms", "next_sequence"],
@@ -820,7 +820,7 @@ fn mp08_mp11_local_browser_wire_is_bound_to_protocol473() {
     });
     assert_eq!(
         format!("{:x}", Sha256::digest(serde_json::to_vec(&wire).unwrap())),
-        "1d76b5e7fa463afc67e4222a1b7ef74061b906c5846356b12fd2035422bdc473"
+        "d449867880d7ec39a23f4521e1f4cd95c96e468c2904e10a8c6b7952d753afd2"
     );
 }
 
@@ -1482,12 +1482,13 @@ fn mp08_mp11_terminal_short_lease_uses_shared_bound_admission() {
             kernel.mint(&terminal, identity.clone()).await.is_err(),
             "browser admission must still refuse long-lived identities"
         );
+        let (mut client, offer) = RtcClient::offer();
         let before = crate::session::unix_epoch_ms();
         let issued = terminal_request(
             &kernel,
             &terminal,
             identity.clone(),
-            serde_json::json!({"local_terminal_connect": {}}),
+            serde_json::json!({"local_terminal_connect": {"offer": offer}}),
             true,
         )
         .await
@@ -1495,11 +1496,26 @@ fn mp08_mp11_terminal_short_lease_uses_shared_bound_admission() {
         let issued = &issued["LocalTerminalConnectIssued"];
         assert_eq!(issued["paired_origin"], ORIGIN);
         assert!(issued["expires_at_ms"].as_u64().unwrap() <= before + 30_100);
-        let grant: Grant = serde_json::from_value(issued.clone()).unwrap();
-        let (mut socket, verdict) = connect(&kernel, &terminal, &grant).await;
+        assert!(issued.get("endpoint").is_none());
+        client.accept(issued["answer"].as_str().unwrap());
+        let grant = issued["grant"].as_str().unwrap().to_owned();
+        let verdict = rtc_handshake(&kernel, &terminal, &mut client, issued, &grant).await;
         assert_eq!(verdict["kind"], "local_connected");
-        let renewal =
-            serde_json::json!({"local_terminal_renew": {"grant": grant.grant, "sequence": 1}});
+        client.send_json(serde_json::json!({
+            "kind": "client_request", "request_id": "ping",
+            "target": {"daemon_id": kernel.daemon_id},
+            "encrypted_request": proof(&terminal, &kernel, serde_json::json!({"KernelPing": null})),
+        })).await;
+        let response = client.next_json().await;
+        let payload: EncryptedRelayPayload =
+            serde_json::from_value(response["encrypted_response"].clone()).unwrap();
+        let plain =
+            relay_crypto::decrypt_payload_for_private_key(&terminal.private_key, &payload).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&plain.plaintext).unwrap(),
+            serde_json::json!({"KernelPong": {}})
+        );
+        let renewal = serde_json::json!({"local_terminal_renew": {"grant": grant, "sequence": 1}});
         assert!(
             terminal_request(&kernel, &terminal, identity.clone(), renewal.clone(), false)
                 .await
@@ -1535,18 +1551,23 @@ fn mp08_mp11_terminal_short_lease_uses_shared_bound_admission() {
                 .is_err()
         );
         assert!(
-            renew(&kernel, &terminal, terminal.identity(), &grant, 2, true)
-                .await
-                .error
-                .is_some(),
+            terminal_request(
+                &kernel,
+                &terminal,
+                terminal.identity(),
+                serde_json::json!({"local_browser_renew": {"grant": grant, "sequence": 2}}),
+                true
+            )
+            .await
+            .is_err(),
             "browser renewal cannot change a terminal lease"
         );
-        socket.close(None).await.unwrap();
+
         assert!(terminal_request(
             &kernel,
             &terminal,
             identity,
-            serde_json::json!({"local_terminal_connect": {}}),
+            serde_json::json!({"local_terminal_connect": {"offer": offer}}),
             false
         )
         .await

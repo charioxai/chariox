@@ -380,7 +380,7 @@ pub(super) async fn handle_prepared_daemon_request(
             };
             ("local_terminal_renew", None, false, result)
         }
-        ParsedRelayClientMessage::LocalTerminalConnect(LocalTerminalConnectRequest {}) => {
+        ParsedRelayClientMessage::LocalTerminalConnect(LocalTerminalConnectRequest { offer }) => {
             let identity = match require_bound_client_sender(
                 caller_identity.as_ref(),
                 &encrypted_request,
@@ -396,7 +396,7 @@ pub(super) async fn handle_prepared_daemon_request(
                 }
             };
             let result = match local_browser {
-                Some(direct) => direct.issue_terminal_grant(identity).await,
+                Some(direct) => direct.issue_terminal_rtc_grant(identity, &offer).await,
                 None => Err(relay_error(
                     "local_browser_unavailable",
                     "local terminal connect is only issued over the relay",
@@ -739,7 +739,9 @@ struct LocalTerminalConnectEnvelope {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct LocalTerminalConnectRequest {}
+struct LocalTerminalConnectRequest {
+    offer: String,
+}
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct LocalTerminalRenewEnvelope {

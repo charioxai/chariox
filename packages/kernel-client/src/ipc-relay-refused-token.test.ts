@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 import { setTimeout as sleep } from "node:timers/promises"
 import { WebSocketServer } from "ws"
-import { LocalIpcClient } from "./ipc.js"
+import { LocalIpcClient } from "./ipc-relay.test-support.js"
 import { RelayClientIdentity, createRelayKeypair } from "./relay-crypto.js"
 
 const observationMs = 7_000

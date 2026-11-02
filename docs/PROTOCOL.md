@@ -6280,3 +6280,27 @@ managed-upgrade list is [629, 636, 911, 923, 934]. Focused checks:
 
 Landing 3 carries local 934 to 937 / relay peer 383 to 386 on top of the Landing 2 release at
 local 933 / peer 382, so the managed-upgrade list is [629, 636, 911, 923, 933, 936, 937].
+
+### Kernel liveness and shared terminal carrier — local 951 / relay peer 400
+
+MP-08 / MP-09 / MP-10 / MP-11: `{"KernelPing":null}` answers with
+`{"KernelPong":{}}` through ordinary authenticated dispatch. It takes no health
+snapshot and does not update semantic session activity or managed shutdown
+activity. Clients reuse authenticated subscription events and successful requests
+as freshness proofs; a quiet link needs only this small reply. Full
+`GetDaemonHealth` remains an explicit diagnostic read.
+
+Web and native terminal clients use `packages/kernel-client/src/kernel-direct.ts`
+and `kernel-data-channel.ts` for discovery, grant proof, direct preference, leases,
+loss detection, fallback and retry. The environment supplies relay/crypto and
+WebRTC adapters. Node and Bun use the TypeScript WebRTC implementation; a native
+WebRTC addon cannot run in Bun's current libuv surface.
+
+`local_terminal_connect` now requires an SDP `offer`. Its
+`LocalTerminalConnectIssued` reply contains `answer`, `grant`, `kernel_id`,
+`endpoint_epoch`, `expires_at_ms` and `paired_origin`; it no longer advertises a
+loopback endpoint. The kernel shares RTC admission/session dispatch with Web.
+Terminal identities retain their existing relay-authorized short lease over a
+longer-lived pairing token; Browser identities still require the short Cloud
+lease token. Every renewal goes through the relay with its one-use sequence.
+Neither direct reachability nor a local discovery record adds authority.

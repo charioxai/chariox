@@ -239,7 +239,7 @@ export type KernelEventHandler = (event: KernelEvent, frame?: KernelTransportEve
 
 export type KernelTransportDiagnostic = {
   lane: "control" | "event"
-  cause: "reset" | "request_replay" | "heartbeat_missed" | "heartbeat_failed" | "socket_close" | "socket_error" | "lease_response_refused" | "lease_transport_failed"
+  cause: "reset" | "request_replay" | "heartbeat_missed" | "heartbeat_failed" | "socket_close" | "socket_error" | "direct_fallback"
     | "renewal_failed" | "authorization_ended"
   local: boolean
   missedPongs: number
@@ -429,7 +429,7 @@ export class LocalIpcClient {
       }) : null
   }
 
-  protected localDirectEligible(_target: RelayTarget): boolean { return false }
+  protected localDirectEligible(target: RelayTarget): boolean { return Boolean(target.daemon_id && !target.daemon_id.startsWith("slice:")) }
 
   isLocalDirectTransport(): boolean {
     return this.terminalLocalDirect?.isLocal(this.controlWebsocket) === true

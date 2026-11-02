@@ -3,7 +3,7 @@ import { createHash } from "node:crypto"
 import test from "node:test"
 import { setTimeout as sleep } from "node:timers/promises"
 import { WebSocketServer } from "ws"
-import { LocalIpcClient } from "./ipc.js"
+import { LocalIpcClient } from "./ipc-relay.test-support.js"
 import { RelayClientIdentity, createRelayKeypair } from "./relay-crypto.js"
 
 // Signed-token verification belongs to the real relay tests. This fixture

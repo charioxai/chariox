@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 import WebSocket, { WebSocketServer } from "ws"
 
-import { LocalIpcClient } from "./ipc.js"
+import { LocalIpcClient } from "./ipc-relay.test-support.js"
 import type { KernelEvent } from "./kernel-events.js"
 import type { EncryptedRelayPayload, RelayTarget } from "./kernel-transport-frames.js"
 import { createRelayKeypair, RelayClientIdentity } from "./relay-crypto.js"

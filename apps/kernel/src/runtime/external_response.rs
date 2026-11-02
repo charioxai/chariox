@@ -312,6 +312,7 @@ response_policies! {
         MetaagentEventRead,
         MetaagentEventsAcked,
         TerminalCommandCatalog,
+        KernelPong,
         DaemonHealth,
         KernelResourceTelemetry,
         ProviderRun,

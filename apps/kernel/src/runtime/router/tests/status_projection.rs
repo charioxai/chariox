@@ -959,3 +959,16 @@ async fn ended_session_archive_supports_reattach_project_restore_and_delete() {
         .await
         .is_err());
 }
+
+#[tokio::test]
+async fn kernel_ping_answers_through_dispatch_without_a_health_projection() {
+    let app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1);
+    let request = LocalDaemonRequest::KernelPing(());
+    let command = KernelCommand::from_local_request("ping", None, None, &request);
+    let response = router.dispatch(command, request).await.unwrap();
+    assert_eq!(
+        serde_json::to_string(&response).unwrap(),
+        r#"{"KernelPong":{}}"#
+    );
+}

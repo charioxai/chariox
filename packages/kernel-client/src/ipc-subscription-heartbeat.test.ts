@@ -1,7 +1,8 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 import { WebSocketServer } from "ws"
-import { LocalIpcClient, RelayClientIdentity } from "./ipc.js"
+import { RelayClientIdentity } from "./ipc.js"
+import { LocalIpcClient } from "./ipc-relay.test-support.js"
 import { createRelayKeypair } from "./relay-crypto.js"
 
 // MP-08 / MP-10 / MP-11: public methods must apply repeat options on both transports.

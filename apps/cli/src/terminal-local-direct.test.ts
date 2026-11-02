@@ -3,12 +3,14 @@ import assert from "node:assert/strict"
 import test, { type TestContext } from "node:test"
 import { setTimeout as sleep } from "node:timers/promises"
 import { once } from "node:events"
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs"
+import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { WebSocket, WebSocketServer } from "ws"
 import { RelayClientIdentity } from "@chariox/kernel-client/ipc"
 import { createECDH } from "node:crypto"
+import { createRequire } from "node:module"
+const rtc = createRequire(import.meta.resolve("@chariox/kernel-client/ipc"))("werift") as { RTCPeerConnection: typeof RTCPeerConnection }
 import { LocalIpcClient } from "./ipc.js"
 
 // The production relay crypto class is exported by ipc; generate runtime-only
@@ -20,52 +22,72 @@ type Fixture = { client: LocalIpcClient; origins: string[]; grants: number; admi
 
 // Mirrors the kernel and relay seams: the direct session closes on any frame
 // that is not a client request, and the relay refuses an expired bearer.
-async function fixture(t: TestContext, token: (thumbprint: string) => string, protocolVersion = 520): Promise<Fixture> {
+async function fixture(t: TestContext, token: (thumbprint: string) => string, _protocolVersion = 951): Promise<Fixture> {
   const root = mkdtempSync(join(tmpdir(), "chariox-terminal-direct-"))
   const previous = process.env.CHARIOX_HOME
   process.env.CHARIOX_HOME = root
   const daemon = identity(); const terminal = identity()
-  const local = new WebSocketServer({ host: "127.0.0.1", port: 0 })
   const relay = new WebSocketServer({ host: "127.0.0.1", port: 0 })
-  await Promise.all([once(local, "listening"), once(relay, "listening")])
-  const address = local.address(); const relayAddress = relay.address()
-  assert(address && typeof address !== "string" && relayAddress && typeof relayAddress !== "string")
+  await once(relay, "listening")
+  const relayAddress = relay.address()
+  assert(relayAddress && typeof relayAddress !== "string")
   const relayUrl = `ws://127.0.0.1:${relayAddress.port}`
-  const registry = join(root, "kernels", "active"); mkdirSync(registry, { recursive: true })
-  writeFileSync(join(registry, "kernel.json"), JSON.stringify({ schema_version: 1, kernel_id: "home-1",
-    machine_id: "machine-1", host: "127.0.0.1", port: address.port, heartbeat_at_ms: Date.now(), local_daemon_protocol_version: protocolVersion }))
+  const peers: RTCPeerConnection[] = []
+  const keepalives: ReturnType<typeof setInterval>[] = []
   const state = { origins: [] as string[], grants: 0, admitted: 0, directCloses: 0, directForeignFrames: 0,
     renewals: 0, leaseRenewals: 0, expiredRelayConnects: 0 }
-  const answer = (socket: WebSocket, frame: { request_id: string; encrypted_request: never }) => {
+  const answer = async (socket: { send(data: string): void }, frame: { request_id: string; encrypted_request: never }) => {
     const parsed = JSON.parse(daemon.decrypt(frame.encrypted_request, terminal.publicKeyBase64))
     const body = parsed.request ?? parsed
     let response: unknown = { Sessions: [] }
     if (body.RelayStatus !== undefined) response = { RelayStatus: { status: { capabilities: ["terminal_relay_authorization_renewal_v1"] } } }
     else if (body.IssueCloudRelayClientToken) { state.renewals++; response = { CloudRelayClientTokenIssued: { profile: {}, token: { relay_url: relayUrl, relay_token: token(terminal.publicKeyThumbprint) } } } }
-    else if (body.local_terminal_connect) { state.grants++; response = { LocalTerminalConnectIssued: {
-      endpoint: `ws://127.0.0.1:${address.port}/v1/browser`, grant: "grant", kernel_id: "home-1",
-      endpoint_epoch: "epoch", paired_origin: "https://cloud.example.test", expires_at_ms: Date.now() + 30_000 } } }
+    else if (body.local_terminal_connect) {
+      state.grants++
+      assert.equal(typeof body.local_terminal_connect.offer, "string")
+      const peer = new rtc.RTCPeerConnection({ iceServers: [] }); peers.push(peer)
+      peer.addEventListener("datachannel", event => {
+        const channel = event.channel
+        channel.binaryType = "arraybuffer"
+        const send = (text: string) => channel.send(new Uint8Array([0, ...Buffer.from(text)]))
+        let parts: Buffer[] = []
+        channel.addEventListener("open", () => {
+          send(JSON.stringify({ kind: "local_challenge", kernel_id: "home-1", endpoint_epoch: "epoch", challenge: "challenge" }))
+          keepalives.push(setInterval(() => { if (channel.readyState === "open") channel.send(new Uint8Array([2])) }, 500))
+        })
+        channel.addEventListener("close", () => { state.directCloses++ })
+        channel.addEventListener("message", event => {
+          const bytes = Buffer.from(event.data)
+          if (bytes[0] === 2) { channel.send(new Uint8Array([3])); return }
+          if (bytes[0] === 3) return
+          parts.push(bytes.subarray(1))
+          if (bytes[0] === 1) return
+          const frame = JSON.parse(Buffer.concat(parts).toString()); parts = []
+          if (frame.kind === "local_connect") {
+            const proof = JSON.parse(daemon.decrypt(frame.proof, terminal.publicKeyBase64))
+            assert.equal(proof.origin, "https://cloud.example.test"); assert.equal(proof.grant, "grant")
+            state.origins.push(proof.origin); state.admitted++
+            send(JSON.stringify({ kind: "local_connected", daemon_public_key: daemon.publicKeyBase64,
+              proof: daemon.encrypt(terminal.publicKeyBase64, JSON.stringify({ grant: "grant", challenge: "challenge" })) }))
+          } else if (frame.kind === "client_request") void answer({ send }, frame)
+          else { state.directForeignFrames++; channel.close() }
+        })
+      })
+      await peer.setRemoteDescription({ type: "offer", sdp: body.local_terminal_connect.offer })
+      await peer.setLocalDescription(await peer.createAnswer())
+      if (peer.iceGatheringState !== "complete") await new Promise<void>(resolve => {
+        const changed = () => { if (peer.iceGatheringState === "complete") { peer.removeEventListener("icegatheringstatechange", changed); resolve() } }
+        peer.addEventListener("icegatheringstatechange", changed)
+      })
+      response = { LocalTerminalConnectIssued: {
+        answer: peer.localDescription!.sdp, grant: "grant", kernel_id: "home-1",
+        endpoint_epoch: "epoch", paired_origin: "https://cloud.example.test", expires_at_ms: Date.now() + 30_000 } }
+    }
     else if (body.local_terminal_renew) { state.leaseRenewals++; response = { LocalTerminalLeaseRenewed: {
       expires_at_ms: Date.now() + 30_000, next_sequence: body.local_terminal_renew.sequence + 1 } } }
     socket.send(JSON.stringify({ kind: "client_response", request_id: frame.request_id, error: null,
       encrypted_response: daemon.encrypt(terminal.publicKeyBase64, JSON.stringify(response)) }))
   }
-  local.on("connection", (socket, request) => {
-    state.origins.push(String(request.headers.origin))
-    socket.on("close", () => { state.directCloses++ })
-    socket.send(JSON.stringify({ kind: "local_challenge", kernel_id: "home-1", endpoint_epoch: "epoch", challenge: "challenge" }))
-    socket.on("message", (data) => {
-      const frame = JSON.parse(String(data))
-      if (frame.kind === "local_connect") {
-        const proof = JSON.parse(daemon.decrypt(frame.proof, terminal.publicKeyBase64))
-        assert.equal(proof.origin, "https://cloud.example.test"); assert.equal(proof.grant, "grant")
-        state.admitted++
-        socket.send(JSON.stringify({ kind: "local_connected", daemon_public_key: daemon.publicKeyBase64,
-          proof: daemon.encrypt(terminal.publicKeyBase64, JSON.stringify({ grant: "grant", challenge: "challenge" })) }))
-      } else if (frame.kind === "client_request") answer(socket, frame)
-      else { state.directForeignFrames++; socket.close() }
-    })
-  })
   relay.on("connection", socket => socket.on("message", data => {
     const frame = JSON.parse(String(data))
     if (frame.kind === "client_connect") {
@@ -81,14 +103,16 @@ async function fixture(t: TestContext, token: (thumbprint: string) => string, pr
     kernelPingIntervalMs: 60_000, controlRequestRetryDeadlineMs: 0 })
   t.after(async () => {
     await client.close()
-    for (const server of [local, relay]) { for (const socket of server.clients) socket.terminate(); await new Promise<void>(resolve => server.close(() => resolve())) }
+    for (const timer of keepalives) clearInterval(timer)
+    for (const peer of peers) peer.close()
+    for (const server of [relay]) { for (const socket of server.clients) socket.terminate(); await new Promise<void>(resolve => server.close(() => resolve())) }
     if (previous === undefined) delete process.env.CHARIOX_HOME; else process.env.CHARIOX_HOME = previous
     rmSync(root, { recursive: true, force: true })
   })
   return Object.assign(state, { client })
 }
 
-test("MP-08 detached and native clients send the paired Origin in Node and compiled Bun transport", async (t) => {
+test("MP-08 native terminal uses the shared authenticated WebRTC carrier without local discovery", async (t) => {
   const state = await fixture(t, () => "fixture")
   assert.deepEqual(await state.client.send({ ListSessions: {} }), { Sessions: [] })
   assert.equal(state.grants, 1, "must request the explicit short terminal lease")
@@ -96,18 +120,10 @@ test("MP-08 detached and native clients send the paired Origin in Node and compi
   assert.deepEqual(state.origins, ["https://cloud.example.test"])
 })
 
-test("MP-08/MP-10/MP-11 main 491 without terminal direct support stays on relay", async (t) => {
-  const state = await fixture(t, () => "fixture", 491)
-  assert.deepEqual(await state.client.send({ ListSessions: {} }), { Sessions: [] })
-  assert.equal(state.grants, 0, "older main must not receive branch-only direct requests")
-  assert.equal(state.admitted, 0)
-  assert.equal(state.client.isLocalDirectTransport(), false)
-})
-
 test("MP-08/MP-11 relay authorization renewal keeps the direct carrier and its relay-renewed lease", async (t) => {
   const token = (thumbprint: string) => "synthetic." + Buffer.from(JSON.stringify({ sub: "terminal", client_id: "terminal", subject_kind: "client",
     realm_id: "realm", account_id: "account", user_id: "owner", public_key_thumbprint: thumbprint,
-    allowed_actions: ["client.connect", "packet.route"], allowed_targets: ["home-1"], exp: (Date.now() + 1_500) / 1000 })).toString("base64url") + ".signature"
+    allowed_actions: ["client.connect", "packet.route"], allowed_targets: ["home-1"], exp: (Date.now() + 3_000) / 1000 })).toString("base64url") + ".signature"
   const state = await fixture(t, token)
   assert.deepEqual(await state.client.send({ ListSessions: {} }), { Sessions: [] })
   assert.equal(state.client.isLocalDirectTransport(), true)

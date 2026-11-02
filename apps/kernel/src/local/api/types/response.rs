@@ -182,6 +182,7 @@ pub enum LocalDaemonResponse {
     MetaagentEventRead { event: serde_json::Value, },
     MetaagentEventsAcked { acked: Vec<serde_json::Value>, },
     TerminalCommandCatalog { catalog: TerminalCommandCatalog, },
+    KernelPong {},
     DaemonHealth { projection: DaemonHealthProjection, },
     KernelResourceTelemetry { snapshot: KernelResourceTelemetrySnapshot, },
     DebugBundleExported {
