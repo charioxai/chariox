@@ -447,5 +447,5 @@ pub use workspace::*;
 /// MP-08/MP-10/MP-11: 936 adds non-blocking task-owned questions (`asking_task_id` on interactions, answered
 /// through `RespondToInteraction`; peer 385).
 /// Browser downloads 937 adds bounded Room artifacts and cancellation.
-/// MP-08/MP-09/MP-10/MP-11: 943 adds the `env` credential use and injection kind (Vault capture/use by command).
+/// MP-08/MP-09/MP-10/MP-11: 943 adds the `env` and `file` credential uses and injection kinds (Vault capture/use by command and file).
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 943;

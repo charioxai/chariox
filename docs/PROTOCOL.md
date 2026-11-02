@@ -128,11 +128,13 @@ grant lock before resource/subscription registration or inventory projection;
 revocation followed by refocus cannot adopt an old call's result into a fresh
 grant. A final live cancellation/provider-run check fences returned results.
 
-### MP-08 / MP-09 / MP-10 / MP-11: Vault capture and use by command (local 943)
+### MP-08 / MP-09 / MP-10 / MP-11: Vault capture and use by command and file (local 943)
 
-Local 943 and relay peer 392 add the `env` credential use and injection kind
-(`{"allowed_uses":["env"],"injection":{"kind":"env"}}`). The sudo MCP tools
-`chariox.vault.capture_command` and `chariox.vault.use_env` add no request or
+Local 943 and relay peer 392 add the kernel-local credential uses and
+injection kinds `env` and `file` (`{"allowed_uses":["env","file"],
+"injection":{"kind":"env"}}`). The sudo MCP tools
+`chariox.vault.capture_command`, `chariox.vault.use_env`,
+`chariox.vault.capture_file` and `chariox.vault.write_file` add no request or
 event shape. See [Sudo windows](KERNEL_SUDO.md).
 
 ### MP-08 / MP-10 / MP-11: A06 Vault generation and login (local 469)

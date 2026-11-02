@@ -71,19 +71,7 @@ impl KernelRuntimeState {
         let turn = &elevation.turn;
         let registry = crate::credential::CharioxCredentialRegistry::user()?;
         for id in args.env.values().chain(&args.stdin) {
-            let credential = registry
-                .get(id)?
-                .ok_or_else(|| error(format!("credential `{id}` does not exist")))?;
-            let metadata = credential.metadata.as_ref();
-            // An agent's captured values stay in the session that captured them.
-            if metadata.and_then(|m| m.created_by_kind.as_deref())
-                == Some(super::capture::CAPTURED_KIND)
-                && metadata.and_then(|m| m.session_id.as_deref()) != Some(turn.session_id.as_str())
-            {
-                return Err(error(format!(
-                    "credential `{id}` belongs to another session"
-                )));
-            }
+            require_session_scope(&registry, id, &turn.session_id)?;
         }
         let _unlock = self
             .ensure_vault_unlocked_for_agent(&turn.session_id, &turn.agent_id, "vault_use_env")
@@ -133,6 +121,26 @@ impl KernelRuntimeState {
                 "truncated": output.truncated || stdout_cut || stderr_cut}),
         })
     }
+}
+
+/// An agent's captured values stay in the session that captured them.
+pub(super) fn require_session_scope(
+    registry: &crate::credential::CharioxCredentialRegistry,
+    id: &str,
+    session_id: &str,
+) -> Result<(), DaemonError> {
+    let credential = registry
+        .get(id)?
+        .ok_or_else(|| error(format!("credential `{id}` does not exist")))?;
+    let metadata = credential.metadata.as_ref();
+    if metadata.and_then(|m| m.created_by_kind.as_deref()) == Some(super::capture::CAPTURED_KIND)
+        && metadata.and_then(|m| m.session_id.as_deref()) != Some(session_id)
+    {
+        return Err(error(format!(
+            "credential `{id}` belongs to another session"
+        )));
+    }
+    Ok(())
 }
 
 fn variable_name(name: &str) -> bool {

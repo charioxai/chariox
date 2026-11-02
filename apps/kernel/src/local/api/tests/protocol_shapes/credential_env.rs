@@ -1,7 +1,7 @@
 use super::*;
 
 // MP-08 / MP-09 / MP-10 / MP-11 VAUDIT S2 (943/392): the `env` credential
-// use and injection kind of a credential captured from a command.
+// and `file` uses and injection kinds of credentials captured by the kernel.
 #[test]
 fn mp08_mp11_env_credential_943_shape_and_hash() {
     const {
@@ -26,4 +26,11 @@ fn mp08_mp11_env_credential_943_shape_and_hash() {
         format!("{:x}", Sha256::digest(&bytes)),
         "b208e07668ede1a18076ef3b281274d225a7ab208c8912ae713d348ecd65d2f7"
     );
+    let file = r#"{"id":"cap-file","source":{"type":"vault","key":"cap-file"},"allowed_uses":["env","file"],"injection":{"kind":"file"}}"#;
+    let credential: crate::config::UserCredentialConfig = serde_json::from_str(file).unwrap();
+    assert_eq!(
+        credential.injection,
+        crate::config::UserCredentialInjectionConfig::File
+    );
+    assert_eq!(serde_json::to_vec(&credential).unwrap(), file.as_bytes());
 }

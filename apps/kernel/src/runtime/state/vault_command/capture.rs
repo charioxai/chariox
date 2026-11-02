@@ -30,8 +30,10 @@ struct CaptureArgs {
 
 #[derive(serde::Deserialize, Default)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-enum Extract {
+pub(super) enum Extract {
+    /// The whole output or file, trimmed.
     #[default]
+    #[serde(alias = "whole")]
     Stdout,
     Json {
         pointer: String,
@@ -84,19 +86,7 @@ impl KernelRuntimeState {
         }
         let host = service_host(&args.host)?;
         let argv = super::super::agent_process_watch::command_argv(&args.argv)?;
-        let pattern = match &args.extract {
-            Extract::Regex { pattern, group } => {
-                let regex = regex::RegexBuilder::new(pattern)
-                    .size_limit(1 << 20)
-                    .build()
-                    .map_err(|e| error(format!("invalid extract pattern: {e}")))?;
-                if *group >= regex.captures_len() {
-                    return Err(error("extract group is not in the pattern"));
-                }
-                Some(regex)
-            }
-            _ => None,
-        };
+        let pattern = extract_pattern(&args.extract)?;
         let timeout = command_timeout(args.timeout_seconds)?;
         let turn = &elevation.turn;
         let handle = captured_handle(turn, &args.request_id);
@@ -150,23 +140,49 @@ impl KernelRuntimeState {
             ));
         }
         let secret = extract(&output.stdout, &args.extract, pattern.as_ref())?;
+        self.store_captured(
+            &elevation,
+            &registry,
+            Captured {
+                handle,
+                host,
+                label: args.label,
+                injection: crate::config::UserCredentialInjectionConfig::Env,
+            },
+            &secret,
+        )
+        .await
+    }
+
+    /// Stores a captured value for kernel-local use (command env/stdin and files).
+    pub(super) async fn store_captured(
+        &self,
+        elevation: &super::elevation::VaultElevation,
+        registry: &crate::credential::CharioxCredentialRegistry,
+        captured: Captured,
+        secret: &str,
+    ) -> Result<RuntimeToolResult, DaemonError> {
+        let turn = &elevation.turn;
         let now = crate::session::unix_epoch_ms();
         let credential = UserCredentialConfig {
-            id: handle.clone(),
-            description: args.label.clone(),
+            id: captured.handle.clone(),
+            description: captured.label.clone(),
             source: crate::config::UserCredentialSourceConfig::Vault {
-                key: handle.clone(),
+                key: captured.handle.clone(),
             },
-            allowed_hosts: vec![host.clone()],
-            allowed_uses: vec![crate::config::UserCredentialUse::Env],
-            injection: crate::config::UserCredentialInjectionConfig::Env,
+            allowed_hosts: vec![captured.host.clone()],
+            allowed_uses: vec![
+                crate::config::UserCredentialUse::Env,
+                crate::config::UserCredentialUse::File,
+            ],
+            injection: captured.injection,
             metadata: Some(UserCredentialMetadataConfig {
                 created_by_kind: Some(CAPTURED_KIND.into()),
                 created_by_id: Some(turn.agent_id.clone()),
                 session_id: Some(turn.session_id.clone()),
                 provider: None,
                 provider_run_id: turn.provider_run_id.clone(),
-                vault_key: Some(handle.clone()),
+                vault_key: Some(captured.handle.clone()),
                 created_at_ms: Some(now),
                 updated_at_ms: Some(now),
             }),
@@ -179,22 +195,43 @@ impl KernelRuntimeState {
         bound
             .upsert_observed_vault_credential(
                 &self.home_runtime_secret_service()?,
-                &registry,
+                registry,
                 credential,
-                secret.as_str(),
+                secret,
                 false,
             )
             .await?;
         Ok(RuntimeToolResult {
             ok: true,
-            payload: serde_json::json!({"credential_id": handle, "label": args.label,
-                "host": host, "length": secret.chars().count(), "created": true}),
+            payload: serde_json::json!({"credential_id": captured.handle, "label": captured.label,
+                "host": captured.host, "length": secret.chars().count(), "created": true}),
         })
     }
 }
 
+pub(super) struct Captured {
+    pub(super) handle: String,
+    pub(super) host: String,
+    pub(super) label: Option<String>,
+    pub(super) injection: crate::config::UserCredentialInjectionConfig,
+}
+
+pub(super) fn extract_pattern(how: &Extract) -> Result<Option<regex::Regex>, DaemonError> {
+    let Extract::Regex { pattern, group } = how else {
+        return Ok(None);
+    };
+    let regex = regex::RegexBuilder::new(pattern)
+        .size_limit(1 << 20)
+        .build()
+        .map_err(|e| error(format!("invalid extract pattern: {e}")))?;
+    if *group >= regex.captures_len() {
+        return Err(error("extract group is not in the pattern"));
+    }
+    Ok(Some(regex))
+}
+
 /// A retry returns the committed handle only to the same agent, session and host.
-fn committed(
+pub(super) fn committed(
     existing: &UserCredentialConfig,
     turn: &KernelSudoTurn,
     host: &str,
@@ -217,7 +254,7 @@ fn committed(
 }
 
 /// Deterministic per request so a lost acknowledgement never stores a second value.
-fn captured_handle(turn: &KernelSudoTurn, request_id: &str) -> String {
+pub(super) fn captured_handle(turn: &KernelSudoTurn, request_id: &str) -> String {
     let digest = Sha256::digest(
         [
             CAPTURED_KIND,
@@ -232,7 +269,7 @@ fn captured_handle(turn: &KernelSudoTurn, request_id: &str) -> String {
 }
 
 /// A bare host name (with an optional port), as credential hosts are matched.
-fn service_host(raw: &str) -> Result<String, DaemonError> {
+pub(super) fn service_host(raw: &str) -> Result<String, DaemonError> {
     let raw = raw.trim();
     let url = url::Url::parse(&format!("https://{raw}"))
         .ok()
@@ -249,18 +286,18 @@ fn service_host(raw: &str) -> Result<String, DaemonError> {
 }
 
 /// Errors name what went wrong, never the output they looked at.
-fn extract(
+pub(super) fn extract(
     stdout: &[u8],
     how: &Extract,
     pattern: Option<&regex::Regex>,
 ) -> Result<Zeroizing<String>, DaemonError> {
     let text = std::str::from_utf8(stdout)
-        .map_err(|_| error("stdout is not UTF-8 text; nothing was stored"))?;
+        .map_err(|_| error("the output is not UTF-8 text; nothing was stored"))?;
     let value = match how {
         Extract::Stdout => Zeroizing::new(text.trim().to_string()),
         Extract::Json { pointer } => {
             let json: serde_json::Value = serde_json::from_str(text)
-                .map_err(|_| error("stdout is not JSON; nothing was stored"))?;
+                .map_err(|_| error("the output is not JSON; nothing was stored"))?;
             match json.pointer(pointer) {
                 Some(serde_json::Value::String(value)) => Zeroizing::new(value.trim().to_string()),
                 Some(serde_json::Value::Number(value)) => Zeroizing::new(value.to_string()),

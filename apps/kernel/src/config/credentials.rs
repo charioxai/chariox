@@ -202,6 +202,8 @@ pub enum UserCredentialUse {
     Pty,
     /// The environment or stdin of a command the kernel runs for the agent.
     Env,
+    /// A file the kernel writes in the agent's workspace.
+    File,
     Connector,
     Browser,
     Computer,
@@ -231,6 +233,7 @@ pub enum UserCredentialInjectionConfig {
     },
     Pty,
     Env,
+    File,
     Browser,
     Computer,
     Provider,
@@ -286,6 +289,7 @@ pub fn validate_credentials(credentials: &[UserCredentialConfig]) -> Result<(), 
             }
             UserCredentialInjectionConfig::Pty => {}
             UserCredentialInjectionConfig::Env => {}
+            UserCredentialInjectionConfig::File => {}
             UserCredentialInjectionConfig::Browser => {}
             UserCredentialInjectionConfig::Computer => {}
             UserCredentialInjectionConfig::Provider => {}

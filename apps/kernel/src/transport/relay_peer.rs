@@ -171,7 +171,7 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// completion cannot end the prompt that replaced it; it pairs with local 935.
 /// MP-08/MP-10/MP-11: 385 pairs the embedded local union with local 936 (non-blocking task-owned questions).
 /// Browser downloads 386 carries local 937 download state and cancellation.
-/// MP-08/MP-09/MP-10/MP-11: 392 carries local 943 `env` credentials.
+/// MP-08/MP-09/MP-10/MP-11: 392 carries local 943 `env` and `file` credentials.
 pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 392;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.

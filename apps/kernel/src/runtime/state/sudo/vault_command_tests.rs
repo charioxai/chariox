@@ -9,6 +9,8 @@ use serde_json::{json, Value};
 // The public tool names, pinned literally so these tests also run on the base.
 const CAPTURE: &str = "chariox.vault.capture_command";
 const USE_ENV: &str = "chariox.vault.use_env";
+const CAPTURE_FILE: &str = "chariox.vault.capture_file";
+const WRITE_FILE: &str = "chariox.vault.write_file";
 const SECRET: &str = "sk_test_51CaptureValue9f8e7d";
 
 fn printing(text: &str) -> Value {
@@ -121,7 +123,10 @@ async fn s2_capture_stores_the_printed_value_and_never_returns_it() {
     assert_eq!(credential.allowed_hosts, ["api.example.com"]);
     assert_eq!(
         credential.allowed_uses,
-        [crate::config::UserCredentialUse::Env]
+        [
+            crate::config::UserCredentialUse::Env,
+            crate::config::UserCredentialUse::File
+        ]
     );
     let metadata = credential.metadata.unwrap();
     assert_eq!(metadata.created_by_kind.as_deref(), Some("vault_capture"));
@@ -280,4 +285,109 @@ async fn s2_use_env_refuses_credentials_not_made_for_commands() {
         "{refused}"
     );
     assert!(!marker.exists());
+}
+
+#[tokio::test]
+async fn s4_capture_file_and_write_file_move_values_through_the_kernel() {
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    let turn = elevated(&f);
+    unlock(&f);
+    let catalog = names(&f);
+    assert!(
+        catalog.iter().any(|name| name == CAPTURE_FILE),
+        "{catalog:?}"
+    );
+    assert!(catalog.iter().any(|name| name == WRITE_FILE), "{catalog:?}");
+    let pulled = workspace(&f).join(".env.local");
+    std::fs::write(&pulled, format!("# pulled\nAPI_KEY={SECRET}\nOTHER=1\n")).unwrap();
+    let captured = call(
+        &f,
+        CAPTURE_FILE,
+        json!({"request_id": "pulled", "path": ".env.local",
+        "host": "api.example.com", "extract": {"kind": "regex", "pattern": "(?m)^API_KEY=(.+)$"},
+        "replace_with_handle": true}),
+    )
+    .await
+    .unwrap();
+    let handle = captured["credential_id"].as_str().unwrap().to_string();
+    assert!(!captured.to_string().contains(SECRET), "{captured}");
+    assert_eq!(captured["replaced_with_handle"], true);
+    assert_eq!(stored(&f, &handle).as_str(), SECRET);
+    assert_eq!(
+        std::fs::read_to_string(&pulled).unwrap(),
+        format!("# pulled\nAPI_KEY=${{chariox:{handle}}}\nOTHER=1\n")
+    );
+    // A file capture is usable by commands too.
+    let used = call(
+        &f,
+        USE_ENV,
+        json!({"argv": ["/bin/sh", "-c", "printf %s \"$K\""], "env": {"K": handle}}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(used["stdout"], format!("[vault:{handle}]"));
+    let written = call(
+        &f,
+        WRITE_FILE,
+        json!({"path": "config/.env",
+        "template": "# app\nAPI_KEY={{KEY}}\nAGAIN={{KEY}}\n", "values": {"KEY": handle}}),
+    )
+    .await;
+    assert!(written.is_err(), "the directory must exist");
+    std::fs::create_dir(workspace(&f).join("config")).unwrap();
+    let written = call(
+        &f,
+        WRITE_FILE,
+        json!({"path": "config/.env",
+        "template": "# app\nAPI_KEY={{KEY}}\nAGAIN={{KEY}}\n", "values": {"KEY": handle}}),
+    )
+    .await
+    .unwrap();
+    assert!(!written.to_string().contains(SECRET), "{written}");
+    let target = workspace(&f).join("config/.env");
+    assert_eq!(
+        std::fs::read_to_string(&target).unwrap(),
+        format!("# app\nAPI_KEY={SECRET}\nAGAIN={SECRET}\n")
+    );
+    use std::os::unix::fs::PermissionsExt;
+    assert_eq!(
+        std::fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    let session =
+        serde_json::to_string(&f.state.owned.session_snapshot(&turn.session_id).unwrap()).unwrap();
+    assert!(!session.contains(SECRET));
+    for refused in [
+        json!({"path": "../outside.env", "template": "K={{K}}", "values": {"K": handle}}),
+        json!({"path": "/tmp/outside.env", "template": "K={{K}}", "values": {"K": handle}}),
+        json!({"path": "x.env", "template": "no placeholder", "values": {"K": handle}}),
+        json!({"path": "x.env", "template": "K={{K}}", "values": {"K": "missing"}}),
+        json!({"path": "x.env", "template": "K={{K}}", "values": {"K": handle}, "mode": "rw"}),
+    ] {
+        assert!(
+            call(&f, WRITE_FILE, refused.clone()).await.is_err(),
+            "{refused}"
+        );
+    }
+    assert!(!workspace(&f).join("x.env").exists());
+    assert!(call(
+        &f,
+        CAPTURE_FILE,
+        json!({"request_id": "escape", "path": "../../etc/hostname",
+        "host": "api.example.com"})
+    )
+    .await
+    .is_err());
+    f.state
+        .revoke_sudo(Some("local"), Some(&turn.entry_id), "explicit_revoke")
+        .unwrap();
+    assert!(call(
+        &f,
+        WRITE_FILE,
+        json!({"path": "late.env", "template": "K={{K}}", "values": {"K": handle}})
+    )
+    .await
+    .is_err());
+    assert!(!workspace(&f).join("late.env").exists());
 }

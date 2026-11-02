@@ -183,6 +183,8 @@ async fn runtime_mcp_advertises_meta_tools_only_to_metaagent_provider_runs() {
                 || spec.name == "chariox.vault.generate"
                 || spec.name == "chariox.vault.capture_command"
                 || spec.name == "chariox.vault.use_env"
+                || spec.name == "chariox.vault.capture_file"
+                || spec.name == "chariox.vault.write_file"
                 || spec.name == crate::transport::runtime_tools::LIST_SESSION_AGENTS_TOOL
                 || spec.name == crate::transport::runtime_tools::GET_SESSION_AGENT_TOOL
                 || spec.name == crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL
