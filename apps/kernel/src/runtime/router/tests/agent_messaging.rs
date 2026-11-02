@@ -482,6 +482,142 @@ fn durable_message_to_unauthenticated_peer_is_refused_to_the_sender() {
     });
 }
 
+// MP-08/MP-09/MP-10/MP-11 A12-S04: a refused message to a delegate that cannot start must also close
+// the sender's delegate obligation, or the turn ends twice with an open obligation and blocks.
+#[test]
+fn refused_message_to_unstartable_delegate_closes_its_obligation_and_the_turn_ends() {
+    run_agent_message_test_with_large_stack("agent-message-refused-delegate", || async {
+        let mut config = DaemonConfig::for_tests();
+        config.room_agent_tools = true;
+        let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
+        let (session, sender) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new(
+                "message-refused-delegate",
+                std::env::temp_dir().to_string_lossy(),
+            ))
+            .expect("session should create");
+        let profile = app
+            .provider_account_profile_registry()
+            .create_managed(
+                crate::session::DEFAULT_LOCAL_USER_ID,
+                "codex",
+                "Unavailable",
+            )
+            .expect("unavailable account should register");
+        app.provider_account_profile_registry()
+            .mark_logged_out(
+                crate::session::DEFAULT_LOCAL_USER_ID,
+                "codex",
+                &profile.profile_id,
+            )
+            .expect("account should log out");
+        let sender_run = launch_test_provider(
+            &mut app,
+            session.id(),
+            sender.id(),
+            "dev-stub",
+            "dev-stub",
+            "sender-model",
+        );
+        let sender_prompt_id = app
+            .sessions()
+            .get_session(session.id())
+            .unwrap()
+            .active_prompt_for_agent(sender.id())
+            .expect("the room fixture turn is running")
+            .id()
+            .to_string();
+        let delegate = crate::app::KernelSessionService::new(&mut app)
+            .spawn_agent(
+                CreateAgentRequest::new(session.id(), "codex")
+                    .with_alias("delegate")
+                    .with_account_profile(profile.profile_id.clone())
+                    .with_spawned_by_agent_id(sender.id()),
+            )
+            .expect("delegate should spawn");
+        let sender_token = sender_run
+            .runtime_mcp_auth_token()
+            .expect("sender needs runtime MCP auth")
+            .to_string();
+        let app = Arc::new(Mutex::new(app));
+        let router = CommandRouter::with_interactive_capacity(app.clone(), 4);
+        let refusal = router
+            .runtime_state
+            .dispatch_authenticated_runtime_tool_call(
+                &sender_token,
+                crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL,
+                serde_json::json!({
+                    "agent": delegate.id(),
+                    "message": "read the README",
+                    "origin_prompt_id": sender_prompt_id,
+                    "reply_requested": true,
+                }),
+            )
+            .await
+            .expect_err("a delegate that cannot start work must refuse the message");
+        assert!(
+            refusal.to_string().contains("not authenticated"),
+            "{refusal}"
+        );
+        let guard = app.lock().await;
+        let store = guard.durable_state_store();
+        let task = store
+            .agent_tasks(Some(session.id()), Some(sender.id()))
+            .unwrap()
+            .pop()
+            .expect("the sender's turn has a task");
+        let delegate_obligation = task
+            .obligations
+            .iter()
+            .find(|o| o.kind == "delegate")
+            .expect("the spawn registered a delegate obligation");
+        assert_eq!(
+            delegate_obligation.status, "failed",
+            "a definite refusal must close the delegate obligation as failed: {:?}",
+            task.obligations
+        );
+        let lost = store
+            .agent_inbox(session.id(), sender.id(), 0)
+            .unwrap()
+            .into_iter()
+            .find(|e| e.kind == "source_lost")
+            .expect("the sender is told that its delegate is gone");
+        assert_eq!(lost.payload["public_answer"]["reason"], "failed_start");
+        store
+            .agent_lifecycle(crate::durable_state::agent_lifecycle::Operation::Ack {
+                room: session.id().into(),
+                agent: sender.id().into(),
+                sequence: lost.sequence,
+                handled: true,
+                now: crate::session::unix_epoch_ms(),
+            })
+            .expect("the sender handles the loss");
+        let settle = |has_answer| {
+            store.agent_lifecycle(crate::durable_state::agent_lifecycle::Operation::Settle {
+                room: session.id().into(),
+                agent: sender.id().into(),
+                prompt: sender_prompt_id.clone(),
+                run: sender_run.id().into(),
+                has_answer,
+                cancelled: false,
+                now: crate::session::unix_epoch_ms(),
+            })
+        };
+        let crate::durable_state::agent_lifecycle::Outcome::Settled { task, correction } =
+            settle(true).unwrap()
+        else {
+            panic!("settlement outcome")
+        };
+        assert!(!correction, "no correction turn is needed: {}", task.reason);
+        assert_eq!(
+            task.state,
+            crate::durable_state::agent_lifecycle::ExecutionState::Done,
+            "{}",
+            task.reason
+        );
+    });
+}
+
 #[test]
 fn settled_sender_cannot_start_a_new_agent_turn_with_old_tool_credentials() {
     run_agent_message_test_with_large_stack("agent-message-settled-sender", || async {
