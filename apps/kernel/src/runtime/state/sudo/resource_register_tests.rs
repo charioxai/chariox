@@ -69,7 +69,7 @@ async fn resource_register_forwarded_calls_use_home_state_and_reject_stale_conte
         worker_machine_id: "worker-machine".into(),
         worker_provider_run_id: "worker-run".into(),
         worker_worktree_path: "/work".into(),
-        worker_workspace_identity: crate::io::WorkspaceIdentity::local("/work".into()),
+        worker_workspace_identity: crate::io::WorkspaceIdentity::local("/work".to_string()),
     };
     let row = state
         .dispatch_forwarded_meta_runtime_tool_call(context.clone(), RECORD.into(), resource())
