@@ -1,6 +1,9 @@
 //! Linux memory controller domains. Only newly created directories are changed.
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
 /// Every workload of a pool, under the shared ceiling.
@@ -129,9 +132,17 @@ impl Budget {
     }
 }
 
+const DRAIN_PASSES: usize = 8;
+/// Lets a test end a takeover after fewer passes than a forking workload takes.
+#[cfg(test)]
+pub(super) static DRAIN_PASSES_OVERRIDE: AtomicUsize = AtomicUsize::new(DRAIN_PASSES);
+
 pub(super) struct Domain {
     path: PathBuf,
     unit: Arc<Unit>,
+    /// Set when a takeover fell short: what it moved here is the previous
+    /// program's work and outlives this domain.
+    members_outlive: AtomicBool,
 }
 impl Domain {
     pub fn create(budget: &Arc<Budget>, unit_key: &str, cap: Option<u64>) -> Option<Self> {
@@ -140,7 +151,11 @@ impl Domain {
             .path
             .join(format!("process-{}", rand::random::<u128>()));
         std::fs::create_dir(&path).ok()?;
-        Some(Self { path, unit })
+        Some(Self {
+            path,
+            unit,
+            members_outlive: AtomicBool::new(false),
+        })
     }
     /// Moves what runs in `previous`, the domain a child of the previous kernel
     /// program was started in (hot reload), into this one and removes the
@@ -165,8 +180,12 @@ impl Domain {
             return false;
         }
         // A member can fork while it moves: its child starts in `previous`.
+        #[cfg(test)]
+        let passes = DRAIN_PASSES_OVERRIDE.load(Ordering::Relaxed);
+        #[cfg(not(test))]
+        let passes = DRAIN_PASSES;
         let mut moved = false;
-        for _ in 0..8 {
+        for _ in 0..passes {
             let Ok(procs) = std::fs::read_to_string(previous.join("cgroup.procs")) else {
                 return false;
             };
@@ -212,12 +231,19 @@ impl Domain {
         unreclaimable(&self.unit.path)
     }
 
+    pub fn leave_members_running(&self) {
+        self.members_outlive.store(true, Ordering::Relaxed);
+    }
+
     pub fn terminate(&self) {
         let _ = std::fs::write(self.path.join("cgroup.kill"), "1");
     }
 }
 impl Drop for Domain {
     fn drop(&mut self) {
+        if self.members_outlive.load(Ordering::Relaxed) && !members(&self.path).is_empty() {
+            return;
+        }
         self.terminate();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
         while std::fs::read_to_string(self.path.join("cgroup.events"))

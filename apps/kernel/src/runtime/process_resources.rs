@@ -159,23 +159,27 @@ impl PreparedDomain {
     /// its owner's unit in this program's budget, and the domain it had goes.
     /// A child that cannot move is watched by resident memory instead.
     pub(crate) fn adopted(unit: &str, previous: Option<&std::path::Path>) -> std::io::Result<Self> {
-        #[cfg_attr(not(target_os = "linux"), allow(unused_mut))]
-        let mut prepared = Self::new(unit)?;
+        Ok(Self::new(unit)?.taking_over(previous))
+    }
+
+    #[cfg_attr(not(target_os = "linux"), allow(unused_mut, unused_variables))]
+    fn taking_over(mut self, previous: Option<&std::path::Path>) -> Self {
         #[cfg(target_os = "linux")]
-        if let Some(group) = prepared.cgroup.take() {
+        if let Some(group) = self.cgroup.take() {
             let moved = previous.is_some_and(|previous| group.take_over(previous));
             if previous.is_some() && !moved {
+                // It may hold what moved before the takeover fell short: that
+                // keeps running where it is, watched by its resident memory.
+                group.leave_members_running();
                 crate::logging::warn_with_fields(
                     "process_resources.handover",
                     "a handed-over process could not join its owner's memory domain; watching its resident memory instead",
-                    serde_json::json!({"unit": unit}),
+                    serde_json::json!({"unit": self.unit}),
                 );
             }
-            prepared.cgroup = moved.then_some(group);
+            self.cgroup = moved.then_some(group);
         }
-        #[cfg(not(target_os = "linux"))]
-        let _ = previous;
-        Ok(prepared)
+        self
     }
 
     /// The commands keep the owners the previous program found for them, from

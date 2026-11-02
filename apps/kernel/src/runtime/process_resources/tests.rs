@@ -459,6 +459,67 @@ fn budget_parent() -> std::path::PathBuf {
         .to_owned()
 }
 
+/// The previous program's domain for a hot reload: the kernel's PID is kept
+/// across it, so it is a `chariox-<pid>-*` budget.
+#[cfg(target_os = "linux")]
+fn previous_domain() -> std::path::PathBuf {
+    let path = budget_parent()
+        .join(format!("chariox-{}-previous", std::process::id()))
+        .join("unit-previous")
+        .join("process-previous");
+    std::fs::create_dir_all(&path).unwrap();
+    path
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "requires a writable cgroup-v2 delegated parent"]
+fn a_takeover_that_moved_only_some_processes_leaves_them_running() {
+    let previous = previous_domain();
+    let prepared = PreparedDomain::in_pool("partial-takeover-test", None, roomy());
+    let destination = prepared
+        .cgroup
+        .as_ref()
+        .expect("cgroup delegation required")
+        .path()
+        .to_owned();
+    let unit = destination.parent().unwrap().to_owned();
+    let budget = unit.parent().unwrap().to_owned();
+    let mut workload = std::process::Command::new("sleep")
+        .arg("30")
+        .spawn()
+        .unwrap();
+    std::fs::write(previous.join("cgroup.procs"), workload.id().to_string()).unwrap();
+    // The takeover moves the process, then runs out of passes before it can
+    // see the old domain empty, as it does for a workload that keeps forking.
+    cgroup::DRAIN_PASSES_OVERRIDE.store(1, std::sync::atomic::Ordering::Relaxed);
+    let taken = prepared.taking_over(Some(&previous));
+    cgroup::DRAIN_PASSES_OVERRIDE.store(8, std::sync::atomic::Ordering::Relaxed);
+    let resident_watch = taken.cgroup.is_none();
+    drop(taken);
+    std::thread::sleep(Duration::from_millis(300));
+    let alive = workload.try_wait().unwrap().is_none();
+    let _ = workload.kill();
+    let _ = workload.wait();
+    let previous_unit = previous.parent().unwrap().to_owned();
+    let previous_budget = previous_unit.parent().unwrap().to_owned();
+    for directory in [
+        destination,
+        unit,
+        budget,
+        previous,
+        previous_unit,
+        previous_budget,
+    ] {
+        let _ = std::fs::remove_dir(directory);
+    }
+    assert!(
+        resident_watch,
+        "a failed takeover must fall back to resident memory"
+    );
+    assert!(alive, "a failed takeover ended the process it was adopting");
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 #[ignore = "requires a writable cgroup-v2 delegated parent"]
