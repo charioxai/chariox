@@ -52,7 +52,7 @@ fn session(f: &Fixture) -> crate::session::RuntimeSession {
         .unwrap()
 }
 
-fn outcomes(f: &Fixture, entry: &str) -> Vec<String> {
+pub(super) fn outcomes(f: &Fixture, entry: &str) -> Vec<String> {
     f.state
         .owned
         .durable_state_store

@@ -938,6 +938,31 @@ impl KernelRuntimeState {
         lost: &str,
         trigger_error: &str,
     ) -> Result<(), DaemonError> {
+        let diagnostic =
+            format!("{lost}. The turn may have partly run; Chariox did not run it again");
+        self.end_accepted_remote_prompt_run(
+            session_id,
+            agent_id,
+            stale_binding,
+            stale_provider_run_id,
+            &diagnostic,
+            trigger_error,
+        )
+        .await
+    }
+
+    /// Ends the accepted turn of a leased agent without replaying it: the
+    /// turn fails with `diagnostic` as a typed host-lost outcome and its task
+    /// resolves with it.
+    pub(in crate::runtime::state) async fn end_accepted_remote_prompt_run(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        stale_binding: &crate::agent::RemoteAgentBinding,
+        stale_provider_run_id: &str,
+        diagnostic: &str,
+        trigger_error: &str,
+    ) -> Result<(), DaemonError> {
         let agent = self.owned.agent_store.get_agent(agent_id)?;
         let Some(binding) = agent.remote_execution().filter(|current| {
             current.leased_agent_id == stale_binding.leased_agent_id
@@ -957,7 +982,7 @@ impl KernelRuntimeState {
             format!("{lost}. The turn may have partly run; Chariox did not run it again");
         crate::logging::warn_with_fields(
             "daemon.remote_prompt_dispatch",
-            "worker lost an accepted remote prompt; ending it for the owner without replay",
+            "ending an accepted remote prompt for the owner without replay",
             serde_json::json!({
                 "session_id": session_id,
                 "agent_id": agent_id,

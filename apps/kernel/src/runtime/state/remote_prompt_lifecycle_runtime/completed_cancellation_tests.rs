@@ -210,6 +210,30 @@ async fn completed_remote_cancellation_recovers_after_active_run_was_cleared() {
         },
     )
     .await;
+    // The drained completion makes the home ask the worker for the turn's git observations.
+    let (id, target, request) = next_peer_request(
+        &mut peer_requests,
+        &worker_private_key,
+        "completed cancellation git observation",
+    )
+    .await;
+    assert_eq!(target, WORKER_ID);
+    assert!(matches!(
+        request,
+        RelayPeerRequest::ObserveLeasedGitAfter { .. }
+    ));
+    acknowledge_peer_request(
+        &relay_state,
+        id,
+        &worker_private_key,
+        &home_public_key,
+        RelayPeerResponse::LeasedGitObserved {
+            provider_run_id: WORKER_RUN_ID.into(),
+            git_observations: Vec::new(),
+            workspace_live_sync_change: None,
+        },
+    )
+    .await;
     recovery.await.unwrap().unwrap();
     let current = runtime
         .owned

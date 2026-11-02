@@ -1503,6 +1503,9 @@ impl KernelRuntimeState {
         if !outcome.accepted {
             return Ok(());
         }
+        if let Some(harvest) = outcome.completion_harvest {
+            self.harvest_remote_completion_observations(harvest).await;
+        }
         for intent in outcome.remote_dispatches {
             self.spawn_remote_prompt_dispatch(intent.dispatch);
         }
