@@ -1,15 +1,21 @@
 // MP-08 / MP-09 / MP-10 / MP-11 AU-15: local WorkOS auth.md protocol service.
 // Credentials live only in memory; diagnostics contain counts and HTTP status.
 import http from 'node:http'
-import { randomBytes } from 'node:crypto'
+import { randomBytes, createHmac } from 'node:crypto'
 import { pathToFileURL } from 'node:url'
 
 const opaque = prefix => prefix + randomBytes(24).toString('base64url')
 export async function createAuthService({ identityOnly = false, expiresIn = 120 } = {}) {
   const registrations = new Map(), assertions = new Map(), tokens = new Map(), attempts = new Map()
+  const signingKey = randomBytes(32)
   const privateValues = []
   const counts = { registrations: 0, polls: 0, claims: 0, accepted: 0 }
   let origin
+  function assertion(id) {
+    const encoded = value => Buffer.from(JSON.stringify(value)).toString('base64url')
+    const body = encoded({ alg: 'HS256', typ: 'JWT' }) + '.' + encoded({ iss: origin, sub: id, aud: `${origin}/`, iat: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 3600, jti: opaque('jwt-') })
+    return body + '.' + createHmac('sha256', signingKey).update(body).digest('base64url')
+  }
   function issue(record, claimed) {
     const token = opaque('access-')
     privateValues.push(token)
@@ -47,7 +53,8 @@ export async function createAuthService({ identityOnly = false, expiresIn = 120 
       } else if (request.method === 'POST' && url.pathname === '/agent/identity') {
         if (identityOnly || !['anonymous', 'service_auth'].includes(input.type)) { reply(400, { error: `${input.type}_not_enabled` }); return }
         if (input.type === 'service_auth' && !input.login_hint) { reply(400, { error: 'invalid_request' }); return }
-        const record = { id: opaque('reg-'), assertion: opaque('assertion-'), claimToken: opaque('claim-'), claimed: false }
+        const id = opaque('reg-')
+        const record = { id, assertion: assertion(id), claimToken: opaque('claim-'), claimed: false }
         privateValues.push(record.assertion, record.claimToken)
         registrations.set(record.claimToken, record)
         assertions.set(record.assertion, record)
@@ -95,7 +102,7 @@ export async function createAuthService({ identityOnly = false, expiresIn = 120 
   origin = `http://127.0.0.1:${server.address().port}`
   return { origin, counts, assertAbsent(text) {
     if (privateValues.some(value => text.includes(value))) throw new Error('Service credential appeared in model-visible evidence')
-  }, async close() { await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve())) } }
+  }, async close() { signingKey.fill(0); await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve())) } }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

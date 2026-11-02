@@ -1,22 +1,23 @@
-// MP-08 / MP-09 / MP-10 / MP-11 AU-15: new terminal-os self-hosted shell,
-// real kernel, encrypted relay and official Codex against the local service.
+// MP-08 / MP-09 / MP-10 / MP-11 AU-15: new hosted terminal-os shell,
+// real kernel, hosted encrypted relay and official Codex against the local service.
 import { randomBytes, createHash } from 'node:crypto'
-import { readFile, writeFile, mkdir, rm, readdir, stat } from 'node:fs/promises'
+import { readFile, writeFile, mkdir, rm, readdir } from 'node:fs/promises'
 import { createWriteStream } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import path from 'node:path'
 import net from 'node:net'
-import http from 'node:http'
 import { spawnOwned, signalOwnedProcess } from '../../../apps/kernel/slice-linux-docker/owned-process-signals.mjs'
 import { createAuthService } from './service.mjs'
 
 const repository = fileURLToPath(new URL('../../../', import.meta.url))
 const options = {}
 for (let index = 2; index < process.argv.length; index += 2) options[process.argv[index].replace(/^--/, '')] = process.argv[index + 1]
-for (const name of ['kernel-bin', 'relay-bin', 'web-root', 'playwright-module', 'home', 'evidence']) {
+for (const name of ['kernel-bin', 'playwright-module', 'home', 'evidence']) {
   if (!options[name] || !path.isAbsolute(options[name])) throw new Error(`--${name} requires an absolute path`)
 }
+const origin = new URL(options['cloud-origin']).origin
+if (!origin.startsWith('https://')) throw new Error('--cloud-origin must use hosted HTTPS')
 const root = options.home, evidence = options.evidence
 const contains = (parent, child) => { const relative = path.relative(parent, child); return !relative || (!relative.startsWith('..') && !path.isAbsolute(relative)) }
 if ([root, evidence].some(value => contains(repository, value)) || contains(root, evidence) || contains(evidence, root)) throw new Error('Use separate external state and evidence directories')
@@ -53,8 +54,8 @@ async function until(predicate, timeout = 240000) {
   }
   throw new Error('auth.md live drill timed out')
 }
-const passphrase = randomBytes(32).toString('base64url'), relayToken = randomBytes(32).toString('base64url')
-const ports = await Promise.all(Array.from({ length: 5 }, freePort))
+const passphrase = randomBytes(32).toString('base64url')
+const ports = await Promise.all(Array.from({ length: 4 }, freePort))
 const env = { PATH: process.env.PATH, LANG: 'C.UTF-8', SHELL: '/bin/bash', CODEX_HOME: process.env.CODEX_HOME,
   HOME: `${root}/os-home`, CHARIOX_HOME: `${root}/home`, TMPDIR: `${root}/tmp`, XDG_CONFIG_HOME: `${root}/config`, XDG_STATE_HOME: `${root}/state`, XDG_DATA_HOME: `${root}/data`, XDG_CACHE_HOME: `${root}/cache`,
   CHARIOX_DAEMON_SOCKET: `${root}/kernel.sock`, CHARIOX_KERNEL_PORT: String(ports[0]), CHARIOX_MCP_PORT: String(ports[1]), CHARIOX_CODEX_PORT: String(ports[2]), CHARIOX_OPENCODE_PORT: String(ports[3]),
@@ -63,10 +64,11 @@ const env = { PATH: process.env.PATH, LANG: 'C.UTF-8', SHELL: '/bin/bash', CODEX
 const result = { MP: ['MP-08', 'MP-09', 'MP-10', 'MP-11'], status: 'FAIL', started: new Date().toISOString(),
   head: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repository, encoding: 'utf8' }).trim(),
   kernel_sha256: createHash('sha256').update(await readFile(options['kernel-bin'])).digest('hex'),
-  client: 'apps/web terminal-os selfhosted (real application entry)', scenarios: [],
+  kernel_source_head: options['kernel-source-head'], web_source_head: options['web-source-head'],
+  client: 'apps/web terminal-os hosted (real application entry)', cloud_origin: origin, scenarios: [],
 }
-let service, staticServer, browser, page, client, sessionId, ownsRoot = false
-const children = [], logs = [], privateValues = [passphrase, relayToken]
+let service, browser, page, client, sessionId, ownsRoot = false
+const children = [], logs = [], privateValues = [passphrase]
 function absent(text) {
   service?.assertAbsent(text)
   if (privateValues.some(value => text.includes(value))) throw new Error('Protected runtime value appeared in evidence')
@@ -142,7 +144,6 @@ try {
   for (const name of ['os-home', 'home', 'tmp', 'config', 'state', 'data', 'cache', 'logs']) await mkdir(`${root}/${name}`, { mode: 0o700 })
   await writeFile(`${root}/home/config.toml`, `version = 1\n[history.archive]\nmode = "disabled"\n[credential_vault]\nbackend = "chariox_encrypted"\npath = "${root}/home/vault.json"\nunlock_policy = "kernel_init"\nagent_management = "allow"\n`, { mode: 0o600 })
   service = await createAuthService()
-  start(options['relay-bin'], { CHARIOX_RELAY_HOST: '127.0.0.1', CHARIOX_RELAY_PORT: String(ports[4]), CHARIOX_RELAY_TOKEN: relayToken }, 'relay')
   start(options['kernel-bin'], {}, 'kernel')
   await writeFile(`${root}/started-pids.json`, JSON.stringify(children.map(child => child.pid)), { mode: 0o600 })
   const kernelUrl = `ws://127.0.0.1:${ports[0]}/kernel`
@@ -150,8 +151,36 @@ try {
     const next = new LocalIpcClient(kernelUrl, { timeoutMs: 2000, localAuthEnvironment: env })
     try { await next.send(requests.listSessionsRequest()); client = next; return true } catch { await next.close(); return false }
   }, 60000)
-  await client.send({ ConfigureRelay: { relay_url: `ws://127.0.0.1:${ports[4]}`, relay_token: relayToken } })
-  await until(async () => variant(await client.send({ RelayStatus: null }), 'RelayStatus').status.connected, 30000)
+  browser = await chromium.launch({ headless: true, executablePath: options['chrome-bin'] ?? '/opt/google/chrome/chrome', args: ['--no-sandbox', '--disable-dev-shm-usage'] })
+  page = await browser.newPage({ viewport: { width: 1440, height: 1000 }, deviceScaleFactor: Number(options.dpr ?? 1) })
+  page.on('console', async message => {
+    if (message.type() !== 'error') return
+    const parts = await Promise.all(message.args().map(handle => handle.evaluate(value => value instanceof Error ? value.message : String(value)).catch(() => 'Unreadable browser diagnostic')))
+    const text = parts.join(' ')
+    try { absent(text); diagnostics.push(text.slice(0, 2000)) } catch { diagnostics.push('Protected browser diagnostic suppressed') }
+  })
+  const relayStatus = variant(await client.send({ RelayStatus: null }), 'RelayStatus').status
+  const login = variant(await client.send({ StartCloudRelayLogin: { api_url: origin, client_id: 'authmd-live', client_alias: 'Authmd drill', machine_id: relayStatus.machine_id, machine_alias: 'Authmd owned drill' } }), 'CloudRelayLoginStarted').login
+  privateValues.push(login.device_code)
+  if (new URL(login.verification_url).origin !== origin) throw new Error('Device approval left the owned hosted stack')
+  await page.goto(login.verification_url)
+  const approve = page.getByRole('button', { name: /approve|allow|connect/i })
+  if (await approve.count() === 1) await approve.click()
+  let enrolled = false
+  for (let attempt = 0; attempt < 30; attempt++) {
+    await delay(Math.max(5000, (login.interval_seconds ?? 5) * 1000))
+    const poll = variant(await client.send({ PollCloudRelayLogin: { api_url: origin, device_code: login.device_code } }), 'CloudRelayLoginPolled').result
+    if (poll.status === 'approved') { enrolled = true; break }
+    if (poll.status !== 'pending' && poll.status !== 'authorization_pending') throw new Error(`Device enrollment: ${poll.status}`)
+  }
+  if (!enrolled) throw new Error('Hosted device enrollment timed out')
+  await client.send({ ConnectCloudRelay: null })
+  await until(async () => {
+    const status = variant(await client.send({ RelayStatus: null }), 'RelayStatus').status
+    if (!status.connected) return false
+    if (!status.relay_url.startsWith('wss://')) throw new Error('Hosted relay must use wss')
+    return true
+  }, 60000)
   // Administrative fixture setup uses public owner APIs; the scenario itself is driven through the new UI.
   const created = variant(await client.send(requests.createSessionRequest(repository, repository, 'authmd drill', { provider: 'codex', model: 'gpt-6-luna', effort: 'low', account_profile: 'default', execution_mode: 'build', permission_level: 'yolo' }, undefined, 'unrestricted')), 'SessionCreated')
   sessionId = created.session.id
@@ -161,29 +190,8 @@ try {
     session = variant(await client.send(requests.getSessionStateRequest(sessionId)), 'SessionState').session
   }
   const agentId = session.agents[0].id
-  const pairing = variant(await client.send({ CreateTerminalPairingLink: { terminal_type: 'web', alias: 'authmd new UI', expires_in_ms: 600000 } }), 'TerminalPairingLinkCreated').pairing
-  privateValues.push(pairing.pairing_link, pairing.pairing_code)
-  staticServer = http.createServer(async (request, response) => {
-    try {
-      const requested = path.resolve(options['web-root'], '.' + decodeURIComponent(new URL(request.url, 'http://localhost').pathname))
-      if (!contains(options['web-root'], requested)) { response.writeHead(403); response.end(); return }
-      const target = (await stat(requested)).isDirectory() ? path.join(requested, 'index.html') : requested
-      response.setHeader('content-type', target.endsWith('.js') ? 'text/javascript' : target.endsWith('.css') ? 'text/css' : target.endsWith('.woff2') ? 'font/woff2' : 'text/html')
-      response.end(await readFile(target))
-    } catch { response.writeHead(404); response.end() }
-  })
-  await new Promise(resolve => staticServer.listen(0, '127.0.0.1', resolve))
-  browser = await chromium.launch({ headless: true, executablePath: options['chrome-bin'] ?? '/opt/google/chrome/chrome', args: ['--no-sandbox', '--disable-dev-shm-usage'] })
-  page = await browser.newPage({ viewport: { width: 1440, height: 1000 }, deviceScaleFactor: Number(options.dpr ?? 1) })
-  page.on('console', async message => {
-    if (message.type() !== 'error') return
-    const parts = await Promise.all(message.args().map(handle => handle.evaluate(value => value instanceof Error ? value.message : String(value)).catch(() => 'Unreadable browser diagnostic')))
-    const text = parts.join(' ')
-    try { absent(text); diagnostics.push(text.slice(0, 2000)) } catch { diagnostics.push('Protected browser diagnostic suppressed') }
-  })
-  await page.goto(`http://127.0.0.1:${staticServer.address().port}`)
-  await page.locator('#pairing-link').fill(pairing.pairing_link)
-  await page.locator('form.settings-add-kernel button[type="submit"]').click()
+  await page.goto(`${origin}/waiting-room?ui=os`)
+  await page.locator('.terminal-os').waitFor()
   await page.locator(`[data-room-id="${sessionId}"] [data-action="open-room"]`).click({ timeout: 60000 })
   await page.locator('[data-prompt-input]').waitFor()
   await capture('new-ui-room')
@@ -198,6 +206,7 @@ try {
       const refusal = diagnostics.find(message => message.includes('prompt-bar.send'))
       if (refusal) throw new Error(refusal)
       const state = variant(await client.send(requests.getSessionStateRequest(sessionId)), 'SessionState').session
+      absent(JSON.stringify(state))
       const promptState = state.prompt_states?.[agentId] ?? {}
       const active = promptState.active_prompt ?? (state.active_prompt?.target_agent_id === agentId ? state.active_prompt : null)
       const queued = promptState.queued_prompts ?? (state.queued_prompts ?? []).filter(prompt => prompt.target_agent_id === agentId)
@@ -220,17 +229,17 @@ try {
   if (page) await capture('failure').catch(() => {})
 } finally {
   if (browser) await browser.close()
-  if (client) { if (sessionId) await client.send(requests.endSessionRequest(sessionId)).catch(() => {}); await client.close() }
-  for (const child of children.reverse()) await stop(child)
   let checked = 0
   try {
     for (const file of [...await files(`${root}/history`), ...logs]) { absent(await readFile(file, 'utf8')); checked++ }
-    result.absence = { checked_files: checked, service_values_absent: true }
+    result.absence = { checked_files: checked, session_state_checked: Boolean(sessionId), service_values_absent: true }
   } catch { result.status = 'FAIL'; result.failure = 'Protected value found in kernel/provider history or logs' }
+  if (client) { if (sessionId) await client.send(requests.endSessionRequest(sessionId)).catch(() => {}); await client.close() }
+  for (const child of children.reverse()) await stop(child)
+  try { for (const file of logs) absent(await readFile(file, 'utf8')) } catch { result.status = 'FAIL'; result.failure = 'Protected value found in shutdown logs' }
   result.counts = service?.counts
   result.browser_diagnostics = diagnostics
   if (service) await service.close()
-  if (staticServer) await new Promise(resolve => staticServer.close(resolve))
   result.finished = new Date().toISOString()
   if (ownsRoot) { await writeFile(`${evidence}/result.json`, JSON.stringify(result, null, 2) + '\n', { mode: 0o600 }); await rm(root, { recursive: true, force: true }) }
 }
