@@ -780,7 +780,7 @@ Required focused scenarios (acceptance area `multidomain-base`):
 - `BROWSER08`: host stop waits for both helpers to be reaped; their 500 ms grace
   periods overlap (combined teardown below 1.8 seconds). Exercise the final
   deadline and failure reporting without skipping Chromium cleanup.
-- `BROWSER09`: on measured before/after kernels, record DPR1 unsubscribe answer
+- `BROWSER10`: on measured before/after kernels, record DPR1 unsubscribe answer
   p50/p95 across 20 real display subscriptions, then exercise Browser view
   close/reopen through the real hosted client and check owned process cleanup
   after kernel stop. Keep kernel hashes, source heads and evidence outside git.
