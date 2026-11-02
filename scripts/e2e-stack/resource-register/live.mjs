@@ -242,8 +242,9 @@ try {
       if (active || row?.is_processing) sawRunning = true
       const entries = await history(session, agent)
       const assistant = entries.filter(entry => entry.kind === 'provider_output').map(entry => entry.text).join('\n')
-      if (assistant.includes(marker) && service.events.some(event => event.key_id === key.id && event.method === 'DELETE' && event.status === 200)) return true
-      if (expectedRed && assistant.includes('VREG_MISSING_TOOL')) return true
+      const idle = !active && !row?.is_processing
+      if (idle && assistant.includes(marker) && service.events.some(event => event.key_id === key.id && event.method === 'DELETE' && event.status === 200)) return true
+      if (idle && expectedRed && assistant.includes('VREG_MISSING_TOOL')) return true
       if (entries.some(entry => entry.kind === 'provider_error')) throw new Error('provider reported an error; inspect private-safe public history')
       if (Date.now() - began > 600000) throw new Error('provider did not complete register workflow')
       await delay(1000)
