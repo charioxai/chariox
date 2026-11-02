@@ -288,7 +288,7 @@ fn load_or_issue_key(
         rand::rngs::OsRng.fill_bytes(&mut *seed);
         StoredKey {
             binding: binding.to_string(),
-            private_key: URL_SAFE_NO_PAD.encode(&*seed),
+            private_key: URL_SAFE_NO_PAD.encode(seed.as_slice()),
             signature_agent: crate::web_bot_auth::validate_origin(
                 config
                     .user_config
@@ -339,6 +339,27 @@ fn error(message: &str) -> DaemonError {
         operation: "web_bot_auth",
         message: message.to_string(),
     }
+}
+
+fn signing_binding(config: &crate::config::DaemonConfig) -> Result<String, DaemonError> {
+    let binding = if let Some(profile) = &config.cloud_relay {
+        // A replacement enrollment grant revokes its predecessor's keys even
+        // when the kernel id is unchanged. Never reuse that grant's Vault key.
+        let credential = profile.kernel_credential.as_deref().ok_or_else(|| {
+            error("re-enroll this kernel with Cloud before enabling Web Bot Auth")
+        })?;
+        format!(
+            "cloud:{}:{}:{:x}",
+            profile.api_url,
+            profile.kernel_id.as_deref().unwrap_or(""),
+            Sha256::digest(credential.as_bytes())
+        )
+    } else {
+        let origin = config.user_config.web_bot_auth.signature_agent.as_deref()
+                .ok_or_else(|| error("configure web_bot_auth.signature_agent to publish this self-hosted kernel's key directory"))?;
+        format!("self:{}", crate::web_bot_auth::validate_origin(origin)?)
+    };
+    Ok(binding)
 }
 
 #[cfg(test)]
@@ -404,25 +425,4 @@ mod tests {
         assert!(!first.contains("fixture-grant-a"));
         assert!(!second.contains("fixture-grant-b"));
     }
-}
-
-fn signing_binding(config: &crate::config::DaemonConfig) -> Result<String, DaemonError> {
-    let binding = if let Some(profile) = &config.cloud_relay {
-        // A replacement enrollment grant revokes its predecessor's keys even
-        // when the kernel id is unchanged. Never reuse that grant's Vault key.
-        let credential = profile.kernel_credential.as_deref().ok_or_else(|| {
-            error("re-enroll this kernel with Cloud before enabling Web Bot Auth")
-        })?;
-        format!(
-            "cloud:{}:{}:{:x}",
-            profile.api_url,
-            profile.kernel_id.as_deref().unwrap_or(""),
-            Sha256::digest(credential.as_bytes())
-        )
-    } else {
-        let origin = config.user_config.web_bot_auth.signature_agent.as_deref()
-                .ok_or_else(|| error("configure web_bot_auth.signature_agent to publish this self-hosted kernel's key directory"))?;
-        format!("self:{}", crate::web_bot_auth::validate_origin(origin)?)
-    };
-    Ok(binding)
 }
