@@ -211,7 +211,7 @@ impl KernelRuntimeState {
                 .validate_browser_secret_input_for_target_url(&args.credential_id, &url)?,
             session,
         )?;
-        self.vault_credential_elevation_allows(
+        self.require_vault_factor_elevation(
             session,
             agent.id(),
             self.home_runtime_secret_service()?
@@ -259,15 +259,28 @@ impl KernelRuntimeState {
         let credential = service
             .validate_browser_secret_input_for_target_url(&args.credential_id, &url)?
             .clone();
-        self.vault_credential_elevation_allows(session, agent.id(), &credential)?;
+        self.require_vault_factor_elevation(session, agent.id(), &credential)?;
         let state = self.clone();
         let session_id = session.to_owned();
         let agent_id = agent.id().to_owned();
         let admission = admission.with_authority(move || {
-            state.vault_credential_elevation_allows(&session_id, &agent_id, &credential).is_ok()
+            state
+                .require_vault_factor_elevation(&session_id, &agent_id, &credential)
+                .is_ok()
         });
-        self.insert_kernel_browser_secret(user, &admission, &args, &service, url, SecretFillContext { actor: None, signing_material, plain })
-            .await?;
+        self.insert_kernel_browser_secret(
+            user,
+            &admission,
+            &args,
+            &service,
+            url,
+            SecretFillContext {
+                actor: None,
+                signing_material,
+                plain,
+            },
+        )
+        .await?;
         Ok(RuntimeToolResult {
             ok: true,
             payload: json!({"inserted":true}),
@@ -333,10 +346,26 @@ impl KernelRuntimeState {
             ));
         }
         let url = self
-            .kernel_browser_secret_target_url_bound(&user, &admission, &SecretTarget::of(&args), true)
+            .kernel_browser_secret_target_url_bound(
+                &user,
+                &admission,
+                &SecretTarget::of(&args),
+                true,
+            )
             .await?;
-        self.insert_kernel_browser_secret(&user, &admission, &args, &service, url, SecretFillContext { actor: Some(&actor), signing_material: Value::Null, plain: false })
-            .await?;
+        self.insert_kernel_browser_secret(
+            &user,
+            &admission,
+            &args,
+            &service,
+            url,
+            SecretFillContext {
+                actor: Some(&actor),
+                signing_material: Value::Null,
+                plain: false,
+            },
+        )
+        .await?;
         Ok(json!({"inserted":true}))
     }
 

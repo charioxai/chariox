@@ -24,6 +24,7 @@ mod receipts;
 mod scope;
 mod vault;
 mod vault_elevation;
+pub(crate) use vault_elevation::VaultCaller;
 mod window;
 pub(crate) use policy::{is_sudo_control, is_sudo_prompt};
 pub(crate) use vault::{

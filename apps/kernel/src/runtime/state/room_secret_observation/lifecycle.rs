@@ -144,7 +144,7 @@ impl KernelRuntimeState {
         let _guard = self.vault_observation_mutation_guard().await;
         if let Some(metadata) = &credential.metadata {
             if let (Some(session), Some(agent)) = (&metadata.session_id, &metadata.created_by_id) {
-                self.vault_elevation_allows(session, agent, &credential)?;
+                self.require_vault_factor_elevation(session, agent, &credential)?;
             }
         }
         self.upsert_vault_credential_locked(service, registry, credential, secret, overwrite)
@@ -254,7 +254,7 @@ impl KernelRuntimeState {
                     if let (Some(session), Some(agent)) =
                         (&metadata.session_id, &metadata.created_by_id)
                     {
-                        self.vault_elevation_allows(session, agent, &credential)?;
+                        self.require_vault_factor_elevation(session, agent, &credential)?;
                     }
                 }
                 let result = service.upsert_vault_backed_credential_with_secret(

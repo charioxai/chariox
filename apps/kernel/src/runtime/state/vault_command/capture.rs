@@ -75,7 +75,7 @@ impl KernelRuntimeState {
         token: &str,
         arguments: serde_json::Value,
     ) -> Result<RuntimeToolResult, DaemonError> {
-        let elevation = self.vault_elevation_allows(token, VaultElevationKind::Capture)?;
+        let elevation = self.vault_command_context(token, VaultElevationKind::Capture)?;
         let args: CaptureArgs = serde_json::from_value(arguments)
             .map_err(|e| error(format!("invalid Vault capture arguments: {e}")))?;
         if args.request_id.trim().is_empty() || args.request_id.len() > 128 {
@@ -100,7 +100,7 @@ impl KernelRuntimeState {
         let _unlock = self
             .ensure_vault_unlocked_for_agent(&turn.session_id, &turn.agent_id, "vault_capture")
             .await?;
-        self.recheck_vault_elevation(token, &elevation)?;
+        self.recheck_vault_elevation(token, &elevation.turn)?;
         let output = run_command(
             self,
             elevation.run.clone(),

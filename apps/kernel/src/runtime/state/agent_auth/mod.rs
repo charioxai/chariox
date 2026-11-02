@@ -93,29 +93,17 @@ impl RegisterArgs {
     }
 }
 
-/// S1 replaces this adapter's sudo admission with project Accounts mandate-or-sudo.
+/// Build the network authority from the shared Vault admission.
 /// All network steps and the post-wait Vault commit pass through the same adapter.
-fn vault_elevation_allows(
+fn registration_authority(
     state: &KernelRuntimeState,
     token: &str,
     _resource: &url::Url,
 ) -> Result<VaultElevation, DaemonError> {
-    let turn = state
-        .sudo_for_auth_token(token)
-        .map_err(|_| error("auth.md registration requires a live sudo window"))?;
-    if state.provider_account_authority_owner_user_id(&turn.owner_user_id)
-        != crate::session::DEFAULT_LOCAL_USER_ID
-        || state
-            .owned
-            .config_projection
-            .snapshot()
-            .user_config
-            .credential_vault
-            .agent_management
-            == crate::config::CredentialVaultAgentManagementPolicy::Deny
-    {
-        return Err(error("the owner's Vault is not available to this agent"));
-    }
+    let turn = state.vault_elevation(
+        super::sudo::VaultCaller::AuthToken(token),
+        "auth.md registration",
+    )?;
     let request = LocalDaemonRequest::ListSessions(crate::local::ListSessionsRequest);
     let authorized_state = state
         .with_external_command_authority(Some((&turn.entry_id, &request)))
@@ -159,7 +147,7 @@ struct Authority {
 
 impl Authority {
     fn check(&self) -> Result<(), DaemonError> {
-        let current = vault_elevation_allows(&self.state, &self.token, &self.resource)?;
+        let current = registration_authority(&self.state, &self.token, &self.resource)?;
         if current.actor != self.actor {
             return Err(error(
                 "auth.md authorization changed; restart registration in the current task",
@@ -178,7 +166,7 @@ impl KernelRuntimeState {
         let args: RegisterArgs = serde_json::from_value(arguments)
             .map_err(|_| error("invalid auth.md registration arguments"))?;
         let (resource, flow) = args.validate()?;
-        let elevation = vault_elevation_allows(self, token, &resource)?;
+        let elevation = registration_authority(self, token, &resource)?;
         let authority = Authority {
             state: self.clone(),
             token: token.into(),

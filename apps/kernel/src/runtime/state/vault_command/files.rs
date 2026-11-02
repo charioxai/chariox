@@ -82,7 +82,7 @@ impl KernelRuntimeState {
         token: &str,
         arguments: serde_json::Value,
     ) -> Result<RuntimeToolResult, DaemonError> {
-        let elevation = self.vault_elevation_allows(token, VaultElevationKind::Capture)?;
+        let elevation = self.vault_command_context(token, VaultElevationKind::Capture)?;
         let args: CaptureFileArgs = serde_json::from_value(arguments)
             .map_err(|e| error(format!("invalid Vault capture arguments: {e}")))?;
         if args.request_id.trim().is_empty() || args.request_id.len() > 128 {
@@ -107,7 +107,7 @@ impl KernelRuntimeState {
         let _unlock = self
             .ensure_vault_unlocked_for_agent(&turn.session_id, &turn.agent_id, "vault_capture")
             .await?;
-        self.recheck_vault_elevation(token, &elevation)?;
+        self.recheck_vault_elevation(token, &elevation.turn)?;
         let mut result = self
             .store_captured(
                 &elevation,
@@ -149,7 +149,7 @@ impl KernelRuntimeState {
         token: &str,
         arguments: serde_json::Value,
     ) -> Result<RuntimeToolResult, DaemonError> {
-        let elevation = self.vault_elevation_allows(token, VaultElevationKind::Use)?;
+        let elevation = self.vault_command_context(token, VaultElevationKind::Use)?;
         let args: WriteFileArgs = serde_json::from_value(arguments)
             .map_err(|e| error(format!("invalid Vault file arguments: {e}")))?;
         if args.values.is_empty() || args.values.len() > MAX_PLACEHOLDERS {
@@ -177,7 +177,7 @@ impl KernelRuntimeState {
         let _unlock = self
             .ensure_vault_unlocked_for_agent(&turn.session_id, &turn.agent_id, "vault_write_file")
             .await?;
-        self.recheck_vault_elevation(token, &elevation)?;
+        self.recheck_vault_elevation(token, &elevation.turn)?;
         let service = self.home_runtime_secret_service()?;
         let mut content = Zeroizing::new(args.template.clone());
         for (name, id) in &args.values {

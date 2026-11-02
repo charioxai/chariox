@@ -46,56 +46,13 @@ pub(crate) fn vault_generate_spec() -> RuntimeToolSpec {
 }
 
 impl KernelRuntimeState {
-    /// The one elevation gate for agent Vault writes (generate, capture, fill).
-    /// Today a live sudo window elevates; the project mandate (VAUDIT S1) joins
-    /// here as mandate-or-sudo.
-    pub(crate) fn vault_elevation(
-        &self,
-        token: &str,
-        operation: &str,
-    ) -> Result<KernelSudoTurn, DaemonError> {
-        let turn = self
-            .sudo_for_auth_token(token)
-            .map_err(|_| error(format!("{operation} requires a live sudo window")))?;
-        // An enrolled kernel's owner acts as its Cloud user; map it as MD-5 does.
-        if self.provider_account_authority_owner_user_id(&turn.owner_user_id)
-            != crate::session::DEFAULT_LOCAL_USER_ID
-            || self
-                .owned
-                .config_projection
-                .snapshot()
-                .user_config
-                .credential_vault
-                .agent_management
-                == crate::config::CredentialVaultAgentManagementPolicy::Deny
-        {
-            return Err(error("the owner's Vault is not available to this agent"));
-        }
-        Ok(turn)
-    }
-
-    /// The Vault unlock wait can outlast, revoke or replace the window.
-    pub(crate) fn recheck_vault_elevation(
-        &self,
-        token: &str,
-        turn: &KernelSudoTurn,
-    ) -> Result<(), DaemonError> {
-        if self
-            .sudo_for_auth_token(token)
-            .ok()
-            .is_none_or(|current| current.entry_id != turn.entry_id)
-        {
-            return Err(error("sudo window ended during the Vault wait"));
-        }
-        Ok(())
-    }
-
     pub(crate) async fn vault_generate(
         &self,
         token: &str,
         arguments: serde_json::Value,
     ) -> Result<RuntimeToolResult, DaemonError> {
-        let turn = self.vault_elevation(token, "Vault generation")?;
+        let turn =
+            self.vault_elevation(super::VaultCaller::AuthToken(token), "Vault generation")?;
         let args: GenerateArgs = serde_json::from_value(arguments)
             .map_err(|_| error("invalid Vault generation arguments"))?;
         if args.request_id.trim().is_empty() || args.request_id.len() > 128 {

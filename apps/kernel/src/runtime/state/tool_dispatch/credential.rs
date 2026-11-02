@@ -86,7 +86,7 @@ impl KernelRuntimeState {
                     credential_from_runtime_input(args.credential)?,
                     provider_run,
                 );
-                self.vault_elevation_allows(
+                self.require_vault_factor_elevation(
                     provider_run.session_id(),
                     provider_run.agent_instance_id().unwrap_or_default(),
                     &credential,
@@ -332,7 +332,7 @@ impl KernelRuntimeState {
                     operation: "runtime_tool_send_secret_to_terminal",
                     message: format!("invalid tool arguments: {error}"),
                 })?;
-                self.vault_elevation_allows(
+                self.require_vault_factor_elevation(
                     provider_run.session_id(),
                     provider_run.agent_instance_id().unwrap_or_default(),
                     service.validate_terminal_secret_input(&args.credential_id)?,
@@ -347,7 +347,7 @@ impl KernelRuntimeState {
                 self.with_app_side_effect(|app| {
                     // Unlock can wait while the owner changes this handle's kind or scope.
                     let service = self.home_runtime_secret_service()?;
-                    self.vault_elevation_allows(
+                    self.require_vault_factor_elevation(
                         provider_run.session_id(),
                         provider_run.agent_instance_id().unwrap_or_default(),
                         service.validate_terminal_secret_input(&args.credential_id)?,
@@ -672,7 +672,7 @@ impl KernelRuntimeState {
                 });
             }
         };
-        self.vault_elevation_allows(&context.home_session_id, agent.id(), credential)?;
+        self.require_vault_factor_elevation(&context.home_session_id, agent.id(), credential)?;
         let _vault_unlock = self
             .ensure_vault_unlocked_for_agent(
                 &context.home_session_id,
@@ -696,7 +696,11 @@ impl KernelRuntimeState {
                         unreachable!("unbound Computer resolution was rejected before unlock")
                     }
                 };
-                self.vault_elevation_allows(&context.home_session_id, agent.id(), credential)?;
+                self.require_vault_factor_elevation(
+                    &context.home_session_id,
+                    agent.id(),
+                    credential,
+                )?;
                 let secret_input = self.with_forwarded_binding_operation(|| match injection {
                     crate::transport::relay_peer::RemoteCredentialSecretInjection::Browser {
                         target_url,
@@ -745,7 +749,7 @@ impl KernelRuntimeState {
             agent.provider(),
             Some(&context.worker_provider_run_id),
         );
-        self.vault_elevation_allows(&context.home_session_id, agent.id(), &credential)?;
+        self.require_vault_factor_elevation(&context.home_session_id, agent.id(), &credential)?;
         match &credential.source {
             crate::config::UserCredentialSourceConfig::Vault { .. } => {}
             crate::config::UserCredentialSourceConfig::Env { .. }

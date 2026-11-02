@@ -1,13 +1,61 @@
 //! MP-08 / MP-09 / MP-10 / MP-11: one elevation seam for agent factor capture/use.
-use super::KernelRuntimeState;
+use super::{error, KernelRuntimeState, KernelSudoTurn};
 use crate::config::{UserCredentialConfig, UserCredentialInjectionConfig};
 use crate::error::DaemonError;
 
+pub(crate) enum VaultCaller<'a> {
+    AuthToken(&'a str),
+    ProviderRun(&'a str),
+}
+
 impl KernelRuntimeState {
-    /// S1 replaces this predicate with project-mandate-or-sudo authorization.
+    /// Shared admission for agent Vault operations; rechecked after every wait.
+    pub(crate) fn vault_elevation(
+        &self,
+        caller: VaultCaller<'_>,
+        operation: &str,
+    ) -> Result<KernelSudoTurn, DaemonError> {
+        let turn = match caller {
+            VaultCaller::AuthToken(token) => self.sudo_for_auth_token(token),
+            VaultCaller::ProviderRun(run) => self.sudo_for_provider_run(run),
+        }
+        .map_err(|_| error(format!("{operation} requires a live sudo window")))?;
+        // An enrolled kernel's owner acts as its Cloud user; map it as MD-5 does.
+        if self.provider_account_authority_owner_user_id(&turn.owner_user_id)
+            != crate::session::DEFAULT_LOCAL_USER_ID
+            || self
+                .owned
+                .config_projection
+                .snapshot()
+                .user_config
+                .credential_vault
+                .agent_management
+                == crate::config::CredentialVaultAgentManagementPolicy::Deny
+        {
+            return Err(error("the owner's Vault is not available to this agent"));
+        }
+        Ok(turn)
+    }
+
+    /// The Vault unlock wait can outlast, revoke or replace the window.
+    pub(crate) fn recheck_vault_elevation(
+        &self,
+        token: &str,
+        turn: &KernelSudoTurn,
+    ) -> Result<(), DaemonError> {
+        if self
+            .vault_elevation(VaultCaller::AuthToken(token), "Vault operation")?
+            .entry_id
+            != turn.entry_id
+        {
+            return Err(error("sudo window ended during the Vault wait"));
+        }
+        Ok(())
+    }
+
     /// Keep the exact current task check: an open window for another agent or
     /// an earlier task is not permission to capture or use this factor.
-    pub(crate) fn vault_credential_elevation_allows(
+    pub(crate) fn require_vault_factor_elevation(
         &self,
         session_id: &str,
         agent_id: &str,
@@ -42,7 +90,13 @@ impl KernelRuntimeState {
                         .map(|run| run.id().to_string())
                 }
             });
-        if run.is_some_and(|run| self.sudo_for_run(&run).is_ok()) {
+        if run.is_some_and(|run| {
+            self.vault_elevation(
+                VaultCaller::ProviderRun(&run),
+                "TOTP and backup-code capture/use",
+            )
+            .is_ok()
+        }) {
             return Ok(());
         }
         Err(DaemonError::LocalTransport {

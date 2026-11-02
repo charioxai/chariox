@@ -90,7 +90,10 @@ impl KernelRuntimeState {
         arguments: Value,
         admission: KernelBrowserAdmission,
     ) -> Result<RuntimeToolResult, DaemonError> {
-        self.vault_elevation(token, "Vault fill_field")?;
+        self.vault_elevation(
+            super::sudo::VaultCaller::AuthToken(token),
+            "Vault fill_field",
+        )?;
         self.kernel_browser_paste_secret(session, agent, arguments, admission, true)
             .await
     }
@@ -103,7 +106,8 @@ impl KernelRuntimeState {
         arguments: Value,
         admission: KernelBrowserAdmission,
     ) -> Result<RuntimeToolResult, DaemonError> {
-        let turn = self.vault_elevation(token, "Vault capture")?;
+        let turn =
+            self.vault_elevation(super::sudo::VaultCaller::AuthToken(token), "Vault capture")?;
         let args: CaptureArgs = serde_json::from_value(arguments)
             .map_err(|_| host_error("VAUDIT: invalid Vault capture arguments".into()))?;
         if args.request_id.trim().is_empty() || args.request_id.len() > 128 {

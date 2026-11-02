@@ -48,7 +48,7 @@ impl KernelRuntimeState {
         token: &str,
         arguments: serde_json::Value,
     ) -> Result<RuntimeToolResult, DaemonError> {
-        let elevation = self.vault_elevation_allows(token, VaultElevationKind::Use)?;
+        let elevation = self.vault_command_context(token, VaultElevationKind::Use)?;
         let args: UseArgs = serde_json::from_value(arguments)
             .map_err(|e| error(format!("invalid Vault use arguments: {e}")))?;
         if args.env.is_empty() && args.stdin.is_none() {
@@ -76,7 +76,7 @@ impl KernelRuntimeState {
         let _unlock = self
             .ensure_vault_unlocked_for_agent(&turn.session_id, &turn.agent_id, "vault_use_env")
             .await?;
-        self.recheck_vault_elevation(token, &elevation)?;
+        self.recheck_vault_elevation(token, &elevation.turn)?;
         let service = self.home_runtime_secret_service()?;
         let value = |id: &str| service.command_secret_input(id).map(Zeroizing::new);
         let env = args

@@ -245,7 +245,7 @@ impl KernelRuntimeState {
                             credentials,
                             &user_config.credential_vault,
                         )?;
-                        self.vault_elevation_allows(
+                        self.require_vault_factor_elevation(
                             provider_run.session_id(),
                             provider_run.agent_instance_id().unwrap_or_default(),
                             service.validate_browser_secret_input_for_target_url(

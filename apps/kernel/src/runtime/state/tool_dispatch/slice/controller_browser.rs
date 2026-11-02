@@ -79,7 +79,7 @@ impl KernelRuntimeState {
                 &args.credential_id,
                 &target_document_url,
             )?;
-        self.vault_elevation_allows(
+        self.require_vault_factor_elevation(
             session_id,
             agent_id,
             self.home_runtime_secret_service()?
@@ -100,7 +100,7 @@ impl KernelRuntimeState {
         let (service, _vault_observation_guard) = self
             .room_secret_input_service(session_id, &args.credential_id)
             .await?;
-        self.vault_elevation_allows(
+        self.require_vault_factor_elevation(
             session_id,
             agent_id,
             service.validate_browser_secret_input_for_target_url(
