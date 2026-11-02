@@ -12,7 +12,10 @@ export class KernelDirectCarrier {
     socket.addEventListener("message", event => this.receive((event as MessageEvent).data))
     socket.addEventListener("activity", () => this.broadcast(() => new Event("activity")))
     socket.addEventListener("pong", () => this.broadcast(() => new Event("pong")))
-    socket.addEventListener("error", () => this.broadcast(() => new Event("error")))
+    socket.addEventListener("error", () => {
+      this.noteLost()
+      this.broadcast(() => new Event("error"))
+    })
     socket.addEventListener("close", event => {
       this.noteLost()
       const close = event as CloseEvent

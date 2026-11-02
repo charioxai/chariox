@@ -88,3 +88,14 @@ test("MP-08 physical loss retires every lane and records recovery before callbac
   assert.equal(a.readyState, 3); assert.equal(b.readyState, 3)
   assert.throws(() => carrier.openLane(), /closed/)
 })
+
+test("MP-08 physical errors record recovery before lane cancellation", () => {
+  const socket = new Socket(), order: string[] = []
+  const carrier = new KernelDirectCarrier(socket as unknown as WebSocket, "key", () => order.push("lost"))
+  for (const lane of [carrier.openLane(), carrier.openLane()]) {
+    lane.addEventListener("error", () => lane.close())
+    lane.addEventListener("close", () => order.push("closed"))
+  }
+  socket.dispatchEvent(new Event("error"))
+  assert.deepEqual(order, ["lost", "closed", "closed"])
+})
