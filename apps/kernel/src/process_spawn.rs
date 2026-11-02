@@ -126,7 +126,14 @@ pub(crate) fn spawn_pty(
             .collect();
     }
     on_owner(
-        move || slave.spawn_command(command).map_err(io::Error::other),
+        move || {
+            slave.spawn_command(command).map_err(|error| {
+                // An erased anyhow root hides a direct IO error's errno.
+                error
+                    .downcast::<io::Error>()
+                    .unwrap_or_else(io::Error::other)
+            })
+        },
         |mut child| {
             let _ = child.kill();
             let _ = child.wait();

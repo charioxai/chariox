@@ -17,6 +17,10 @@ use super::input_backlog::PtyInputBacklog;
 use crate::error::DaemonError;
 use crate::provider::RuntimeProviderRun;
 
+#[cfg(all(test, unix))]
+#[path = "spawn_failure_tests.rs"]
+mod spawn_failure_tests;
+
 const PTY_OUTPUT_QUEUE_LIMIT: usize = 1024;
 const PTY_INPUT_QUEUE_LIMIT: usize = 64;
 const PTY_DIAGNOSTIC_TAIL_LIMIT: usize = 8 * 1024;
@@ -167,15 +171,31 @@ fn discard_unread_input(_terminal: Option<&std::fs::File>) -> std::io::Result<()
     Err(std::io::Error::other("PTY input flush is unavailable"))
 }
 
-/// A spawn that failed because the kernel has no file descriptors left says so
-/// in plain words: the descriptor numbers and run ids of the failure are internal.
+/// Resource refusals name the recovery; descriptor numbers and run ids stay in logs.
 fn spawn_failed(provider_run_id: &str, error: &(dyn std::error::Error + 'static)) -> DaemonError {
-    let out_of_files = std::iter::successors(Some(error), |error| error.source())
+    let shortage = std::iter::successors(Some(error), |error| error.source())
         .filter_map(|error| error.downcast_ref::<std::io::Error>())
         .filter_map(std::io::Error::raw_os_error)
-        .any(is_out_of_files);
-    if out_of_files {
-        return DaemonError::TooManyOpenFiles;
+        .find_map(|errno| resource_refusal(errno).map(|refusal| (errno, refusal)))
+        .or_else(|| {
+            // portable-pty 0.8.1 formats openpty's IO error instead of retaining
+            // its source. Decode only that allocation error at this boundary.
+            let detail = error.to_string();
+            let errno = detail
+                .strip_prefix("failed to openpty: Os { code: ")?
+                .split_once(',')?
+                .0
+                .parse()
+                .ok()?;
+            resource_refusal(errno).map(|refusal| (errno, refusal))
+        });
+    if let Some((errno, refusal)) = shortage {
+        crate::logging::warn_with_fields(
+            "pty.spawn",
+            "terminal creation refused because kernel resources are unavailable",
+            serde_json::json!({"provider_run_id": provider_run_id, "errno": errno, "error": error.to_string()}),
+        );
+        return refusal;
     }
     DaemonError::PtySpawn {
         provider_run_id: provider_run_id.to_string(),
@@ -184,13 +204,20 @@ fn spawn_failed(provider_run_id: &str, error: &(dyn std::error::Error + 'static)
 }
 
 #[cfg(unix)]
-fn is_out_of_files(errno: i32) -> bool {
-    matches!(errno, libc::EMFILE | libc::ENFILE)
+fn resource_refusal(errno: i32) -> Option<DaemonError> {
+    match errno {
+        libc::EMFILE | libc::ENFILE => Some(DaemonError::TooManyOpenFiles),
+        libc::EAGAIN | libc::ENOMEM => Some(crate::room_terminal::refusal(
+            "not enough resources in this kernel to open a terminal; close a terminal and try again"
+                .into(),
+        )),
+        _ => None,
+    }
 }
 
 #[cfg(not(unix))]
-fn is_out_of_files(_errno: i32) -> bool {
-    false
+fn resource_refusal(_errno: i32) -> Option<DaemonError> {
+    None
 }
 
 #[cfg(unix)]
@@ -792,22 +819,23 @@ impl PtyManager {
         resources: crate::runtime::process_resources::ProcessDomain,
         mut output_filter: Option<PtyOutputFilter>,
     ) -> Result<(), DaemonError> {
-        let input_terminal = match clone_input_terminal(master.as_ref()) {
-            Ok(input_terminal) => input_terminal,
+        // Acquire all handles before starting either IO thread. Any failure
+        // still owns the child, so kill and reap it before returning the refusal.
+        let handles = (|| -> anyhow::Result<_> {
+            Ok((
+                clone_input_terminal(master.as_ref())?,
+                PtyOutputSource::new(master.as_ref())?,
+                master.take_writer()?,
+            ))
+        })();
+        let (input_terminal, mut reader, writer) = match handles {
+            Ok(handles) => handles,
             Err(error) => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err(DaemonError::PtySpawn {
-                    provider_run_id,
-                    message: error.to_string(),
-                });
+                return Err(spawn_failed(&provider_run_id, &*error));
             }
         };
-        let mut reader = PtyOutputSource::new(master.as_ref())
-            .map_err(|error| spawn_failed(&provider_run_id, &error))?;
-        let writer = master
-            .take_writer()
-            .map_err(|error| spawn_failed(&provider_run_id, &*error))?;
         let (input_tx, input_rx) = mpsc::sync_channel(PTY_INPUT_QUEUE_LIMIT);
         let backlog = Arc::new(PtyInputBacklog::default());
         let writer_backlog = backlog.clone();
@@ -827,14 +855,14 @@ impl PtyManager {
                     writer_backlog,
                 )
             });
-        if let Err(error) = writer_thread {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(DaemonError::PtySpawn {
-                provider_run_id: provider_run_id.clone(),
-                message: format!("failed to spawn bounded PTY writer: {error}"),
-            });
-        }
+        let writer_thread = match writer_thread {
+            Ok(thread) => thread,
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(spawn_failed(&provider_run_id, &error));
+            }
+        };
         let input_writer = PtyInputWriter {
             provider_run_id: writer_provider_run_id,
             input_tx,
@@ -887,10 +915,10 @@ impl PtyManager {
         if let Err(error) = reader_thread {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(DaemonError::PtySpawn {
-                provider_run_id: provider_run_id.clone(),
-                message: format!("failed to spawn bounded PTY reader: {error}"),
-            });
+            drop(input_writer);
+            let _ = writer_thread.join();
+            self.output_signal.unregister_process(&process_key);
+            return Err(spawn_failed(&provider_run_id, &error));
         }
 
         // portable-pty creates a new Unix session whose leader is the child.
