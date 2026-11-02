@@ -204,6 +204,12 @@ done
         .is_err());
     host.cleanup_session_downloads("unrelated-room").unwrap();
     assert!(!root.join("cleaned").exists());
+    host.backend("alice")
+        .unwrap()
+        .lock()
+        .unwrap()
+        .stop()
+        .unwrap();
     host.cleanup_session_downloads("room-a").unwrap();
     assert_eq!(
         std::fs::read_to_string(root.join("cleaned")).unwrap(),
