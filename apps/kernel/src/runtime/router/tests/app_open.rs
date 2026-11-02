@@ -184,7 +184,6 @@ while IFS= read -r request; do
   id=${id%%,*}
   case "$request" in
     *'"method":"health"'*) printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s,"diagnostic_code":null}}\n' "$id" "$$" ;;
-    *'"method":"health"'*) printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s,"diagnostic_code":null}}\n' "$id" "$$" ;;
     *'"method":"browser.app.inspect"'*) case "$request" in *'"target_id":"inspection-target"'*|*'"target_id":"focused-target"'*) ;; *) exit 1 ;; esac; printf '{"id":%s,"ok":true,"result":{"registrations":[{"name":"add","description":"Add","inputSchema":{"type":"object"},"effect":"write"}],"state":{"ok":true,"value":{"count":1}},"controls":[{"control":"button#missing","action":null}]}}\n' "$id" ;;
     *'"method":"shutdown"'*) printf '{"id":%s,"ok":true,"result":{"state":"stopped","process_id":null,"diagnostic_code":null}}\n' "$id"; exit 0 ;;
     *) exit 1 ;;
