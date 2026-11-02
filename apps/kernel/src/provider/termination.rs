@@ -35,7 +35,7 @@ impl ProviderRunTermination {
     pub fn outside_end(timestamp_ms: u64) -> Self {
         Self {
             category: ProviderRunTerminationCategory::OutsideEnd,
-            reason: "Stopped from Health.".into(),
+            reason: "Stopped from Machines.".into(),
             timestamp_ms,
             failure: Some(TurnOutcome::cancelled()),
         }
