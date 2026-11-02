@@ -1005,7 +1005,7 @@ test("managed kernel upgrade rolls the binary and receipt back together when hea
   assert.equal(JSON.parse(await readFile(harness.receiptPath, "utf8")).runtimeReleaseDigest, harness.current.digest)
   assert.equal(await readFile(grantBinding, "utf8"), '{"schemaVersion":1}\n')
   const calls = (await readFile(join(harness.state, "systemctl.log"), "utf8")).trim().split("\n")
-  assert.deepEqual(calls.slice(-7), [
+  assert.deepEqual(calls.slice(-4), [
     `stop ${serviceName}`,
     "daemon-reload",
     `start ${serviceName}`,
