@@ -451,6 +451,14 @@ const ASSETS: &[(&str, &[u8])] = &[
         include_bytes!("../../slice-linux-docker/docker/browser-controller-cookie-fence.mjs"),
     ),
     (
+        "browser-page-permissions.mjs",
+        include_bytes!("../../slice-linux-docker/docker/browser-page-permissions.mjs"),
+    ),
+    (
+        "browser-page-permission-shim.mjs",
+        include_bytes!("../../slice-linux-docker/docker/browser-page-permission-shim.mjs"),
+    ),
+    (
         "browser-controller-dialogs.mjs",
         include_bytes!("../../slice-linux-docker/docker/browser-controller-dialogs.mjs"),
     ),

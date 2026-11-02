@@ -45,6 +45,7 @@ import {
   BrowserHistoryError,
   navigateBrowserHistory,
 } from "./browser-controller-history.mjs";
+import { BrowserPagePermissions } from './browser-page-permissions.mjs';
 import { BrowserDialogDefaults } from "./browser-controller-dialogs.mjs";
 import { applyBrowserBar } from "./browser-controller-bar.mjs";
 import { acquireBrowserCookieWriterFence } from "./browser-controller-cookie-fence.mjs";
@@ -101,6 +102,7 @@ export class BrowserCdpClient {
     applyCanonicalDisplay,
     focusWorldSource,
     memory = new BrowserMemory(),
+    permissionRequests = false,
   } = {}) {
     this.memory = memory;
     this.rendererRecovery = new BrowserRendererRecovery(this);
@@ -145,6 +147,7 @@ export class BrowserCdpClient {
     this.fillTargets = new Map();
     this.fillRevision = 0;
     this.dialogDefaults = new BrowserDialogDefaults();
+    this.pagePermissions = permissionRequests ? new BrowserPagePermissions(this) : null;
     this.networkRequestsBySession = new Map();
     this.responseBodies = new BrowserResponseBodies();
     this.cookieWriterFence = null;
@@ -396,6 +399,7 @@ export class BrowserCdpClient {
     this.documentIdsByTarget.clear(); this.pageFramesByTarget.clear(); this.suspendedPageFrames.clear();
     this.fillTargets.clear();
     this.snapshotStateByTarget.clear();
+    this.pagePermissions?.clear();
     this.dialogDefaults.clear();
     this.networkRequestsBySession.clear();
     this.responseBodies.clear();
@@ -463,6 +467,7 @@ export class BrowserCdpClient {
       }
       this.unsubscribeFromConnection = unsubscribe ?? null;
       this.assertConnectionAttemptCurrent(attempt, connection);
+      await this.pagePermissions?.initialize(connection);
       await connection.send("Target.setDiscoverTargets", { discover: true });
       this.assertConnectionAttemptCurrent(attempt, connection);
       this.memory.watch(connection);
@@ -519,6 +524,7 @@ export class BrowserCdpClient {
     ]);
     const failed = results.find((result) => result.status === "rejected");
     if (failed) throw failed.reason;
+    await this.pagePermissions?.install(connection, sessionId);
   }
 
   async configureWriterTargetSession(connection, sessionId) {
@@ -645,6 +651,7 @@ export class BrowserCdpClient {
     this.documentIdsByTarget.delete(targetId); this.pageFramesByTarget.delete(targetId); this.suspendedPageFrames.delete(targetId);
     this.focusWorldsByTarget.delete(targetId);
     this.snapshotStateByTarget.delete(targetId);
+    this.pagePermissions?.dropTarget(targetId);
     this.dialogDefaults.delete(targetId);
     this.targetsByFrame.removeTarget(targetId);
     await this.frameSessions.removeTarget(targetId);
@@ -1201,6 +1208,14 @@ export class BrowserCdpClient {
         `browser target ${JSON.stringify(targetId)} moved away from the requested document`,
       );
     }
+    const permissionDialog = this.dialogDefaults.permissions.get(rawRequest.dialog_id);
+    if (permissionDialog) {
+      if (promptText != null || !this.dialogDefaults.current(targetId, rawRequest.dialog_id, documentId)) {
+        throw new BrowserControllerError("browser_dialog_invalid", "Browser permission answer is invalid");
+      }
+      await this.pagePermissions.answer(permissionDialog, action === "accept");
+      return { browser_generation:this.browserGeneration, target_id:targetId, document_id:documentId, action };
+    }
     const defaultPrompt = action === "accept" && promptText == null
       ? this.dialogDefaults.get(targetId, documentId)
       : undefined;
@@ -1476,6 +1491,7 @@ export class BrowserCdpClient {
   }
 
   recordConnectionEvent(message) {
+    this.pagePermissions?.observe(message);
     this.rendererRecovery.observe(message);
     this.responseBodies.observe(message);
     if (message?.method === "Network.requestWillBeSent" && typeof message.sessionId === "string"
@@ -1515,6 +1531,7 @@ export class BrowserCdpClient {
         this.sessionsByTarget.delete(targetId);
         this.viewportByTarget.delete(targetId);
         this.focusWorldsByTarget.delete(targetId);
+        this.pagePermissions?.dropTarget(targetId);
         this.dialogDefaults.delete(targetId);
         this.targetsByFrame.removeTarget(targetId);
         void this.frameSessions.removeTarget(targetId);

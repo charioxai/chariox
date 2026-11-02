@@ -94,7 +94,7 @@ export function navigationUrl(raw) {
 }
 
 export class KernelBrowserHost {
-  constructor(root, { chromium = new HostChromium(root), browserFactory = connection => new BrowserCdpClient({ connectionFactory: () => connection, focusWorldSource: mirror2ObserverExpression() }) } = {}) {
+  constructor(root, { chromium = new HostChromium(root), browserFactory = connection => new BrowserCdpClient({ connectionFactory: () => connection, permissionRequests: true, focusWorldSource: mirror2ObserverExpression() }) } = {}) {
     this.root = root;
     this.timing = displayTiming(root);
     this.visitedLinks = new VisitedLinks();
@@ -258,6 +258,7 @@ export class KernelBrowserHost {
     assertNotCancelled(signal);
     this.browser = this.browserFactory(connection);
     this.browser.pageTiming = this.timing;
+    this.browser.onPermissionChanged = () => this.stateSignal.notify();
     this.browser.visitedLinks = this.visitedLinks;
     connection.presentationFence?.bindOwner?.(this.browser, this.timing);
     this.browser.protectedValues = new Set(this.protection.values);

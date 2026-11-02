@@ -787,3 +787,38 @@ Required focused scenarios (acceptance area `multidomain-base`):
 
 The first two scenarios are regression checks; they do not establish hosted
 client acceptance or the broader MP-08 / MP-09 / MP-10 / MP-11 parity matrix.
+
+## MP-08 / MP-09 / MP-10 / MP-11: page permission dialogs (BROWSER09)
+
+The kernel browser presents page permission requests in the existing JSON
+`dialogs` list as `kind: "permission"`. The message is the permission name and
+`origin` is the requesting HTTP(S) execution context's origin, read from CDP.
+The ordinary document-bound `dialog` operation answers it: `accept` allows and
+`dismiss` denies. The viewer uses the same dialog and offers Allow/Deny.
+Unanswered requests are denied after 30 seconds. Navigation, context destruction,
+tab close and browser shutdown retire pending requests. Answers cannot revive a
+retired request. Decisions last for that origin and the running browser session;
+they are not saved to the profile, and CDP overrides are reset on reconnect.
+
+CDP's Browser permission setters do not supply a permission-prompt event, and
+Page's JavaScript-dialog events do not include browser permissions. The kernel
+therefore installs a main-world script through `Runtime.addBinding` and
+`Page.addScriptToEvaluateOnNewDocument` before navigating owned tabs. It wraps
+`geolocation.getCurrentPosition` / `watchPosition`,
+`Notification.requestPermission`, `permissions.query` for the covered names,
+and `clipboard.read` / `readText`. Querying permission state never opens a dialog.
+Actual geolocation and clipboard operations still use Chromium's native API
+after the kernel applies an explicit CDP grant; granting geolocation does not
+provide a virtual location or guarantee the machine has a location provider.
+
+Camera, microphone and screen capture always reject with a plain unavailable
+reason, and native CDP defaults deny these permissions too. No virtual devices
+are provided. Clipboard writes keep their native gesture requirements. Other
+APIs (for example MIDI, USB, Bluetooth, serial, local fonts and filesystem
+pickers), service workers and out-of-process iframe targets are not shimmed.
+A popup's script that executes before its controller session attaches is also
+outside the interception coverage. The native defaults for the covered names
+are denied, so such requests cannot silently acquire a grant. Same-process
+frame requests use their own CDP context origin and share the tab dialog list.
+No request or answer protocol shape changes: the permission kind extends the
+existing JSON state value.

@@ -80,7 +80,7 @@ export type KernelBrowserAgentActivity = { sequence: number; tab_id: string; act
 export type KernelBrowserTab = { can_go_back?: boolean | null; can_go_forward?: boolean | null; favicon_png_base64?: string | null; tab_id: string; document_id: string; url: string; title: string; opened_by?: KernelBrowserTabActor | null; taken_over?: boolean }
 export type KernelBrowserDialog = {
   dialog_id: string; tab_id: string; generation: number; document_id: string;
-  kind: "alert" | "confirm" | "prompt" | "beforeunload"; message: string; origin: string; default_prompt?: string
+  kind: "alert" | "confirm" | "prompt" | "beforeunload" | "permission"; message: string; origin: string; default_prompt?: string
 }
 export type KernelBrowserResult = {
   active_tab_id?: string | null;
