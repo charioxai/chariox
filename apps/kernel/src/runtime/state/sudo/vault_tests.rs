@@ -12,7 +12,7 @@ const TOKEN: &str = "sudo-fixture-bearer";
 const PASTE: &str = "chariox.kernel_browser_paste_secret";
 const SITE: &str = "http://127.0.0.1:8123";
 
-fn names(f: &Fixture) -> Vec<String> {
+pub(super) fn names(f: &Fixture) -> Vec<String> {
     f.router
         .runtime_tool_specs_for_auth_token(TOKEN)
         .into_iter()
@@ -20,7 +20,7 @@ fn names(f: &Fixture) -> Vec<String> {
         .collect()
 }
 
-async fn call(f: &Fixture, tool: &str, arguments: Value) -> Result<Value, DaemonError> {
+pub(super) async fn call(f: &Fixture, tool: &str, arguments: Value) -> Result<Value, DaemonError> {
     Box::pin(
         f.router
             .dispatch_authenticated_runtime_tool_call(TOKEN, tool, arguments),
@@ -39,7 +39,7 @@ fn vault_path(f: &Fixture) -> String {
         .path
 }
 
-fn unlock(f: &Fixture) {
+pub(super) fn unlock(f: &Fixture) {
     crate::secret::unlock_chariox_encrypted_vault(
         vault_path(f),
         PASSKEY,
@@ -59,7 +59,7 @@ fn stored(f: &Fixture, handle: &str) -> zeroize::Zeroizing<String> {
 }
 
 /// A live sudo window whose turn is actually running, as during provider work.
-fn elevated(f: &Fixture) -> KernelSudoTurn {
+pub(super) fn elevated(f: &Fixture) -> KernelSudoTurn {
     let turn = running(f);
     let prompts = &f.state.owned.prompt_state_owner;
     let session = f

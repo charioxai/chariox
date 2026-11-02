@@ -333,6 +333,15 @@ impl RuntimeSecretService {
                     ),
                 ));
             }
+            UserCredentialInjectionConfig::Env => {
+                return Err(secret_error(
+                    "http_request_with_credential",
+                    format!(
+                        "credential `{}` is configured for command environment input",
+                        credential.id
+                    ),
+                ));
+            }
             UserCredentialInjectionConfig::Browser => {
                 return Err(secret_error(
                     "http_request_with_credential",
@@ -403,6 +412,19 @@ impl RuntimeSecretService {
 
     pub fn terminal_secret_input(&self, credential_id: &str) -> Result<String, DaemonError> {
         let credential = self.validate_terminal_secret_input(credential_id)?;
+        self.resolve_secret(credential)
+    }
+
+    /// A value the kernel injects into a command's environment or stdin.
+    pub fn command_secret_input(&self, credential_id: &str) -> Result<String, DaemonError> {
+        let credential = self.credential(credential_id)?;
+        self.ensure_use_allowed(credential, UserCredentialUse::Env)?;
+        if !matches!(credential.injection, UserCredentialInjectionConfig::Env) {
+            return Err(secret_error(
+                "credential_policy",
+                format!("credential `{credential_id}` is not configured for command input"),
+            ));
+        }
         self.resolve_secret(credential)
     }
 
@@ -907,6 +929,7 @@ fn injection_kind(injection: &UserCredentialInjectionConfig) -> &'static str {
         UserCredentialInjectionConfig::Basic { .. } => "basic",
         UserCredentialInjectionConfig::Hmac { .. } => "hmac",
         UserCredentialInjectionConfig::Pty => "pty",
+        UserCredentialInjectionConfig::Env => "env",
         UserCredentialInjectionConfig::Browser => "browser",
         UserCredentialInjectionConfig::Computer => "computer",
         UserCredentialInjectionConfig::Provider => "provider",

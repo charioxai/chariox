@@ -200,6 +200,8 @@ fn default_credential_vault_max_ttl_minutes() -> u64 {
 pub enum UserCredentialUse {
     Http,
     Pty,
+    /// The environment or stdin of a command the kernel runs for the agent.
+    Env,
     Connector,
     Browser,
     Computer,
@@ -228,6 +230,7 @@ pub enum UserCredentialInjectionConfig {
         signature_header: String,
     },
     Pty,
+    Env,
     Browser,
     Computer,
     Provider,
@@ -282,6 +285,7 @@ pub fn validate_credentials(credentials: &[UserCredentialConfig]) -> Result<(), 
                 validate_non_empty("credentials.injection.signature_header", signature_header)?;
             }
             UserCredentialInjectionConfig::Pty => {}
+            UserCredentialInjectionConfig::Env => {}
             UserCredentialInjectionConfig::Browser => {}
             UserCredentialInjectionConfig::Computer => {}
             UserCredentialInjectionConfig::Provider => {}
