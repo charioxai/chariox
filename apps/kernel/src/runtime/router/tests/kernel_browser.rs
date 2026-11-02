@@ -103,6 +103,12 @@ async fn focus_check() {
     assert_eq!(input["modifiers"]["minimum"], 0);
     assert_eq!(input["modifiers"]["maximum"], 15);
     assert_eq!(input["key"]["type"], "string");
+    assert!(input["kind"]["enum"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("upload")));
+    assert_eq!(input["paths"]["maxItems"], 20);
+    assert_eq!(input["target"]["type"], "string");
     assert!(
         input["key"].get("enum").is_none(),
         "MP-08: Ctrl+A must be representable"
