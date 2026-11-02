@@ -1,49 +1,53 @@
 use super::*;
 
-struct SpawnRefused(i32);
+struct SpawnRefused(i32, bool);
 
 impl portable_pty::SlavePty for SpawnRefused {
     fn spawn_command(
         &self,
         _command: CommandBuilder,
     ) -> anyhow::Result<Box<dyn Child + Send + Sync>> {
-        Err(
-            anyhow::Error::new(std::io::Error::from_raw_os_error(self.0))
-                .context("dup of fd 317 failed"),
-        )
+        let error = anyhow::Error::new(std::io::Error::from_raw_os_error(self.0));
+        Err(if self.1 {
+            error.context("dup of fd 317 failed")
+        } else {
+            error
+        })
     }
 }
 
 #[test]
 fn resource_refusals_keep_wrapped_errno_out_of_the_client() {
-    for errno in [libc::EMFILE, libc::ENFILE, libc::EAGAIN, libc::ENOMEM] {
-        let error = crate::process_spawn::spawn_pty(
-            Box::new(SpawnRefused(errno)),
-            CommandBuilder::new("/bin/cat"),
-        )
-        .unwrap_err();
-        let refusal = spawn_failed("private-run", &error);
-        let public = crate::transport::kernel_protocol::map_kernel_error(&refusal);
-        let expected = match errno {
+    for context in [false, true] {
+        for errno in [libc::EMFILE, libc::ENFILE, libc::EAGAIN, libc::ENOMEM] {
+            let error = crate::process_spawn::spawn_pty(
+                Box::new(SpawnRefused(errno, context)),
+                CommandBuilder::new("/bin/cat"),
+            )
+            .unwrap_err();
+            let refusal = spawn_failed("private-run", &error);
+            let public = crate::transport::kernel_protocol::map_kernel_error(&refusal);
+            let expected = match errno {
             libc::EMFILE | libc::ENFILE => {
                 "too many open files in this kernel; close a terminal and try again"
             }
             _ => "not enough resources in this kernel to open a terminal; close a terminal and try again",
         };
-        assert_eq!(public.message, expected, "errno {errno}");
-        assert_eq!(
-            public.code,
-            match errno {
-                libc::EMFILE | libc::ENFILE => "too_many_open_files",
-                _ => "terminal_refused",
-            }
-        );
-        assert_eq!(
-            public.retryable,
-            matches!(errno, libc::EMFILE | libc::ENFILE)
-        );
-        assert!(!public.message.contains("private-run"));
-        assert!(!public.message.contains("317"));
+            assert_eq!(public.message, expected, "errno {errno}");
+            assert_eq!(
+                public.code,
+                match errno {
+                    libc::EMFILE | libc::ENFILE => "too_many_open_files",
+                    _ => "terminal_refused",
+                }
+            );
+            assert_eq!(
+                public.retryable,
+                matches!(errno, libc::EMFILE | libc::ENFILE)
+            );
+            assert!(!public.message.contains("private-run"));
+            assert!(!public.message.contains("317"));
+        }
     }
     let error = std::io::Error::from_raw_os_error(libc::ENOENT);
     assert!(matches!(

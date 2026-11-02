@@ -120,10 +120,14 @@ try {
   // Repeated failed opens must release their descriptors.
   for (let i = 0; i < 10; i++) {
     const before = fds()
+    let refusal
     try { await term(session, { operation: 'open', cols: 80, rows: 24, title: 'retry' }); throw new Error('unexpected successful retry') }
-    catch (error) { if (String(error).includes('unexpected successful retry')) throw error }
+    catch (error) {
+      if (String(error).includes('unexpected successful retry')) throw error
+      refusal = { code: error.code, message: error.message }
+    }
     await delay(300)
-    report.samples.push({ before, after: fds() })
+    report.samples.push({ before, after: fds(), refusal })
   }
   await delay(3000)
   report.witnesses = []
@@ -143,7 +147,7 @@ try {
   if (!exited(recovered)) await detach(recovered)
   report.fds_after_closing = fds()
   report.actionable = report.refusal.message.includes('too many open files in this kernel; close a terminal and try again')
-  report.no_fd_growth = report.samples.every(s => s.after <= report.samples[0].before)
+  report.no_fd_growth = report.samples.every(s => s.after <= report.samples[0].before && s.refusal.code === 'too_many_open_files')
   report.pass = report.actionable && report.no_fd_growth && report.witness_checkpoints.every(w => w.echoes) && report.witnesses.length === 10 && report.witnesses.every(w => w.echoes) && report.recovered
   console.log(JSON.stringify({ opened: report.terminals.length, refusal: report.refusal, witnesses_echoing: report.witnesses.filter(w => w.echoes).length, recovered: report.recovered, no_fd_growth: report.no_fd_growth, pass: report.pass }))
   process.exitCode = report.pass ? 0 : 1
