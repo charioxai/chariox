@@ -1,7 +1,6 @@
 //! `chariox.vault.capture_command`: a command prints a secret (an API key a
 //! CLI just created, `openssl rand` output); the kernel stores it in the Vault
 //! and the agent receives only the handle and its own label.
-use super::elevation::VaultElevationKind;
 use super::*;
 use crate::config::{UserCredentialConfig, UserCredentialMetadataConfig};
 use crate::transport::runtime_tools::{RuntimeToolResult, RuntimeToolSpec};
@@ -52,7 +51,7 @@ fn first_group() -> usize {
 pub(crate) fn capture_command_spec() -> RuntimeToolSpec {
     RuntimeToolSpec {
         name: VAULT_CAPTURE_COMMAND.into(),
-        description: "During your sudo window, run one command (argv, no shell) in your workspace and store a secret it prints on stdout in the owner's Vault. You never see the value or the command's output: the result is an opaque credential_id with your label. extract picks the value: {\"kind\":\"stdout\"} (whole stdout, trimmed; the default), {\"kind\":\"json\",\"pointer\":\"/data/api_key\"} (JSON Pointer into stdout), or {\"kind\":\"regex\",\"pattern\":\"token: (\\\\S+)\",\"group\":1}. host names the service the secret belongs to. Use it with chariox.vault.use_env. Retrying with the same request_id returns the same credential without running the command again.".into(),
+        description: "run one command (argv, no shell) in your workspace and store a secret it prints on stdout in the owner's Vault. You never see the value or the command's output: the result is an opaque credential_id with your label. extract picks the value: {\"kind\":\"stdout\"} (whole stdout, trimmed; the default), {\"kind\":\"json\",\"pointer\":\"/data/api_key\"} (JSON Pointer into stdout), or {\"kind\":\"regex\",\"pattern\":\"token: (\\\\S+)\",\"group\":1}. host names the service the secret belongs to. Use it with chariox.vault.use_env. Retrying with the same request_id returns the same credential without running the command again.".into(),
         input_schema: serde_json::json!({"type":"object","required":["request_id","argv","host"],"properties":{
             "request_id":{"type":"string","minLength":1,"maxLength":128},
             "argv":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":64},
@@ -75,7 +74,7 @@ impl KernelRuntimeState {
         token: &str,
         arguments: serde_json::Value,
     ) -> Result<RuntimeToolResult, DaemonError> {
-        let elevation = self.vault_command_context(token, VaultElevationKind::Capture)?;
+        let context = self.vault_agent_context(token)?;
         let args: CaptureArgs = serde_json::from_value(arguments)
             .map_err(|e| error(format!("invalid Vault capture arguments: {e}")))?;
         if args.request_id.trim().is_empty() || args.request_id.len() > 128 {
@@ -88,22 +87,22 @@ impl KernelRuntimeState {
         let argv = super::super::agent_process_watch::command_argv(&args.argv)?;
         let pattern = extract_pattern(&args.extract)?;
         let timeout = command_timeout(args.timeout_seconds)?;
-        let turn = &elevation.turn;
+        let turn = &context;
         let handle = captured_handle(turn, &args.request_id);
         let registry = crate::credential::CharioxCredentialRegistry::user()?;
         if let Some(existing) = registry.get(&handle)? {
             return committed(&existing, turn, &host);
         }
         let cwd =
-            super::super::agent_process_watch::workspace_cwd(&elevation.run, args.cwd.as_deref())?;
+            super::super::agent_process_watch::workspace_cwd(&context.run, args.cwd.as_deref())?;
         // Unlock before running: a key a service shows once must not be lost.
         let _unlock = self
             .ensure_vault_unlocked_for_agent(&turn.session_id, &turn.agent_id, "vault_capture")
             .await?;
-        self.recheck_vault_elevation(token, &elevation.turn)?;
+        self.recheck_vault_agent(&context)?;
         let output = run_command(
             self,
-            elevation.run.clone(),
+            context.run.clone(),
             super::super::agent_process_watch::KernelCommand {
                 argv,
                 cwd,
@@ -141,7 +140,7 @@ impl KernelRuntimeState {
         }
         let secret = extract(&output.stdout, &args.extract, pattern.as_ref())?;
         self.store_captured(
-            &elevation,
+            &context,
             &registry,
             Captured {
                 handle,
@@ -157,12 +156,12 @@ impl KernelRuntimeState {
     /// Stores a captured value for kernel-local use (command env/stdin and files).
     pub(super) async fn store_captured(
         &self,
-        elevation: &super::elevation::VaultElevation,
+        context: &VaultAgentContext,
         registry: &crate::credential::CharioxCredentialRegistry,
         captured: Captured,
         secret: &str,
     ) -> Result<RuntimeToolResult, DaemonError> {
-        let turn = &elevation.turn;
+        let turn = &context;
         let now = crate::session::unix_epoch_ms();
         let credential = UserCredentialConfig {
             id: captured.handle.clone(),
@@ -177,30 +176,27 @@ impl KernelRuntimeState {
             ],
             injection: captured.injection,
             metadata: Some(UserCredentialMetadataConfig {
+                use_binding: None,
                 created_by_kind: Some(CAPTURED_KIND.into()),
                 created_by_id: Some(turn.agent_id.clone()),
                 session_id: Some(turn.session_id.clone()),
                 provider: None,
-                provider_run_id: turn.provider_run_id.clone(),
+                provider_run_id: Some(turn.run.id().to_string()),
                 vault_key: Some(captured.handle.clone()),
                 created_at_ms: Some(now),
                 updated_at_ms: Some(now),
             }),
         };
-        // Retain the submitting turn across lifecycle/barrier/app waits, as generation does.
-        let authority = LocalDaemonRequest::ListSessions(crate::local::ListSessionsRequest);
-        let bound = self
-            .with_external_command_authority(Some((&turn.entry_id, &authority)))
-            .with_sudo_binding(turn.prompt_id.clone().zip(turn.provider_run_id.clone()));
-        bound
-            .upsert_observed_vault_credential(
-                &self.home_runtime_secret_service()?,
-                registry,
-                credential,
-                secret,
-                false,
-            )
-            .await?;
+        let _mutation = self.vault_observation_mutation_guard().await;
+        self.upsert_vault_credential_locked_for_agent(
+            &self.home_runtime_secret_service()?,
+            registry,
+            credential,
+            secret,
+            false,
+            Some(context),
+        )
+        .await?;
         Ok(RuntimeToolResult {
             ok: true,
             payload: serde_json::json!({"credential_id": captured.handle, "label": captured.label,
@@ -233,7 +229,7 @@ pub(super) fn extract_pattern(how: &Extract) -> Result<Option<regex::Regex>, Dae
 /// A retry returns the committed handle only to the same agent, session and host.
 pub(super) fn committed(
     existing: &UserCredentialConfig,
-    turn: &KernelSudoTurn,
+    turn: &VaultAgentContext,
     host: &str,
 ) -> Result<RuntimeToolResult, DaemonError> {
     let metadata = existing.metadata.as_ref();
@@ -254,7 +250,7 @@ pub(super) fn committed(
 }
 
 /// Deterministic per request so a lost acknowledgement never stores a second value.
-pub(super) fn captured_handle(turn: &KernelSudoTurn, request_id: &str) -> String {
+pub(super) fn captured_handle(turn: &VaultAgentContext, request_id: &str) -> String {
     let digest = Sha256::digest(
         [
             CAPTURED_KIND,

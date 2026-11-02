@@ -105,6 +105,7 @@ impl KernelRuntimeState {
                 value: "Bearer ${secret}".into(),
             },
             metadata: Some(UserCredentialMetadataConfig {
+                use_binding: None,
                 created_by_kind: Some("agent_auth".into()),
                 created_by_id: Some(authority.actor.agent_id.clone()),
                 session_id: Some(authority.actor.session_id.clone()),
@@ -115,16 +116,16 @@ impl KernelRuntimeState {
                 updated_at_ms: Some(now),
             }),
         };
-        authority
-            .authorized_state
-            .upsert_observed_vault_credential(
-                &self.home_runtime_secret_service()?,
-                registry,
-                credential.clone(),
-                issued.value.as_str(),
-                false,
-            )
-            .await?;
+        let _mutation = self.vault_observation_mutation_guard().await;
+        self.upsert_vault_credential_locked_for_agent(
+            &self.home_runtime_secret_service()?,
+            registry,
+            credential.clone(),
+            issued.value.as_str(),
+            false,
+            Some(&authority.context),
+        )
+        .await?;
         record_registration(self, &credential, &issued.registration_id)?;
         Ok(RuntimeToolResult {
             ok: true,

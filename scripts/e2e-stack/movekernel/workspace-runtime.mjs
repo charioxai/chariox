@@ -89,7 +89,7 @@ async function runtime(name) {
     const path = root + '/' + name;
     for (const dir of ['home', 'os-home', 'tmp', 'config'])
         await mkdir(path + '/' + dir, { recursive: true, mode: 0o700 });
-    await writeFile(path + '/home/config.toml', 'version = 1\n[state]\npath = "' + path + '/home/state.db"\n[history.archive]\nmode = "disabled"\n[credential_vault]\nbackend = "chariox_encrypted"\npath = "' + path + '/home/private-vault.json"\nunlock_policy = "kernel_init"\nagent_management = "allow"\n', { mode: 0o600 });
+    await writeFile(path + '/home/config.toml', 'version = 1\n[state]\npath = "' + path + '/home/state.db"\n[history.archive]\nmode = "disabled"\n[credential_vault]\nbackend = "chariox_encrypted"\npath = "' + path + '/home/private-vault.json"\nunlock_policy = "kernel_init"\n', { mode: 0o600 });
     const ports = await Promise.all(Array.from({ length: 4 }, port));
     const env = { PATH: process.env.PATH, LANG: 'C.UTF-8', HOME: path + '/os-home', CHARIOX_HOME: path + '/home', TMPDIR: path + '/tmp', XDG_CONFIG_HOME: path + '/config', XDG_DATA_HOME: path + '/data', XDG_STATE_HOME: path + '/state', XDG_CACHE_HOME: path + '/cache', IS_SANDBOX: '1', CHARIOX_KERNEL_PORT: String(ports[0]), CHARIOX_MCP_PORT: String(ports[1]), CHARIOX_CODEX_PORT: String(ports[2]), CHARIOX_OPENCODE_PORT: String(ports[3]), CHARIOX_DAEMON_SOCKET: path + '/daemon.sock', RUST_MIN_STACK: '16777216' };
     const url = `ws://127.0.0.1:${ports[0]}/kernel`;

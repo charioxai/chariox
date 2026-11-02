@@ -3,7 +3,6 @@
 //! output is masked for the injected values before it is returned. Later
 //! reads elsewhere are not scrubbed (UX-first rule: what the agent does with
 //! a value it chose to use is its own action).
-use super::elevation::VaultElevationKind;
 use super::*;
 use crate::transport::runtime_tools::{RuntimeToolResult, RuntimeToolSpec};
 use zeroize::Zeroizing;
@@ -17,6 +16,7 @@ const MAX_VARIABLES: usize = 16;
 #[serde(deny_unknown_fields)]
 struct UseArgs {
     argv: serde_json::Value,
+    origin: String,
     #[serde(default)]
     cwd: Option<String>,
     #[serde(default)]
@@ -30,8 +30,9 @@ struct UseArgs {
 pub(crate) fn use_env_spec() -> RuntimeToolSpec {
     RuntimeToolSpec {
         name: VAULT_USE_ENV.into(),
-        description: "During your sudo window, run one command (argv, no shell) in your workspace with Vault values injected by the kernel: env maps environment variable names to credential_ids, stdin sends one credential's value to the command's standard input. You never see the values; in this command's returned stdout and stderr they appear as [vault:<credential_id>]. Works with credentials whose allowed uses include env, such as those from chariox.vault.capture_command. Returns exit_code, stdout and stderr.".into(),
-        input_schema: serde_json::json!({"type":"object","required":["argv"],"properties":{
+        description: "Run one command (argv, no shell) in your workspace with Vault values injected by the kernel for the declared service origin: env maps environment variable names to credential_ids, stdin sends one credential's value to the command's standard input. You never see the values; in this command's returned stdout and stderr they appear as [vault:<credential_id>]. Works with credentials whose allowed uses include env, such as those from chariox.vault.capture_command. Returns exit_code, stdout and stderr.".into(),
+        input_schema: serde_json::json!({"type":"object","required":["argv","origin"],"properties":{
+            "origin":{"type":"string","description":"Exact service origin this command uses, such as https://api.example.com"},
             "argv":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":64},
             "cwd":{"type":"string","description":"Directory inside your workspace, relative to it"},
             "env":{"type":"object","additionalProperties":{"type":"string"},"maxProperties":MAX_VARIABLES,
@@ -48,7 +49,7 @@ impl KernelRuntimeState {
         token: &str,
         arguments: serde_json::Value,
     ) -> Result<RuntimeToolResult, DaemonError> {
-        let elevation = self.vault_command_context(token, VaultElevationKind::Use)?;
+        let context = self.vault_agent_context(token)?;
         let args: UseArgs = serde_json::from_value(arguments)
             .map_err(|e| error(format!("invalid Vault use arguments: {e}")))?;
         if args.env.is_empty() && args.stdin.is_none() {
@@ -67,24 +68,42 @@ impl KernelRuntimeState {
         let argv = super::super::agent_process_watch::command_argv(&args.argv)?;
         let timeout = command_timeout(args.timeout_seconds)?;
         let cwd =
-            super::super::agent_process_watch::workspace_cwd(&elevation.run, args.cwd.as_deref())?;
-        let turn = &elevation.turn;
-        let registry = crate::credential::CharioxCredentialRegistry::user()?;
-        for id in args.env.values().chain(&args.stdin) {
-            require_session_scope(&registry, id, &turn.session_id)?;
+            super::super::agent_process_watch::workspace_cwd(&context.run, args.cwd.as_deref())?;
+        let turn = &context;
+        let origin = crate::config::vault_use::vault_origin(&args.origin)?;
+        let env_target = |name: &str| crate::config::VaultUseTarget::CommandEnvironment {
+            name: name.into(),
+            origin: origin.clone(),
+        };
+        let stdin_target = crate::config::VaultUseTarget::CommandStdin {
+            origin: origin.clone(),
+        };
+        for (name, id) in &args.env {
+            self.preflight_workspace_vault_use(&turn.agent_id, id, &env_target(name))?;
+        }
+        if let Some(id) = &args.stdin {
+            self.preflight_workspace_vault_use(&turn.agent_id, id, &stdin_target)?;
         }
         let _unlock = self
             .ensure_vault_unlocked_for_agent(&turn.session_id, &turn.agent_id, "vault_use_env")
             .await?;
-        self.recheck_vault_elevation(token, &elevation.turn)?;
-        let service = self.home_runtime_secret_service()?;
-        let value = |id: &str| service.command_secret_input(id).map(Zeroizing::new);
-        let env = args
-            .env
-            .iter()
-            .map(|(name, id)| Ok((name.clone(), value(id)?)))
-            .collect::<Result<Vec<_>, DaemonError>>()?;
-        let stdin = args.stdin.as_deref().map(value).transpose()?;
+        self.recheck_vault_agent(&context)?;
+        let mut env = Vec::new();
+        for (name, id) in &args.env {
+            env.push((
+                name.clone(),
+                self.read_workspace_vault_value(&context, id, &env_target(name))
+                    .await?,
+            ));
+        }
+        let stdin = match &args.stdin {
+            Some(id) => Some(
+                self.read_workspace_vault_value(&context, id, &stdin_target)
+                    .await?,
+            ),
+            None => None,
+        };
+        self.recheck_vault_agent(&context)?;
         let mut masks = args
             .env
             .values()
@@ -96,7 +115,7 @@ impl KernelRuntimeState {
         masks.sort_by_key(|(_, value)| std::cmp::Reverse(value.len()));
         let output = run_command(
             self,
-            elevation.run.clone(),
+            context.run.clone(),
             super::super::agent_process_watch::KernelCommand {
                 argv,
                 cwd,
@@ -124,25 +143,6 @@ impl KernelRuntimeState {
 }
 
 /// An agent's captured values stay in the session that captured them.
-pub(super) fn require_session_scope(
-    registry: &crate::credential::CharioxCredentialRegistry,
-    id: &str,
-    session_id: &str,
-) -> Result<(), DaemonError> {
-    let credential = registry
-        .get(id)?
-        .ok_or_else(|| error(format!("credential `{id}` does not exist")))?;
-    let metadata = credential.metadata.as_ref();
-    if metadata.and_then(|m| m.created_by_kind.as_deref()) == Some(super::capture::CAPTURED_KIND)
-        && metadata.and_then(|m| m.session_id.as_deref()) != Some(session_id)
-    {
-        return Err(error(format!(
-            "credential `{id}` belongs to another session"
-        )));
-    }
-    Ok(())
-}
-
 fn variable_name(name: &str) -> bool {
     let mut chars = name.chars();
     name.len() <= 128

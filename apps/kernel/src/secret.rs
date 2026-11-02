@@ -20,6 +20,7 @@ use crate::error::DaemonError;
 mod backup_codes;
 mod http_boundary;
 mod totp;
+mod vault_activity;
 pub(crate) use http_boundary::HttpSecretBoundary;
 use http_boundary::{decode_http_response, http_error};
 mod vault;
@@ -80,6 +81,8 @@ pub struct CredentialHandleView {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CredentialHandleMetadataView {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub use_binding: Option<crate::config::VaultUseBinding>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_by_kind: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -175,6 +178,22 @@ impl PreparedCredentialHttpRequest {
     }
 }
 
+/// Issued by the kernel for one use, never serialized or returned to a model.
+#[derive(Debug, Clone)]
+pub(crate) struct VaultUseApproval {
+    credential_id: String,
+    binding: crate::config::VaultUseBinding,
+}
+
+impl VaultUseApproval {
+    pub(crate) fn new(credential_id: String, binding: crate::config::VaultUseBinding) -> Self {
+        Self {
+            credential_id,
+            binding,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct RuntimeSecretService {
     credentials: Vec<UserCredentialConfig>,
@@ -182,6 +201,7 @@ pub struct RuntimeSecretService {
     vault_backend: crate::config::CredentialVaultBackend,
     vault_path: String,
     vault_store: Arc<dyn CredentialVaultStore>,
+    vault_use_approval: Option<VaultUseApproval>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -222,6 +242,7 @@ impl RuntimeSecretService {
             vault_backend: crate::config::CredentialVaultBackend::ProcessMemory,
             vault_path: UserCredentialVaultConfig::default().path,
             vault_store,
+            vault_use_approval: None,
         }
     }
 
@@ -235,7 +256,13 @@ impl RuntimeSecretService {
             vault_backend: vault_config.backend,
             vault_path: vault_config.path.clone(),
             vault_store: vault_store_for_config(vault_config)?,
+            vault_use_approval: None,
         })
+    }
+
+    pub(crate) fn with_vault_use_approval(mut self, approval: VaultUseApproval) -> Self {
+        self.vault_use_approval = Some(approval);
+        self
     }
 
     pub fn credential_env_names(&self) -> BTreeSet<String> {
@@ -507,6 +534,16 @@ impl RuntimeSecretService {
         requested: UserCredentialUse,
     ) -> Result<String, DaemonError> {
         let credential = self.credential(credential_id)?;
+        if credential
+            .metadata
+            .as_ref()
+            .is_some_and(|m| m.use_binding.is_some())
+        {
+            return Err(secret_error(
+                "credential_policy",
+                "a bound Vault entry needs its exact command or file destination".into(),
+            ));
+        }
         self.ensure_use_allowed(credential, requested)?;
         if !matches!(
             credential.injection,
@@ -520,8 +557,84 @@ impl RuntimeSecretService {
         self.resolve_secret(credential)
     }
 
+    pub(crate) fn validate_workspace_secret_target(
+        &self,
+        credential_id: &str,
+        target: &crate::config::VaultUseTarget,
+    ) -> Result<&UserCredentialConfig, DaemonError> {
+        use crate::config::VaultUseTarget;
+        target.validate()?;
+        let requested = match target {
+            VaultUseTarget::CommandEnvironment { .. } | VaultUseTarget::CommandStdin { .. } => {
+                UserCredentialUse::Env
+            }
+            VaultUseTarget::File { .. } => UserCredentialUse::File,
+            _ => {
+                return Err(secret_error(
+                    "credential_policy",
+                    "a workspace secret needs a command or file destination".into(),
+                ))
+            }
+        };
+        let credential = self.credential(credential_id)?;
+        if let Some(binding) = credential
+            .metadata
+            .as_ref()
+            .and_then(|m| m.use_binding.as_ref())
+        {
+            binding.require(target)?;
+        }
+        self.ensure_use_allowed(credential, requested)?;
+        if !matches!(
+            credential.injection,
+            UserCredentialInjectionConfig::Env | UserCredentialInjectionConfig::File
+        ) {
+            return Err(secret_error(
+                "credential_policy",
+                "this credential is not configured for workspace commands or files".into(),
+            ));
+        }
+        Ok(credential)
+    }
+
+    pub(crate) fn workspace_secret_input_for_target(
+        &self,
+        credential_id: &str,
+        target: &crate::config::VaultUseTarget,
+    ) -> Result<String, DaemonError> {
+        self.resolve_secret(self.validate_workspace_secret_target(credential_id, target)?)
+    }
+
+    pub(crate) fn browser_vault_target(
+        &self,
+        credential_id: &str,
+        url: &str,
+    ) -> Result<crate::config::VaultUseTarget, DaemonError> {
+        let origin = crate::config::vault_use::vault_origin(url)?;
+        Ok(
+            if matches!(
+                self.credential(credential_id)?.injection,
+                UserCredentialInjectionConfig::Totp(_)
+            ) {
+                crate::config::VaultUseTarget::Totp { origin }
+            } else {
+                crate::config::VaultUseTarget::Site { origin }
+            },
+        )
+    }
+
     pub fn browser_secret_input(&self, credential_id: &str) -> Result<String, DaemonError> {
         let credential = self.credential(credential_id)?;
+        if credential
+            .metadata
+            .as_ref()
+            .is_some_and(|m| m.use_binding.is_some())
+        {
+            return Err(secret_error(
+                "credential_policy",
+                "a bound Vault entry needs an observed destination URL".into(),
+            ));
+        }
         self.ensure_use_allowed(credential, UserCredentialUse::Browser)?;
         if !matches!(
             credential.injection,
@@ -717,6 +830,7 @@ impl RuntimeSecretService {
         let (credential, secret) = normalize_vault_credential_input(credential, secret)?;
         let secret = secret.as_str();
         crate::credential::validate_credential_registration(&credential)?;
+        registry.validate_upsert(&credential)?;
         let vault_key = match &credential.source {
             UserCredentialSourceConfig::Vault { key } => key.trim().to_string(),
             UserCredentialSourceConfig::Env { .. } | UserCredentialSourceConfig::File { .. } => {
@@ -818,7 +932,7 @@ impl RuntimeSecretService {
         }
     }
 
-    fn credential(&self, id: &str) -> Result<&UserCredentialConfig, DaemonError> {
+    pub(crate) fn credential(&self, id: &str) -> Result<&UserCredentialConfig, DaemonError> {
         self.credentials
             .iter()
             .find(|credential| credential.id == id)
@@ -826,6 +940,22 @@ impl RuntimeSecretService {
     }
 
     fn resolve_secret(&self, credential: &UserCredentialConfig) -> Result<String, DaemonError> {
+        if let Some(binding) = credential
+            .metadata
+            .as_ref()
+            .and_then(|m| m.use_binding.as_ref())
+        {
+            if binding.value_kind == crate::config::VaultValueKind::PaymentCard
+                && self.vault_use_approval.as_ref().is_none_or(|approval| {
+                    approval.credential_id != credential.id || &approval.binding != binding
+                })
+            {
+                return Err(secret_error(
+                    "vault_card_approval",
+                    "payment card use requires the owner's approval for this operation".into(),
+                ));
+            }
+        }
         match &credential.source {
             UserCredentialSourceConfig::Env { name } => std::env::var(name).map_err(|_| {
                 secret_error(
@@ -849,6 +979,7 @@ impl RuntimeSecretService {
                     })
             }
             UserCredentialSourceConfig::Vault { key } => {
+                validate_vault_key(key)?;
                 let service = self.vault_service_name()?;
                 let key = key.trim();
                 self.ensure_vault_cache_available()?;
@@ -916,6 +1047,34 @@ impl RuntimeSecretService {
         credential: &UserCredentialConfig,
         requested: UserCredentialUse,
     ) -> Result<(), DaemonError> {
+        if let Some(binding) = credential
+            .metadata
+            .as_ref()
+            .and_then(|m| m.use_binding.as_ref())
+        {
+            if !matches!(
+                (&binding.target, requested),
+                (
+                    crate::config::VaultUseTarget::Site { .. },
+                    UserCredentialUse::Browser | UserCredentialUse::Http
+                ) | (
+                    crate::config::VaultUseTarget::Totp { .. },
+                    UserCredentialUse::Browser
+                ) | (
+                    crate::config::VaultUseTarget::CommandEnvironment { .. }
+                        | crate::config::VaultUseTarget::CommandStdin { .. },
+                    UserCredentialUse::Env
+                ) | (
+                    crate::config::VaultUseTarget::File { .. },
+                    UserCredentialUse::File
+                )
+            ) {
+                return Err(secret_error(
+                    "credential_policy",
+                    "this Vault entry was created for a different use".into(),
+                ));
+            }
+        }
         if credential.allowed_uses.is_empty() || credential.allowed_uses.contains(&requested) {
             return Ok(());
         }
@@ -933,6 +1092,13 @@ impl RuntimeSecretService {
         credential: &UserCredentialConfig,
         target: &url::Url,
     ) -> Result<(), DaemonError> {
+        if let Some(binding) = credential
+            .metadata
+            .as_ref()
+            .and_then(|m| m.use_binding.as_ref())
+        {
+            return binding.require(&self.browser_vault_target(&credential.id, target.as_str())?);
+        }
         // MP-08/MP-10/MP-11 A06: generated credentials authorize one exact
         // origin, including scheme and effective port. Legacy host-only generated
         // entries fail closed; the owner can regenerate for the intended origin.
@@ -1009,6 +1175,7 @@ impl RuntimeSecretService {
 impl From<&crate::config::UserCredentialMetadataConfig> for CredentialHandleMetadataView {
     fn from(metadata: &crate::config::UserCredentialMetadataConfig) -> Self {
         Self {
+            use_binding: metadata.use_binding.clone(),
             created_by_kind: metadata.created_by_kind.clone(),
             created_by_id: metadata.created_by_id.clone(),
             session_id: metadata.session_id.clone(),
@@ -1130,7 +1297,15 @@ fn expand_user_path(path: &str) -> PathBuf {
     PathBuf::from(path)
 }
 
+pub(crate) const VAULT_ACTIVITY_KEY: &str = "chariox-vault-activity";
+
 fn validate_vault_key(key: &str) -> Result<(), DaemonError> {
+    if key.trim() == VAULT_ACTIVITY_KEY {
+        return Err(secret_error(
+            "credential_vault",
+            "Vault Activity is not a credential value.".into(),
+        ));
+    }
     if key.trim().is_empty() {
         return Err(secret_error(
             "credential_vault",

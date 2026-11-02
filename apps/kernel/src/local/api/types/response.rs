@@ -263,6 +263,7 @@ pub enum LocalDaemonResponse {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         effects: Vec<UserConfigMutationEffect>,
     },
+    OwnerVault { result: OwnerVaultResult },
     CredentialSecretStored { key: String, },
     CredentialSecretDeleted { key: String, },
     CredentialVaultStatus { status: crate::secret::CharioxVaultUnlockStatus, },

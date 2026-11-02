@@ -7,7 +7,6 @@
 use super::capture::{
     captured_handle, committed, extract, extract_pattern, service_host, Captured, Extract,
 };
-use super::elevation::VaultElevationKind;
 use super::*;
 use crate::transport::runtime_tools::{RuntimeToolResult, RuntimeToolSpec};
 use std::io::Write;
@@ -46,7 +45,7 @@ struct WriteFileArgs {
 pub(crate) fn capture_file_spec() -> RuntimeToolSpec {
     RuntimeToolSpec {
         name: VAULT_CAPTURE_FILE.into(),
-        description: "During your sudo window, store a secret that a tool wrote into a file in your workspace (for example .env.local or a downloaded key) in the owner's Vault, without reading the file yourself. The result is an opaque credential_id with your label. extract picks the value: {\"kind\":\"whole\"} (whole file, trimmed; the default), {\"kind\":\"json\",\"pointer\":\"/private_key\"} or {\"kind\":\"regex\",\"pattern\":\"^API_KEY=(.+)$\",\"group\":1}. With replace_with_handle the value in the file becomes ${chariox:<credential_id>}. host names the service the secret belongs to. Retrying with the same request_id returns the same credential.".into(),
+        description: "store a secret that a tool wrote into a file in your workspace (for example .env.local or a downloaded key) in the owner's Vault, without reading the file yourself. The result is an opaque credential_id with your label. extract picks the value: {\"kind\":\"whole\"} (whole file, trimmed; the default), {\"kind\":\"json\",\"pointer\":\"/private_key\"} or {\"kind\":\"regex\",\"pattern\":\"^API_KEY=(.+)$\",\"group\":1}. With replace_with_handle the value in the file becomes ${chariox:<credential_id>}. host names the service the secret belongs to. Retrying with the same request_id returns the same credential.".into(),
         input_schema: serde_json::json!({"type":"object","required":["request_id","path","host"],"properties":{
             "request_id":{"type":"string","minLength":1,"maxLength":128},
             "path":{"type":"string","description":"File inside your workspace, relative to it"},
@@ -65,7 +64,7 @@ pub(crate) fn capture_file_spec() -> RuntimeToolSpec {
 pub(crate) fn write_file_spec() -> RuntimeToolSpec {
     RuntimeToolSpec {
         name: VAULT_WRITE_FILE.into(),
-        description: "During your sudo window, write a file in your workspace (for example .env) from a template: every {{NAME}} in template is replaced by the Vault value of values[NAME] (a credential_id). You never see the values. Works with credentials whose allowed uses include file, such as those from chariox.vault.capture_command or chariox.vault.capture_file. mode is octal, default \"600\". Returns the path and size.".into(),
+        description: "write a file in your workspace (for example .env) from a template: every {{NAME}} in template is replaced by the Vault value of values[NAME] (a credential_id). You never see the values. Works with credentials whose allowed uses include file, such as those from chariox.vault.capture_command or chariox.vault.capture_file. mode is octal, default \"600\". Returns the path and size.".into(),
         input_schema: serde_json::json!({"type":"object","required":["path","template","values"],"properties":{
             "path":{"type":"string","description":"File inside your workspace, relative to it; replaced if it exists"},
             "template":{"type":"string","maxLength":65536},
@@ -82,7 +81,7 @@ impl KernelRuntimeState {
         token: &str,
         arguments: serde_json::Value,
     ) -> Result<RuntimeToolResult, DaemonError> {
-        let elevation = self.vault_command_context(token, VaultElevationKind::Capture)?;
+        let context = self.vault_agent_context(token)?;
         let args: CaptureFileArgs = serde_json::from_value(arguments)
             .map_err(|e| error(format!("invalid Vault capture arguments: {e}")))?;
         if args.request_id.trim().is_empty() || args.request_id.len() > 128 {
@@ -93,13 +92,13 @@ impl KernelRuntimeState {
         }
         let host = service_host(&args.host)?;
         let pattern = extract_pattern(&args.extract)?;
-        let turn = &elevation.turn;
+        let turn = &context;
         let handle = captured_handle(turn, &args.request_id);
         let registry = crate::credential::CharioxCredentialRegistry::user()?;
         if let Some(existing) = registry.get(&handle)? {
             return committed(&existing, turn, &host);
         }
-        let path = existing_workspace_file(&elevation.run, &args.path)?;
+        let path = existing_workspace_file(&context.run, &args.path)?;
         let content = Zeroizing::new(
             std::fs::read(&path).map_err(|e| error(format!("cannot read {}: {e}", args.path)))?,
         );
@@ -107,10 +106,10 @@ impl KernelRuntimeState {
         let _unlock = self
             .ensure_vault_unlocked_for_agent(&turn.session_id, &turn.agent_id, "vault_capture")
             .await?;
-        self.recheck_vault_elevation(token, &elevation.turn)?;
+        self.recheck_vault_agent(&context)?;
         let mut result = self
             .store_captured(
-                &elevation,
+                &context,
                 &registry,
                 Captured {
                     handle: handle.clone(),
@@ -149,7 +148,7 @@ impl KernelRuntimeState {
         token: &str,
         arguments: serde_json::Value,
     ) -> Result<RuntimeToolResult, DaemonError> {
-        let elevation = self.vault_command_context(token, VaultElevationKind::Use)?;
+        let context = self.vault_agent_context(token)?;
         let args: WriteFileArgs = serde_json::from_value(arguments)
             .map_err(|e| error(format!("invalid Vault file arguments: {e}")))?;
         if args.values.is_empty() || args.values.len() > MAX_PLACEHOLDERS {
@@ -168,21 +167,30 @@ impl KernelRuntimeState {
             )));
         }
         let mode = file_mode(args.mode.as_deref())?;
-        let path = new_workspace_file(&elevation.run, &args.path)?;
-        let turn = &elevation.turn;
-        let registry = crate::credential::CharioxCredentialRegistry::user()?;
+        let path = new_workspace_file(&context.run, &args.path)?;
+        let turn = &context;
+        let target = crate::config::VaultUseTarget::File {
+            path: path.to_string_lossy().into_owned(),
+        };
         for id in args.values.values() {
-            super::use_env::require_session_scope(&registry, id, &turn.session_id)?;
+            self.preflight_workspace_vault_use(&turn.agent_id, id, &target)?;
         }
         let _unlock = self
             .ensure_vault_unlocked_for_agent(&turn.session_id, &turn.agent_id, "vault_write_file")
             .await?;
-        self.recheck_vault_elevation(token, &elevation.turn)?;
-        let service = self.home_runtime_secret_service()?;
+        self.recheck_vault_agent(&context)?;
         let mut content = Zeroizing::new(args.template.clone());
         for (name, id) in &args.values {
-            let value = Zeroizing::new(service.file_secret_input(id)?);
+            let value = self
+                .read_workspace_vault_value(&context, id, &target)
+                .await?;
             content = Zeroizing::new(content.replace(&format!("{{{{{name}}}}}"), &value));
+        }
+        self.recheck_vault_agent(&context)?;
+        if new_workspace_file(&context.run, &args.path)? != path {
+            return Err(error(
+                "the destination changed while waiting; retry the file write",
+            ));
         }
         write_atomically(&path, content.as_bytes(), mode)
             .map_err(|e| error(format!("cannot write {}: {e}", args.path)))?;

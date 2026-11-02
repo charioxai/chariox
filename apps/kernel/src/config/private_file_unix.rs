@@ -100,8 +100,7 @@ mod tests {
         let path = root.join("config.toml");
         let mut config = crate::config::CharioxUserConfig::default();
         config.credential_vault.unlock_policy = crate::config::CredentialVaultUnlockPolicy::Always;
-        config.credential_vault.agent_management =
-            crate::config::CredentialVaultAgentManagementPolicy::Deny;
+        config.credential_vault.default_ttl_minutes = 23;
         let original = toml::to_string(&config).unwrap();
         write(&path, &root, original.as_bytes()).unwrap();
         let defaults = toml::to_string(&crate::config::CharioxUserConfig::default()).unwrap();
@@ -119,10 +118,7 @@ mod tests {
             loaded.credential_vault.unlock_policy,
             crate::config::CredentialVaultUnlockPolicy::Always
         );
-        assert_eq!(
-            loaded.credential_vault.agent_management,
-            crate::config::CredentialVaultAgentManagementPolicy::Deny
-        );
+        assert_eq!(loaded.credential_vault.default_ttl_minutes, 23);
         assert_eq!(mode, 0o600);
         assert_eq!(entries, 1);
     }

@@ -245,13 +245,9 @@ impl KernelRuntimeState {
                             credentials,
                             &user_config.credential_vault,
                         )?;
-                        self.require_vault_factor_elevation(
-                            provider_run.session_id(),
-                            provider_run.agent_instance_id().unwrap_or_default(),
-                            service.validate_browser_secret_input_for_target_url(
-                                &args.credential_id,
-                                &browser_url,
-                            )?,
+                        service.validate_browser_secret_input_for_target_url(
+                            &args.credential_id,
+                            &browser_url,
                         )?;
                         zeroize::Zeroizing::new(service.browser_secret_input_for_target_url(
                             &args.credential_id,

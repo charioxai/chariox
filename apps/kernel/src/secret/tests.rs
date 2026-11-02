@@ -117,6 +117,7 @@ fn credential_handles_do_not_include_internal_vault_metadata() {
         allowed_uses: vec![UserCredentialUse::Browser],
         injection: UserCredentialInjectionConfig::Browser,
         metadata: Some(UserCredentialMetadataConfig {
+            use_binding: None,
             created_by_kind: Some("agent".to_string()),
             created_by_id: Some("agent-1".to_string()),
             session_id: Some("session-1".to_string()),
@@ -653,6 +654,7 @@ fn vault_process_cache_is_scoped_by_backend_path_service_and_key() {
         crate::session::unix_epoch_ms()
     );
     let writer = RuntimeSecretService {
+        vault_use_approval: None,
         credentials: Vec::new(),
         vault_service: service_name.clone(),
         vault_backend: CredentialVaultBackend::ProcessMemory,
@@ -665,6 +667,7 @@ fn vault_process_cache_is_scoped_by_backend_path_service_and_key() {
         .expect("writer should warm its scoped cache");
 
     let reader = RuntimeSecretService {
+        vault_use_approval: None,
         credentials: vec![UserCredentialConfig {
             id: "shared-key".to_string(),
             description: None,

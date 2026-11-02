@@ -1,12 +1,11 @@
 //! MP-08 / MP-09 / MP-10 / MP-11 VAUDIT S2: Vault capture from a command and
 //! Vault use as a command's environment or stdin. The kernel moves the value;
 //! the model only ever holds an opaque credential_id.
+use super::vault_use::VaultAgentContext;
 use super::*;
-use crate::local::KernelSudoTurn;
 use crate::runtime::kernel_access::error;
 
 mod capture;
-mod elevation;
 mod files;
 mod use_env;
 

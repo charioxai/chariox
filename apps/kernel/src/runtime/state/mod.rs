@@ -109,6 +109,8 @@ mod user_app_view_restore;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod user_app_view_runtime;
 mod vault_command;
+mod vault_generate;
+mod vault_use;
 #[cfg(test)]
 pub(crate) use critical_approval_passkey::critical_approval_audit_payload;
 #[cfg(test)]
@@ -573,6 +575,7 @@ mod claude_token_first_use;
 mod provider_login_workflow;
 mod runtime_interaction_owned_state;
 pub(crate) use runtime_interaction_owned_state::interaction_waits;
+mod owner_vault;
 mod runtime_interaction_state;
 mod runtime_notice_owned_state;
 mod runtime_state_views;

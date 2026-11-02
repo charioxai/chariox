@@ -36,6 +36,9 @@ pub(crate) async fn execute_user_config_request(
         LocalDaemonRequest::UnsetUserConfigValue(request) => {
             execute_unset_user_config_value_request(runtime_state, request).await
         }
+        LocalDaemonRequest::OwnerVault(request) => {
+            runtime_state.owner_vault(command, request).await
+        }
         LocalDaemonRequest::SetCredentialSecret(request) => {
             execute_set_credential_secret_request(
                 config_projection,

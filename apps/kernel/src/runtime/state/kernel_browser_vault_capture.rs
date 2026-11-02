@@ -7,9 +7,9 @@
 //! plain field (an env var value box) that stays masked for the model.
 use super::kernel_browser_runtime::host_error;
 use super::kernel_browser_secret_runtime::{require_vault_owner, SecretTarget};
+use super::vault_use::VaultAgentContext;
 use super::*;
 use crate::config::{UserCredentialConfig, UserCredentialMetadataConfig};
-use crate::local::KernelSudoTurn;
 use crate::runtime::kernel_browser_host::{KernelBrowserAdmission, KernelBrowserHost};
 use crate::transport::runtime_tools::{RuntimeToolResult, RuntimeToolSpec};
 use serde::Deserialize;
@@ -62,7 +62,7 @@ impl CaptureRead {
 pub(super) fn capture_spec() -> RuntimeToolSpec {
     RuntimeToolSpec {
         name: CAPTURE.into(),
-        description: "During your sudo window, store a secret a user-domain page shows (an API key, a webhook signing secret) in the owner's Vault without reading it. Point node_ref at the element that shows the value (text or input); if the page hides it behind a Reveal/Show button, pass that button as reveal_node_ref and do not click it yourself. For a copy-to-clipboard button, pass the button as node_ref with read=clipboard. The kernel reveals, reads and masks the value for you; you receive only credential_id and label. use_on lists the site origins where the credential may be filled later (default: this page's origin). Retrying with the same request_id returns the same credential.".into(),
+        description: "store a secret a user-domain page shows (an API key, a webhook signing secret) in the owner's Vault without reading it. Point node_ref at the element that shows the value (text or input); if the page hides it behind a Reveal/Show button, pass that button as reveal_node_ref and do not click it yourself. For a copy-to-clipboard button, pass the button as node_ref with read=clipboard. The kernel reveals, reads and masks the value for you; you receive only credential_id and label. use_on lists the site origins where the credential may be filled later (default: this page's origin). Retrying with the same request_id returns the same credential.".into(),
         input_schema: json!({"type":"object","required":["request_id","tab_id","generation","document_id","node_ref"],"properties":{
             "request_id":{"type":"string","minLength":1,"maxLength":128},
             "tab_id":{"type":"string"},"generation":{"type":"integer","minimum":1},"document_id":{"type":"string"},
@@ -76,7 +76,7 @@ pub(super) fn capture_spec() -> RuntimeToolSpec {
 pub(super) fn fill_spec() -> RuntimeToolSpec {
     RuntimeToolSpec {
         name: FILL.into(),
-        description: "During your sudo window, put a Vault credential into an observed plain text field of a user-domain tab (input, textarea or contenteditable, e.g. an environment variable value box) on a site the credential allows. The field stays masked in everything you observe. Use tab/generation/document_id/node_ref from a fresh snapshot. For login password fields use chariox.kernel_browser_paste_secret.".into(),
+        description: "put a Vault credential into an observed plain text field of a user-domain tab (input, textarea or contenteditable, e.g. an environment variable value box) on a site the credential allows. The field stays masked in everything you observe. Use tab/generation/document_id/node_ref from a fresh snapshot. For login password fields use chariox.kernel_browser_paste_secret.".into(),
         input_schema: json!({"type":"object","properties":{"credential_id":{"type":"string"},"tab_id":{"type":"string"},"generation":{"type":"integer","minimum":1},"document_id":{"type":"string"},"node_ref":{"type":"string"},"submit":{"type":"boolean","default":false}},"required":["credential_id","tab_id","generation","document_id","node_ref"],"additionalProperties":false}),
     }
 }
@@ -90,10 +90,8 @@ impl KernelRuntimeState {
         arguments: Value,
         admission: KernelBrowserAdmission,
     ) -> Result<RuntimeToolResult, DaemonError> {
-        self.vault_elevation(
-            super::sudo::VaultCaller::AuthToken(token),
-            "Vault fill_field",
-        )?;
+        let context = self.vault_agent_context(token)?;
+        self.recheck_vault_agent(&context)?;
         self.kernel_browser_paste_secret(session, agent, arguments, admission, true)
             .await
     }
@@ -106,8 +104,7 @@ impl KernelRuntimeState {
         arguments: Value,
         admission: KernelBrowserAdmission,
     ) -> Result<RuntimeToolResult, DaemonError> {
-        let turn =
-            self.vault_elevation(super::sudo::VaultCaller::AuthToken(token), "Vault capture")?;
+        let turn = self.vault_agent_context(token)?;
         let args: CaptureArgs = serde_json::from_value(arguments)
             .map_err(|_| host_error("VAUDIT: invalid Vault capture arguments".into()))?;
         if args.request_id.trim().is_empty() || args.request_id.len() > 128 {
@@ -138,13 +135,13 @@ impl KernelRuntimeState {
         let url = self
             .kernel_browser_secret_target_url(user, &admission, &target, false)
             .await?;
-        let source = super::sudo::generation_origin(&url)?;
+        let source = crate::config::vault_use::vault_origin(&url)?;
         let use_on = if args.use_on.is_empty() {
             vec![source.clone()]
         } else {
             let mut origins = Vec::new();
             for origin in &args.use_on {
-                let origin = super::sudo::generation_origin(origin)?;
+                let origin = crate::config::vault_use::vault_origin(origin)?;
                 if !origins.contains(&origin) {
                     origins.push(origin);
                 }
@@ -163,7 +160,7 @@ impl KernelRuntimeState {
         let _unlock = self
             .ensure_vault_unlocked_for_agent(session, agent.id(), "vault_capture_browser")
             .await?;
-        self.recheck_vault_elevation(token, &turn)?;
+        self.recheck_vault_agent(&turn)?;
         check_authority()?;
         let secret = {
             let _barrier = protection.barrier(&scope)?.write_owned().await;
@@ -242,28 +239,26 @@ impl KernelRuntimeState {
             allowed_uses: vec![crate::config::UserCredentialUse::Browser],
             injection: crate::config::UserCredentialInjectionConfig::Browser,
             metadata: Some(UserCredentialMetadataConfig {
+                use_binding: None,
                 created_by_kind: Some(CAPTURED_KIND.into()),
                 created_by_id: Some(turn.agent_id.clone()),
                 session_id: Some(turn.session_id.clone()),
                 provider: None,
-                provider_run_id: turn.provider_run_id.clone(),
+                provider_run_id: Some(turn.run.id().to_string()),
                 vault_key: Some(handle.clone()),
                 created_at_ms: Some(now),
                 updated_at_ms: Some(now),
             }),
         };
-        // Retain the submitting turn across lifecycle/barrier/app waits, as generation does.
-        let authority = LocalDaemonRequest::ListSessions(crate::local::ListSessionsRequest);
-        let bound = self
-            .with_external_command_authority(Some((&turn.entry_id, &authority)))
-            .with_sudo_binding(turn.prompt_id.clone().zip(turn.provider_run_id.clone()));
-        match bound
-            .upsert_observed_vault_credential(
+        let _mutation = self.vault_observation_mutation_guard().await;
+        match self
+            .upsert_vault_credential_locked_for_agent(
                 &self.home_runtime_secret_service()?,
                 &registry,
                 credential,
                 secret.as_str(),
                 false,
+                Some(&turn),
             )
             .await
         {
@@ -303,7 +298,7 @@ fn captured_value(value: &str) -> Result<(), DaemonError> {
 /// A retry returns the committed handle only to the same agent, session and sites.
 fn committed(
     existing: &UserCredentialConfig,
-    turn: &KernelSudoTurn,
+    turn: &VaultAgentContext,
     use_on: &[String],
 ) -> Result<RuntimeToolResult, DaemonError> {
     let metadata = existing.metadata.as_ref();
@@ -324,7 +319,7 @@ fn committed(
 }
 
 /// Deterministic per request so a lost acknowledgement never stores a second value.
-fn captured_handle(turn: &KernelSudoTurn, request_id: &str) -> String {
+fn captured_handle(turn: &VaultAgentContext, request_id: &str) -> String {
     let digest = Sha256::digest(
         [
             CAPTURED_KIND,

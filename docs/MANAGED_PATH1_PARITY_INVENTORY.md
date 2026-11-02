@@ -2077,3 +2077,30 @@ navigation, link click, observed progress, readable bytes, cancellation, two Tab
 Room cleanup and browser cleanup. Kernel/provider tool acceptance also requires
 those operations through a real authenticated run. These checks alone do not
 close the wider MP-10 parity matrix or the MP-11 security-anchor review.
+
+## MP-08 / MP-09 / MP-10 / MP-11 owner Vault management (2026-11-02)
+
+Protocol 958/407 reconciles owner and agent creation: both persist a canonical
+`VaultUseBinding` in the credential registry and store each value in its own
+ordinary encrypted Vault slot. The owner form sends the same typed Site,
+CommandEnvironment, File or TOTP target; replacement cannot change that binding.
+The duplicate owner catalogue and owner-only inventory protocol are removed.
+`ListCredentials` is the single value-free inventory for both creators.
+
+Owner-only Create/Generate/Reveal/Activity/Replace/Delete remain checked at the
+router and executor. Agents, sudo/KA callers, forwarded Hosts and other users
+cannot reveal values. Owner controls bypass command receipts and client replay;
+Debug, payload redaction and the external response boundary protect values.
+
+Activity lives as a value-free encrypted log in the same Vault. It records owner
+creation, reveal and replacement, plus browser/HTTP agent operations and exact-use
+refusals, attributed to the caller. Agent-created entries also expose their
+creation metadata in Activity. The internal Activity key cannot be resolved or
+changed as a credential and never enters the ordinary value cache. Owner changes
+restore registry and value on failure; Activity also restores post-rename write
+failures. A failed rollback requires explicit recovery.
+
+These paths are common to ordinary and managed kernels. No placement branch,
+provider execution rule, relay admission, signing/trust or managed automatic
+shutdown behavior changes (MP-09). Focused router/storage and hosted owner-to-agent
+drills cover this seam only; they do not close the entire MP-10 comparison matrix.

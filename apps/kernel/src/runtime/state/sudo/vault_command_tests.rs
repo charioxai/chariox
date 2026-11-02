@@ -47,31 +47,33 @@ fn workspace(f: &Fixture) -> std::path::PathBuf {
 }
 
 #[tokio::test]
-async fn s2_ordinary_agents_cannot_capture_or_use() {
+async fn s2_ordinary_agents_capture_and_use_without_sudo() {
     crate::test_support::isolated_env_test!();
     let f = fixture();
     unlock(&f);
     let catalog = names(&f);
-    // Stable discovery is not a grant: dispatch checks the live window.
-    assert!(catalog.iter().any(|name| name == CAPTURE), "{catalog:?}");
-    assert!(catalog.iter().any(|name| name == USE_ENV), "{catalog:?}");
-    let refused = capture(&f, "key", printing(SECRET), json!({"kind": "stdout"}))
+    assert!(catalog.iter().any(|name| name == CAPTURE));
+    assert!(catalog.iter().any(|name| name == USE_ENV));
+    let captured = capture(&f, "key", printing(SECRET), json!({"kind":"stdout"}))
         .await
-        .unwrap_err()
-        .to_string();
-    assert!(refused.contains("sudo"), "{refused}");
-    let marker = workspace(&f).join("must-not-run");
-    assert!(call(
+        .unwrap();
+    let handle = captured["credential_id"].as_str().unwrap();
+    let used = call(
         &f,
         USE_ENV,
-        json!({"argv": ["/usr/bin/touch", marker], "env": {"KEY": "any"}}),
+        json!({"origin":"https://api.example.com","argv":["/usr/bin/env"],"env":{"KEY":handle}}),
     )
     .await
-    .is_err());
-    assert!(!marker.exists());
-    assert!(crate::credential::load_user_credentials()
+    .unwrap();
+    assert!(!used.to_string().contains(SECRET));
+    assert!(used["stdout"]
+        .as_str()
         .unwrap()
-        .is_empty());
+        .contains(&format!("KEY=[vault:{handle}]")));
+    let marker = workspace(&f).join("must-not-run");
+    assert!(call(&f,USE_ENV,json!({"origin":"https://api.example.com","argv":["/usr/bin/touch",marker],"env":{"KEY":"missing"}})).await.is_err());
+    assert!(!marker.exists());
+    f.state.shutdown_cleanup().await.unwrap();
 }
 
 #[tokio::test]
@@ -196,7 +198,7 @@ async fn s2_use_env_injects_values_and_masks_this_output() {
         .unwrap();
     let handle = created["credential_id"].as_str().unwrap().to_string();
     let received = workspace(&f).join("received");
-    let arguments = json!({"argv": ["/bin/sh", "-c",
+    let arguments = json!({"origin":"https://api.example.com","argv": ["/bin/sh", "-c",
         format!("printf '%s' \"$API_KEY\" > '{}'; echo \"key=$API_KEY\"; cat; echo \"err $API_KEY\" >&2; exit 4", received.display())],
         "env": {"API_KEY": handle}, "stdin": handle});
     assert!(!arguments.to_string().contains(SECRET));
@@ -216,17 +218,17 @@ async fn s2_use_env_injects_values_and_masks_this_output() {
     let slow = call(
         &f,
         USE_ENV,
-        json!({"argv": ["/bin/sleep", "30"], "env": {"K": handle}, "timeout_seconds": 1}),
+        json!({"origin":"https://api.example.com","argv": ["/bin/sleep", "30"], "env": {"K": handle}, "timeout_seconds": 1}),
     )
     .await
     .unwrap();
     assert_eq!(slow["status"], "timed_out");
     assert!(started.elapsed() < Duration::from_secs(15));
     for refused in [
-        json!({"argv": ["/bin/true"]}),
-        json!({"argv": ["/bin/true"], "env": {"BAD-NAME": handle}}),
-        json!({"argv": ["/bin/true"], "env": {"K": "missing"}}),
-        json!({"argv": ["/bin/true"], "env": {"K": handle}, "cwd": "../.."}),
+        json!({"origin":"https://api.example.com","argv": ["/bin/true"]}),
+        json!({"origin":"https://api.example.com","argv": ["/bin/true"], "env": {"BAD-NAME": handle}}),
+        json!({"origin":"https://api.example.com","argv": ["/bin/true"], "env": {"K": "missing"}}),
+        json!({"origin":"https://api.example.com","argv": ["/bin/true"], "env": {"K": handle}, "cwd": "../.."}),
     ] {
         assert!(
             call(&f, USE_ENV, refused.clone()).await.is_err(),
@@ -238,7 +240,7 @@ async fn s2_use_env_injects_values_and_masks_this_output() {
         .unwrap();
     std::fs::remove_file(&received).unwrap();
     assert!(call(&f, USE_ENV,
-        json!({"argv": ["/bin/sh", "-c", format!("printf x > '{}'", received.display())], "env": {"K": handle}}))
+        json!({"origin":"https://api.example.com","argv": ["/bin/sh", "-c", format!("printf x > '{}'", received.display())], "env": {"K": handle}}))
     .await
     .is_err());
     assert!(!received.exists());
@@ -275,7 +277,7 @@ async fn s2_use_env_refuses_credentials_not_made_for_commands() {
     let refused = call(
         &f,
         USE_ENV,
-        json!({"argv": ["/usr/bin/touch", marker], "env": {"K": "owner-terminal"}}),
+        json!({"origin":"https://api.example.com","argv": ["/usr/bin/touch", marker], "env": {"K": "owner-terminal"}}),
     )
     .await
     .unwrap_err()
@@ -322,7 +324,7 @@ async fn s4_capture_file_and_write_file_move_values_through_the_kernel() {
     let used = call(
         &f,
         USE_ENV,
-        json!({"argv": ["/bin/sh", "-c", "printf %s \"$K\""], "env": {"K": handle}}),
+        json!({"origin":"https://api.example.com","argv": ["/bin/sh", "-c", "printf %s \"$K\""], "env": {"K": handle}}),
     )
     .await
     .unwrap();

@@ -86,11 +86,7 @@ impl KernelRuntimeState {
                     credential_from_runtime_input(args.credential)?,
                     provider_run,
                 );
-                self.require_vault_factor_elevation(
-                    provider_run.session_id(),
-                    provider_run.agent_instance_id().unwrap_or_default(),
-                    &credential,
-                )?;
+
                 match &credential.source {
                     crate::config::UserCredentialSourceConfig::Vault { .. } => {}
                     crate::config::UserCredentialSourceConfig::Env { .. }
@@ -277,13 +273,74 @@ impl KernelRuntimeState {
                     operation: "runtime_tool_http_request_with_credential",
                     message: format!("invalid tool arguments: {error}"),
                 })?;
-                service.validate_http_request_target(&args.credential_id, &args.url)?;
+                let (credential, _) =
+                    match service.validate_http_request_target(&args.credential_id, &args.url) {
+                        Ok(target) => target,
+                        Err(error) => {
+                            if service.credential(&args.credential_id).is_ok() {
+                                self.record_vault_refusal(
+                                    &args.credential_id,
+                                    &crate::config::VaultUseTarget::site(&args.url)?,
+                                    provider_run.agent_instance_id().unwrap_or("agent"),
+                                )?;
+                            }
+                            return Err(error);
+                        }
+                    };
+                let vault_actor = if credential
+                    .metadata
+                    .as_ref()
+                    .is_some_and(|m| m.use_binding.is_some())
+                {
+                    let token = provider_run.runtime_mcp_auth_token().ok_or_else(|| {
+                        crate::runtime::kernel_access::error("Vault provider authentication ended")
+                    })?;
+                    let actor = self.vault_agent_context(token)?;
+                    if actor.run.id() != provider_run.id() {
+                        return Err(crate::runtime::kernel_access::error(
+                            "the Vault operation's provider run changed",
+                        ));
+                    }
+                    Some(actor)
+                } else {
+                    None
+                };
                 let _vault_unlock = self
                     .ensure_vault_unlocked_for_provider_run(
                         provider_run,
                         "runtime_tool_http_request_with_credential",
                     )
                     .await?;
+                let approval = if vault_actor.is_some() {
+                    Some(
+                        self.authorize_vault_use(
+                            provider_run.owner_user_id(),
+                            provider_run.agent_instance_id().unwrap_or("agent"),
+                            credential,
+                            &crate::config::VaultUseTarget::site(&args.url)?,
+                        )
+                        .await?,
+                    )
+                } else {
+                    None
+                };
+                if let Some(actor) = &vault_actor {
+                    self.recheck_vault_agent(actor)?;
+                }
+                let service = self.home_runtime_secret_service()?;
+                let service = match approval {
+                    Some(approval) => service.with_vault_use_approval(approval),
+                    None => service,
+                };
+                service.validate_http_request_target(&args.credential_id, &args.url)?;
+                service.record_vault_activity(
+                    &args.credential_id,
+                    &format!(
+                        "Use attempted over HTTP by {}",
+                        provider_run.agent_instance_id().unwrap_or("agent")
+                    ),
+                )?;
+                let audit_id = args.credential_id.clone();
                 let request = crate::secret::CredentialHttpRequest {
                     credential_id: args.credential_id,
                     method: args.method,
@@ -314,6 +371,13 @@ impl KernelRuntimeState {
                     operation: "runtime_tool_http_request_with_credential",
                     message: error.to_string(),
                 })??;
+                self.home_runtime_secret_service()?.record_vault_activity(
+                    &audit_id,
+                    &format!(
+                        "Used over HTTP by {}",
+                        provider_run.agent_instance_id().unwrap_or("agent")
+                    ),
+                )?;
                 Ok(crate::transport::runtime_tools::RuntimeToolResult {
                     ok: true,
                     payload: serde_json::to_value(response).map_err(|error| {
@@ -332,11 +396,7 @@ impl KernelRuntimeState {
                     operation: "runtime_tool_send_secret_to_terminal",
                     message: format!("invalid tool arguments: {error}"),
                 })?;
-                self.require_vault_factor_elevation(
-                    provider_run.session_id(),
-                    provider_run.agent_instance_id().unwrap_or_default(),
-                    service.validate_terminal_secret_input(&args.credential_id)?,
-                )?;
+                service.validate_terminal_secret_input(&args.credential_id)?;
                 let _vault_unlock = self
                     .ensure_vault_unlocked_for_provider_run(
                         provider_run,
@@ -347,11 +407,7 @@ impl KernelRuntimeState {
                 self.with_app_side_effect(|app| {
                     // Unlock can wait while the owner changes this handle's kind or scope.
                     let service = self.home_runtime_secret_service()?;
-                    self.require_vault_factor_elevation(
-                        provider_run.session_id(),
-                        provider_run.agent_instance_id().unwrap_or_default(),
-                        service.validate_terminal_secret_input(&args.credential_id)?,
-                    )?;
+                    service.validate_terminal_secret_input(&args.credential_id)?;
                     let mut input = zeroize::Zeroizing::new(
                         service.terminal_secret_input(&args.credential_id)?,
                     );
@@ -656,7 +712,7 @@ impl KernelRuntimeState {
     ) -> Result<(String, String), DaemonError> {
         let agent = self.authorize_home_credential_context(&context)?;
         let service = self.home_runtime_secret_service()?;
-        let credential = match &injection {
+        match &injection {
             crate::transport::relay_peer::RemoteCredentialSecretInjection::Browser {
                 target_url,
             } => {
@@ -672,7 +728,7 @@ impl KernelRuntimeState {
                 });
             }
         };
-        self.require_vault_factor_elevation(&context.home_session_id, agent.id(), credential)?;
+
         let _vault_unlock = self
             .ensure_vault_unlocked_for_agent(
                 &context.home_session_id,
@@ -684,7 +740,7 @@ impl KernelRuntimeState {
             .with_app_side_effect(|_| {
                 self.authorize_home_credential_context(&context)?;
                 let service = self.home_runtime_secret_service()?;
-                let credential = match &injection {
+                match &injection {
                     crate::transport::relay_peer::RemoteCredentialSecretInjection::Browser {
                         target_url,
                     } => service
@@ -696,11 +752,7 @@ impl KernelRuntimeState {
                         unreachable!("unbound Computer resolution was rejected before unlock")
                     }
                 };
-                self.require_vault_factor_elevation(
-                    &context.home_session_id,
-                    agent.id(),
-                    credential,
-                )?;
+
                 let secret_input = self.with_forwarded_binding_operation(|| match injection {
                     crate::transport::relay_peer::RemoteCredentialSecretInjection::Browser {
                         target_url,
@@ -749,7 +801,7 @@ impl KernelRuntimeState {
             agent.provider(),
             Some(&context.worker_provider_run_id),
         );
-        self.require_vault_factor_elevation(&context.home_session_id, agent.id(), &credential)?;
+
         match &credential.source {
             crate::config::UserCredentialSourceConfig::Vault { .. } => {}
             crate::config::UserCredentialSourceConfig::Env { .. }

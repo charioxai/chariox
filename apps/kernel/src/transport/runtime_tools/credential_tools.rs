@@ -11,6 +11,7 @@ pub struct ManageCredentialVaultArgs {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeCredentialConfigInput {
+    pub use_binding: crate::config::VaultUseBinding,
     pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
@@ -407,7 +408,7 @@ pub fn credential_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: REQUEST_CREDENTIAL_SECRET_TOOL.to_string(),
-            description: "Ask the user for a credential secret through a redacted Chariox interaction, then store it as a vault-backed credential handle. The typed secret is never returned to the model. During the authorized task, injection.kind=totp accepts a base32 manual key or otpauth://totp URI in the protected field; backup_codes accepts one recovery code per line or a JSON string array.".to_string(),
+            description: "Ask the user for a credential secret through a redacted Chariox interaction, then store it as a vault-backed credential handle for its required use_binding. No sudo or task approval is needed. The typed secret is never returned to the model. injection.kind=totp accepts a base32 manual key or otpauth://totp URI in the protected field; backup_codes accepts one recovery code per line or a JSON string array.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["credential", "prompt"],
@@ -433,7 +434,7 @@ pub fn credential_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: HTTP_REQUEST_WITH_CREDENTIAL_TOOL.to_string(),
-            description: "Perform an HTTP request using a Chariox credential handle. Chariox resolves and injects/signs the secret outside the model context, enforces the handle policy, and returns only the HTTP status/body.".to_string(),
+            description: "Perform an HTTP request using a Chariox credential handle. Chariox resolves and injects/signs the secret outside the model context, enforces the exact use binding (payment cards ask the owner once), and returns only the HTTP status/body.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["credential_id", "url"],
@@ -598,8 +599,16 @@ pub fn credential_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
 fn credential_creation_schema() -> Value {
     serde_json::json!({
         "type": "object",
-        "required": ["id", "injection"],
+        "required": ["id", "injection", "use_binding"],
         "properties": {
+            "use_binding": {
+                "type":"object", "required":["target"], "additionalProperties":false,
+                "properties":{
+                    "value_kind":{"type":"string","enum":["secret","payment_card"],"default":"secret"},
+                    "target":{"type":"object","required":["kind","origin"],"additionalProperties":false,
+                        "properties":{"kind":{"type":"string","enum":["site"]},"origin":{"type":"string","description":"One canonical HTTPS origin (HTTP only on loopback)"}}}
+                }
+            },
             "id": {"type": "string"},
             "description": {"type": "string"},
             "source": {

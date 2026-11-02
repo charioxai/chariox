@@ -1,5 +1,6 @@
 use super::*;
 use crate::config::UserCredentialConfig;
+use crate::local::KernelSudoTurn;
 
 impl KernelRuntimeState {
     /// Shared by generated and captured credentials, including future capture entry points.

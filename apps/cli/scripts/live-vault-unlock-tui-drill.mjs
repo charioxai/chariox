@@ -328,7 +328,6 @@ async function main() {
       `unlock_policy = "${options.unlockPolicy}"`,
       "default_ttl_minutes = 30",
       "max_ttl_minutes = 240",
-      'agent_management = "allow"',
       "",
     ].join("\n"), "utf8")
     const { cliDist, kernelBinary, relayBinary } = await ensureBuilt()

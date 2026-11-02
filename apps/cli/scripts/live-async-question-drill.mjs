@@ -129,7 +129,7 @@ async function setup(name,relayUrl,relaySecret) {
   const home=path.join(root,name)
   for(const sub of ['home','os-home','tmp','config','data','cache','state'])await mkdir(path.join(home,sub),{recursive:true,mode:0o700})
   const passphrase=randomBytes(24).toString('base64url');secrets.push(passphrase)
-  await writeFile(path.join(home,'home/config.toml'),`version = 1\n[history.archive]\nmode = "disabled"\n[credential_vault]\nbackend = "chariox_encrypted"\npath = "${home}/home/private-vault.json"\nunlock_policy = "kernel_init"\nagent_management = "allow"\n`,{mode:0o600})
+  await writeFile(path.join(home,'home/config.toml'),`version = 1\n[history.archive]\nmode = "disabled"\n[credential_vault]\nbackend = "chariox_encrypted"\npath = "${home}/home/private-vault.json"\nunlock_policy = "kernel_init"\n`,{mode:0o600})
   const ports=await Promise.all(Array.from({length:4},port))
   const env={PATH:process.env.PATH,LANG:'C.UTF-8',HOME:home+'/os-home',CHARIOX_HOME:home+'/home',TMPDIR:home+'/tmp',XDG_CONFIG_HOME:home+'/config',XDG_STATE_HOME:home+'/state',XDG_DATA_HOME:home+'/data',XDG_CACHE_HOME:home+'/cache',CHARIOX_KERNEL_HOST:'127.0.0.1',CHARIOX_KERNEL_PORT:String(ports[0]),CHARIOX_MCP_PORT:String(ports[1]),CHARIOX_CODEX_PORT:String(ports[2]),CHARIOX_OPENCODE_PORT:String(ports[3]),CHARIOX_DAEMON_SOCKET:path.join(root,name+'.sock'),CHARIOX_ROOM_AGENT_TOOLS:'1',CHARIOX_RELAY_URL:relayUrl,CHARIOX_RELAY_TOKEN:relaySecret,NODE_OPTIONS:'--max-old-space-size=4096',RUST_MIN_STACK:'16777216'}
   if(process.env.AMASK_REVIEW_ONLY==='1'){env.CHARIOX_LOG_DIR=path.join(home,'logs');env.CHARIOX_LOG_LEVEL='debug'}

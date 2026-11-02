@@ -43,7 +43,7 @@ enum Flow {
 pub(super) fn spec() -> RuntimeToolSpec {
     RuntimeToolSpec {
         name: REGISTER.into(),
-        description: "Register at an auth.md service using Anonymous or Service Auth, without a trusted identity issuer. Discovers OAuth resource/server metadata and the service's auth.md. A live sudo window is currently required. Service Auth (email) or claim:true opens one owner claim popup while the kernel polls. Credentials go directly into the owner's Vault; returns only credential_id and label. Use the handle with http_request_with_credential. Reuse request_id after a lost reply. Identity assertions from an agent provider are not supported.".into(),
+        description: "Register at an auth.md service using Anonymous or Service Auth, without a trusted identity issuer. Discovers OAuth resource/server metadata and the service's auth.md. Service Auth (email) or claim:true opens one owner claim popup while the kernel polls. Credentials go directly into the owner's Vault; returns only credential_id and label. Use the handle with http_request_with_credential. Reuse request_id after a lost reply. Identity assertions from an agent provider are not supported.".into(),
         input_schema: json!({"type":"object","required":["request_id","resource_url"],"properties":{
             "request_id":{"type":"string","minLength":1,"maxLength":128},
             "resource_url":{"type":"string","description":"Canonical resource URL from the service's OAuth protected-resource metadata"},
@@ -99,31 +99,22 @@ fn registration_authority(
     state: &KernelRuntimeState,
     token: &str,
     _resource: &url::Url,
-) -> Result<VaultElevation, DaemonError> {
-    let turn = state.vault_elevation(
-        super::sudo::VaultCaller::AuthToken(token),
-        "auth.md registration",
-    )?;
-    let request = LocalDaemonRequest::ListSessions(crate::local::ListSessionsRequest);
-    let authorized_state = state
-        .with_external_command_authority(Some((&turn.entry_id, &request)))
-        .with_sudo_binding(turn.prompt_id.clone().zip(turn.provider_run_id.clone()));
-    Ok(VaultElevation {
-        state: authorized_state,
+) -> Result<RegistrationAuthority, DaemonError> {
+    let turn = state.vault_agent_context(token)?;
+    Ok(RegistrationAuthority {
+        context: turn.clone(),
         actor: RegistrationActor {
-            elevation_id: turn.entry_id,
             owner_user_id: turn.owner_user_id,
             session_id: turn.session_id,
             agent_id: turn.agent_id,
             prompt_id: turn.prompt_id,
-            provider_run_id: turn.provider_run_id,
+            provider_run_id: Some(turn.run.id().into()),
         },
     })
 }
 
 #[derive(Clone, PartialEq)]
 struct RegistrationActor {
-    elevation_id: String,
     owner_user_id: String,
     session_id: String,
     agent_id: String,
@@ -131,8 +122,8 @@ struct RegistrationActor {
     provider_run_id: Option<String>,
 }
 
-struct VaultElevation {
-    state: KernelRuntimeState,
+struct RegistrationAuthority {
+    context: super::vault_use::VaultAgentContext,
     actor: RegistrationActor,
 }
 
@@ -142,7 +133,7 @@ struct Authority {
     token: String,
     resource: url::Url,
     actor: RegistrationActor,
-    authorized_state: KernelRuntimeState,
+    context: super::vault_use::VaultAgentContext,
 }
 
 impl Authority {
@@ -166,12 +157,12 @@ impl KernelRuntimeState {
         let args: RegisterArgs = serde_json::from_value(arguments)
             .map_err(|_| error("invalid auth.md registration arguments"))?;
         let (resource, flow) = args.validate()?;
-        let elevation = registration_authority(self, token, &resource)?;
+        let registration = registration_authority(self, token, &resource)?;
         let authority = Authority {
             state: self.clone(),
             token: token.into(),
-            actor: elevation.actor,
-            authorized_state: elevation.state,
+            actor: registration.actor,
+            context: registration.context,
             resource,
         };
         let handle = storage::handle(&authority.actor, &args.request_id);

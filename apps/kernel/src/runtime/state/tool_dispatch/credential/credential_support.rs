@@ -12,31 +12,20 @@ impl KernelRuntimeState {
                 message: "credential creation requires an agent-scoped provider run".to_string(),
             });
         };
-        let config = self.owned.config_projection.snapshot().user_config;
-        match config.credential_vault.agent_management {
-            crate::config::CredentialVaultAgentManagementPolicy::Allow => {}
-            crate::config::CredentialVaultAgentManagementPolicy::Deny => {
-                return Err(DaemonError::LocalTransport {
-                    operation: "agent_vault_management_policy",
-                    message: "agent vault credential creation is disabled by user config"
-                        .to_string(),
-                });
-            }
-        }
         let session = self
             .owned
             .session_store
             .get_session(provider_run.session_id())?;
         let agent = self.owned.agent_store.get_agent(agent_id)?;
-        let authority = crate::session::effective_agent_user_authority(&session, Some(&agent));
-        if authority.is_full() {
+        if agent.owner_user_id() == session.owner_user_id()
+            && self.provider_account_authority_owner_user_id(session.owner_user_id())
+                == crate::session::DEFAULT_LOCAL_USER_ID
+        {
             return Ok(());
         }
-        Err(DaemonError::LocalTransport {
-            operation: "agent_vault_management_policy",
-            message: "agent vault credential creation requires full agent user authority"
-                .to_string(),
-        })
+        Err(crate::runtime::kernel_access::error(
+            "only the owner's agents may create entries in this Vault",
+        ))
     }
 
     pub(super) fn ensure_agent_can_manage_user_vault_for_agent(
@@ -44,27 +33,16 @@ impl KernelRuntimeState {
         session_id: &str,
         agent: &crate::agent::AgentInstance,
     ) -> Result<(), DaemonError> {
-        let config = self.owned.config_projection.snapshot().user_config;
-        match config.credential_vault.agent_management {
-            crate::config::CredentialVaultAgentManagementPolicy::Allow => {}
-            crate::config::CredentialVaultAgentManagementPolicy::Deny => {
-                return Err(DaemonError::LocalTransport {
-                    operation: "agent_vault_management_policy",
-                    message: "agent vault credential creation is disabled by user config"
-                        .to_string(),
-                });
-            }
-        }
         let session = self.owned.session_store.get_session(session_id)?;
-        let authority = crate::session::effective_agent_user_authority(&session, Some(agent));
-        if authority.is_full() {
+        if agent.owner_user_id() == session.owner_user_id()
+            && self.provider_account_authority_owner_user_id(session.owner_user_id())
+                == crate::session::DEFAULT_LOCAL_USER_ID
+        {
             return Ok(());
         }
-        Err(DaemonError::LocalTransport {
-            operation: "agent_vault_management_policy",
-            message: "agent vault credential creation requires full agent user authority"
-                .to_string(),
-        })
+        Err(crate::runtime::kernel_access::error(
+            "only the owner's agents may create entries in this Vault",
+        ))
     }
 }
 
@@ -92,7 +70,10 @@ pub(super) fn credential_from_runtime_input(
         allowed_hosts: input.allowed_hosts,
         allowed_uses: input.allowed_uses,
         injection: input.injection,
-        metadata: None,
+        metadata: Some(crate::config::UserCredentialMetadataConfig {
+            use_binding: Some(input.use_binding),
+            ..Default::default()
+        }),
     };
     crate::credential::validate_credential_registration(&credential)?;
     Ok(credential)
@@ -125,6 +106,10 @@ pub(super) fn stamp_runtime_credential_metadata_for_agent(
         | crate::config::UserCredentialSourceConfig::File { .. } => None,
     };
     credential.metadata = Some(crate::config::UserCredentialMetadataConfig {
+        use_binding: credential
+            .metadata
+            .as_ref()
+            .and_then(|m| m.use_binding.clone()),
         created_by_kind: Some("agent".to_string()),
         created_by_id: agent_id.map(ToOwned::to_owned),
         session_id: Some(session_id.to_string()),

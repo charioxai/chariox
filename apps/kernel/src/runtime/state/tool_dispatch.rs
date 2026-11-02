@@ -186,7 +186,8 @@ impl KernelRuntimeState {
         }
         // Official provider harnesses cache MCP discovery before sudo begins.
         // Advertising an interface conveys no authority: dispatch still checks
-        // the live exact sudo prompt on every invocation.
+        // the live exact sudo prompt on every privileged invocation.
+        // Vault generation is an ordinary tool bound to its entry's destination.
         if matches!(provider_runs.as_slice(), [run]
             if run.state() != crate::provider::ProviderRunState::Ended)
         {
@@ -195,7 +196,7 @@ impl KernelRuntimeState {
                 description: "Act as the host on this kernel during your sudo window, for the owner-authorized task only. Submit a LocalDaemonRequest using its case-sensitive externally tagged JSON: for example {\"request\":{\"AliasSession\":{\"session_id\":\"SESSION_ID\",\"alias\":\"new-name\"}}} or {\"request\":{\"ListSessions\":null}}. Do not use method/params or type fields. Cannot answer approvals, grant sudo/access, read secrets or change the passkey/access configuration. Authority ends at expiry, task end or revocation; regular work continues.".into(),
                 input_schema: serde_json::json!({"type":"object","required":["request"],"properties":{"request":{"type":"object"}},"additionalProperties":false}),
             });
-            specs.push(super::sudo::vault_generate_spec());
+            specs.push(super::vault_generate::vault_generate_spec());
             specs.push(super::vault_command::capture_command_spec());
             specs.push(super::vault_command::use_env_spec());
             specs.push(super::vault_command::capture_file_spec());
@@ -383,7 +384,7 @@ impl KernelRuntimeState {
         if tool_name == super::agent_auth::REGISTER {
             return Box::pin(self.agent_auth_register(auth_token, arguments)).await;
         }
-        if tool_name == super::sudo::VAULT_GENERATE {
+        if tool_name == super::vault_generate::VAULT_GENERATE {
             return Box::pin(self.vault_generate(auth_token, arguments)).await;
         }
         if tool_name == super::vault_command::VAULT_CAPTURE_COMMAND {

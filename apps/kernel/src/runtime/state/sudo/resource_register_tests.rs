@@ -253,7 +253,7 @@ fn resource_register_protocol_snapshot_and_hash() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "41b7fd63b81bbbe89a63c9ba62ce5d7a2440c3d9ba47232e8bd6be3c7852e473"
+        "2a176228778b88f3054fd8078241d7ec9125f2c799a25be89b0f3e9270dd9f84"
     );
 }
 
@@ -319,6 +319,7 @@ async fn resource_register_http_revoke_uses_vault_and_never_echoes_response() {
             value: "Bearer ${secret}".into(),
         },
         metadata: Some(UserCredentialMetadataConfig {
+            use_binding: None,
             created_by_kind: Some("captured".into()),
             created_by_id: Some(turn.agent_id.clone()),
             session_id: Some(turn.session_id.clone()),

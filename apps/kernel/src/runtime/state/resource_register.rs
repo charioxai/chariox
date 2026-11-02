@@ -1,7 +1,7 @@
 //! MP-08 / MP-09 / MP-10 / MP-11 AU-11: project-scoped inventory of external resources.
 use super::KernelRuntimeState;
 use crate::error::DaemonError;
-use crate::local::{CreatedResource, CreatedResourceState, KernelSudoTurn, ResourceRevokeMethod};
+use crate::local::{CreatedResource, CreatedResourceState, ResourceRevokeMethod};
 use crate::runtime::kernel_access::error;
 use crate::transport::runtime_tools::{RuntimeToolResult, RuntimeToolSpec};
 use serde::Deserialize;
@@ -29,14 +29,14 @@ pub(super) fn specs() -> Vec<RuntimeToolSpec> {
         {"type":"object","required":["kind","reason"],"properties":{"kind":{"const":"unavailable"},"reason":text()},"additionalProperties":false}
     ]});
     vec![
-        RuntimeToolSpec { name: RECORD.into(), description: "Record an external resource you created in this Room's project. Requires elevation. Metadata only: reference Vault handles, never secret values. request_id makes retries idempotent. Store an HTTP revoke request using a Vault credential, an owner settings URL, or the reason no revoke method is available.".into(),
+        RuntimeToolSpec { name: RECORD.into(), description: "Record an external resource you created in this Room's project. Metadata only: reference Vault handles, never secret values. request_id makes retries idempotent. Store an HTTP revoke request using a Vault credential, an owner settings URL, or the reason no revoke method is available.".into(),
             input_schema: json!({"type":"object","required":["request_id","service","kind","name","revoke"],"properties":{
                 "request_id":text(),"service":text(),"kind":text(),"name":text(),"url":text(),"credential_id":text(),"revoke":revoke.clone()},"additionalProperties":false}) },
         RuntimeToolSpec { name: SET_REVOKE.into(), description: "Set the revoke method on an existing resource, including automatic Vault or SSH entries. Requires elevation in the resource project. Metadata and Vault handles only; cannot change provenance or a revocation in progress.".into(),
             input_schema: json!({"type":"object","required":["resource_id","revoke"],"properties":{"resource_id":text(),"revoke":revoke},"additionalProperties":false}) },
-        RuntimeToolSpec { name: LIST.into(), description: "List resources created for this Room's project, including Vault handle links, provenance and revoke methods. Requires elevation. Returns metadata only.".into(),
+        RuntimeToolSpec { name: LIST.into(), description: "List resources created for this Room's project, including Vault handle links, provenance and revoke methods. Returns metadata only.".into(),
             input_schema: json!({"type":"object","properties":{},"additionalProperties":false}) },
-        RuntimeToolSpec { name: REVOKE.into(), description: "Revoke a registered resource using its stored HTTP request and Vault credential. Requires elevation. Returns only status, never HTTP response content or credentials. For an owner URL, return the URL for the owner to open; the row remains active until a service revocation is confirmed. After a crash, unfinished revocations become revoke_failed; check the service before retrying.".into(),
+        RuntimeToolSpec { name: REVOKE.into(), description: "Revoke a registered resource using its stored HTTP request and Vault credential. Returns only status, never HTTP response content or credentials. For an owner URL, return the URL for the owner to open; the row remains active until a service revocation is confirmed. After a crash, unfinished revocations become revoke_failed; check the service before retrying.".into(),
             input_schema: json!({"type":"object","required":["resource_id"],"properties":{"resource_id":text()},"additionalProperties":false}) },
     ]
 }
@@ -59,7 +59,6 @@ impl Authority {
 }
 
 impl KernelRuntimeState {
-    /// S1 integration seam: replace the live-sudo admission here with mandate-or-sudo.
     /// Resolve project and provenance in the kernel; arguments never choose another project.
     fn resource_register_authority(
         &self,
@@ -68,13 +67,17 @@ impl KernelRuntimeState {
         _kind: &str,
     ) -> Result<Authority, DaemonError> {
         self.authorize_current_external_command()?;
-        let turn = self.vault_elevation(
-            super::sudo::VaultCaller::ProviderRun(run_id),
-            "resource register",
-        )?;
+        let run = self.watched_process_run(run_id)?;
+        let token = run
+            .runtime_mcp_auth_token()
+            .ok_or_else(|| error("resource register requires an authenticated provider run"))?;
+        let turn = self.vault_agent_context(token)?;
+        if turn.run.id() != run_id {
+            return Err(error("resource register provider run changed"));
+        }
         let session = self.owned.session_store.get_session(&turn.session_id)?;
         Ok(Authority {
-            authorization_id: turn.entry_id,
+            authorization_id: turn.run.id().into(),
             owner_user_id: turn.owner_user_id,
             session_id: turn.session_id,
             project_id: session.project_id().into(),
@@ -82,9 +85,7 @@ impl KernelRuntimeState {
             prompt_id: turn
                 .prompt_id
                 .ok_or_else(|| error("resource register requires a running prompt"))?,
-            provider_run_id: turn
-                .provider_run_id
-                .ok_or_else(|| error("resource register requires a running provider"))?,
+            provider_run_id: turn.run.id().into(),
         })
     }
 

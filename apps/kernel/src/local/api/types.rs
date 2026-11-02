@@ -272,7 +272,7 @@ pub use workspace::*;
 /// `primary_model`, `primary_effort`, `primary_account_profile`,
 /// `active_substitute_index` and `last_substitution`. An agent persisted on a
 /// substitute loads on its primary profile.
-/// Version 405 binds native approvals to the originating turn and provider run.
+/// Version 407 binds native approvals to the originating turn and provider run.
 /// Version 407 exposes `AppWorkerPhase::Quarantined` after the supervisor's
 /// restart limit is exhausted. Recovery uses the existing explicit start action.
 /// Version 409 adds owner-mediated App clipboard and link acceptance.
@@ -458,4 +458,5 @@ pub use workspace::*;
 /// VAUDIT S3 948 adds the kernel-browser Vault capture_browser and fill_field tools.
 /// Protocol 950 advertises the answering kernel protocol in RelayStatus.
 /// MP-08 / MP-09 / MP-10 / MP-11: 954 adds nullable cumulative process disk I/O (peer403).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 954;
+/// MP-08/MP-09/MP-10/MP-11: 960 integrates Machines and canonical owner/agent Vault uses (peer409).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 960;

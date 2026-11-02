@@ -8,6 +8,8 @@ use crate::transport::relay_crypto;
 use serde::{Deserialize, Serialize};
 
 mod credentials;
+pub(crate) mod vault_use;
+pub use vault_use::{VaultUseBinding, VaultUseTarget, VaultValueKind};
 mod env_loader;
 mod identity;
 mod kernel_access;
@@ -34,10 +36,9 @@ mod validation;
 pub use totp::{TotpAlgorithm, TotpConfig};
 
 pub use credentials::{
-    validate_credentials, CredentialVaultAgentManagementPolicy, CredentialVaultBackend,
-    CredentialVaultUnlockPolicy, UserCredentialConfig, UserCredentialInjectionConfig,
-    UserCredentialMetadataConfig, UserCredentialSourceConfig, UserCredentialUse,
-    UserCredentialVaultConfig,
+    validate_credentials, CredentialVaultBackend, CredentialVaultUnlockPolicy,
+    UserCredentialConfig, UserCredentialInjectionConfig, UserCredentialMetadataConfig,
+    UserCredentialSourceConfig, UserCredentialUse, UserCredentialVaultConfig,
 };
 pub use identity::prepare_protected_slice_identity;
 #[cfg(test)]
