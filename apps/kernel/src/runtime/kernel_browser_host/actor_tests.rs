@@ -237,11 +237,13 @@ done
         assert_eq!(state["actions"][0]["state"], "cancelled");
         assert_eq!(state["actions"][0]["outcome"]["reason"], "human_takeover");
         assert!(!state.to_string().contains("must-not-be-retained"));
-        assert!(host
-            .release_input("alice", "terminal:b", "host-tab-a", 1)
-            .is_err());
-        host.release_input("alice", "terminal:a", "host-tab-a", 1)
+        // The person's other (or reloaded) connection returns the control terminal:a took.
+        host.release_input("alice", "terminal:b", "host-tab-a", 1)
             .unwrap();
+        assert!(host.actor_snapshot("alice").unwrap()["input_ownership"]
+            .as_array()
+            .unwrap()
+            .is_empty());
     }
     host.shutdown().unwrap();
     std::fs::remove_dir_all(root).unwrap();

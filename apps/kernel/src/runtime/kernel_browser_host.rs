@@ -766,7 +766,8 @@ impl KernelBrowserHost {
         // retained agent's projection; scoped inventory cannot remove another
         // actor's tabs or input ownership from the shared ledger.
         // Creation evidence belongs to the private controller seam. Never expose
-        // it in the serialized client result or use it to widen capability grants.
+        // it in the serialized client result. It extends a grant only to the agent whose
+        // admitted input opened the Tab (below), never to the agent that happens to read it.
         let tab_creation_actions = result
             .as_mut()
             .ok()
@@ -776,9 +777,10 @@ impl KernelBrowserHost {
                 state.remove("_tab_creation_actions")
             })
             .unwrap_or(Value::Null);
+        let mut opened_by_agents = Vec::new();
         if let Ok(state) = &mut result {
             let mut ledger = model.lock().map_err(|_| "MD-3: actor lock poisoned")?;
-            ledger.reconcile_inventory(state, &tab_creation_actions)?;
+            opened_by_agents = ledger.reconcile_inventory(state, &tab_creation_actions)?;
             if method == "host.browser" && request_params["op"] == "dialog" {
                 if let Some(tab) = request_params["tab_id"].as_str() {
                     ledger.dialog_answered(&browser_actor(admission, &request_params), tab);
@@ -822,6 +824,19 @@ impl KernelBrowserHost {
                 }
             }
             ledger.project_tabs(payload);
+        }
+        if result.is_ok() && !opened_by_agents.is_empty() {
+            let mut state = self
+                .inner
+                .lock()
+                .map_err(|_| "MP-11: grant lock unavailable")?;
+            for (tab, actor) in &opened_by_agents {
+                if let Some(agent) = actor.actor_id.strip_prefix("agent:") {
+                    // A popup opened by an agent's click belongs to that agent like a Tab it opened itself.
+                    // An agent whose grant has ended has nothing to extend.
+                    let _ = state.access.opened_tab(user, agent, tab);
+                }
+            }
         }
         if let (Some(admission), Ok(payload)) = (admission, &mut result) {
             if let Some(agent) = admission.agent.as_deref() {

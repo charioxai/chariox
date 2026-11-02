@@ -1,15 +1,7 @@
 //! MP-08/MP-11: authenticated agents open shared tabs, terminal inventory watches them.
 use super::*;
 use serde_json::json;
-#[test]
-fn mp08_delayed_popup_inventory_preserves_completed_agent_action_attribution() {
-    let root = std::env::temp_dir().join(format!(
-        "chariox-am6-delayed-{:032x}",
-        rand::random::<u128>()
-    ));
-    std::fs::create_dir(&root).unwrap();
-    let script = root.join("controller.sh");
-    std::fs::write(&script, r#"set -eu
+const POPUP_AFTER_INPUT_CONTROLLER: &str = r#"set -eu
 acted=0
 action=
 while IFS= read -r request; do
@@ -27,7 +19,16 @@ while IFS= read -r request; do
  *'"method":"shutdown"'*) printf '{"id":%s,"ok":true,"result":{"state":"stopped","process_id":null,"diagnostic_code":null}}\n' "$id"; exit 0 ;;
  esac
 done
-"#).unwrap();
+"#;
+#[test]
+fn mp08_delayed_popup_inventory_preserves_completed_agent_action_attribution() {
+    let root = std::env::temp_dir().join(format!(
+        "chariox-am6-delayed-{:032x}",
+        rand::random::<u128>()
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let script = root.join("controller.sh");
+    std::fs::write(&script, POPUP_AFTER_INPUT_CONTROLLER).unwrap();
     let host = KernelBrowserHost::new(root.clone());
     host.install_fixture_backend("alice", &script, &root);
     host.backend("alice")
@@ -73,6 +74,70 @@ done
     }
     assert_eq!(first["agent_activity"], second["agent_activity"]);
     assert_eq!(before, after);
+}
+
+#[test]
+fn mp10_agent_lists_and_reaches_the_popup_its_click_opened_while_another_agent_is_focused() {
+    let root = std::env::temp_dir().join(format!(
+        "chariox-am6-popup-grant-{:032x}",
+        rand::random::<u128>()
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let script = root.join("controller.sh");
+    std::fs::write(&script, POPUP_AFTER_INPUT_CONTROLLER).unwrap();
+    let host = KernelBrowserHost::new(root.clone());
+    host.install_fixture_backend("alice", &script, &root);
+    host.backend("alice")
+        .unwrap()
+        .lock()
+        .unwrap()
+        .start()
+        .unwrap();
+    host.set_focus("alice", Some("mara"));
+    host.load("alice", "mara").unwrap();
+    let policy = json!({"values":[],"targets":[],"unknown":false});
+    host.protected_request("alice", Some("mara"), "host.browser", json!({"op":"input","tab_id":"source","generation":1,"document_id":"doc","input":{"kind":"click","x":10,"y":10}}), policy.clone()).unwrap();
+    host.set_focus("alice", Some("someone-else"));
+    let listed = host
+        .protected_request(
+            "alice",
+            Some("mara"),
+            "host.browser",
+            json!({"op":"state"}),
+            policy.clone(),
+        )
+        .unwrap();
+    let ids = |state: &serde_json::Value| {
+        state["tabs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tab| tab["tab_id"].as_str().unwrap().to_string())
+            .collect::<Vec<_>>()
+    };
+    assert!(
+        ids(&listed).contains(&"popup".to_string()),
+        "the click's own popup is listed: {:?}",
+        ids(&listed)
+    );
+    assert!(
+        !ids(&listed).contains(&"other-popup".to_string()),
+        "another tab's popup is not"
+    );
+    assert!(
+        !ids(&listed).contains(&"native".to_string()),
+        "a Tab nobody's click opened is not"
+    );
+    host.protected_request(
+        "alice",
+        Some("mara"),
+        "host.browser",
+        json!({"op":"snapshot","tab_id":"popup","generation":1,"document_id":"popup"}),
+        policy,
+    )
+    .unwrap();
+    host.shutdown().unwrap();
+    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
