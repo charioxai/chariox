@@ -1,3 +1,7 @@
+# MP-08 / MP-09 / MP-10 / MP-11: current boot image boundary
+
+Reusable preinstall images now live in Cloud; the release-coupled OSS image builder is removed. Use [authenticated kernel boot](AUTHENTICATED_KERNEL_BOOT.md) for new managed VMs. The installed release/update details below apply to existing consumers until their lifecycle slice replaces them.
+
 # Managed remote-kernel image
 
 The Hetzner adapter creates servers from one immutable snapshot ID. Build that
@@ -143,11 +147,7 @@ likewise opt in explicitly with `path1`.
 Run the production/shared-host preparation path with:
 
 ```sh
-sudo env CHARIOX_MANAGED_PROVIDER_TOPOLOGY=shared_host \
-  deploy/managed-kernel/prepare-worker-image.sh \
-  <release-rootfs> \
-  <release-digest> \
-  <trusted-public-key>
+# New allocation boot: see AUTHENTICATED_KERNEL_BOOT.md.
 ```
 
 For a disposable-VM Path-1 image, replace `shared_host` with `path1` and set
