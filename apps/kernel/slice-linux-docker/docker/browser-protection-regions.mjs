@@ -275,7 +275,6 @@ export async function measurePageProtection(connection,sessionId,targetId,policy
         if(inFlight&&(!state.exists||!state.editable))throw Error('MP-11: pending fill target unavailable');
         // VAUDIT S3: a captured value shown as page text (a revealed key) masks its element while it shows the value.
         if(!inFlight&&(!state.exists||state.changed||!state.value || digest(state.value)!==target.value_hash)) {dead.add(key);continue;}
-        handled.add(backendNodeId);
         if(state.password)continue; // Rechecked even for a previously plain field.
         await maskField(entry,raw,frame,frameId,backendNodeId,state);
       }

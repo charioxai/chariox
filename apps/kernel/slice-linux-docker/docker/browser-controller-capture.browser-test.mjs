@@ -93,14 +93,16 @@ for (const dpr of [1, 2]) {
     await assert.rejects(capture({ node_ref: await ref('#key'), reveal_node_ref: await ref('#copy'), read: 'clipboard' }), /omit reveal_node_ref/);
   }));
 
-  test(`VAUDIT S3 DPR${dpr}: fill_field fills a plain field without changing the page`, () => setup(dpr, async ({ browser, ref, protect, pixel, evaluate, targetId, documentId, url }) => {
+  test(`VAUDIT S3 DPR${dpr}: fill_field fills a plain field without changing the page`, () => setup(dpr, async ({ browser, ref, protect, pixel, regions, evaluate, targetId, documentId, url }) => {
     const node_ref = await ref('#env');
     const fill = (extra) => browser.performAction({ target_id: targetId, document_id: documentId, node_ref, action: { kind: 'fill', text: secret, expected_document_url: url, ...extra } });
-    await assert.rejects(fill({}), /must remain masked/, 'the ordinary Vault paste stays password-only');
+    await fill({});
+    assert.equal(await evaluate("document.querySelector('#env').value"), secret, 'the shared editable-field fill keeps the owner field unchanged');
     await fill({ plain_target: true });
     assert.equal(await evaluate("document.querySelector('#env').value"), secret);
     assert.equal(await evaluate("document.querySelector('#env').type"), 'text', 'the owner sees the field as the page made it');
     protect(node_ref, secret);
+    assert.ok((await regions()).length > 0, 'a plain fill passes the protected capture fence');
     assert.deepEqual(await pixel(100, 300), [0, 0, 0], 'the filled plain field is masked for the model');
     const reveal = await ref('#reveal');
     await assert.rejects(browser.performAction({ target_id: targetId, document_id: documentId, node_ref: reveal,
