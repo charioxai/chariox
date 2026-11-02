@@ -274,13 +274,6 @@ impl KernelRuntimeState {
         } else {
             crate::session::WorkflowRunStatus::Stopped
         };
-        if resolved_workflow_run.status() == expected_status {
-            if !pause {
-                self.cancel_workflow_agent_tasks(session_id, &workflow_run_id)
-                    .await?;
-            }
-            return Ok((resolved_workflow_run, owned.session_snapshot(session_id)?));
-        }
         let mut provider_run_ids = owned
             .agent_store
             .get_session_agents(session_id)
@@ -326,6 +319,11 @@ impl KernelRuntimeState {
                     pause,
                     stop_user,
                 )?;
+                // A previous stop may have committed before live cleanup failed.
+                // Skip the durable append but finish cancellation and queue advancement.
+                if current_run.status() == expected_status {
+                    return Ok((current_run, Vec::new()));
+                }
                 // Prompt records of every agent holding this run's queued prompts commit in
                 // the interrupt's SQLite transaction; the live prompt owner is untouched
                 // until that write succeeds, so a rejected write needs no owner restore.

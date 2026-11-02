@@ -791,6 +791,67 @@ async fn pause_append_failure_preserves_interrupt_state_and_retries_once() {
 }
 
 #[tokio::test]
+async fn repeated_stop_finishes_committed_workflow_cancellation() {
+    let fixture = interrupt_fixture();
+    let owned = &fixture.runtime.owned;
+    // Model interruption after the durable stop, before live prompt cleanup.
+    owned
+        .session_store
+        .write()
+        .cancel_workflow_run(&fixture.session_id, &fixture.workflow_run_id)
+        .unwrap();
+    owned
+        .persist_workflow_runtime_session(&fixture.session_id, "committed_stop_fixture")
+        .unwrap();
+
+    let (result, _) = fixture
+        .runtime
+        .execute_workflow_cancel_run_request(crate::local::CancelWorkflowRunRequest {
+            session_id: fixture.session_id.clone(),
+            workflow_run_ref: fixture.workflow_run_id.clone(),
+        })
+        .await;
+    result.expect("repeating a committed stop should finish cleanup");
+    let session = owned
+        .session_store
+        .get_session(&fixture.session_id)
+        .unwrap();
+    let (active, queued) = owned
+        .prompt_state_owner
+        .state_parts(&session, &fixture.target_agent_id);
+    assert!(
+        active.is_none_or(|prompt| {
+            prompt.workflow_run_id() != Some(fixture.workflow_run_id.as_str())
+                || prompt.status() == crate::session::PromptStatus::Cancelling
+        }),
+        "a committed stop must still cancel its active provider turn"
+    );
+    assert!(
+        queued
+            .iter()
+            .all(|prompt| { prompt.workflow_run_id() != Some(fixture.workflow_run_id.as_str()) }),
+        "a committed stop must still remove its queued agent prompts"
+    );
+    assert!(
+        !owned.prompt_workspace_claims.contains(&fixture.claim_id),
+        "a committed stop must still release its workflow workspace claim"
+    );
+    let (repeated, _) = fixture
+        .runtime
+        .execute_workflow_cancel_run_request(crate::local::CancelWorkflowRunRequest {
+            session_id: fixture.session_id.clone(),
+            workflow_run_ref: fixture.workflow_run_id.clone(),
+        })
+        .await;
+    repeated.expect("a fully settled stop should remain idempotent");
+    assert_eq!(
+        workflow_interrupt_event_count(&fixture, "workflow_run_cancelled"),
+        0,
+        "repeating a committed stop must not append another durable stop"
+    );
+}
+
+#[tokio::test]
 async fn cancel_append_failure_preserves_interrupt_state_and_retries_once() {
     run_interrupt_append_failure_regression(false).await;
 }
