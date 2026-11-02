@@ -288,7 +288,7 @@ try {
     await answerOwnerInput()
     return (await page.locator(`[data-room-pane="${agent.id}"]`).innerText()).includes('TOTP_TWO_PERIODS_DONE')
   }, 'provider completion after two sign-ins', 120_000)
-  await page.frameLocator('[data-room-browser] .kernel-browser-layer:not([inert]) .kernel-browser-mirror iframe')
+  await page.frameLocator('[data-room-browser] .kernel-browser-layer:not([inert]) .kernel-browser-mirror iframe:visible')
     .getByRole('heading', { name: 'Signed in', exact: true }).waitFor({ timeout: 30_000 })
   results.ownerVisibleSignedIn = true
   await screenshot('03-two-period-sign-in')
