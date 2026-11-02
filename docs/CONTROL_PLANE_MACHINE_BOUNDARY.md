@@ -28,7 +28,7 @@ MP-08 / MP-09 / MP-10 / MP-11. Users have visibility and Start/Stop/Delete contr
 | Optional control-plane capability and authenticated resource-request transport | OSS kernel | Enabled only by the owner's connected session and its advertised account-scoped capability. No vendor or rental rule implementation. |
 | Native release package, artifact verification and neutral boot installer | OSS | Verify before execution against pinned public trust and signed manifest. Provider image recipes and provisioning wrappers live in Cloud. |
 | Rental aggregate/API, rules/reconciler, private saved state/retention, internal per-user usage, provider adapters/accounts/limits | Cloud | One ManagedEnvironment path; no provider-specific business code in OSS kernel, relay, CLI, packages or deploy. |
-| Rental/rule chooser and Start/Stop/Delete; operator-only usage | Cloud web | Hosted feature. OSS clients may display validated state/action data, without provider/image/snapshot or monetary fields. No customer cost view. |
+| Rental/rule chooser and Start/Stop/Delete; operator-only usage | Cloud web | Hosted feature. OSS clients may display validated state/action data, without provider/raw infrastructure image/snapshot or monetary fields; user-owned kept images remain visible. No customer cost view. |
 | Encrypted transport | Relay | No runtime, allocation, spend, admission or shutdown decisions. |
 
 ## Proposed neutral protocol surface
