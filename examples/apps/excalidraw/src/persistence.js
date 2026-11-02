@@ -7,8 +7,14 @@ const sceneKey = scene => JSON.stringify(scene, (_, value) =>
   value && typeof value === 'object' && !Array.isArray(value)
     ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b))) : value);
 
+export function recoverDraft(saved, loaded) {
+  // A drained save may have committed before its reply was interrupted.
+  return saved && (saved.base === loaded.version || saved.pending === sceneKey(loaded.scene)) ? saved.scene : null;
+}
+
 export function persistence(chariox, api, loaded) {
   let version = loaded.version;
+  let pendingScene = null;
   const restored = loaded.scene ? restore(loaded.scene, null, null) : null;
   let lastSaved = restored ? sceneKey(JSON.parse(serializeAsJSON(restored.elements, restored.appState, restored.files, 'local'))) : null;
   let queue = Promise.resolve();
@@ -30,9 +36,11 @@ export function persistence(chariox, api, loaded) {
       // Validation failures can recover after a person makes the diagram smaller.
       const scene = checkedScene(text);
       let result;
+      pendingScene = sceneKey(scene);
       try { result = await caller.call('save_scene', { scene, version }); }
       catch (error) { failure = error; throw error; }
       version = result.version;
+      pendingScene = null;
       lastSaved = key;
       notify();
     });
@@ -42,7 +50,7 @@ export function persistence(chariox, api, loaded) {
   const filename = (name = 'diagram', extension = '.excalidraw') => name.endsWith(extension) ? name : name + extension;
   return {
     save,
-    version: () => version,
+    draft: () => ({ base: version, pending: pendingScene, scene: JSON.parse(sceneJSON(api)) }),
     status: () => ({ saved: !failure, error: failure?.message ?? null }),
     async save_file({ name } = {}, caller) {
       // A private copy must remain possible after a concurrent-view conflict.

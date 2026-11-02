@@ -177,7 +177,7 @@ test('canvas, declarations, persistence, native shortcuts and three exports roun
 // An update reloads the view after the kernel has switched generations, so the
 // old page can no longer call the App: its pending edit must wait in the view's
 // own web storage and come back with the new page.
-async function updateTest(name, body) {
+async function updateTest(name, body, beforePrepare = async () => {}) {
   test(name, { timeout: 60_000 }, async () => {
     const types = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.woff2': 'font/woff2' };
     const server = createServer(async (req, res) => {
@@ -195,7 +195,7 @@ async function updateTest(name, body) {
       const backend = { scene: null, version: '1' };
       await page.exposeFunction('broker', async (call, input) => {
         if (call === 'load_scene') return { scene: backend.scene, version: backend.version };
-        if (call === 'save_scene') { backend.scene = input.scene; backend.version = String(Number(backend.version) + 1); return { version: backend.version }; }
+        if (call === 'save_scene') { backend.scene = input.scene; backend.version = String(Number(backend.version) + 1); if (backend.delaySaveReply) await new Promise(() => {}); return { version: backend.version }; }
         throw Error('unknown backend tool: ' + call);
       });
       // A slow save: the App's 300 ms automatic save timer does not fire during the test.
@@ -213,6 +213,7 @@ async function updateTest(name, body) {
       await page.keyboard.press('r');
       await page.mouse.move(380, 260); await page.mouse.down(); await page.mouse.move(600, 380, { steps: 10 }); await page.waitForTimeout(100); await page.mouse.up();
       await page.waitForFunction(() => window.__charioxViewAgent.state().then(r => r.value?.total > 0));
+      await beforePrepare({ page, total, backend });
       await page.evaluate(() => window.__charioxViewAgent.prepareUpdate());
       await body({ open, total, backend });
     } finally { await browser.close(); await new Promise(resolve => server.close(resolve)); }
@@ -228,4 +229,19 @@ await updateTest('a saved draft is dropped when the App saved a newer scene mean
   backend.version = '7';
   await open();
   assert.equal(await total(), 0, 'a draft based on an older version must not overwrite the newer scene');
+});
+
+await updateTest('an unacknowledged automatic save does not discard newer user edits during update', async ({ open, total }) => {
+  await open();
+  assert.equal(await total(), 3, 'the pending user draft must survive its own unacknowledged save');
+}, async ({ page, total, backend }) => {
+  backend.delaySaveReply = true;
+  await page.evaluate(() => { void window.__charioxViewAgent.invoke('add_elements', { elements: [{ type: 'rectangle', x: 50, y: 50, width: 30, height: 30 }] }); });
+  for (let i = 0; i < 100 && backend.version === '1'; i++) await page.waitForTimeout(20);
+  assert.equal(backend.version, '2');
+  for (const y of [450, 600]) {
+    await page.keyboard.press('r');
+    await page.mouse.move(650, y); await page.mouse.down(); await page.mouse.move(800, y + 80, { steps: 10 }); await page.mouse.up();
+  }
+  await page.waitForFunction(() => window.__charioxViewAgent.state().then(r => r.value?.total === 3));
 });

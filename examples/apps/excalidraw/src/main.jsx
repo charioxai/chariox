@@ -4,7 +4,7 @@ import { Excalidraw, MainMenu } from '@excalidraw/excalidraw';
 import '@excalidraw/excalidraw/index.css';
 import declarations from '../schemas/ui-actions.json';
 import { diagramActions, sceneJSON, summary } from './scene.js';
-import { persistence } from './persistence.js';
+import { persistence, recoverDraft } from './persistence.js';
 
 const chariox = window.chariox;
 if (!chariox?.action || !chariox?.view || !chariox?.call) throw new Error('Open this App in a Chariox kernel with WASM and UI action support.');
@@ -18,7 +18,7 @@ const DRAFT = 'chariox.excalidraw.draft';
 const draft = (() => {
   const raw = localStorage.getItem(DRAFT);
   localStorage.removeItem(DRAFT);
-  try { const saved = JSON.parse(raw); return saved?.base === loaded.version ? saved.scene : null; } catch { return null; }
+  try { const saved = JSON.parse(raw); return recoverDraft(saved, loaded); } catch { return null; }
 })();
 let automaticSaveError;
 const report = error => {
@@ -39,7 +39,7 @@ const ready = next => {
   storage = persistence(chariox, api, loaded);
   chariox.view.beforeUpdate(() => {
     clearTimeout(timer);
-    localStorage.setItem(DRAFT, JSON.stringify({ base: storage.version(), scene: JSON.parse(sceneJSON(api)) }));
+    localStorage.setItem(DRAFT, JSON.stringify(storage.draft()));
   });
   actions = Object.fromEntries(declarations.uiActions.map(declaration => [declaration.name,
     chariox.action(declaration, (input, caller) => {
