@@ -1,3 +1,4 @@
+import { HostDownloads } from "./kernel-browser-downloads.mjs";
 import { BrowserHeaderState } from "./kernel-browser-header.mjs";
 import {resolveDisplayTarget,nativeStateObservationOptions} from './kernel-browser-display-document.mjs';
 import {capturePageScreenshot} from './kernel-browser-screenshot.mjs';
@@ -133,6 +134,7 @@ export class KernelBrowserHost {
     this.observedDocuments = new Map();
     this.displayDocuments = new DisplayDocuments((stage, started, ended) => this.timing?.(stage, started, ended));
     this.stateSignal = new StateSignal();
+    this.downloads = new HostDownloads({ notify: () => this.stateSignal.notify() });
     this.header = new BrowserHeaderState(() => this.stateSignal.notify());
     this.mirror = new MirrorService(this);
     this.protection = { values: [], targets: [], unknown: false };
@@ -228,6 +230,7 @@ export class KernelBrowserHost {
     this.displays.clear(); this.scales.clear(); this.inputEpochs.clear();
     this.tabGroups?.close?.();this.tabGroups=null;
     await this.browser?.close();
+    await this.downloads.close();
     this.browser = null;
     this.tabs.clear();this.header.clear();this.layouts.clear();this.layoutRevisions.clear();this.windowLayout=null;this.resizeSettled=null;
     this.popupEvidence.clear();
@@ -264,6 +267,7 @@ export class KernelBrowserHost {
     try {
       const connection = await this.browser.ensureConnection();
       await this.lockdown(connection);
+      await this.downloads.start(connection, this.browser);
       // MP-08/MP-11: agent Tabs are grouped under the agent's name in the native strip.
       // Attribution UI only: a browser without the component extension still works.
       this.tabGroups = new ChromeTabGroups(connection, () => this.stateSignal.notify());
@@ -472,6 +476,7 @@ export class KernelBrowserHost {
     this.displays.clear(); this.scales.clear();
     this.tabGroups?.close?.();this.tabGroups=null;
     await this.browser?.close();
+    await this.downloads.close();
     this.browser = null;
     this.timing.flush?.();
     return { state: "stopped", generation: this.generation, tabs: [] };
@@ -485,7 +490,7 @@ export class KernelBrowserHost {
     const _tab_creation_actions = this.popupEvidence.inventory([...this.tabs.values()]);
     const dialogs = this.pendingDialogs();
     return redactObservation({ state: "ready", generation: this.generation, _observation: this.observed, _tab_creation_actions,
-      active_tab_id: active, tabs: [...this.tabs.values()].map(({ target_id, opener_target_id, ...tab }) => ({ ...tab, ...this.header.read(tab) })), dialogs, viewport:this.viewport(), chrome_window: this.chromeWindow(),
+      active_tab_id: active, downloads: this.downloads.state(), tabs: [...this.tabs.values()].map(({ target_id, opener_target_id, ...tab }) => ({ ...tab, ...this.header.read(tab) })), dialogs, viewport:this.viewport(), chrome_window: this.chromeWindow(),
       // MP-11: whether Chromium's managed policies apply, or only the kernel's CDP lockdown layer.
       browser_lockdown: this.chromium?.policy ?? null }, this.protection.values);
   }
@@ -588,7 +593,11 @@ export class KernelBrowserHost {
       const old = byTarget.get(tab.target_id);
       this.tabs.set(old?.tab_id ?? `host-tab-${randomUUID()}`, { ...tab, tab_id: old?.tab_id ?? null });
     }
-    for (const [id, tab] of this.tabs) tab.tab_id = id;
+    for (const [id, tab] of this.tabs) {
+      tab.tab_id = id;
+      if (!this.downloads.bindings.has(tab.target_id)) this.downloads.bind(tab,
+        this.downloads.bindings.get(tab.opener_target_id)?.session ?? "browser-viewer");
+    }
     // A surviving Tab keeps its committed page size; only retired Tabs drop theirs.
     for (const map of [this.layouts, this.layoutRevisions]) for (const id of [...map.keys()]) if (!this.tabs.has(id)) map.delete(id);
     // A Tab that opened in the resized window is laid out at the window's size, not the canonical one.
@@ -646,13 +655,13 @@ export class KernelBrowserHost {
       for (const [id, entry] of [...this.compositors]) if (entry.source instanceof LinuxCapture && !kept(id)) await this.closeCompositors(id);
     });
   }
-  async open(url, tabId = `host-tab-${randomUUID()}`, { signal } = {}) {
+  async open(url, tabId = `host-tab-${randomUUID()}`, { signal, downloadSession } = {}) {
     await this.closeCompositors();this.foreground.reset();
-    await this.createTab(url, tabId, { signal });
+    await this.createTab(url, tabId, { signal, downloadSession });
     const state = await this.reconcile();
     return { ...state, tab_id: tabId };
   }
-  async createTab(url, tabId, { signal, background = false } = {}) {
+  async createTab(url, tabId, { signal, background = false, downloadSession = "browser-viewer" } = {}) {
     requireBrowserMemory();
     if (this.tabs.size >= TAB_LIMIT) throw new Error("MD-2: host tab limit reached");
     const connection = await this.browser.ensureConnection();
@@ -661,6 +670,7 @@ export class KernelBrowserHost {
     const { targetId } = await connection.send("Target.createTarget", { url: navigationUrl(url), ...(background ? { background: true } : {}) });
     if (browser !== this.browser) throw new BrowserActionError('browser_unavailable', 'MP-08: browser restarted; interrupted action was not replayed');
     this.tabs.set(tabId, { tab_id: tabId, target_id: targetId, url, title: "", document_id: "" });
+    this.downloads.bind(this.tabs.get(tabId), downloadSession);
     this.observed = ++this.observations;
   }
   async target(command) {
@@ -770,12 +780,18 @@ export class KernelBrowserHost {
     if (command.op.startsWith("display_") && !featureOn("CHARIOX_KERNEL_BROWSER_DISPLAY")) throw new Error("MD-DISPLAY: display disabled");
     if (command.op === "stop") return this.stop();
     // MP-11: observation never launches/relaunches the browser.
-    await this.start({ signal, allowStart: !["dialog", "state", "snapshot", "screenshot", "unsubscribe", "display_subscribe", "display_attach", "display_suspend", "display_resume", "display_park", "display_input_target", "resize", "note_selection", "pointer_cursor", "mirror_subscribe", "mirror_next", "mirror_close", "chrome_window_follow"].includes(command.op) });
+    await this.start({ signal, allowStart: !["cancel_download", "dialog", "state", "snapshot", "screenshot", "unsubscribe", "display_subscribe", "display_attach", "display_suspend", "display_resume", "display_park", "display_input_target", "resize", "note_selection", "pointer_cursor", "mirror_subscribe", "mirror_next", "mirror_close", "chrome_window_follow"].includes(command.op) });
     assertNotCancelled(signal);
     const browserAtStart = this.browser;
     if (this.protection.unknown) throw new Error("MD-5: observation registry unavailable");
     // A modal blocks renderer evaluation. Read and answer from the controller's
     // CDP event state, never from a reconciliation that waits on that renderer.
+    if (command.op === "cancel_download") {
+      const tab = this.tabs.get(command.tab_id);
+      if (!tab || command.generation !== this.generation) throw new UserDomainRefusal("stale_reference");
+      await this.downloads.cancel(command.download_id, tab.tab_id);
+      return this.observe(this.tabState(), null, scope);
+    }
     if (command.op === "dialog") {
       const tab = this.tabs.get(command.tab_id);
       if (command.generation !== this.generation || !tab || tab.document_id !== command.document_id ||
@@ -807,7 +823,7 @@ export class KernelBrowserHost {
     }
     const agentRequest = command.focused_agent || command._agent_input;
     if (agentRequest && ["open", "navigate"].includes(command.op) && extensionManagementUrl(command.url)) throw new Error(EXTENSIONS_REFUSED);
-    if (command.op === "open") { const opened = await this.open(command.url, undefined, { signal }); await this.rebindWindows(); return this.observe(opened, null, scope); }
+    if (command.op === "open") { const opened = await this.open(command.url, undefined, { signal, downloadSession: command._download_session }); await this.rebindWindows(); return this.observe(opened, null, scope); }
     for (const stream of this.displays.values()) if (Date.now() > stream.expires) await this.removeDisplay(stream);
     if(['display_suspend','display_resume'].includes(command.op)){
       if(command.focused_agent||command._agent_input)throw new UserDomainRefusal('not_granted');
@@ -875,6 +891,7 @@ export class KernelBrowserHost {
       throw new UserDomainRefusal("not_granted");
     }
     if(command.op==='resize')return resizeBrowserPage(this,tab,command,signal);
+    if (["navigate", "input"].includes(command.op)) this.downloads.bind(tab, command._download_session);
     const binding = { target_id: tab.target_id, document_id: tab.document_id };
     if (command.op === "display_subscribe") return this.initialPush(command, await reserveDisplay(this,async()=>{
       if (!featureOn("CHARIOX_KERNEL_BROWSER_DISPLAY")) throw new Error("MD-DISPLAY: display disabled");
@@ -922,6 +939,7 @@ export class KernelBrowserHost {
       const navigated = await this.browser.navigate({ ...binding, url: navigationUrl(command.url) }, { signal });
       // MP-08/MP-10: answer at commit, like a browser's address bar; the page loads
       // into attached views and later state reads reconcile its title.
+      if (navigated?.download_started) return this.observe(this.tabState(), null, scope);
       const stored = this.tabs.get(tab.tab_id);
       if (!stored || typeof navigated?.document_id !== 'string' || !navigated.document_id) return this.observe(await this.reconcile(), null, scope);
       // A redirect commits another address: read the committed target, fenced to this document.
@@ -1049,6 +1067,10 @@ export class KernelBrowserHost {
     return { app, agent };
   }
   async handle(request, { signal } = {}) {
+    if (request.method === "host.downloads.cleanup") {
+      if (this.downloads.root) await this.downloads.cleanupSession(request.params.session_id);
+      return { id: request.id, ok: true, result: {} };
+    }
     const browserAtEntry = this.browser;
     try { assertNotCancelled(signal); } catch { return { id: request.id, ok: false, error: { code: "browser_action_cancelled", message: "MD-3: browser action cancelled" } }; }
     try {

@@ -442,4 +442,5 @@ pub use workspace::*;
 /// secret requests) and 930 to 932 (agent triggers).
 /// Browser header 933 adds the portable active Tab, history bounds and bounded favicon PNGs to the
 /// `KernelBrowser` state (`active_tab_id`, `can_go_back`, `can_go_forward`, `favicon_png_base64`).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 933;
+/// Browser downloads 937 adds bounded Room artifacts and cancellation.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 937;

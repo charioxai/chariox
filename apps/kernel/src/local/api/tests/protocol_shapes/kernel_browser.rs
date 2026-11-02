@@ -712,17 +712,17 @@ fn browser_dialog_protocol630_snapshot() {
 
 // MP-08/MP-10: coordinator-allocated portable Browser header, including no-band clients.
 #[test]
-fn mp08_mp10_browser_header_933_shape_and_hash() {
+fn mp08_mp10_browser_header_937_shape_and_hash() {
     const {
         assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 933);
     }
     const {
         assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 382);
     }
-    let bytes = include_bytes!("browser-header-933.json");
+    let bytes = include_bytes!("browser-header-937.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "c40616d3090c0400564b46218885c55180ba190eaaa73b1bf20def5bd984b555"
+        "a44a8f1693358f4d9b631f8973fe62c72848dcab8cb3fdf3b399eb6a03d33f1e"
     );
     let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     let response: LocalDaemonResponse =
@@ -731,4 +731,11 @@ fn mp08_mp10_browser_header_933_shape_and_hash() {
         serde_json::to_value(response).unwrap(),
         snapshot["response"]
     );
+}
+
+#[test]
+fn mp08_mp10_download_cancellation_937_shape() {
+    let wire = serde_json::json!({"op":"cancel_download","tab_id":"t","generation":7,"download_id":"download-a"});
+    let command: Command = serde_json::from_value(wire.clone()).unwrap();
+    assert_eq!(serde_json::to_value(command).unwrap(), wire);
 }

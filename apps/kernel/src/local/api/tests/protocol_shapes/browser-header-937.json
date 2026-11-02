@@ -1,11 +1,12 @@
 {
-  "local_protocol": 933,
-  "peer_protocol": 382,
+  "local_protocol": 937,
+  "peer_protocol": 386,
   "state_keys": [
     "active_tab_id",
     "browser_lockdown",
     "chrome_window",
     "dialogs",
+    "downloads",
     "generation",
     "state",
     "tabs",
@@ -55,7 +56,8 @@
           "device_scale_factor": 2
         },
         "chrome_window": null,
-        "browser_lockdown": "unavailable"
+        "browser_lockdown": "unavailable",
+        "downloads": []
       }
     }
   }
