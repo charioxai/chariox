@@ -26,7 +26,7 @@ export type WorkflowRunGetPayload = {
 
 export type WorkflowRunCommandDeps = {
   flashFooter: (message: string, tone: FooterTone) => void
-  appendNotice?: (message: string) => void
+  appendNotice: (message: string) => void
   applySessionState: (session: RuntimeSession) => void
   listWorkflowRuns?: (workflowRef?: string | null) => Promise<WorkflowRun[]>
   cancelWorkflowRun?: (workflowRunRef: string) => Promise<WorkflowRunCancelPayload>
@@ -50,7 +50,7 @@ export async function handleWorkflowRunShowCommand(
     return
   }
   const payload = await deps.getWorkflowRun(workflowRunRef)
-  deps.appendNotice?.(JSON.stringify(payload.workflow_run, null, 2))
+  deps.appendNotice(JSON.stringify(payload.workflow_run, null, 2))
   deps.flashFooter(`workflow run ${formatWorkflowRunSummary(payload.workflow_run)}`, "info")
 }
 
@@ -85,12 +85,15 @@ export async function handleWorkflowRunsCommand(
   }
   const workflowRef = args[1] ?? null
   const workflowRuns = await deps.listWorkflowRuns(workflowRef)
-  deps.flashFooter(
-    workflowRuns.length === 0
-      ? (workflowRef ? `no workflow runs for ${workflowRef}` : "no workflow runs in session")
-      : `workflow runs: ${workflowRuns.map(formatWorkflowRunSummary).join(", ")}`,
-    "info",
+  if (workflowRuns.length === 0) {
+    deps.flashFooter(workflowRef ? `no workflow runs for ${workflowRef}` : "no workflow runs in session", "info")
+    return
+  }
+  // The footer is one line wide, so the full list goes to the transcript, one run per line.
+  deps.appendNotice(
+    [`workflow runs (${workflowRuns.length}):`, ...workflowRuns.map(formatWorkflowRunSummary)].join("\n"),
   )
+  deps.flashFooter(`listed ${workflowRuns.length} workflow run${workflowRuns.length === 1 ? "" : "s"}`, "info")
 }
 
 export async function handleWorkflowRunCancelCommand(

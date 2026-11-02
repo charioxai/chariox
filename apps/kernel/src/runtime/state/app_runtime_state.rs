@@ -5,7 +5,7 @@ impl KernelRuntimeState {
         self.owned
             .session_store
             .get_session(session_id)
-            .is_ok_and(|session| session.has_member(owner))
+            .is_ok_and(|session| self.is_room_member(&session, owner))
     }
 
     pub(crate) fn app_control(&self) -> &crate::runtime::app_control::AppControlService {

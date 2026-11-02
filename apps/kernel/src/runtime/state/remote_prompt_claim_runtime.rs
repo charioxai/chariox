@@ -299,15 +299,12 @@ impl KernelRuntimeState {
                         return Ok(true);
                     };
                     if let Err(error) = self
-                        .resume_delivered_remote_prompt_cancellation_after_restart(
-                            &dispatch,
-                            prompt.durable_delivery_provider_run_id(),
-                        )
+                        .resume_delivered_remote_prompt_cancellation_after_restart(&dispatch)
                         .await
                     {
                         crate::logging::warn_with_fields(
                             "daemon.remote_prompt_dispatch",
-                            "restart kept delivered remote cancellation held because its worker receipt was not reconciled",
+                            "restart could not reconcile a delivered remote cancellation from its worker receipt; retrying it",
                             serde_json::json!({
                                 "session_id": dispatch.session_id,
                                 "agent_id": dispatch.agent_id,
@@ -317,6 +314,7 @@ impl KernelRuntimeState {
                                 "error": error.to_string(),
                             }),
                         );
+                        self.spawn_delivered_remote_cancellation_resume(dispatch);
                     }
                     return Ok(true);
                 }
@@ -912,7 +910,7 @@ impl KernelRuntimeState {
         Ok(())
     }
 
-    fn end_lost_leased_provider_run(
+    pub(super) fn end_lost_leased_provider_run(
         &self,
         session_id: &str,
         projected_run_id: &str,

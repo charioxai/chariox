@@ -562,7 +562,8 @@ pub(crate) async fn drain_relay_leased_runtime_projection(
     pump_output: bool,
     replay_settled_completion: bool,
     require_authorization: bool,
-) -> Result<Option<(String, RelayPeerEvent)>, DaemonError> {
+    acknowledged_projection_sequence: u64,
+) -> Result<Option<crate::app::DrainedLeasedProjection>, DaemonError> {
     runtime_state
         .drain_relay_leased_runtime_projection(
             leased_agent_id,
@@ -570,6 +571,7 @@ pub(crate) async fn drain_relay_leased_runtime_projection(
             pump_output,
             replay_settled_completion,
             require_authorization,
+            acknowledged_projection_sequence,
         )
         .await
 }

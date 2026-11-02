@@ -442,4 +442,5 @@ pub use workspace::*;
 /// secret requests) and 930 to 932 (agent triggers).
 /// Browser header 933 adds the portable active Tab, history bounds and bounded favicon PNGs to the
 /// `KernelBrowser` state (`active_tab_id`, `can_go_back`, `can_go_forward`, `favicon_png_base64`).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 933;
+/// MP-08/MP-10/MP-11: 934 acknowledges the leased projection drain (peer 383).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 934;

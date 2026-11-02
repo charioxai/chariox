@@ -66,27 +66,29 @@ pub(crate) async fn authorize_session_membership(
         }
     })?;
 
-    // MP-08/MP-11: the enrolled terminal still owns its OS-local session.
-    // Use the local identity for membership and session projection only; the
-    // command retains the authenticated enrolled ID for interaction authority.
-    if command.is_terminal_caller() {
-        if let SessionMembershipScope::SessionId(session_id) = &scope {
-            if runtime_state.is_legacy_local_terminal_owner(session_id, &user_id) {
-                return Ok(DEFAULT_LOCAL_USER_ID.to_string());
-            }
-        }
-    }
-
     match scope {
         SessionMembershipScope::AllSessions => Ok(user_id),
         SessionMembershipScope::SessionId(session_id) => {
-            ensure_session_member(runtime_state, session_projection, &session_id, &user_id).await?;
+            ensure_session_member(
+                runtime_state,
+                session_projection,
+                command,
+                &session_id,
+                &user_id,
+            )
+            .await?;
             Ok(user_id)
         }
         SessionMembershipScope::SessionIds(session_ids) => {
             for session_id in session_ids {
-                ensure_session_member(runtime_state, session_projection, &session_id, &user_id)
-                    .await?;
+                ensure_session_member(
+                    runtime_state,
+                    session_projection,
+                    command,
+                    &session_id,
+                    &user_id,
+                )
+                .await?;
             }
             Ok(user_id)
         }
@@ -101,7 +103,7 @@ pub(crate) async fn authorize_session_membership(
                 workspace_id.as_deref(),
             )
             .await?;
-            if !session.has_member(&user_id) {
+            if !is_member(runtime_state, command, &session, &user_id) {
                 return Err(DaemonError::SessionAccessDenied {
                     session_id: session.id().to_string(),
                     user_id,
@@ -117,7 +119,7 @@ pub(crate) async fn authorize_session_membership(
                 .resolve_session_ref_id_for_delete(&session_ref, workspace_id.as_deref())
                 .await?;
             let session = runtime_state.session_snapshot(&session_id).await?;
-            if !session.has_member(&user_id) {
+            if !is_member(runtime_state, command, &session, &user_id) {
                 return Err(DaemonError::SessionAccessDenied {
                     session_id,
                     user_id,
@@ -133,9 +135,45 @@ pub(crate) async fn authorize_session_membership(
             } else {
                 runtime_state.attachment_session_id(&attachment_id).await?
             };
-            ensure_session_member(runtime_state, session_projection, &session_id, &user_id).await?;
+            ensure_session_member(
+                runtime_state,
+                session_projection,
+                command,
+                &session_id,
+                &user_id,
+            )
+            .await?;
             Ok(user_id)
         }
+    }
+}
+
+/// The identity the addressed room stores for an admitted caller, for the projections that
+/// show the room to its member (what that member may see). Ownership checks never use it:
+/// they keep the authenticated identity and relate it to the owner with `acts_for_owner`.
+pub(crate) fn request_room_member_user_id(
+    runtime_state: &KernelRuntimeState,
+    command: &KernelCommand,
+    request: &LocalDaemonRequest,
+    user_id: &str,
+) -> String {
+    if !command.is_terminal_caller() && !command.is_sudo_command() {
+        return user_id.to_string();
+    }
+    // A provider run carries no session scope of its own; it belongs to the room it ran in.
+    if let LocalDaemonRequest::GetProviderRun(run_request) = request {
+        return runtime_state
+            .provider_run_session_id(&run_request.provider_run_id)
+            .map_or_else(
+                || user_id.to_string(),
+                |session_id| runtime_state.room_member_user_id(&session_id, user_id),
+            );
+    }
+    match request_session_scope(request) {
+        Some(SessionMembershipScope::SessionId(session_id)) => {
+            runtime_state.room_member_user_id(&session_id, user_id)
+        }
+        _ => user_id.to_string(),
     }
 }
 
@@ -166,14 +204,31 @@ fn hosted_service_request_is_authorized(
     }
 }
 
+/// Membership of the room as the caller's own identity, or as the room's `local` member when the
+/// caller is the enrolled owner's terminal or an admitted sudo command.
+fn is_member(
+    runtime_state: &KernelRuntimeState,
+    command: &KernelCommand,
+    session: &crate::session::RuntimeSession,
+    user_id: &str,
+) -> bool {
+    // Sudo admission rechecks the exact live grant before this membership check.
+    if command.is_terminal_caller() || command.is_sudo_command() {
+        runtime_state.is_room_member(session, user_id)
+    } else {
+        session.has_member(user_id)
+    }
+}
+
 async fn ensure_session_member(
     runtime_state: &KernelRuntimeState,
     session_projection: &SessionStateProjectionStore,
+    command: &KernelCommand,
     session_id: &str,
     user_id: &str,
 ) -> Result<(), DaemonError> {
     if let Some(session) = session_projection.get(session_id) {
-        if session.has_member(user_id) {
+        if is_member(runtime_state, command, &session, user_id) {
             return Ok(());
         }
         return Err(DaemonError::SessionAccessDenied {
@@ -182,7 +237,7 @@ async fn ensure_session_member(
         });
     }
     let session = runtime_state.session_snapshot(session_id).await?;
-    if session.has_member(user_id) {
+    if is_member(runtime_state, command, &session, user_id) {
         Ok(())
     } else {
         Err(DaemonError::SessionAccessDenied {

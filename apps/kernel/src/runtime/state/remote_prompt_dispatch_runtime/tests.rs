@@ -579,6 +579,7 @@ async fn assert_no_duplicate_claim_submission(
                             ..
                         } => {
                             let response = crate::transport::relay_peer::RelayPeerResponse::LeasedRuntimeProjectionDrained {
+                                projection_sequence: None,
                                 event: None,
                             };
                             let encrypted_response =
@@ -1064,6 +1065,7 @@ mod receipt_reconciliation {
                     leased_agent_id: requested_agent,
                     provider_run_id: requested_run,
                     pump_output: true,
+                    ..
                 } if requested_agent == &leased_agent_id && requested_run == &run_id
             ));
             drain_seen_tx
@@ -1081,6 +1083,7 @@ mod receipt_reconciliation {
                 &worker_private_key,
                 &home_public_key,
                 RelayPeerResponse::LeasedRuntimeProjectionDrained {
+                    projection_sequence: None,
                     event: Some(RelayPeerEvent::LeasedRuntimeProjection {
                         home_session_id: session_id,
                         home_agent_id: agent_id,
@@ -1490,6 +1493,7 @@ mod receipt_reconciliation {
                     leased_agent_id,
                     provider_run_id,
                     pump_output: true,
+                    ..
                 } if leased_agent_id == &listener_leased_agent_id
                     && provider_run_id.as_str() == "worker-run-completed-receipt"
             ));
@@ -1499,6 +1503,7 @@ mod receipt_reconciliation {
                 &listener_worker_private_key,
                 &listener_home_public_key,
                 RelayPeerResponse::LeasedRuntimeProjectionDrained {
+                    projection_sequence: None,
                     event: Some(RelayPeerEvent::LeasedRuntimeProjection {
                         home_session_id: listener_session_id,
                         home_agent_id: listener_agent_id,
@@ -3160,7 +3165,10 @@ mod projection_drain {
                 &fixture.worker_id,
                 &fixture.worker_private_key,
                 &fixture.home_public_key,
-                RelayPeerResponse::LeasedRuntimeProjectionDrained { event: None },
+                RelayPeerResponse::LeasedRuntimeProjectionDrained {
+                    event: None,
+                    projection_sequence: None,
+                },
             )
         };
 
@@ -3846,7 +3854,10 @@ mod projection_drain {
             worker_id,
             &worker_private_key,
             &home_public_key,
-            RelayPeerResponse::LeasedRuntimeProjectionDrained { event: Some(event) },
+            RelayPeerResponse::LeasedRuntimeProjectionDrained {
+                event: Some(event),
+                projection_sequence: None,
+            },
         )
         .await;
         let observation_request = receive_fake_worker_peer_request(
@@ -5557,7 +5568,7 @@ mod lost_worker_run {
     use super::*;
     use crate::durable_state::agent_lifecycle::{ExecutionState, Operation};
 
-    async fn delivered_fixture(
+    pub(super) async fn delivered_fixture(
         relay_url: &str,
         suffix: &str,
         worker_run: &str,
@@ -5660,18 +5671,13 @@ mod lost_worker_run {
         ))
     }
 
-    // MP-08 / MP-10 / MP-11 A10-S02 / A10-S04: a worker that restarts during an
-    // accepted turn loses it. Home never runs that instruction again on its own:
-    // the turn ends failed, its task is cancelled with that outcome (no owner
-    // card), and the queue moves on.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn worker_lost_accepted_turn_ends_failed_instead_of_replaying_it() {
-        let listener = TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("fake relay listener should bind");
-        let relay_url = format!("ws://{}", listener.local_addr().unwrap());
-        let lost_run = "worker-run-lost";
-        let fixture = delivered_fixture(&relay_url, "lost-run", lost_run).await;
+    /// The fake worker answers home's drain with the lease gone, then accepts
+    /// home's queued successor.
+    async fn lose_the_accepted_turn(
+        listener: TcpListener,
+        fixture: &ReceiptReconciliationFixture,
+        lost_run: &'static str,
+    ) {
         let worker_id = fixture.worker_id.clone();
         let worker_machine_id = fixture.worker_machine_id.clone();
         let worker_public_key = fixture.worker_public_key.clone();
@@ -5741,6 +5747,170 @@ mod lost_worker_run {
             .await
             .expect("fake worker should see the drain and the successor")
             .expect("fake worker assertions should hold");
+    }
+
+    // MP-08 / MP-10 / MP-11 A10-S02: a tool the worker was running when it lost
+    // the turn stayed RUNNING at home; the worker that owned it will never close it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn worker_lost_accepted_turn_ends_its_running_tool_rows() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("fake relay listener should bind");
+        let relay_url = format!("ws://{}", listener.local_addr().unwrap());
+        let lost_run = "worker-run-lost";
+        let fixture = delivered_fixture(&relay_url, "lost-tool", lost_run).await;
+        let owned = &fixture.runtime.owned;
+        let projected =
+            crate::provider::projected_leased_provider_run_id(&fixture.leased_agent_id, lost_run);
+        let running = serde_json::json!({
+            "id": "call-1", "type": "commandExecution", "command": "sleep 600", "status": "inProgress",
+        });
+        owned.append_history_entries(
+            &fixture.session_id,
+            vec![crate::history::SessionHistoryEntry::provider_output(
+                &fixture.session_id,
+                &projected,
+                Some(&fixture.agent_id),
+                crate::terminal::TerminalOutputKind::ProviderTool,
+                Some("call-1".to_string()),
+                running.to_string(),
+            )],
+        );
+
+        lose_the_accepted_turn(listener, &fixture, lost_run).await;
+
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let statuses = owned
+                .operational_history_store
+                .load_provider_tool_entries_for_run(&fixture.session_id, &projected)
+                .unwrap()
+                .into_iter()
+                .map(|entry| {
+                    let row: serde_json::Value = serde_json::from_str(&entry.text).unwrap();
+                    row["status"].as_str().unwrap().to_string()
+                })
+                .collect::<Vec<_>>();
+            if statuses == ["inProgress", "error"] {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the lost turn's running tool must end with it: {statuses:?}"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    }
+
+    // MP-08 / MP-10 / MP-11 A10-S02: Ctrl+C on a leased turn whose worker never
+    // comes back stayed Cancelling forever: nothing could reach the worker and
+    // home has no lease expiry. After the deadline home ends it, and says why.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancel_the_worker_never_answers_ends_the_turn_cancelled_with_a_reason() {
+        // A relay nobody answers on: the worker is gone for good.
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("fake relay listener should bind");
+        let relay_url = format!("ws://{}", listener.local_addr().unwrap());
+        let gone_run = "worker-run-gone";
+        let fixture = delivered_fixture(&relay_url, "cancel-gone", gone_run).await;
+        let owned = &fixture.runtime.owned;
+        let projected =
+            crate::provider::projected_leased_provider_run_id(&fixture.leased_agent_id, gone_run);
+        let running =
+            serde_json::json!({"id": "call-1", "type": "commandExecution", "status": "inProgress"});
+        owned.append_history_entries(
+            &fixture.session_id,
+            vec![crate::history::SessionHistoryEntry::provider_output(
+                &fixture.session_id,
+                &projected,
+                Some(&fixture.agent_id),
+                crate::terminal::TerminalOutputKind::ProviderTool,
+                Some("call-1".to_string()),
+                running.to_string(),
+            )],
+        );
+        owned
+            .begin_remote_prompt_cancellation_if_matches(
+                &fixture.session_id,
+                &fixture.agent_id,
+                &fixture.dispatch.source_attachment_id,
+                Some(&fixture.dispatch.prompt_id),
+            )
+            .expect("Ctrl+C starts the cancellation")
+            .expect("the delivered prompt is cancelling");
+
+        assert!(fixture
+            .runtime
+            .end_remote_cancellation_the_worker_never_answered(
+                &fixture.session_id,
+                &fixture.agent_id
+            )
+            .expect("home ends the cancellation"));
+
+        let session = owned
+            .session_store
+            .get_session(&fixture.session_id)
+            .unwrap();
+        let active = owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &fixture.agent_id);
+        assert_ne!(
+            active.map(|prompt| prompt.id().to_string()).as_deref(),
+            Some(fixture.dispatch.prompt_id.as_str()),
+            "the cancelled turn is no longer active"
+        );
+        let task = owned
+            .durable_state_store
+            .agent_tasks(Some(&fixture.session_id), Some(&fixture.agent_id))
+            .unwrap()
+            .into_iter()
+            .find(|task| task.prompt_id == fixture.dispatch.prompt_id)
+            .expect("the turn's task");
+        assert_eq!(task.state, ExecutionState::Cancelled, "{task:?}");
+        let history = owned
+            .operational_history_store
+            .load_session_history_entries(&fixture.session_id, Some(&fixture.agent_id))
+            .unwrap();
+        assert!(
+            history.iter().any(|entry| entry.kind
+                == crate::history::SessionHistoryEntryKind::Notice
+                && entry.text.contains("did not answer for 120 s")
+                && entry.text.contains("Chariox cancelled this turn here")),
+            "the owner is told why the turn ended without the worker"
+        );
+        let last_tool = history
+            .iter()
+            .rfind(|entry| entry.kind == crate::history::SessionHistoryEntryKind::ProviderTool)
+            .map(|entry| serde_json::from_str::<serde_json::Value>(&entry.text).unwrap());
+        assert_eq!(
+            last_tool.as_ref().map(|row| row["status"].clone()),
+            Some("cancelled".into())
+        );
+        assert!(
+            owned
+                .provider_run_projection
+                .get(&projected)
+                .is_none_or(|run| run.state() == crate::provider::ProviderRunState::Ended),
+            "the projected run ends with the turn"
+        );
+        drop(listener);
+    }
+
+    // MP-08 / MP-10 / MP-11 A10-S02 / A10-S04: a worker that restarts during an
+    // accepted turn loses it. Home never runs that instruction again on its own:
+    // the turn ends failed, its task is cancelled with that outcome (no owner
+    // card), and the queue moves on.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn worker_lost_accepted_turn_ends_failed_instead_of_replaying_it() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("fake relay listener should bind");
+        let relay_url = format!("ws://{}", listener.local_addr().unwrap());
+        let lost_run = "worker-run-lost";
+        let fixture = delivered_fixture(&relay_url, "lost-run", lost_run).await;
+        lose_the_accepted_turn(listener, &fixture, lost_run).await;
+        let successor_prompt_id = fixture.successor_prompt_id.clone();
 
         let owned = &fixture.runtime.owned;
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -5881,5 +6051,832 @@ mod lost_worker_run {
             .remote_prompt_projection_drain_target(&fixture.session_id, &fixture.agent_id)
             .expect("the replacement run drains");
         assert_eq!(drain_run, "worker-run-replayed");
+    }
+}
+
+// MP-08 / MP-10 A10-S02: the home names the last projection it applied in every
+// drain, so a worker can answer a lost reply again; it records a projection only
+// after applying it.
+mod projection_acknowledgement {
+    use super::lost_worker_run::delivered_fixture;
+    use super::*;
+
+    fn final_text(fixture: &ReceiptReconciliationFixture, text: &str) -> RelayPeerResponse {
+        RelayPeerResponse::LeasedRuntimeProjectionDrained {
+            event: Some(RelayPeerEvent::LeasedRuntimeProjection {
+                home_session_id: fixture.session_id.clone(),
+                home_agent_id: fixture.agent_id.clone(),
+                provider_run_id: "worker-run-ack".to_string(),
+                provider_run: None,
+                prompts: Vec::new(),
+                output_chunks: vec![crate::transport::relay_peer::RelayProjectedOutputChunk {
+                    kind: crate::terminal::TerminalOutputKind::ProviderOutput,
+                    merge_key: Some("final-answer".to_string()),
+                    bytes: text.as_bytes().to_vec(),
+                }],
+                notices: Vec::new(),
+                completions: Vec::new(),
+            }),
+            projection_sequence: Some(1),
+        }
+    }
+
+    fn acknowledged(request: &RelayPeerRequest) -> u64 {
+        let RelayPeerRequest::DrainLeasedRuntimeProjection {
+            acknowledged_projection_sequence,
+            ..
+        } = request
+        else {
+            panic!("expected a projection drain, got {request:?}");
+        };
+        *acknowledged_projection_sequence
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn home_acknowledges_a_projection_only_after_applying_it() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("fake relay listener should bind");
+        let relay_url = format!("ws://{}", listener.local_addr().unwrap());
+        let fixture = delivered_fixture(&relay_url, "ack", "worker-run-ack").await;
+        let worker_id = fixture.worker_id.clone();
+        let worker_machine_id = fixture.worker_machine_id.clone();
+        let worker_public_key = fixture.worker_public_key.clone();
+        let worker_private_key = fixture.worker_private_key.clone();
+        let home_public_key = fixture.home_public_key.clone();
+        let reply = final_text(&fixture, "PART_DONE");
+        let server = tokio::spawn(async move {
+            let mut seen = Vec::new();
+            for answer in [None, Some(reply.clone()), None] {
+                let request = receive_fake_worker_peer_request(
+                    &listener,
+                    &worker_id,
+                    &worker_machine_id,
+                    &worker_public_key,
+                    &worker_private_key,
+                    None,
+                )
+                .await;
+                seen.push(acknowledged(&request.request));
+                match answer {
+                    // The reply to the first drain is lost at reconnect.
+                    None if seen.len() == 1 => {
+                        send_fake_relay_envelope(
+                            &mut { request.socket },
+                            RelayEnvelope::DaemonPeerResponse {
+                                request_id: request.request_id,
+                                from_daemon_id: worker_id.clone(),
+                                encrypted_response: None,
+                                error: Some(chariox_relay::protocol::RelayError {
+                                    code: "target_not_connected".to_string(),
+                                    message: "kernel relay connection is reconnecting".into(),
+                                    retryable: true,
+                                }),
+                            },
+                        )
+                        .await
+                    }
+                    Some(response) => {
+                        send_fake_worker_peer_response(
+                            request,
+                            &worker_id,
+                            &worker_private_key,
+                            &home_public_key,
+                            response,
+                        )
+                        .await
+                    }
+                    None => {
+                        send_fake_worker_peer_response(
+                            request,
+                            &worker_id,
+                            &worker_private_key,
+                            &home_public_key,
+                            RelayPeerResponse::LeasedRuntimeProjectionDrained {
+                                event: None,
+                                projection_sequence: None,
+                            },
+                        )
+                        .await
+                    }
+                }
+            }
+            seen
+        });
+
+        let runtime = &fixture.runtime;
+        assert!(runtime
+            .drain_remote_prompt_projection_once(&fixture.session_id, &fixture.agent_id)
+            .await
+            .is_err());
+        for _ in 0..2 {
+            assert!(runtime
+                .drain_remote_prompt_projection_once(&fixture.session_id, &fixture.agent_id)
+                .await
+                .expect("the drain applies the worker reply"));
+        }
+        let seen = tokio::time::timeout(std::time::Duration::from_secs(10), server)
+            .await
+            .expect("fake worker should see three drains")
+            .expect("fake worker assertions should hold");
+        assert_eq!(
+            seen,
+            vec![0, 0, 1],
+            "a lost reply is not acknowledged; an applied one is"
+        );
+        let finals = runtime
+            .owned
+            .operational_history_store
+            .load_session_events(&fixture.session_id, Some(&fixture.agent_id))
+            .expect("home history should load")
+            .into_iter()
+            .filter_map(|event| event.to_session_history_entry())
+            .filter(|entry| entry.text.contains("PART_DONE"))
+            .count();
+        assert_eq!(finals, 1, "the final text reaches the home exactly once");
+    }
+
+    fn projection(
+        fixture: &ReceiptReconciliationFixture,
+        run: &str,
+        sequence: u64,
+        completed: bool,
+    ) -> RelayPeerResponse {
+        RelayPeerResponse::LeasedRuntimeProjectionDrained {
+            event: Some(RelayPeerEvent::LeasedRuntimeProjection {
+                home_session_id: fixture.session_id.clone(),
+                home_agent_id: fixture.agent_id.clone(),
+                provider_run_id: run.to_string(),
+                provider_run: None,
+                prompts: Vec::new(),
+                output_chunks: if completed {
+                    Vec::new()
+                } else {
+                    vec![crate::transport::relay_peer::RelayProjectedOutputChunk {
+                        kind: crate::terminal::TerminalOutputKind::ProviderOutput,
+                        merge_key: Some("final-answer".to_string()),
+                        bytes: b"PART_DONE".to_vec(),
+                    }]
+                },
+                notices: Vec::new(),
+                completions: if completed {
+                    vec![crate::transport::relay_peer::RelayProjectedCompletion {
+                        message_id: "ack-cancel-completion".to_string(),
+                        completed_at_ms: 1,
+                        home_prompt_id: Some(fixture.dispatch.prompt_id.clone()),
+                        provider_termination: None,
+                        failure: None,
+                    }]
+                } else {
+                    Vec::new()
+                },
+            }),
+            projection_sequence: Some(sequence),
+        }
+    }
+
+    // MP-08 / MP-10 A10-S02 (#1065 review P1): the worker keeps an output-only
+    // projection whose drain reply was lost, then settles the turn. A home that
+    // restarts while cancelling it must apply that output before the completion
+    // behind it; rejecting it held the cancellation forever.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn restarted_cancellation_applies_retained_output_before_the_completion() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("fake relay listener should bind");
+        let relay_url = format!("ws://{}", listener.local_addr().unwrap());
+        let run = "worker-run-ack-cancel";
+        let fixture = delivered_fixture(&relay_url, "ack-cancel", run).await;
+        let worker_id = fixture.worker_id.clone();
+        let worker_machine_id = fixture.worker_machine_id.clone();
+        let worker_public_key = fixture.worker_public_key.clone();
+        let worker_private_key = fixture.worker_private_key.clone();
+        let home_public_key = fixture.home_public_key.clone();
+        let prompt_id = fixture.dispatch.prompt_id.clone();
+        let output = projection(&fixture, run, 1, false);
+        let completion = projection(&fixture, run, 2, true);
+        let server = tokio::spawn(async move {
+            let mut drains = Vec::new();
+            loop {
+                let request = receive_fake_worker_peer_request(
+                    &listener,
+                    &worker_id,
+                    &worker_machine_id,
+                    &worker_public_key,
+                    &worker_private_key,
+                    None,
+                )
+                .await;
+                let response = match &request.request {
+                    RelayPeerRequest::DrainLeasedRuntimeProjection { .. } if drains.is_empty() => {
+                        drains.push(acknowledged(&request.request));
+                        // The reply carrying the output is lost at reconnect.
+                        send_fake_relay_envelope(
+                            &mut { request.socket },
+                            RelayEnvelope::DaemonPeerResponse {
+                                request_id: request.request_id,
+                                from_daemon_id: worker_id.clone(),
+                                encrypted_response: None,
+                                error: Some(chariox_relay::protocol::RelayError {
+                                    code: "target_not_connected".to_string(),
+                                    message: "kernel relay connection is reconnecting".into(),
+                                    retryable: true,
+                                }),
+                            },
+                        )
+                        .await;
+                        continue;
+                    }
+                    RelayPeerRequest::GetLeasedPromptReceipt { .. } => {
+                        RelayPeerResponse::LeasedPromptReceiptQueried {
+                            receipt: Some(crate::transport::relay_peer::LeasedPromptReceipt {
+                                home_prompt_id: prompt_id.clone(),
+                                worker_provider_run_id: run.to_string(),
+                                phase:
+                                    crate::transport::relay_peer::LeasedPromptReceiptPhase::Completed,
+                                target_home_prompt_id: None,
+                                execution_lease_id: Some("lease-receipt-ack-cancel".to_string()),
+                            }),
+                        }
+                    }
+                    RelayPeerRequest::DrainLeasedRuntimeProjection { .. } => {
+                        let acknowledged = acknowledged(&request.request);
+                        drains.push(acknowledged);
+                        // The worker answers with its retained output until the home
+                        // acknowledges it; the settled completion comes after.
+                        if acknowledged < 1 {
+                            output.clone()
+                        } else {
+                            completion.clone()
+                        }
+                    }
+                    RelayPeerRequest::ObserveLeasedGitAfter { .. } => {
+                        RelayPeerResponse::LeasedGitObserved {
+                            provider_run_id: run.to_string(),
+                            git_observations: Vec::new(),
+                            workspace_live_sync_change: None,
+                        }
+                    }
+                    other => panic!("unexpected worker request {other:?}"),
+                };
+                let done = matches!(
+                    &request.request,
+                    RelayPeerRequest::ObserveLeasedGitAfter { .. }
+                );
+                send_fake_worker_peer_response(
+                    request,
+                    &worker_id,
+                    &worker_private_key,
+                    &home_public_key,
+                    response,
+                )
+                .await;
+                if done || drains.len() > 3 {
+                    return drains;
+                }
+            }
+        });
+
+        let runtime = &fixture.runtime;
+        let owned = &runtime.owned;
+        assert!(runtime
+            .drain_remote_prompt_projection_once(&fixture.session_id, &fixture.agent_id)
+            .await
+            .is_err());
+        owned
+            .begin_remote_prompt_cancellation_if_matches(
+                &fixture.session_id,
+                &fixture.agent_id,
+                &fixture.dispatch.source_attachment_id,
+                Some(&fixture.dispatch.prompt_id),
+            )
+            .expect("Ctrl+C starts the cancellation")
+            .expect("the delivered prompt is cancelling");
+        runtime
+            .recover_remote_prompt_after_kernel_restart(
+                &fixture.session_id,
+                &fixture.agent_id,
+                Some(crate::session::DurablePromptDeliveryPhase::Delivered),
+                Some(run),
+            )
+            .await
+            .expect("restart recovery runs");
+        let drains = tokio::time::timeout(std::time::Duration::from_secs(10), server)
+            .await
+            .expect("fake worker should see the recovery drains")
+            .expect("fake worker assertions should hold");
+        assert_eq!(
+            drains,
+            vec![0, 0, 1],
+            "recovery applies and acknowledges the retained output, then drains the completion"
+        );
+
+        let session = owned
+            .session_store
+            .get_session(&fixture.session_id)
+            .unwrap();
+        assert_ne!(
+            owned
+                .prompt_state_owner
+                .active_prompt_for_agent(&session, &fixture.agent_id)
+                .map(|prompt| prompt.id().to_string())
+                .as_deref(),
+            Some(fixture.dispatch.prompt_id.as_str()),
+            "the cancellation settles"
+        );
+        let finals = owned
+            .operational_history_store
+            .load_session_events(&fixture.session_id, Some(&fixture.agent_id))
+            .expect("home history should load")
+            .into_iter()
+            .filter_map(|event| event.to_session_history_entry())
+            .filter(|entry| entry.text.contains("PART_DONE"))
+            .count();
+        assert_eq!(finals, 1, "the retained output is applied exactly once");
+    }
+
+    // MP-08 / MP-10 A10-S02 (#1065 review P1 @2a7b19e4e): a home restarted during
+    // Ctrl+C whose first worker-receipt query failed only drained output, so a
+    // worker that came back still running never got the cancellation and the
+    // home prompt stayed Cancelling. The exact receipt recovery is retried.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn restarted_cancellation_retries_the_receipt_until_the_cancel_lands() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("fake relay listener should bind");
+        let relay_url = format!("ws://{}", listener.local_addr().unwrap());
+        let run = "worker-run-restart-retry";
+        let fixture = delivered_fixture(&relay_url, "restart-retry", run).await;
+        let worker_id = fixture.worker_id.clone();
+        let worker_machine_id = fixture.worker_machine_id.clone();
+        let worker_public_key = fixture.worker_public_key.clone();
+        let worker_private_key = fixture.worker_private_key.clone();
+        let home_public_key = fixture.home_public_key.clone();
+        let prompt_id = fixture.dispatch.prompt_id.clone();
+        let leased_agent_id = fixture.leased_agent_id.clone();
+        let completion = projection(&fixture, run, 1, true);
+        let server = tokio::spawn(async move {
+            let mut seen = Vec::new();
+            let mut cancelled = false;
+            loop {
+                let request = receive_fake_worker_peer_request(
+                    &listener,
+                    &worker_id,
+                    &worker_machine_id,
+                    &worker_public_key,
+                    &worker_private_key,
+                    None,
+                )
+                .await;
+                let response = match &request.request {
+                    RelayPeerRequest::GetLeasedPromptReceipt { .. }
+                        if !seen.contains(&"receipt lost") =>
+                    {
+                        // The worker is still reconnecting: no answer reaches the home.
+                        seen.push("receipt lost");
+                        drop(request);
+                        continue;
+                    }
+                    RelayPeerRequest::GetLeasedPromptReceipt { .. } => {
+                        seen.push("receipt");
+                        RelayPeerResponse::LeasedPromptReceiptQueried {
+                            receipt: Some(crate::transport::relay_peer::LeasedPromptReceipt {
+                                home_prompt_id: prompt_id.clone(),
+                                worker_provider_run_id: run.to_string(),
+                                phase:
+                                    crate::transport::relay_peer::LeasedPromptReceiptPhase::Active,
+                                target_home_prompt_id: None,
+                                execution_lease_id: Some("lease-receipt-restart-retry".to_string()),
+                            }),
+                        }
+                    }
+                    RelayPeerRequest::CancelLeasedPrompt {
+                        home_prompt_id,
+                        worker_provider_run_id,
+                        ..
+                    } => {
+                        assert_eq!(home_prompt_id, &prompt_id);
+                        assert_eq!(worker_provider_run_id, run);
+                        seen.push("cancel");
+                        cancelled = true;
+                        RelayPeerResponse::LeasedPromptCancelled {
+                            cancellation: crate::session::PromptCancellation {
+                                prompt: crate::session::PromptQueueItem::new(
+                                    "worker-local-restart-retry",
+                                    "worker-attachment-restart-retry",
+                                    &leased_agent_id,
+                                    "long leased turn",
+                                    crate::session::PromptStatus::Cancelling,
+                                ),
+                                started_next: None,
+                            },
+                        }
+                    }
+                    RelayPeerRequest::DrainLeasedRuntimeProjection { .. } if !cancelled => {
+                        RelayPeerResponse::LeasedRuntimeProjectionDrained {
+                            event: None,
+                            projection_sequence: None,
+                        }
+                    }
+                    RelayPeerRequest::DrainLeasedRuntimeProjection { .. } => {
+                        seen.push("drain");
+                        completion.clone()
+                    }
+                    RelayPeerRequest::ObserveLeasedGitAfter { .. } => {
+                        seen.push("observe");
+                        RelayPeerResponse::LeasedGitObserved {
+                            provider_run_id: run.to_string(),
+                            git_observations: Vec::new(),
+                            workspace_live_sync_change: None,
+                        }
+                    }
+                    other => panic!("unexpected worker request {other:?}"),
+                };
+                let done = matches!(
+                    &request.request,
+                    RelayPeerRequest::ObserveLeasedGitAfter { .. }
+                );
+                send_fake_worker_peer_response(
+                    request,
+                    &worker_id,
+                    &worker_private_key,
+                    &home_public_key,
+                    response,
+                )
+                .await;
+                if done {
+                    return seen;
+                }
+            }
+        });
+
+        let runtime = &fixture.runtime;
+        let owned = &runtime.owned;
+        owned
+            .begin_remote_prompt_cancellation_if_matches(
+                &fixture.session_id,
+                &fixture.agent_id,
+                &fixture.dispatch.source_attachment_id,
+                Some(&fixture.dispatch.prompt_id),
+            )
+            .expect("Ctrl+C starts the cancellation")
+            .expect("the delivered prompt is cancelling");
+        runtime
+            .recover_remote_prompt_after_kernel_restart(
+                &fixture.session_id,
+                &fixture.agent_id,
+                Some(crate::session::DurablePromptDeliveryPhase::Delivered),
+                Some(run),
+            )
+            .await
+            .expect("restart recovery runs");
+        let seen = tokio::time::timeout(std::time::Duration::from_secs(20), server)
+            .await
+            .expect("the cancellation should reach the worker once it answers")
+            .expect("fake worker assertions should hold");
+        assert_eq!(
+            seen,
+            vec!["receipt lost", "receipt", "cancel", "drain", "observe"]
+        );
+
+        let settled = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                let session = owned
+                    .session_store
+                    .get_session(&fixture.session_id)
+                    .unwrap();
+                if owned
+                    .prompt_state_owner
+                    .active_prompt_for_agent(&session, &fixture.agent_id)
+                    .is_none_or(|prompt| prompt.id() != fixture.dispatch.prompt_id)
+                {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+        })
+        .await;
+        assert!(
+            settled.is_ok(),
+            "the cancellation settles without another user action"
+        );
+    }
+
+    // MP-08 / MP-10 A10-S02 (#1065 review P1 @28edc7354): while a restarted home
+    // retries its Ctrl+C, a drain follows the worker onto a successor run (provider
+    // sign-in relaunch). The retry kept asking about the original run, failed the
+    // binding check every time and ended the turn at home after 120 s while the
+    // worker kept running the cancelled work. The cancel must reach the successor.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn restarted_cancellation_follows_a_successor_run_found_by_its_drain() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("fake relay listener should bind");
+        let relay_url = format!("ws://{}", listener.local_addr().unwrap());
+        let run = "worker-run-restart-first";
+        let successor = "worker-run-restart-successor";
+        let fixture = delivered_fixture(&relay_url, "restart-successor", run).await;
+        let worker_id = fixture.worker_id.clone();
+        let worker_machine_id = fixture.worker_machine_id.clone();
+        let worker_public_key = fixture.worker_public_key.clone();
+        let worker_private_key = fixture.worker_private_key.clone();
+        let home_public_key = fixture.home_public_key.clone();
+        let prompt_id = fixture.dispatch.prompt_id.clone();
+        let leased_agent_id = fixture.leased_agent_id.clone();
+        let (_, _, output_event, _) = actual_worker_output_then_completion(
+            &fixture.session_id,
+            &fixture.agent_id,
+            &prompt_id,
+        );
+        let RelayPeerEvent::LeasedRuntimeProjection {
+            provider_run: Some(worker_run),
+            ..
+        } = &output_event
+        else {
+            panic!("the worker projects its run");
+        };
+        let successor_projection = RelayPeerResponse::LeasedRuntimeProjectionDrained {
+            event: Some(RelayPeerEvent::LeasedRuntimeProjection {
+                home_session_id: fixture.session_id.clone(),
+                home_agent_id: fixture.agent_id.clone(),
+                provider_run_id: successor.to_string(),
+                provider_run: Some(worker_run.clone().projected_for_home_agent_with_id(
+                    successor.to_string(),
+                    fixture.session_id.clone(),
+                    fixture.agent_id.clone(),
+                )),
+                prompts: Vec::new(),
+                output_chunks: Vec::new(),
+                notices: Vec::new(),
+                completions: Vec::new(),
+            }),
+            projection_sequence: Some(1),
+        };
+        let completion = projection(&fixture, successor, 2, true);
+        let server = tokio::spawn(async move {
+            let mut seen = Vec::new();
+            let mut cancelled = false;
+            loop {
+                let request = receive_fake_worker_peer_request(
+                    &listener,
+                    &worker_id,
+                    &worker_machine_id,
+                    &worker_public_key,
+                    &worker_private_key,
+                    None,
+                )
+                .await;
+                let response = match &request.request {
+                    RelayPeerRequest::GetLeasedPromptReceipt { .. }
+                        if !seen.contains(&"receipt lost") =>
+                    {
+                        seen.push("receipt lost");
+                        drop(request);
+                        continue;
+                    }
+                    RelayPeerRequest::GetLeasedPromptReceipt { .. } => {
+                        seen.push("receipt");
+                        RelayPeerResponse::LeasedPromptReceiptQueried {
+                            receipt: Some(crate::transport::relay_peer::LeasedPromptReceipt {
+                                home_prompt_id: prompt_id.clone(),
+                                worker_provider_run_id: successor.to_string(),
+                                phase:
+                                    crate::transport::relay_peer::LeasedPromptReceiptPhase::Active,
+                                target_home_prompt_id: None,
+                                execution_lease_id: Some(
+                                    "lease-receipt-restart-successor".to_string(),
+                                ),
+                            }),
+                        }
+                    }
+                    RelayPeerRequest::CancelLeasedPrompt {
+                        home_prompt_id,
+                        worker_provider_run_id,
+                        ..
+                    } => {
+                        assert_eq!(home_prompt_id, &prompt_id);
+                        assert_eq!(worker_provider_run_id, successor);
+                        seen.push("cancel");
+                        cancelled = true;
+                        RelayPeerResponse::LeasedPromptCancelled {
+                            cancellation: crate::session::PromptCancellation {
+                                prompt: crate::session::PromptQueueItem::new(
+                                    "worker-local-restart-successor",
+                                    "worker-attachment-restart-successor",
+                                    &leased_agent_id,
+                                    "long leased turn",
+                                    crate::session::PromptStatus::Cancelling,
+                                ),
+                                started_next: None,
+                            },
+                        }
+                    }
+                    RelayPeerRequest::DrainLeasedRuntimeProjection { .. }
+                        if !seen.contains(&"successor") =>
+                    {
+                        seen.push("successor");
+                        successor_projection.clone()
+                    }
+                    RelayPeerRequest::DrainLeasedRuntimeProjection { .. } if !cancelled => {
+                        RelayPeerResponse::LeasedRuntimeProjectionDrained {
+                            event: None,
+                            projection_sequence: None,
+                        }
+                    }
+                    RelayPeerRequest::DrainLeasedRuntimeProjection { .. } => {
+                        seen.push("drain");
+                        completion.clone()
+                    }
+                    RelayPeerRequest::ObserveLeasedGitAfter { .. } => {
+                        seen.push("observe");
+                        RelayPeerResponse::LeasedGitObserved {
+                            provider_run_id: successor.to_string(),
+                            git_observations: Vec::new(),
+                            workspace_live_sync_change: None,
+                        }
+                    }
+                    other => panic!("unexpected worker request {other:?}"),
+                };
+                let done = matches!(
+                    &request.request,
+                    RelayPeerRequest::ObserveLeasedGitAfter { .. }
+                );
+                send_fake_worker_peer_response(
+                    request,
+                    &worker_id,
+                    &worker_private_key,
+                    &home_public_key,
+                    response,
+                )
+                .await;
+                if done {
+                    return seen;
+                }
+            }
+        });
+
+        let runtime = &fixture.runtime;
+        let owned = &runtime.owned;
+        owned
+            .begin_remote_prompt_cancellation_if_matches(
+                &fixture.session_id,
+                &fixture.agent_id,
+                &fixture.dispatch.source_attachment_id,
+                Some(&fixture.dispatch.prompt_id),
+            )
+            .expect("Ctrl+C starts the cancellation")
+            .expect("the delivered prompt is cancelling");
+        runtime
+            .recover_remote_prompt_after_kernel_restart(
+                &fixture.session_id,
+                &fixture.agent_id,
+                Some(crate::session::DurablePromptDeliveryPhase::Delivered),
+                Some(run),
+            )
+            .await
+            .expect("restart recovery runs");
+        let seen = tokio::time::timeout(std::time::Duration::from_secs(20), server)
+            .await
+            .expect("the cancellation should reach the successor run")
+            .expect("fake worker assertions should hold");
+        assert_eq!(
+            seen,
+            vec![
+                "receipt lost",
+                "successor",
+                "receipt",
+                "cancel",
+                "drain",
+                "observe"
+            ]
+        );
+    }
+
+    // MP-08 / MP-10 A10-S02 (amint r18): a delivery persisted by an older kernel has
+    // no worker run id, so its receipt cannot be reconciled after a restart. The
+    // retry must still drain the worker's output instead of leaving the turn held.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn restarted_cancellation_without_a_durable_run_still_drains() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("fake relay listener should bind");
+        let relay_url = format!("ws://{}", listener.local_addr().unwrap());
+        let run = "worker-run-restart-no-run";
+        let fixture = delivered_fixture(&relay_url, "restart-no-run", run).await;
+        let worker_id = fixture.worker_id.clone();
+        let worker_machine_id = fixture.worker_machine_id.clone();
+        let worker_public_key = fixture.worker_public_key.clone();
+        let worker_private_key = fixture.worker_private_key.clone();
+        let home_public_key = fixture.home_public_key.clone();
+        let completion = projection(&fixture, run, 1, true);
+        let server = tokio::spawn(async move {
+            let mut seen = Vec::new();
+            loop {
+                let request = receive_fake_worker_peer_request(
+                    &listener,
+                    &worker_id,
+                    &worker_machine_id,
+                    &worker_public_key,
+                    &worker_private_key,
+                    None,
+                )
+                .await;
+                let response = match &request.request {
+                    RelayPeerRequest::DrainLeasedRuntimeProjection { .. } => {
+                        seen.push("drain");
+                        completion.clone()
+                    }
+                    RelayPeerRequest::ObserveLeasedGitAfter { .. } => {
+                        seen.push("observe");
+                        RelayPeerResponse::LeasedGitObserved {
+                            provider_run_id: run.to_string(),
+                            git_observations: Vec::new(),
+                            workspace_live_sync_change: None,
+                        }
+                    }
+                    other => panic!("unexpected worker request {other:?}"),
+                };
+                let done = matches!(
+                    &request.request,
+                    RelayPeerRequest::ObserveLeasedGitAfter { .. }
+                );
+                send_fake_worker_peer_response(
+                    request,
+                    &worker_id,
+                    &worker_private_key,
+                    &home_public_key,
+                    response,
+                )
+                .await;
+                if done {
+                    return seen;
+                }
+            }
+        });
+
+        let runtime = &fixture.runtime;
+        let owned = &runtime.owned;
+        owned
+            .mark_active_prompt_delivery(
+                &fixture.session_id,
+                &fixture.agent_id,
+                &fixture.dispatch.prompt_id,
+                crate::session::DurablePromptDeliveryPhase::Delivered,
+                None,
+                None,
+            )
+            .expect("an older kernel recorded the delivery without its run");
+        owned
+            .begin_remote_prompt_cancellation_if_matches(
+                &fixture.session_id,
+                &fixture.agent_id,
+                &fixture.dispatch.source_attachment_id,
+                Some(&fixture.dispatch.prompt_id),
+            )
+            .expect("Ctrl+C starts the cancellation")
+            .expect("the delivered prompt is cancelling");
+        runtime
+            .recover_remote_prompt_after_kernel_restart(
+                &fixture.session_id,
+                &fixture.agent_id,
+                Some(crate::session::DurablePromptDeliveryPhase::Delivered),
+                None,
+            )
+            .await
+            .expect("restart recovery runs");
+        let seen = tokio::time::timeout(std::time::Duration::from_secs(20), server)
+            .await
+            .expect("the worker output should still be drained")
+            .expect("fake worker assertions should hold");
+        assert_eq!(seen, vec!["drain", "observe"]);
+    }
+
+    // MP-08 / MP-10 A10-S02 (amint r17 live): the binding's worker run id lived in
+    // memory only, so a home restarted during a leased turn came back without it
+    // and its Ctrl+C was refused as "no longer owns the delivered prompt run".
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_restarted_home_keeps_the_binding_worker_run() {
+        let run = "worker-run-durable-binding";
+        let worker_run = |app: &DaemonApp, agent_id: &str| {
+            app.agents()
+                .get_agent(agent_id)
+                .expect("the home agent is restored")
+                .remote_execution()
+                .and_then(|binding| binding.active_worker_provider_run_id.clone())
+        };
+        let (config, agent_id) = {
+            let fixture = delivered_fixture("ws://127.0.0.1:9", "durable-binding", run).await;
+            let config = fixture.app.lock().await.config().clone();
+            (config, fixture.agent_id.clone())
+        };
+        {
+            let app = DaemonApp::bootstrap(config.clone()).expect("the home restarts");
+            assert_eq!(worker_run(&app, &agent_id).as_deref(), Some(run));
+            app.agents()
+                .set_remote_execution_active_worker_provider_run_id(&agent_id, None)
+                .expect("the worker run settles");
+        }
+        let app = DaemonApp::bootstrap(config).expect("the home restarts again");
+        assert_eq!(worker_run(&app, &agent_id), None);
     }
 }

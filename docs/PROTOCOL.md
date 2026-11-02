@@ -574,6 +574,7 @@ Remote native TUI composition:
 - worker output, notices, completions, and permission interactions MUST return to the home kernel through existing leased runtime projection and native interaction relay paths
 - relay peer protocol v3 extends leased runtime projection with an optional worker `provider_run` snapshot. The home kernel MUST project that worker-owned run onto the home session/agent, including any resolved `provider_session_id` and resume state, because some providers such as Codex only expose the durable thread id after the first turn rather than at launch time.
 - relay peer protocol v7 correlates projected completions with `home_prompt_id`. Workers retain the latest settled completion for pull-based replay, and home kernels MUST ignore a stale replay when that prompt is no longer active. This makes a completion recoverable when a fire-and-forget worker projection is lost without allowing the replay to settle a later queued turn.
+- relay peer protocol 383 (local 934) acknowledges pulled projections; both kernels must speak 383. Each `drain_leased_runtime_projection` carries the required `acknowledged_projection_sequence`, the last projection sequence the home applied for that leased agent (persisted by the home). A worker answering with `projection_sequence` keeps that projection and answers every later drain with it until a drain acknowledges it, then drains new output. A reply lost on the way home (a relay writer closing at reconnect, a home timeout) is therefore answered again: no output is lost, and the home applies each sequence once. The worker no longer pushes a projection after a steer; the home's next drain carries it. A home recovering a settled worker receipt (restart, cancellation) applies and acknowledges the retained output of that run before its completion.
 - relay peer protocol v8 carries an optional exact worker-local skill requirement set for native TUI launch and prompt submission. Standard workers validate matching local package hashes without receiving package payloads; home-managed slices may materialize packages first. Workers project the validated set onto the leased backing agent so per-prompt hidden skill context stays worker-local and grant revocations cannot leave stale skills active.
 - relay peer protocol v9 adds idempotent queued-prompt steering for leased agents. The home kernel keeps queue/history authority and removes the queued prompt only after the worker acknowledges provider delivery; the worker keys delivery by the home queued prompt ID, rejects stale active-turn targets, and replays acknowledgements without injecting duplicate provider input.
 - relay peer protocol v10 forwards provider-targeted terminal resizes to leased worker PTYs. The worker validates that the requested provider run belongs to the leased agent and acknowledges the applied dimensions; the home kernel does not report a remote resize as successful before that acknowledgement.
@@ -754,6 +755,10 @@ admission binding. Other assessments cannot supply this check's verdict, even
 when their bytes arrive after its prompt boundary. Both kernels must speak 181;
 178 workers do not provide this identity. Ordinary failed completions retain the
 worker termination and settle as failed work.
+
+MP-08 / MP-10 / MP-11: 934/383 makes the leased projection drain acknowledged
+(see the leased runtime projection rules above). A kernel on an older peer cannot
+drain an acknowledged projection.
 
 MP-08 / MP-10 / MP-11: coordinator-allocated 513/121 adds the paired terminal
 actor normalization for display metadata/credits and the historical workflow
@@ -6213,3 +6218,12 @@ prompt names the label and the hosts; an existing one needs `overwrite` and the 
 or the origin of the enrolled Cloud; with neither the request fails with `secret_link_unavailable`. Other refusals:
 `vault_locked`, `secret_request_exists`, `secret_request_invalid`, `secret_request_denied`, `secret_request_unknown`.
 Focused checks: `cargo test -p chariox-kernel --lib vault_secret`.
+
+### Acknowledged leased projection drain — local 934 / relay peer 383
+
+A worker keeps a drained leased projection until the home kernel acknowledges it, so a lost
+reply or a home restart cannot lose output. `drain_leased_runtime_projection` carries the
+required `acknowledged_projection_sequence`; `leased_runtime_projection_drained` carries the
+optional `projection_sequence` of the event it retains. Both kernels must speak peer 383. The
+managed-upgrade list is [629, 636, 911, 923, 934]. Focused checks:
+`cargo test -p chariox-kernel --lib protocol_shapes` and `pnpm protocol:conformance`.

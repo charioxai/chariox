@@ -25,6 +25,17 @@ fn native_refresh_pending_retries_only_the_exact_pre_admission_relay_error() {
     ));
 }
 
+// MP-08 / MP-10 A10-S02 (amint r17 live): a relay socket aborted under a
+// partition ended the home's projection drain instead of waiting for the worker.
+#[test]
+fn an_aborted_relay_socket_is_a_transient_transport_error() {
+    let aborted = DaemonError::LocalTransport {
+        operation: "read temporary relay peer response",
+        message: "IO error: Software caused connection abort (os error 103)".into(),
+    };
+    assert!(remote_prompt_error_should_retry_transport(&aborted));
+}
+
 #[test]
 fn launch_credential_retry_requires_the_typed_worker_diagnostic() {
     use crate::transport::relay_peer::REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE;

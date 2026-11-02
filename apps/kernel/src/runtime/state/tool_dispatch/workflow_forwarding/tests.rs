@@ -221,8 +221,6 @@ async fn mp11_forwarded_workflow_peer_releases_response_then_settles_prompt() {
     let state = Arc::new(tokio::sync::RwLock::new(
         crate::transport::relay_client::RelayClientState::default(),
     ));
-    let (outgoing, _priority, _events) =
-        crate::transport::relay_client::RelayOutgoingSender::channel(16);
     let worker = crate::DaemonConfig::for_tests();
     let worker_key = worker.relay_public_key.clone();
     let identity = chariox_relay::protocol::RelayCallerIdentity {
@@ -239,7 +237,6 @@ async fn mp11_forwarded_workflow_peer_releases_response_then_settles_prompt() {
     let response = crate::transport::relay_client::send_authenticated_peer_request_for_test(
         &router,
         &state,
-        &outgoing,
         "worker-kernel-1",
         identity,
         &worker.relay_private_key,

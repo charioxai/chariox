@@ -120,31 +120,4 @@ impl KernelRuntimeOwnedState {
         }
         owner.to_owned()
     }
-
-    /// Whether `caller` is the person a decision raised for `owner` waits on.
-    /// A session created before enrollment is owned by `local`, and after a
-    /// restart its decisions still belong to the person the kernel is enrolled
-    /// for; any other identity is refused.
-    pub(super) fn answers_for_owner(&self, owner: &str, caller: Option<&str>) -> bool {
-        Some(owner) == caller || Some(self.owner_context_review_owner(owner).as_str()) == caller
-    }
-}
-
-impl KernelRuntimeState {
-    pub(in crate::runtime) fn is_legacy_local_terminal_owner(
-        &self,
-        session_id: &str,
-        user_id: &str,
-    ) -> bool {
-        self.owned
-            .session_store
-            .get_session(session_id)
-            .is_ok_and(|session| {
-                session.owner_user_id() == crate::session::DEFAULT_LOCAL_USER_ID
-                    && self
-                        .owned
-                        .owner_context_review_owner(session.owner_user_id())
-                        == user_id
-            })
-    }
 }

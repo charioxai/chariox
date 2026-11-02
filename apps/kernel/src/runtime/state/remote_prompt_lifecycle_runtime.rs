@@ -5,6 +5,11 @@
 use super::remote_prompt_worker_submission_runtime::remote_prompt_error_should_refresh_binding;
 use super::*;
 
+/// How long a cancelled leased turn waits for a worker that does not answer
+/// before home ends it; the same bound as an unconfirmed inbox delivery.
+pub(super) const REMOTE_CANCEL_WORKER_ANSWER_DEADLINE: std::time::Duration =
+    std::time::Duration::from_secs(120);
+
 impl KernelRuntimeState {
     pub(super) async fn cancel_remote_agent_prompt_if_remote(
         &self,
@@ -456,6 +461,78 @@ impl KernelRuntimeState {
             self.spawn_remote_prompt_dispatch(dispatch);
         }
         Ok(Some(submission))
+    }
+
+    /// Ctrl+C on a leased turn whose worker no longer answers. The cancel cannot
+    /// reach the worker, so after [`REMOTE_CANCEL_WORKER_ANSWER_DEADLINE`] of silence
+    /// the home ends the turn as Cancelled and says why, rather than waiting forever.
+    pub(super) fn end_remote_cancellation_the_worker_never_answered(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<bool, DaemonError> {
+        let session = self.owned.session_store.get_session(session_id)?;
+        let Some(prompt) = self
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, agent_id)
+            .filter(|prompt| prompt.status() == crate::session::PromptStatus::Cancelling)
+        else {
+            return Ok(false);
+        };
+        let Some(binding) = self
+            .owned
+            .agent_store
+            .get_agent(agent_id)?
+            .remote_execution()
+            .cloned()
+        else {
+            return Ok(false);
+        };
+        let message = format!(
+            "{}: Worker kernel `{}` did not answer for {} s, so the cancel could not reach it. \
+             Chariox cancelled this turn here; anything the worker still does for it is not shown.",
+            self.agent_notice_name(agent_id),
+            binding.worker_kernel_id,
+            REMOTE_CANCEL_WORKER_ANSWER_DEADLINE.as_secs(),
+        );
+        crate::logging::warn_with_fields(
+            "daemon.remote_prompt_dispatch",
+            "worker never answered a remote prompt cancellation; cancelled at home",
+            serde_json::json!({
+                "session_id": session_id,
+                "agent_id": agent_id,
+                "worker_kernel_id": binding.worker_kernel_id,
+                "leased_agent_id": binding.leased_agent_id,
+                "prompt_id": prompt.id(),
+            }),
+        );
+        if let Some(run) = prompt.durable_delivery_provider_run_id() {
+            let projected =
+                crate::provider::projected_leased_provider_run_id(&binding.leased_agent_id, run);
+            self.owned.end_open_provider_tools(
+                session_id,
+                &projected,
+                agent_id,
+                crate::app::ProviderToolEnding::Cancelled,
+            )?;
+            self.end_lost_leased_provider_run(session_id, &projected)?;
+        }
+        self.owned.record_notice_for_agent(
+            session_id,
+            None,
+            Some(agent_id),
+            self.owned
+                .attachment_store
+                .list_session_attachment_ids(session_id),
+            message,
+        );
+        self.finalize_remote_prompt_cancellation_and_advance(
+            session_id,
+            agent_id,
+            prompt.source_attachment_id(),
+        )?;
+        Ok(true)
     }
 
     pub(super) fn finalize_remote_prompt_cancellation_and_advance(
