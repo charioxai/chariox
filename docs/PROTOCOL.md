@@ -6280,3 +6280,17 @@ managed-upgrade list is [629, 636, 911, 923, 934]. Focused checks:
 
 Landing 3 carries local 934, 935 and 936 / relay peer 383, 384 and 385 on top of the Landing 2
 release at local 933 / peer 382, so the managed-upgrade list is [629, 636, 911, 923, 933, 936].
+
+MP-08 / MP-09 / MP-10 / MP-11, local protocol **938**, relay peer **387** (EXT-21 / EXT-24):
+`RequestKernelAccess.holder_pid` is optional. Absent, the kernel resolves the holder from the
+Unix peer's host ancestry (SO_PEERCRED / LOCAL_PEERPID): the first installed provider harness
+in the kernel's own PID namespace, climbed to the outermost of a run of that same executable
+(Codex's per-command sandbox helper), else the depth-two fallback for an unsandboxed peer. A
+present pid must still be the requester or one of its OS ancestors. `no_wait: true` makes the
+kernel record the pending request, raise the popup and answer `KernelAccessStatus` at once; the
+owner's decision binds to the holder only, and a refusal, timeout or invalidation is remembered
+by holder identity. The Unix-only `GetKernelAccessStatus { holder_pid? }` answers
+`KernelAccessStatus { state: granted | pending | ended | not_requested, holder_pid,
+holder_executable, holder_harness?, grant?, reason? }` for that one identity; a pid outside the
+caller's chain is refused. The CLI's client-side holder discovery and detached `--no-wait`
+waiter are removed. The managed-upgrade list is [629, 636, 911, 923, 933, 936, 938].

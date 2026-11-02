@@ -234,3 +234,47 @@ async fn a_request_that_does_not_match_the_list_waits_for_the_owner() {
         "a malformed entry hid the valid one"
     );
 }
+
+// EXT-24: status answers for one holder identity in the caller's own chain, never with the
+// caller's grant for an unrelated or missing pid.
+#[tokio::test]
+async fn status_reports_the_named_holder_and_refuses_pids_outside_the_callers_chain() {
+    crate::test_support::isolated_env_test!();
+    let root = crate::test_support::TestWorktree::new("access-status-identity");
+    let holder = OrphanHolder::start(&root, "holder");
+    let unrelated = OrphanHolder::start(&root, "unrelated");
+    std::env::set_var("CHARIOX_CLAUDE_BIN", holder.executable());
+    list_standing(&root, "claude", &holder.executable());
+    let router = reopen_kernel(&root);
+    let state = router.runtime_state();
+    let grant = holder
+        .admitted(&state, KernelAccessTerm::UntilHolderExits)
+        .await;
+    let requester = process::inspect(holder.requester).unwrap().0;
+    let status = state
+        .kernel_access_status(&requester, Some(holder.holder))
+        .unwrap();
+    assert_eq!(status.state, KernelAccessHolderState::Granted);
+    assert_eq!(status.grant.unwrap().grant_id, grant.grant_id);
+    for pid in [unrelated.holder, unrelated.requester, 99_999_999] {
+        let refused = state
+            .kernel_access_status(&requester, Some(pid))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            refused.contains("not this process or one of its OS ancestors"),
+            "{refused}"
+        );
+    }
+    let outsider = process::inspect(unrelated.requester).unwrap().0;
+    assert!(state
+        .kernel_access_status(&outsider, Some(holder.holder))
+        .is_err());
+    assert_eq!(
+        state
+            .kernel_access_status(&outsider, Some(unrelated.holder))
+            .unwrap()
+            .state,
+        KernelAccessHolderState::NotRequested
+    );
+}
