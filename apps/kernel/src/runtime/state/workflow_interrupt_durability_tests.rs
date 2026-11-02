@@ -3133,7 +3133,11 @@ async fn typed_remote_workflow_failure_without_output_settles_home_ownership() {
         task.state,
         crate::durable_state::agent_lifecycle::ExecutionState::Cancelled
     );
-    assert!(task.reason.contains(failure.reason.as_str()), "{}", task.reason);
+    assert!(
+        task.reason.contains(failure.reason.as_str()),
+        "{}",
+        task.reason
+    );
     let settled = runtime
         .with_app_side_effect(|app| {
             app.completed_git_turn_snapshot_store()
