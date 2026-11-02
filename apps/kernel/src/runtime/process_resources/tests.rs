@@ -675,6 +675,58 @@ fn a_root_unreadable_for_one_sample_stays_owned() {
 
 /// Starting `ps` fails with `errno` until dropped.
 #[cfg(unix)]
+#[test]
+fn a_sampler_short_of_resources_keeps_ownership_beyond_the_unreadable_grace() {
+    let mut child = std::process::Command::new("sleep")
+        .arg("30")
+        .spawn()
+        .unwrap();
+    let mut tree = sampling::ProcessTree::new(child.id());
+    let before = sample_until_listed(&mut tree, child.id());
+    let mut skipped = 0;
+    let mut initial_roots = Vec::new();
+    for errno in [libc::EMFILE, libc::ENFILE, libc::EAGAIN, libc::ENOMEM] {
+        let mut initial = {
+            let _fault = crate::runtime::kernel_access::process::fault::inject(child.id(), errno);
+            let mut initial = sampling::ProcessTree::new(child.id());
+            for _ in 0..16 {
+                if matches!(tree.sample(), Err(sampling::SamplingError::Short(code)) if code == errno)
+                {
+                    skipped += 1;
+                }
+                let _ = initial.sample();
+            }
+            initial
+        };
+        initial_roots.push(
+            initial
+                .sample()
+                .unwrap()
+                .iter()
+                .any(|sample| sample.pid == child.id()),
+        );
+    }
+    let after = tree.sample().unwrap();
+    let _ = child.kill();
+    let _ = child.wait();
+    assert_eq!(
+        skipped, 64,
+        "resource failures must skip the sample, not age ownership"
+    );
+    assert!(
+        initial_roots.into_iter().all(|listed| listed),
+        "a shortage abandoned an initially unreadable root"
+    );
+    assert!(
+        before.iter().any(|old| after
+            .iter()
+            .any(|new| old.pid == child.id() && new.process_id == old.process_id)),
+        "resource pressure discarded the process identity"
+    );
+}
+
+/// Starting `ps` fails with `errno` until dropped.
+#[cfg(unix)]
 struct PsFailing;
 #[cfg(unix)]
 impl PsFailing {
