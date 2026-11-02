@@ -64,7 +64,8 @@ pub fn create_scaffold(
 const README: &str = r#"# Your Chariox WASM App
 
 `src/app.ts` implements the `greet` tool declared in `bundle/schemas/tools.json`.
-Compile it with `packages/app-sdk-tools/build-js.mjs` into
+Create the output directory with `mkdir -p bundle/runtime`, then compile it
+with `packages/app-sdk-tools/build-js.mjs` into
 `bundle/runtime/app.wasm` before packing. The SDK build tool resolves the WASM
 SDK and checks the component's imports; Node is a build tool only.
 `bundle/ui/index.html` is the view. `app.json` is a contract-2 manifest;
