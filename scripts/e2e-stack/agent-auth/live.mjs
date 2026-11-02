@@ -118,11 +118,11 @@ async function interact() {
   }
   const secretReply = page.locator('[data-interaction-id] [data-action="reply-interaction"]')
   if (await secretReply.count()) { await secretReply.first().click(); return }
-  const claim = page.locator('[data-interaction-id^="agent-auth-claim-"]')
+  const claim = page.locator('.ap-ask[aria-label="Claim service account"], [data-interaction-id^="agent-auth-claim-"]')
   if (await claim.count()) {
-    const id = await claim.first().getAttribute('data-interaction-id')
-    if (claimed.has(id)) return
     const message = await claim.first().innerText()
+    const id = await claim.first().getAttribute('data-interaction-id') ?? message
+    if (claimed.has(id)) return
     const link = message.match(/https?:\/\/\S+/)?.[0], code = message.match(/code (\d{6})/)?.[1]
     if (!link || !code) throw new Error('Claim card has no link or user code')
     await capture('claim-card')
@@ -228,8 +228,9 @@ try {
       await interact()
       const refusal = diagnostics.find(message => message.includes('prompt-bar.send'))
       if (refusal) throw new Error(refusal)
-      const state = variant(await client.send(requests.getSessionStateRequest(sessionId)), 'SessionState').session
-      absent(JSON.stringify(state))
+      const snapshot = variant(await client.send(requests.getSessionStateRequest(sessionId)), 'SessionState')
+      absent(JSON.stringify(snapshot))
+      const state = snapshot.session
       const promptState = state.prompt_states?.[agentId] ?? {}
       const active = promptState.active_prompt ?? (state.active_prompt?.target_agent_id === agentId ? state.active_prompt : null)
       const queued = promptState.queued_prompts ?? (state.queued_prompts ?? []).filter(prompt => prompt.target_agent_id === agentId)
@@ -257,7 +258,9 @@ try {
   if (browser) await browser.close()
   let checked = 0
   try {
-    for (const file of [...await files(`${root}/history`), ...logs]) { absent(await readFile(file, 'utf8')); checked++ }
+    const historyFiles = (await files(root)).filter(file => /\/(?:history|sessions|session-history)\//.test(file) || file.endsWith('.jsonl'))
+    for (const file of [...new Set([...historyFiles, ...logs])]) { absent(await readFile(file, 'utf8')); checked++ }
+    result.history_files_checked = historyFiles.length
     result.absence = { checked_files: checked, session_state_checked: Boolean(sessionId), service_values_absent: true }
   } catch { result.status = 'FAIL'; result.failure = 'Protected value found in kernel/provider history or logs' }
   if (client) { if (sessionId) await client.send(requests.endSessionRequest(sessionId)).catch(() => {}); await client.close() }
