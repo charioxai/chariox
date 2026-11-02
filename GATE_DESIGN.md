@@ -2,9 +2,14 @@
 
 MP-08 / MP-09 / MP-10 / MP-11 · design only · 2026-11-02
 
-Source inspected: `9a31a58847514ab39fa2d41e0a6b87d8fe130893`.
-Names and shapes marked **proposed** below do not exist at that revision. This
-document changes no runtime, protocol number, UI, or acceptance result.
+Workflow pipeline inspected: `9a31a58847514ab39fa2d41e0a6b87d8fe130893`.
+Apps WASM runtime inspected separately: `apps/r4-a2-integration` at
+`83241dd4296c1f98ac785a3113626b39d0e9a2d1` (including async worker `8df139da77`
+and signed migrations `cd4cdb90b5`), and R5 containment at
+`11683dba40396a31f101526a5e6ce606aca4f824` on `apps/r5-containment`.
+These are source identities, not a claim that the branches are integrated here.
+Gate names and shapes marked **proposed** below do not exist at these revisions.
+This document changes no runtime, protocol number, UI, or acceptance result.
 
 ## 1. Decision
 
@@ -26,27 +31,67 @@ handoffs, turn continuations, and resumes of an already admitted run do not exec
 it again. A newly submitted endpoint invocation does, including a manual one.
 Workflows without a gate retain their existing admission behavior.
 
-### The sandbox premise at this base
+### Reuse the Apps WASM runtime
 
-There is **no Apps WASM execution runtime to reuse** in this checkout. Apps run
-JavaScript in embedded Node. `apps/app-worker/README.md`,
-`apps/app-worker/src/launcher.c`, `apps/app-worker/src/bootstrap.md`, and
-`packages/app-runtime/src/worker_process.rs` describe the native launcher,
-bootstrap, and supervised process domains. `packages/app-package/README.md`
-describes packaging, not a WASM engine. The current wrapper has no WASM host
-imports, fuel meter, or epoch interrupt. App workers also have legitimate broker
-capabilities and ambient JavaScript time/randomness, inappropriate for a gate.
+The Apps branches already provide a Rust Wasmtime component worker in
+`packages/app-wasm-worker`, WIT admission in `packages/app-wit`, and verified
+process launch in `packages/app-runtime`. Use that runtime, pinned to Wasmtime
+50.0.0 at the inspected revisions. Do not add another WASM engine. The older
+Node worker in this workflow checkout is not the foundation for new gates.
 
-**Proposed:** reuse App worker process containment and supervision, with a trusted
-WASM runner instead of the Node embedder. Add a small interpreter integration to
-`packages/app-runtime`, shared by the kernel's gate runner; do not create an App
-installation, SDK channel, or private App database for a workflow gate. Wasmi is
-the proposed engine: its documented fuel and store limits supply the missing
-execution controls. Pin a release compatible with the repository Rust toolchain,
-its enabled WASM features, and fuel configuration as `gate_v1`; do not select a
-floating dependency. This is new interpreter integration, not existing product
-functionality. The implementation must prove the process-containment seam on
-Linux and macOS before enabling gates.
+**Proposed:** add the import-free gate WIT world below and a one-evaluation
+worker entry mode to the same trusted worker/runtime bundle. Share the following
+mechanisms, while keeping gate authority and state in the workflow kernel:
+
+| Existing Apps mechanism | Gate reuse and explicit boundary |
+| --- | --- |
+| `app-wasm-worker/src/engine.rs`, `worker.rs` | Reuse Wasmtime component compilation, engine/build identity and the epoch ticker. Add a pinned `gate_v1` engine profile with fuel enabled; the inspected App engine enables epochs but **does not enable fuel**. Do not change App metering implicitly. |
+| `app-wasm-worker/src/limits.rs` | Reuse the store `ResourceLimiter` mechanism for aggregate linear-memory and table growth, with the tighter gate ceilings. Use a fresh store/instance for each evaluation, never the App's long-lived instance or concurrent calls. |
+| `app-wit/src/lib.rs` and `contract.rs` | Reuse structural/type admission machinery and generated Wasmtime WIT bindings for a new, separately resolved gate world. The existing supported worlds are App and migration; neither admits a gate today. Never include `app-admission`, `wasi-compat`, or migration state imports in the gate world. |
+| R5 `app-wasm-worker/src/containment.rs` and `containment/{linux.rs,macos.rs,macos.sb}` | Reuse mandatory containment before readiness, compilation, epoch/Tokio threads and guest entry: Linux Landlock + seccomp + process limits; macOS signed hardened runtime/JIT + Seatbelt + process limits. No gate-specific sandbox implementation or bypass switch. |
+| `app-runtime/src/worker_process/` and `worker_process/wasm/` | Reuse verified executable pinning, clean spawn, startup continuation, bounded transport, cancellation, exact owned PID supervision and reap. Introduce a workflow-entry/evaluation identity in place of installation identity; the current App launch constructor cannot be called unchanged. |
+| `app-runtime/src/release_store/aot_cache.rs` | Reuse engine/build/target/CPU provenance rules if local compilation is cached; include the gate profile and world in cache identity. Uploaded or exported native code remains forbidden. No App release/install transaction is needed to store portable gate bytes. |
+
+Bypass App installation/catalog activation, registration and `worker.ready`
+broker exchange, App SDK/broker dispatch, App capability grants, App private
+DB/data/tmp directories, migrations and snapshots. In particular,
+`bindings.rs`, `broker.rs`, `host.rs`, `wasi.rs`, HTTP/files/streams and App
+`RetryPolicy` are not linked into a gate evaluator. A gate has no App installation
+ID and cannot call `state.get/transact`; its only state is explicit input/output
+committed by the workflow writer. Signed App migrations demonstrate another WIT
+world on the runtime, not a storage API for gates.
+
+The inspected R4 supervised path and R5 `serve` containment are separate seams:
+R4's `worker_process/wasm/domain.rs` explicitly leaves native verification to R5.
+The gate implementation must compose them so **every** evaluation/test path
+enters R5 containment before engine construction or continuation, including any
+cached-code path. Neither an R4 Ready reply nor R5 source alone proves that
+integration. Linux and signed macOS drills are required before enabling gates.
+
+### Typical checks
+
+These are user-authored pure policies, not kernel business rules:
+
+| Check | Concrete gate behavior |
+| --- | --- |
+| Relevance against inventory/version ranges | Compare an advisory's ecosystem/package/affected range with stored installed versions using a pinned pure range library; drop a known nonmatch, run on a match or explicitly unknown/stale inventory. |
+| Severity threshold | Run for a numeric score ≥ 7 or an owner-listed critical category; drop lower scores, with an explicit policy for missing scores. |
+| Dedup/already handled | Drop an advisory ID + revision already in a bounded seen/handled set. A committed `run` means admitted, not successfully handled; completion must explicitly write a handled marker. |
+| Debounce/coalesce | Store the newest change revision and a fixed due instant; defer candidates to that instant, then drop superseded revisions and run the current one. A sliding window requires explicit state/defer updates; the kernel does not move a batch cutoff. |
+| Batching/quiet hours | Batch compact release records under a fixed morning cutoff, or defer a single alert until quiet hours end, always before its original deadline. Flush emits one queued digest. |
+| Rate limits | Store a bounded token bucket and recorded refill time; consume a token on `run`, otherwise defer to the next eligible instant or drop under the author's policy. This meters admission, not provider completions. |
+| Payload reduction | Keep advisory ID, matched packages, severity and URL; remove the full feed body before forming the downstream prompt/payload. |
+
+Inventory and other context arrive **outside** the gate: workflow configuration
+seeds initial state; an earlier agent run explicitly writes a new inventory or
+handled set through the authorized workflow-state CAS request; or a separate
+trigger carries an inventory snapshot that the same gate recognizes, stores in
+replacement workflow state, and `drop`s without waking an agent. An external App
+may collect that snapshot through its own granted capabilities before emitting
+the trigger. These writes share the workflow lane/state revisions; seed edits
+alone do not overwrite live state. Store a bounded snapshot plus freshness/source
+revision, not a URL the gate must fetch. A missing/stale snapshot has an explicit
+author policy. No network, App DB read or hidden refresh occurs during evaluation.
 
 ## 2. Existing pipeline and exact insertion points
 
@@ -152,6 +197,54 @@ requires a locally verified module and validates sample inputs without starting
 providers. A module is user code, not a publisher-trusted native binary; an owned
 workflow edit authorizes its use under this sandbox, without a new permission
 prompt. Only the trusted runner/platform bundle needs product signing/enrollment.
+
+### WIT world and export
+
+**Proposed:** a separate WIT package `chariox:workflow-gate@1.0.0`, resolved
+alongside the App contracts by shared admission code. `gate_v1` selects exactly
+this world and the pinned engine/limits profile; it is not an App backend.
+
+```wit
+package chariox:workflow-gate@1.0.0;
+
+interface evaluator {
+  record input { entry-json: string }
+  record state { workflow-json: string, binding-json: string }
+  record run-value { payload-json: string, prompt: option<string> }
+  record batch-value { key: string, flush-at-ms: u64, payload-json: string }
+  variant decision {
+    run(run-value),
+    drop,
+    defer-until(u64),
+    batch(batch-value),
+  }
+  record output { decision: decision, state: state, reason: string }
+  evaluate: func(input: input, state: state) -> output;
+}
+
+world gate {
+  export evaluator;
+}
+```
+
+This world has **zero imports**, including zero broker capabilities or WASI.
+Its sole interface export is `chariox:workflow-gate/evaluator@1.0.0`, with one
+synchronous `evaluate` function: input record + state → decision + state.
+The existing async worker infrastructure can host that call; the guest gets no
+async tasks, subscriptions or host callbacks. `entry-json` is canonical `GateInput`
+below with `state` omitted; the separate state record carries those two JSON
+objects. Output maps exactly to `GateOutput` below. JSON fields retain its safe
+integer, UTF-8, depth and byte rules, including the time fields represented as
+WIT `u64`. No handles, resources or filesystem references cross this interface.
+
+Generated component bindings own canonical ABI lowering/lifting, allocation and
+post-return cleanup; there is no public pointer-packing ABI. Core modules inside
+the component may use only internally satisfied imports needed for this pure
+component, including canonical ABI glue. That does not authorize any external
+component import. Validate the whole component and nested core modules, then
+instantiate with an empty host linker. Unknown imports fail admission, never
+receive stubs or the App linker. All guest work, including instantiation,
+reallocation and post-return, shares the evaluation budget.
 
 ### Input
 
@@ -391,10 +484,10 @@ They are shared by ordinary and managed kernels and not client preferences.
 
 | Resource | Gate v1 ceiling |
 | --- | --- |
-| Module | 2 MiB raw WASM; reject oversized base64 before decoding; bounded validation/translation in the worker |
-| Guest module structure | One nonshared 32-bit memory; 256 pages (16 MiB); at most one table/4,096 elements, 4,096 functions, call depth 256, value stack 256 KiB; reject unsupported features and start functions |
-| Work per evaluation | 10,000,000 fuel units over allocation and gate call; no resumable fuel refill; profile pinned with the engine |
-| Host process | 128 MiB hard Linux memory domain; equivalent App-style macOS monitored bound with documented sampling overshoot; two workers kernel-wide, one per workflow |
+| Module | 2 MiB portable WASM component; reject oversized base64 before decoding; bounded validation/compilation in the contained worker |
+| Guest component structure | At most 16 core instances, one nonshared 32-bit memory (256 pages / 16 MiB), one table/4,096 elements, and 4,096 functions across nested modules, including canonical ABI glue; enforce counts in admission and the store; Wasmtime `max_wasm_stack` 256 KiB; reject unsupported features and guest start functions |
+| Work per evaluation | 10,000,000 fuel units over instantiation, allocation, evaluate and post-return; no resumable fuel refill; profile pinned with the engine |
+| Host process | Reuse R5's 1 GiB hard address-space ceiling and its file/descriptor/core limits on Linux/macOS; two workers kernel-wide, one per workflow |
 | Time | 2 seconds total monotonic deadline including spawn, validation, I/O, execution and result acceptance; 250 ms execution watchdog; 1 second OS CPU limit as an outer bound |
 | Wire | 512 KiB total canonical input; 128 KiB total output; one framed response; no guest stdout/log API |
 | State | 16 KiB workflow + 16 KiB per binding, depth 32 and 4,096 JSON nodes per object; at most 256 retained binding-state records/workflow |
@@ -441,7 +534,7 @@ to run while its authoritative machine is powered off.
 
 | Event | Result before any target agent wake |
 | --- | --- |
-| Fuel exhausted, trap, bad pointer, invalid JSON/output, invalid decision time, state/body limit | Terminal failed entry with a stable code (`gate_fuel_exhausted`, `gate_trapped`, `gate_invalid_output`, `gate_invalid_time`, `gate_limit`). No output state or dispatch commits. |
+| Fuel exhausted, trap, canonical ABI bounds/type failure, invalid JSON/output, invalid decision time, state/body limit | Terminal failed entry with a stable code (`gate_fuel_exhausted`, `gate_trapped`, `gate_invalid_output`, `gate_invalid_time`, `gate_limit`). No output state or dispatch commits. |
 | Watchdog/CPU/memory limit, process crash or worker IPC loss | Kill/cancel and reap the exact owned domain; terminal `gate_timeout`, `gate_resource_limit` or `gate_worker_failed`. Retain accounting until physical exit. Late responses cannot commit. |
 | Unsupported/missing sandbox, verified runner unavailable | Refuse activation/upload test clearly; if discovered after acceptance, terminal `gate_runtime_unavailable`. No unsandboxed execution fallback. |
 | Kernel exits after claim without decision | Recover as `gate_interrupted` after confirming the old domain is empty. Unclaimed work resumes normally. |
@@ -456,39 +549,48 @@ and availability are operational failures, not reproducible domain decisions;
 history distinguishes them. An owner may submit a new entry after fixing a
 failure. A duplicate source occurrence returns its old failure, not another try.
 
-The proposed runner implements `gate_alloc(i32) -> i32` and
-`gate_evaluate(i32, i32) -> i64`, exporting memory. The i64 packs output pointer
-and length; the runner validates checked ranges against current memory and caps
-the length before copying. Use a fresh instance per evaluation; drop it rather
-than retaining guest globals/heap. Both exports consume the same fuel allowance.
-The SDK must emit this ABI without WASI. Reject **all imports**, start functions,
-floating-point instructions/types, threads/atomics, shared memory, SIMD, memory64,
-extern references and other features outside the pinned integer profile. No
-guest host callback can read time, obtain entropy, log, allocate outside metered
-memory, or call the kernel. Calendar/version/JSON helpers must be pure code in
-the module; the SDK's integer-only JSON implementation must not link float code.
+Execute only the gate WIT export above, in a fresh store/instance. Reject external
+component imports, guest start functions, floating-point instructions/types,
+threads/atomics, shared memory, SIMD, memory64, externally supplied references and
+features outside the pinned integer profile, including in nested core modules.
+Canonical ABI glue must also fit that profile; do not reject its internal wiring
+as a host capability. No guest callback can read time, obtain entropy, log or call
+the kernel. Calendar/version/JSON helpers are pure component code; the SDK's
+integer-only JSON implementation must not link float code.
 
-Use Wasmi's fuel, stack and store-resource limits, plus bounded parsing/translation;
-defaults are not acceptable limits. Its documented APIs are evidence for a
-feasible engine choice, not a completed integration:
-[Config](https://docs.rs/wasmi/latest/wasmi/struct.Config.html),
-[Store](https://docs.rs/wasmi/latest/wasmi/struct.Store.html),
-[StoreLimitsBuilder](https://docs.rs/wasmi/latest/wasmi/struct.StoreLimitsBuilder.html).
-Engine changes require replay/resource calibration and an explicit profile
-revision; do not silently reinterpret retained module fuel costs.
+Reuse Wasmtime's existing epoch and `ResourceLimiter` wiring, with gate-specific
+limits and `Config::max_wasm_stack`. Add `Config::consume_fuel(true)` and one
+`Store::set_fuel(10_000_000)` before instantiation; never top it up. Record consumed
+fuel with `get_fuel`. Use the shared epoch ticker with a trapping store deadline
+and the supervisor's wall watchdog for operational cancellation. Fuel bounds
+guest instructions deterministically; it does not meter native compilation,
+JSON parsing or canonical ABI host allocation. Bound those with byte/structure
+limits, the store limiter, native process limits and the total watchdog. In
+particular, cap returned string lengths before materializing/copying them on the
+host, rather than checking only after an unbounded typed lift. These are new gate
+bindings/limits, not proof supplied by the App handlers. Engine changes require
+replay/resource calibration and an explicit profile revision; record fuel,
+stack, feature and memory settings in its configuration digest/AOT identity.
 
-Factor the existing `ResourceDomain` lifecycle out of
-`packages/app-runtime/src/worker_process.rs` into shared internal supervision;
-reuse its Linux cgroup/bundled Bubblewrap and macOS Seatbelt/monitoring paths.
-Their current App installation/storage/Node assumptions need explicit separation.
-Pass only a clean environment, verified runner/runtime and module bytes, bounded
-input/output channels, and empty ephemeral scratch if the OS needs it. No App
-data mount, broker FD3, provider profile, inherited descriptors or host home.
-The trusted gate runner is part of the pinned product runtime, not an App-selected
-executable. OS confinement setup failure is definitive. Update native bundle
-inventory/signing/enrollment with the runner; do not reuse a Node verification
-receipt to claim another executable was verified. Keep all teardown by exact
-owned PID/domain and preserve existing signal guards.
+Use R5's native boundary, not the Node/bubblewrap launcher. Read only bounded
+supervisor inputs, close setup descriptors, enter containment on the initial
+thread, then acknowledge readiness/start engine threads. Preserve R5's W^X,
+zero memory reservation and no memfd-backed initialization configuration. Apply
+the proposed one-second gate CPU ceiling through the same process-limit code
+(R5's App default is 300 seconds); do not claim that tighter setting exists today.
+No scratch/data mount, App DB, broker channel, provider profile, ambient
+descriptors or host home reaches the evaluator. A generation-fenced evaluation
+channel may reuse wire framing, but has no broker message dispatcher. Replace
+installation identity in the handshake with the exact entry/evaluation/module
+identity and validate it before continuation and result acceptance.
+
+The trusted gate entry mode belongs to the same pinned worker product bundle,
+not a user-selected executable. Extend its inventory/signing/enrollment identity;
+do not reuse a Node receipt or an App AOT entry to verify a different profile.
+Confinement failure is definitive. Preserve the supervisor's exact owned PID,
+wait/reap authority and signal guards. R4/R5 composition, native resource
+calibration and signed macOS JIT validation remain implementation proof, not a
+completed acceptance claim.
 
 Source authentication, App signatures/schema/capability admission, notification
 ownership/grants, ancestry, and relay peer checks remain outside and before the
@@ -589,11 +691,13 @@ gate control/history clearly; raise a client's minimum only for these features.
 
 ### Author, test, apply
 
-1. Write a pure Rust gate using a small proposed SDK for the ABI, bounded
-   integer-only JSON, and optional pure calendar/version helpers. Compile to
-   `wasm32-unknown-unknown`; the repository currently has no gate SDK or gate build
-   command. Add that SDK/recipe as implementation work. Existing
-   `chariox app create/pack/validate` packages JavaScript Apps and is not that recipe.
+1. Write a pure Rust gate with bindings generated from the gate WIT world,
+   bounded integer-only JSON, and optional pure calendar/version helpers. Reuse
+   the Apps worker's Rust component recipe (`wasm32-unknown-unknown` core build
+   plus WIT component encoding, as in `app-wasm-worker/tests/guest`), targeting
+   the import-free gate world instead of App handlers. The gate SDK/build command
+   is proposed implementation work; reject toolchain output that adds WASI or
+   unsupported features. App install/pack/migrate commands are not the gate path.
 2. Upload bytes through the proposed shared `workflow gate module put <file>`
    shell command. This command reads the chosen file client-side and calls the
    bounded kernel upload; it grants no kernel filesystem read. Declare its digest
@@ -735,9 +839,11 @@ the named limit/expiry rather than waiting forever.
   sleeping agent loops from those migrated examples. This source inspection does
   not establish that such product modules currently exist; there are no named
   release/advisory kernel modules to delete at this base.
-- Replace the run-only history response/read path with the typed mixed history,
-  and separate native App supervision from Node-specific launch assumptions in
-  the same implementation. Keep one OS containment/signal implementation.
+- Replace the run-only history response/read path with the typed mixed history.
+  Factor the reusable WASM engine/containment/supervisor seams from App-specific
+  launch, broker and installation setup in the same implementation. Keep one
+  Wasmtime runtime and one OS containment/signal implementation; no second engine
+  or legacy pointer ABI for gates.
 - Keep App incoming handlers, outgoing emission, AEGS/AEDS delivery, source
   schema/filter checks, private-notification ancestry/grants, transport dedupe,
   ordinary queue ordering/overlap/max-concurrency, provider acceptance recovery,
@@ -758,7 +864,7 @@ supplementing existing workflow/compiler/inbox/injection tests:
 | `workflow-gate/G-03` | Morning batch with real delivered releases and short test cutoff, later real scheduled cutoff. Restart before due, race arrival at cutoff, busy/paused queue, differing binding/caller, conflicting time, earliest expiry and capacity. Exactly one aggregate invocation and complete member lineage. |
 | `workflow-gate/G-04` | Defer/resume with a controlled CAS state edit, expiry, evaluation limit, late restart and cancellation. Resume observes current state, while committed run decisions stay fixed. No waiting worker/agent or original-deadline extension. Definition changes cancel pending work. |
 | `workflow-gate/G-05` | Fault-inject before/after source handoff, claim, result persistence, state/queue commit and projection; kill kernel/worker at each seam. Duplicate/concurrent delivery must not repeat a state transition or dispatch; claimed unfinished evaluations terminalize, including flush membership. |
-| `workflow-gate/G-06` | Malicious modules: import/WASI/clock/random/float/start/threads, invalid pointers, huge memory/table/module/JSON, recursion, infinite loop, output flood; missing confinement and runner tampering. Test Linux and signed macOS boundary; bounded failure, no ambient read/network/model/Vault capability, cleanup verified. |
+| `workflow-gate/G-06` | Malicious components: reject App/migration/broker/WASI/clock/random imports and float/start/threads in nested modules; malformed canonical ABI, huge memory/table/component/JSON, recursion, infinite loop, output flood; missing confinement and runner tampering. Prove fuel, epoch/watchdog and store limits independently, and R5 containment before readiness/threads for both evaluate and test. Test Linux and signed macOS boundary; bounded failure, no ambient read/network/model/Vault capability, cleanup verified. |
 | `workflow-gate/G-07` | Concurrent bindings sharing workflow state, owner isolation, scope spoofing, module/binding/grant/signer edits, transfer/uninstall/deletion, package export/import. No lost update, stale authority release, cross-owner state or bypass through low-level enqueue/injection. |
 | `workflow-gate/G-08` | Real Web and TUI via existing terminal/history surfaces and hosted encrypted relay: author, upload, test, apply, inspect drop/failure/defer/batch/run, cancel and restart/reconnect. Sync HTTP/SSE and Room obligations terminate truthfully with entry IDs. Test API does not mutate live state. |
 | `workflow-gate/G-09` | Ordinary/managed comparison, both authority and leased-worker placements. Deferred/batched future work permits mandatory auto-stop; a due release respects the quiescence fence. Verify the delay still measures from the last real agent finishing, disabled/keep-running policy and all existing stop triggers. No Cloud wake promise. |
