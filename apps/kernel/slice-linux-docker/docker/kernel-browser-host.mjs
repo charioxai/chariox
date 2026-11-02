@@ -31,6 +31,7 @@ import { StateSignal, stateChangingEvent } from "./kernel-browser-state-signal.m
 import { redactObservation } from "./browser-controller-snapshot.mjs";
 import {resizeBrowserPage} from './kernel-browser-resize.mjs';
 import { inputHostTab } from "./kernel-browser-input.mjs";
+import { publicUploadFailure } from "./kernel-browser-upload.mjs";
 import { BusyInputQueue, lateInputAck, markDispatched } from "./kernel-browser-input-queue.mjs";
 import { BrowserPopupEvidence, popupActionId } from "./kernel-browser-popup-evidence.mjs";
 import { assertNotCancelled, BrowserActionError } from "./browser-controller-actions.mjs";
@@ -966,7 +967,7 @@ export class KernelBrowserHost {
       const observed = command.document_id ?? (command.focused_agent ? null : this.observedDocuments.get(scope)?.get(tab.tab_id));
       if (!observed || observed !== tab.document_id) throw new UserDomainRefusal("stale_reference");
       const at = timestamp();
-      let dispatched = false;
+      let dispatched = false, uploadResult;
       // MD-DISPLAY-02/04: input retires exact verification through its epoch.
       // MP-08/MP-10: all physical input keeps bounded video dependencies.
       // Retiring an encoded row on each key forces an IDR and can delay echo
@@ -1017,7 +1018,8 @@ export class KernelBrowserHost {
         const laneAt=timestamp();
         const deferred=await this.sampleLane(tab).run("input", async () => {
           if(timestamp()-laneAt>250)this.timing('input_wait sample_lane',laneAt);
-          const result=await this.popupEvidence.capture(this.browser, tab, popupActionId(command), beginDispatch => inputHostTab(this.browser, tab, command.input, { signal, inputGuard, documentCurrent, chromeFocused: () => Boolean(this.arbiter?.chromeFocus), slow: (name, operation) => slowMark(this.timing, `input_wait ${name}`, operation), onDispatch: () => { onDispatch(); return beginDispatch(); }, viewport:{css_width:this.pageSize(tab.tab_id).width,css_height:this.pageSize(tab.tab_id).height}, asyncScroll: ()=>viewerActive()&&(handoverOrdered||owned?.attested&&typeof owned.valid==='function'&&owned.valid()), nativeWheel, nativeClick, nativeKey, resolveMirror: input => this.mirror.resolveInput(tab,input,scope,signal) }));
+          const result=await this.popupEvidence.capture(this.browser, tab, popupActionId(command), beginDispatch => inputHostTab(this.browser, tab, command.input, { uploadRoots: command._upload_roots, signal, inputGuard, documentCurrent, chromeFocused: () => Boolean(this.arbiter?.chromeFocus), slow: (name, operation) => slowMark(this.timing, `input_wait ${name}`, operation), onDispatch: () => { onDispatch(); return beginDispatch(); }, viewport:{css_width:this.pageSize(tab.tab_id).width,css_height:this.pageSize(tab.tab_id).height}, asyncScroll: ()=>viewerActive()&&(handoverOrdered||owned?.attested&&typeof owned.valid==='function'&&owned.valid()), nativeWheel, nativeClick, nativeKey, resolveMirror: input => this.mirror.resolveInput(tab,input,scope,signal) }));
+          if (command.input.kind === 'upload') uploadResult = result;
           rememberSelection();
           return result;
         });
@@ -1050,6 +1052,7 @@ export class KernelBrowserHost {
       observation.catch(() => {});
       const result = this.observe(await withinMs(observation, POST_INPUT_OBSERVE_MS) ?? this.tabState(), null, scope);
       this.timing('input_post_reconcile', post);
+      if (uploadResult) result.upload = { file_count: uploadResult.file_count, total_bytes: uploadResult.total_bytes };
       return result;
     }
     if (command.op === "screenshot") {
@@ -1219,6 +1222,8 @@ export class KernelBrowserHost {
         return { id: request.id, ok: false, error: { code: 'browser_unavailable', message: 'MP-08: browser disconnected; interrupted action was not replayed' } };
       }
       if (error instanceof UserDomainRefusal || error instanceof CaptureRefusal) return {id:request.id,ok:false,error:{code:error.code,message:error.message}};
+      const uploadFailure = request.params?.input?.kind === 'upload' ? publicUploadFailure(error) : null;
+      if (uploadFailure) return { id: request.id, ok: false, error: uploadFailure };
       if (isTrustedStaleReferenceError(error)) return {id:request.id,ok:false,error:{code:"user_domain_stale_reference",message:"User-domain request refused"}};
       // A cancelled request that may have dispatched input stops the browser (no held keys/buttons). A
       // cancelled read-only observation (a viewer's credit on a huge page) must not stop every Tab (MP-08/MP-10).

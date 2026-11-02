@@ -503,6 +503,14 @@ const ASSETS: &[(&str, &[u8])] = &[
         include_bytes!("../../slice-linux-docker/docker/browser-controller-upload-staging.mjs"),
     ),
     (
+        "browser-upload-store.py",
+        include_bytes!("../../slice-linux-docker/docker/browser-upload-store.py"),
+    ),
+    (
+        "browser-lifecycle.py",
+        include_bytes!("../../slice-linux-docker/docker/browser-lifecycle.py"),
+    ),
+    (
         "browser-controller.mjs",
         include_bytes!("../../slice-linux-docker/docker/browser-controller.mjs"),
     ),
@@ -513,6 +521,10 @@ const ASSETS: &[(&str, &[u8])] = &[
     (
         "kernel-browser-resize.mjs",
         include_bytes!("../../slice-linux-docker/docker/kernel-browser-resize.mjs"),
+    ),
+    (
+        "kernel-browser-upload.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-upload.mjs"),
     ),
     (
         "kernel-browser-input.mjs",

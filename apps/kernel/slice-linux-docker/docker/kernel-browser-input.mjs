@@ -1,4 +1,5 @@
 import {displayGeometry as geometry} from './kernel-browser-geometry.mjs';
+import { uploadHostFiles } from './kernel-browser-upload.mjs';
 // MD-3: document-bound physical input, sharing Room cancellation and document checks.
 import { PointerOutsideViewport, UserDomainRefusal } from "./kernel-browser-refusal.mjs";
 import { BrowserActionError, assertCurrentDocument, assertNotCancelled } from "./browser-controller-actions.mjs";
@@ -38,8 +39,9 @@ async function nativeOnce(dispatch) {
   catch (error) { if (error?.code === "native_input_uncertain") return true; throw error; }
 }
 
-export async function inputHostTab(browser, tab, input, { viewport=canonicalViewport, signal, onDispatch, resolveMirror, asyncScroll = false, nativeWheel = null, nativeClick = null, nativeKey = null, viewScale = 1, inputGuard, documentCurrent, chromeFocused = () => false, slow = (_name, operation) => operation } = {}) {
+export async function inputHostTab(browser, tab, input, { viewport=canonicalViewport, signal, onDispatch, resolveMirror, asyncScroll = false, nativeWheel = null, nativeClick = null, nativeKey = null, viewScale = 1, inputGuard, documentCurrent, chromeFocused = () => false, slow = (_name, operation) => operation, uploadRoots } = {}) {
     assertNotCancelled(signal);
+    if (input.kind === 'upload') return uploadHostFiles(browser, tab, input, { uploadRoots, signal, inputGuard, onDispatch });
     // MP-08/MP-11 protocol498: CDP bits Alt=1, Control=2, Meta=4, Shift=8.
     if (input.kind === 'key' && input.modifiers !== undefined && (!Number.isInteger(input.modifiers) || input.modifiers < 0 || input.modifiers > 15)) throw new Error('MP-11: invalid key modifiers');
     const { connection, sessionId } = await slow('page_target', browser.resolvePageTarget(tab.target_id));
