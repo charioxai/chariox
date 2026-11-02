@@ -680,6 +680,12 @@ export class BrowserCdpClient {
     return this.queueLayout(targetId, () => this.applyLayout(targetId));
   }
 
+  // The page can lose the applied viewport when it moves to another renderer; the recorded key would then skip the next apply.
+  reapplyLayout(targetId) {
+    this.viewportByTarget.delete(targetId);
+    return this.queueLayout(targetId, () => this.applyLayout(targetId));
+  }
+
   queueLayout(targetId, operation) {
     const run = (this.layoutQueue.get(targetId) ?? Promise.resolve()).catch(() => {}).then(operation);
     this.layoutQueue.set(targetId, run);
