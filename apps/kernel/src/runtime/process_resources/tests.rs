@@ -673,7 +673,6 @@ fn a_root_unreadable_for_one_sample_stays_owned() {
     );
 }
 
-/// Starting `ps` fails with `errno` until dropped.
 #[cfg(unix)]
 #[test]
 fn a_sampler_short_of_resources_keeps_ownership_beyond_the_unreadable_grace() {

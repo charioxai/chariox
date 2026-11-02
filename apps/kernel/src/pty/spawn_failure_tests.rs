@@ -32,6 +32,13 @@ fn resource_refusals_keep_wrapped_errno_out_of_the_client() {
         };
         assert_eq!(public.message, expected, "errno {errno}");
         assert_eq!(
+            public.code,
+            match errno {
+                libc::EMFILE | libc::ENFILE => "too_many_open_files",
+                _ => "terminal_refused",
+            }
+        );
+        assert_eq!(
             public.retryable,
             matches!(errno, libc::EMFILE | libc::ENFILE)
         );
