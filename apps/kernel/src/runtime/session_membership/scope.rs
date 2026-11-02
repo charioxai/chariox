@@ -662,6 +662,7 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::GetVaultSecretStatus(_)
         | LocalDaemonRequest::RenewKernelSudoRequester(_)
         | LocalDaemonRequest::RequestKernelAccess(_)
+        | LocalDaemonRequest::GetKernelAccessStatus(_)
         | LocalDaemonRequest::CoverKernelAccessProcess(_)
         | LocalDaemonRequest::ListKernelAccessGrants(_)
         | LocalDaemonRequest::RevokeKernelAccessGrant(_)

@@ -103,17 +103,9 @@ pub fn help_requested(args: &[String]) -> Result<bool, String> {
     Ok(help)
 }
 
-/// `access request` and `access status` name the same holder: the nearest
-/// provider harness, unless the caller passes `--holder-pid`.
-pub fn needs_access_holder(args: &[String]) -> bool {
-    args.first().map(String::as_str) == Some("access")
-        && matches!(args.get(1).map(String::as_str), Some("request" | "status"))
-        && !args.iter().any(|arg| arg == "--holder-pid")
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{help_requested, needs_access_holder};
+    use super::help_requested;
 
     // MP-08 / MP-11: Cloud commands use the ordinary TypeScript parser.
     #[test]
@@ -212,23 +204,5 @@ mod tests {
             assert!(listed.contains(&name), "usage omits {name}");
         }
         assert!(!listed.contains(&"machines"));
-    }
-
-    #[test]
-    fn access_status_names_the_same_holder_as_access_request() {
-        let args = |list: &[&str]| list.iter().map(|arg| arg.to_string()).collect::<Vec<_>>();
-        assert!(needs_access_holder(&args(&[
-            "access",
-            "request",
-            "--no-wait"
-        ])));
-        assert!(needs_access_holder(&args(&["access", "status"])));
-        assert!(!needs_access_holder(&args(&[
-            "access",
-            "status",
-            "--holder-pid",
-            "7"
-        ])));
-        assert!(!needs_access_holder(&args(&["access", "list"])));
     }
 }

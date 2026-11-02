@@ -64,15 +64,6 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
     let terminal_cwd = env::current_dir()
         .map_err(|error| format!("failed to read terminal working directory: {error}"))?;
     let mut cli = Command::new(&bun);
-    #[cfg(unix)]
-    if arguments::needs_access_holder(args) {
-        cli.env(
-            "CHARIOX_CLI_ACCESS_HOLDER_PID",
-            chariox_kernel::local::default_access_holder_pid()
-                .map_err(|error| format!("cannot identify holder ancestor: {error}"))?
-                .to_string(),
-        );
-    }
     cli.env("CHARIOX_CLI_ORIGINAL_CWD", terminal_cwd)
         .arg(cli_dir.join("dist/index.js"))
         .args(args)

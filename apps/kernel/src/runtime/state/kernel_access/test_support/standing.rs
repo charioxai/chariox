@@ -69,7 +69,8 @@ impl OrphanHolder {
             .request_kernel_access(
                 process::inspect(self.requester).unwrap().0,
                 RequestKernelAccessRequest {
-                    holder_pid: self.holder,
+                    holder_pid: Some(self.holder),
+                    no_wait: false,
                     term: Some(term),
                 },
             )

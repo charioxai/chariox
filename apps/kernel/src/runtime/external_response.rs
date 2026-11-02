@@ -210,6 +210,7 @@ response_policies! {
         VaultSecretStatusReported,
         KernelSudoExtended,
         KernelAccessGranted,
+        KernelAccessStatus,
         KernelAccessCovered,
         KernelAccessGrantsListed,
         KernelAccessRevoked,

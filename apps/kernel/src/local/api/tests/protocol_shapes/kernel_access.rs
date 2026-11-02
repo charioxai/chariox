@@ -284,15 +284,18 @@ fn local_kernel_access_protocol_451_has_no_session_scope_or_bearer() {
     };
     let requests = [
         LocalDaemonRequest::RequestKernelAccess(RequestKernelAccessRequest {
-            holder_pid: 42,
+            holder_pid: Some(42),
+            no_wait: false,
             term: Some(crate::local::KernelAccessTerm::Minutes(30)),
         }),
         LocalDaemonRequest::RequestKernelAccess(RequestKernelAccessRequest {
-            holder_pid: 42,
+            holder_pid: Some(42),
+            no_wait: false,
             term: Some(crate::local::KernelAccessTerm::UntilHolderExits),
         }),
         LocalDaemonRequest::RequestKernelAccess(RequestKernelAccessRequest {
-            holder_pid: 42,
+            holder_pid: Some(42),
+            no_wait: false,
             term: None,
         }),
         LocalDaemonRequest::ListKernelAccessGrants(ListKernelAccessGrantsRequest {}),

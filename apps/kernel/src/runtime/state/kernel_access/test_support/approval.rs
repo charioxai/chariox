@@ -49,7 +49,8 @@ async fn kernel_access_permission_approval_keeps_the_requested_lifetime() {
         let request = state.request_kernel_access(
             holder.clone(),
             RequestKernelAccessRequest {
-                holder_pid: holder.pid,
+                holder_pid: Some(holder.pid),
+                no_wait: false,
                 term: requested,
             },
         );

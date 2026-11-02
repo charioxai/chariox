@@ -130,6 +130,9 @@ pub(crate) struct AccessState {
     /// request from them reads "access ended: <reason>" rather than "never covered".
     /// Bounded, no secrets.
     pub(crate) ended: Vec<(ProcessIdentity, Refusal)>,
+    /// Holders whose `--no-wait` request the owner refused, let lapse or that was invalidated,
+    /// so status says why instead of "not requested". Bounded, no secrets.
+    pub(crate) request_outcomes: Vec<(ProcessIdentity, crate::local::KernelAccessStatusReason)>,
     /// Requesters on other kernels that raised a sudo request here, by the grant id
     /// their sudo entries carry. They live while their origin kernel keeps renewing the
     /// lease and until it says its grant ended; silence ends them here without it.
@@ -190,6 +193,18 @@ impl AccessState {
         }
         let excess = self.ended.len().saturating_sub(ENDED_PROCESSES);
         self.ended.drain(..excess);
+    }
+
+    pub(crate) fn remember_request_outcome(
+        &mut self,
+        holder: &ProcessIdentity,
+        reason: crate::local::KernelAccessStatusReason,
+    ) {
+        self.request_outcomes
+            .retain(|(known, _)| !known.gone() && known != holder);
+        self.request_outcomes.push((holder.clone(), reason));
+        let excess = self.request_outcomes.len().saturating_sub(ENDED_PROCESSES);
+        self.request_outcomes.drain(..excess);
     }
 }
 
