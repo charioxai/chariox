@@ -1317,13 +1317,68 @@ mod tests {
         for (error, kind, retryable, message) in cases {
             assert_eq!(
                 TurnOutcome::classify("codex", &error_text(error.clone())),
-                TurnOutcome {
-                    kind,
-                    retryable,
-                    reason: message.to_string()
-                },
+                TurnOutcome::new(kind, retryable, message),
                 "{error}"
             );
+        }
+    }
+
+    #[test]
+    fn ea2_75_documented_codex_codes_and_http_details_keep_their_meaning() {
+        use crate::provider::{TurnOutcome, TurnOutcomeKind::*};
+        for (code, kind, retryable) in [
+            ("flexUnavailable", Overloaded, true),
+            ("policyCapacityUnavailable", Overloaded, true),
+            ("sessionBudgetExceeded", UsageLimit, false),
+            ("contextWindowExceeded", Other, false),
+            ("invalidPrompt", Other, false),
+            ("modelNotFound", Other, false),
+            ("tooManyDenials", Other, false),
+            ("bioPolicy", Other, false),
+            ("cyberPolicy", Other, false),
+            ("misalignmentPolicyViolation", Other, false),
+            ("badRequest", Other, false),
+            ("sandboxError", Other, false),
+            ("threadRollbackFailed", Other, false),
+            ("internalServerError", Other, true),
+            ("responseTooManyFailedAttempts", Network, true),
+        ] {
+            let framed =
+                super::codex_error_text(&json!({"codexErrorInfo":code}), "Request rejected");
+            let outcome = TurnOutcome::classify("codex", &framed);
+            assert_eq!(
+                (outcome.kind, outcome.retryable),
+                (kind, retryable),
+                "{code}"
+            );
+        }
+        for variant in [
+            "httpConnectionFailed",
+            "responseStreamConnectionFailed",
+            "responseStreamDisconnected",
+            "responseTooManyFailedAttempts",
+        ] {
+            for (status, kind, retryable) in [
+                (401, SignInRequired, false),
+                (429, UsageLimit, true),
+                (503, Overloaded, true),
+                (529, Overloaded, true),
+                (502, Network, true),
+                (408, Network, true),
+                (400, Other, false),
+                (403, Other, false),
+            ] {
+                let framed = super::codex_error_text(
+                    &json!({"codexErrorInfo": {variant: {"httpStatusCode": status}}}),
+                    "Request rejected",
+                );
+                let outcome = TurnOutcome::classify("codex", &framed);
+                assert_eq!(
+                    (outcome.kind, outcome.retryable),
+                    (kind, retryable),
+                    "{variant} {status}"
+                );
+            }
         }
     }
 

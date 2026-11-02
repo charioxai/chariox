@@ -4558,6 +4558,9 @@ pub(in crate::runtime::state) mod tests {
         let expected = crate::provider::TurnOutcome::classify(&adapter_key, REFUSAL);
         assert_eq!(expected.kind, crate::provider::TurnOutcomeKind::Overloaded);
         assert!(visible.contains(&expected.notice()));
+        assert!(visible
+            .iter()
+            .all(|text| !text.contains("Selected model is at capacity")));
         assert_eq!(failure, Some(serde_json::to_value(&expected).unwrap()));
     }
 
@@ -5384,17 +5387,20 @@ pub(in crate::runtime::state) mod tests {
         let failed = failed_requests(&runtime, agent.id());
         assert_eq!(failed.len(), 1, "{provider}");
         assert_eq!(failed[0].excerpt, "record r372-mcp-1, then r372-mcp-2");
-        assert_eq!(failed[0].reason, "usage limit reached", "{provider}");
+        assert_eq!(
+            failed[0].reason, "The provider's usage limit was reached",
+            "{provider}"
+        );
         assert_eq!(
             not_carried_out_entries(&runtime, session.id(), observer.id()),
-            vec!["Request not carried out: usage limit reached. It was dropped; send it again to retry."],
+            vec!["Request not carried out: The provider's usage limit was reached. It was dropped; send it again to retry."],
             "{provider}"
         );
         assert!(runtime
             .owned
             .agent_store
             .hidden_context_with_failed_requests(agent.id(), "")
-            .starts_with("Your previous request (\"record r372-mcp-1, then r372-mcp-2\") failed (usage limit reached)"));
+            .starts_with("Your previous request (\"record r372-mcp-1, then r372-mcp-2\") failed (The provider's usage limit was reached)"));
     }
 
     #[tokio::test]

@@ -199,8 +199,7 @@ impl KernelRuntimeOwnedState {
         );
     }
 
-    /// A failed turn's typed notice: already redacted, so it keeps its own
-    /// words and its recovery whole.
+    /// A failed turn's calm explanation and recovery.
     pub(super) fn record_provider_failure_notice(
         &self,
         session_id: &str,
@@ -211,8 +210,8 @@ impl KernelRuntimeOwnedState {
         self.append_provider_failure_entry(session_id, provider_run_id, agent_id, failure.notice());
     }
 
-    /// A refused dispatch shows the owner the provider's own failure when it
-    /// reported one; a kernel-side error stays an internal diagnostic.
+    /// A refused dispatch shows the owner a typed explanation and recovery; a
+    /// kernel-side error stays an internal diagnostic.
     pub(super) fn record_dispatch_failure_output(
         &self,
         session_id: &str,

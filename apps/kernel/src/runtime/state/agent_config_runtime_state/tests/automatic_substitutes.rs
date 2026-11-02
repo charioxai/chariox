@@ -364,7 +364,7 @@ async fn codex_server_overloaded_reruns_the_turn_on_the_first_substitute() {
         turn.rerun_notices(),
         vec![format!(
             "This turn runs on {SUBSTITUTE_A} because {PRIMARY_MODEL} failed: \
-             model at capacity (server_overloaded)."
+             The provider is at capacity."
         )]
     );
     let failure_outputs = turn
@@ -400,7 +400,7 @@ async fn provider_crash_mid_turn_reruns_the_turn_on_the_substitute() {
         turn.rerun_notices(),
         vec![format!(
             "This turn runs on {SUBSTITUTE_A} because {PRIMARY_MODEL} failed: \
-             provider process exited with status 1."
+             The provider process stopped unexpectedly."
         )]
     );
 }

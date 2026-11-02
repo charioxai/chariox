@@ -1496,11 +1496,8 @@ done
             assert!(batch.explicit_provider_error);
             TurnOutcome::classify("claude", &batch.terminal_failure.expect("failure"))
         };
-        let expected = |kind, retryable, reason: &str| TurnOutcome {
-            kind,
-            retryable,
-            reason: reason.to_string(),
-        };
+        let expected =
+            |kind, retryable, diagnostic: &str| TurnOutcome::new(kind, retryable, diagnostic);
         assert_eq!(
             result_error("Not logged in · Please run /login"),
             expected(SignInRequired, false, "Not logged in · Please run /login")

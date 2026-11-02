@@ -286,16 +286,7 @@ impl KernelRuntimeOwnedState {
         run: &str,
         outcome: &crate::provider::TurnOutcome,
     ) -> Result<Option<(AgentTaskExecution, bool)>, DaemonError> {
-        self.end_failed_agent_task_with_reason(
-            room,
-            agent,
-            prompt,
-            run,
-            &format!(
-                "Provider run failed: {}. Owner must reconcile and resume or cancel",
-                outcome.reason
-            ),
-        )
+        self.end_failed_agent_task_with_reason(room, agent, prompt, run, &outcome.notice())
     }
 
     pub(super) fn end_failed_agent_task_with_reason(
