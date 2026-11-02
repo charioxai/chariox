@@ -1,0 +1,53 @@
+[
+  {
+    "target": {
+      "kind": "site",
+      "origin": "https://example.com"
+    },
+    "value_kind": "secret"
+  },
+  {
+    "target": {
+      "kind": "site",
+      "origin": "https://example.com"
+    },
+    "value_kind": "payment_card"
+  },
+  {
+    "target": {
+      "kind": "command_environment",
+      "name": "API_KEY",
+      "origin": "https://api.example.com"
+    },
+    "value_kind": "secret"
+  },
+  {
+    "target": {
+      "kind": "command_stdin",
+      "origin": "https://api.example.com"
+    },
+    "value_kind": "secret"
+  },
+  {
+    "target": {
+      "kind": "file",
+      "path": "/workspace/.env"
+    },
+    "value_kind": "secret"
+  },
+  {
+    "target": {
+      "kind": "totp",
+      "origin": "https://example.com"
+    },
+    "value_kind": "secret"
+  },
+  {
+    "target": {
+      "kind": "web_authn",
+      "origin": "https://login.example.com",
+      "rp_id": "example.com"
+    },
+    "value_kind": "secret"
+  }
+]

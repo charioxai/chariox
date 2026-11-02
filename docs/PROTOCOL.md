@@ -131,10 +131,12 @@ grant. A final live cancellation/provider-run check fences returned results.
 ### MP-08 / MP-10 / MP-11: A06 Vault generation and login (local 469)
 
 Local 469 combines A04 (460) and A05 (462); relay peer 87 combines peer 82 and
-86. A06 adds no serialized request or event shape: the sudo-only MCP tool
+86. A06 adds no serialized request or event shape: the MCP tool
 `chariox.vault.generate` replaces `chariox.create_generated_credential`, and
 `chariox.kernel_browser_paste_secret` accepts a live sudo window in place of
 focus for a retained grant. See [Sudo windows](KERNEL_SUDO.md).
+
+MP-08 / MP-09 / MP-10 / MP-11, local 956 / peer 405: Vault generation is an ordinary agent tool. Generated and captured entries persist `metadata.use_binding` with one exact destination and a value kind. Browser/HTTP site uses compare canonical origins (scheme, host, effective port), not host suffixes. Environment/stdin, file, TOTP and WebAuthn bindings are distinct uses. Bindings and card kind cannot be changed by overwriting or aliasing a handle. Payment-card values require one owner interaction per operation; ordinary values need no task approval or sudo. Only the encrypted Vault's actual setup/unlock still requires its key. `chariox_kernel_request` remains sudo-only.
 
 ### MP-08 / MP-10 / MP-11: A05 capability acquisition (local 462)
 

@@ -202,11 +202,26 @@ impl KernelRuntimeState {
             .kernel_browser_secret_target_url(user, &admission, &args)
             .await?;
         check_authority()?;
-        crate::runtime::state::sudo::require_login_handle_scope(
-            self.home_runtime_secret_service()?
-                .validate_browser_secret_input_for_target_url(&args.credential_id, &url)?,
-            session,
-        )?;
+        let credential = self
+            .home_runtime_secret_service()?
+            .validate_browser_secret_input_for_target_url(&args.credential_id, &url)?
+            .clone();
+        let approval = if credential
+            .metadata
+            .as_ref()
+            .is_some_and(|m| m.use_binding.is_some())
+        {
+            Some(
+                self.authorize_vault_use(
+                    agent.owner_user_id(),
+                    &credential,
+                    &crate::config::VaultUseTarget::site(&url)?,
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
         let protection = &self.owned.kernel_browser_secret_observations;
         let scope = KernelBrowserHost::profile_key(user);
         // MP-11 A06: discovery fixes the protection epoch the fill relies on.
@@ -218,6 +233,10 @@ impl KernelRuntimeState {
         let (service, _vault_guard) = self
             .scoped_secret_input_service(protection, &scope, &args.credential_id)
             .await?;
+        let service = match approval {
+            Some(approval) => service.with_vault_use_approval(approval),
+            None => service,
+        };
         check_authority()?;
         let _barrier = protection.barrier(&scope)?.write_owned().await;
         check_authority()?;
@@ -239,10 +258,7 @@ impl KernelRuntimeState {
             .kernel_browser_secret_target_url_bound(user, &admission, &args)
             .await?;
         check_authority()?;
-        crate::runtime::state::sudo::require_login_handle_scope(
-            service.validate_browser_secret_input_for_target_url(&args.credential_id, &url)?,
-            session,
-        )?;
+        service.validate_browser_secret_input_for_target_url(&args.credential_id, &url)?;
         self.insert_kernel_browser_secret(user, &admission, &args, &service, url, None)
             .await?;
         Ok(RuntimeToolResult {
@@ -295,14 +311,37 @@ impl KernelRuntimeState {
         let url = self
             .kernel_browser_secret_target_url(&user, &admission, &args)
             .await?;
-        self.home_runtime_secret_service()?
-            .validate_browser_secret_input_for_target_url(&args.credential_id, &url)?;
+        let credential = self
+            .home_runtime_secret_service()?
+            .validate_browser_secret_input_for_target_url(&args.credential_id, &url)?
+            .clone();
+        let approval = if credential
+            .metadata
+            .as_ref()
+            .is_some_and(|m| m.use_binding.is_some())
+        {
+            let owner = self.owner_client_user_id(caller)?;
+            Some(
+                self.authorize_vault_use(
+                    &owner,
+                    &credential,
+                    &crate::config::VaultUseTarget::site(&url)?,
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
         let protection = &self.owned.kernel_browser_secret_observations;
         let scope = KernelBrowserHost::profile_key(&user);
         let epoch = protection.revision(&scope)?;
         let (service, _vault_guard) = self
             .scoped_secret_input_service(protection, &scope, &args.credential_id)
             .await?;
+        let service = match approval {
+            Some(approval) => service.with_vault_use_approval(approval),
+            None => service,
+        };
         let _barrier = protection.barrier(&scope)?.write_owned().await;
         if protection.revision(&scope)? != epoch {
             return Err(host_error(

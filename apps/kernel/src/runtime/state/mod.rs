@@ -107,6 +107,8 @@ mod user_app_view_browser;
 mod user_app_view_restore;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod user_app_view_runtime;
+mod vault_generate;
+mod vault_use;
 #[cfg(test)]
 pub(crate) use critical_approval_passkey::critical_approval_audit_payload;
 #[cfg(test)]

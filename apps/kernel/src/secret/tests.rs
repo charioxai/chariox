@@ -116,6 +116,7 @@ fn credential_handles_do_not_include_internal_vault_metadata() {
         allowed_uses: vec![UserCredentialUse::Browser],
         injection: UserCredentialInjectionConfig::Browser,
         metadata: Some(UserCredentialMetadataConfig {
+            use_binding: None,
             created_by_kind: Some("agent".to_string()),
             created_by_id: Some("agent-1".to_string()),
             session_id: Some("session-1".to_string()),

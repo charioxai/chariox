@@ -108,7 +108,7 @@ impl KernelRuntimeState {
         credential: crate::config::UserCredentialConfig,
     ) -> Result<(crate::config::UserCredentialConfig, std::path::PathBuf), DaemonError> {
         let _guard = self.vault_observation_mutation_guard().await;
-        crate::credential::validate_credential_registration(&credential)?;
+        registry.validate_upsert(&credential)?;
         if let Some(previous) = registry.get(&credential.id)? {
             if previous.source != credential.source {
                 if let crate::config::UserCredentialSourceConfig::Vault { key } = previous.source {
@@ -189,7 +189,22 @@ impl KernelRuntimeState {
         secret: &str,
         overwrite: bool,
     ) -> Result<crate::secret::VaultCredentialUpsertResult, DaemonError> {
-        crate::credential::validate_credential_registration(&credential)?;
+        self.upsert_vault_credential_locked_for_agent(
+            service, registry, credential, secret, overwrite, None,
+        )
+        .await
+    }
+
+    pub(in crate::runtime::state) async fn upsert_vault_credential_locked_for_agent(
+        &self,
+        service: &crate::secret::RuntimeSecretService,
+        registry: &crate::credential::CharioxCredentialRegistry,
+        credential: crate::config::UserCredentialConfig,
+        secret: &str,
+        overwrite: bool,
+        context: Option<&super::super::vault_use::VaultAgentContext>,
+    ) -> Result<crate::secret::VaultCredentialUpsertResult, DaemonError> {
+        registry.validate_upsert(&credential)?;
         let previous = registry.get(&credential.id)?;
         // A new handle must not take over a Vault slot that holds a value: storing would
         // replace the value of the handle that uses it, or one that was stored or kept
@@ -239,6 +254,9 @@ impl KernelRuntimeState {
             _ => None,
         };
         self.with_authorized_app_side_effect(|_| {
+            if let Some(context) = context {
+                self.recheck_vault_agent(context)?;
+            }
             self.with_forwarded_binding_operation(|| {
                 let _history = self.owned.operational_history_store.lock_public_history()?;
                 let result = service.upsert_vault_backed_credential_with_secret(

@@ -1,4 +1,4 @@
-//! MP-08/MP-10/MP-11 A06: elevated Vault generation and protected login through
+//! MP-08 / MP-09 / MP-10 / MP-11: ordinary Vault generation and protected login through
 //! the real MCP router. The browser is a fixture controller that records what
 //! the kernel physically inserted; live Chromium/provider acceptance is separate.
 use super::tests::{fixture, running, Fixture, PASSKEY};
@@ -86,56 +86,61 @@ async fn generate(f: &Fixture, request_id: &str, origin: &str) -> Result<Value, 
     .await
 }
 
+// MP-08 / MP-09 / MP-10 / MP-11: ordinary Vault creation needs no elevation.
 #[tokio::test]
-async fn a06_ordinary_agents_cannot_generate_credentials() {
+async fn vopen_plain_agent_generates_for_one_origin_without_a_prompt() {
     crate::test_support::isolated_env_test!();
     let f = fixture();
     unlock(&f);
-    let catalog = names(&f);
-    // MP-08/MP-10/MP-11: stable discovery is not a Vault generation grant.
-    assert!(catalog.iter().any(|name| name == VAULT_GENERATE));
-    assert!(
-        !catalog
-            .iter()
-            .any(|name| name.contains("generated_credential")),
-        "A06: generation is not an ordinary agent tool"
+    assert!(f.state.owned.sudo_turns.lock().unwrap().is_empty());
+    let created = generate(&f, "ordinary-signup", SITE).await.unwrap();
+    let handle = created["credential_id"].as_str().unwrap();
+    assert_eq!(created["origin"], SITE);
+    assert_eq!(created["created"], true);
+    let value = stored(&f, handle);
+    assert!(!created.to_string().contains(value.as_str()));
+    assert_eq!(
+        generate(&f, "ordinary-signup", SITE).await.unwrap()["credential_id"],
+        handle
     );
-    assert!(generate(&f, "signup", SITE).await.is_err());
+    assert!(generate(&f, "ordinary-signup", "https://example.com")
+        .await
+        .is_err());
+    assert!(f
+        .state
+        .home_runtime_secret_service()
+        .unwrap()
+        .browser_secret_input_for_target_url(handle, "http://127.0.0.1:9999/login")
+        .is_err());
+    let snapshot = f
+        .state
+        .owned
+        .session_snapshot(&f.request.session_id)
+        .unwrap();
+    assert!(snapshot.active_interactions().is_empty());
+    assert!(f.state.owned.sudo_turns.lock().unwrap().is_empty());
     assert!(call(
         &f,
-        "chariox.create_generated_credential",
-        json!({"credential":{"id":"ordinary","allowed_hosts":["127.0.0.1:8123"],
-            "allowed_uses":["browser"],"injection":{"kind":"browser"}}}),
+        "chariox_kernel_request",
+        json!({"request":{"ListSessions":null}})
     )
     .await
     .is_err());
-    assert!(crate::credential::load_user_credentials()
-        .unwrap()
-        .is_empty());
 }
 
 #[tokio::test]
-async fn a06_an_enrolled_kernel_owner_generates_and_other_users_cannot() {
+async fn vopen_an_enrolled_kernel_owner_generates_and_other_users_cannot() {
     crate::test_support::isolated_env_test!();
-    let f = fixture();
-    let turn = elevated(&f);
+    let f = super::tests::fixture_for_owner(None, false, "claude", "claude", None, "cloud-owner");
     unlock(&f);
-    // A Cloud-enrolled kernel's local owner is its Cloud user.
+    assert!(generate(&f, "before-enrollment", SITE).await.is_err());
     let mut config = f.state.owned.config_projection.snapshot();
     config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
         user_id: "cloud-owner".into(),
         ..Default::default()
     });
     f.state.owned.config_projection.update(config);
-    let set_owner = |owner: &str| {
-        let mut turns = f.state.owned.sudo_turns.lock().unwrap();
-        turns.get_mut(&turn.entry_id).unwrap().owner_user_id = owner.into();
-    };
-    set_owner("collaborator");
-    assert!(generate(&f, "other", SITE).await.is_err());
-    set_owner("cloud-owner");
-    let created = generate(&f, "signup", SITE).await.unwrap();
-    assert_eq!(created["created"], true);
+    assert_eq!(generate(&f, "signup", SITE).await.unwrap()["created"], true);
 }
 
 #[tokio::test]
@@ -198,7 +203,7 @@ async fn a06_elevated_generation_commits_one_handle_and_never_returns_the_value(
         .revoke_sudo(Some("local"), Some(&turn.entry_id), "explicit_revoke")
         .unwrap();
     assert!(names(&f).iter().any(|name| name == VAULT_GENERATE));
-    assert!(generate(&f, "after-revoke", SITE).await.is_err());
+    assert!(generate(&f, "after-revoke", SITE).await.is_ok());
 }
 
 #[tokio::test]
@@ -207,7 +212,12 @@ async fn a06_a_generated_handle_never_takes_a_slot_that_holds_a_value() {
     let f = fixture();
     let turn = elevated(&f);
     unlock(&f);
-    let handle = super::vault::generated_handle(&turn, "signup");
+    let handle = super::super::vault_generate::generated_handle(
+        &turn.owner_user_id,
+        &turn.session_id,
+        &turn.agent_id,
+        "signup",
+    );
     f.state
         .home_runtime_secret_service()
         .unwrap()
@@ -252,7 +262,7 @@ async fn owner_unlocks(f: &Fixture, session: &str, during: impl FnOnce()) {
     .await
     .unwrap();
     during();
-    // Ending the window withdraws the prompt itself; nothing is left to answer.
+    // A caller may withdraw its own unlock request.
     if f.state
         .owned
         .pending_interactions
@@ -275,7 +285,7 @@ async fn owner_unlocks(f: &Fixture, session: &str, during: impl FnOnce()) {
 }
 
 #[tokio::test]
-async fn a06_generation_refuses_when_the_window_ends_during_the_vault_wait() {
+async fn vopen_generation_survives_sudo_revocation_during_vault_unlock() {
     crate::test_support::isolated_env_test!();
     let f = fixture();
     let turn = elevated(&f);
@@ -287,12 +297,10 @@ async fn a06_generation_refuses_when_the_window_ends_during_the_vault_wait() {
     });
     let (result, ()) = tokio::join!(pending, unlock);
     assert!(
-        result.is_err(),
-        "A06: no value may be minted after the window ends"
+        result.is_ok(),
+        "sudo revocation does not gate ordinary Vault generation"
     );
-    assert!(crate::credential::load_user_credentials()
-        .unwrap()
-        .is_empty());
+    assert_eq!(crate::credential::load_user_credentials().unwrap().len(), 1);
 }
 
 const LOGIN_CONTROLLER: &str = r#"set -eu
@@ -394,6 +402,10 @@ fn owner_credential(f: &Fixture, id: &str, hosts: &[&str], generated_in: Option<
                 allowed_uses: vec![crate::config::UserCredentialUse::Browser],
                 injection: crate::config::UserCredentialInjectionConfig::Browser,
                 metadata: generated_in.map(|session| UserCredentialMetadataConfig {
+                    use_binding: Some(crate::config::VaultUseBinding {
+                        target: crate::config::VaultUseTarget::site(hosts[0]).unwrap(),
+                        value_kind: crate::config::VaultValueKind::Secret,
+                    }),
                     created_by_kind: Some("vault_generate".into()),
                     created_by_id: Some("other-agent".into()),
                     session_id: Some(session.into()),
@@ -411,7 +423,7 @@ fn owner_credential(f: &Fixture, id: &str, hosts: &[&str], generated_in: Option<
 }
 
 #[tokio::test]
-async fn a06_sudo_window_fills_a_retained_target_and_ordinary_agents_are_refused() {
+async fn vopen_ordinary_agent_fills_only_the_bound_origin_without_a_prompt() {
     crate::test_support::isolated_env_test!();
     let login = login_room().await;
     let f = &login.f;
@@ -420,6 +432,9 @@ async fn a06_sudo_window_fills_a_retained_target_and_ordinary_agents_are_refused
     let ordinary = call(f, PASTE, paste_args("gen-unknown")).await.unwrap_err();
     assert!(!needs_focus(ordinary));
     let turn = elevated(f);
+    f.state
+        .revoke_sudo(Some("local"), Some(&turn.entry_id), "explicit_revoke")
+        .unwrap();
     let handle = generate(f, "signup", SITE).await.unwrap()["credential_id"]
         .as_str()
         .unwrap()
@@ -430,23 +445,9 @@ async fn a06_sudo_window_fills_a_retained_target_and_ordinary_agents_are_refused
         .as_str()
         .unwrap()
         .to_string();
-    owner_credential(
-        f,
-        "foreign-generated",
-        &["127.0.0.1:8123"],
-        Some("other-session"),
-    );
     owner_credential(f, "unbound-owner", &[], None);
-    for (refused, reason) in [
-        (elsewhere.as_str(), "another site"),
-        ("foreign-generated", "another session"),
-    ] {
-        assert!(
-            call(f, PASTE, paste_args(refused)).await.is_err(),
-            "A06: {reason} must be refused"
-        );
-        assert_eq!(inserted(&login), None, "A06: {reason} reached the page");
-    }
+    assert!(call(f, PASTE, paste_args(&elsewhere)).await.is_err());
+    assert_eq!(inserted(&login), None, "another origin reached the page");
     // P3-1: a credential without a site binding fills like it does for a focused agent.
     assert!(call(f, PASTE, paste_args("unbound-owner")).await.is_ok());
     let _ = std::fs::remove_file(login.root.path().join("echo"));
@@ -489,9 +490,6 @@ async fn a06_sudo_window_fills_a_retained_target_and_ordinary_agents_are_refused
     assert!(!observed.contains(secret.as_str()));
     assert!(observed.contains("[redacted]"));
     std::fs::remove_file(login.root.path().join("echo")).unwrap();
-    f.state
-        .revoke_sudo(Some("local"), Some(&turn.entry_id), "explicit_revoke")
-        .unwrap();
     // The fill rides the browser grant, not the sudo window: it still types after sudo ended.
     assert_eq!(
         call(f, PASTE, paste_args(&handle)).await.unwrap(),
@@ -676,12 +674,11 @@ async fn a06_generation_retry_refuses_scheme_and_port_rebinding() {
     f.state.shutdown_cleanup().await.unwrap();
 }
 
-// Poll the real generation future into its contended storage wait before ending sudo.
-async fn queued_generation_loses_authority(expire: bool) {
+// MP-08 / MP-09 / MP-10 / MP-11: sudo expiry/revocation never gates ordinary storage.
+async fn queued_generation_ignores_sudo_end(expire: bool) {
     let f = fixture();
     let turn = elevated(&f);
     unlock(&f);
-    let before = std::fs::read(vault_path(&f)).unwrap();
     let guard = f.state.vault_observation_mutation_guard().await;
     let pending = generate(&f, "queued-write", SITE);
     tokio::pin!(pending);
@@ -705,31 +702,155 @@ async fn queued_generation_loses_authority(expire: bool) {
             .unwrap();
     }
     drop(guard);
-    let error = pending
+    let result = pending
         .await
-        .expect_err("generation committed after original sudo authority ended");
-    assert!(
-        error.to_string().contains("sudo"),
-        "storage must reject the ended sudo authority"
-    );
-    assert!(crate::credential::load_user_credentials()
-        .unwrap()
-        .is_empty());
-    assert!(
-        std::fs::read(vault_path(&f)).unwrap() == before,
-        "Vault storage changed after authority ended"
-    );
+        .expect("ordinary generation survives sudo expiry or revocation");
+    assert_eq!(result["created"], true);
+    assert_eq!(crate::credential::load_user_credentials().unwrap().len(), 1);
     f.state.shutdown_cleanup().await.unwrap();
 }
 
 #[tokio::test]
-async fn a06_generation_storage_wait_rechecks_revoked_window() {
+async fn vopen_generation_storage_wait_survives_revoked_window() {
     crate::test_support::isolated_env_test!();
-    queued_generation_loses_authority(false).await;
+    queued_generation_ignores_sudo_end(false).await;
 }
 
 #[tokio::test]
-async fn a06_generation_storage_wait_rechecks_expired_window() {
+async fn vopen_generation_storage_wait_survives_expired_window() {
     crate::test_support::isolated_env_test!();
-    queued_generation_loses_authority(true).await;
+    queued_generation_ignores_sudo_end(true).await;
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11: cards ask once per actual fill, even under sudo.
+#[tokio::test]
+async fn vopen_cards_ask_each_time_and_never_resolve_without_approval() {
+    crate::test_support::isolated_env_test!();
+    let login = login_room().await;
+    let f = &login.f;
+    unlock(f);
+    let _sudo = elevated(f);
+    let binding = crate::config::VaultUseBinding {
+        target: crate::config::VaultUseTarget::site(SITE).unwrap(),
+        value_kind: crate::config::VaultValueKind::PaymentCard,
+    };
+    let credential: UserCredentialConfig = serde_json::from_value(json!({
+        "id":"test-card", "source":{"type":"vault","key":"test-card"},
+        "allowed_hosts":[SITE], "allowed_uses":["browser"], "injection":{"kind":"browser"},
+        "metadata":{"use_binding":binding}
+    }))
+    .unwrap();
+    let registry = crate::credential::CharioxCredentialRegistry::user().unwrap();
+    f.state
+        .home_runtime_secret_service()
+        .unwrap()
+        .upsert_vault_backed_credential_with_secret(
+            &registry,
+            credential,
+            "card-fixture-value",
+            false,
+        )
+        .unwrap();
+    assert!(f
+        .state
+        .home_runtime_secret_service()
+        .unwrap()
+        .browser_secret_input_for_target_url("test-card", SITE)
+        .is_err());
+    for allow in [true, false, true] {
+        let answer = async {
+            let id = tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    let id = f
+                        .state
+                        .owned
+                        .pending_interactions
+                        .write()
+                        .keys()
+                        .find(|id| id.starts_with("vault-card-"))
+                        .cloned();
+                    if let Some(id) = id {
+                        break id;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            f.state
+                .resolve_terminal_runtime_interaction(
+                    crate::runtime::kernel_access::ACCESS_INTERACTION_SCOPE,
+                    &id,
+                    if allow { "allow" } else { "cancel" },
+                    None,
+                    Some("local"),
+                )
+                .await
+                .unwrap();
+        };
+        let fill = call(f, PASTE, paste_args("test-card"));
+        let (result, ()) = tokio::join!(fill, answer);
+        assert_eq!(result.is_ok(), allow);
+        assert_eq!(inserted(&login).is_some(), allow);
+        let _ = std::fs::remove_file(login.root.path().join("echo"));
+    }
+}
+
+#[tokio::test]
+async fn vopen_overwrite_and_alias_cannot_rebind_or_downgrade_an_entry() {
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    unlock(&f);
+    let handle = generate(&f, "bound-entry", SITE).await.unwrap()["credential_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let registry = crate::credential::CharioxCredentialRegistry::user().unwrap();
+    let original = registry.get(&handle).unwrap().unwrap();
+    let mut changed = original.clone();
+    changed
+        .metadata
+        .as_mut()
+        .unwrap()
+        .use_binding
+        .as_mut()
+        .unwrap()
+        .target = crate::config::VaultUseTarget::site("https://example.com").unwrap();
+    assert!(registry.upsert(changed).is_err());
+    let mut alias = original.clone();
+    alias.id = "alias".into();
+    alias.metadata = None;
+    assert!(registry.upsert(alias).is_err());
+    let mut stripped = original.clone();
+    stripped.metadata = None;
+    assert!(registry.upsert(stripped).is_err());
+    assert_eq!(registry.get(&handle).unwrap().unwrap(), original);
+    assert!(f
+        .state
+        .home_runtime_secret_service()
+        .unwrap()
+        .browser_secret_input(&handle)
+        .is_err());
+}
+
+#[tokio::test]
+async fn vopen_agent_is_rechecked_after_the_final_storage_barrier() {
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    unlock(&f);
+    let guard = f.state.vault_observation_mutation_guard().await;
+    let pending = generate(&f, "delayed-write", SITE);
+    tokio::pin!(pending);
+    tokio::select! {
+        result = &mut pending => panic!("generation passed its held storage barrier: {result:?}"),
+        _ = tokio::time::sleep(Duration::from_millis(30)) => {}
+    }
+    let mut ended = f.run.clone();
+    ended.mark_ended();
+    f.state.owned.provider_run_projection.update(ended);
+    drop(guard);
+    assert!(pending.await.is_err());
+    assert!(crate::credential::load_user_credentials()
+        .unwrap()
+        .is_empty());
 }

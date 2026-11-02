@@ -33,7 +33,7 @@ impl KernelRuntimeState {
         let mut tools: Vec<_> = self
             .runtime_tool_specs_for_current_grants(token)
             .into_iter()
-            .filter(|tool| tool.name != sudo::SUDO_TOOL && tool.name != sudo::VAULT_GENERATE)
+            .filter(|tool| tool.name != sudo::SUDO_TOOL)
             .map(|tool| (tool.name, tool.description, tool.input_schema))
             .collect();
         tools.sort_by(|a, b| a.0.cmp(&b.0));

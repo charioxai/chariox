@@ -234,13 +234,36 @@ impl KernelRuntimeState {
                     operation: "runtime_tool_http_request_with_credential",
                     message: format!("invalid tool arguments: {error}"),
                 })?;
-                service.validate_http_request_target(&args.credential_id, &args.url)?;
+                let (credential, _) =
+                    service.validate_http_request_target(&args.credential_id, &args.url)?;
+                let approval = if credential
+                    .metadata
+                    .as_ref()
+                    .is_some_and(|m| m.use_binding.is_some())
+                {
+                    self.ensure_agent_can_manage_user_vault(provider_run)?;
+                    Some(
+                        self.authorize_vault_use(
+                            provider_run.owner_user_id(),
+                            credential,
+                            &crate::config::VaultUseTarget::site(&args.url)?,
+                        )
+                        .await?,
+                    )
+                } else {
+                    None
+                };
                 let _vault_unlock = self
                     .ensure_vault_unlocked_for_provider_run(
                         provider_run,
                         "runtime_tool_http_request_with_credential",
                     )
                     .await?;
+                let service = self.home_runtime_secret_service()?;
+                let service = match approval {
+                    Some(approval) => service.with_vault_use_approval(approval),
+                    None => service,
+                };
                 let request = crate::secret::CredentialHttpRequest {
                     credential_id: args.credential_id,
                     method: args.method,

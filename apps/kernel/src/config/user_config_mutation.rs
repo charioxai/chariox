@@ -459,13 +459,6 @@ impl CharioxUserConfig {
                 self.credential_vault.max_ttl_minutes =
                     parse_config_u64("credential_vault.max_ttl_minutes", &value, true)?
             }
-            "credential_vault.agent_management" => {
-                self.credential_vault.agent_management =
-                    crate::config::CredentialVaultAgentManagementPolicy::parse(
-                        "credential_vault.agent_management",
-                        &value,
-                    )?
-            }
             "providers.workspace_live_sync" => {
                 self.providers.workspace_live_sync = WorkspaceLiveSyncConfig::from_mode(
                     WorkspaceLiveSyncMode::parse_config_policy(&value)?,
@@ -650,10 +643,6 @@ impl CharioxUserConfig {
                 {
                     self.workflow.code = None;
                 }
-            }
-            "credential_vault.agent_management" => {
-                self.credential_vault.agent_management =
-                    crate::config::CredentialVaultAgentManagementPolicy::default()
             }
             "providers.workspace_live_sync" => {
                 self.providers.workspace_live_sync = WorkspaceLiveSyncConfig::default()

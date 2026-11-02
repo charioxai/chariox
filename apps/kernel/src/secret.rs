@@ -78,6 +78,8 @@ pub struct CredentialHandleView {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CredentialHandleMetadataView {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub use_binding: Option<crate::config::VaultUseBinding>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_by_kind: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_by_id: Option<String>,
@@ -152,6 +154,22 @@ impl PreparedCredentialHttpRequest {
     }
 }
 
+/// Issued by the kernel for one use, never serialized or returned to a model.
+#[derive(Debug, Clone)]
+pub(crate) struct VaultUseApproval {
+    credential_id: String,
+    binding: crate::config::VaultUseBinding,
+}
+
+impl VaultUseApproval {
+    pub(crate) fn new(credential_id: String, binding: crate::config::VaultUseBinding) -> Self {
+        Self {
+            credential_id,
+            binding,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct RuntimeSecretService {
     credentials: Vec<UserCredentialConfig>,
@@ -159,6 +177,7 @@ pub struct RuntimeSecretService {
     vault_backend: crate::config::CredentialVaultBackend,
     vault_path: String,
     vault_store: Arc<dyn CredentialVaultStore>,
+    vault_use_approval: Option<VaultUseApproval>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -199,6 +218,7 @@ impl RuntimeSecretService {
             vault_backend: crate::config::CredentialVaultBackend::ProcessMemory,
             vault_path: UserCredentialVaultConfig::default().path,
             vault_store,
+            vault_use_approval: None,
         }
     }
 
@@ -212,7 +232,13 @@ impl RuntimeSecretService {
             vault_backend: vault_config.backend,
             vault_path: vault_config.path.clone(),
             vault_store: vault_store_for_config(vault_config)?,
+            vault_use_approval: None,
         })
+    }
+
+    pub(crate) fn with_vault_use_approval(mut self, approval: VaultUseApproval) -> Self {
+        self.vault_use_approval = Some(approval);
+        self
     }
 
     pub fn credential_env_names(&self) -> BTreeSet<String> {
@@ -408,6 +434,16 @@ impl RuntimeSecretService {
 
     pub fn browser_secret_input(&self, credential_id: &str) -> Result<String, DaemonError> {
         let credential = self.credential(credential_id)?;
+        if credential
+            .metadata
+            .as_ref()
+            .is_some_and(|m| m.use_binding.is_some())
+        {
+            return Err(secret_error(
+                "credential_policy",
+                "a bound Vault entry needs an observed destination URL".into(),
+            ));
+        }
         self.ensure_use_allowed(credential, UserCredentialUse::Browser)?;
         if !matches!(credential.injection, UserCredentialInjectionConfig::Browser) {
             return Err(secret_error(
@@ -585,7 +621,7 @@ impl RuntimeSecretService {
         secret: &str,
         overwrite: bool,
     ) -> Result<VaultCredentialUpsertResult, DaemonError> {
-        crate::credential::validate_credential_registration(&credential)?;
+        registry.validate_upsert(&credential)?;
         let vault_key = match &credential.source {
             UserCredentialSourceConfig::Vault { key } => key.trim().to_string(),
             UserCredentialSourceConfig::Env { .. } | UserCredentialSourceConfig::File { .. } => {
@@ -658,6 +694,22 @@ impl RuntimeSecretService {
     }
 
     fn resolve_secret(&self, credential: &UserCredentialConfig) -> Result<String, DaemonError> {
+        if let Some(binding) = credential
+            .metadata
+            .as_ref()
+            .and_then(|m| m.use_binding.as_ref())
+        {
+            if binding.value_kind == crate::config::VaultValueKind::PaymentCard
+                && self.vault_use_approval.as_ref().is_none_or(|approval| {
+                    approval.credential_id != credential.id || &approval.binding != binding
+                })
+            {
+                return Err(secret_error(
+                    "vault_card_approval",
+                    "payment card use requires the owner's approval for this operation".into(),
+                ));
+            }
+        }
         match &credential.source {
             UserCredentialSourceConfig::Env { name } => std::env::var(name).map_err(|_| {
                 secret_error(
@@ -748,6 +800,24 @@ impl RuntimeSecretService {
         credential: &UserCredentialConfig,
         requested: UserCredentialUse,
     ) -> Result<(), DaemonError> {
+        if let Some(binding) = credential
+            .metadata
+            .as_ref()
+            .and_then(|m| m.use_binding.as_ref())
+        {
+            if !matches!(
+                (&binding.target, requested),
+                (
+                    crate::config::VaultUseTarget::Site { .. },
+                    UserCredentialUse::Browser | UserCredentialUse::Http
+                )
+            ) {
+                return Err(secret_error(
+                    "credential_policy",
+                    "this Vault entry was created for a different use".into(),
+                ));
+            }
+        }
         if credential.allowed_uses.is_empty() || credential.allowed_uses.contains(&requested) {
             return Ok(());
         }
@@ -765,23 +835,12 @@ impl RuntimeSecretService {
         credential: &UserCredentialConfig,
         target: &url::Url,
     ) -> Result<(), DaemonError> {
-        // MP-08/MP-10/MP-11 A06: generated credentials authorize one exact
-        // origin, including scheme and effective port. Legacy host-only generated
-        // entries fail closed; the owner can regenerate for the intended origin.
-        if credential
+        if let Some(binding) = credential
             .metadata
             .as_ref()
-            .and_then(|metadata| metadata.created_by_kind.as_deref())
-            == Some("vault_generate")
+            .and_then(|m| m.use_binding.as_ref())
         {
-            return if credential.allowed_hosts == [target.origin().ascii_serialization()] {
-                Ok(())
-            } else {
-                Err(secret_error(
-                    "credential_policy",
-                    "generated credential is not allowed for this origin".into(),
-                ))
-            };
+            return binding.require(&crate::config::VaultUseTarget::site(target.as_str())?);
         }
         if credential.allowed_hosts.is_empty() {
             return Ok(());
@@ -821,6 +880,7 @@ impl RuntimeSecretService {
 impl From<&crate::config::UserCredentialMetadataConfig> for CredentialHandleMetadataView {
     fn from(metadata: &crate::config::UserCredentialMetadataConfig) -> Self {
         Self {
+            use_binding: metadata.use_binding.clone(),
             created_by_kind: metadata.created_by_kind.clone(),
             created_by_id: metadata.created_by_id.clone(),
             session_id: metadata.session_id.clone(),

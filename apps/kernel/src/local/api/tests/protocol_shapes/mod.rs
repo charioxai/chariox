@@ -121,6 +121,7 @@ mod room_pin;
 mod usage_snapshot;
 mod vault_secret;
 mod vault_unlock;
+mod vault_use;
 
 mod async_questions;
 mod provider_login;

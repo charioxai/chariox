@@ -1,0 +1,139 @@
+//! MP-08 / MP-09 / MP-10 / MP-11: ordinary agent Vault operations.
+//! Authentication identifies the actor; the stored use identifies the destination.
+use super::*;
+use crate::config::{UserCredentialConfig, VaultUseTarget, VaultValueKind};
+use crate::runtime::kernel_access::error;
+
+#[derive(Clone)]
+pub(super) struct VaultAgentContext {
+    pub(super) run: crate::provider::RuntimeProviderRun,
+    pub(super) agent_id: String,
+    pub(super) session_id: String,
+    pub(super) owner_user_id: String,
+    prompt_id: Option<String>,
+}
+
+impl KernelRuntimeState {
+    pub(super) fn vault_agent_context(
+        &self,
+        token: &str,
+    ) -> Result<VaultAgentContext, DaemonError> {
+        let runs = self
+            .owned
+            .provider_store
+            .get_runs_by_runtime_mcp_auth_token(token);
+        let [run] = runs.as_slice() else {
+            return Err(error(
+                "Vault operations require one authenticated provider run",
+            ));
+        };
+        let agent_id = run
+            .agent_instance_id()
+            .ok_or_else(|| error("Vault operations require an agent"))?;
+        let agent = self.owned.agent_store.get_agent(agent_id)?;
+        let session = self.owned.session_store.get_session(run.session_id())?;
+        if run.state() == crate::provider::ProviderRunState::Ended
+            || agent.session_id() != session.id()
+            || agent.owner_user_id() != session.owner_user_id()
+            || self.provider_account_authority_owner_user_id(session.owner_user_id())
+                != crate::session::DEFAULT_LOCAL_USER_ID
+        {
+            return Err(error(
+                "the provider run no longer belongs to the owner's agent",
+            ));
+        }
+        Ok(VaultAgentContext {
+            run: run.clone(),
+            agent_id: agent_id.into(),
+            session_id: session.id().into(),
+            owner_user_id: session.owner_user_id().into(),
+            prompt_id: self
+                .owned
+                .prompt_state_owner
+                .active_prompt_for_agent(&session, agent_id)
+                .map(|prompt| prompt.id().to_owned()),
+        })
+    }
+
+    /// Recheck after an asynchronous unlock, command or lifecycle barrier.
+    pub(super) fn recheck_vault_agent(
+        &self,
+        context: &VaultAgentContext,
+    ) -> Result<(), DaemonError> {
+        let token = context
+            .run
+            .runtime_mcp_auth_token()
+            .ok_or_else(|| error("Vault provider authentication ended"))?;
+        let current = self.vault_agent_context(token)?;
+        if current.run.id() != context.run.id()
+            || current.agent_id != context.agent_id
+            || current.session_id != context.session_id
+            || current.owner_user_id != context.owner_user_id
+            || current.prompt_id != context.prompt_id
+        {
+            return Err(error(
+                "the Vault operation's provider run changed; retry from the current run",
+            ));
+        }
+        Ok(())
+    }
+
+    /// No consent for ordinary values. Cards receive one owner decision per use.
+    /// Call before reading a value, then recheck the binding under the use barrier.
+    pub(super) async fn authorize_vault_use(
+        &self,
+        owner: &str,
+        credential: &UserCredentialConfig,
+        target: &VaultUseTarget,
+    ) -> Result<crate::secret::VaultUseApproval, DaemonError> {
+        let binding = credential
+            .metadata
+            .as_ref()
+            .and_then(|m| m.use_binding.as_ref())
+            .ok_or_else(|| {
+                error(
+                    "this Vault entry has no declared use; create it for one specific destination",
+                )
+            })?;
+        binding.require(target)?;
+        if binding.value_kind == VaultValueKind::PaymentCard {
+            let id = format!("vault-card-{:016x}", rand::random::<u64>());
+            let interaction = crate::session::RuntimeInteraction::for_kernel_operation(
+                &id,
+                &id,
+                "Use payment card",
+                "Allow this payment card to be used for its declared destination?",
+                vec![
+                    crate::session::RuntimeInteractionChoice::new(
+                        "allow",
+                        "Allow once",
+                        "allow",
+                        None,
+                    ),
+                    crate::session::RuntimeInteractionChoice::new(
+                        "cancel", "Cancel", "cancel", None,
+                    ),
+                ],
+            )
+            .with_timeout_sec(300);
+            let scope = crate::runtime::kernel_access::ACCESS_INTERACTION_SCOPE;
+            let receiver = self
+                .create_kernel_operation_interaction(scope, owner, interaction)
+                .await?;
+            let resolution = match tokio::time::timeout(Duration::from_secs(300), receiver).await {
+                Ok(Ok(resolution)) => resolution,
+                _ => {
+                    let _ = self.timeout_runtime_interaction(scope, &id).await;
+                    return Err(error("payment card approval ended; try again"));
+                }
+            };
+            if resolution.choice_id.as_deref() != Some("allow") {
+                return Err(error("payment card use was not approved"));
+            }
+        }
+        Ok(crate::secret::VaultUseApproval::new(
+            credential.id.clone(),
+            binding.clone(),
+        ))
+    }
+}
