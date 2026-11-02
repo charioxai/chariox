@@ -45,6 +45,11 @@ impl Workload {
     pub(super) fn gated(prepared: PreparedDomain, commands: &[(&str, String)]) -> Self {
         Self::run_under(prepared, false, true, commands)
     }
+    /// Another program's watch of the same workload: a hot reload starts one
+    /// while the first program's ends with its `exec`.
+    pub(super) fn watched_again(&self, prepared: PreparedDomain) -> ProcessDomain {
+        prepared.start(self.child.id()).unwrap()
+    }
     pub(super) fn go(&self, commands: &[&str]) {
         std::fs::write(self.dir.join("go"), "").unwrap();
         let deadline = std::time::Instant::now() + Duration::from_secs(5);

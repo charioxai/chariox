@@ -34,6 +34,7 @@ pub(crate) use projection::SessionProcessState;
 pub(crate) use projection::{for_session, keys_for_session};
 pub use projection::{SessionProcess, SessionProcessOwner};
 pub(crate) use session_sweep::SessionSweep;
+pub(crate) use submissions::Submissions;
 #[cfg(test)]
 mod admission_tests;
 #[cfg(target_os = "linux")]
@@ -90,6 +91,9 @@ pub(crate) struct PreparedDomain {
     /// job that detached from its parent is still found.
     #[cfg(target_os = "linux")]
     marker: Option<String>,
+    /// Who launched what, as the watch's first sample finds it: an agent's
+    /// unless the workload is an adopted terminal.
+    submissions: Submissions,
 }
 
 impl PreparedDomain {
@@ -132,6 +136,7 @@ impl PreparedDomain {
             cgroup,
             #[cfg(target_os = "linux")]
             marker,
+            submissions: Submissions::new(true),
         }
     }
 
@@ -146,6 +151,7 @@ impl PreparedDomain {
             cgroup: None,
             #[cfg(target_os = "linux")]
             marker: Some(sampling::new_marker()),
+            submissions: Submissions::new(true),
         }
     }
 
@@ -170,6 +176,13 @@ impl PreparedDomain {
         #[cfg(not(target_os = "linux"))]
         let _ = previous;
         Ok(prepared)
+    }
+
+    /// The commands keep the owners the previous program found for them, from
+    /// the watch's first sample.
+    pub(crate) fn launched_by(mut self, submissions: Submissions) -> Self {
+        self.submissions = submissions;
+        self
     }
 
     /// A domain without a cgroup, for tests that only need the launch shape:
@@ -273,7 +286,7 @@ impl PreparedDomain {
             listed: listing,
             released: handed_over,
             root,
-            submissions: submissions::Submissions::new(true),
+            submissions: self.submissions,
             ..Observation::default()
         }));
         self.pool.join(&state);
@@ -650,6 +663,11 @@ impl ProcessDomain {
     pub(crate) fn cgroup_path(&self) -> Option<std::path::PathBuf> {
         let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         state.cgroup.clone()
+    }
+    /// Who launched each command, which a hot reload hands over with the process.
+    pub(crate) fn submissions(&self) -> Submissions {
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.submissions.clone()
     }
     /// Set once the workload itself was the command stopped for memory.
     pub(crate) fn memory_limit_bytes(&self) -> Option<u64> {

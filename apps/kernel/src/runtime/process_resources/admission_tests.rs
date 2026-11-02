@@ -244,6 +244,107 @@ fn a_command_admission_paused_is_still_listed_and_startable_after_a_hot_reload()
     assert!(!writer.waiting("write"), "Start now did not start it");
 }
 
+/// How the terminal's shell found the line that started the writer.
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy)]
+enum Launch {
+    PersonInTheForeground,
+    PersonInTheBackground,
+    PersonInAShellWithoutMarks,
+    AgentInTheForeground,
+}
+
+/// A terminal's writer crosses a hot reload onto a volume past its floor:
+/// whether the next program's admission paused it.
+#[cfg(target_os = "linux")]
+fn paused_after_a_hot_reload(launch: Launch) -> bool {
+    let volume = |free: u64| {
+        Arc::new(pool::Pool::with_volume(
+            1 << 40,
+            Box::new(move |_| {
+                Some(admission::Space {
+                    id: 1,
+                    free,
+                    total: 100 * GIB,
+                })
+            }),
+        ))
+    };
+    let writer = Workload::gated(
+        domain(&volume(50 * GIB), "writer", false),
+        &[(
+            "write",
+            "python3 -c 'import os,sys,time\nf=open(sys.argv[1],\"wb\")\nwhile True:\n f.write(os.urandom(4194304)); f.flush(); os.fsync(f.fileno()); time.sleep(0.5)' \"$0/out\""
+                .into(),
+        )],
+    );
+    let key = format!("admission-{:016x}", rand::random::<u64>());
+    writer.domain.bind_key(&key);
+    let (reports_lines, agent) = match launch {
+        Launch::PersonInAShellWithoutMarks => (false, false),
+        Launch::AgentInTheForeground => (true, true),
+        _ => (true, false),
+    };
+    bind_terminal_for_key(&key, reports_lines);
+    if reports_lines {
+        line_finished_for_key(&key, &[]);
+    }
+    submit_line_for_key(&key, agent);
+    if reports_lines {
+        line_started_for_key(&key);
+    }
+    writer.go(&["write"]);
+    if matches!(launch, Launch::PersonInTheBackground) {
+        line_finished_for_key(&key, &[writer.pid("write") as u32]);
+    }
+    settle(2);
+    // The next program reads what the previous one handed over, then watches
+    // the same processes on a volume past its floor.
+    let handed_over: Submissions =
+        serde_json::from_slice(&serde_json::to_vec(&writer.domain.submissions()).unwrap()).unwrap();
+    let _next =
+        writer.watched_again(domain(&volume(5 * GIB), "writer", false).launched_by(handed_over));
+    settle(4);
+    writer.domain.unbind_key(&key);
+    writer.waiting("write")
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_persons_foreground_command_is_still_never_paused_after_a_hot_reload() {
+    assert!(
+        !paused_after_a_hot_reload(Launch::PersonInTheForeground),
+        "the reload made a person's running command pausable"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_persons_background_writer_is_still_never_paused_after_a_hot_reload() {
+    assert!(
+        !paused_after_a_hot_reload(Launch::PersonInTheBackground),
+        "the reload made a person's background writer pausable"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_persons_command_in_a_shell_without_marks_is_still_never_paused_after_a_hot_reload() {
+    assert!(
+        !paused_after_a_hot_reload(Launch::PersonInAShellWithoutMarks),
+        "the reload forgot that the shell reports no lines"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn an_agents_command_stays_pausable_after_a_hot_reload() {
+    assert!(
+        paused_after_a_hot_reload(Launch::AgentInTheForeground),
+        "the reload exempted an agent's command"
+    );
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn a_persons_own_terminal_command_never_waits() {

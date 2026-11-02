@@ -18,6 +18,8 @@ pub struct PtyHandover {
     pub cgroup: Option<std::path::PathBuf>,
     /// The agent whose tools may leave jobs behind, so the new program hands them on the same way.
     pub agent: Option<super::PtyAgent>,
+    /// Who launched the commands the child runs, so none of them changes owner.
+    pub(crate) submissions: crate::runtime::process_resources::Submissions,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]

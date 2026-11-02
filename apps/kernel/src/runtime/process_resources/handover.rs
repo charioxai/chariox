@@ -12,6 +12,8 @@ pub(crate) struct ReleasedJobs {
     /// The memory domain they run in, which the next program takes over.
     cgroup: Option<std::path::PathBuf>,
     tree: sampling::Owned,
+    /// Who launched each job: a person's keeps not waiting for room.
+    submissions: Submissions,
 }
 
 impl ReleasedJobs {
@@ -60,6 +62,7 @@ pub(crate) fn hand_over_released() -> Vec<ReleasedJobs> {
                 listing: observation.listed.clone()?,
                 cgroup: observation.cgroup.clone(),
                 tree: observation.owned.clone()?,
+                submissions: observation.submissions.clone(),
             };
             jobs.tree.including(jobs.domain_members());
             (!jobs.pids().is_empty()).then_some(jobs)
@@ -78,6 +81,7 @@ pub(crate) fn adopt_released(handed_over: Vec<ReleasedJobs>) {
             listing,
             cgroup,
             tree,
+            submissions,
         } = jobs;
         let tree = sampling::ProcessTree::restored(tree);
         if tree.alive_pid().is_none() {
@@ -85,6 +89,7 @@ pub(crate) fn adopt_released(handed_over: Vec<ReleasedJobs>) {
         }
         let root = tree.root();
         let started = PreparedDomain::adopted(&unit, cgroup.as_deref())
+            .map(|domain| domain.launched_by(submissions))
             .and_then(|domain| domain.start_released(tree, listing));
         if let Err(error) = started {
             crate::logging::error_with_fields(
@@ -234,6 +239,7 @@ mod tests {
             },
             cgroup,
             tree: stale,
+            submissions: Submissions::new(true),
         };
         assert!(
             handed.pids().contains(&job),

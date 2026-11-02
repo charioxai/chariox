@@ -484,6 +484,48 @@ async fn who_owns_the_job_two_lines_launch(first: &TerminalActor, second: &Termi
     .await[0]
 }
 
+#[tokio::test]
+async fn a_hot_reload_hands_over_who_launched_the_terminals_commands() {
+    let root = TempDir::new();
+    let service = service(root.path());
+    let id = open(&service, root.path()).terminal_id;
+    let run_id = service
+        .terminal_for_test(&id)
+        .lock_open()
+        .unwrap()
+        .terminal
+        .run_id
+        .clone()
+        .unwrap();
+    let job = root.path().join("job");
+    type_as(
+        &service,
+        &id,
+        &TerminalActor::User,
+        &format!("sleep 120 & echo $! > '{}'\r", job.display()),
+    )
+    .await;
+    until("the job to be launched", || async { job.exists() }).await;
+    let pid: u32 = std::fs::read_to_string(&job)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    until("the sampler to decide the job", || async {
+        crate::runtime::process_resources::command_holdable_for_key(&run_id, pid).is_some()
+    })
+    .await;
+    let handovers = service.hand_over().expect("the terminal is handed over");
+    service.release_handover();
+    // SAFETY: the positive PID of a job this test started; never a group.
+    unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+    service.end_session("room-1");
+    let submissions = serde_json::to_value(&handovers[0].pty.submissions).unwrap();
+    assert_eq!(submissions["default"], false, "{submissions}");
+    assert_eq!(submissions["unreported"], false, "{submissions}");
+    assert_eq!(submissions["jobs"][pid.to_string()], false, "{submissions}");
+}
+
 /// A command that records its pid, then sleeps as that same process.
 const SLEEPER: &str = "sh -c 'echo $$ > {dir}/sleeper; exec sleep 120'";
 

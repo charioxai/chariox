@@ -12,6 +12,8 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::time::{Duration, Instant};
 
+use serde::{Deserialize, Serialize};
+
 /// Lines remembered.
 const KEPT: usize = 256;
 /// The shell reads an accepted line within moments of reaching its prompt. One
@@ -20,8 +22,11 @@ const KEPT: usize = 256;
 /// Time spent behind a running command does not count.
 const LINE_WINDOW: Duration = Duration::from_secs(10);
 
-#[derive(Default)]
-pub(super) struct Submissions {
+/// What a hot reload carries to the next program: the watch of an adopted
+/// terminal starts with the lines and jobs its predecessor attributed, so a
+/// person's command is still a person's at its first sample.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct Submissions {
     /// For commands no submitted line explains: the shell's own start, a
     /// workload that has no terminal.
     default: bool,
@@ -32,6 +37,7 @@ pub(super) struct Submissions {
     /// Enters accepted that the shell has not reported yet, oldest first:
     /// whether their commands may wait, and since when the shell has been at
     /// its prompt with them.
+    #[serde(with = "waiting_since")]
     queued: VecDeque<(bool, Instant)>,
     /// The shell's first prompt is reported before any line was entered.
     prompted: bool,
@@ -42,6 +48,35 @@ pub(super) struct Submissions {
     /// The process groups still alive and the line, or the actor of a shell
     /// without marks, that started each.
     jobs: BTreeMap<u32, bool>,
+}
+
+/// `Instant`s mean nothing to another program: the time at the prompt travels
+/// as an age.
+mod waiting_since {
+    use super::*;
+    use serde::{Deserializer, Serializer};
+
+    pub(super) fn serialize<S: Serializer>(
+        queued: &VecDeque<(bool, Instant)>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        let now = Instant::now();
+        let ages = queued
+            .iter()
+            .map(|(holdable, at)| (*holdable, now.saturating_duration_since(*at)))
+            .collect::<Vec<_>>();
+        ages.serialize(serializer)
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<VecDeque<(bool, Instant)>, D::Error> {
+        let now = Instant::now();
+        Ok(Vec::<(bool, Duration)>::deserialize(deserializer)?
+            .into_iter()
+            .map(|(holdable, age)| (holdable, now.checked_sub(age).unwrap_or(now)))
+            .collect())
+    }
 }
 
 impl Submissions {
@@ -192,6 +227,35 @@ mod tests {
         lines.for_terminal(true);
         lines.line_finished(&[], t());
         lines
+    }
+
+    fn reloaded(lines: &Submissions) -> Submissions {
+        serde_json::from_slice(&serde_json::to_vec(lines).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn a_shell_without_marks_keeps_its_last_submitter_across_a_hot_reload() {
+        let mut lines = Submissions::new(AGENT);
+        lines.for_terminal(false);
+        lines.submit(PERSON, t(), &[]);
+        let mut next = reloaded(&lines);
+        assert_eq!(next.claim(10, None, t()), Some(PERSON));
+        next.submit(AGENT, t(), &[10]);
+        assert_eq!(next.claim(11, None, t()), Some(AGENT));
+        assert_eq!(next.claim(10, None, t()), Some(PERSON));
+    }
+
+    #[test]
+    fn a_waiting_line_keeps_its_age_across_a_hot_reload() {
+        let mut lines = Submissions::new(AGENT);
+        lines.for_terminal(true);
+        let now = t();
+        let nine_seconds_ago = now.checked_sub(Duration::from_secs(9)).unwrap();
+        lines.submit(PERSON, nine_seconds_ago, &[]);
+        let mut next = reloaded(&lines);
+        assert_eq!(next.claim(10, None, now), None);
+        let later = now + Duration::from_secs(2);
+        assert_eq!(next.claim(10, None, later), Some(PERSON));
     }
 
     #[test]

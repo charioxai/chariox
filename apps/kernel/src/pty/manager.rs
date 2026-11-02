@@ -997,6 +997,7 @@ impl PtyManager {
             process_group: process.process_group,
             cgroup: process.resources.cgroup_path(),
             agent: process.agent.clone(),
+            submissions: process.resources.submissions(),
         })
     }
 
@@ -1022,6 +1023,7 @@ impl PtyManager {
             unit,
             handover.cgroup.as_deref(),
         )
+        .map(|domain| domain.launched_by(handover.submissions.clone()))
         .and_then(|domain| domain.start(handover.pid))
         .map_err(|e| failed(e.to_string()))?;
         resources.bind_key(&process_key);
