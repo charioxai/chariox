@@ -21,6 +21,9 @@ pub(crate) fn external_request_failure_message(code: &str) -> &'static str {
         "interaction_closed" => {
             "the decision is no longer open: someone else answered it or it expired"
         }
+        "leased_backing_session_refused" => {
+            "this session backs a leased agent; use its home session on the kernel that holds the lease"
+        }
         _ => "external request failed; details are available only in the host terminal",
     }
 }

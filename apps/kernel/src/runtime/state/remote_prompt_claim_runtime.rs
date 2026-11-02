@@ -996,6 +996,12 @@ impl KernelRuntimeState {
             &binding.leased_agent_id,
             stale_provider_run_id,
         );
+        self.owned.end_open_provider_tools(
+            session_id,
+            &projected_run_id,
+            agent_id,
+            crate::app::ProviderToolEnding::Failed,
+        )?;
         self.end_lost_leased_provider_run(session_id, &projected_run_id)?;
         self.settle_remote_prompt_receipt(
             session_id,
