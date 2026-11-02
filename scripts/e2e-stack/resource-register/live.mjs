@@ -94,6 +94,9 @@ async function storeKey(key, handle) {
 async function openRoom(alias) {
   await page.locator('[data-action="open-room"]').filter({ hasText: alias }).first().click()
   await page.locator('[data-prompt-input][placeholder^="Message"]').waitFor({ timeout: 30000 })
+  await page.locator('[data-kernel-status="connected"]').first().waitFor({ timeout: 30000 })
+  // Initial Cloud enrollment can still rotate the connection's authorization after the Room opens.
+  await delay(2000)
 }
 async function prompt(text) {
   await page.locator('[data-prompt-input]').fill(text)
