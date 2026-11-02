@@ -207,6 +207,9 @@ fn take_adopted(pid: u32) -> Option<HeldCommand> {
 pub(super) struct Ledger {
     arrivals: u64,
     resumed_at: BTreeMap<u8, Instant>,
+    /// The owner whose command started last for each reason: the next one in
+    /// line is the following owner's.
+    served: BTreeMap<u8, String>,
     peaks: Peaks,
 }
 
@@ -235,6 +238,7 @@ impl Ledger {
         Self {
             arrivals: 0,
             resumed_at: BTreeMap::new(),
+            served: BTreeMap::new(),
             peaks: Peaks::load(file),
         }
     }
@@ -364,6 +368,7 @@ impl Ledger {
         let state = State::read(members, room);
         number(
             members,
+            &self.served,
             room,
             &state,
             room.memory.saturating_sub(state.reserved),
@@ -485,7 +490,9 @@ impl Ledger {
         {
             return None;
         }
-        let (member, pid) = line(members, reason).into_iter().next()?;
+        let (member, pid) = line(members, reason, self.served.get(&(reason as u8)))
+            .into_iter()
+            .next()?;
         let mut observation = member.lock().unwrap_or_else(|e| e.into_inner());
         let entry = observation.admission.get_mut(&pid)?;
         // Both resources must have room now: what it waited for, and the
@@ -511,7 +518,9 @@ impl Ledger {
         entry.wait = None;
         entry.admitted = true;
         state.running(entry, room);
+        let unit = observation.unit.clone();
         drop(observation);
+        self.served.insert(reason as u8, unit);
         self.resumed_at.insert(reason as u8, Instant::now());
         Some(member)
     }
@@ -602,11 +611,14 @@ fn need(entry: &Entry, reason: WaitReason, room: &Room) -> u64 {
     }
 }
 
-/// The waiting commands for `reason` in the order they start: by arrival,
-/// one per owner in turn, so one owner's ten builds cannot starve the others.
+/// The waiting commands for `reason` in the order they start: an owner's by
+/// arrival, one per owner in turn, so one owner's ten builds cannot starve the
+/// others. The owners take turns in name order, the one after `served` first
+/// (the one waiting longest when none has started yet).
 fn line(
     members: &[Arc<Mutex<Observation>>],
     reason: WaitReason,
+    served: Option<&String>,
 ) -> Vec<(Arc<Mutex<Observation>>, u32)> {
     let mut owners = BTreeMap::<String, Vec<(u64, Arc<Mutex<Observation>>, u32)>>::new();
     for member in members {
@@ -621,14 +633,23 @@ fn line(
             }
         }
     }
-    let mut owners = owners.into_values().collect::<Vec<_>>();
-    for waiting in &mut owners {
+    let mut owners = owners.into_iter().collect::<Vec<_>>();
+    for (_, waiting) in &mut owners {
         waiting.sort_by_key(|(arrived, ..)| *arrived);
     }
-    owners.sort_by_key(|waiting| waiting[0].0);
+    let first = match served {
+        Some(served) => owners.iter().position(|(unit, _)| unit > served),
+        None => (0..owners.len()).min_by_key(|owner| owners[*owner].1[0].0),
+    };
+    owners.rotate_left(first.unwrap_or(0));
     let mut line = Vec::new();
-    for turn in 0..owners.iter().map(Vec::len).max().unwrap_or(0) {
-        for waiting in &owners {
+    for turn in 0..owners
+        .iter()
+        .map(|(_, waiting)| waiting.len())
+        .max()
+        .unwrap_or(0)
+    {
+        for (_, waiting) in &owners {
             if let Some((_, member, pid)) = waiting.get(turn) {
                 line.push((member.clone(), *pid));
             }
@@ -639,9 +660,16 @@ fn line(
 
 /// Writes each waiting command's place in line, need and free room, for
 /// clients.
-fn number(members: &[Arc<Mutex<Observation>>], room: &Room, state: &State, available: u64) {
+fn number(
+    members: &[Arc<Mutex<Observation>>],
+    served: &BTreeMap<u8, String>,
+    room: &Room,
+    state: &State,
+    available: u64,
+) {
     for reason in [WaitReason::Memory, WaitReason::Disk] {
-        for (position, (member, pid)) in line(members, reason).into_iter().enumerate() {
+        let line = line(members, reason, served.get(&(reason as u8)));
+        for (position, (member, pid)) in line.into_iter().enumerate() {
             let mut observation = member.lock().unwrap_or_else(|e| e.into_inner());
             let Some(entry) = observation.admission.get_mut(&pid) else {
                 continue;
@@ -970,12 +998,12 @@ mod display_tests {
             }))
         };
         let members = [owner("a", &[1, 2, 3]), owner("b", &[4]), owner("c", &[5])];
-        let order = line(&members, WaitReason::Memory)
+        let order = line(&members, WaitReason::Memory, None)
             .into_iter()
             .map(|(_, pid)| pid)
             .collect::<Vec<_>>();
         assert_eq!(order, [1, 4, 5, 2, 3]);
-        assert!(line(&members, WaitReason::Disk).is_empty());
+        assert!(line(&members, WaitReason::Disk, None).is_empty());
     }
 
     #[test]

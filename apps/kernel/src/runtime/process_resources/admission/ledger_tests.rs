@@ -525,3 +525,52 @@ fn a_command_waits_to_be_decided_while_the_shell_has_not_reported_its_line() {
         Some(Wait::Paused(WaitReason::Memory))
     );
 }
+
+#[test]
+fn owners_keep_their_turn_while_commands_resume_one_at_a_time() {
+    let free = Arc::new(AtomicU64::new(50 * GIB));
+    let volume = volume(&free);
+    let held = |arrived| Entry {
+        wait: Some(Wait::Held(WaitReason::Memory)),
+        ..entry(arrived, scratch(0))
+    };
+    let owner = |unit: &str, arrivals: &[u64]| {
+        owner(
+            unit,
+            true,
+            arrivals
+                .iter()
+                .map(|pid| command(*pid as u32, 0, 0))
+                .collect(),
+            arrivals
+                .iter()
+                .map(|pid| (*pid as u32, held(*pid)))
+                .collect(),
+        )
+    };
+    let a = owner("a", &[1, 2, 3]);
+    let b = owner("b", &[4]);
+    let members = [a.clone(), b.clone()];
+    let mut ledger = Ledger::new(None);
+    let mut started = Vec::new();
+    for _ in 0..4 {
+        unsettle(&mut ledger);
+        ledger.pass(&members, &a, &room(GIB, false, &volume));
+        for pid in 1..=4 {
+            let member = if pid == 4 { &b } else { &a };
+            if wait(member, pid).is_none() && !started.contains(&pid) {
+                started.push(pid);
+            }
+        }
+        let position =
+            |member: &Arc<Mutex<Observation>>, pid| member.lock().unwrap().admission[&pid].position;
+        if started == [1] {
+            assert_eq!(
+                (position(&b, 4), position(&a, 2), position(&a, 3)),
+                (1, 2, 3),
+                "the displayed line is not the order they resume in"
+            );
+        }
+    }
+    assert_eq!(started, [1, 4, 2, 3]);
+}
