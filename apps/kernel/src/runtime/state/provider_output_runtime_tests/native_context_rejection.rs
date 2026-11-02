@@ -496,12 +496,22 @@ async fn rejection_scenario(scenario: NativeContextScenario) {
         .unwrap();
     if recent_reply {
         assert_eq!(
-            runtime.owned.provider_store.get_run(run.id()).unwrap().state(),
+            runtime
+                .owned
+                .provider_store
+                .get_run(run.id())
+                .unwrap()
+                .state(),
             crate::provider::ProviderRunState::Running
         );
         assert_eq!(
-            runtime.owned.session_snapshot(session.id()).unwrap()
-                .active_prompt_for_agent(agent.id()).unwrap().id(),
+            runtime
+                .owned
+                .session_snapshot(session.id())
+                .unwrap()
+                .active_prompt_for_agent(agent.id())
+                .unwrap()
+                .id(),
             original_prompt_id,
             "the model's own reply must not settle the native prompt"
         );

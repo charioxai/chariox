@@ -204,8 +204,7 @@ impl KernelRuntimeState {
                     "sender turn is no longer running; agent message was not sent",
                 ));
             }
-            self.enqueue_prompt_dispatch(&dispatch)
-                .await?;
+            self.enqueue_prompt_dispatch(&dispatch).await?;
             let mut sequence = None;
             if let Some(active_prompt_id) = dispatch.target_active_prompt_id.as_deref() {
                 match self.owned.append_steering_prompt_history(
