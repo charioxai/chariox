@@ -718,10 +718,14 @@ impl KernelBrowserHost {
                 params["op"].as_str(),
                 Some("note_selection" | "pointer_cursor")
             );
+        // Dropping a display stream releases its compositor on the controller, which can take seconds
+        // (the Browser view does it right after a navigation paints): input must not queue behind it.
+        let display_release = method == "host.browser" && params["op"] == "unsubscribe";
         let mut result = if display
             || mirror_credit
             || display_subscribe
             || note
+            || display_release
             || method == "browser.app.calls"
             || state
             || (method == "host.browser" && params["op"] == "input")

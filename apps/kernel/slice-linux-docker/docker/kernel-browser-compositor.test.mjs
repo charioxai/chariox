@@ -62,7 +62,7 @@ test('MP-11 protection retirement keeps the renderer lease and rejects a late ol
  const held=new Promise(r=>release=r),entered=new Promise(r=>enter=r);
  const black=encodePng(8,8,Buffer.alloc(8*8*4,0));
  f.source.protect=async()=>{if(++captures===1){enter();return held;}return {data_base64:black};};
- f.emit('Page.screencastFrame',{data:encodePng(8,8,Buffer.alloc(8*8*4,255)),sessionId:2});await entered;
+ f.emit('Page.screencastFrame',{data:encodePng(8,8,Buffer.alloc(8*8*4,64)),sessionId:2});await entered;
  // MP-11: generic observation markers were retired; a document update still fences captures.
  f.emit('DOM.documentUpdated',{});
  assert.equal(f.source.sample(),null);assert.equal(f.source.closed,false);assert.equal(f.source.regionRevision,1);
@@ -100,4 +100,13 @@ test('MP-08/MP-10 resized DPR2 compositor attests the complete current viewport'
  f.source.connection.send=async(method,params)=>{if(method==='Page.startScreencast'){assert.equal(params.maxWidth,8);assert.equal(params.maxHeight,8)}return send(method,params)};
  f.source.screenshot=async clip=>{assert.equal(clip,null,'physical raster dimensions must never be reused as a CSS crop');attested=true;return {data_base64:encodePng(8,8,Buffer.alloc(8*8*4,255))}};
  await f.source.start();assert(attested);assert.equal(f.source.sample().width,8);await f.source.close();
+});
+test('MD-DISPLAY a screencast frame identical to the last one starts no protected capture',async()=>{
+ const f=fixture();await f.source.start();let captures=0;const frame=encodePng(8,8,Buffer.alloc(8*8*4,128));
+ f.source.protect=async()=>{captures++;return {data_base64:frame,[displayMaskRegions]:[]};};
+ // Chrome answers each protected capture with one more screencast frame of the unchanged page.
+ for(let i=0;i<4;i++){f.emit('Page.screencastFrame',{data:frame,sessionId:2+i});await new Promise(r=>setTimeout(r,0));}
+ assert.equal(captures,1);assert.equal(f.source.sample().serial,2);
+ f.emit('Page.screencastFrame',{data:encodePng(8,8,Buffer.alloc(8*8*4,0)),sessionId:9});await new Promise(r=>setTimeout(r,0));
+ assert.equal(captures,2);await f.source.close();
 });

@@ -23,6 +23,8 @@ pub(crate) struct KernelBrowserActors {
     viewport: (u64, u64),
     tabs: TabRegistry,
     actors: BTreeMap<String, EnvironmentActor>,
+    /// When each actor last registered work: a full model retires the longest idle one.
+    seen: BTreeMap<String, Instant>,
     ledger: EnvironmentActionLedger,
     active: BTreeMap<String, Arc<BrowserCancellation>>,
     pointers: BTreeMap<String, EnvironmentPointer>,
@@ -52,6 +54,7 @@ impl Default for KernelBrowserActors {
             viewport: (1280, 800),
             tabs: TabRegistry::new(),
             actors: BTreeMap::new(),
+            seen: BTreeMap::new(),
             ledger: EnvironmentActionLedger::new(256, 0),
             active: BTreeMap::new(),
             pointers: BTreeMap::new(),
@@ -215,7 +218,16 @@ impl KernelBrowserActors {
     }
     fn register(&mut self, actor: EnvironmentActor) -> Result<(), String> {
         if !self.actors.contains_key(&actor.actor_id) && self.actors.len() >= 64 {
-            return Err("MD-3: browser actor limit reached".into());
+            // A viewer that closed its page over the relay never disconnects: make room by
+            // retiring the longest idle actor that holds no input, action or desktop view.
+            let idle = self
+                .actors
+                .keys()
+                .filter(|id| !self.holds_work(id))
+                .min_by_key(|id| self.seen.get(*id))
+                .cloned()
+                .ok_or("MD-3: browser actor limit reached")?;
+            self.disconnect(&idle);
         }
         if self
             .actors
@@ -224,8 +236,27 @@ impl KernelBrowserActors {
         {
             return Err("MD-3: browser actor kind conflict".into());
         }
+        self.seen.insert(actor.actor_id.clone(), Instant::now());
         self.actors.insert(actor.actor_id.clone(), actor);
         Ok(())
+    }
+    fn holds_work(&self, actor_id: &str) -> bool {
+        self.ledger
+            .ownership()
+            .iter()
+            .any(|owner| owner.actor_id == actor_id)
+            || self
+                .ledger
+                .pending_takeovers()
+                .iter()
+                .any(|pending| pending.human_actor_id == actor_id)
+            || self
+                .desktop_viewers
+                .values()
+                .any(|(actor, _)| actor == actor_id)
+            || self.ledger.actions().iter().any(|action| {
+                action.actor_id == actor_id && self.active.contains_key(&action.action_id)
+            })
     }
     /// MP-08/MP-11: dialog answers cannot reserve the lane held by the action
     /// that opened them, but still honor both active and pending human takeover.
@@ -639,6 +670,7 @@ impl KernelBrowserActors {
             }
         }
         self.actors.remove(actor_id);
+        self.seen.remove(actor_id);
         self.pointers.remove(actor_id);
         self.pointer_tabs.remove(actor_id);
     }
@@ -801,6 +833,31 @@ mod tests {
         assert_eq!(model.snapshot()["pointers"][0]["x"], 1919);
         assert_eq!(model.snapshot()["pointers"][0]["y"], 1079);
         model.finish(&action, EnvironmentActionTerminal::Completed);
+    }
+
+    #[test]
+    fn md3_a_full_model_retires_the_longest_idle_actor_and_keeps_busy_ones() {
+        // F-5 (b3, browserfix r5): each relay viewer page is its own actor and never disconnects;
+        // the 65th viewer was refused every browser request.
+        let mut model = ready();
+        model
+            .takeover(human("terminal:busy"), "host-tab-a", 1)
+            .unwrap();
+        for viewer in 0..63 {
+            let id = format!("terminal:{viewer}");
+            let (action, _) = model.begin(human(&id), &input("host-tab-b")).unwrap();
+            model.finish(&action, EnvironmentActionTerminal::Completed);
+        }
+        let (action, _) = model
+            .begin(human("terminal:new"), &input("host-tab-b"))
+            .unwrap();
+        model.finish(&action, EnvironmentActionTerminal::Completed);
+        let actors = model.snapshot()["actors"].to_string();
+        assert!(
+            !actors.contains("\"terminal:0\""),
+            "the longest idle viewer is retired"
+        );
+        assert!(actors.contains("terminal:busy") && actors.contains("terminal:new"));
     }
 
     #[test]

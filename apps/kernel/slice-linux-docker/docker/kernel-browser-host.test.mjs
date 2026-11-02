@@ -412,7 +412,7 @@ test('MP-11 a refused compositor attestation is cached per document with backoff
   if(method==='Page.startScreencast')for(const handler of handlers)handler({method:'Page.screencastFrame',sessionId:session,params:{data:encodePng(1280,800,Buffer.alloc(1280*800*4,255)),sessionId:1}});
   return result;
  };
- const stream={codec:'avc1.420033',device_scale_factor:1};
+ const stream={subscription_id:'host-display-a',codec:'avc1.420033',device_scale_factor:1};host.displays.set(stream.subscription_id,stream);
  for(let n=0;n<4;n++)assert.equal(await host.compositorFor(tab,stream),null);
  assert.equal(attempts,1,'credits cannot rebuild a refused source');
  host.compositors.get(tab.tab_id).retryAt=-Infinity;
@@ -420,6 +420,27 @@ test('MP-11 a refused compositor attestation is cached per document with backoff
  assert(host.compositors.get(tab.tab_id).retryAt>performance.now()+1500,'consecutive refusals back off further');
  pages.get(tab.target_id).document_id='next';tab.document_id='next';
  assert.equal(await host.compositorFor(tab,stream),null);assert.equal(attempts,3,'a new document retries at once');
+ host.displays.delete(stream.subscription_id);
+}));
+// F-5 (b3, browserfix r5): a credit still in flight when its display was removed started a compositor that nobody
+// stopped; its protected capture per screencast frame held the sample lane, and each typed key waited 30-50 ms.
+test('MP-08/MP-10 a credit for a removed display starts no compositor',()=>using(async({host,sent})=>{
+ const opened=await host.request({op:'open',url:'about:blank'}),tab=host.tabs.get(opened.tab_id);
+ const stream={subscription_id:'host-display-gone',codec:'avc1.420033',device_scale_factor:1};host.displays.set(stream.subscription_id,stream);
+ const resolve=host.browser.resolvePageTarget.bind(host.browser);
+ host.browser.resolvePageTarget=async target=>{const page=await resolve(target);host.displays.delete(stream.subscription_id);return page};
+ const screencasts=sent.filter(c=>c.method==='Page.startScreencast').length;
+ assert.equal(await host.compositorFor(tab,stream),null);
+ assert.equal(host.compositors.has(tab.tab_id),false,'no compositor is left for the removed display');
+ assert.equal(sent.filter(c=>c.method==='Page.startScreencast').length,screencasts,'no screencast starts');
+}));
+test('MP-08/MP-10 removing the last display stops the compositor before the stream closes',()=>using(async({host})=>{
+ const opened=await host.request({op:'open',url:'about:blank'}),tab=host.tabs.get(opened.tab_id),order=[];
+ const source={close:async()=>{order.push('compositor')}};
+ host.compositors.set(tab.tab_id,{source,ready:Promise.resolve(source)});
+ const stream={subscription_id:'host-display-last',tab_id:tab.tab_id,close:async()=>{order.push('stream')}};host.displays.set(stream.subscription_id,stream);
+ await host.removeDisplay(stream);
+ assert.deepEqual(order,['compositor','stream']);assert.equal(host.compositors.has(tab.tab_id),false);
 }));
 test('MP-11 overlapping saves serialize the shared tabs.json.new writer',()=>using(async({host},root)=>{
  await host.request({op:'open',url:'about:blank'});
@@ -945,6 +966,18 @@ test('MP-08 a desktop tab drops the Browser panel DPR emulation with its last vi
  assert.equal(sent.filter(c=>c.method==='Emulation.setDeviceMetricsOverride').length,0,'a Browser viewer never emulates density on the desktop');
  await host.request({op:'unsubscribe',subscription_id:subscribed.subscription_id,generation:subscribed.generation});
  assert.equal(sent.filter(c=>c.method==='Emulation.clearDeviceMetricsOverride').length,1);assert.equal(host.scales.has(tab.tab_id),false);
+ }finally{delete host.chromium.desktop;if(original===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY=original;}
+}));
+
+// MP-08/MP-10: the unsubscribe no longer holds the controller lock, so it can finish after the viewer resized the window;
+// its late clear must not wipe the viewport the resize set (the region screenshot then has the wrong size).
+test('MP-08/MP-10 a late display unsubscribe does not clear the viewer-sized viewport',()=>using(async({host,sent})=>{
+ const original=process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;process.env.CHARIOX_KERNEL_BROWSER_DISPLAY='1';
+ try{const tab=await host.request({op:'open',url:'about:blank'});host.chromium.desktop={binding:()=>null};
+ const subscribed=await host.request({op:'display_subscribe',tab_id:tab.tab_id,generation:tab.generation,codecs:['png'],bitrate:8000000,device_scale_factor:2});
+ host.windowLayout={width:800,height:600};
+ await host.request({op:'unsubscribe',subscription_id:subscribed.subscription_id,generation:subscribed.generation});
+ assert.equal(sent.filter(c=>c.method==='Emulation.clearDeviceMetricsOverride').length,0,'the resized window keeps its viewport');assert.equal(host.scales.has(tab.tab_id),false);
  }finally{delete host.chromium.desktop;if(original===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY=original;}
 }));
 
@@ -2659,3 +2692,30 @@ test('MP-08/MP-10 protocol933 portable header follows Chromium without a native 
  const tab=state.tabs.find(t=>t.tab_id===second.tab_id);assert.equal(tab.can_go_back,true);assert.equal(tab.can_go_forward,false);assert.equal(tab.favicon_png_base64,png);
  assert(state.tabs.some(t=>t.tab_id===first.tab_id));
 }));
+test("MP-11: the kernel's policy with its own key order is the same policy and keeps bound mirror streams current", async () => {
+  const host = new KernelBrowserHost("/unused-policy-order", { chromium: { start: async () => { throw new Error("must not launch"); } } });
+  const bound = host.protection;
+  let invalidated = 0;
+  host.mirror.invalidate = () => { invalidated++; };
+  // The kernel serializes its policy with sorted keys.
+  await host.protect(JSON.parse('{"targets":[],"unknown":false,"values":[]}'));
+  assert.equal(invalidated, 0);
+  assert.ok(host.protection === bound, "a mirror stream bound to the first policy must stay current");
+  await host.protect(JSON.parse('{"targets":[],"unknown":false,"values":["synthetic-protected-value"]}'));
+  assert.equal(invalidated, 1);
+});
+test("MD-2: the host process exits after its shutdown reply even when a handle is left open", async () => {
+  const { spawn } = await import("node:child_process");
+  const root = await mkdtemp(path.join(os.tmpdir(), "host-shutdown-"));
+  try {
+    // A leftover handle (a helper socket, a timer) must not keep the process alive: the kernel waits for its exit.
+    const child = spawn(process.execPath, ["--import", "data:text/javascript,setInterval(()=>{},1000)", path.join(import.meta.dirname, "kernel-browser-host.mjs"), "stdio", root], { stdio: ["pipe", "pipe", "inherit"] });
+    const reply = new Promise(resolve => readline.createInterface({ input: child.stdout }).once("line", resolve));
+    const exited = new Promise(resolve => child.once("exit", resolve));
+    child.stdin.write(JSON.stringify({ id: 1, method: "shutdown", params: {} }) + "\n");
+    assert.equal(JSON.parse(await reply).ok, true);
+    const outcome = await Promise.race([exited.then(() => "exited"), new Promise(resolve => setTimeout(resolve, 3000, "still running"))]);
+    if (outcome !== "exited") child.kill("SIGKILL");
+    assert.equal(outcome, "exited");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});

@@ -21,6 +21,22 @@ for(const method of ['host.browser','host.computer'])test('MP-08/MP-10/MP-11 '+m
  input.end();release();await running;assert.equal(early,true);assert.deepEqual(replies,[2,1]);
 });
 
+// MP-08/MP-10: the Browser view drops its native preview with an unsubscribe right after a navigation paints, and releasing
+// the compositor takes seconds: the owner's first click and keys must not queue behind it in the controller.
+test('MP-08/MP-10 person input progresses while a display unsubscribe releases its compositor',async()=>{
+ const input=new PassThrough(),output=new PassThrough();let release,started,completed;
+ const began=new Promise(r=>started=r),hold=new Promise(r=>release=r),inputDone=new Promise(r=>completed=r);
+ output.on('data',b=>{for(const line of b.toString().trim().split('\n'))if(line&&JSON.parse(line).id===2)completed()});
+ const server=new BrowserControllerStdioServer({input,output,scheduleRequest:scheduleHostRequest,handleRequest:async request=>{
+  if(request.id===1){started();await hold}return {id:request.id,ok:true,result:{}};
+ }});
+ const running=server.run();
+ input.write(JSON.stringify({id:1,method:'host.browser',params:{op:'unsubscribe',subscription_id:'s',generation:1}})+'\n');await began;
+ input.write(JSON.stringify({id:2,method:'host.browser',params:{op:'input',tab_id:'t'}})+'\n');
+ const early=await Promise.race([inputDone.then(()=>true),new Promise(r=>setTimeout(()=>r(false),50))]);
+ input.end();release();await running;assert.equal(early,true,'input waited behind the unsubscribe');
+});
+
 // MP-08/MP-10/MP-11: a resource-heavy mirror read must not park native input.
 test('MP-08/MP-10/MP-11 Computer input progresses during held Browser mirror observation',async()=>{
  const input=new PassThrough(),output=new PassThrough();let release,started,completed;
