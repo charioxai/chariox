@@ -55,6 +55,17 @@ async function deadline(promise, ms = 5000) {
   try { return await Promise.race([promise, new Promise((_, reject) => { timer = setTimeout(() => reject(Error('owned cleanup deadline')), ms) })]) } finally { clearTimeout(timer) }
 }
 async function screenshot(step) { await page.screenshot({ path: path.join(evidence, `${step}.png`), timeout: 5000 }) }
+async function retainObservations() {
+  if (!browserRoot) return []
+  const observations = path.join(browserRoot, 'owned', 'observations')
+  const captured = await texts(observations)
+  assert.ok(site.checkAbsence(captured), 'model observation absence check failed')
+  const records = captured.trim().split('\n').filter(Boolean).map(line => JSON.parse(line))
+  assert.ok(records.every(record => record.absencePassed), 'host observation absence check failed')
+  if (records.length) await cp(observations, path.join(evidence, 'model-observations'), { recursive: true })
+  results.modelObservations = records.map(({ op, absencePassed, filledTargets }) => ({ op, absencePassed, filledTargets }))
+  return records
+}
 
 try {
   await mkdir(evidence, { recursive: true, mode: 0o700 })
@@ -168,7 +179,11 @@ try {
   async function chooseRow(row) {
     const selector = page.locator(`[data-new-room] [data-row="${row}"]`)
     if (!await selector.count()) return
-    if ((await selector.innerText()).includes(name)) return
+    const state = await until(async () => {
+      if ((await selector.innerText()).includes(name)) return 'selected'
+      return await selector.getAttribute('aria-haspopup') === 'menu' ? 'choose' : false
+    }, `new-UI ${row} inventory`)
+    if (state === 'selected') return
     await selector.click()
     const choices = page.locator('[data-new-room-choices] [role^="menuitem"]')
     await choices.first().waitFor({ timeout: 30_000 })
@@ -284,14 +299,8 @@ try {
   const visible = await page.locator(`[data-room-pane="${agent.id}"]`).innerText()
   assert.ok(site.checkAbsence(transcript + visible + rawKernelLog), 'seed/code absence check failed')
   if (browserRoot) {
-    const observations = path.join(browserRoot, 'owned', 'observations')
-    const captured = await texts(observations)
-    assert.ok(site.checkAbsence(captured), 'model observation absence check failed')
-    const records = captured.trim().split('\n').filter(Boolean).map(line => JSON.parse(line))
+    const records = await retainObservations()
     assert.ok(records.some(record => record.op === 'snapshot') && records.some(record => record.op === 'screenshot'), 'require actual model snapshots and screenshots')
-    assert.ok(records.every(record => record.absencePassed), 'host observation absence check failed')
-    await cp(observations, path.join(evidence, 'model-observations'), { recursive: true })
-    results.modelObservations = records.map(({ op, absencePassed, filledTargets }) => ({ op, absencePassed, filledTargets }))
   }
   assert.ok(!transcript.includes(passphrase) && !transcript.includes(bootstrapSecret), 'protected input absence check failed')
   results.absencePassed = true
@@ -314,6 +323,7 @@ try {
       const transcript = visible + await texts(path.join(root, 'history')) + rawKernelLog
       results.failureAbsencePassed = site.checkAbsence(transcript) && !transcript.includes(passphrase) && !transcript.includes(bootstrapSecret)
       if (results.failureAbsencePassed) await writeFile(path.join(evidence, 'failure-public-pane.txt'), visible, { mode: 0o600 })
+      await retainObservations().catch(() => { results.observationAbsenceFailed = true })
     }
     await screenshot('failure').catch(() => {})
   }
