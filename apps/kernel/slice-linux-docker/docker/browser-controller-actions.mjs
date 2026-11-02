@@ -110,8 +110,8 @@ function normalizeAction(action) {
       throw invalidAction(`fill text exceeds ${MAX_FILL_TEXT_BYTES} UTF-8 bytes`);
     }
     const expectedDocumentUrl = normalizeExpectedDocumentUrl(action.expected_document_url);
-    if (action.mask_code_input === true && expectedDocumentUrl === null) {
-      throw invalidAction("protected owner code requires a bound document URL");
+    if ((action.mask_code_input === true || action.vault_factor_input === true) && expectedDocumentUrl === null) {
+      throw invalidAction("protected code requires a bound document URL");
     }
     return {
       kind: "fill",
@@ -120,6 +120,7 @@ function normalizeAction(action) {
       submit: action.submit === true,
       expectedDocumentUrl,
       maskCodeInput: action.mask_code_input === true,
+      vaultFactorInput: action.vault_factor_input === true,
     };
   }
   if (action?.kind === "submit") {
@@ -422,14 +423,15 @@ async function secureFillElement(connection, sessionId, objectId, action) {
     "Runtime.callFunctionOn",
     {
       objectId,
-      functionDeclaration: `function(text, append, expectedDocumentUrl, submit, maskCodeInput) {
+      functionDeclaration: `function(text, append, expectedDocumentUrl, submit, maskCodeInput, vaultFactorInput) {
         const ownerDocument = this.ownerDocument;
         const ownerWindow = ownerDocument?.defaultView;
         if (!ownerWindow || ownerWindow.location.href !== expectedDocumentUrl) {
           return { ok: false, reason: "target_url_changed" };
         }
         // MP-08 / MP-10 / MP-11: owner codes may use ordinary editable
-        // fields. Mask before focus/value handlers; Vault fills remain password-only.
+        // fields. Mask owner code fields before focus/value handlers; the kernel
+        // separately admits Vault factors with model observation protection.
         const inputPrototype = ownerWindow.HTMLInputElement?.prototype;
         const textareaPrototype = ownerWindow.HTMLTextAreaElement?.prototype;
         const elementPrototype = ownerWindow.Element?.prototype;
@@ -441,8 +443,11 @@ async function secureFillElement(connection, sessionId, objectId, action) {
           !hasAttribute.call(this, "disabled") && !hasAttribute.call(this, "readonly") &&
           String(getAttribute.call(this, "aria-disabled") || "false").toLowerCase() !== "true" &&
           String(getAttribute.call(this, "aria-readonly") || "false").toLowerCase() !== "true";
-        const isMaskedEditableInput = () => {
+        const isAcceptedInput = () => {
           if (!editable()) return false;
+          // The kernel registers Vault factor targets before input, so the
+          // observation boundary masks these without changing the owner's DOM.
+          if (vaultFactorInput && isInput) return ["text", "tel", "number", "password", "search"].includes(String(getAttribute.call(this, "type") || "text").toLowerCase());
           if (isInput) return String(getAttribute.call(this, "type") || "text").toLowerCase() === "password";
           if (!maskCodeInput || !isTextarea || typeof ownerWindow.getComputedStyle !== "function") return false;
           return ownerWindow.getComputedStyle(this).getPropertyValue("-webkit-text-security") === "disc";
@@ -457,21 +462,21 @@ async function secureFillElement(connection, sessionId, objectId, action) {
             if (typeof setter !== "function") return false;
             setter.call(this.style, "-webkit-text-security", "disc", "important");
           } else return false;
-          return isMaskedEditableInput();
+          return isAcceptedInput();
         };
         if (maskCodeInput) {
           const codeType = editable() ? String(getAttribute.call(this, "type") || "text").toLowerCase() : "";
           if (!editable() || !(isTextarea || (isInput && ["text", "tel", "number", "password", "search"].includes(codeType)))) {
             return { ok: false, reason: "target_not_masked" };
           }
-          if (!isMaskedEditableInput() && !maskCodeTarget()) return { ok: false, reason: "target_not_masked" };
+          if (!isAcceptedInput() && !maskCodeTarget()) return { ok: false, reason: "target_not_masked" };
         }
         const restoreMaskAfterHandler = () => {
-          if (isMaskedEditableInput()) return true;
+          if (isAcceptedInput()) return true;
           maskCodeTarget();
           return false;
         };
-        if (!isMaskedEditableInput()) return { ok: false, reason: "target_not_masked" };
+        if (!isAcceptedInput()) return { ok: false, reason: "target_not_masked" };
         // MP-08/MP-10: submission eligibility is checked before secret mutation.
         // Some sign-in steps use a separate JavaScript button and no native form.
         const form = submit ? this.form || this.closest?.("form") : null;
@@ -489,7 +494,7 @@ async function secureFillElement(connection, sessionId, objectId, action) {
         if (!(activeElement === this || this.contains?.(activeElement))) {
           return { ok: false, reason: "target_not_focusable" };
         }
-        if (!isMaskedEditableInput()) {
+        if (!isAcceptedInput()) {
           return { ok: false, reason: "target_not_masked" };
         }
         const currentValue = this.isContentEditable
@@ -525,6 +530,7 @@ async function secureFillElement(connection, sessionId, objectId, action) {
         { value: action.expectedDocumentUrl },
         { value: action.submit },
         { value: action.maskCodeInput },
+        { value: action.vaultFactorInput },
       ],
       returnByValue: true,
       awaitPromise: false,

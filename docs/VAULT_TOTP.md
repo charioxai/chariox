@@ -34,6 +34,12 @@ Fill the observed code field with `chariox.kernel_browser_paste_secret` and
 bindings, host restrictions, Vault unlocking and target masking are the same
 as for password input. The current code is registered for protection before
 insertion. Terminal stdin uses `chariox.send_secret_to_terminal`.
+TOTP and recovery-code credentials accept editable text, telephone and numeric
+inputs as well as password inputs. The kernel marks this internal fill path
+only after validating the factor handle and registers the target before input.
+The owner's field keeps its original type; model snapshots and screenshots
+mask the Vault-filled target. Other credential kinds keep their existing
+input rules.
 `RuntimeSecretService::environment_secret_input` is the resolver for S2's
 env executor; the env execution tool is supplied by S2, not this slice.
 

@@ -302,7 +302,7 @@ while IFS= read -r request; do
  [ -f "$1/opened" ] && tabs="$tabs"',{"tab_id":"host-tab-new","document_id":"doc-login"}'
  case "$request" in
   *'"method":"health"'*) printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s,"diagnostic_code":null}}\n' "$id" "$$" ;;
-  *'"method":"host.secret"'*) printf '%s' "$request" | sed -n 's/.*"text":"\([^"]*\)".*/\1/p' > "$1/echo"; printf '%s' "$request" | sed -n 's/.*"_app_view_tab":"\([^"]*\)".*/\1/p' > "$1/app_view_tab"; printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
+  *'"method":"host.secret"'*) printf '%s' "$request" | sed -n 's/.*"text":"\([^"]*\)".*/\1/p' > "$1/echo"; printf '%s' "$request" | sed -n 's/.*"vault_factor_input":\(true\|false\).*/\1/p' > "$1/factor_input"; printf '%s' "$request" | sed -n 's/.*"_app_view_tab":"\([^"]*\)".*/\1/p' > "$1/app_view_tab"; printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
   *'"method":"host.'*'"op":"open"'*) : > "$1/opened"; printf '{"id":%s,"ok":true,"result":{"generation":1,"tab_id":"host-tab-new","tabs":[%s,{"tab_id":"host-tab-new","document_id":"doc-login"}]}}\n' "$id" "$tabs" ;;
   *'"op":"state"'*|*'"op":"start"'*) printf '{"id":%s,"ok":true,"result":{"generation":1,"tabs":[%s]}}\n' "$id" "$tabs" ;;
   *'"op":"snapshot"'*) : > "$1/snapshot-observed"; echo=$(cat "$1/echo" 2>/dev/null || true); printf '{"id":%s,"ok":true,"result":{"snapshot":{"browser_generation":1,"target_id":"target-login","document_id":"doc-login","snapshot_revision":1,"accessibility_nodes":[],"dom_documents":[{"document_index":0,"url":"http://127.0.0.1:8123/login","owner_node_ref":null}],"shadow_roots":[],"dom_nodes":[{"node_ref":"backend:7","parent_ref":null,"document_index":0,"node_type":1,"node_name":"INPUT","text":"echo %s","attributes":{"type":"password","id":"password"},"bounds":null}]}}}\n' "$id" "$echo" ;;
@@ -449,6 +449,12 @@ async fn a06_sudo_window_fills_a_retained_target_and_ordinary_agents_are_refused
     }
     // P3-1: a credential without a site binding fills like it does for a focused agent.
     assert!(call(f, PASTE, paste_args("unbound-owner")).await.is_ok());
+    assert_eq!(
+        std::fs::read_to_string(login.root.path().join("factor_input"))
+            .unwrap()
+            .trim(),
+        "false"
+    );
     let _ = std::fs::remove_file(login.root.path().join("echo"));
     let mut stale = paste_args(&handle);
     stale["document_id"] = json!("doc-replaced");
@@ -770,6 +776,12 @@ async fn totp_browser_fill_requires_live_elevation_and_masks_the_computed_code()
     assert!(inserted(&login).is_none());
     let turn = elevated(f);
     let result = call(f, PASTE, paste_args("service-totp")).await.unwrap();
+    assert_eq!(
+        std::fs::read_to_string(login.root.path().join("factor_input"))
+            .unwrap()
+            .trim(),
+        "true"
+    );
     let code = zeroize::Zeroizing::new(inserted(&login).unwrap());
     assert!(code.len() == 6 && code.bytes().all(|c| c.is_ascii_digit()));
     assert!(!result.to_string().contains(code.as_str()));

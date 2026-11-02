@@ -289,6 +289,16 @@ impl KernelRuntimeState {
             };
         protection.register_command(&scope, &command)?;
         let mut params = json!({"tab_id":args.tab_id,"generation":args.generation,"document_id":args.document_id,"node_ref":args.node_ref,"action":action});
+        // OTP and recovery forms commonly use plain inputs. The registered
+        // target protects model observations without changing the owner's field.
+        params["vault_factor_input"] = matches!(
+            service
+                .validate_browser_secret_input_for_target_url(&args.credential_id, &url)?
+                .injection,
+            crate::config::UserCredentialInjectionConfig::Totp(_)
+                | crate::config::UserCredentialInjectionConfig::BackupCodes
+        )
+        .into();
         // MP-08/MP-11: the fill is the agent's input to an App Tab too.
         self.claim_app_view_tab(user, &admission, &mut params)?;
         check_authority()?;

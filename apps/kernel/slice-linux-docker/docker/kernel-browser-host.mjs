@@ -1115,8 +1115,12 @@ export class KernelBrowserHost {
         // MP-08 / MP-10 / MP-11: this internal owner-only flag does not
         // loosen ordinary Vault secret insertion into password fields.
         const codeInput = request.params.mask_code_input === true;
+        const factorInput = request.params.vault_factor_input === true;
         if (codeInput && (!String(request.params.observed_by ?? "").startsWith("terminal:") ||
             request.params.action?.kind !== "fill" || typeof request.params.action?.expected_document_url !== "string")) {
+          throw new UserDomainRefusal("not_granted");
+        }
+        if (factorInput && (request.params.action?.kind !== "fill" || typeof request.params.action?.expected_document_url !== "string")) {
           throw new UserDomainRefusal("not_granted");
         }
         await this.start({ signal });
@@ -1127,7 +1131,7 @@ export class KernelBrowserHost {
         // recorded before the field's input/change handlers can run.
         const { app, agent } = this.appAgent(tab, request.params, true);
         if (app && agent) this.browser.appTabs.noteAgent(tab.target_id, agent);
-        const action = codeInput ? { ...request.params.action, mask_code_input: true } : request.params.action;
+        const action = { ...request.params.action, mask_code_input: codeInput, vault_factor_input: factorInput };
         await this.sampleLane(tab).run("input", () => this.browser.performAction({ target_id: tab.target_id, document_id: tab.document_id,
           node_ref: request.params.node_ref, action, timeout_ms: 10_000 }, { signal }));
         await this.save();
