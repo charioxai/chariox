@@ -41,3 +41,10 @@ the base rejects `injection.kind=totp`.
 These are local-fixture regressions. They do not establish real-service
 `apps-autonomy/AU-10` acceptance, which also needs a real account and service,
 two periods and absence checks on all model-bound channels.
+
+The source host needs the standard product browser setup, including a usable
+Chromium sandbox (see `deploy/local-linux/install-root.sh`). On the root builder,
+`CHARIOX_TOTP_SOURCE_CHROME` may name an owned copy of pinned Chrome 155.0.8059.79.
+Its parent directories must be traversable by the unprivileged browser user.
+A `browser_sandbox_unavailable` result blocks the browser leg; do not disable
+the sandbox to turn the drill green.

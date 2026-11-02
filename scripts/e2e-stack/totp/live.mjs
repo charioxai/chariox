@@ -218,17 +218,8 @@ try {
       else if (/Authorize sudo window|Run one sudo task/.test(title)) value = passphrase
       else if (title === 'Agent needs your action') throw Error('agent requested owner action before completing the browser drill')
       else continue
-      const card = page.locator('.ap-ask').filter({ has: page.getByText(title, { exact: true }) }).first()
-      if (await card.isVisible().catch(() => false)) {
-        await card.locator('input[type="password"]').fill(value)
-        await card.getByRole('button', { name: /approve|send/i }).first().click()
-        answered.add(interaction.id)
-        results.interactions.push({ title, kind: interaction.kind, answeredIn: 'terminal-os masked card' })
-        console.log('MP-08 / MP-09 / MP-10 / MP-11: answered protected owner interaction ' + title)
-        await record()
-        continue
-      }
       let popup = page.locator('[data-passkey-prompt]').first()
+      if (/Run one sudo task|Authorize sudo window/.test(title)) await popup.waitFor({ timeout: 20_000 })
       if (!await popup.isVisible().catch(() => false)) {
         const stripe = page.locator('[data-passkey-stripe]').first()
         if (await stripe.count()) await stripe.locator('button').first().click()
