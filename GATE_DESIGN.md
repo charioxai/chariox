@@ -17,7 +17,8 @@ Add one optional **gate** to a workflow definition. It runs at entry, for every
 endpoint and every kind of invocation, after source authorization and durable
 acceptance and before workflow queue insertion, runtime-agent provisioning,
 provider startup, or notification steering. It receives a normalized trigger and
-small durable workflow/binding state. It returns exactly one of `run`, `drop`,
+revisioned setup configuration and small durable workflow/binding state. It returns
+exactly one of `run`, `drop`,
 `defer_until`, or `batch`, together with replacement state.
 
 The gate is a pure, metered WebAssembly function. No model, network, filesystem,
@@ -25,11 +26,165 @@ Vault, App SDK, provider API, or ambient clock is available to its code. Invento
 matching and morning digests belong in user-authored gate modules. The kernel
 knows only entry identity, state revisions, decisions, deadlines, and opaque keys.
 
-Use the existing workflow queue and dispatch policy after `run`. An entry gate is
-neither a DAG agent node nor another workflow execution engine. Downstream edges,
+A `run` selects one or more connected entry nodes and a payload/prompt for each.
+Use the existing workflow queue and dispatch policy after that selection. An entry
+gate is neither a DAG agent node nor another workflow execution engine. Downstream edges,
 handoffs, turn continuations, and resumes of an already admitted run do not execute
 it again. A newly submitted endpoint invocation does, including a manual one.
 Workflows without a gate retain their existing admission behavior.
+
+### Primary path: describe it to a utility agent (21:16Z decision)
+
+The default remains **No gate**. To add one, the user opens the workflow inspector,
+sees the selected notification's JSON **field list beside the description**, and
+writes what should happen. An existing **utility agent** turns that request into
+gate code and tests once, during authoring. The panel then leads with a
+plain-language summary and results on past events. Code stays in **Advanced**.
+There is no per-event model call; every enabled gate is the same import-free
+`gate_v1` WASM component with the same kernel admission, state, routing and history.
+
+Recommend v1: **No gate + Describe with utility agent + shared Test/History**.
+Ship the internal Rust SDK/build path required to produce those components, not a
+manual coding UI. A small Rules quick-start is optional only if it can cheaply
+prefill the description/tests and use that same utility-agent path; it is not a
+separate v1 compiler project or a prerequisite. Rich no-code rules are deferred.
+Ready-made publisher packages follow when they exist. Advanced read-only source
+and component export may ship for transparency; manual code editing/build UX is
+later. The 21:16Z owner direction supersedes the 21:12Z proposal to prioritize
+Rules, while preserving its requirement that all layers use one primitive.
+
+| Layer | User experience | Compile/run boundary |
+| --- | --- | --- |
+| No gate | Default ordinary workflow entry | No component or gate-owned state |
+| Describe (primary) | Utility agent gets schema, examples and selected past entries; proposes code, tests and a plain summary | Same bounded Rust build, component admission and normal reviewed workflow apply |
+| Rules (optional quick-start) | A small condition list prefills a description/tests, then Generate proposal uses the utility agent | Same generated component; no host rules interpreter or second compiler in v1 |
+| Ready-made (later availability) | Publisher package; owner fills inventory/severity configuration | Same portable component and local validation; no App capability grant |
+| Advanced (later manual editor) | Source/identity inspection first; optional manual editing later | Same SDK/WIT/profile, never another language runtime |
+
+The inspector uses **Summary / Test / History / Advanced** tabs; optional Rules is
+an additional quick-start, closed initially. A gate mode switch edits a draft,
+never the active revision immediately. Selecting No gate requires ordinary apply
+with the pending-entry cancellation preview. No silent fallback, automatic agent
+run or code-to-rules reverse engineering. Config remains revisioned setup, never
+an external state-write path. Utility-agent authoring is an ordinary real agent
+run (including managed activity); evaluating the compiled gate is not.
+
+### Optional Rules quick-start / later no-code specification
+
+This is optional authoring vocabulary, not a v1 runtime or required independent
+compiler. A cheap quick-start submits its typed selections as a prompt and tests
+to the utility agent. Defer it if that integration grows. The richer deterministic
+rules-to-Rust compiler below is a possible later authoring tool only.
+
+Reuse the existing workflow field/picker, checkbox, section/row, button and time
+input components. A row is **When [field] [comparison] [value] → [action]**;
+multiple conditions in one row mean all; rows are ordered and **first match wins**.
+Offer add/remove and explicit move up/down buttons rather than invent a builder
+canvas. Up to 16 rows and 8 conditions/row; a required final **Otherwise** action
+makes uncovered events visible. The gate mode itself defaults to No gate; a fresh
+Rules draft defaults to an explicit run to the current singleton entry node, so
+merely opening the draft cannot discard events.
+
+Fields come from the event's declared schema and configuration; choose structured
+JSON property paths, never free-form expressions. Comparisons are present,
+equals/not-equals, string contains, and integer < / ≤ / > / ≥. Missing/type-mismatched
+values make a positive comparison false (`not-equals` also requires presence);
+null equality is explicit. No regex, scripts or user-defined expression syntax.
+Validate safe integers, bounded string/path lengths and enum values at draft/apply.
+Version-range/inventory joins exceed this small rule language: use Describe or a
+publisher gate for advisory relevance. Simple severity/category matching does not
+claim to calculate pinned-version relevance.
+
+Actions are **Run → connected node(s)** (normally one selected A or B), **Drop**, or
+**Batch → connected node(s) at daily HH:MM UTC**. Batch rows form separate groups by
+rule ID/day with the existing kernel-owned provenance boundaries; the compiled
+flush path routes the aggregate straight to that row's fixed targets. It never
+re-evaluates the trigger condition or batches an aggregate again. A daily flush
+is a literal UTC time in v1; local-time/DST calendar choices are advanced/publisher
+policies until tested. Conditions and route IDs are part of the workflow revision.
+
+Optional policies use ordinary existing fields, not another rule engine:
+
+- **Dedupe by key:** choose a required scalar event field and a bounded retention
+  window (at most seven days / 256 keys per binding). Exact transport dedupe stays
+  in the kernel. The generated component checks its seen set and records a key
+  only on terminal `run`, `drop`, or batch membership, never on defer. Missing
+  keys yield a visible failed test/decision; never turn all missing keys into one.
+  An exhausted set returns the named limit failure; it does not silently evict
+  still-retained keys. A flush uses its membership identity, not a second dedupe
+  of source items already collected.
+- **At most N per period:** 1–1,000 invocations per integer UTC period (1 minute
+  to 24 hours); use a fixed epoch-aligned window. One workflow invocation counts
+  once even when it selects two nodes. On overflow defer to the next window,
+  before original expiry, with no token consumed until `run`. A batch consumes
+  one admission at flush, not one per member.
+- **Quiet hours:** start/end HH:MM UTC (overnight allowed, equal values invalid).
+  Run/flush waits via `defer_until` to the first permitted instant. No provider
+  or persistent worker waits. Drop may still finish immediately, and batch may
+  collect during quiet hours. Rate and quiet hours combine by taking the later
+  eligible instant; the hard deadline/evaluation-count bounds still apply.
+
+Fixed semantic order inside the compiled component: validate fields/config →
+source-key dedupe → first matching rule (or its Otherwise) → batch collection or
+drop → rate/quiet-hours eligibility for run/flush → atomic counter/seen update
+and decision. Deferral retains the event; reconsider its first-match rule against
+the same revision on resume. Flush retains its chosen rule/targets. Emit the
+matched row ID and policy reason as bounded returned logs, so tests explain the
+outcome without exposing code. The plain summary includes policy order and UTC
+meaning. Warn on unreachable trailing rows during Validate, with no hidden reorder.
+
+If the later direct Rules compiler is built, it validates this typed, bounded rule document,
+generates straight-line Rust using the locked gate SDK, and builds/admits a normal
+component through the same supervised build path as Describe. Include the rule
+source hash/compiler identity in the manifest and pin the result with the workflow
+revision. The evaluator receives only ordinary config/input/state; it does not
+parse rules or interpret conditions on the host. Rules require no compiler or
+model while an event arrives, and cannot bypass fuel/containment. Generated
+rule/summary/source fixtures are portable with the component. Changing rule order,
+policy, action or config creates a new revision and cancels old pending work.
+
+### Describe, ready-made and shared testing
+
+**Describe (primary)** uses the existing instructions textarea and a **Generate proposal**
+button. Only that user action starts the existing selected utility agent through its real official provider in
+the Room, with normal authoring permissions. The agent writes the gate and tests,
+builds it, and returns a proposed plain-language summary, not a permission grant
+or live activation. Show, for example: “Runs the triage agent for critical/high
+advisories that affect your pinned versions; everything else waits for the 07:00
+summary.” Include unknown/stale-inventory handling, dedupe, UTC time and failures
+in expandable policy details. Summary, source, config, fixtures and component
+hashes share one draft identity; edits mark the summary/tests stale until
+regenerated/reviewed. Do not treat an agent's prose as verification of code.
+
+The proposal's tests include supplied boundary cases plus a sample of retained
+real past events. Show matched/skipped/unknown events, expected vs actual decision,
+selected nodes/payload, state diff, logs and fuel/time using the shared Test view.
+Past-history replay is isolated; no agent runs, source ACKs or live state changes.
+Compare events independently from their captured states by default; an explicit
+**Sequence** test instead advances a private copied state in original history
+order to assess dedupe/rates/batching, and simulates recorded due entries up to a
+chosen bounded horizon. Label which mode was used; independent replays do not
+establish batch/rate behavior. Sample count/time horizon and missing/pruned bodies
+are visible. The user reviews and applies the exact built proposal; failure
+leaves the active gate untouched. No automatic application by generated code.
+
+**Ready-made**, when supplied, uses a versioned package from the upstream AEGS
+publisher (for example advisory normalization plus relevance gate) with component,
+config schema/labels, optional source, plain summary and test cases. Existing App
+publisher/catalog trust verifies package provenance during authoring/import; it
+does not grant the gate any App capability, state store or Vault access. Pin its
+component and configuration with the workflow revision. A publisher update is an
+explicit replacement/apply, never hot-loaded during delivery. The user's inventory
+and severity exist only in setup on their authoritative kernel, never in relay
+plaintext or an automatic publisher feedback channel. Publisher signatures do not
+replace local WIT/limits validation. Until an actual package exists, offer Describe
+rather than a fabricated ready-made product.
+
+Describe, optional Rules and ready-made modes all expose the same Test and History tabs.
+History is about the actual WASM decision: it records the authoring mode/manifest,
+rule ID where available, selected targets and immutable config/module identity.
+Advanced is closed initially. A user can understand the example through Summary
+and past-event results without opening source or learning WASM.
 
 ### Reuse the Apps WASM runtime
 
@@ -74,24 +229,249 @@ These are user-authored pure policies, not kernel business rules:
 
 | Check | Concrete gate behavior |
 | --- | --- |
-| Relevance against inventory/version ranges | Compare an advisory's ecosystem/package/affected range with stored installed versions using a pinned pure range library; drop a known nonmatch, run on a match or explicitly unknown/stale inventory. |
+| Relevance against inventory/version ranges | Compare an advisory's ecosystem/package/affected range with configured installed versions using a pinned pure range library; drop a known nonmatch, run on a match or explicitly unknown/stale inventory. |
 | Severity threshold | Run for a numeric score ≥ 7 or an owner-listed critical category; drop lower scores, with an explicit policy for missing scores. |
-| Dedup/already handled | Drop an advisory ID + revision already in a bounded seen/handled set. A committed `run` means admitted, not successfully handled; completion must explicitly write a handled marker. |
+| Dedup/already handled | Drop an advisory ID + revision already in a bounded seen set maintained by the gate. A committed `run` means admitted, not successfully handled; v1 does not accept completion writes into gate state. |
 | Debounce/coalesce | Store the newest change revision and a fixed due instant; defer candidates to that instant, then drop superseded revisions and run the current one. A sliding window requires explicit state/defer updates; the kernel does not move a batch cutoff. |
 | Batching/quiet hours | Batch compact release records under a fixed morning cutoff, or defer a single alert until quiet hours end, always before its original deadline. Flush emits one queued digest. |
 | Rate limits | Store a bounded token bucket and recorded refill time; consume a token on `run`, otherwise defer to the next eligible instant or drop under the author's policy. This meters admission, not provider completions. |
 | Payload reduction | Keep advisory ID, matched packages, severity and URL; remove the full feed body before forming the downstream prompt/payload. |
 
-Inventory and other context arrive **outside** the gate: workflow configuration
-seeds initial state; an earlier agent run explicitly writes a new inventory or
-handled set through the authorized workflow-state CAS request; or a separate
-trigger carries an inventory snapshot that the same gate recognizes, stores in
-replacement workflow state, and `drop`s without waking an agent. An external App
-may collect that snapshot through its own granted capabilities before emitting
-the trigger. These writes share the workflow lane/state revisions; seed edits
-alone do not overwrite live state. Store a bounded snapshot plus freshness/source
-revision, not a URL the gate must fetch. A missing/stale snapshot has an explicit
-author policy. No network, App DB read or hidden refresh occurs during evaluation.
+Inventory and other external context enter **only through workflow configuration
+and setup**. The owner or an authorized agent edits a bounded configuration snapshot
+using the ordinary workflow edit/apply path. Each edit creates a workflow revision;
+it never writes gate-owned state. Configuration is an immutable explicit argument,
+separate from the gate's mutable dedup counters, seen IDs, rate buckets and batches.
+There is no prior-run state-write path, inventory-update trigger, App DB read or
+hidden refresh. A source event carries the event to assess, not a replacement
+inventory. If inventory changes, update setup and apply a new revision. Store its
+source revision and freshness timestamp in configuration; missing/stale data has
+an explicit author policy. The gate cannot fetch a URL or resolve Vault values.
+
+### Typed notification data is a prerequisite for structured filtering
+
+Source verification at this workflow checkout (`3d090bc750`):
+
+| Source | Observed contract / gap |
+| --- | --- |
+| `apps/kernel/src/local/api/types/event_publication.rs::EventGeneratorEventDefinition` | `event_type`, `version`, `name`, `description`, `filter_schema`, `required_scopes`; **no payload schema/examples** |
+| `packages/aegs-sdk/src/manifest.rs::validate_manifest_envelope`, `unsigned_manifest_digest` | Event validation checks type/version/name/filter schema; canonical unsigned manifest bytes are signed. `filter_schema` describes subscription choices, not delivered data. |
+| `packages/event-protocol/src/lib.rs::PublishEventRequest`, `EventDeliveryEnvelope` | Required nonempty prompt, maximum **1 MiB**, artifact metadata, arbitrary `metadata`, reply context; **no typed `data`**. Current event-delivery version is 3, management version 4. |
+| `packages/aegs-sdk/src/provider.rs::NormalizedEvent` and `manifest.rs::PublishEventBuilder` | Prompt/metadata-centric emit path; no schema-aware data builder. |
+| `apps/kernel/src/runtime/state/event_delivery_runtime_state.rs::accept_app_event_delivery` | Validates event identity against App route, wraps prompt as `text` with metadata/artifacts/reply context, then passes it to the App inbox. A gate cannot infer typed advisory properties from this wrapper. |
+| `packages/app-package/src/declarations.rs::EventDeclaration`; `app_inbox_runtime.rs::accept_app_inbox_occurrence` | **Already** has signed `payload_schema`/`schema_version`, incoming/outgoing direction and receipt validation. Reuse these mechanisms; do not claim all current App events are untyped. |
+| `packages/app-runtime/src/app_outbox/invocation.rs::Invocation`; `durable_state/app_event_delivery/preparation.rs::PreparedAppEvent::prepare` | App workflow invocation is prompt/artifacts (64 KiB prompt here), separate from the already validated App event payload. Preparation retains a payload in the receipt but queues prompt/publication context. Preserve a typed bridge to the gate instead of reading App DB. |
+| `session/workflow_scheduling.rs::WorkflowPublicationInvocationEnvelope`; `session/workflow_publication.rs` | Internal invocation already has untyped `input`; HTTP publication has optional input schema. Normalize/validate this at the kernel boundary rather than parse prompt text. |
+
+**Manifest extension (proposed).** Add optional `payload_schema` and `examples` to
+each publisher-signed AEGS event definition, catalog detail and SDK manifest model.
+Use the existing restricted JSON Schema **Draft 7** compiler from
+`packages/app-package/src/declarations.rs` (factor its schema-only helper if needed,
+not a new validator). Require a closed object schema, inline finite references,
+no remote fetch/IDs or recursive references; retain bounded schema compilation.
+Schema max 64 KiB, depth 32 / 4,096 nodes. Gate-compatible schemas and their
+examples must use safe integer JSON numeric literals; decimal values/constraints
+are represented by declared strings or rejected at gate apply, rather than passed
+to the integer-only guest profile. Examples are at most eight named objects
+`{name, data}`, each 8 KiB and 32 KiB aggregate, and every example must validate.
+Examples without a schema fail manifest admission. Sign schema and examples as
+part of the canonical manifest body; a schema digest alone is not a trust root.
+
+```json
+{
+  "event_type": "advisory.published", "version": 2,
+  "name": "Advisory published", "description": "Normalized package advisory",
+  "filter_schema": {"type":"object","properties":{},"additionalProperties":false},
+  "required_scopes": [],
+  "payload_schema": {
+    "type":"object", "additionalProperties":false,
+    "required":["advisory_id","revision","severity","package","affected"],
+    "properties": {
+      "advisory_id":{"type":"string"}, "revision":{"type":"string"},
+      "severity":{"type":"string","enum":["critical","high","medium","low"]},
+      "package":{"type":"object","additionalProperties":false,
+        "required":["ecosystem","name"],
+        "properties":{"ecosystem":{"type":"string"},"name":{"type":"string"}}},
+      "affected":{"type":"array","maxItems":32,"items":{"type":"string"}}
+    }
+  },
+  "examples":[{"name":"Affected npm package","data":{
+    "advisory_id":"ADV-A","revision":"1","severity":"high",
+    "package":{"ecosystem":"npm","name":"widget"},
+    "affected":[">=2.4.0 <2.5.0"]}}]
+}
+```
+
+The example's event version is illustrative, not a protocol allocation. Identify
+schemas by generator/manifest digest + event type/version + schema digest. Reject
+schema changes under the same event type/version at registry/install/apply;
+publish a new event version instead. Pin verified manifest/schema on source
+binding and workflow revision. Publisher updates never change an accepted entry.
+`description` and examples are untrusted content, not agent instructions.
+
+**Delivery and validation (proposed).** Add `data: JsonObject | null` and
+`payload_schema_sha256: string | null` beside prompt in `NormalizedEvent`,
+`PublishEventRequest`, `EventDeliveryEnvelope`, durable AEGS outbox/inbox/replay and
+AEDS fan-out records. With a declared schema, data/digest are required and must
+match; without one both are null and the event is explicitly text-only. This is
+an intentional untyped source capability, not a legacy compatibility read path.
+Never silently derive `data` from prompt, metadata, filter parameters or a model.
+The authenticated binding chooses the signed schema; a delivery cannot select a
+schema URL or pass its own schema to gain admission. Schema validity does not
+make data trusted instructions or authority.
+
+SDK emit validates against the registered manifest before storing/publishing; a
+bad producer gets field-path validation errors and must fix the event. AEDS
+checks event/schema identity and byte bounds against verified registration (Cloud
+service contract work), preserves bytes/digest during fan-out, and never routes
+from `data`. The authoritative kernel independently checks the signed binding's
+schema and validates `data` **before its durable acceptance ACK**. Wrong/missing
+schema, wrong types/required fields, excess bodies and invalid examples fail
+clearly with `event_schema_mismatch` / `event_data_invalid`, no gate state/queue
+or success ACK. Retries under the same occurrence cannot change canonical data;
+dedupe hashes include data and schema identity. Data is at most 128 KiB, depth 32 /
+4,096 nodes; the whole envelope is capped at 1.5 MiB with existing prompt/artifact
+ceilings retained. A gated entry has the stricter **512 KiB whole input** limit:
+a formerly legal 1 MiB prompt is refused at gate handoff with `gate_input_limit`,
+never silently truncated. Already ACKed App inbox work retains its truthful source
+status if the later outgoing handoff fails.
+
+For the current AEGS → App inbox → App outgoing automation → workflow path,
+preserve typed data in the declared incoming wrapper and validate against both
+the source AEGS schema and App incoming schema before inbox acceptance. An App may
+normalize/transform it; its outgoing event already has a signed payload schema.
+At the automation boundary project that **outgoing** payload as gate `data` with
+its own schema identity, not the original upstream identity. Add structured data
+to workflow `Invocation`/publication envelope and pass it through
+`PreparedAppEvent::prepare` atomically with the existing receipt. Require equality
+to the validated outgoing payload for that handoff, or an explicitly declared,
+validated output mapping/schema; never infer a schema for arbitrary prompt text.
+Do not restore a retired direct AEGS-to-workflow route. Private workflow
+notifications likewise carry their producer-declared validated data/schema; a
+text-only notification remains explicitly text-only.
+
+**HTTP / manual / schedules.** Input schema is **optional per endpoint**.
+Preserve GET URLs where the user types `?prompt=...` and that exact decoded text
+is injected as the invocation prompt (subject to the gate's explicit decision).
+The schema governs structured fields, not the free-text prompt; adding a schema
+must not remove GET or require wrapping prompt in JSON. POST can carry the same
+canonical `{prompt, data}` envelope when a URL is too short. Manual/Room calls use
+the same endpoint contract. Normalize to one canonical data field in the kernel;
+remove ambiguous parallel `input` vs `data` reads in this implementation.
+
+For GET, decode UTF-8 query exactly once (`+` means space, percent escapes decoded
+once). `prompt` is reserved free text and is **excluded from data**. All remaining
+application query parameters map to `data` by their literal top-level names;
+no dotted-path/bracket expansion, JSON-in-query parsing or hidden metadata fields.
+A query named `data` is just a string application field, not an envelope override.
+Reject malformed escapes, duplicate keys (including repeated `prompt`), and
+prototype keys (`__proto__`, `prototype`, `constructor`) at normalization. Empty
+values are empty strings, not absent. Transport auth and idempotency are headers /
+existing authenticated session state, never query data; reserve `_chariox_*` names
+and reject them in the application query. Do not parse a query `token`/`key` as
+authentication; it is ordinary application data only if the endpoint allows it.
+
+- **No schema:** `data` is the remaining `Record<string,string>` (empty `{}` for
+  prompt-only URLs), `data_schema` is null and the panel says **Query strings;
+  no declared fields**. The gate can inspect those strings or prompt text; the
+  utility agent does not invent typed fields from a sample. This intentional
+  HTTP source shape differs from an untyped AEGS event's null data.
+- **With schema:** extract prompt first, then coerce each remaining query value
+  according to its declared top-level property. Strings stay strings; integer
+  accepts a base-10 signed integer lexeme within safe JSON range; boolean accepts
+  only `true`/`false`. No truthiness, hex/exponent coercion, silent defaults, empty
+  to null/zero or inference from examples. A `number` property is gate-compatible
+  only for safe integers in v1; fractions/amounts/versions use declared strings.
+  Object/array/null or ambiguous union properties cannot be encoded by this v1
+  scalar GET mapping: return an actionable 422 to use POST JSON, not an implicit
+  change of type. Apply flags schemas requiring those fields as POST-only while
+  retaining GET for schemas whose required fields can be represented. Run the
+  full declared schema validator after coercion, including required, enum,
+  bounds and additional-properties policy. The gate receives the resulting
+  typed object and its pinned schema; invalid input never starts a gate or agent.
+
+Bound GET request-target (encoded path + `?` + query) to **8,192 bytes**, at most
+64 application parameters, 128 decoded UTF-8 bytes/name and 4,096 bytes/value;
+`prompt` may use the remaining URL budget up to 8,192 decoded bytes. Enforce raw
+and decoded limits before allocation in gateway **and** kernel normalization
+(shared helper/raw bounded query representation), not only a proxy setting.
+Return HTTP **414** for request-target overflow, **400** for malformed/duplicate
+encoding, **422** for coercion/schema failure, with no silent truncation. The
+existing 1 MiB prompt ceiling still applies to POST transports, and the stricter
+gate whole-input limit applies after normalization. A proxy/browser may impose a
+smaller URL limit; provide POST JSON as the explicit larger-payload path.
+
+**GET authentication and intentional invocation.** A URL identifies a trigger;
+it is not a grant. Keep the endpoint's existing publication admission policy for
+both methods: owner/session or authorized caller cookie for a browser link,
+Authorization header for service clients, and anonymous invocation only when the
+owner explicitly published that endpoint as public. The kernel rechecks the
+verified publication caller and source binding before acceptance; query fields
+cannot choose caller/owner/workflow/queue. A copied protected link prompts the
+existing sign-in/access flow when needed and never becomes public because it is
+GET. Hosted links use HTTPS. Never issue a bearer credential in the URL or record
+it as data. Preserve existing CSRF/session checks; reject cross-site embedded
+subresource requests and advertised prefetch/prerender/link-preview fetches as
+non-invocations. Permit an intentional signed-in top-level user navigation under
+that policy, without a new gate-specific confirmation. Service callers use their
+existing authentication, independent of browser fetch metadata. Send
+`Cache-Control: no-store` and `Referrer-Policy: no-referrer`; no CDN caching or
+viewer auto-refresh may repeat the invocation. An explicit reload/new GET is a
+new request; service retries use the existing idempotency header and same caller
+identity. Do not claim all browser reloads are deduplicated automatically.
+
+A schedule supplies a fixed kernel-owned closed schema:
+`{schedule_id:string, schedule_revision:string, scheduled_for_ms:integer,
+trigger_kind:"interval"|"cron", timezone:string}`. This describes the occurrence,
+not invented notification fields. Manual/query time cannot impersonate the
+kernel-owned schedule provenance. A gate shared by several sources gets a
+source-discriminated union, including the untyped HTTP query-string map and
+text-only AEGS case. The utility agent handles each explicitly.
+
+**Gate and utility agent.** The normalized trigger below exposes validated
+`data`, `data_schema` (source kind/type/version, schema digest, exact schema JSON)
+and prompt separately. JSON remains the language-neutral WIT transport, while
+SDK bindings provide typed accessors/generated structs from that schema. Include
+schema bytes in input/hash/body accounting and retained replay. Test fixtures
+validate the event data before worker entry. In the panel, list field path, type,
+required/optional and enum beside the description, with the full JSON/examples
+expandable. An absent schema says **Text only; no declared fields**, rather than
+suggest made-up field names.
+
+The explicit Generate proposal action passes the utility agent the requested
+policy, connected node IDs, config/schema, signed publisher examples, selected
+real past entry data (up to 20 / 256 KiB total, fewer if the body budget is reached),
+known gate limits and pinned SDK. Existing owner/history access and Vault-target
+redaction still apply; examples/data do not grant Vault reads or expose opaque
+reply credentials. Historical external text is treated as data by the authoring
+prompt. Show how many events are retained/missing. The agent may implement regex
+where simple Rules cannot: use a pinned pure, bounded non-backtracking regex
+helper compiled inside the component, with integer-profile-compatible build
+features, explicit pattern/input bounds and fuel tests. No host regex call, model
+inference or language interpreter is added to `evaluate`. Schema + examples are
+necessary hints; only compiled tests and the owner's apply review validate the
+proposed behavior.
+
+**Protocol / SDK implementation impact.** This round allocates no numbers.
+Coordinate new local and relay-peer versions for schema/catalog projections,
+workflow data/gate definitions, requests/history and forwarding. Coordinate event
+delivery and AEGS management protocol revisions (currently 3 and 4), manifest
+schema version, SDK release and Cloud catalog/AEDS contract together. Update
+canonical signature/digest fixtures, protocol shape/hash snapshots, client minimums
+for typed-gate features and App event schema/package revisions for the changed
+wrappers/invocation. Do not carry dual prompt-to-data conversions or older-kernel
+fallbacks. Re-register/re-pair affected publishers/bindings as needed in development.
+
+AEGS SDK changes span `manifest.rs` (schema/examples validation and signed
+manifest), `provider.rs::NormalizedEvent`, `PublishEventBuilder.data(...)` plus
+schema-aware build/emit, `publisher.rs` and `server/inbox.rs` durable emit,
+`store/inbox.rs`/replay and event-protocol types/hashes. The SDK must retain the
+verified registration schema handle (not just a producer ID) so an unvalidated
+builder cannot bypass checking via direct `publish`. Reuse the schema-only
+validator in both SDK and kernel. Cloud validates producer registration/delivery;
+OSS contains no Cloud compute-provider business logic. Update App SDK/outbox
+builders to carry the validated payload across their existing signed boundary.
+No schema or data parsing belongs in the encrypted relay.
 
 ## 2. Existing pipeline and exact insertion points
 
@@ -175,14 +555,15 @@ runtime `WorkflowDefinition` in `session/workflow_definition.rs` with:
 type WorkflowGateDefinition = {
   abi: "gate_v1"
   module_sha256: string
-  initial_workflow_state: JsonObject
-  initial_binding_state: JsonObject
+  config: JsonObject
+  config_sha256: string // kernel-computed canonical JSON digest
 }
 ```
 
 There is exactly one gate, shared by the workflow's endpoints, with no binding
-override chain and no fail-open option. Seed state initializes missing state once;
-editing a seed does not reset existing state. Module upload is an owner-authorized
+override chain and no fail-open option. New workflow/binding state starts as `{}`;
+only committed gate decisions populate it. Config is not a state seed. Module
+upload is an owner-authorized
 `PutWorkflowGateModule {session_id, wasm_base64, sha256}` request. The kernel
 hashes, validates and stores the bytes by digest. It never opens a caller-supplied
 path or downloads a module. Workflow source references that digest. Portable
@@ -193,10 +574,95 @@ reference and a package can carry the bytes. No executable native cache is impor
 Workflow-code remains declarative: its Node compiler builds a definition and does
 not execute the gate. Extend `workflow_code/definition.rs`, validation, apply,
 source export/rebuild, artifact/package hashing, and SDK builder together. Apply
-requires a locally verified module and validates sample inputs without starting
-providers. A module is user code, not a publisher-trusted native binary; an owned
+requires a locally verified module, checks the config and declared entry targets,
+and runs author-supplied fixtures without starting providers. A module is user code, not a publisher-trusted native binary; an owned
 workflow edit authorizes its use under this sandbox, without a new permission
 prompt. Only the trusted runner/platform bundle needs product signing/enrollment.
+
+### Configuration revision and delivery
+
+The canonical config object (64 KiB, JSON depth 32, 4,096 nodes) is stored in the
+workflow definition/artifact and hashed into the ordinary workflow revision and
+portable package. Verify `config_sha256` on import/apply; never trust a client digest.
+A source/build manifest pins module bytes, source digest, SDK/toolchain versions
+and config digest together. Source may be absent for an imported component; show
+read-only component identity and allow replacement rather than fabricate source.
+
+At acceptance the writer pins the entire workflow revision, config bytes/digest,
+module and endpoint target set on the entry. The worker receives the immutable
+`configuration` record below on every trigger/resume/flush. Replay uses those
+exact bytes. A flush inherits one revision because batch identity includes it.
+Config has no ambient read API and output cannot replace it. The returned state
+is gate-owned memory only; the SDK exposes no external state-write request.
+
+Applying a config/module/entry-edge edit cancels all pending, unhanded entries,
+open groups and their timers atomically with revision activation. An old active
+evaluation cannot commit after the revision fence; no old entry is silently
+reinterpreted with new inventory. Already handed queue work keeps its committed
+revision/proof under ordinary cancellation checks. Gate-owned state persists
+across revisions; policies whose dedup meaning changes must namespace their seen
+keys by config digest, or the owner explicitly resets state as part of apply.
+Reset accepts expected revisions and a reason, cancels pending work, and clears
+state to `{}`; it cannot import arbitrary external data. The apply preview shows
+config changes, affected entries and optional reset before confirmation.
+
+### Entry edges and conditional branching
+
+Extend the endpoint's current single `entryNode` to a nonempty ordered set
+`entry_nodes: NodeId[]`, encoded by outgoing entry-to-agent edges in the existing
+graph. There is still one entry point and one workflow gate, with no gate node
+or predicate on each edge. Example:
+
+```mermaid
+flowchart LR
+    E[Advisory entry] --> A[Assess advisory]
+    E --> U[Check unknown relevance]
+    A --> X[Existing downstream graph]
+    U --> X
+```
+
+The entry inspector lists these two target IDs. Gate code returns
+`run([{node_id:"assess", payload:compactMatch, prompt:"Assess advisory"}])` on a
+known match, `run([{node_id:"check_unknown", payload:compactUnknown,
+prompt:"Check advisory; relevance unknown"}])` for stale/incomplete configuration,
+and `drop` for a known nonmatch. Multiple selected targets are explicit fan-out;
+no match is `drop`, never an empty successful `run` or implicit all-target default.
+
+Apply rejects empty/duplicate/missing entry targets, non-agent targets, dangling
+edges, foreign workflow nodes, invalid input schemas and static target references
+in the gate's declared build manifest that are absent from the graph. Dynamic
+computed targets cannot be proven at apply: every evaluation checks the complete
+returned list against the entry's pinned allowed IDs and each node's input schema.
+Unknown/duplicate/empty targets fail `gate_invalid_target`, atomically with zero
+state writes or dispatch. A manifest cannot expand graph authority. No other
+workflow or endpoint is selectable. Existing ungated endpoints retain one start
+node in v1; multi-start entries require the gate's explicit selection.
+
+A selected list creates **one** workflow invocation, one queue position and one
+durable dispatch intent with ordered per-node input records. Extend the existing
+run constructor/scheduler to seed exactly that subset of Ready entry nodes in one
+transaction; retain its downstream handoff, join and completion rules. Each route
+has a unique `(entry_id, evaluation_number, node_id)` dispatch identity, so partial
+provider startup/recovery cannot repeat a successful node. Capacity waits hold
+the whole intent before run creation, with no early dispatch of a subset. Selected
+branches have independent downstream effects once admitted; no rollback of agent
+side effects is promised. A join requiring every predecessor still waits for all
+of them: apply flags fan-out/conditional paths feeding such joins and requires
+ordinary workflow join semantics to be configured deliberately, never invents a
+new conditional join engine. Completion remains one ordinary workflow run.
+
+Notification injection or generated-agent steering supports only its existing
+bound node. Such an entry declares that singleton target; apply rejects a routing
+graph that would steer a different agent. An endpoint needing multiple branches
+uses its ordinary queue policy, selected before evaluation. Batch flush is always
+queued. History records all selected node IDs, transformed inputs, intent/run ID
+and each route's eventual node-run/provider status; skipped branches have no run.
+
+The only routing predicate is this gate's `evaluate`. The kernel validates IDs and
+hands the result to the existing scheduler; edges contain no second condition
+language/interpreter. A deterministic node between agent nodes is a possible
+follow-up, **outside v1**: it would need typed handoff/state ownership, scheduling,
+join and replay semantics agreed first. This design evaluates only at entry.
 
 ### WIT world and export
 
@@ -209,17 +675,18 @@ package chariox:workflow-gate@1.0.0;
 
 interface evaluator {
   record input { entry-json: string }
+  record configuration { workflow-revision: string, config-sha256: string, config-json: string }
   record state { workflow-json: string, binding-json: string }
-  record run-value { payload-json: string, prompt: option<string> }
+  record route { node-id: string, payload-json: string, prompt: option<string> }
   record batch-value { key: string, flush-at-ms: u64, payload-json: string }
   variant decision {
-    run(run-value),
+    run(list<route>),
     drop,
     defer-until(u64),
     batch(batch-value),
   }
-  record output { decision: decision, state: state, reason: string }
-  evaluate: func(input: input, state: state) -> output;
+  record output { decision: decision, state: state, reason: string, logs: list<string> }
+  evaluate: func(input: input, configuration: configuration, state: state) -> output;
 }
 
 world gate {
@@ -229,11 +696,11 @@ world gate {
 
 This world has **zero imports**, including zero broker capabilities or WASI.
 Its sole interface export is `chariox:workflow-gate/evaluator@1.0.0`, with one
-synchronous `evaluate` function: input record + state → decision + state.
+synchronous `evaluate` function: input + configuration + state → decision + state + logs.
 The existing async worker infrastructure can host that call; the guest gets no
 async tasks, subscriptions or host callbacks. `entry-json` is canonical `GateInput`
-below with `state` omitted; the separate state record carries those two JSON
-objects. Output maps exactly to `GateOutput` below. JSON fields retain its safe
+below with `configuration` and `state` omitted; separate records carry immutable
+configuration and the two mutable state objects. Output maps exactly to `GateOutput` below. JSON fields retain its safe
 integer, UTF-8, depth and byte rules, including the time fields represented as
 WIT `u64`. No handles, resources or filesystem references cross this interface.
 
@@ -255,6 +722,8 @@ type GateInput = {
   abi: "gate_v1"
   entry_id: string
   endpoint_id: string
+  allowed_entry_nodes: string[]
+  configuration: {workflow_revision: string, config_sha256: string, config: JsonObject}
   binding_id: string
   phase: "trigger" | "resume" | "batch_flush"
   accepted_at_ms: number
@@ -264,7 +733,9 @@ type GateInput = {
     kind: "app_event" | "workflow_notification" | "http" | "schedule" | "manual"
     occurrence_id: string
     occurred_at_ms: number | null
-    payload: JsonValue
+    data: JsonObject | null
+    data_schema: null | {source_kind: string, event_type: string, version: number,
+                         sha256: string, schema: JsonObject}
     prompt: string | null
     artifacts: ArtifactMetadata[]
   } | null
@@ -277,6 +748,9 @@ type GateInput = {
 }
 ```
 
+Input `data` is validated against its pinned `data_schema` when declared;
+no-schema HTTP GET supplies its bounded string map with null schema. It is never
+a best-effort parse of prompt or metadata. The gate cannot replace the source schema.
 For `batch_flush`, `trigger` is null and items are in durable acceptance order.
 For `resume`, use the saved trigger or saved batch. Time is a recorded UTC instant,
 not a callable capability. `evaluation_at_ms` is the instant the writer claims the
@@ -290,7 +764,7 @@ Kernel-only authority is **not** writable guest data: owner/realm, target and
 binding revisions, authenticated caller, installation/catalog/signer identity,
 ancestry, delivery mode, original expiry, original artifact records, dispatch
 obligation, and content digest remain on the entry. The gate may inspect public
-payload fields that happen to contain similar strings; they grant no authority.
+data fields that happen to contain similar strings; they grant no authority.
 
 ### Output
 
@@ -298,8 +772,9 @@ payload fields that happen to contain similar strings; they grant no authority.
 type GateOutput = {
   state: {workflow: JsonObject, binding: JsonObject}
   reason: string
+  logs: string[] // returned bounded diagnostics; no host log import
   decision:
-    | {kind: "run", payload: JsonValue, prompt: string | null}
+    | {kind: "run", targets: {node_id: string, payload: JsonValue, prompt: string | null}[]}
     | {kind: "drop"}
     | {kind: "defer_until", at_ms: number}
     | {kind: "batch", key: string, flush_at_ms: number, payload: JsonValue}
@@ -309,16 +784,17 @@ type GateOutput = {
 `reason` is a short author-supplied explanation, untrusted plain text. Validate
 the whole result before committing any part. Output replaces both state objects;
 there are no arbitrary storage calls or partial patch semantics. A gate needing
-an unchanged prompt/payload copies it explicitly. Only the output `prompt` and
-`payload` enter agent context; retaining the original prompt alongside the reduced
+an unchanged prompt/payload copies it explicitly. Only each selected target's output `prompt` and
+`payload` enter that node's agent context; retaining the original prompt alongside the reduced
 one would defeat reduction. The kernel reconstructs the trusted invocation
-envelope and applies the target input contract after transformation. It preserves
+envelope and applies every selected node's input contract after transformation. It preserves
 source provenance separately, including notification ancestry and deadline.
 Artifact metadata can be retained from the original input but cannot be promoted
 to provider attachments, fetched, or replaced with guest-supplied file paths.
 
 `run` commits state plus exactly one durable dispatch intent. It may insert the
-ordinary queue item in that transaction when capacity permits; otherwise the
+ordinary queue item containing the full selected-target list in that transaction
+when capacity permits; otherwise the
 intent waits for queue admission. A paused target may delay dispatch; the gate
 is not evaluated again. A single
 notification `run` preserves the binding's `queue|inject` policy. `drop` commits
@@ -347,7 +823,7 @@ At due time the writer atomically closes that group and creates one aggregate
 entry with its ordered member IDs. Closed groups reject new members; an arrival
 at/after cutoff must use a new key/time. Each source occurrence can belong to at
 most one group. `batch_flush` may `run`, `drop`, or `defer_until`, but cannot batch
-again. `run` releases one **queued** invocation; batching never steers an active
+again. `run` releases one **queued** invocation with its explicit selected-target list; batching never steers an active
 turn. All members link to that aggregate and eventual run. The aggregate carries
 the union of member ancestry and the earliest deadline; overflow fails the
 aggregate without truncating ancestry. Domain duplicate releases may still need
@@ -362,8 +838,8 @@ Proposed table responsibilities:
 | Table | Identity and contents |
 | --- | --- |
 | `workflow_gate_state` | Owner/session/workflow plus `scope=workflow|binding` and scope ID; state JSON, monotonic CAS revision, state digest. Binding state is never shared solely because two callers supplied the same string. |
-| `workflow_gate_entries` | Stable entry ID and acceptance sequence; immutable source dedupe identity/digest, pinned gate/target/binding revision and dispatch context, retained input, original deadline, current phase/disposition, evaluation count, due time, queue/run link. |
-| `workflow_gate_decisions` | Append-only `(entry_id, evaluation_number)` input/state digests, exact recorded time, engine profile and module digest, decision/reason or stable failure, state revisions before/after, fuel used, and output digest. Retained replay bytes follow the limits below. |
+| `workflow_gate_entries` | Stable entry ID and acceptance sequence; immutable source dedupe identity/digest, pinned gate/config/target/binding revision, config bytes/digest and dispatch context, retained input, original deadline, current phase/disposition, evaluation count, due time, queue/run link. |
+| `workflow_gate_decisions` | Append-only `(entry_id, evaluation_number)` input/state digests, exact recorded time, engine profile and module digest, decision/reason or stable failure, state revisions before/after, fuel and wall/CPU time used, bounded returned logs, selected-target/input links, and output digest. Retained replay bytes follow the limits below. |
 | `workflow_gate_batches` and membership | Opaque group identity, cutoff, open/closed state, aggregate entry link, ordered member links. Members and timers are part of the same writer transaction as the decision. |
 
 The workflow owns state and entries on its authoritative kernel, even if its
@@ -377,8 +853,8 @@ There is one in-flight evaluation per workflow, because every gate can change
 workflow state. Concurrent source admissions persist first and are evaluated in
 acceptance-sequence order. Timers become ready entries ordered by due instant
 then durable sequence. A deferred entry releases this lane until due. Independent
-workflows rotate fairly through a bounded shared worker pool. State edits use the
-same lane/CAS, so there is no lost update or speculative concurrent evaluation.
+workflows rotate fairly through a bounded shared worker pool. Explicit state reset
+and workflow apply use the same lane/CAS; no external state mutation API exists.
 
 Execution has three boundaries:
 
@@ -446,21 +922,19 @@ receipt/run correlation for many-to-one batches.
 
 ### Edits, expiry and ownership changes
 
-New entries pin the active module/definition. State persists across module edits;
-an edit must pass the supplied state fixtures against current state. Incompatible
-changes require an explicit atomic state replacement, not a migration guessed by
-the kernel. Ordinary CAS state replacement serializes with evaluations; deferred
-entries and batch flushes intentionally observe the resulting current state.
-It cannot change an already committed `run` decision. The kernel does not infer
-domain compatibility from state fields. Pending entries are cancelled with
-`gate_definition_changed` when the workflow gate, target, or relevant binding
-revision changes; their already
-committed state is not rolled back. An edit serializes with an evaluation and
-cancels its uncommitted result. There is no mix of old and new code in one batch.
-Removing a gate cancels its pending entries before admitting new ungated work.
-Here pending means not yet handed to an ordinary queue or send intent. Already
-queued work follows the ordinary target-revision/cancellation checks; an edit
-must not erase its gate proof or authorize another evaluation.
+New entries pin the active module/definition/config and allowed target IDs. State
+persists across edits; apply tests supplied fixtures and a read-only current-state
+snapshot. Incompatible changes require an explicit reset to empty state in that
+same apply transaction. Pending entries are cancelled with
+`gate_definition_changed` when gate code, config, entry edges, target or relevant
+binding revision changes; committed state is not rolled back. Apply serializes
+with evaluations and invalidates uncommitted results. There is no mix of old/new
+code or config in a batch. Removing a gate cancels pending work before new ungated
+admission. Pending means not yet handed to an ordinary queue or send intent,
+including capacity-delayed intents. Already queued work follows ordinary
+revision/cancellation checks and retains its gate proof; edits cannot authorize
+another evaluation of that entry. A gate reset is audited with actor/reason and
+expected state revisions. It never accepts replacement inventory or handled sets.
 
 Uninstall, revoked signer/capability, detached notification grant, workflow/Room
 deletion or owner transfer stops further release under the old authority.
@@ -489,9 +963,12 @@ They are shared by ordinary and managed kernels and not client preferences.
 | Work per evaluation | 10,000,000 fuel units over instantiation, allocation, evaluate and post-return; no resumable fuel refill; profile pinned with the engine |
 | Host process | Reuse R5's 1 GiB hard address-space ceiling and its file/descriptor/core limits on Linux/macOS; two workers kernel-wide, one per workflow |
 | Time | 2 seconds total monotonic deadline including spawn, validation, I/O, execution and result acceptance; 250 ms execution watchdog; 1 second OS CPU limit as an outer bound |
-| Wire | 512 KiB total canonical input; 128 KiB total output; one framed response; no guest stdout/log API |
+| Wire | 512 KiB total canonical input including config; 128 KiB total output including logs; one framed response; no guest stdout or host log API |
+| Configuration | 64 KiB canonical JSON, depth 32 / 4,096 nodes; immutable workflow-revision snapshot |
+| Selected routes | 1–16 unique agent node IDs in declared edge order; at most 16 declared targets/entry; aggregate context bytes still capped at 64 KiB |
+| Diagnostics | At most 32 returned log strings, 256 UTF-8 bytes each / 8 KiB total, charged to output/history budgets; reject overflow without partial logs |
 | State | 16 KiB workflow + 16 KiB per binding, depth 32 and 4,096 JSON nodes per object; at most 256 retained binding-state records/workflow |
-| Output context | Combined rendered agent prompt and transformed payload at most 64 KiB, reserving trusted envelope/header space before acceptance; reason at most 512 UTF-8 bytes |
+| Output context | Sum of all selected nodes' rendered prompts and transformed payloads at most 64 KiB, reserving trusted envelope/header space before acceptance; reason at most 512 UTF-8 bytes |
 | Pending work | 1,024 source entries and 16 MiB retained bodies/workflow; 4,096 entries and 64 MiB/kernel; existing smaller source limits still apply |
 | Batch | 64 open groups/workflow, key at most 128 UTF-8 bytes; 256 members and 64 KiB combined encoded item list/group, plus bounded kernel provenance; no automatic partial flush |
 | Repeated evaluation | At most 32 evaluations per original entry or aggregate, including resumes; one durable due time per deferred entry/group |
@@ -538,7 +1015,7 @@ to run while its authoritative machine is powered off.
 | Watchdog/CPU/memory limit, process crash or worker IPC loss | Kill/cancel and reap the exact owned domain; terminal `gate_timeout`, `gate_resource_limit` or `gate_worker_failed`. Retain accounting until physical exit. Late responses cannot commit. |
 | Unsupported/missing sandbox, verified runner unavailable | Refuse activation/upload test clearly; if discovered after acceptance, terminal `gate_runtime_unavailable`. No unsandboxed execution fallback. |
 | Kernel exits after claim without decision | Recover as `gate_interrupted` after confirming the old domain is empty. Unclaimed work resumes normally. |
-| State CAS or authority changed while running | Discard output; terminal conflict/cancel reason, no automatic reevaluation against different state. State editing uses the same lane so this is exceptional. |
+| State CAS or authority changed while running | Discard output; terminal conflict/cancel reason, no automatic reevaluation against different state. Reset/apply uses the same lane so this is exceptional. |
 | Definitively rolled-back writer failure | No state/queue partial commit; retain the captured result for a bounded persistence retry until entry deadline. Storage-unavailable state is operationally visible; dispatch is prohibited. |
 | Uncertain writer commit | Fence affected transitions; recovery reconciles exact token. Never pretend rollback, repeat a committed update, or dispatch from a provisional read. |
 | Due time/entry deadline/evaluation count exhausted | Terminal expired/failed entry, clear timers and memberships, zero new dispatches. |
@@ -554,7 +1031,7 @@ component imports, guest start functions, floating-point instructions/types,
 threads/atomics, shared memory, SIMD, memory64, externally supplied references and
 features outside the pinned integer profile, including in nested core modules.
 Canonical ABI glue must also fit that profile; do not reject its internal wiring
-as a host capability. No guest callback can read time, obtain entropy, log or call
+as a host capability. No guest callback can read time, obtain entropy, stream logs or call
 the kernel. Calendar/version/JSON helpers are pure component code; the SDK's
 integer-only JSON implementation must not link float code.
 
@@ -594,12 +1071,12 @@ completed acceptance claim.
 
 Source authentication, App signatures/schema/capability admission, notification
 ownership/grants, ancestry, and relay peer checks remain outside and before the
-guest. Recheck revocable authority before release. Guest output cannot select
+guest. Recheck revocable authority before release. Guest output can select only entry nodes in the pinned graph set. It cannot select
 another workflow, endpoint, owner, queue, artifact authority or delivery mode.
 Module digest is identity, not authority. Test/replay APIs require the same
 owner/workflow access as editing/history and cannot read another binding's state.
 
-Never resolve Vault handles into gate input/state/history. Preserve the existing
+Never resolve Vault handles into gate input/config/state/history/logs. Preserve the existing
 redaction policy before persistence/model context; worker errors expose stable
 codes, not arbitrary stderr/memory. Guest reasons and payloads render as untrusted
 text, never HTML. Ordinary visible user input is not a new secret-guard target.
@@ -658,10 +1135,12 @@ Proposed local protocol changes:
 - Gate definition and module sidecars in workflow-code artifacts, apply/rebuild
   reports, runtime workflow projection and portable package hashes.
 - `PutWorkflowGateModule`, `TestWorkflowGate`, `GetWorkflowGateState`,
-  `ReplaceWorkflowGateState` (CAS), `GetWorkflowGateEntry`, and
-  `CancelWorkflowGateEntry`. State replacement records actor/reason and checks
-  CAS under the workflow lane; future evaluations see it. Module/definition edits
-  cancel pending work as specified above. There is no arbitrary guest state API.
+  `ResetWorkflowGateState` (clear-to-empty CAS), `GetWorkflowGateEntry`, and
+  `CancelWorkflowGateEntry`. Reset records actor/reason and checks CAS under the
+  workflow lane. Config changes use ordinary workflow-code apply, never a state
+  write. Module/config/graph edits cancel pending work as specified above. There
+  is no arbitrary external or guest state-write API. Add bounded build/validation
+  reports and read-only replay requests described below.
 - `WorkflowEntryAccepted {entry_id, disposition, next_due_at_ms?}` alongside
   existing started/queued invoke responses; source receipt `entry_owned` and
   `gate_entry_id`; history union, run link, and entry-update subscription.
@@ -685,61 +1164,171 @@ batch, and SSE must stop waiting for a run on a terminal gate outcome.
 Implementation needs coordinator-allocated local protocol version and updated
 snapshots. Peer forwarding of these requests, history or workflow packages also
 needs a coordinator-allocated peer version/capability, since remote clients must
-receive the same contract. The AEGS/AEDS delivery envelope does not change. Do not
+receive the same contract. The typed-data extension also changes AEGS/AEDS
+delivery and signed manifest/SDK contracts as specified in section 1. Do not
 guess version numbers or add old-kernel fallback execution. Reject unsupported
 gate control/history clearly; raise a client's minimum only for these features.
 
-### Author, test, apply
+### Shared authoring machinery and advanced code follow-up
 
-1. Write a pure Rust gate with bindings generated from the gate WIT world,
-   bounded integer-only JSON, and optional pure calendar/version helpers. Reuse
-   the Apps worker's Rust component recipe (`wasm32-unknown-unknown` core build
-   plus WIT component encoding, as in `app-wasm-worker/tests/guest`), targeting
-   the import-free gate world instead of App handlers. The gate SDK/build command
-   is proposed implementation work; reject toolchain output that adds WASI or
-   unsupported features. App install/pack/migrate commands are not the gate path.
-2. Upload bytes through the proposed shared `workflow gate module put <file>`
-   shell command. This command reads the chosen file client-side and calls the
-   bounded kernel upload; it grants no kernel filesystem read. Declare its digest
-   and seed state in existing workflow code; use the existing
-   `/workflow code validate`, `apply`, artifact and package commands implemented
-   by `packages/kernel-client/src/shell-workflow-code-command.ts`.
-3. Run proposed `/workflow gate test <workflow> <fixture-file>`. The kernel runs
-   the same sandbox/profile against supplied trigger/time and explicit fixture
-   state, returning decision, replacement state, resource usage and validation
-   failures. No source ACK, durable state update, timer, queue or provider start.
-   Exact retained decision replay uses its stored bytes; after body compaction,
-   report replay unavailable rather than substituting today's state/time.
-4. Apply using existing workflow-code flow, then submit real triggers and inspect
-   existing workflow history/run detail and command-output surfaces. State reads
-   and CAS replacement use shared requests; state reset is explicit and audited.
-   Disabling a workflow/trigger retains its normal meaning, not a gate bypass.
+This section specifies machinery shared by utility-agent authoring and a later
+manual editor; the primary user surface is Describe/Summary above. Extend the existing
+workflow side inspector with **Summary / Test / History / Advanced** tabs (Rules is an optional quick-start) using
+`workflow-settings-tabs`; the selected entry stays visible in the canvas. Give
+code enough room: a proposed resizable inspector width of 680 px at desktop 1440,
+reusing the existing panel/splitter, not a new shell. This is a mock proposal, not
+a production UI change. The task explicitly requests a 390 px phone mock despite
+the general parked-phone rule; it shows the same inspector full width and no
+new mobile navigation. TUI uses shared kernel requests and existing terminal
+command output; clients do not compile, validate, route or mutate state locally.
 
-Use the existing Room terminal/prompt, command output, workflow list/history
-rows and detail surfaces. Extend their typed data/formatting, not their layout.
-`apps/cli/src/workflow-run-command-handlers.ts` and shared shell formatting are
-concrete TUI integration points. Cloud Web consumes the same kernel contract;
-this checkout does not contain `apps/web`. No new editor, gate canvas node,
-wizard, card, menu or background error banner is proposed. Product authoring can
-start entirely through existing terminal components. Any later dedicated visual
-editor needs its own prototype proposal and owner approval outside this design.
+**Advanced code (manual editing later).** The underlying v1 build supports Rust
+source for utility-agent proposals and any later direct Rules compiler, plus upload of a prebuilt portable component
+in the same WIT world. The existing schema JSONC textarea
+(`workflow-schema-ui.js`) is the actual editable component; the prototype's
+`renderWorkflowCode` is a read-only `pre`, not an editor. Reuse that textarea with
+spellcheck off, normal selection/undo and multiline editing. No Monaco,
+CodeMirror, new IDE or syntax-highlighting component is proposed. A user or an
+authorized agent may edit the same draft; compare expected draft/revision on
+save/apply so one does not overwrite the other. Unsaved source is a draft, never
+the active gate. Multiline Enter inserts a line; explicit Save/Build commits the
+source draft. Escape cancels an in-place single-line field, not the whole panel.
+
+**Build (shared internal path; manual button later).** The proposed gate SDK supplies a Rust crate template and locked
+`wit-bindgen = 0.63.0` bindings, generated from the exact import-free gate world.
+Reuse the inspected App recipe at `83241dd429`: `cargo build --locked --release
+--target wasm32-unknown-unknown`, cdylib output, then
+`wit_component::ComponentEncoder::module(...).validate(true).encode()`. Provide
+that encoding in a proposed `workflow gate build` SDK command; it is not present
+at the inspected revisions. Bundle a tested toolchain/SDK lock and encode its
+identity in a build manifest. Use a pure integer-only bounded JSON implementation;
+the App drill's `serde_json`/futures dependencies cannot simply be copied because
+its imports/features exceed this gate profile. Pin pure range/calendar helpers.
+Admission of the **resulting bytes**, including compiler glue, is the support
+criterion. Implementation must produce an admissible template before claiming
+Rust support; the current App guest alone does not prove that.
+
+The shared authoring build action requests an ordinary kernel-owned workspace/Room
+exec on the chosen authoring machine, using its existing process/account
+permissions and process supervisor. Compiler access to files/network belongs to
+that explicit ordinary build, never to gate evaluation. Bound source (256 KiB),
+workspace files (32 / 1 MiB), compiler diagnostics (64 KiB), build wall time
+(120 s) and concurrency (one per authoring workspace); clean up the owned build
+process on cancellation. Cargo must use the pinned lockfile and offline cached
+SDK for this template; a missing toolchain/cache returns an actionable build
+failure. Build output is portable bytes, never imported native cache. Upload
+through `PutWorkflowGateModule`; the evaluator never accepts a workspace path.
+
+C/C++/TinyGo can supply prebuilt components if their authors satisfy this world
+and profile, but v1 offers no supported source recipe/editor mode for them.
+JavaScript/TypeScript, Python and Lua are **not** gate source languages in v1:
+the workflow's declarative TypeScript compiler is separate, and interpreters or
+WASI wrappers would need new profile/size/fuel proof. No alternate runtime is
+introduced for authoring convenience.
+
+**Validate.** Build diagnostics show source location in the existing result
+area. Then the kernel checks component hash/size, WIT exports/types, zero external
+imports, nested module features/counts, store/fuel/time limits, config JSON/digest,
+entry edge targets and target schemas. Use the contained shared worker admission
+path for bounded compile/instantiate checks. A stale build cannot be applied:
+the report binds source/module/config/graph hashes and SDK/engine profile; editing
+any input invalidates the report. Apply rechecks these hashes and expected live
+workflow revision, repeats admission checks, and runs supplied fixtures. A
+validation success means admissible code/graph, not a proof of business policy or
+that all computed target IDs are valid.
+
+**Configuration (within Summary).** Edit inventory/thresholds in the existing JSON textarea and
+show workflow revision/config digest beside it. This is setup, never mutable
+state. The next revision preview includes config diff, affected pending entries
+and optional audited clear-to-empty reset. Inventory does not arrive through a
+previous run or a second entry point.
+
+**Test.** Choose a sample JSON file or a retained real entry/evaluation from
+history with existing picker/rows. Samples specify normalized event, recorded
+time, config snapshot and explicit fixture state. The kernel fixes allowed
+targets to the draft graph. Existing history selection uses its captured original
+input/config/state rather than today's values. A separate **Test draft** action
+may deliberately use draft code/config on a copied historical event; display
+both identities and label that a comparison. It never changes the historical
+record. Limit concurrent tests and module/body sizes as live evaluation does.
+`TestWorkflowGate` runs the exact contained worker/limits with no source ACK,
+live state write, queue, timers, provider or release side effects.
+
+Result rows show decision/reason, selected node IDs and per-node payload/prompt,
+config/workflow/module/profile identities, state **before / after / diff**,
+fuel consumed/limit, execution and total milliseconds, returned logs and stable
+validation/trap/timeout errors. JSON diffs are computed from the exact copies;
+large values are paged within body budgets, never silently clipped into a valid
+fixture. Keep author-supplied reasons/logs inert plain text. Store no Vault values.
+Metrics are observations; OS time and timeout are not deterministic outputs.
+
+**Debug history.** Open a specific entry and evaluation number, inspect its
+captured config/input/state, all decisions, route/run links, and recorded error.
+**Replay decision** uses the exact old module/engine profile/input/config/time and
+state snapshot, reporting output/state/log equality and fuel comparison alongside
+the recorded result. Native timing/availability failures need not reproduce.
+Pin source/build manifest with replayable bytes; source is optional and the
+module identity remains authoritative. After compaction or unavailable profile,
+disable exact replay with its precise reason; never substitute current inputs.
+This is deterministic replay and bounded returned traces, **not an instruction
+stepper or breakpoint debugger in v1**. To investigate a branch, copy its event
+into Test draft, add bounded returned log strings, rebuild and compare. Traps may
+have no guest-returned logs; show stable worker error/fuel/time, never arbitrary
+stderr/memory. Logs are explicit output (`logs: list<string>`), not a host import;
+failed validation commits no partial guest state/logs. Retained successful logs
+are charged to history. Test logs are ephemeral unless the owner saves a fixture.
+
+**Apply.** Validate/build/test results remain attached to exact draft hashes.
+Apply uses the existing workflow-code transaction, expected revision and normal
+edit authority; show resulting workflow/config/module identities. Failed apply
+leaves the previous active revision intact with the error at the requested
+action. No background toast/banner, new permission prompt or App install flow.
+Agents use the same build/upload/test/apply/history requests and may write all
+source/setup for the owner. `/workflow gate module put`, `test`, `replay`, `state`
+(read only), and `reset-state` are proposed TUI command bindings.
+
+### Mock and existing component provenance
+
+The lane-local `mock/index.html` is an interactive, static **design mock** only.
+It composes a copy of the OS-shell prototype at `a697679c7` (read from the available
+Cloud checkout `/root/work/agent-termui-cloud`; the old audit checkout is absent).
+Its copied workflow window is the shell; graph nodes/edges use the prototype
+rendered markup/classes with the two-branch example data. Reuse:
+
+| Surface | Existing source/component |
+| --- | --- |
+| Workflow window, entry/agent nodes and edges | Prototype `app.js::renderWorkflowCanvas`, `workflow-flow.jsx` node markup and bundled styles; same entry node with two outgoing edges, no gate node |
+| Side inspector / tabs / controls | Prototype `workflow-inspector`, `workflow-settings-tabs`, `workflow-settings-button`, `workflow-node-field-actions`, inspector fields and `<details>` picker |
+| Source/config/sample editing | Prototype `workflow-schema-ui.js` schema textarea / `workflow-inspector-text`; existing `pre` for read-only output |
+| Facts and state readout | Prototype `workflow-node-parameters`, settings sections and schema preview `pre` |
+| Decision history/results | Existing Vault table markup/classes from Cloud `301278e1c` `programs/vault-secret-table.tsx` / `vault-styles.ts`; table scroll and action buttons retained, column content adapted to decisions |
+
+No new reusable visual component, icon set, shell, editor library or product code
+is added. Only the requested inspector width, tab content/actions, rule content and graph data
+are proposed. The mock's buttons select **illustrative canned results** and do
+not compile or execute WASM or call an agent. Summary/description and its schema fields are shown first; Rules is optional;
+Advanced is opt-in and its manual editor is labeled as a later proposal. The HTML labels this in its document title and
+configuration/result detail. Desktop 1440×900 at DPR1/DPR2 and phone 390×844
+captures, source identities, hashes and click checks are in the lane handoff;
+none is a live runtime acceptance result. The mock is reviewable without a gate
+implementation and does not change Cloud or this repository's UI.
 
 ## 8. Worked example: advisory relevance against an inventory
 
 This policy is example gate code, not kernel vulnerability handling. An external
-App normalizes public advisory data; an owner or inventory App updates the
-workflow state through authorized CAS. No inventory fetch happens inside a gate.
+App normalizes public advisory data; an owner or authorized agent updates the
+workflow configuration through ordinary setup/apply. No inventory fetch happens inside a gate.
 
 ```json
 {
-  "workflow": {
+  "configuration": {
     "inventory_as_of_ms": 1793577600000,
     "inventory": [
       {"ecosystem":"npm", "package":"widget", "version":"2.4.1"},
       {"ecosystem":"cargo", "package":"sample", "version":"0.9.0"}
     ]
   },
-  "binding": {"seen": [], "dropped": 0}
+  "state": {"workflow": {}, "binding": {"seen": [], "dropped": 0}}
 }
 ```
 
@@ -749,9 +1338,10 @@ version library in the module):
 
 ```text
 on trigger/resume:
-    if inventory absent/stale, payload incomplete, or range unsupported:
-        return run(prompt="Check advisory; relevance unknown", payload=compact(advisory)), same_state
-    hits = inventory entries with exact ecosystem/package and matches(version, ranges)
+    if configuration.inventory absent/stale, payload incomplete, or range unsupported:
+        return run([{node_id:"check_unknown", prompt:"Check advisory; relevance unknown",
+                     payload:compact(advisory)}]), same_state
+    hits = configuration.inventory entries with exact ecosystem/package and matches(version, ranges)
     occurrence = advisory.id + ":" + advisory.revision
     if occurrence in binding.seen:
         return drop("already considered"), same_state
@@ -759,8 +1349,8 @@ on trigger/resume:
     if hits empty:
         next.binding.dropped += 1
         return drop("no installed version in affected ranges"), next
-    return run(prompt="Assess the matching installed packages",
-               payload={advisory_id, revision, affected:hits, advisory_url}), next
+    return run([{node_id:"assess", prompt:"Assess the matching installed packages",
+                 payload:{advisory_id, revision, affected:hits, advisory_url}}]), next
 ```
 
 The unknown branch deliberately asks the downstream agent to assess uncertainty;
@@ -776,7 +1366,9 @@ the stated reason and zero agent wakes. Exact transport replay of `ADV-A:1` does
 not call the gate again. A distinct delivery of the same advisory revision drops
 through the module's seen set. Unsupported version syntax or stale inventory
 runs with `relevance unknown`, rather than treating an error as no match.
-History shows module, inventory-state revision, decision and eventual run link.
+History shows module, workflow/config revision and digest, selected node, decision
+and eventual run link. Applying a new inventory snapshot activates a new workflow
+revision and cancels old pending entries; it does not rewrite the seen set.
 
 ## 9. Worked example: release morning batch
 
@@ -787,7 +1379,7 @@ release, morning, repository, holidays, urgency, or digest content.
 ```text
 on trigger/resume with a release payload:
     if the payload cannot be normalized:
-        return run(prompt="Review unrecognized release", payload=original), state
+        return run([{node_id:"digest", prompt:"Review unrecognized release", payload:original}]), state
     if release.id/revision already in binding.seen:
         return drop("release already collected"), state
     morning = next 09:00 UTC strictly after evaluation_at_ms
@@ -796,8 +1388,8 @@ on trigger/resume with a release payload:
     return batch(key, flush_at_ms=morning, payload=item), state with seen updated
 
 on batch_flush/resume with a batch:
-    return run(prompt="Review these releases together",
-               payload={releases: batch.items.map(item => item.payload)}), state
+    return run([{node_id:"digest", prompt:"Review these releases together",
+                 payload:{releases: batch.items.map(item => item.payload)}}]), state
 ```
 
 | Recorded UTC time | Action | Durable effect / agent work |
@@ -820,10 +1412,50 @@ leased worker remains stopped until ordinary dispatch needs it; waiting overnigh
 does not extend managed idle time.
 
 For defer coverage, the same ABI permits a module to return
-`defer_until(accepted_at_ms + 60_000)` once while waiting for a state refresh.
-The resume sees current state and its recorded time. If it defers 32 times or
+`defer_until(accepted_at_ms + 60_000)` once to coalesce its own observations.
+The resume sees current gate-owned state, pinned configuration and recorded time;
+it does not wait for an external inventory update. Such an update is a new setup
+revision, cancelling this pending entry. If it defers 32 times or
 cannot fit another due time inside the immutable deadline, it terminates with
 the named limit/expiry rather than waiting forever.
+
+### Worked example: GET prompt link, with and without a schema
+
+An authorized user opens the following protected published trigger (illustrative
+host, no credential in the link):
+
+```text
+https://workflows.example/triage?prompt=Check+this+release&severity=high&attempt=2
+```
+
+With **no endpoint schema**, the kernel normalizes it to:
+
+```json
+{
+  "prompt": "Check this release",
+  "data": {"severity":"high", "attempt":"2"},
+  "data_schema": null
+}
+```
+
+The prompt is injected as free text if the gate admits it. A described gate may
+match `data.severity == "high"` and route to triage; it must compare attempt as
+a string or explicitly parse it inside its bounded code. No gate means ordinary
+invocation with this prompt. `?prompt=Check+this+release` alone remains valid with
+`data:{}`. The panel shows the query-string map rather than a fictional schema.
+
+If the owner declares an optional endpoint schema with string severity enum and
+integer attempt ≥ 1, required `["severity","attempt"]`, and
+`additionalProperties:false`, the **same URL** supplies
+`data:{"severity":"high","attempt":2}` plus that schema identity. `prompt` is
+still `"Check this release"` and not checked as a schema property. The utility
+agent sees severity as an enum and attempt as an integer. The gate can route
+`high && attempt <= 3` to triage, otherwise to summary, using the same compiled
+component contract. `attempt=two`, a missing required attempt, or an undeclared
+field fails with 422 before evaluation. A protected link opened by an unauthorized
+person fails the existing auth check; explicitly public endpoints follow their
+configured public policy. A URL over 8 KiB gets 414 and an instruction to send
+POST JSON. Neither schema mode removes GET prompt injection.
 
 ## 10. What this replaces or deletes
 
@@ -862,13 +1494,20 @@ supplementing existing workflow/compiler/inbox/injection tests:
 | `workflow-gate/G-01` | Real App inbox → outgoing automation, local/remote workflow notification, published HTTP, workflow cron/interval, manual/Room invocation, and generated-agent HTTP/timer firing. Use a drop gate; assert zero target provider starts/steers and a history decision on every path. Removing the gate executes ordinary work as control. |
 | `workflow-gate/G-02` | Advisory fixture and inventory above through real source adapters; relevant/irrelevant/unknown and distinct/exact duplicates. Count state revisions, agent turns and retained context. One permitted real provider turn proves reduction reaches the actual prompt. |
 | `workflow-gate/G-03` | Morning batch with real delivered releases and short test cutoff, later real scheduled cutoff. Restart before due, race arrival at cutoff, busy/paused queue, differing binding/caller, conflicting time, earliest expiry and capacity. Exactly one aggregate invocation and complete member lineage. |
-| `workflow-gate/G-04` | Defer/resume with a controlled CAS state edit, expiry, evaluation limit, late restart and cancellation. Resume observes current state, while committed run decisions stay fixed. No waiting worker/agent or original-deadline extension. Definition changes cancel pending work. |
+| `workflow-gate/G-04` | Defer/resume with concurrent gate-owned state advances and an explicit reset, expiry, evaluation limit, late restart and cancellation. Resume observes current gate-owned state and pinned config; config edits cancel old pending work, while handed run decisions stay fixed. No waiting worker/agent or original-deadline extension. Definition changes cancel pending work. |
 | `workflow-gate/G-05` | Fault-inject before/after source handoff, claim, result persistence, state/queue commit and projection; kill kernel/worker at each seam. Duplicate/concurrent delivery must not repeat a state transition or dispatch; claimed unfinished evaluations terminalize, including flush membership. |
 | `workflow-gate/G-06` | Malicious components: reject App/migration/broker/WASI/clock/random imports and float/start/threads in nested modules; malformed canonical ABI, huge memory/table/component/JSON, recursion, infinite loop, output flood; missing confinement and runner tampering. Prove fuel, epoch/watchdog and store limits independently, and R5 containment before readiness/threads for both evaluate and test. Test Linux and signed macOS boundary; bounded failure, no ambient read/network/model/Vault capability, cleanup verified. |
 | `workflow-gate/G-07` | Concurrent bindings sharing workflow state, owner isolation, scope spoofing, module/binding/grant/signer edits, transfer/uninstall/deletion, package export/import. No lost update, stale authority release, cross-owner state or bypass through low-level enqueue/injection. |
-| `workflow-gate/G-08` | Real Web and TUI via existing terminal/history surfaces and hosted encrypted relay: author, upload, test, apply, inspect drop/failure/defer/batch/run, cancel and restart/reconnect. Sync HTTP/SSE and Room obligations terminate truthfully with entry IDs. Test API does not mutate live state. |
+| `workflow-gate/G-08` | Real Web side inspector and TUI via shared requests and hosted encrypted relay: author, upload, test, apply, inspect drop/failure/defer/batch/run, state diff, logs/fuel/time, exact history replay and Test draft, cancel and restart/reconnect. Sync HTTP/SSE and Room obligations terminate truthfully with entry IDs. Test API does not mutate live state. |
 | `workflow-gate/G-09` | Ordinary/managed comparison, both authority and leased-worker placements. Deferred/batched future work permits mandatory auto-stop; a due release respects the quiescence fence. Verify the delay still measures from the last real agent finishing, disabled/keep-running policy and all existing stop triggers. No Cloud wake promise. |
 | `workflow-gate/G-10` | Multi-hour real-trigger soak under body/history/module/state quotas, many idle workflows, backpressure, and restart. Bounded memory/CPU/WAL growth and pending latency, no one-second polling for future-only timers, eventual admission fairness, and zero leaked processes/domains/timers after cancellation. |
+| `workflow-gate/G-11` | Apply config revision A, defer/batch entries, apply B while an evaluation is active. A cannot commit/release after the edit; all affected pending work settles; replay retains A bytes. New events get B, no event/prior-run path can mutate config or inject inventory into state. Gate dedup persists unless explicitly reset. |
+| `workflow-gate/G-12` | Real two-branch entry: known match → assess, unknown → check_unknown, known nonmatch → drop; multi-target fan-out seeds one run with exact payloads. Reject dangling/foreign declared targets at apply and empty/duplicate/computed unknown IDs at evaluation, without state or partial dispatch. Restart after one provider starts cannot duplicate that route; joins use existing semantics. Singleton inject/agent-trigger routes reject fan-out at apply. |
+| `workflow-gate/G-13` | Underlying utility-agent authoring source edit → bounded Rust build → WIT/import/limits validation → sample/history test → apply. Edit after validation invalidates stale report; concurrent agent edit conflicts; replay uses old config/time/state/profile, compaction explains unavailable replay, draft comparison is distinct. Logs/traps/timeout and before/after diff visible on request; no live test effects, Vault value or new background debug banner. |
+| `workflow-gate/G-14` | Optional quick-start only: No gate → Rules selections → utility-agent proposal → standard compile/test/apply via inspector. A later direct compiler must also prove these semantics. Exercise ordered comparisons, missing/type-mismatched fields, A/B routes, Otherwise, daily batch, dedupe, cap and quiet-hour composition, limits and restart. Verify one standard component is uploaded and that evaluation uses no host rules interpreter or per-event agent. No gate control retains ordinary admission. |
+| `workflow-gate/G-15` | Real Describe action with official provider writes source/config/summary/tests and builds; inspect past-event independent and sequence results, approve exact proposal, edit/race drafts and simulate failures. No automatic apply or fabricated tests. Optional publisher package later uses the same tests/admission; provenance/schema rejection and pinned updates stay local. |
+| `workflow-gate/G-16` | Signed AEGS schema/examples registration → real SDK emit → AEDS → kernel receipt → App inbox/outgoing normalization → gate. Fail before typed data exists, pass after. Reject tampered signature/digest, same-version schema change, invalid examples/data, remote/recursive schema, missing fields and overlimits at both SDK and kernel. Durable retry/replay preserves schema/data and exact dedupe; no prompt/metadata inference. |
+| `workflow-gate/G-17` | Real HTTP/manual declared optional GET/HTTP schema (string query map vs declared scalar coercion), fixed schedule schema, multiple sources and explicit text-only source. Utility agent sees actual field list/examples/selected past entries, writes regex/relevance policy and tests boundary/unknown cases. Wrong-schema events cannot enter the gate; real provider receives only selected transformed output. Past replay retains exact schema/config, with honest unavailable bodies. |
 
 Use existing regressions in `session/service/tests/workflow_runs`,
 `runtime/state/workflow_prompt_queue_owned_state/`,
