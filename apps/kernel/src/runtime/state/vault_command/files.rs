@@ -5,7 +5,8 @@
 //! the kernel fills with Vault values. The agent's own later reads of a file
 //! it asked for are its own action (UX-first rule), so nothing is scrubbed.
 use super::capture::{
-    captured_handle, committed, extract, extract_pattern, service_host, Captured, Extract,
+    capture_binding_schema, captured_handle, committed, extract, extract_pattern, service_host,
+    Captured, Extract,
 };
 use super::*;
 use crate::transport::runtime_tools::{RuntimeToolResult, RuntimeToolSpec};
@@ -24,6 +25,7 @@ struct CaptureFileArgs {
     request_id: String,
     path: String,
     host: String,
+    use_binding: crate::config::VaultUseBinding,
     #[serde(default)]
     label: Option<String>,
     #[serde(default)]
@@ -45,8 +47,9 @@ struct WriteFileArgs {
 pub(crate) fn capture_file_spec() -> RuntimeToolSpec {
     RuntimeToolSpec {
         name: VAULT_CAPTURE_FILE.into(),
-        description: "store a secret that a tool wrote into a file in your workspace (for example .env.local or a downloaded key) in the owner's Vault, without reading the file yourself. The result is an opaque credential_id with your label. extract picks the value: {\"kind\":\"whole\"} (whole file, trimmed; the default), {\"kind\":\"json\",\"pointer\":\"/private_key\"} or {\"kind\":\"regex\",\"pattern\":\"^API_KEY=(.+)$\",\"group\":1}. With replace_with_handle the value in the file becomes ${chariox:<credential_id>}. host names the service the secret belongs to. Retrying with the same request_id returns the same credential.".into(),
-        input_schema: serde_json::json!({"type":"object","required":["request_id","path","host"],"properties":{
+        description: "store a secret that a tool wrote into a file in your workspace (for example .env.local or a downloaded key) in the owner's Vault, without reading the file yourself. The result is an opaque credential_id with your label. extract picks the value: {\"kind\":\"whole\"} (whole file, trimmed; the default), {\"kind\":\"json\",\"pointer\":\"/private_key\"} or {\"kind\":\"regex\",\"pattern\":\"^API_KEY=(.+)$\",\"group\":1}. With replace_with_handle the value in the file becomes ${chariox:<credential_id>}. host names the source service. use_binding declares one exact command environment, stdin or workspace file destination. Retrying with the same request_id returns the same credential.".into(),
+        input_schema: serde_json::json!({"type":"object","required":["request_id","path","host","use_binding"],"properties":{
+            "use_binding": capture_binding_schema(),
             "request_id":{"type":"string","minLength":1,"maxLength":128},
             "path":{"type":"string","description":"File inside your workspace, relative to it"},
             "host":{"type":"string","description":"Host of the service the secret is for, such as api.example.com"},
@@ -91,14 +94,16 @@ impl KernelRuntimeState {
         if args.label.as_ref().is_some_and(|label| label.len() > 200) {
             return Err(error("label must be at most 200 characters"));
         }
+        args.use_binding.target.validate()?;
         let host = service_host(&args.host)?;
         let pattern = extract_pattern(&args.extract)?;
         let turn = &context;
         let handle = captured_handle(turn, &args.request_id);
         let registry = crate::credential::CharioxCredentialRegistry::user()?;
         if let Some(existing) = registry.get(&handle)? {
-            return committed(&existing, turn, &host);
+            return committed(&existing, turn, &host, &args.use_binding);
         }
+        validate_capture_binding(&context.run, &args.use_binding)?;
         let path = existing_workspace_file(&context.run, &args.path)?;
         let content = Zeroizing::new(
             std::fs::read(&path).map_err(|e| error(format!("cannot read {}: {e}", args.path)))?,
@@ -116,7 +121,7 @@ impl KernelRuntimeState {
                     handle: handle.clone(),
                     host,
                     label: args.label,
-                    injection: crate::config::UserCredentialInjectionConfig::File,
+                    use_binding: args.use_binding,
                 },
                 &secret,
             )
@@ -241,7 +246,7 @@ fn existing_workspace_file(
 
 /// A file to (re)write: its directory is inside the workspace and the name is
 /// not a symlink, so the write cannot land outside.
-fn new_workspace_file(
+pub(super) fn new_workspace_file(
     run: &crate::provider::RuntimeProviderRun,
     relative: &str,
 ) -> Result<PathBuf, DaemonError> {

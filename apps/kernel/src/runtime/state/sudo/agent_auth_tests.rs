@@ -357,6 +357,20 @@ async fn au15_anonymous_vault_credential_works_and_retry_does_not_register_twice
     );
     assert_eq!(credentials[0].allowed_hosts, [service.origin.clone()]);
     assert_eq!(
+        credentials[0]
+            .metadata
+            .as_ref()
+            .unwrap()
+            .use_binding
+            .as_ref()
+            .unwrap()
+            .target,
+        crate::config::VaultUseTarget::Site {
+            origin: service.origin.clone()
+        }
+    );
+
+    assert_eq!(
         credentials[0].allowed_uses,
         [crate::config::UserCredentialUse::Http]
     );

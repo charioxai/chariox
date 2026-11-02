@@ -176,14 +176,15 @@ async function linkProvider(client, requests, provider, options) {
   return profile.profile_id
 }
 
-function prompt(provider, service, node) {
+function prompt(provider, service, node, workspace) {
   return [
-    '/sudo Set up access to the local Svc service for this project without ever seeing its API key.',
+    'Set up access to the local Svc service for this project without ever seeing its API key.',
     `1. Call the chariox.vault.capture_command tool with request_id "svc-key-${provider}", argv ["${node}", "svc.mjs", "create-key"],`,
-    `host "127.0.0.1:${service.port}", label "Svc API key" and extract {"kind": "json", "pointer": "/secret"}. It returns a credential_id.`,
-    `2. Call the chariox.vault.use_env tool with argv ["${node}", "svc.mjs", "whoami"] and env {"SVC_API_KEY": "<that credential_id>"}.`,
-    `3. Call the chariox.vault.write_file tool with path ".env.${provider}", template "SVC_API_KEY={{KEY}}\\n" and values {"KEY": "<that credential_id>"}.`,
-    '4. Reply with the whoami stdout the tool returned, exactly. Do not run svc.mjs any other way, do not read files, and never try to see the key.',
+    `host "127.0.0.1:${service.port}", label "Svc API key", use_binding {"target":{"kind":"command_environment","name":"SVC_API_KEY","origin":"http://127.0.0.1:${service.port}"}} and extract {"kind": "json", "pointer": "/secret"}. It returns a credential_id.`,
+    `2. Call the chariox.vault.use_env tool with argv ["${node}", "svc.mjs", "whoami"] with origin "http://127.0.0.1:${service.port}" and env {"SVC_API_KEY": "<that credential_id>"}.`,
+    `3. Capture a second key with capture_command request_id "svc-file-${provider}", the same argv/host/extract and use_binding {"target":{"kind":"file","path":${JSON.stringify(path.join(workspace, `.env.${provider}`))}}}.`,
+    `4. Call the chariox.vault.write_file tool with path ".env.${provider}", template "SVC_API_KEY={{KEY}}\\n" and values {"KEY": "<the second credential_id>"}.`,
+    '5. Reply with the whoami stdout the tool returned, exactly. Do not run svc.mjs any other way, do not read files, and never try to see the key.',
   ].join('\n')
 }
 
@@ -283,18 +284,9 @@ async function main() {
       row.resolved_model = run.model ?? null
       const since = Date.now()
       const keysBefore = new Set(service.keys)
-      // A /sudo prompt is accepted only once the owner approves, so it waits on its own connection.
       const submitter = new LocalIpcClient(url, { localAuthEnvironment: env })
-      const submitted = submitter.send(requests.submitPromptRequest(session.id, attachment.id, agentId,
-        prompt(provider, service, process.execPath), [])).finally(() => submitter.close().catch(() => {}))
-      submitted.catch(() => {})
-      // The owner approves in both modes, so the kernel's tools are the only difference.
-      const popup = await waitFor('the sudo popup', 120_000, async () => (await sessionState(client, requests, session.id))
-        .active_interactions?.find((entry) => String(entry.id ?? '').startsWith('sudo:')))
-      const approve = (popup.choices ?? []).find((choice) => choice.requires_passkey)
-      await client.send(requests.respondToInteractionRequest(session.id, popup.id, approve.id, null, { passkey: passphrase, accessLifetime: 60 }))
-      await Promise.race([submitted, sleep(60_000).then(() => { throw new Error('the /sudo prompt was not accepted') })])
-      step('sudo approved')
+      await submitter.send(requests.submitPromptRequest(session.id, attachment.id, agentId,
+        prompt(provider, service, process.execPath, workspace), [])).finally(() => submitter.close().catch(() => {}))
       await idle(client, requests, session.id, attachment.id, agentId, options.timeoutMs)
       step(`${provider} turn finished`)
       const minted = [...service.keys].filter((key) => !keysBefore.has(key))
@@ -313,10 +305,10 @@ async function main() {
         capture_tool_in_transcript: CAPTURE.test(seen),
         use_env_tool_in_transcript: USE_ENV.test(seen),
         write_file_tool_in_transcript: WRITE_FILE.test(seen),
-        env_file_holds_key: minted.length === 1 && envText?.replace(/\\n$/, '').trim() === `SVC_API_KEY=${minted[0]}`,
+        env_file_holds_key: minted.length === 2 && envText?.replace(/\\n$/, '').trim() === `SVC_API_KEY=${minted[1]}`,
         keys_minted: minted.length,
         captured_credentials: captured.length,
-        captured_injection_env: captured.every((c) => c.injection?.kind === 'env'),
+        captured_injection_env: captured.some((c) => c.injection?.kind === 'env') && captured.some((c) => c.injection?.kind === 'file'),
         service_authorized_calls: service.calls.filter((c) => c.path === '/me' && c.authorized && c.at >= since).length,
         masked_output_in_transcript: seen.includes('[vault:cap-'),
         key_in_transcript: minted.some((key) => seen.includes(key)),
@@ -328,7 +320,7 @@ async function main() {
         ? !row.capture_tool_in_transcript && !row.use_env_tool_in_transcript && !row.write_file_tool_in_transcript &&
           row.captured_credentials === 0 && row.service_authorized_calls === 0 && envText === null
         : row.capture_tool_in_transcript && row.use_env_tool_in_transcript && row.keys_minted >= 1 &&
-          row.captured_credentials === 1 && row.captured_injection_env && row.service_authorized_calls >= 1 &&
+          row.captured_credentials === 2 && row.captured_injection_env && row.service_authorized_calls >= 1 &&
           row.masked_output_in_transcript && row.write_file_tool_in_transcript && row.env_file_holds_key &&
           !row.key_in_transcript && !row.key_in_session_state &&
           row.key_in_kernel_files.length === 0 && row.key_in_codex_sessions === 0

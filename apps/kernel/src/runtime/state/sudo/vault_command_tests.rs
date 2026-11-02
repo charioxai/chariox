@@ -27,17 +27,25 @@ async fn capture(
         f,
         CAPTURE,
         json!({"request_id": request_id, "argv": argv, "host": "api.example.com",
-            "label": "example key", "extract": extract}),
+            "label": "example key", "extract": extract, "use_binding":{"target":{"kind":"command_environment","name":"KEY","origin":"https://api.example.com"}}}),
     )
     .await
 }
 
 fn stored(f: &Fixture, handle: &str) -> zeroize::Zeroizing<String> {
+    let service = f.state.home_runtime_secret_service().unwrap();
+    let binding = service
+        .credential(handle)
+        .unwrap()
+        .metadata
+        .as_ref()
+        .unwrap()
+        .use_binding
+        .as_ref()
+        .unwrap();
     zeroize::Zeroizing::new(
-        f.state
-            .home_runtime_secret_service()
-            .unwrap()
-            .command_secret_input(handle)
+        service
+            .workspace_secret_input_for_target(handle, &binding.target)
             .unwrap(),
     )
 }
@@ -73,6 +81,78 @@ async fn s2_ordinary_agents_capture_and_use_without_sudo() {
     let marker = workspace(&f).join("must-not-run");
     assert!(call(&f,USE_ENV,json!({"origin":"https://api.example.com","argv":["/usr/bin/touch",marker],"env":{"KEY":"missing"}})).await.is_err());
     assert!(!marker.exists());
+    f.state.shutdown_cleanup().await.unwrap();
+}
+
+#[tokio::test]
+async fn captured_command_refuses_a_different_origin_or_environment_name() {
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    unlock(&f);
+    let captured = capture(&f, "one-use", printing(SECRET), json!({"kind":"stdout"}))
+        .await
+        .unwrap();
+    let handle = captured["credential_id"].as_str().unwrap();
+    for (name, origin) in [
+        ("KEY", "https://other.example.com"),
+        ("OTHER", "https://api.example.com"),
+    ] {
+        let marker = workspace(&f).join(format!("wrong-{name}"));
+        let result = call(
+            &f,
+            USE_ENV,
+            json!({"origin":origin,"argv":["/usr/bin/touch",marker],"env":{name:handle}}),
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "a captured entry must refuse a different origin or environment name"
+        );
+        assert!(!marker.exists(), "refused uses must never run the command");
+    }
+    f.state.shutdown_cleanup().await.unwrap();
+}
+
+#[tokio::test]
+async fn capture_requires_a_binding_before_command_or_file_access() {
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    unlock(&f);
+    let marker = workspace(&f).join("unbound-command-ran");
+    let missing = call(
+        &f,
+        CAPTURE,
+        json!({"request_id":"unbound", "host":"api.example.com",
+        "argv":["/usr/bin/touch",marker]}),
+    )
+    .await;
+    assert!(missing.is_err());
+    assert!(!marker.exists());
+    let created = capture(&f, "retry", printing(SECRET), json!({"kind":"stdout"}))
+        .await
+        .unwrap();
+    let changed = call(&f,CAPTURE,json!({"request_id":"retry", "host":"api.example.com", "argv":["/usr/bin/touch",marker],
+        "use_binding":{"target":{"kind":"command_environment","name":"OTHER","origin":"https://api.example.com"}}})).await;
+    assert!(changed.is_err());
+    assert!(!marker.exists());
+    let id = created["credential_id"].as_str().unwrap();
+    let registry = crate::credential::CharioxCredentialRegistry::user().unwrap();
+    let mut unbound = registry.get(id).unwrap().unwrap();
+    unbound.id = "unbound-entry".into();
+    unbound.source = crate::config::UserCredentialSourceConfig::Vault {
+        key: "unbound-entry".into(),
+    };
+    unbound.metadata = None;
+    registry.upsert(unbound).unwrap();
+    assert!(call(&f,USE_ENV,json!({"origin":"https://api.example.com","argv":["/usr/bin/touch",marker],"env":{"KEY":"unbound-entry"}})).await.is_err());
+    assert!(!marker.exists());
+    assert!(call(
+        &f,
+        CAPTURE_FILE,
+        json!({"request_id":"unbound-file","path":"missing","host":"api.example.com"})
+    )
+    .await
+    .is_err());
     f.state.shutdown_cleanup().await.unwrap();
 }
 
@@ -125,10 +205,7 @@ async fn s2_capture_stores_the_printed_value_and_never_returns_it() {
     assert_eq!(credential.allowed_hosts, ["api.example.com"]);
     assert_eq!(
         credential.allowed_uses,
-        [
-            crate::config::UserCredentialUse::Env,
-            crate::config::UserCredentialUse::File
-        ]
+        [crate::config::UserCredentialUse::Env]
     );
     let metadata = credential.metadata.unwrap();
     assert_eq!(metadata.created_by_kind.as_deref(), Some("vault_capture"));
@@ -198,10 +275,19 @@ async fn s2_use_env_injects_values_and_masks_this_output() {
         .await
         .unwrap();
     let handle = created["credential_id"].as_str().unwrap().to_string();
+    let stdin_capture = call(
+        &f,
+        CAPTURE,
+        json!({"request_id":"stdin", "host":"api.example.com", "argv":printing(SECRET),
+        "use_binding":{"target":{"kind":"command_stdin","origin":"https://api.example.com"}}}),
+    )
+    .await
+    .unwrap();
+    let stdin_handle = stdin_capture["credential_id"].as_str().unwrap();
     let received = workspace(&f).join("received");
     let arguments = json!({"origin":"https://api.example.com","argv": ["/bin/sh", "-c",
-        format!("printf '%s' \"$API_KEY\" > '{}'; echo \"key=$API_KEY\"; cat; echo \"err $API_KEY\" >&2; exit 4", received.display())],
-        "env": {"API_KEY": handle}, "stdin": handle});
+        format!("printf '%s' \"$KEY\" > '{}'; echo \"key=$KEY\"; cat; echo \"err $KEY\" >&2; exit 4", received.display())],
+        "env": {"KEY": handle}, "stdin": stdin_handle});
     assert!(!arguments.to_string().contains(SECRET));
     let used = call(&f, USE_ENV, arguments).await.unwrap();
     // The command really got the value; the model gets only the mask.
@@ -219,7 +305,7 @@ async fn s2_use_env_injects_values_and_masks_this_output() {
     let slow = call(
         &f,
         USE_ENV,
-        json!({"origin":"https://api.example.com","argv": ["/bin/sleep", "30"], "env": {"K": handle}, "timeout_seconds": 1}),
+        json!({"origin":"https://api.example.com","argv": ["/bin/sleep", "30"], "env": {"KEY": handle}, "timeout_seconds": 1}),
     )
     .await
     .unwrap();
@@ -229,7 +315,7 @@ async fn s2_use_env_injects_values_and_masks_this_output() {
         json!({"origin":"https://api.example.com","argv": ["/bin/true"]}),
         json!({"origin":"https://api.example.com","argv": ["/bin/true"], "env": {"BAD-NAME": handle}}),
         json!({"origin":"https://api.example.com","argv": ["/bin/true"], "env": {"K": "missing"}}),
-        json!({"origin":"https://api.example.com","argv": ["/bin/true"], "env": {"K": handle}, "cwd": "../.."}),
+        json!({"origin":"https://api.example.com","argv": ["/bin/true"], "env": {"KEY": handle}, "cwd": "../.."}),
     ] {
         assert!(
             call(&f, USE_ENV, refused.clone()).await.is_err(),
@@ -241,7 +327,7 @@ async fn s2_use_env_injects_values_and_masks_this_output() {
         .unwrap();
     std::fs::remove_file(&received).unwrap();
     assert!(call(&f, USE_ENV,
-        json!({"origin":"https://api.example.com","argv": ["/bin/sh", "-c", format!("printf x > '{}'", received.display())], "env": {"K": handle}}))
+        json!({"origin":"https://api.example.com","argv": ["/bin/sh", "-c", format!("printf x > '{}'", received.display())], "env": {"KEY": handle}}))
     .await
     .is_err());
     assert!(!received.exists());
@@ -284,10 +370,7 @@ async fn s2_use_env_refuses_credentials_not_made_for_commands() {
     .await
     .unwrap_err()
     .to_string();
-    assert!(
-        refused.contains("command input") || refused.contains("not allowed"),
-        "{refused}"
-    );
+    assert!(refused.contains("no declared use"), "{refused}");
     assert!(!marker.exists());
 }
 
@@ -305,11 +388,12 @@ async fn s4_capture_file_and_write_file_move_values_through_the_kernel() {
     assert!(catalog.iter().any(|name| name == WRITE_FILE), "{catalog:?}");
     let pulled = workspace(&f).join(".env.local");
     std::fs::write(&pulled, format!("# pulled\nAPI_KEY={SECRET}\nOTHER=1\n")).unwrap();
+    std::fs::create_dir(workspace(&f).join("config")).unwrap();
     let captured = call(
         &f,
         CAPTURE_FILE,
         json!({"request_id": "pulled", "path": ".env.local",
-        "host": "api.example.com", "extract": {"kind": "regex", "pattern": "(?m)^API_KEY=(.+)$"},
+        "host": "api.example.com", "use_binding":{"target":{"kind":"file","path":workspace(&f).join("config/.env")}}, "extract": {"kind": "regex", "pattern": "(?m)^API_KEY=(.+)$"},
         "replace_with_handle": true}),
     )
     .await
@@ -322,24 +406,30 @@ async fn s4_capture_file_and_write_file_move_values_through_the_kernel() {
         std::fs::read_to_string(&pulled).unwrap(),
         format!("# pulled\nAPI_KEY=${{chariox:{handle}}}\nOTHER=1\n")
     );
-    // A file capture is usable by commands too.
-    let used = call(
+    assert!(call(
         &f,
         USE_ENV,
-        json!({"origin":"https://api.example.com","argv": ["/bin/sh", "-c", "printf %s \"$K\""], "env": {"K": handle}}),
+        json!({"origin":"https://api.example.com","argv":["/bin/true"],"env":{"KEY":handle}})
     )
     .await
-    .unwrap();
-    assert_eq!(used["stdout"], format!("[vault:{handle}]"));
-    let written = call(
+    .is_err());
+    let wrong = workspace(&f).join("wrong.env");
+    assert!(call(
         &f,
         WRITE_FILE,
-        json!({"path": "config/.env",
-        "template": "# app\nAPI_KEY={{KEY}}\nAGAIN={{KEY}}\n", "values": {"KEY": handle}}),
+        json!({"path":"wrong.env","template":"KEY={{KEY}}","values":{"KEY":handle}})
     )
-    .await;
-    assert!(written.is_err(), "the directory must exist");
-    std::fs::create_dir(workspace(&f).join("config")).unwrap();
+    .await
+    .is_err());
+    assert!(!wrong.exists());
+    assert!(call(
+        &f,
+        CAPTURE_FILE,
+        json!({"request_id":"pulled","path":"missing-source", "host":"api.example.com",
+        "use_binding":{"target":{"kind":"file","path":wrong}}})
+    )
+    .await
+    .is_err());
     let written = call(
         &f,
         WRITE_FILE,
@@ -383,6 +473,18 @@ async fn s4_capture_file_and_write_file_move_values_through_the_kernel() {
     )
     .await
     .is_err());
+    std::fs::remove_file(&target).unwrap();
+    std::fs::remove_dir(workspace(&f).join("config")).unwrap();
+    let retry = call(
+        &f,
+        CAPTURE_FILE,
+        json!({"request_id":"pulled","path":"missing-source", "host":"api.example.com",
+        "use_binding":{"target":{"kind":"file","path":target}}}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(retry["credential_id"], handle);
+    assert_eq!(retry["created"], false);
     f.state
         .revoke_sudo(Some("local"), Some(&turn.entry_id), "explicit_revoke")
         .unwrap();
