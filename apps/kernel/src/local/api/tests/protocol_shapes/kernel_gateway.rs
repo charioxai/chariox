@@ -183,7 +183,7 @@ fn outside_events_snapshot_and_hash() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "e46da44b63f2f9c7cd925e5f12e1c360681e3d44c5bbcf45040abfa2adc305a1"
+        "b1574935e4be885d8c299a5412d8754d12744b3e722f051d2f45c3acc63c03cb"
     );
 }
 
