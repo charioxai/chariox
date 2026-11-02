@@ -68,3 +68,14 @@ builds, and the candidate image pins only its TEST public key. The HTTPS test
 server uses an ephemeral certificate with explicit CA trust on the validation
 clones; verification is never disabled. The candidate is test-only and cannot be
 promoted to production. The private TEST key is destroyed after the drill.
+
+## MP-08 / MP-09 / MP-10 / MP-11 — protected local-disk enrollment
+
+Cloud may supply managed bootstrap envelope schema 4 for a machine whose state
+lives on its local disk. It uses the canonical protected bootstrap path and the
+same signed installer, supervisor, grant exchange/confirmation, owner identity
+and durable grant/receipt binding as managed enrollment. Schema 4 requires the
+explicit repository root and rejects attached-volume serial/size fields. A
+confirmed restart reuses its persisted identity and receipt. Schema 3 remains
+for the existing attached-volume path. This private bootstrap envelope change
+does not change the kernel client or relay wire shapes.
