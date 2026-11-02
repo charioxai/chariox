@@ -1,6 +1,7 @@
 //! Real PTYs and the user's real shell.
 
 use std::future::Future;
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -461,13 +462,30 @@ async fn who_owns(
 }
 
 /// The two shells that report their job table: the login shell (bash) and zsh.
-fn integrated_shells() -> [Option<String>; 2] {
+fn integrated_shells(root: &Path) -> [Option<String>; 2] {
     let zsh = std::env::var("CHARIOX_TEST_ZSH").unwrap_or_else(|_| "/usr/bin/zsh".into());
     assert!(
         Path::new(&zsh).exists(),
         "zsh is not installed at {zsh}: install it or set CHARIOX_TEST_ZSH"
     );
-    [None, Some(zsh)]
+    // Keep the real integration .zshenv, but give it only our startup files.
+    // Global rc files can run compinit and consume typed input with a prompt.
+    let startup = root.join("zsh-startup");
+    std::fs::create_dir_all(&startup).unwrap();
+    std::fs::write(startup.join(".zshenv"), "unsetopt GLOBAL_RCS\n").unwrap();
+    let quote = |text: &str| format!("'{}'", text.replace('\'', "'\\''"));
+    let wrapper = root.join("zsh");
+    std::fs::write(
+        &wrapper,
+        format!(
+            "#!/bin/sh\nexport CHARIOX_ORIG_ZDOTDIR={}\nexec {} \"$@\"\n",
+            quote(startup.to_str().unwrap()),
+            quote(&zsh),
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o700)).unwrap();
+    [None, Some(wrapper.to_str().unwrap().to_string())]
 }
 
 /// A background job's line, then a second line accepted before the shell
@@ -577,7 +595,8 @@ async fn a_command_belongs_to_whoever_pressed_enter_when_the_text_came_in_separa
 async fn every_job_one_line_starts_belongs_to_that_lines_submitter() {
     let a = agent("a");
     let line = "sleep 120 & echo $! > '{dir}/one'; sleep 121 & echo $! > '{dir}/two'\r";
-    for shell in integrated_shells() {
+    let shells = TempDir::new();
+    for shell in integrated_shells(shells.path()) {
         assert_eq!(
             who_owns(
                 shell.as_deref(),
@@ -598,7 +617,8 @@ async fn every_job_one_line_starts_belongs_to_that_lines_submitter() {
 async fn a_pipeline_in_the_background_belongs_to_its_line_in_every_member() {
     let a = agent("a");
     let line = "sh -c 'echo $$ > {dir}/head; exec sleep 120' | sh -c 'echo $$ > {dir}/tail; exec sleep 121' &\r";
-    for shell in integrated_shells() {
+    let shells = TempDir::new();
+    for shell in integrated_shells(shells.path()) {
         assert_eq!(
             who_owns(
                 shell.as_deref(),
@@ -619,7 +639,7 @@ async fn a_pipeline_in_the_background_belongs_to_its_line_in_every_member() {
 async fn zsh_reports_its_jobs_without_a_word_at_the_prompt() {
     let root = TempDir::new();
     let service = service(root.path());
-    service.use_shell_for_test(integrated_shells()[1].as_deref().unwrap());
+    service.use_shell_for_test(integrated_shells(root.path())[1].as_deref().unwrap());
     let id = open(&service, root.path()).terminal_id;
     type_as(
         &service,
@@ -717,7 +737,8 @@ async fn a_persons_job_stays_the_persons_when_an_agent_submits_next_in_a_shell_w
 async fn typeahead_keeps_its_owner_while_the_command_before_it_runs_past_the_window() {
     // The first command outlasts the ten seconds an unreported Enter is kept.
     let a = agent("a");
-    for shell in integrated_shells() {
+    let shells = TempDir::new();
+    for shell in integrated_shells(shells.path()) {
         assert_eq!(
             who_owns(
                 shell.as_deref(),
