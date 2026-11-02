@@ -142,6 +142,11 @@ impl KernelRuntimeState {
         overwrite: bool,
     ) -> Result<crate::secret::VaultCredentialUpsertResult, DaemonError> {
         let _guard = self.vault_observation_mutation_guard().await;
+        if let Some(metadata) = &credential.metadata {
+            if let (Some(session), Some(agent)) = (&metadata.session_id, &metadata.created_by_id) {
+                self.vault_elevation_allows(session, agent, &credential)?;
+            }
+        }
         self.upsert_vault_credential_locked(service, registry, credential, secret, overwrite)
             .await
     }
@@ -189,6 +194,9 @@ impl KernelRuntimeState {
         secret: &str,
         overwrite: bool,
     ) -> Result<crate::secret::VaultCredentialUpsertResult, DaemonError> {
+        let (credential, secret) =
+            crate::secret::normalize_vault_credential_input(credential, secret)?;
+        let secret = secret.as_str();
         crate::credential::validate_credential_registration(&credential)?;
         let previous = registry.get(&credential.id)?;
         // A new handle must not take over a Vault slot that holds a value: storing would
@@ -241,6 +249,13 @@ impl KernelRuntimeState {
         self.with_authorized_app_side_effect(|_| {
             self.with_forwarded_binding_operation(|| {
                 let _history = self.owned.operational_history_store.lock_public_history()?;
+                if let Some(metadata) = &credential.metadata {
+                    if let (Some(session), Some(agent)) =
+                        (&metadata.session_id, &metadata.created_by_id)
+                    {
+                        self.vault_elevation_allows(session, agent, &credential)?;
+                    }
+                }
                 let result = service.upsert_vault_backed_credential_with_secret(
                     registry, credential, secret, overwrite,
                 )?;

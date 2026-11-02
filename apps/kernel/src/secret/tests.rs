@@ -1281,3 +1281,32 @@ fn a_host_port_entry_matches_the_scheme_default_port_and_only_that_port() {
         "https://evil.example.net/v1"
     ));
 }
+
+#[test]
+fn totp_inputs_compute_codes_instead_of_returning_the_seed() {
+    let seed = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
+    let credential: UserCredentialConfig = serde_json::from_value(serde_json::json!({
+        "id":"totp-test", "source":{"type":"vault","key":"totp-test"},
+        "allowed_hosts":["example.com"], "allowed_uses":["browser","pty"],
+        "injection":{"kind":"totp","algorithm":"sha1","digits":8,"period_s":30}
+    }))
+    .expect("TOTP is a supported credential kind");
+    let store = Arc::new(MemoryVaultStore::default());
+    store.set_secret("totp-test", "totp-test", seed).unwrap();
+    let service = RuntimeSecretService::with_vault_store(vec![credential], "totp-test", store);
+    let browser = service
+        .browser_secret_input_for_target_url("totp-test", "https://example.com/login")
+        .unwrap();
+    assert!(
+        browser.len() == 8 && browser.bytes().all(|c| c.is_ascii_digit()),
+        "browser receives only a computed code"
+    );
+    assert!(service.terminal_secret_input("totp-test").unwrap().len() == 8);
+    assert!(service
+        .browser_secret_input_for_target_url("totp-test", "https://other.example/login")
+        .is_err());
+    let handles = serde_json::to_string(&service.list_handles()).unwrap();
+    assert!(!handles.contains(seed) && !handles.contains(&browser));
+}
+
+mod factors;

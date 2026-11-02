@@ -23,6 +23,7 @@ mod process;
 mod receipts;
 mod scope;
 mod vault;
+mod vault_elevation;
 mod window;
 pub(crate) use policy::{is_sudo_control, is_sudo_prompt};
 pub(crate) use vault::{require_login_handle_scope, vault_generate_spec, VAULT_GENERATE};

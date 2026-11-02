@@ -27,9 +27,11 @@ mod socket_path;
 mod storage;
 pub(crate) use paths::default_state_dir;
 pub(crate) use socket_path::validate_local_socket_path;
+mod totp;
 mod user_config_mutation;
 mod user_config_schema;
 mod validation;
+pub use totp::{TotpAlgorithm, TotpConfig};
 
 pub use credentials::{
     validate_credentials, CredentialVaultAgentManagementPolicy, CredentialVaultBackend,

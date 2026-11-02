@@ -390,7 +390,7 @@ pub fn credential_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: REQUEST_CREDENTIAL_SECRET_TOOL.to_string(),
-            description: "Ask the user for a credential secret through a redacted Chariox interaction, then store it as a vault-backed credential handle. The typed secret is never returned to the model.".to_string(),
+            description: "Ask the user for a credential secret through a redacted Chariox interaction, then store it as a vault-backed credential handle. The typed secret is never returned to the model. During the authorized task, injection.kind=totp accepts a base32 manual key or otpauth://totp URI in the protected field; backup_codes accepts one recovery code per line or a JSON string array.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["credential", "prompt"],
@@ -588,7 +588,7 @@ fn credential_creation_schema() -> Value {
                 "type": "array",
                 "items": {
                     "type": "string",
-                    "enum": ["http", "pty", "connector", "browser", "computer", "mcp"]
+                    "enum": ["http", "pty", "connector", "browser", "computer", "mcp", "env"]
                 }
             },
             "injection": {
@@ -597,13 +597,16 @@ fn credential_creation_schema() -> Value {
                 "properties": {
                     "kind": {
                         "type": "string",
-                        "enum": ["header", "query", "basic", "hmac", "pty", "browser", "computer"]
+                        "enum": ["header", "query", "basic", "hmac", "pty", "browser", "computer", "totp", "backup_codes"]
                     },
                     "name": {"type": "string"},
                     "value": {"type": "string"},
                     "username": {"type": "string"},
                     "timestamp_header": {"type": "string"},
-                    "signature_header": {"type": "string"}
+                    "signature_header": {"type": "string"},
+                    "algorithm": {"type":"string", "enum":["sha1","sha256","sha512"], "default":"sha1"},
+                    "digits": {"type":"integer", "enum":[6,8], "default":6},
+                    "period_s": {"type":"integer", "minimum":1, "maximum":3600, "default":30}
                 },
                 "additionalProperties": false
             }

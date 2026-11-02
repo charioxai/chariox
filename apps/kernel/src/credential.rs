@@ -163,12 +163,14 @@ pub(crate) fn validate_credential_registration(
         && !matches!(
             credential.injection,
             crate::config::UserCredentialInjectionConfig::Browser
+                | crate::config::UserCredentialInjectionConfig::Totp(_)
+                | crate::config::UserCredentialInjectionConfig::BackupCodes
         )
     {
         return Err(DaemonError::LocalTransport {
             operation: "credential.register",
             message: format!(
-                "credential `{}` allows browser use but requires injection.kind=browser; basic is HTTP Basic authentication",
+                "credential `{}` allows browser use but requires injection.kind=browser, totp or backup_codes; basic is HTTP Basic authentication",
                 credential.id,
             ),
         });

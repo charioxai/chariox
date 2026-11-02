@@ -733,3 +733,79 @@ async fn a06_generation_storage_wait_rechecks_expired_window() {
     crate::test_support::isolated_env_test!();
     queued_generation_loses_authority(true).await;
 }
+
+fn owner_factor(f: &Fixture) {
+    f.state
+        .home_runtime_secret_service()
+        .unwrap()
+        .upsert_vault_backed_credential_with_secret(
+            &crate::credential::CharioxCredentialRegistry::user().unwrap(),
+            UserCredentialConfig {
+                id: "service-totp".into(),
+                description: None,
+                source: crate::config::UserCredentialSourceConfig::Vault {
+                    key: "service-totp".into(),
+                },
+                allowed_hosts: vec!["127.0.0.1:8123".into()],
+                allowed_uses: vec![crate::config::UserCredentialUse::Browser],
+                injection: crate::config::UserCredentialInjectionConfig::Totp(
+                    crate::config::TotpConfig::default(),
+                ),
+                metadata: None,
+            },
+            "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ",
+            false,
+        )
+        .unwrap();
+}
+
+#[tokio::test]
+async fn totp_browser_fill_requires_live_elevation_and_masks_the_computed_code() {
+    crate::test_support::isolated_env_test!();
+    let login = login_room().await;
+    let f = &login.f;
+    unlock(f);
+    owner_factor(f);
+    assert!(call(f, PASTE, paste_args("service-totp")).await.is_err());
+    assert!(inserted(&login).is_none());
+    let turn = elevated(f);
+    let result = call(f, PASTE, paste_args("service-totp")).await.unwrap();
+    let code = zeroize::Zeroizing::new(inserted(&login).unwrap());
+    assert!(code.len() == 6 && code.bytes().all(|c| c.is_ascii_digit()));
+    assert!(!result.to_string().contains(code.as_str()));
+    let snapshot = call(
+        f,
+        "chariox.kernel_browser",
+        json!({"command":{"op":"snapshot","tab_id":"host-tab-new","generation":1}}),
+    )
+    .await
+    .unwrap();
+    assert!(!snapshot.to_string().contains(code.as_str()));
+    assert!(!snapshot
+        .to_string()
+        .contains("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"));
+    f.state
+        .revoke_sudo(Some("local"), Some(&turn.entry_id), "explicit_revoke")
+        .unwrap();
+    assert!(call(f, PASTE, paste_args("service-totp")).await.is_err());
+}
+
+#[tokio::test]
+async fn totp_browser_fill_rechecks_elevation_after_vault_unlock() {
+    crate::test_support::isolated_env_test!();
+    let login = login_room().await;
+    let f = &login.f;
+    unlock(f);
+    owner_factor(f);
+    crate::secret::lock_chariox_encrypted_vault(vault_path(f)).unwrap();
+    let turn = elevated(f);
+    let fill = call(f, PASTE, paste_args("service-totp"));
+    let unlock = owner_unlocks(f, &turn.session_id, || {
+        f.state
+            .revoke_sudo(Some("local"), Some(&turn.entry_id), "explicit_revoke")
+            .unwrap();
+    });
+    let (result, ()) = tokio::join!(fill, unlock);
+    assert!(result.is_err());
+    assert!(inserted(&login).is_none());
+}

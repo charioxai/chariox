@@ -17,7 +17,9 @@ use crate::config::{
 use crate::credential::CharioxCredentialRegistry;
 use crate::error::DaemonError;
 
+mod backup_codes;
 mod http_boundary;
+mod totp;
 pub(crate) use http_boundary::HttpSecretBoundary;
 use http_boundary::{decode_http_response, http_error};
 mod vault;
@@ -324,6 +326,12 @@ impl RuntimeSecretService {
                 boundary.add(&signature);
                 headers.insert(signature_header.clone(), signature);
             }
+            UserCredentialInjectionConfig::Totp(_) | UserCredentialInjectionConfig::BackupCodes => {
+                return Err(secret_error(
+                    "http_request_with_credential",
+                    "TOTP and backup codes support only browser, stdin and env input".into(),
+                ));
+            }
             UserCredentialInjectionConfig::Pty => {
                 return Err(secret_error(
                     "http_request_with_credential",
@@ -403,19 +411,24 @@ impl RuntimeSecretService {
 
     pub fn terminal_secret_input(&self, credential_id: &str) -> Result<String, DaemonError> {
         let credential = self.validate_terminal_secret_input(credential_id)?;
-        self.resolve_secret(credential)
+        self.resolve_input_secret(credential)
     }
 
     pub fn browser_secret_input(&self, credential_id: &str) -> Result<String, DaemonError> {
         let credential = self.credential(credential_id)?;
         self.ensure_use_allowed(credential, UserCredentialUse::Browser)?;
-        if !matches!(credential.injection, UserCredentialInjectionConfig::Browser) {
+        if !matches!(
+            credential.injection,
+            UserCredentialInjectionConfig::Browser
+                | UserCredentialInjectionConfig::Totp(_)
+                | UserCredentialInjectionConfig::BackupCodes
+        ) {
             return Err(secret_error(
                 "credential_policy",
                 format!("credential `{credential_id}` is not configured for browser input"),
             ));
         }
-        self.resolve_secret(credential)
+        self.resolve_input_secret(credential)
     }
 
     pub fn computer_secret_input(&self, credential_id: &str) -> Result<String, DaemonError> {
@@ -448,7 +461,7 @@ impl RuntimeSecretService {
     ) -> Result<String, DaemonError> {
         let credential =
             self.validate_browser_secret_input_for_target_url(credential_id, target_url)?;
-        self.resolve_secret(credential)
+        self.resolve_input_secret(credential)
     }
 
     pub fn validate_terminal_secret_input(
@@ -457,7 +470,12 @@ impl RuntimeSecretService {
     ) -> Result<&UserCredentialConfig, DaemonError> {
         let credential = self.credential(credential_id)?;
         self.ensure_use_allowed(credential, UserCredentialUse::Pty)?;
-        if !matches!(credential.injection, UserCredentialInjectionConfig::Pty) {
+        if !matches!(
+            credential.injection,
+            UserCredentialInjectionConfig::Pty
+                | UserCredentialInjectionConfig::Totp(_)
+                | UserCredentialInjectionConfig::BackupCodes
+        ) {
             return Err(secret_error(
                 "credential_policy",
                 format!("credential `{credential_id}` is not configured for terminal input"),
@@ -473,7 +491,12 @@ impl RuntimeSecretService {
     ) -> Result<&UserCredentialConfig, DaemonError> {
         let credential = self.credential(credential_id)?;
         self.ensure_use_allowed(credential, UserCredentialUse::Browser)?;
-        if !matches!(credential.injection, UserCredentialInjectionConfig::Browser) {
+        if !matches!(
+            credential.injection,
+            UserCredentialInjectionConfig::Browser
+                | UserCredentialInjectionConfig::Totp(_)
+                | UserCredentialInjectionConfig::BackupCodes
+        ) {
             return Err(secret_error(
                 "credential_policy",
                 format!("credential `{credential_id}` is not configured for browser input"),
@@ -585,6 +608,8 @@ impl RuntimeSecretService {
         secret: &str,
         overwrite: bool,
     ) -> Result<VaultCredentialUpsertResult, DaemonError> {
+        let (credential, secret) = normalize_vault_credential_input(credential, secret)?;
+        let secret = secret.as_str();
         crate::credential::validate_credential_registration(&credential)?;
         let vault_key = match &credential.source {
             UserCredentialSourceConfig::Vault { key } => key.trim().to_string(),
@@ -647,6 +672,43 @@ impl RuntimeSecretService {
                 }
                 Err(error)
             }
+        }
+    }
+
+    /// S2's env/stdin executor uses this after its normal elevation and target checks.
+    pub fn environment_secret_input(&self, credential_id: &str) -> Result<String, DaemonError> {
+        let credential = self.validate_environment_secret_input(credential_id)?;
+        self.resolve_input_secret(credential)
+    }
+
+    pub fn validate_environment_secret_input(
+        &self,
+        credential_id: &str,
+    ) -> Result<&UserCredentialConfig, DaemonError> {
+        let credential = self.credential(credential_id)?;
+        self.ensure_use_allowed(credential, UserCredentialUse::Env)?;
+        Ok(credential)
+    }
+
+    fn resolve_input_secret(
+        &self,
+        credential: &UserCredentialConfig,
+    ) -> Result<String, DaemonError> {
+        match &credential.injection {
+            UserCredentialInjectionConfig::Totp(config) => {
+                let seed = Zeroizing::new(self.resolve_secret(credential)?);
+                totp::code(&seed, config, crate::session::unix_epoch_ms() / 1000)
+            }
+            UserCredentialInjectionConfig::BackupCodes => {
+                let UserCredentialSourceConfig::Vault { key } = &credential.source else {
+                    return Err(secret_error(
+                        "credential_backup_codes",
+                        "backup codes require a Vault source".into(),
+                    ));
+                };
+                backup_codes::take(self, key)
+            }
+            _ => self.resolve_secret(credential),
         }
     }
 
@@ -900,6 +962,22 @@ fn hex_bytes(bytes: &[u8]) -> String {
     hex
 }
 
+pub(crate) fn normalize_vault_credential_input(
+    mut credential: UserCredentialConfig,
+    value: &str,
+) -> Result<(UserCredentialConfig, Zeroizing<String>), DaemonError> {
+    let value = match &credential.injection {
+        UserCredentialInjectionConfig::Totp(config) => {
+            let (seed, config) = totp::normalize(value, config)?;
+            credential.injection = UserCredentialInjectionConfig::Totp(config);
+            seed
+        }
+        UserCredentialInjectionConfig::BackupCodes => backup_codes::normalize(value)?,
+        _ => Zeroizing::new(value.to_string()),
+    };
+    Ok((credential, value))
+}
+
 fn injection_kind(injection: &UserCredentialInjectionConfig) -> &'static str {
     match injection {
         UserCredentialInjectionConfig::Header { .. } => "header",
@@ -910,6 +988,8 @@ fn injection_kind(injection: &UserCredentialInjectionConfig) -> &'static str {
         UserCredentialInjectionConfig::Browser => "browser",
         UserCredentialInjectionConfig::Computer => "computer",
         UserCredentialInjectionConfig::Provider => "provider",
+        UserCredentialInjectionConfig::Totp(_) => "totp",
+        UserCredentialInjectionConfig::BackupCodes => "backup_codes",
     }
 }
 

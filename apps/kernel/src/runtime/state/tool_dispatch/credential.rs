@@ -48,6 +48,11 @@ impl KernelRuntimeState {
                     credential_from_runtime_input(args.credential)?,
                     provider_run,
                 );
+                self.vault_elevation_allows(
+                    provider_run.session_id(),
+                    provider_run.agent_instance_id().unwrap_or_default(),
+                    &credential,
+                )?;
                 match &credential.source {
                     crate::config::UserCredentialSourceConfig::Vault { .. } => {}
                     crate::config::UserCredentialSourceConfig::Env { .. }
@@ -277,19 +282,46 @@ impl KernelRuntimeState {
                     operation: "runtime_tool_send_secret_to_terminal",
                     message: format!("invalid tool arguments: {error}"),
                 })?;
-                service.validate_terminal_secret_input(&args.credential_id)?;
+                self.vault_elevation_allows(
+                    provider_run.session_id(),
+                    provider_run.agent_instance_id().unwrap_or_default(),
+                    service.validate_terminal_secret_input(&args.credential_id)?,
+                )?;
                 let _vault_unlock = self
                     .ensure_vault_unlocked_for_provider_run(
                         provider_run,
                         "runtime_tool_send_secret_to_terminal",
                     )
                     .await?;
-                let mut input = service.terminal_secret_input(&args.credential_id)?;
-                if args.append_newline {
-                    input.push('\n');
-                }
+                self.vault_elevation_allows(
+                    provider_run.session_id(),
+                    provider_run.agent_instance_id().unwrap_or_default(),
+                    service.validate_terminal_secret_input(&args.credential_id)?,
+                )?;
                 let provider_run_id = provider_run.id().to_string();
-                self.with_app_side_effect(move |app| {
+                self.with_app_side_effect(|app| {
+                    self.vault_elevation_allows(
+                        provider_run.session_id(),
+                        provider_run.agent_instance_id().unwrap_or_default(),
+                        service.validate_terminal_secret_input(&args.credential_id)?,
+                    )?;
+                    let mut input = zeroize::Zeroizing::new(
+                        service.terminal_secret_input(&args.credential_id)?,
+                    );
+                    if matches!(
+                        service
+                            .validate_terminal_secret_input(&args.credential_id)?
+                            .injection,
+                        crate::config::UserCredentialInjectionConfig::Totp(_)
+                            | crate::config::UserCredentialInjectionConfig::BackupCodes
+                    ) {
+                        self.owned
+                            .room_secret_observations
+                            .register(provider_run.session_id(), &input)?;
+                    }
+                    if args.append_newline {
+                        input.push('\n');
+                    }
                     app.write_provider_pty_input_for_runtime(&provider_run_id, input.as_bytes())
                 })
                 .await?;
@@ -560,7 +592,7 @@ impl KernelRuntimeState {
     ) -> Result<(String, String), DaemonError> {
         let agent = self.authorize_home_credential_context(&context)?;
         let service = self.home_runtime_secret_service()?;
-        match &injection {
+        let credential = match &injection {
             crate::transport::relay_peer::RemoteCredentialSecretInjection::Browser {
                 target_url,
             } => {
@@ -576,6 +608,7 @@ impl KernelRuntimeState {
                 });
             }
         };
+        self.vault_elevation_allows(&context.home_session_id, agent.id(), credential)?;
         let _vault_unlock = self
             .ensure_vault_unlocked_for_agent(
                 &context.home_session_id,
@@ -583,9 +616,11 @@ impl KernelRuntimeState {
                 "home_credential_secret_resolve",
             )
             .await?;
+        self.vault_elevation_allows(&context.home_session_id, agent.id(), credential)?;
         let secret_input = self
             .with_app_side_effect(|_| {
                 self.authorize_home_credential_context(&context)?;
+                self.vault_elevation_allows(&context.home_session_id, agent.id(), credential)?;
                 let secret_input = self.with_forwarded_binding_operation(|| match injection {
                     crate::transport::relay_peer::RemoteCredentialSecretInjection::Browser {
                         target_url,
@@ -634,6 +669,7 @@ impl KernelRuntimeState {
             agent.provider(),
             Some(&context.worker_provider_run_id),
         );
+        self.vault_elevation_allows(&context.home_session_id, agent.id(), &credential)?;
         match &credential.source {
             crate::config::UserCredentialSourceConfig::Vault { .. } => {}
             crate::config::UserCredentialSourceConfig::Env { .. }
