@@ -39,11 +39,11 @@ test('MP-08/MP-11 cancellation and retired target cannot move a replacement wind
 });
 
 test('MP-08/MP-10 the ordinary host browser entry routes the resize mutation',async()=>{
- const {host,tab}=fixture();Object.assign(host,{start:async()=>{},protection:{unknown:false},streams:new Map(),target:async command=>{assert.equal(command.generation,1);return tab},displayTarget:async command=>{assert.equal(command.generation,1);return tab},appAgent:()=>({})});
+ const {host,tab}=fixture();Object.assign(host,{start:async()=>{},protection:{unknown:false},streams:new Map(),target:async command=>{assert.equal(command.generation,1);return tab},displayTarget:async command=>{assert.equal(command.generation,1);return tab},appForInput:()=>null});
  assert.deepEqual(await KernelBrowserHost.prototype.requestNow.call(host,command),{width:900,height:600});
 });
 test('MP-08/MP-10 failed layout application leaves the last committed size retryable',async()=>{
- const proto=KernelBrowserHost.prototype,host={layouts:new Map(),layoutRevisions:new Map(),browser:{setLayout:async()=>{throw Error('layout unavailable')}},pageSize:proto.pageSize,noteLayout:proto.noteLayout,layoutRevision:proto.layoutRevision};
+ const proto=KernelBrowserHost.prototype,host={chromium:{desktop:null},layouts:new Map(),layoutRevisions:new Map(),browser:{setLayout:async()=>{throw Error('layout unavailable')}},pageSize:proto.pageSize,noteLayout:proto.noteLayout,layoutRevision:proto.layoutRevision};
  await assert.rejects(proto.setLayout.call(host,{tab_id:'t',target_id:'T'},'resize',{width:900,height:600}),/layout unavailable/);assert.equal(host.layouts.size,0);assert.equal(host.layoutRevisions.size,0);
 });
 
@@ -65,7 +65,7 @@ test('MP-08/MP-10 a retried resize completes a partially applied one across ever
  let failU=1;
  const host={generation:1,tabs,displays:new Map(streams.map((s,i)=>[String(i),s])),layouts:new Map(),layoutRevisions:new Map(),windowLayout:null,
   pageSize:proto.pageSize,noteLayout:proto.noteLayout,layoutRevision:proto.layoutRevision,setLayout:proto.setLayout,
-  browser:{setLayout:async target=>{if(target==='U'&&failU-->0)throw Error('layout unavailable');calls.push('layout '+target)},
+  browser:{nativeViewport:async target_id=>({target_id,width:bounds.width,height:bounds.height-88}),setLayout:async target=>{if(target==='U'&&failU-->0)throw Error('layout unavailable');calls.push('layout '+target)},
    resolvePageTarget:async()=>({sessionId:'s',connection:{send:async(m,p)=>{if(m==='Browser.setWindowBounds')Object.assign(bounds,p.bounds);return {windowId:7,bounds:{...bounds}};}}})},
   chromium:{desktop:{binding:()=>({})}},chromeWindows:{resolve:async()=>{},current:()=>({tabbed:{scale:1,page_rect:{width:bounds.width,height:bounds.height-88}}}),retire:()=>{}},
   closeCompositors:async()=>{},stateSignal:{notify(){}},rebindWindows:async()=>calls.push('rebind')};
