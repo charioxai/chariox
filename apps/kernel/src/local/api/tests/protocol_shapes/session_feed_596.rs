@@ -91,7 +91,7 @@ fn session_feed_596_shapes_are_pinned() {
     let bytes = include_bytes!("session-feed-596.json");
     assert_eq!(
         format!("{:x}", sha2::Sha256::digest(bytes)),
-        "ed52a5c170697f73d52f2010994e20b2defc4932081b012ee7f88496e8b2e866"
+        "f61d4c85f339a8e2759b54ce464d3845085a06623f877598b6a4b37f986ecda4"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(fixture, fixture_events());

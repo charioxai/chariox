@@ -44,7 +44,6 @@ COPY packages/app-wit packages/app-wit
 COPY packages/app-wasm-worker packages/app-wasm-worker
 COPY packages/app-sdk-rust packages/app-sdk-rust
 COPY packages/app-sdk-tools packages/app-sdk-tools
-COPY packages/app-sdk packages/app-sdk
 COPY apps/kernel/slice-linux-docker/prebuilt /opt/chariox-prebuilt
 RUN cargo metadata --locked --no-deps --format-version 1 > /dev/null
 ARG CHARIOX_PREBUILT_RUNTIME=0

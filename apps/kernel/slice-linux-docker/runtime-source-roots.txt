@@ -15,4 +15,3 @@ packages/app-wit
 packages/app-wasm-worker
 packages/app-sdk-rust
 packages/app-sdk-tools
-packages/app-sdk

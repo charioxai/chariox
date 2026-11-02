@@ -64,7 +64,6 @@ COPY packages/app-wit packages/app-wit
 COPY packages/app-wasm-worker packages/app-wasm-worker
 COPY packages/app-sdk-rust packages/app-sdk-rust
 COPY packages/app-sdk-tools packages/app-sdk-tools
-COPY packages/app-sdk packages/app-sdk
 COPY deploy/managed-kernel/extract-release.py deploy/managed-kernel/extract-release.py
 COPY deploy/managed-kernel/verify-image-release.mjs deploy/managed-kernel/verify-image-release.mjs
 COPY deploy/managed-kernel/path1-service-policy.mjs deploy/managed-kernel/path1-service-policy.mjs

@@ -11,6 +11,49 @@ use crate::{
     ErrorCode, Limits, PackageError, Result, TrustedPublisher,
 };
 
+pub(super) fn generate_manifest(
+    options: super::ManifestOptions,
+    limits: &Limits,
+) -> Result<ManifestV2> {
+    let mut manifest = ManifestV2 {
+        schema: v2::APP_SCHEMA_V2.into(),
+        app_id: options.app_id,
+        version: options.version,
+        publisher: options.publisher,
+        app_contract_version: v2::APP_CONTRACT_VERSION_V2,
+        resource_policy: crate::RESOURCE_POLICY.into(),
+        world: "chariox:app/app@1.0.0".into(),
+        required_features: Vec::new(),
+        idempotent_tools: Vec::new(),
+        runtime: v2::RuntimeV2 {
+            engine: v2::RuntimeEngineV2::Wasm,
+            component: if options.runtime_entry == "runtime/main.js" {
+                "runtime/app.wasm".into()
+            } else {
+                options.runtime_entry
+            },
+        },
+        build: v2::Build {
+            language: "typescript".into(),
+            toolchain: "chariox-app-sdk-tools".into(),
+            sdk_version: "0.1.0".into(),
+        },
+        ui: crate::Ui {
+            entry: options.ui_entry,
+            agent_panel: None,
+        },
+        tools: options.tools,
+        events: options.events,
+        actions: options.actions,
+        ui_actions: None,
+        capabilities: options.capabilities,
+        migrations: None,
+    };
+    manifest.required_features = manifest.derive_features();
+    manifest.validate(limits)?;
+    Ok(manifest)
+}
+
 const CONTROL_ENTRIES: usize = 3;
 
 fn policy(publisher: TrustedPublisher, limits: &Limits) -> PolicyV2 {

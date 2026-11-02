@@ -5,15 +5,15 @@ use std::{collections::BTreeMap, path::Path};
 use serde::Serialize;
 use serde_json::json;
 
-use super::{fs, generate_manifest, ManifestOptions, PublisherFile};
-use crate::{json as package_json, Limits, Manifest, Result};
+use super::{fs, v2::generate_manifest, ManifestOptions, PublisherFile};
+use crate::{json as package_json, v2::ManifestV2, Limits, Result};
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScaffoldReport {
     pub status: &'static str,
     pub directory: String,
-    pub manifest: Manifest,
+    pub manifest: ManifestV2,
 }
 
 /// All validation happens before creating the destination. Creation refuses an
@@ -34,7 +34,7 @@ pub fn create_scaffold(
         publisher.publisher.clone(),
         kernel_protocol,
     );
-    options.runtime_entry = "runtime/main.mjs".into();
+    options.runtime_entry = "runtime/app.wasm".into();
     options.tools = Some("schemas/tools.json".into());
     let manifest = generate_manifest(options, limits)?;
     let tools = json!({"tools":[{
@@ -47,7 +47,7 @@ pub fn create_scaffold(
     let files = BTreeMap::from([
         ("app.json", package_json::canonical(&manifest)?),
         ("publisher.json", package_json::canonical(publisher)?),
-        ("bundle/runtime/main.mjs", b"export default function register(chariox) {\n  chariox.tools.register('greet', async ({ name }) => ({ greeting: `Hello, ${name}!` }));\n}\n".to_vec()),
+        ("src/app.ts", b"import { defineApp } from '@chariox/app-sdk-wasm';\nexport const handlers = defineApp({ tools: { async greet({ name }: { name: string }) { return { greeting: `Hello, ${name}!` }; } } });\n".to_vec()),
         ("bundle/schemas/tools.json", package_json::canonical(&tools)?),
         ("bundle/ui/index.html", b"<!doctype html>\n<html lang=\"en\"><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Hello Chariox</title>\n<main><h1>Hello Chariox</h1><p>Your App is ready to customize.</p><p>The App runtime exposes a <code>greet</code> tool for Chariox agents.</p></main></html>\n".to_vec()),
         (".gitignore", b"*.cxapp\n*.key\n*.pem\n.env\n.env.*\nnode_modules/\n".to_vec()),
@@ -61,15 +61,16 @@ pub fn create_scaffold(
     })
 }
 
-const README: &str = r#"# Your Chariox App
+const README: &str = r#"# Your Chariox WASM App
 
-`bundle/runtime/main.mjs` registers the `greet` tool declared in
-`bundle/schemas/tools.json`. `bundle/ui/index.html` is the App view.
-`app.json` is generated from the selected SDK/App contract and CLI protocol.
-`publisher.json` contains only your public publisher identity.
+`src/app.ts` implements the `greet` tool declared in `bundle/schemas/tools.json`.
+Compile it with `packages/app-sdk-tools/build-js.mjs` into
+`bundle/runtime/app.wasm` before packing. The SDK build tool resolves the WASM
+SDK and checks the component's imports; Node is a build tool only.
+`bundle/ui/index.html` is the view. `app.json` is a contract-2 manifest;
+`publisher.json` holds only the public identity.
 
-Keep your private signing key in its protected directory outside this project.
-From this project directory, package the completed source bundle with:
+Keep signing keys outside the source tree. After compiling:
 
 ```sh
 chariox app pack --bundle bundle --manifest app.json --key /path/to/private-key --output example.cxapp
@@ -77,11 +78,6 @@ chariox app validate example.cxapp --trust publisher.json
 chariox app inspect example.cxapp
 ```
 
-Replace the key placeholder with your existing private key. No private key or
-machine-specific path is stored in this scaffold. Packaging performs no npm
-install, build script, network request or App execution. If your App needs a
-build step, write its completed output into `bundle/` before packing.
-
-Local validation checks the selected publisher and package bytes. It does not
-enroll that publisher in a kernel, approve capabilities, or install the App.
+Packing does not run a build, install dependencies, enroll a publisher or execute
+an App. Complete the component build before packing; no engine is bundled.
 "#;

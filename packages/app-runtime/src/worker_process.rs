@@ -70,10 +70,10 @@ trait ResourceDomain: Send {
     fn private_data_directory(&self) -> Result<File, WorkerError> {
         Err(WorkerError::Preparation)
     }
-    /// Trusted setup only: Linux inherits cgroup.procs at FD5 and the pinned
-    /// bubblewrap executable at FD6 and a borrowed storage lease at FD7. All
-    /// setup channels close before Bubblewrap exec. Ordinary
-    /// workers and macOS Apple-tool launches retain the original FD0..4 ABI.
+    /// The WASM launch retains the verified component, AOT artifact, config
+    /// and private directory handles. These are supervisor inputs, not paths
+    /// or descriptors selected by the App. The worker closes setup descriptors
+    /// before entering its native containment and exposing the SDK channel.
     fn setup_descriptors(&self) -> &[File] {
         &[]
     }

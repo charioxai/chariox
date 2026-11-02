@@ -41,7 +41,6 @@ const SLICE_BUILD_CONTEXT_SOURCES = [
   "packages/aegs-sdk",
   "packages/app-package",
   "packages/app-runtime",
-  "packages/app-sdk",
   "packages/event-protocol",
 ]
 const SLICE_RUNTIME_SOURCE_ROOTS = "apps/kernel/slice-linux-docker/runtime-source-roots.txt"

@@ -1417,7 +1417,7 @@ fn linux_docker_slice_auto_build_refreshes_protocol_or_runtime_incompatible_work
     assert!(!script.contains("grep -v '^apps/kernel/slice-linux-docker/'"));
     assert!(dockerfile.contains("COPY packages/event-protocol packages/event-protocol"));
     // The kernel links the App packages; the runtime image must build them.
-    for package in ["app-package", "app-runtime", "app-sdk"] {
+    for package in ["app-package", "app-runtime"] {
         let root = format!("packages/{package}");
         assert!(dockerfile.contains(&format!("COPY {root} {root}")));
         assert!(roots.contains(&root.as_str()));

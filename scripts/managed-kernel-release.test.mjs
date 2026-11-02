@@ -384,7 +384,6 @@ async function makeFixture(root, variant = "", { dockerfileContents, omitQuotaAs
     ["packages/aegs-sdk/Cargo.toml", "[package]\nname = \"sdk-fixture\"\n"],
     ["packages/app-package/Cargo.toml", "[package]\nname = \"app-package-fixture\"\n"],
     ["packages/app-runtime/Cargo.toml", "[package]\nname = \"app-runtime-fixture\"\n"],
-    ["packages/app-sdk/package.json", '{"name":"@chariox/app-sdk"}\n'],
     ["packages/event-protocol/Cargo.toml", "[package]\nname = \"event-fixture\"\n"],
   ])
   if (omitQuotaAsset) sourceFiles.delete(omitQuotaAsset)
@@ -546,7 +545,6 @@ test("managed kernel release packages one reproducible signed rootfs", async (co
     "usr/lib/chariox/slice-build-context/packages/event-protocol/Cargo.toml",
     "usr/lib/chariox/slice-build-context/packages/app-package/Cargo.toml",
     "usr/lib/chariox/slice-build-context/packages/app-runtime/Cargo.toml",
-    "usr/lib/chariox/slice-build-context/packages/app-sdk/package.json",
     "usr/local/bin/chariox-kernel",
     "usr/local/bin/chariox-managed-bootstrap",
     "usr/local/bin/chariox-app-package",

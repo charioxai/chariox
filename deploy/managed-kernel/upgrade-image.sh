@@ -369,6 +369,7 @@ atomic_symlink() {
 . "$script_root/managed-app-release.sh"
 
 sync_managed_app_binaries() {
+  install -d -o root -g root -m 0755 "$install_root/usr/local/bin" || return 1
   for name in chariox-app-package chariox-app-wasm-worker; do
     publish_app_release_link "../../../usr/lib/chariox/current/usr/local/bin/$name" "$install_root/usr/local/bin/$name" || return 1
   done
