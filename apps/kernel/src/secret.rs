@@ -942,13 +942,13 @@ impl RuntimeSecretService {
             .metadata
             .as_ref()
             .and_then(|metadata| metadata.created_by_kind.as_deref());
-        if kind == Some("vault_generate") {
+        if matches!(kind, Some("vault_generate" | "agent_auth")) {
             return if credential.allowed_hosts == [target.origin().ascii_serialization()] {
                 Ok(())
             } else {
                 Err(secret_error(
                     "credential_policy",
-                    "generated credential is not allowed for this origin".into(),
+                    "credential is not allowed for this origin".into(),
                 ))
             };
         }
