@@ -862,6 +862,16 @@ fn idle_workflow_prompt_fixture() -> InterruptFixture {
         .prompt_state_owner
         .cancel_active_prompt_only(&session, &fixture.target_agent_id)
         .unwrap();
+    // Ordinary queued work takes precedence over workflow turns. This fixture
+    // exercises retry admission of the workflow head itself.
+    owned
+        .prompt_state_owner
+        .remove_queued_prompt(
+            &session,
+            &fixture.target_agent_id,
+            &fixture.target_unrelated_prompt_id,
+        )
+        .unwrap();
     let (active, queued) = owned
         .prompt_state_owner
         .state_parts(&session, &fixture.target_agent_id);
