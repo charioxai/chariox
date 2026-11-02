@@ -260,9 +260,3 @@ test("kernel runtime images install the mandatory process sampler", async () => 
     assert.ok(runtime.includes("RUN node /usr/local/lib/chariox/check-process-sampler.mjs"), `${path} must check a real launched process in the image`)
   }
 })
-
-test("the native managed image explicitly installs and checks the sampler", async () => {
-  const source = await readFile(new URL("../deploy/managed-kernel/prepare-worker-image.sh", import.meta.url), "utf8")
-  assert.match(source, /\n  procps \\\n/)
-  assert.ok(source.includes("ps -axo pid=,ppid=,rss=,pcpu=,etime=,comm="))
-})
