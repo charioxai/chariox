@@ -15,6 +15,8 @@ export type KernelBrowserDisplayTarget =
   | { kind: "browser_auxiliary"; window_generation: number; auxiliary_id: number }
   | { kind: "browser_window"; window_generation: number }
 export type KernelBrowserCommand =
+  | { op: "paste_secret"; credential_id: string; tab_id: string; generation: number }
+
   | { op: "grant_leased_computer"; agent_id: string; target: KernelDesktopTarget }
   | { op: "revoke_leased_computer"; agent_id: string }
   | { op: "grant_room_computer"; agent_id: string | null }

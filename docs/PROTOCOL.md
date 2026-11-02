@@ -6280,3 +6280,13 @@ managed-upgrade list is [629, 636, 911, 923, 934]. Focused checks:
 
 Landing 3 carries local 934, 935 and 936 / relay peer 383, 384 and 385 on top of the Landing 2
 release at local 933 / peer 382, so the managed-upgrade list is [629, 636, 911, 923, 933, 936].
+
+MP-08 / MP-09 / MP-10 / MP-11, local 941 / peer 390: `KernelBrowser`
+`paste_secret` lets an authenticated person fill the focused editable field of
+`tab_id` / `generation` with `credential_id`. The kernel discovers the focused
+node from a fresh snapshot, validates the document and credential host/use, and
+uses the same registered Vault fill as the agent tool. It never submits. The
+Vault must be unlocked. Agents keep the observed-node MCP fill; this command
+is admitted only through the human terminal adapter. Responses contain only
+`inserted: true`. Browser display audience comes from the home kernel; model
+observations stay protected even when the owner's display is unmasked.

@@ -243,6 +243,91 @@ impl KernelRuntimeState {
             service.validate_browser_secret_input_for_target_url(&args.credential_id, &url)?,
             session,
         )?;
+        self.insert_kernel_browser_secret(user, &admission, &args, &service, url, None)
+            .await?;
+        Ok(RuntimeToolResult {
+            ok: true,
+            payload: json!({"inserted":true}),
+        })
+    }
+
+    pub(super) async fn kernel_browser_terminal_paste_secret(
+        &self,
+        caller: &crate::runtime::command::KernelCommand,
+        credential_id: String,
+        tab_id: String,
+        generation: u64,
+    ) -> Result<Value, DaemonError> {
+        let (user, actor) = self.kernel_browser_terminal_context(caller)?;
+        require_vault_owner(&user)?;
+        let admission = self
+            .owned
+            .kernel_browser_host
+            .admit_terminal(&user, caller.terminal_lifetime.clone().unwrap_or_default());
+        let snapshot = self.kernel_browser_operation_admitted(&user, Some(admission.clone()),
+            "host.browser", json!({"op":"snapshot","tab_id":tab_id,"generation":generation,"observed_by":actor})).await?;
+        let snapshot: crate::runtime::browser_controller_snapshot::BrowserControllerStructuredSnapshot =
+            serde_json::from_value(snapshot["snapshot"].clone()).map_err(|_| host_error("MD-5: invalid browser snapshot".into()))?;
+        let node_ref = snapshot
+            .accessibility_nodes
+            .iter()
+            .find(|node| {
+                node.focused
+                    && snapshot.dom_nodes.iter().any(|dom| {
+                        dom.node_ref == node.node_ref
+                            && (dom.node_name.eq_ignore_ascii_case("input")
+                                || dom.node_name.eq_ignore_ascii_case("textarea")
+                                || dom.attributes.contains_key("contenteditable"))
+                    })
+            })
+            .map(|node| node.node_ref.clone())
+            .ok_or_else(|| {
+                host_error("Focus the page field to fill, then choose Fill from Vault.".into())
+            })?;
+        let args = PasteArgs {
+            credential_id,
+            tab_id,
+            generation,
+            document_id: snapshot.document_id,
+            node_ref,
+            submit: false,
+        };
+        let url = self
+            .kernel_browser_secret_target_url(&user, &admission, &args)
+            .await?;
+        self.home_runtime_secret_service()?
+            .validate_browser_secret_input_for_target_url(&args.credential_id, &url)?;
+        let protection = &self.owned.kernel_browser_secret_observations;
+        let scope = KernelBrowserHost::profile_key(&user);
+        let epoch = protection.revision(&scope)?;
+        let (service, _vault_guard) = self
+            .scoped_secret_input_service(protection, &scope, &args.credential_id)
+            .await?;
+        let _barrier = protection.barrier(&scope)?.write_owned().await;
+        if protection.revision(&scope)? != epoch {
+            return Err(host_error(
+                "The page protection changed. Focus the field and try again.".into(),
+            ));
+        }
+        let url = self
+            .kernel_browser_secret_target_url_bound(&user, &admission, &args)
+            .await?;
+        self.insert_kernel_browser_secret(&user, &admission, &args, &service, url, Some(&actor))
+            .await?;
+        Ok(json!({"inserted":true}))
+    }
+
+    async fn insert_kernel_browser_secret(
+        &self,
+        user: &str,
+        admission: &KernelBrowserAdmission,
+        args: &PasteArgs,
+        service: &crate::secret::RuntimeSecretService,
+        url: String,
+        actor: Option<&str>,
+    ) -> Result<(), DaemonError> {
+        let protection = &self.owned.kernel_browser_secret_observations;
+        let scope = KernelBrowserHost::profile_key(user);
         let secret = zeroize::Zeroizing::new(
             service.browser_secret_input_for_target_url(&args.credential_id, &url)?,
         );
@@ -250,13 +335,12 @@ impl KernelRuntimeState {
         let snapshot = self
             .kernel_browser_bound_operation(
                 user,
-                Some(&admission),
+                Some(admission),
                 "host.browser",
                 json!({"op":"snapshot","tab_id":args.tab_id,"generation":args.generation}),
                 true,
             )
             .await?;
-        check_authority()?;
         let target = snapshot["snapshot"]["target_id"]
             .as_str()
             .ok_or_else(|| host_error("MD-5: missing target identity".into()))?;
@@ -278,14 +362,15 @@ impl KernelRuntimeState {
         protection.register_command(&scope, &command)?;
         let mut params = json!({"tab_id":args.tab_id,"generation":args.generation,"document_id":args.document_id,"node_ref":args.node_ref,"action":action});
         // MP-08/MP-11: the fill is the agent's input to an App Tab too.
-        self.claim_app_view_tab(user, &admission, &mut params)?;
-        check_authority()?;
-        self.kernel_browser_bound_operation(user, Some(&admission), "host.secret", params, true)
+        if admission.is_agent() {
+            self.claim_app_view_tab(user, admission, &mut params)?;
+        }
+        if let Some(actor) = actor {
+            params["observed_by"] = json!(actor);
+        }
+        self.kernel_browser_bound_operation(user, Some(admission), "host.secret", params, true)
             .await?;
-        Ok(RuntimeToolResult {
-            ok: true,
-            payload: json!({"inserted":true}),
-        })
+        Ok(())
     }
 
     async fn kernel_browser_secret_target_url(
