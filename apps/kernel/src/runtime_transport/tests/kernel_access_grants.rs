@@ -423,7 +423,10 @@ fn kernel_access_background_process() {
                     .await
                     .unwrap();
                 let reply = response(&mut socket, "request").await;
-                std::fs::write(&result, reply.to_string()).unwrap();
+                // Rename so the poller never reads a half-written reply.
+                let partial = root.join(format!("bg-{label}-result.partial"));
+                std::fs::write(&partial, reply.to_string()).unwrap();
+                std::fs::rename(&partial, &result).unwrap();
             }
         });
 }
