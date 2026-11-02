@@ -2,10 +2,10 @@ import { LocalIpcClient } from "@chariox/kernel-client/ipc"
 import { resolveSessionRequest } from "@chariox/kernel-client/ipc-requests"
 import type { RuntimeSession } from "@chariox/kernel-client/kernel-types"
 
+import { TERMINAL_ATTACH_USAGE } from "./terminal-verbs.js"
 import { parseRoomTerminalCommand, ROOM_TERMINAL_USAGE, runRoomTerminalCommand } from "./room-terminal-command.js"
 
-const USAGE = `usage: chariox terminal --session SESSION [--kernel-url URL] [list | new [TITLE] | close TERMINAL | TERMINAL]
-Attaches this terminal to a Room terminal (the newest running one, else a new one). Ctrl-] detaches.`
+const USAGE = TERMINAL_ATTACH_USAGE
 
 export function parseTerminalArgs(argv: readonly string[]): { session: string; kernelUrl?: string; rest: string[] } | string {
   const rest: string[] = []

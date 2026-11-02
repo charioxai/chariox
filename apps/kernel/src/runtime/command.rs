@@ -49,7 +49,9 @@ pub struct KernelCommand {
 
 impl KernelCommand {
     pub(crate) fn external_grant_id(&self) -> Option<String> {
-        (self.caller.connection_class == Some(crate::local::KernelConnectionClass::ExternalAgent)
+        // A request a gateway forwards for an external agent names no grant of this kernel.
+        ((self.caller.connection_class == Some(crate::local::KernelConnectionClass::ExternalAgent)
+            && self.caller.caller_kind != KernelCallerKind::RemoteClient)
             || (self.caller.connection_class
                 == Some(crate::local::KernelConnectionClass::KernelAgent)
                 && self.caller.caller_id.starts_with("sudo:")))

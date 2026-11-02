@@ -862,7 +862,7 @@ enum RelayDispatchOutcome {
 async fn dispatch_on_behalf_of(
     router: &CommandRouter,
     command_sequence: &AtomicU64,
-    caller: KernelCaller,
+    mut caller: KernelCaller,
     request: LocalDaemonRequest,
     command_id: Option<String>,
     command_result_cache: &CommandResultCache,
@@ -870,6 +870,8 @@ async fn dispatch_on_behalf_of(
     gateway_public_key: &str,
 ) -> RelayDispatchOutcome {
     use crate::runtime::kernel_gateway::ledger::{is_repeatable, Failure, Settled};
+    // The paired gateway carries an external agent's request; it is not a person's terminal.
+    caller.connection_class = Some(crate::local::KernelConnectionClass::ExternalAgent);
     if let Err(error) = router
         .runtime_state()
         .authorize_on_behalf_of_request(on_behalf_of, &request)

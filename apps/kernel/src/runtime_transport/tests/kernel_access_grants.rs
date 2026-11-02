@@ -1611,6 +1611,30 @@ async fn a_grant_holder_moves_a_file_in_chunks_and_a_bad_request_says_what_to_do
     );
 }
 
+// A grant holder that copies the kernel id from an event record into `--kernel` means the
+// kernel it is talking to: the answer is the local one, as when the name is omitted.
+#[tokio::test]
+async fn naming_this_kernels_own_id_is_the_local_kernel() {
+    let mut kernel = Kernel::start().await;
+    let mut holder = Client::start(&kernel.root);
+    grant(&mut kernel, &mut holder).await;
+    let status = holder.request(serde_json::json!({"RelayStatus":{}}));
+    let own = status["response"]["RelayStatus"]["status"]["daemon_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{status}"))
+        .to_string();
+    let local = holder.request_on(
+        &own,
+        serde_json::json!({"GetSessionState":{"session_id":SESSION}}),
+    );
+    assert!(local["error"].is_null(), "{local}");
+    assert!(local["kernel"].is_null(), "answered locally: {local}");
+    assert!(
+        local["response"]["SessionState"].is_object(),
+        "the session state of this kernel: {local}"
+    );
+}
+
 // EA2-04 / EA2-10 (origin half): a request that names a kernel is decided by the
 // local kernel first. Unknown kernels and human-only shapes end here, with a
 // definitive code, before anything leaves the kernel; nothing falls back to local.

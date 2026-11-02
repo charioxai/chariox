@@ -21,6 +21,10 @@ impl CommandRouter {
             .subscribe_appended_events()
     }
 
+    pub(crate) fn local_daemon_id(&self) -> String {
+        self.config_projection.snapshot().daemon_id
+    }
+
     pub(crate) fn kernel_websocket_bind_address(&self) -> (String, u16) {
         let config = self.config_projection.snapshot();
         (config.kernel_websocket_host, config.kernel_websocket_port)

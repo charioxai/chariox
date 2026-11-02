@@ -29,17 +29,20 @@ test("--no-wait is a flag of access request and changes nothing else", () => {
   assert.throws(() => parseAccessRequest(["--no-wait", "--no-wait"], () => 43))
 })
 
-async function statusOf(answer: Parameters<typeof replyWith>[2], runtimeDir: string, holder: number): Promise<{ out: string; exit: number | undefined }> {
+async function statusOf(answer: Parameters<typeof replyWith>[2], runtimeDir: string, holder: number): Promise<{ out: string; err: string; exit: number | undefined }> {
   const kernel = await startFakeKernel((socket, frame) => replyWith(socket, frame, answer))
-  const previous = { out: console.log, dir: process.env.XDG_RUNTIME_DIR, exit: process.exitCode }
+  const previous = { out: console.log, err: process.stderr.write, dir: process.env.XDG_RUNTIME_DIR, exit: process.exitCode }
   let out = ""
+  let err = ""
   console.log = (line: string) => { out += line }
+  process.stderr.write = ((chunk: string) => { err += chunk; return true }) as typeof process.stderr.write
   process.env.XDG_RUNTIME_DIR = runtimeDir
   try {
     await runAccessCommand(["access", "status", "--holder-pid", String(holder), "--socket", kernel.path])
-    return { out, exit: process.exitCode as number | undefined }
+    return { out, err, exit: process.exitCode as number | undefined }
   } finally {
     console.log = previous.out
+    process.stderr.write = previous.err
     if (previous.dir === undefined) delete process.env.XDG_RUNTIME_DIR; else process.env.XDG_RUNTIME_DIR = previous.dir
     process.exitCode = previous.exit
     await kernel.close()
@@ -91,6 +94,18 @@ test("a waiter that ends without a grant leaves its reason for access status, an
   }
 })
 
+test("access status of a process the kernel would refuse says how to get covered, like the refusal does", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "chx-status-"))
+  const hint = { error: { code: "kernel_access_not_covered", message: "To cover a background process you started, run `chariox access cover --pid <its pid>`.", retryable: false } }
+  try {
+    const orphan = await statusOf(hint, dir, 4243)
+    assert.equal(orphan.out, '{"status":"not_requested"}')
+    assert.equal(orphan.err.trim(), hint.error.message)
+    writeFileSync(join(dir, "access-waiter-4242.pid"), String(process.pid), { mode: 0o600 })
+    assert.equal((await statusOf(hint, dir, 4242)).err, "", "a request still waiting for the user needs no hint")
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
 test("access cover names one pid to the kernel and prints the grant id and the process it now covers", async () => {
   const process_ = { pid: 4242, start: 77, executable: "/usr/bin/shipper" }
   const kernel = await startFakeKernel((socket, frame) => replyWith(socket, frame, { response: { KernelAccessCovered: { grant_id: "access-1", process: process_ } } }))
@@ -113,5 +128,35 @@ test("access cover names one pid to the kernel and prints the grant id and the p
     console.error = previous.err
     process.exitCode = previous.exit
     await kernel.close()
+  }
+})
+
+test("access --help prints the usage and exits 0", async () => {
+  const printed: string[] = []
+  const log = console.log
+  const previous = process.exitCode
+  console.log = (line: string) => { printed.push(line) }
+  try {
+    process.exitCode = undefined
+    assert.equal(await runAccessCommand(["access", "--help"]), true)
+    assert.match(printed.join("\n"), /chariox access request/)
+    assert.ok(!process.exitCode)
+  } finally { console.log = log; process.exitCode = previous }
+})
+
+test("an unknown access verb is a usage answer, not a crash", async () => {
+  const previous = { err: process.stderr.write, exit: process.exitCode }
+  let err = ""
+  process.stderr.write = ((chunk: string) => { err += chunk; return true }) as typeof process.stderr.write
+  try {
+    for (const verb of ["bogus"]) {
+      process.exitCode = undefined
+      assert.equal(await runAccessCommand(["access", verb]), true)
+      assert.equal(JSON.parse(err.trim().split("\n").pop()!).error.code, "usage", verb)
+      assert.equal(process.exitCode, 2, verb)
+    }
+  } finally {
+    process.stderr.write = previous.err
+    process.exitCode = previous.exit
   }
 })

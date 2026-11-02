@@ -7,6 +7,8 @@ import { CommandFailure } from "./agent-command-table.js"
 import type { SendRequest } from "./kernel-files.js"
 
 export const TERMINAL_VERBS = ["open", "list", "send", "read", "wait", "close"] as const
+export const TERMINAL_ATTACH_USAGE = `usage: chariox terminal --session SESSION [--kernel-url URL] [list | new [TITLE] | close TERMINAL | TERMINAL]
+Attaches this terminal to a Room terminal (the newest running one, else a new one). Ctrl-] detaches.`
 export type TerminalVerb = typeof TERMINAL_VERBS[number]
 
 const DEFAULT_COLS = 120

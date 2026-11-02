@@ -7,7 +7,7 @@ import { kernelSocketConfigRoot } from "@chariox/kernel-client/kernel-unix-socke
 import { LocalIpcClient, LocalIpcError } from "@chariox/kernel-client/ipc"
 import type { KernelAccessCoveredResponse, KernelAccessGrantedResponse, KernelAccessGrantsListedResponse, KernelAccessRevokedResponse } from "@chariox/kernel-client/kernel-types"
 import { CommandFailure, parseFlags, usageOf } from "./agent-command-table.js"
-import { probeKernel, reportFailure } from "./kernels-command.js"
+import { failureOf, probeKernel, reportFailure } from "./kernels-command.js"
 
 const WAITER_START_TIMEOUT_MS = 10_000
 // The kernel verifies the holder through the requester's live parent chain when the request
@@ -154,6 +154,8 @@ async function accessStatus(argv: string[]): Promise<void> {
         reason = waiterOutcome(holder)
         status = reason ? "ended" : "not_requested"
       }
+      // The refusal's own hint: a status of "not_requested" alone is a dead end for an uncovered process.
+      if (status === "not_requested") process.stderr.write(`${failureOf(error).message}\n`)
     } else throw error
   }
   console.log(JSON.stringify(reason ? { status, reason: reason.code, message: reason.message } : { status }))
@@ -163,25 +165,29 @@ const ACCESS_USAGE = [usageOf("access request"), usageOf("access status"), usage
 
 export async function runAccessCommand(argv: string[]): Promise<boolean> {
   if (argv[0] !== "access") return false
-  const direct = { request: requestAccess, status: accessStatus, cover: coverProcess }[argv[1] ?? ""]
-  if (direct) {
-    try {
-      await direct(argv.slice(2))
-    } catch (error) { reportFailure(error) }
+  if (argv[1] === "--help") {
+    console.log(ACCESS_USAGE)
     return true
   }
+  const direct = { request: requestAccess, status: accessStatus, cover: coverProcess }[argv[1] ?? ""]
+  try {
+    if (direct) await direct(argv.slice(2))
+    else await listOrRevoke(argv)
+  } catch (error) { reportFailure(error) }
+  return true
+}
+
+async function listOrRevoke(argv: string[]): Promise<void> {
   const endpoint = process.env.CHARIOX_KERNEL_URL || `ws://${process.env.CHARIOX_KERNEL_HOST || "127.0.0.1"}:${process.env.CHARIOX_KERNEL_PORT || "43118"}`
+  if (!(argv[1] === "list" && argv.length === 2) && !(argv[1] === "revoke" && argv.length === 3)) throw new CommandFailure("usage", ACCESS_USAGE)
   const client = new LocalIpcClient(endpoint)
   try {
-    if (argv[1] === "list" && argv.length === 2) {
+    if (argv[1] === "list") {
       const result = await client.send<KernelAccessGrantsListedResponse>({ ListKernelAccessGrants: {} })
       console.log(JSON.stringify(result.KernelAccessGrantsListed, null, 2))
-    } else if (argv[1] === "revoke" && argv.length === 3) {
+    } else {
       const result = await client.send<KernelAccessRevokedResponse>({ RevokeKernelAccessGrant: { grant_id: argv[2] === "--all" ? null : argv[2] } })
       console.log(`Revoked ${result.KernelAccessRevoked.revoked} grants`)
-    } else {
-      throw new CommandFailure("usage", ACCESS_USAGE)
     }
   } finally { await client.close() }
-  return true
 }

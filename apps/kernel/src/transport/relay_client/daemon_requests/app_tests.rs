@@ -1682,3 +1682,61 @@ fn paired_terminal_on_a_private_relay_lists_and_attaches_the_owners_session() {
         .join()
         .unwrap();
 }
+
+// MP-08 / MP-09 / MP-10 / MP-11: an answer a gateway forwards for an external agent is that
+// agent's, not a paired terminal's, in the audit record and in how the decision closed.
+#[tokio::test]
+async fn a_decision_answered_through_the_gateway_is_the_external_agents() {
+    let root = TestRoot::new();
+    let workspace = crate::test_support::TestWorktree::new("gateway-decision-class");
+    let mut app = crate::test_support::bootstrap_authenticated_app(root.config()).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(workspace.session_request())
+        .unwrap();
+    let owner = session.owner_user_id().to_string();
+    let router =
+        CommandRouter::with_interactive_capacity(Arc::new(tokio::sync::Mutex::new(app)), 8);
+    let state = router.runtime_state();
+    let grant = state.open_watched_decision_for_test(session.id(), agent.id(), "gateway-pick");
+    let answer = LocalDaemonRequest::RespondToInteraction(
+        serde_json::from_value(serde_json::json!({
+            "session_id": session.id(),
+            "interaction_id": "gateway-pick",
+            "choice_id": "red",
+        }))
+        .unwrap(),
+    );
+    let on_behalf_of = crate::local::OnBehalfOf {
+        origin_kernel: "origin-kernel".into(),
+        origin_name: None,
+        grant_id: "grant-that-lives-at-the-origin".into(),
+        harness: "claude".into(),
+    };
+    let outcome = dispatch_on_behalf_of(
+        &router,
+        &AtomicU64::new(1),
+        KernelCaller::for_relay_request(Some(caller(&owner))),
+        answer,
+        Some("gateway-answer".into()),
+        &CommandResultCache::default(),
+        &on_behalf_of,
+        "paired-gateway-key",
+    )
+    .await;
+    if let RelayDispatchOutcome::RelayError(error) = &outcome {
+        panic!(
+            "the forwarded answer is admitted: {} {}",
+            error.code, error.message
+        );
+    }
+    let audit = state
+        .durable_state_store()
+        .load_subject_events_by_kind("gateway-pick", "interaction.answered", 10)
+        .unwrap();
+    assert_eq!(audit.len(), 1);
+    assert_eq!(audit[0].payload["connection_class"], "external_agent");
+    assert_eq!(
+        state.closed_decision_via_for_test(&grant, "gateway-pick"),
+        "external_agent"
+    );
+}

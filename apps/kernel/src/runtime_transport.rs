@@ -1339,7 +1339,17 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
     }
 
     let frame = match serde_json::from_slice::<KernelIncomingFrame>(payload) {
-        Ok(frame) => frame,
+        Ok(mut frame) => {
+            // Records name the kernel they come from by its id: that is this kernel, not another.
+            if let KernelIncomingFrame::Request { kernel, .. }
+            | KernelIncomingFrame::Subscribe { kernel, .. } = &mut frame
+            {
+                if kernel.as_deref() == Some(router.local_daemon_id().as_str()) {
+                    *kernel = None;
+                }
+            }
+            frame
+        }
         Err(error) => {
             let _ = try_send_outgoing_frame(
                 outgoing_tx,

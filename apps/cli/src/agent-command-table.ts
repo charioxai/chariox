@@ -136,6 +136,16 @@ export class CommandFailure extends Error {
   }
 }
 
+/** `--help` before any `--` (what follows is a program's argv). */
+export function wantsHelp(argv: readonly string[]): boolean {
+  const end = argv.indexOf("--")
+  return (end < 0 ? argv : argv.slice(0, end)).includes("--help")
+}
+
+export function familyUsageOf(family: string, verbs: readonly string[]): string {
+  return `Usage: chariox ${family} ${verbs.join("|")} (chariox guide lists the arguments)`
+}
+
 export function usageOf(command: string): string {
   return usage(commandSpec(command))
 }
