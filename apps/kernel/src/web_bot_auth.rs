@@ -205,8 +205,7 @@ impl WebBotAuthSigner {
         );
 
         let mut base = format!(
-            "\"@method\": {method}\n\"@target-uri\": {target_uri}\n\"@authority\": {authority}\n\"signature-agent\";key=\"sig1\": \"{}\"",
-            signature_agent_url,
+            "\"@method\": {method}\n\"@target-uri\": {target_uri}\n\"@authority\": {authority}\n\"signature-agent\";key=\"sig1\": \"{signature_agent_url}\"",
         );
         if let Some(digest) = &content_digest {
             base.push_str(&format!("\n\"content-digest\": {digest}"));

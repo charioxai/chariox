@@ -46,7 +46,7 @@ impl Reply {
         if (200..300).contains(&self.status) {
             Ok(())
         } else {
-            Err(error(&format!("auth.md service returned HTTP {}; consult the service documentation before retrying", self.status)))
+            Err(error(format!("auth.md service returned HTTP {}; consult the service documentation before retrying", self.status)))
         }
     }
 }
