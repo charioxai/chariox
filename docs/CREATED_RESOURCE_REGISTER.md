@@ -61,21 +61,21 @@ After a kernel restart an unfinished `revoking` row becomes `revoke_failed`:
 the remote effect may have happened, so inspect the service before retrying.
 There is no permanently stuck pending state and no automatic repeat of a request.
 
-## Validation and UI
+## Validation
 
 Protocol allocation: local 944 / peer 393. The resource shape and tool names have
 a pinned snapshot/hash. Router tests cover elevation, idempotence, credential
 links, owner URLs and a service that echoes the injected key; storage tests cover
 owner/project isolation, stale requests and restart recovery.
 
-`scripts/e2e-stack/resource-register/live.mjs` drives the production self-hosted
-`terminal-os` entry with real official Codex/Claude agents, a real local relay and
+`scripts/e2e-stack/resource-register/live.mjs` drives the production Cloud
+`terminal-os` entry on an owned hosted stack with real official Codex/Claude agents, a real local relay and
 a disposable service that issues and revokes keys. It has a red-on-base mode and
-records screenshots, service results, model IDs, public history, a private
+records screenshots, recordings, service results, model IDs, public history, a private
 absence check and cleanup outside the repository. It is a development drill,
 not real-service AU-11 acceptance; the latter stays NOT RUN until owner accounts
 are provided. Do not use the old UI or TUI for its client leg.
 
-The current new-UI Vault window has no register controls. The Cloud PROPOSALS.md
-contains a mock rendered from a copy of the frozen prototype; no UI implementation
-is part of this round. Lane vaultui owns that gap.
+The register is agent-facing only. It has no Vault-panel rows or UI proposal,
+per the owner's 2026-11-02 decision. Agents list and clean up their resources
+through these MCP tools in the new shell's transcript.

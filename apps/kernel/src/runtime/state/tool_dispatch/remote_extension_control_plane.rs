@@ -255,12 +255,6 @@ impl KernelRuntimeState {
                 | super::super::resource_register::SET_REVOKE
                 | super::super::resource_register::REVOKE
         ) {
-            let turn = self.sudo_for_provider_run(&run)?;
-            if turn.prompt_id != context.home_prompt_id {
-                return Err(crate::runtime::kernel_access::error(
-                    "resource register's home prompt changed",
-                ));
-            }
             return self
                 .with_room_provider_origin(Some(&context.home_agent_id), Some(&run))
                 .resource_register_for_run(&run, &tool_name, arguments)

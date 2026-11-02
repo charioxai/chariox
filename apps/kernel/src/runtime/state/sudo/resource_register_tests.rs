@@ -42,6 +42,61 @@ fn resource() -> Value {
 }
 
 #[tokio::test]
+async fn resource_register_forwarded_calls_use_home_state_and_reject_stale_context() {
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    let mut turn = elevate(&f);
+    let worker = crate::config::DaemonConfig::for_tests();
+    crate::config::DaemonConfig::approve_remote_machine("worker-machine", None).unwrap();
+    super::forgotten_machine_tests::lease_agent_to_machine(&f, &worker.daemon_id);
+    turn.placement = Some("lease".into());
+    f.state
+        .owned
+        .sudo_turns
+        .lock()
+        .unwrap()
+        .insert(turn.entry_id.clone(), turn.clone());
+    let state = f.state.with_relay_peer_authority(
+        crate::runtime::relay_peer_authority::test_peer_authority(&worker.daemon_id),
+    );
+    let context = crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext {
+        home_kernel_id: f.state.owned.config_projection.snapshot().daemon_id,
+        home_session_id: turn.session_id,
+        home_agent_id: turn.agent_id.clone(),
+        home_prompt_id: turn.prompt_id,
+        leased_agent_id: "leased-agent".into(),
+        worker_kernel_id: worker.daemon_id,
+        worker_machine_id: "worker-machine".into(),
+        worker_provider_run_id: "worker-run".into(),
+        worker_worktree_path: "/work".into(),
+        worker_workspace_identity: crate::io::WorkspaceIdentity::local("/work".into()),
+    };
+    let row = state
+        .dispatch_forwarded_meta_runtime_tool_call(context.clone(), RECORD.into(), resource())
+        .await
+        .unwrap()
+        .payload;
+    assert_eq!(row["resource"]["created_by"], turn.agent_id);
+    let listed = state
+        .dispatch_forwarded_meta_runtime_tool_call(context.clone(), LIST.into(), json!({}))
+        .await
+        .unwrap()
+        .payload;
+    assert_eq!(listed["resources"][0], row["resource"]);
+    let mut stale = context.clone();
+    stale.home_prompt_id = Some("old-prompt".into());
+    assert!(state
+        .dispatch_forwarded_meta_runtime_tool_call(stale, LIST.into(), json!({}))
+        .await
+        .is_err());
+    f.state.owned.sudo_turns.lock().unwrap().clear();
+    assert!(state
+        .dispatch_forwarded_meta_runtime_tool_call(context, LIST.into(), json!({}))
+        .await
+        .is_err());
+}
+
+#[tokio::test]
 async fn resource_register_record_list_retry_and_owner_url() {
     crate::test_support::isolated_env_test!();
     let f = fixture();
