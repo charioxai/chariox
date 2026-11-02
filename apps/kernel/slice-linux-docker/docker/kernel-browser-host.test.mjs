@@ -69,7 +69,8 @@ function fixture(root) {
     },
   };
   const chromium = { child: null, start: async () => { chromium.child = { exitCode: null, signalCode: null }; return "http://127.0.0.1:1"; }, stop: async () => { chromium.child = null; } };
-  const browserFactory = () => ({ connection, ensureConnection: async () => connection,ensureTargetSession:async (_connection,target)=>`session-${target}`, close: async () => {},
+  const webBotAuth={byTab:new Map()};
+  const browserFactory = () => ({ connection, webBotAuth, configureWebBotAuth:async(tabId,signer)=>{if(signer===null)webBotAuth.byTab.delete(tabId);else webBotAuth.byTab.set(tabId,signer);return{configured:true,kid:'fixture-kid'};}, attachWebBotAuth:async(_tabId,_targetId,session)=>{await connection.send('Fetch.enable',{patterns:[{urlPattern:'*',requestStage:'Request'}]},session);},clearWebBotAuth:async(tabId)=>webBotAuth.byTab.delete(tabId), ensureConnection: async () => connection,ensureTargetSession:async (_connection,target)=>`session-${target}`, close: async () => {},
     reconcile: async viewport => { connection.density=viewport.device_scale_factor; return { tabs: [...pages].map(([target_id, tab]) => ({ target_id, document_id: `doc-${target_id}`, title: "fixture", ...tab })) }; },
     manageTab: async ({ target_id }) => pages.delete(target_id),
     navigate: async ({ target_id, url }) => { pages.set(target_id, { url }); },
@@ -86,6 +87,33 @@ async function using(callback) {
   const context = fixture(root);
   try { await callback(context, root); } finally { fixture.secretFocused = false; fixture.protectedField = false; await context.host.stop(); await rm(root, { recursive: true, force: true }); }
 }
+
+test("MP-08/MP-09/MP-10/MP-11 configures Web Bot Auth before a Tab's first navigation", () => using(async ({ host, sent }) => {
+  const signer = { private_key: "private-seed-must-not-return", signature_agent: "https://agents.example.test", not_before: 1, expires_at: 2 };
+  const reply = await host.handle({ id: 701, method: "host.browser", params: {
+    op: "open", tab_id: "wba-tab", url: "https://example.test/", _web_bot_auth: signer,
+  } });
+  assert.equal(reply.ok, true);
+  assert.equal(reply.result.tabs[0].tab_id, "wba-tab");
+  assert.equal(JSON.stringify(reply).includes("private-seed-must-not-return"), false);
+  const create = sent.findIndex(({ method, params }) => method === "Target.createTarget" && params.url === "about:blank");
+  const enable = sent.findIndex(({ method }) => method === "Fetch.enable");
+  const navigate = sent.findIndex(({ method, params }) => method === "Page.navigate" && params.url === "https://example.test/");
+  assert.ok(create >= 0 && enable > create && navigate > enable);
+}));
+
+test("MP-08/MP-09/MP-10/MP-11 project WBA policy acknowledges without signer data", () => using(async ({ host }) => {
+  await host.request({ op: "open", url: "https://example.test/" });
+  let applied;
+  host.browser.webBotAuth.applyProjectPolicy = (projects, reset) => { applied = { projects, reset }; };
+  const response = await host.handle({ id: "wba-policy", method: "host.web_bot_auth_policy", params: {
+    projects: ["enabled-project"], reset: false,
+  } });
+  assert.deepEqual(applied, { projects: ["enabled-project"], reset: false });
+  assert.equal(response.ok, true);
+  assert.deepEqual(response.result, { updated: true });
+  assert.equal(JSON.stringify(response).includes("private_key"), false);
+}));
 
 test("MP-08/MP-09/MP-10/MP-11 a dialog without Chrome chrome is shared and answerable while its renderer is blocked", () => using(async ({ host }) => {
   const opened = await host.request({ op: "open", url: "https://example.com" });
@@ -904,6 +932,31 @@ test("MP-08/MP-10/MP-11 owner code flag reaches the bound controller action", ()
   const denied = await host.handle({ id: "agent-code", method: "host.secret", params: { ...params, observed_by: "agent:unadmitted" } });
   assert.equal(denied.ok, false);
   assert.equal(captured, null, "a non-terminal code exception cannot reach physical input");
+}));
+
+test("MP-08/MP-09/MP-10/MP-11 configures Web Bot Auth before an agent Vault fill", () => using(async ({ host }) => {
+  const opened = await host.request({ op: "open", url: "https://example.test/account" });
+  const tab = opened.tabs[0];
+  const order = [];
+  host.browser.configureWebBotAuth = async (tabId, signer, targetId) => {
+    order.push(["configure", tabId, targetId]);
+    signer.private_key = "";
+    return { configured: true, kid: "fixture-kid" };
+  };
+  host.browser.performAction = async () => { order.push(["fill"]); return {}; };
+  const signer = {
+    private_key: "A".repeat(43), signature_agent: "https://agents.example.test",
+    not_before: Math.floor(Date.now() / 1000) - 1, expires_at: Math.floor(Date.now() / 1000) + 3600,
+  };
+  const result = await host.handle({ id: "agent-vault-fill", method: "host.secret", params: {
+    tab_id: tab.tab_id, generation: opened.generation, document_id: tab.document_id,
+    node_ref: "backend:105", observed_by: "agent:agent-7", _web_bot_auth: signer,
+    action: { kind: "fill", text: "fixture-secret", append: false, submit: false },
+  } });
+  assert.equal(result.ok, true);
+  assert.deepEqual(order, [["configure", tab.tab_id, host.tabs.get(tab.tab_id).target_id], ["fill"]]);
+  assert.equal(signer.private_key, "");
+  assert.equal(JSON.stringify(result).includes("A".repeat(43)), false);
 }));
 test('MP-11 agent native input cannot bypass App human-channel admission', () => using(async ({host}) => {
   await host.request({op:'open',url:'https://example.com'});

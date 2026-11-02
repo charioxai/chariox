@@ -215,6 +215,9 @@ impl KernelRuntimeState {
         let _unlock = self
             .ensure_vault_unlocked_for_agent(session, agent.id(), "kernel_browser_paste_secret")
             .await?;
+        let signing_material = self
+            .web_bot_auth_browser_material(session, agent.id())
+            .await?;
         check_authority()?;
         let (service, _vault_guard) = self
             .scoped_secret_input_service(protection, &scope, &args.credential_id)
@@ -278,6 +281,7 @@ impl KernelRuntimeState {
             };
         protection.register_command(&scope, &command)?;
         let mut params = json!({"tab_id":args.tab_id,"generation":args.generation,"document_id":args.document_id,"node_ref":args.node_ref,"action":action});
+        params["_web_bot_auth"] = signing_material;
         // MP-08/MP-11: the fill is the agent's input to an App Tab too.
         self.claim_app_view_tab(user, &admission, &mut params)?;
         check_authority()?;

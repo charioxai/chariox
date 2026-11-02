@@ -820,6 +820,7 @@ fn is_home_credential_runtime_tool(tool_name: &str) -> bool {
         crate::transport::runtime_tools::LIST_CREDENTIAL_HANDLES_TOOL
             | crate::transport::runtime_tools::REQUEST_CREDENTIAL_SECRET_TOOL
             | crate::transport::runtime_tools::HTTP_REQUEST_WITH_CREDENTIAL_TOOL
+            | crate::transport::runtime_tools::HTTP_REQUEST_TOOL
             | crate::transport::runtime_tools::SEND_SECRET_TO_TERMINAL_TOOL
             | crate::transport::runtime_tools::PASTE_SECRET_TO_COMPUTER_TOOL
             | crate::transport::runtime_tools::REQUEST_POPUP_TOOL

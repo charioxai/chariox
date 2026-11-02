@@ -9,6 +9,32 @@ impl CharioxUserConfig {
     pub(super) fn set_value(&mut self, key_path: &str, value: String) -> Result<(), DaemonError> {
         let normalized = key_path.trim();
         validate_config_key_path(normalized)?;
+        if normalized.starts_with("web_bot_auth.") {
+            let mut candidate = self.web_bot_auth.clone();
+            match normalized {
+                "web_bot_auth.projects" => {
+                    candidate.projects =
+                        serde_json::from_str::<Vec<String>>(&value).map_err(|_| {
+                            DaemonError::InvalidConfig {
+                                field: "web_bot_auth.projects",
+                                message: "expected a JSON array of project ids",
+                            }
+                        })?
+                }
+                "web_bot_auth.signature_agent" => {
+                    candidate.signature_agent = Some(crate::web_bot_auth::validate_origin(&value)?)
+                }
+                _ => {
+                    return Err(DaemonError::InvalidConfig {
+                        field: "web_bot_auth",
+                        message: "unsupported Web Bot Auth config key",
+                    })
+                }
+            }
+            candidate.validate()?;
+            self.web_bot_auth = candidate;
+            return Ok(());
+        }
         if normalized.starts_with("kernel_access.") {
             let mut candidate = self.kernel_access.clone();
             match normalized {
@@ -514,6 +540,8 @@ impl CharioxUserConfig {
 
         match normalized {
             "providers.default" => self.providers.default = None,
+            "web_bot_auth.projects" => self.web_bot_auth.projects.clear(),
+            "web_bot_auth.signature_agent" => self.web_bot_auth.signature_agent = None,
             "providers.model" => self.providers.model = None,
             "providers.effort" => self.providers.effort = None,
             "ui.theme" => self.ui.theme = None,

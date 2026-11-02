@@ -5,6 +5,7 @@ import { BrowserMemory } from './browser-memory.mjs';
 import { BrowserRendererRecovery } from './browser-renderer-recovery.mjs';
 import { recordBrowserFill, finishBrowserFill } from './browser-protection-regions.mjs';
 import { createHash } from "node:crypto";
+import { BrowserWebBotAuth } from "./browser-controller-web-bot-auth.mjs";
 import { artifactBytes, BrowserArtifactError, BrowserPassiveCapture, readCompletedDownload, withUploadArtifacts } from "./browser-controller-artifacts.mjs";
 import { captureProtectedBrowserImage } from "./browser-controller-image.mjs";
 import { observeBrowserNote } from "./browser-controller-notes.mjs";
@@ -120,6 +121,8 @@ export class BrowserCdpClient {
     this.stageUploads = stageUploads;
     this.eventJournal = eventJournal;
     this.connection = null;
+    this.webBotAuth = new BrowserWebBotAuth(() => this.connection);
+    this.webBotAuthTargets = new Map();
     this.connectionEpoch = 0;
     this.connectionAttempt = null;
     this.pageCloseQueue = Promise.resolve();
@@ -275,6 +278,8 @@ export class BrowserCdpClient {
   }
 
   async close() {
+    await this.webBotAuth.clearAll();
+    this.webBotAuthTargets.clear();
     this.memory.close();
     const connection = this.invalidateConnection(undefined, { preserveFrameSessions: true });
     await this.frameSessions.close();
@@ -380,6 +385,7 @@ export class BrowserCdpClient {
     }
     this.targetSessionAttempts.clear();
     this.connection = null;
+    this.webBotAuth.detachSessions();
     this.rendererRecovery.close();
     this.appliedViewport = null;
     this.viewportByTarget.clear(); this.contentInsetsByWindow.clear();
@@ -946,6 +952,34 @@ export class BrowserCdpClient {
     };
   }
 
+  async configureWebBotAuth(tabId, signer, targetId = this.webBotAuthTargets.get(tabId)) {
+    const appOwnsFetch = typeof targetId === "string"
+      && [...(this.appTabs?.apps?.values() ?? [])].some((app) => app.targetId === targetId);
+    if (appOwnsFetch) {
+      this.webBotAuthTargets.delete(tabId);
+      return this.webBotAuth.configureIgnoredTab(tabId, signer);
+    }
+    const result = await this.webBotAuth.configureTab(tabId, signer);
+    if (signer === null) {
+      this.webBotAuthTargets.delete(tabId);
+      return result;
+    }
+    if (targetId) await this.attachWebBotAuth(tabId, targetId);
+    return result;
+  }
+
+  async attachWebBotAuth(tabId, targetId, attachedSessionId) {
+    this.webBotAuthTargets.set(tabId, targetId);
+    const connection = await this.ensureConnection();
+    const sessionId = attachedSessionId ?? await this.ensureTargetSession(connection, targetId);
+    await this.webBotAuth.attachTab(tabId, sessionId);
+  }
+
+  async clearWebBotAuth(tabId) {
+    await this.webBotAuth.clearTab(tabId);
+    this.webBotAuthTargets.delete(tabId);
+  }
+
   async closePageTarget(connection, targetId, { signal } = {}) {
     const previous = this.pageCloseQueue;
     let release;
@@ -1491,6 +1525,7 @@ export class BrowserCdpClient {
   }
 
   recordConnectionEvent(message) {
+    this.webBotAuth.observe(message);
     this.pagePermissions?.observe(message);
     this.rendererRecovery.observe(message);
     this.responseBodies.observe(message);
@@ -1515,6 +1550,7 @@ export class BrowserCdpClient {
     this.dialogDefaults.observe(redactObservation(message, this.protectedValues), dialogTargetId, this.documentIdsByTarget.get(dialogTargetId));
     if (message?.method === "Target.detachedFromTarget") {
       const sessionId = message.params?.sessionId ?? message.sessionId;
+      this.webBotAuth.detachSession(sessionId);
       const targetId = this.targetsBySession.get(sessionId) ?? message.params?.targetId;
       if (typeof sessionId === "string") {
         this.targetsBySession.delete(sessionId);

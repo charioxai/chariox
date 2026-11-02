@@ -23,6 +23,7 @@ use http_boundary::{decode_http_response, http_error};
 mod vault;
 pub(crate) use vault::remove_installed_transferred_vault;
 use vault::vault_store_for_config;
+pub(crate) use vault::vault_store_for_config as web_bot_auth_vault_store;
 pub use vault::{
     change_chariox_encrypted_vault_passphrase, chariox_encrypted_vault_status,
     chariox_vault_single_use_unlocked, clear_all_chariox_encrypted_vault_unlocks,
@@ -129,6 +130,26 @@ pub(crate) struct PreparedCredentialHttpRequest {
 }
 
 impl PreparedCredentialHttpRequest {
+    pub(crate) fn with_web_bot_auth(
+        mut self,
+        signer: Option<&crate::web_bot_auth::WebBotAuthSigner>,
+    ) -> Result<Self, DaemonError> {
+        if let Some(signer) = signer {
+            // Sign the final URL, after credential query injection. Replace all
+            // caller-supplied signature headers with the kernel's fresh signature.
+            let headers = signer.sign_request(
+                self.request.method(),
+                self.request.url(),
+                self.body.as_deref().map(str::as_bytes),
+                crate::session::unix_epoch_ms() / 1000,
+            )?;
+            for (name, value) in headers {
+                self.request = self.request.set(&name, &value);
+            }
+        }
+        Ok(self)
+    }
+
     pub(crate) fn execute(self) -> Result<CredentialHttpResponse, DaemonError> {
         let response = if let Some(body) = self.body {
             self.request.send_string(&body)
@@ -362,13 +383,59 @@ impl RuntimeSecretService {
             }
         }
 
-        if request.timeout_ms == 0 {
+        Self::prepare_outbound_http_request(
+            request.timeout_ms,
+            request.max_response_bytes,
+            method,
+            target,
+            headers,
+            body,
+            boundary,
+        )
+    }
+
+    pub(crate) fn prepare_plain_http_request(
+        request: crate::transport::runtime_tools::HttpRequestArgs,
+    ) -> Result<PreparedCredentialHttpRequest, DaemonError> {
+        let target = url::Url::parse(&request.url)
+            .map_err(|_| secret_error("http_request", "invalid URL".into()))?;
+        if !matches!(target.scheme(), "http" | "https")
+            || !target.username().is_empty()
+            || target.password().is_some()
+        {
+            return Err(secret_error(
+                "http_request",
+                "use an HTTP(S) URL without embedded credentials".into(),
+            ));
+        }
+        Self::prepare_outbound_http_request(
+            request.timeout_ms,
+            request.max_response_bytes,
+            request.method.trim().to_ascii_uppercase(),
+            target,
+            request.headers,
+            request_body(request.body_text, request.body_json)?,
+            HttpSecretBoundary::new(""),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn prepare_outbound_http_request(
+        timeout_ms: u64,
+        max_response_bytes: u64,
+        method: String,
+        target: url::Url,
+        headers: BTreeMap<String, String>,
+        body: Option<String>,
+        boundary: HttpSecretBoundary,
+    ) -> Result<PreparedCredentialHttpRequest, DaemonError> {
+        if timeout_ms == 0 {
             return Err(secret_error(
                 "http_request_with_credential",
                 "timeout_ms must be greater than zero".to_string(),
             ));
         }
-        if request.max_response_bytes == 0 {
+        if max_response_bytes == 0 {
             return Err(secret_error(
                 "http_request_with_credential",
                 "max_response_bytes must be greater than zero".to_string(),
@@ -376,7 +443,7 @@ impl RuntimeSecretService {
         }
         // A redirect would resend a header credential to a host outside allowed_hosts.
         let agent = crate::outbound_dial::agent_builder()
-            .timeout(std::time::Duration::from_millis(request.timeout_ms))
+            .timeout(std::time::Duration::from_millis(timeout_ms))
             .redirects(0)
             .build();
         let mut http_request = match method.as_str() {
@@ -396,7 +463,7 @@ impl RuntimeSecretService {
         Ok(PreparedCredentialHttpRequest {
             request: http_request,
             body,
-            max_response_bytes: request.max_response_bytes,
+            max_response_bytes,
             boundary,
         })
     }

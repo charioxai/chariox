@@ -12,6 +12,12 @@ type AuthenticatedRuntimeToolFuture<'a> = std::pin::Pin<
 >;
 
 impl CommandRouter {
+    pub(crate) fn web_bot_auth_directory(
+        &self,
+        authority: &str,
+    ) -> Result<(Vec<u8>, std::collections::BTreeMap<String, String>), DaemonError> {
+        self.runtime_state.web_bot_auth_directory(authority)
+    }
     pub(crate) fn with_forwarded_response_authority<R>(
         &self,
         operation: impl FnOnce() -> Result<R, DaemonError>,

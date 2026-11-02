@@ -686,11 +686,25 @@ export class KernelBrowserHost {
     const connection = await this.browser.ensureConnection();
     const browser = this.browser;
     assertNotCancelled(signal);
-    const { targetId } = await connection.send("Target.createTarget", { url: navigationUrl(url), ...(background ? { background: true } : {}) });
+    const targetUrl = navigationUrl(url);
+    const signFirstNavigation = browser.webBotAuth?.byTab.has(tabId) === true;
+    const canAttachFetch = signFirstNavigation && typeof browser.ensureTargetSession === "function";
+    const { targetId } = await connection.send("Target.createTarget", { url: canAttachFetch ? "about:blank" : targetUrl, ...(background ? { background: true } : {}) });
     if (browser !== this.browser) throw new BrowserActionError('browser_unavailable', 'MP-08: browser restarted; interrupted action was not replayed');
     this.tabs.set(tabId, { tab_id: tabId, target_id: targetId, url, title: "", document_id: "" });
     this.downloads.bind(this.tabs.get(tabId), downloadSession);
     this.observed = ++this.observations;
+    try {
+      if (canAttachFetch) {
+        const sessionId = await browser.ensureTargetSession(connection, targetId);
+        await browser.attachWebBotAuth(tabId, targetId, sessionId);
+        if (targetUrl !== "about:blank") await connection.send("Page.navigate", { url: targetUrl }, sessionId);
+      }
+    } catch (error) {
+      this.tabs.delete(tabId);
+      if (browser.closePageTarget) await browser.closePageTarget(connection, targetId).catch(() => {});
+      throw error;
+    }
   }
   async target(command) {
     const started = timestamp();
@@ -805,6 +819,12 @@ export class KernelBrowserHost {
     if (command.op.startsWith("mirror_") && !featureOn("CHARIOX_KERNEL_BROWSER_MIRROR")) throw new Error("MP-08: DOM mirror disabled");
     if (command.op.startsWith("display_") && !featureOn("CHARIOX_KERNEL_BROWSER_DISPLAY")) throw new Error("MD-DISPLAY: display disabled");
     if (command.op === "stop") return this.stop();
+    if (command.op === "configureWebBotAuth") {
+      if (typeof command.tab_id !== "string" || !command.tab_id) throw new Error("invalid Web Bot Auth tab id");
+      await this.start({ signal });
+      const tab = this.tabs.get(command.tab_id);
+      return this.browser.configureWebBotAuth(command.tab_id, command.signer, tab?.target_id);
+    }
     // MP-11: observation never launches/relaunches the browser.
     await this.start({ signal, allowStart: !["cancel_download", "dialog", "state", "snapshot", "screenshot", "unsubscribe", "display_subscribe", "display_attach", "display_suspend", "display_resume", "display_park", "display_input_target", "resize", "note_selection", "pointer_cursor", "mirror_subscribe", "mirror_next", "mirror_close", "chrome_window_follow"].includes(command.op) });
     assertNotCancelled(signal);
@@ -849,7 +869,7 @@ export class KernelBrowserHost {
     }
     const agentRequest = command.focused_agent || command._agent_input;
     if (agentRequest && ["open", "navigate"].includes(command.op) && extensionManagementUrl(command.url)) throw new Error(EXTENSIONS_REFUSED);
-    if (command.op === "open") { const opened = await this.open(command.url, undefined, { signal, downloadSession: command._download_session }); await this.rebindWindows(); return this.observe(opened, null, scope); }
+    if (command.op === "open") { const opened = await this.open(command.url, command.tab_id, { signal, downloadSession: command._download_session }); await this.rebindWindows(); return this.observe(opened, null, scope); }
     for (const stream of this.displays.values()) if (Date.now() > stream.expires) await this.removeDisplay(stream);
     if(['display_suspend','display_resume'].includes(command.op)){
       if(command.focused_agent||command._agent_input)throw new UserDomainRefusal('not_granted');
@@ -948,6 +968,7 @@ export class KernelBrowserHost {
       this.inputEpochs.delete(tab.tab_id);
       this.scrolling.delete(tab.tab_id);
       await this.browser.manageTab({ ...binding, action: "close" }, { signal });
+      await this.browser.clearWebBotAuth?.(tab.tab_id);
       for (const observed of this.observedDocuments.values()) observed.delete(tab.tab_id);
       const state = await this.reconcile();
       await this.rebindWindows();
@@ -1111,25 +1132,32 @@ export class KernelBrowserHost {
         for(const owner of owners){await this.nativeComputer.retire(owner);for(const observer of this.nativeAccessibility.observers.keys())if(observer.startsWith(owner+':'))this.nativeAccessibility.retire(observer);}
         return { id: request.id, ok: true, result: { revoked: true } };
       }
+      if (request.method === "host.web_bot_auth_policy") {
+        const params = request.params ?? {};
+        this.browser?.webBotAuth?.applyProjectPolicy(params.projects, params.reset);
+        return { id: request.id, ok: true, result: { updated: true } };
+      }
       if (request.method === "host.secret") {
+        const { _web_bot_auth: webBotAuth, ...params } = request.params ?? {};
         // MP-08 / MP-10 / MP-11: this internal owner-only flag does not
         // loosen ordinary Vault secret insertion into password fields.
-        const codeInput = request.params.mask_code_input === true;
-        if (codeInput && (!String(request.params.observed_by ?? "").startsWith("terminal:") ||
-            request.params.action?.kind !== "fill" || typeof request.params.action?.expected_document_url !== "string")) {
+        const codeInput = params.mask_code_input === true;
+        if (codeInput && (!String(params.observed_by ?? "").startsWith("terminal:") ||
+            params.action?.kind !== "fill" || typeof params.action?.expected_document_url !== "string")) {
           throw new UserDomainRefusal("not_granted");
         }
         await this.start({ signal });
         if (this.protection.unknown) throw new Error("MD-5: observation registry unavailable");
-        const tab = await this.target(request.params);
-        if (tab.document_id !== request.params.document_id) throw new UserDomainRefusal("stale_reference");
+        const tab = await this.target(params);
+        if (tab.document_id !== params.document_id) throw new UserDomainRefusal("stale_reference");
+        if (webBotAuth !== undefined) await this.browser.configureWebBotAuth(params.tab_id, webBotAuth, tab.target_id);
         // MP-08/MP-11: a Vault fill is the agent's input to an App Tab too,
         // recorded before the field's input/change handlers can run.
-        const { app, agent } = this.appAgent(tab, request.params, true);
+        const { app, agent } = this.appAgent(tab, params, true);
         if (app && agent) this.browser.appTabs.noteAgent(tab.target_id, agent);
-        const action = codeInput ? { ...request.params.action, mask_code_input: true } : request.params.action;
+        const action = codeInput ? { ...params.action, mask_code_input: true } : params.action;
         await this.sampleLane(tab).run("input", () => this.browser.performAction({ target_id: tab.target_id, document_id: tab.document_id,
-          node_ref: request.params.node_ref, action, timeout_ms: 10_000 }, { signal }));
+          node_ref: params.node_ref, action, timeout_ms: 10_000 }, { signal }));
         await this.save();
         return { id: request.id, ok: true, result: { inserted: true } };
       }
@@ -1202,7 +1230,15 @@ export class KernelBrowserHost {
         if(this.nativeComputer.held.size && ['input','open','close','navigate','resize'].includes(request.params.op))throw new Error('MP-11: native keys held; release desktop input first');
         const at = timestamp();
         // MP-08/MP-11: the kernel's opener ledger names the agent Tabs ([{tab_id, label}]).
-        const { _tab_groups: groups, ...params } = request.params ?? {};
+        const { _tab_groups: groups, _web_bot_auth: webBotAuth, ...params } = request.params ?? {};
+        if (webBotAuth !== undefined) {
+          await this.start({ signal });
+          if (params.op === "open") params.tab_id ??= `host-tab-${randomUUID()}`;
+          if (typeof params.tab_id === "string") {
+            const tab = this.tabs.get(params.tab_id);
+            await this.browser.configureWebBotAuth(params.tab_id, webBotAuth, tab?.target_id);
+          }
+        }
         let result;
         try { result = await this.request(params, { signal }); }
         // A person's keys and wheel never wake a state read; Tab changes and an agent acting do.

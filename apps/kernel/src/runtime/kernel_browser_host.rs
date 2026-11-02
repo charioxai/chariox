@@ -196,6 +196,34 @@ impl KernelBrowserHost {
     pub(crate) fn profile_root(&self, user: &str) -> PathBuf {
         self.root.join(Self::profile_key(user))
     }
+    pub(crate) fn update_web_bot_auth_policy(
+        &self,
+        projects: &[String],
+        reset: bool,
+    ) -> Result<(), String> {
+        let browsers = self
+            .inner
+            .lock()
+            .map_err(|_| "browser host lock poisoned")?
+            .browsers
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        for browser in browsers {
+            let mut backend = browser
+                .lock()
+                .map_err(|_| "browser operation lock poisoned")?;
+            if backend.health()?.state
+                == super::browser_controller_process::BrowserControllerProcessState::Ready
+            {
+                backend.host_request(
+                    "host.web_bot_auth_policy",
+                    serde_json::json!({"projects": projects, "reset": reset}),
+                )?;
+            }
+        }
+        Ok(())
+    }
     pub(crate) fn profile_key(user: &str) -> String {
         format!("{:x}", Sha256::digest(user.as_bytes()))
     }
