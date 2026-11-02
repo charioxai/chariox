@@ -937,6 +937,7 @@ mod tests {
         let LocalDaemonResponse::SessionState { session, .. } = redact_response_for_user(
             session_state_response(),
             "member",
+            "member",
             &ProviderRunProjectionStore::default(),
             None,
             None,
@@ -953,6 +954,7 @@ mod tests {
             LocalDaemonResponse::TriggerDeliveryResent {
                 session: session_with_a_private_trigger_firing(),
             },
+            "member",
             "member",
             &ProviderRunProjectionStore::default(),
             None,
@@ -987,6 +989,7 @@ mod tests {
             | LocalDaemonResponse::AgentTriggerDeleted { session, .. }) = redact_response_for_user(
                 response,
                 "member",
+                "member",
                 &ProviderRunProjectionStore::default(),
                 None,
                 None,
@@ -1010,6 +1013,7 @@ mod tests {
             let (LocalDaemonResponse::TriggerDeliveryResent { session }
             | LocalDaemonResponse::SessionState { session, .. }) = redact_response_for_user(
                 response,
+                crate::session::DEFAULT_LOCAL_USER_ID,
                 crate::session::DEFAULT_LOCAL_USER_ID,
                 &ProviderRunProjectionStore::default(),
                 None,

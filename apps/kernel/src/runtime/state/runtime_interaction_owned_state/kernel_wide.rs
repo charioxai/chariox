@@ -107,6 +107,7 @@ impl KernelRuntimeOwnedState {
                 responder: std::sync::Arc::new(std::sync::Mutex::new(Some(responder))),
                 kernel_wide_interaction: Some(interaction),
                 user_domain_interaction: None,
+                async_task_id: None,
             },
         );
         drop(pending);

@@ -978,8 +978,6 @@ impl KernelRuntimeState {
         else {
             return Ok(());
         };
-        let diagnostic =
-            format!("{lost}. The turn may have partly run; Chariox did not run it again");
         crate::logging::warn_with_fields(
             "daemon.remote_prompt_dispatch",
             "ending an accepted remote prompt for the owner without replay",
