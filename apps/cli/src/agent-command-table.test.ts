@@ -143,6 +143,10 @@ test("the guide tells the agent to read parse errors and to give state-changing 
   assert.match(guide, /changes state[^\n]*--command-id/)
 })
 
+test("the guide names the terminal ID returned by terminal open", () => {
+  assert.match(guideText(), /terminal\.terminal_id/)
+})
+
 test("the guide steps cover watching a kernel and an attachment that is kept alive", () => {
   const guide = guideText()
   assert.match(guide, /4\. Watch events on a kernel: chariox watch --kernel NAME --session ID --attachment ID/)

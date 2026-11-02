@@ -53,7 +53,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   {
     name: "terminal open",
     flags: [KERNEL, SESSION, HOST_AGENT, { name: "--cols", value: "N" }, { name: "--rows", value: "N" }, { name: "--title", value: "TITLE" }, TIMEOUT, SOCKET],
-    summary: "open a terminal in that Room (a login shell, or the argv after --); it keeps running when you disconnect",
+    summary: "open a terminal in that Room (a login shell, or the argv after --); prints terminal.terminal_id; it keeps running when you disconnect",
   },
   { name: "terminal list", flags: [KERNEL, SESSION, TIMEOUT, SOCKET], summary: "the Room's terminals with their output offsets; a terminal that shows host_agent runs on that agent's machine: pass that id as --host-agent to send, read, wait and close" },
   {
