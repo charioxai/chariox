@@ -5643,9 +5643,11 @@ error and the agent is in the `error` state. `retryable` is whether a later atte
 may succeed without anyone changing anything (overload, crash, network loss, a plain
 HTTP 429 and `interrupted_by_restart` are; an exhausted plan, a missing sign-in and an
 unrecognised error are not). A reader decides to retry or stop from `kind` and
-`retryable` only. `reason` is text for people: the harness's own error text with
-credentials removed, whitespace and diagnostic length preserved; it is empty for
-`completed` and `cancelled`. Chariox adds no retry, backoff or usage-limit policy; the
+`retryable` only. `reason` is text for people: a controlled explanation of the
+provider failure, such as `The provider is at capacity.`; it is empty for
+`completed` and `cancelled`. Kernel-authored failures can retain specific recovery
+details, such as a missing workspace path. Native provider diagnostics are retained
+in kernel logs with credentials redacted, rather than copied into public reasons. Chariox adds no retry, backoff or usage-limit policy; the
 provider's own behaviour is unchanged and the orchestrating agent decides.
 
 The kernel types a failure once from the harness's native error: Codex
@@ -5653,10 +5655,12 @@ The kernel types a failure once from the harness's native error: Codex
 error names with their HTTP status and native `isRetryable` flag, then the words of
 the error; a process exit, signal or transport loss is `provider_crashed` or
 `network` without any text. A failure the provider reported without a protocol
-frame, such as a rejected dispatch, is typed from its text; it does not become
-termination evidence. If native sign-in recovery is declined, the failed turn
-retains the original native kind and reason while the existing recovery notice
-explains what happened.
+frame is typed from its text. Rejected Codex dispatches retain structured
+`error.data.codexErrorInfo` when present. `explicit_provider_error` records the
+termination provenance; `provider_termination.failure` carries the typed cause and
+matches the settled turn outcome. If native sign-in recovery is declined, the
+failed turn retains its original kind and controlled public reason while the
+existing recovery notice explains what happened.
 
 `interrupted_by_restart` is a turn the kernel restarted in the middle of and could
 not resume (for example the Vault stayed locked, or no provider session identified
@@ -5667,10 +5671,8 @@ restart recovery does resume ends with the outcome of the resumed turn.
 A provider run whose process is gone and whose exit the kernel never saw is
 `provider_crashed`, retryable.
 The provider-error transcript entry of a failed turn, shown by every client, reads
-`<Cause headline>. <harness message>. <recovery>`, for example `Usage limit reached.
-You've hit your weekly limit · resets Oct 28, 9pm (UTC). Wait for the limit to reset
-(the message gives the time when the provider does) or switch this agent to another
-account, then send the request again.` It replaces the earlier `Provider prompt
+`<controlled explanation> <recovery>`, for example `The provider is at capacity.
+Try again in a moment or choose another model.` It replaces the earlier `Provider prompt
 dispatch failed: <message>` entry and, for a process exit, the bare exit text; the
 entry text carries no new serialized field. A Claude account whose plan limit is
 reached still passes the credential check, because the limit answer proves the token
