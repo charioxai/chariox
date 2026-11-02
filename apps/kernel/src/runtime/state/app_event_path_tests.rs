@@ -100,12 +100,20 @@ impl Drop for Connector {
         }
     }
 }
-fn connector(state: &KernelRuntimeState, config: &crate::config::DaemonConfig) -> Connector {
+async fn connector(
+    state: &KernelRuntimeState,
+    config: &crate::config::DaemonConfig,
+    services: &Services,
+) -> Connector {
+    let connection_id = format!("/connector-{:032x}", rand::random::<u128>());
     let (stop, stopped) = watch::channel(false);
     let task = tokio::spawn(run_event_delivery_connector(
         state.clone(),
         EventDeliveryClientConfig {
-            url: config.event_delivery_url.clone(),
+            url: config
+                .event_delivery_url
+                .as_ref()
+                .map(|url| format!("{url}{connection_id}")),
             token: None,
             kernel_id: config.daemon_id.clone(),
             environment_id: config.event_delivery_environment_id.clone(),
@@ -114,10 +122,15 @@ fn connector(state: &KernelRuntimeState, config: &crate::config::DaemonConfig) -
         },
         stopped,
     ));
-    Connector {
+    let connector = Connector {
         stop,
         task: Some(task),
-    }
+    };
+    // Shutdown of the client does not mean the stand-in has consumed its
+    // Close. Never let a restarted delivery be consumed by that old socket.
+    // Automatic reconnects of the old connector carry its old path too.
+    services.wait_connected(&connection_id).await;
+    connector
 }
 fn configure(state: &KernelRuntimeState, session: &str, publication: &str, automation: &str) {
     let catalog = state
@@ -419,7 +432,7 @@ async fn exercise(fanout: bool) {
         .wake_pump()
         .try_begin(crate::session::unix_epoch_ms())
         .unwrap();
-    let connection = connector(&state, &config);
+    let connection = connector(&state, &config, &services).await;
     assert_eq!(
         services
             .generate(
@@ -510,7 +523,7 @@ async fn exercise(fanout: bool) {
         .wake_pump()
         .try_begin(crate::session::unix_epoch_ms())
         .unwrap();
-    let connection = connector(&state, &config);
+    let connection = connector(&state, &config, &services).await;
     assert_eq!(
         services.deliver(deliveries.clone(), false).await,
         deliveries.len()
@@ -527,7 +540,14 @@ async fn exercise(fanout: bool) {
         crate::session::unix_epoch_ms(),
     );
     expired.expires_at_ms = crate::session::unix_epoch_ms() - 1;
-    assert_eq!(services.deliver(vec![expired], false).await, 0);
+    // Acceptance is serialized. ACK of the following replay proves the expired
+    // delivery was processed without ACK or insertion, without a timing window.
+    assert_eq!(
+        services
+            .deliver(vec![expired, deliveries[0].clone()], false)
+            .await,
+        1
+    );
     assert_eq!(counts(&state), (0, claims.len() as u64, 0));
     assert_eq!(runs(&state, &sessions), original_runs);
     // Transport TTL and durable inbox retention are separate contracts. An

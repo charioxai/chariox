@@ -16,6 +16,7 @@ pub(super) struct Services {
     pub aeds_url: String,
     pub subscriptions: chariox_aegs_sdk::AegsStore,
     pub commands: mpsc::Sender<DeliveryCommand>,
+    connections: watch::Receiver<String>,
     stop: watch::Sender<bool>,
     tasks: Vec<tokio::task::JoinHandle<()>>,
 }
@@ -81,6 +82,7 @@ impl Services {
             }
         });
         let (commands, mut receiver) = mpsc::channel::<DeliveryCommand>(8);
+        let (connected, connections) = watch::channel(String::new());
         let mut aeds_stop = stopped;
         let aeds_task = tokio::spawn(async move {
             loop {
@@ -88,7 +90,17 @@ impl Services {
                     _ = aeds_stop.changed() => return,
                     accepted = aeds.accept() => accepted.unwrap(),
                 };
-                let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+                let mut connection_id = String::new();
+                let mut socket = tokio_tungstenite::accept_hdr_async(
+                    stream,
+                    |request: &tokio_tungstenite::tungstenite::handshake::server::Request,
+                     response| {
+                        connection_id = request.uri().path().to_owned();
+                        Ok(response)
+                    },
+                )
+                .await
+                .unwrap();
                 let frame = socket.next().await.unwrap().unwrap();
                 let KernelToAedsMessage::Hello {
                     protocol_version,
@@ -124,6 +136,7 @@ impl Services {
                     },
                 )
                 .await;
+                connected.send_replace(connection_id);
                 loop {
                     let command = tokio::select! {
                         _ = aeds_stop.changed() => return,
@@ -139,14 +152,22 @@ impl Services {
                             bindings.contains(&delivery.binding_id),
                             "delivery must have a claimed binding"
                         );
-                        expected.insert(delivery.delivery_id.clone());
+                        if delivery.expires_at_ms > crate::session::unix_epoch_ms() {
+                            expected.insert(delivery.delivery_id.clone());
+                        }
                         send(&mut socket, AedsToKernelMessage::Delivery { delivery }).await;
                     }
+                    assert!(
+                        !expected.is_empty(),
+                        "each delivery batch needs a live acknowledgement barrier"
+                    );
                     let mut acknowledgements = 0;
                     while !expected.is_empty() {
-                        let frame =
-                            tokio::time::timeout(Duration::from_millis(500), socket.next()).await;
-                        let Ok(Some(Ok(frame))) = frame else { break };
+                        let frame = socket
+                            .next()
+                            .await
+                            .expect("the connector stays open until acknowledgement")
+                            .expect("the connector frame is readable");
                         if let Ok(KernelToAedsMessage::Ack { delivery_id }) =
                             serde_json::from_str(frame.to_text().unwrap())
                         {
@@ -168,9 +189,20 @@ impl Services {
             aeds_url,
             subscriptions,
             commands,
+            connections,
             stop,
             tasks: vec![generator_task, aeds_task],
         }
+    }
+    pub async fn wait_connected(&self, connection_id: &str) {
+        let mut connections = self.connections.clone();
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            connections.wait_for(|current| current == connection_id),
+        )
+        .await
+        .expect("the restarted connector reaches the AEDS handshake")
+        .expect("the AEDS fixture stays running");
     }
     /// Fixture source publication: production AEGS reconciliation/filter first,
     /// then the stand-in's per-binding transport fan-out.
