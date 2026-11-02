@@ -2049,7 +2049,8 @@ directory there, outside repositories and protected kernel state. Limits are
 256 MiB per file, 1 GiB of reserved/received bytes per Room, 200 retained download
 records per browser, plus the controller's free-space reserve. CDP progress
 cancels oversized streams, including unknown-length responses; partial files are
-removed. Browser stop/recovery removes the transient download tree. Room end
+removed. Browser stop/recovery removes the transient download tree. A replacement controller
+also removes its stopped predecessor's tree using the stable kernel/profile binding. Room end
 revokes its agents and removes its files; later downloads from its pages are
 cancelled. Files an agent wants to keep must be moved before Room/browser cleanup.
 This lifecycle does not change MP-09 shutdown triggers or prolong activity.

@@ -3,20 +3,22 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { access, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { HostDownloads } from './kernel-browser-downloads.mjs';
 
 async function using(run, limits) {
   const handlers = new Set(), sent = [], frames = new Map([['fa','ta'],['fb','tb']]);
   const connection = { subscribe: f => { handlers.add(f); return () => handlers.delete(f); }, send: async (method, params) => { sent.push({method,params}); } };
   const browser = { targetsByFrame: frames, targetsByDownload: new Map() };
-  const downloads = new HostDownloads({ notify: () => {}, ...limits });
+  const ownerRoot = randomUUID();
+  const downloads = new HostDownloads({ ownerRoot, notify: () => {}, ...limits });
   await downloads.start(connection, browser);
   downloads.bind({tab_id:'a',target_id:'ta'}, 'room-a');
   downloads.bind({tab_id:'b',target_id:'tb'}, 'room-b');
   const emit = (method, params) => { for (const handler of handlers) handler({method:`Browser.${method}`,params}); };
   const begin = (guid, frameId='fa') => emit('downloadWillBegin',{guid,frameId,suggestedFilename:'../../report.txt'});
   const progress = (guid,state,receivedBytes,totalBytes=receivedBytes) => emit('downloadProgress',{guid,state,receivedBytes,totalBytes});
-  try { await run({downloads, sent, begin, progress}); }
+  try { await run({downloads, sent, begin, progress, ownerRoot}); }
   finally { await downloads.close(); assert.equal(handlers.size,0); }
 }
 
@@ -58,4 +60,15 @@ test('MP-08/MP-11 a missing completed file fails and native downloads remain all
   begin('one'); progress('one','completed',2); await downloads.settle(); assert.equal(downloads.state()[0].state,'failed');
   const calls=sent.length; begin('foreign','unknown'); await downloads.settle(); assert.equal(sent.length,calls);
   assert.equal(downloads.state().length,1);
+}));
+
+
+test('MP-08/MP-10 a replacement controller removes artifacts from its stopped predecessor', () => using(async ({downloads,begin,progress,ownerRoot}) => {
+  begin('one'); await writeFile(path.join(downloads.spool,'one'),'saved'); progress('one','completed',5); await downloads.settle();
+  const saved=downloads.state()[0].path; downloads.off();
+  const replacement=new HostDownloads({ownerRoot});
+  // Recreate the same kernel/profile binding after losing in-memory controller state.
+  await replacement.start({subscribe:()=>()=>{},send:async()=>{}},{});
+  try { await assert.rejects(access(saved)); assert.deepEqual(replacement.state(),[]); }
+  finally { await replacement.close(); }
 }));

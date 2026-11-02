@@ -134,7 +134,7 @@ export class KernelBrowserHost {
     this.observedDocuments = new Map();
     this.displayDocuments = new DisplayDocuments((stage, started, ended) => this.timing?.(stage, started, ended));
     this.stateSignal = new StateSignal();
-    this.downloads = new HostDownloads({ notify: () => this.stateSignal.notify() });
+    this.downloads = new HostDownloads({ ownerRoot: root, notify: () => this.stateSignal.notify() });
     this.header = new BrowserHeaderState(() => this.stateSignal.notify());
     this.mirror = new MirrorService(this);
     this.protection = { values: [], targets: [], unknown: false };
@@ -1068,7 +1068,8 @@ export class KernelBrowserHost {
   }
   async handle(request, { signal } = {}) {
     if (request.method === "host.downloads.cleanup") {
-      if (this.downloads.root) await this.downloads.cleanupSession(request.params.session_id);
+      if (!this.browser) await this.downloads.close();
+      else await this.downloads.cleanupSession(request.params.session_id);
       return { id: request.id, ok: true, result: {} };
     }
     const browserAtEntry = this.browser;

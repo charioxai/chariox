@@ -1,5 +1,5 @@
 // MP-08/MP-10/MP-11: one CDP download spool, with completed files owned by a Room.
-import { mkdir, mkdtemp, lstat, rename, rm } from 'node:fs/promises';
+import { mkdir, lstat, rename, rm } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { userInfo } from 'node:os';
@@ -11,7 +11,10 @@ const sessionKey = session => createHash('sha256').update(session).digest('hex')
 const failure = (code, message) => Object.assign(new Error(message), {code});
 
 export class HostDownloads {
-  constructor({ notify, maxFileBytes = 256 * 1024 * 1024, maxSessionBytes = 1024 * 1024 * 1024 } = {}) {
+  constructor({ ownerRoot, notify, maxFileBytes = 256 * 1024 * 1024, maxSessionBytes = 1024 * 1024 * 1024 } = {}) {
+    if (typeof ownerRoot !== 'string' || !ownerRoot) throw new Error('browser download owner root required');
+    this.directory = path.join(userInfo().homedir, '.local/share/chariox/browser-downloads', sessionKey(ownerRoot));
+    this.root = this.directory;
     this.notify = notify ?? (() => {});
     this.maxFileBytes = maxFileBytes;
     this.maxSessionBytes = maxSessionBytes;
@@ -22,9 +25,10 @@ export class HostDownloads {
   }
   async start(connection, browser) {
     // Use the OS account's data directory, never cwd, TMPDIR or protected CHARIOX_HOME.
-    const parent = path.join(userInfo().homedir, '.local/share/chariox/browser-downloads');
-    await mkdir(parent, {recursive:true,mode:0o700});
-    this.root = await mkdtemp(path.join(parent, 'browser-'));
+    this.root = this.directory;
+    // A replacement controller retires the stopped browser's transient artifacts too.
+    await rm(this.root, {recursive:true,force:true});
+    await mkdir(this.root, {recursive:true,mode:0o700});
     this.spool = path.join(this.root, 'incoming');
     await mkdir(this.spool, {mode:0o700});
     await assertBrowserDownloadHeadroom({downloadDirectory:this.spool});

@@ -172,14 +172,16 @@ impl KernelBrowserHost {
             let mut backend = backend
                 .lock()
                 .map_err(|_| "browser backend lock poisoned")?;
-            if backend.host_is_live()? {
-                backend
-                    .host_request_classified(
-                        "host.downloads.cleanup",
-                        serde_json::json!({"session_id": session}),
-                    )
-                    .map_err(|error| error.to_string())?;
+            if !backend.host_is_live()? {
+                // The controller retires its stopped predecessor's artifacts without launching Chrome.
+                backend.start()?;
             }
+            backend
+                .host_request_classified(
+                    "host.downloads.cleanup",
+                    serde_json::json!({"session_id": session}),
+                )
+                .map_err(|error| error.to_string())?;
         }
         self.inner
             .lock()
