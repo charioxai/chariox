@@ -858,24 +858,19 @@ fn idle_workflow_prompt_fixture() -> InterruptFixture {
         .session_store
         .get_session(&fixture.session_id)
         .unwrap();
-    let active = owned
+    owned
         .prompt_state_owner
-        .active_prompt_for_agent(&session, &fixture.target_agent_id)
+        .cancel_active_prompt_only(&session, &fixture.target_agent_id)
         .unwrap();
+    let (active, queued) = owned
+        .prompt_state_owner
+        .state_parts(&session, &fixture.target_agent_id);
     owned
-        .cancel_local_prompt(
+        .mirror_prompt_owner_agent_state(
             &fixture.session_id,
             &fixture.target_agent_id,
-            active.source_attachment_id(),
-        )
-        .unwrap()
-        .unwrap();
-    owned
-        .finalize_local_prompt_cancellation_deferring_queue_head(
-            &fixture.session_id,
-            &fixture.target_agent_id,
-            active.id(),
-            Some("interrupt-provider-run"),
+            active,
+            queued,
         )
         .unwrap();
     fixture

@@ -935,7 +935,7 @@ impl KernelRuntimeState {
                 let _ = self.fail_prompt_dispatch(dispatch, error).await;
             }
         }
-        if failed_delivery.is_some()
+        if (failed_delivery.is_some() || cancellation.queue_head_deferred)
             && self
                 .owned
                 .prompt_state_owner
@@ -945,20 +945,8 @@ impl KernelRuntimeState {
                 )
                 .is_some()
         {
-            let session_id_owned = session_id.to_string();
-            let agent_id_owned = agent_id.to_string();
-            let replacement_provider_run_id = self
-                .with_app_side_effect(move |app| {
-                    app.ensure_prompt_provider_run_for_agent(&session_id_owned, &agent_id_owned)
-                })
-                .await?;
-            if let Some(dispatch) = self.owned.advance_next_queued_prompt_dispatch(
-                session_id,
-                agent_id,
-                &replacement_provider_run_id,
-            )? {
-                self.spawn_prompt_dispatch(dispatch, self.provider_runtime_lanes.clone());
-            }
+            Box::pin(self.advance_project_queued_prompt_after_settlement(session_id, agent_id))
+                .await;
         }
         Ok(CancelledLocalPromptRestartOutcome::Finalized)
     }
