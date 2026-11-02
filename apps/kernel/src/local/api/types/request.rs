@@ -250,6 +250,7 @@ pub enum LocalDaemonRequest {
     SetUserConfigValue(SetUserConfigValueRequest),
     SetWorkspaceLiveSyncMode(SetWorkspaceLiveSyncModeRequest),
     UnsetUserConfigValue(UnsetUserConfigValueRequest),
+    OwnerVault(OwnerVaultRequest),
     SetCredentialSecret(SetCredentialSecretRequest),
     DeleteCredentialSecret(DeleteCredentialSecretRequest),
     GetCredentialVaultStatus(GetCredentialVaultStatusRequest),

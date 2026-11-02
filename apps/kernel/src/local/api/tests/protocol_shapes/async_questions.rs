@@ -36,7 +36,7 @@ fn async_popup_returns_protocol_936_385_snapshot_and_hash() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "5f16b69203066813e09d1116036e5cd93f7f381bf444a0bb4e94e281d2de6062"
+        "5e598951325cbc53b048b5b6f9efb5ddc999cf73a93ec47bc4bd54d033afb758"
     );
     // An old client ignores the additive ownership field; its answer uses
     // exactly the pre-existing request shape.

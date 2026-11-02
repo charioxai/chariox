@@ -125,3 +125,5 @@ mod vault_unlock;
 mod async_questions;
 mod provider_login;
 mod session_activity;
+
+mod owner_vault;

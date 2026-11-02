@@ -199,7 +199,7 @@ fn generation_origin(raw: &str) -> Result<String, DaemonError> {
     Ok(url.origin().ascii_serialization())
 }
 
-fn generate_password(length: usize, symbols: bool) -> String {
+pub(in crate::runtime::state) fn generate_password(length: usize, symbols: bool) -> String {
     const CLASSES: [&str; 4] = [
         "abcdefghijkmnopqrstuvwxyz",
         "ABCDEFGHJKLMNPQRSTUVWXYZ",

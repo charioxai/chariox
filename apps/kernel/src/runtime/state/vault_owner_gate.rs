@@ -30,6 +30,11 @@ enum Who {
 
 fn who_may(request: &LocalDaemonRequest) -> Option<(Who, &'static str, &'static str)> {
     Some(match request {
+        LocalDaemonRequest::OwnerVault(_) => (
+            Who::Owner,
+            "vault_owner_only",
+            "Only the owner of this kernel can open its Vault values.",
+        ),
         LocalDaemonRequest::LockCredentialVault(_) => {
             (Who::Owner, "vault_lock_owner_only", wording::LOCK)
         }

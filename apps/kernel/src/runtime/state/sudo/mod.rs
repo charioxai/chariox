@@ -23,6 +23,7 @@ mod process;
 mod receipts;
 mod scope;
 mod vault;
+pub(in crate::runtime::state) use vault::generate_password;
 mod window;
 pub(crate) use policy::{is_sudo_control, is_sudo_prompt};
 pub(crate) use vault::{require_login_handle_scope, vault_generate_spec, VAULT_GENERATE};

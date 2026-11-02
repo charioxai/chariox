@@ -217,6 +217,7 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
             LocalRequestMetadata::new("workspace_live_sync.mode", Normal)
                 .session(&request.session_id)
         }
+        LocalDaemonRequest::OwnerVault(_) => LocalRequestMetadata::new("vault.owner", Normal),
         LocalDaemonRequest::SetCredentialSecret(request) => {
             LocalRequestMetadata::new("credential.secret.set", Normal)
                 .optional_session(request.session_id.as_deref())
@@ -920,6 +921,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::ResetAllPromptSettings(_) => "prompt_settings.reset_all",
         LocalDaemonRequest::SetUserConfigValue(_) => "config.set",
         LocalDaemonRequest::UnsetUserConfigValue(_) => "config.unset",
+        LocalDaemonRequest::OwnerVault(_) => "vault.owner",
         LocalDaemonRequest::SetCredentialSecret(_) => "credential.secret.set",
         LocalDaemonRequest::DeleteCredentialSecret(_) => "credential.secret.delete",
         LocalDaemonRequest::SetProviderAccountCredential(_) => "provider_account.credential.set",
