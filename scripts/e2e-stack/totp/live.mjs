@@ -297,7 +297,9 @@ try {
   const blobs = []
   for (const entry of outline.agents) {
     const ids = [...new Set(entry.turns.flatMap(turn => turn.blobs.map(blob => blob.blob_id)))]
-    if (ids.length) blobs.push(...variant(await client.send({ GetSessionHistoryBlobContents: { session_id: sessionId, agent_id: entry.agent_id, blob_ids: ids } }), 'SessionHistoryBlobContents').blobs)
+    for (let offset = 0; offset < ids.length; offset += 64) {
+      blobs.push(...variant(await client.send({ GetSessionHistoryBlobContents: { session_id: sessionId, agent_id: entry.agent_id, blob_ids: ids.slice(offset, offset + 64) } }), 'SessionHistoryBlobContents').blobs)
+    }
   }
   assert.ok(blobs.some(blob => blob.entries.length > 0), 'absence check requires actual public history entries')
   const publicHistory = JSON.stringify({ outline, blobs })
