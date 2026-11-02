@@ -1338,3 +1338,24 @@ fn task_deltas_keep_concurrent_session_changes_in_the_snapshot() {
     }
     assert!(can_skip_session_snapshot(&task_only, Some(&previous), true));
 }
+
+#[test]
+fn control_plane_refusals_keep_their_typed_boundary() {
+    for code in [
+        "control_plane_unavailable",
+        "control_plane_grant_required",
+        "control_plane_authorization_denied",
+        "control_plane_binding_invalid",
+    ] {
+        let error = DaemonError::RelayTransport {
+            operation: "connected control plane",
+            code: code.into(),
+            retryable: false,
+            message: "Action required".into(),
+        };
+        let mapped = map_kernel_error(&error);
+        assert_eq!(mapped.code, code);
+        assert_eq!(mapped.message, "Action required");
+        assert!(!mapped.retryable);
+    }
+}

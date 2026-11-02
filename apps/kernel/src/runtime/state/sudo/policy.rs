@@ -230,7 +230,6 @@ pub(super) fn sudo_request_forbidden(request: &LocalDaemonRequest) -> bool {
             | LocalDaemonRequest::ListEvents(_)
             | LocalDaemonRequest::WaitEvents(_)
             | LocalDaemonRequest::AckEvents(_)
-            | LocalDaemonRequest::ListGatewayKernels(_)
             | LocalDaemonRequest::ManageCredentialVault(_)
             | LocalDaemonRequest::UnlockCredentialVault(_)
             | LocalDaemonRequest::GetCredential(_)

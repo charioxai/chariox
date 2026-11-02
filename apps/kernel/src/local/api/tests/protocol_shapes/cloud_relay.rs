@@ -28,8 +28,6 @@ fn relay_status_control_capabilities_are_versioned_and_hashed() {
     assert_eq!(
         response["RelayStatus"]["status"]["capabilities"],
         serde_json::json!([
-            "disposable_worker_control_v1",
-            "managed_environment_keep_running_v1",
             "terminal_relay_authorization_renewal_v1",
             "exact_prompt_cancellation_v499",
             "owner_managed_context_transfer_v1",
@@ -47,7 +45,7 @@ fn relay_status_control_capabilities_are_versioned_and_hashed() {
             "{:x}",
             Sha256::digest(serde_json::to_string(&response).unwrap().as_bytes())
         ),
-        "a9ff50eb8eefc2f26cbe377157e66d63562a84ef8b708147d3aad5575f25ce7f"
+        "2491c6a3eb60358bc78ebac7f4f5b3233187f9efba63e51544847cd2793ec041"
     );
 }
 

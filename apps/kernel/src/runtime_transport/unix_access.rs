@@ -32,13 +32,16 @@ pub(super) async fn admit_frame(
     };
     if let Some(turn) = sudo {
         let verdict = match frame {
-            // A sudo window is one turn on this kernel; it does not reach other kernels.
             KernelIncomingFrame::Request {
+                kernel: Some(_),
+                request,
+                ..
+            } => runtime_state
+                .authorize_gateway_request(&turn.entry_id, request)
+                .map_err(|error| Refusal::of(&error)),
+            KernelIncomingFrame::Subscribe {
                 kernel: Some(_), ..
-            }
-            | KernelIncomingFrame::Subscribe {
-                kernel: Some(_), ..
-            } => Err(Refusal::NotCovered),
+            } => Ok(()),
             KernelIncomingFrame::Request { request, .. } => runtime_state
                 .authorize_sudo_request(&turn.entry_id, request)
                 .map(|_| ())
@@ -665,8 +668,8 @@ pub(super) fn serve_gateway(
     let grant_id = caller.caller_id.clone();
     let harness = router
         .runtime_state()
-        .access_grant_summary(&grant_id)
-        .map(|grant| crate::runtime::kernel_gateway::harness_name(&grant))
+        .gateway_origin(&grant_id)
+        .map(|origin| origin.harness)
         .unwrap_or_else(|| "unknown".into());
     let router = Arc::clone(router);
     let health = runtime.transport_health.clone();
