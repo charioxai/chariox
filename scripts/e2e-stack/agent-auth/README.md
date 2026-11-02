@@ -32,6 +32,11 @@ node scripts/e2e-stack/agent-auth/live.mjs \
   --dpr 1
 ```
 
+The fixture verifies the already linked native Codex profile through the owner
+Refresh API and starts first-time Vault management through the owner API. All
+Vault passphrase answers use the actual new-UI secret interaction. Those setup
+initiators are absent from the current new-UI windows and are reported as gaps.
+
 The client is exclusively `apps/web`'s new terminal-os shell, built from the real
 hosted application entry (`/waiting-room?ui=os`). The drill enrolls its kernel
 through the product device flow and real hosted WSS relay, submits two owner-authorized `/sudo` prompts, answers the actual new UI

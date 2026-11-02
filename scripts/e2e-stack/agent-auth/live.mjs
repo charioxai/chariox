@@ -189,6 +189,8 @@ try {
     if (!status.relay_url.startsWith('wss://')) throw new Error('Hosted relay must use wss')
     return true
   }, 60000)
+  stage('verify linked native provider precondition')
+  await client.send({ RefreshProviderAccountProfile: { provider: 'codex', account_profile: 'default' } })
   // Administrative fixture setup uses public owner APIs; the scenario itself is driven through the new UI.
   const created = variant(await client.send(requests.createSessionRequest(repository, repository, 'authmd drill', { provider: 'codex', model: 'gpt-6-luna', effort: 'low', account_profile: 'default', execution_mode: 'build', permission_level: 'yolo' }, undefined, 'unrestricted')), 'SessionCreated')
   sessionId = created.session.id
@@ -204,8 +206,19 @@ try {
   await page.locator(`[data-room-id="${sessionId}"] [data-action="open-room"]`).click({ timeout: 60000 })
   await page.locator('[data-prompt-input]').waitFor()
   await capture('new-ui-room')
+  // The current Vault window cannot initiate first-time setup. Start that
+  // existing owner operation as fixture provisioning; its secret answers still
+  // go exclusively through the real new-UI interaction controls.
+  stage('prepare configured Vault precondition')
+  let managed = false, manageFailure
+  const managing = client.send({ ManageCredentialVault: { session_id: sessionId, agent_id: agentId } })
+    .then(() => { managed = true }, error => { manageFailure = error })
+  await until(async () => { await interact(); if (manageFailure) throw manageFailure; return managed })
+  await managing
+  result.vault_precondition = 'Existing owner ManageCredentialVault API; all secret answers in new UI'
   for (const flow of ['anonymous', 'service_auth']) {
     stage(`provider ${flow}`)
+    let sawProviderActivity = false
     const before = service.counts.accepted
     const args = { request_id: `live-${flow}`, resource_url: `${service.origin}/`, ...(flow === 'service_auth' ? { email: 'owner@example.test' } : {}) }
     const prompt = `/sudo MP-08 / MP-09 / MP-10 / MP-11 AU-15. Register this owner-authorized local test account. Use Chariox MCP tools only. Call chariox.agent_auth.register with exactly ${JSON.stringify(args)}. Then call chariox.http_request_with_credential with its returned credential_id, method GET and url ${service.origin}/api/check. Do not use shell, files or raw network tools. Never print a credential value. Report HTTP status and end with AU15_${flow}_DONE.`
@@ -221,7 +234,10 @@ try {
       const active = promptState.active_prompt ?? (state.active_prompt?.target_agent_id === agentId ? state.active_prompt : null)
       const queued = promptState.queued_prompts ?? (state.queued_prompts ?? []).filter(prompt => prompt.target_agent_id === agentId)
       const agent = state.agents.find(agent => agent.id === agentId)
-      return service.counts.accepted > before && !active && !queued.length && agent && !agent.is_processing && agent.state !== 'Working'
+      const busy = active || queued.length || agent?.is_processing || agent?.state === 'Working'
+      if (busy) sawProviderActivity = true
+      if (sawProviderActivity && !busy && agent && service.counts.accepted === before) throw new Error('Provider finished without a credential-backed successful API call')
+      return service.counts.accepted > before && !busy && agent
     })
     const text = await page.locator('body').innerText()
     absent(text)
