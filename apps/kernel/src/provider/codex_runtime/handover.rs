@@ -157,7 +157,8 @@ mod tests {
             let (stream, _) = listener.accept().unwrap();
             let mut socket = accept(stream).unwrap();
             socket.send(Message::text("after the swap")).unwrap();
-            std::thread::sleep(Duration::from_millis(500));
+            // Keep the connection open until the test drops its end.
+            while socket.read().is_ok() {}
         });
         let (socket, ()) = test_codex_connect(&endpoint).unwrap();
         let ProviderRuntimeBinding::Codex(binding) =
@@ -187,6 +188,7 @@ mod tests {
             adopted.socket.read().unwrap(),
             Message::text("after the swap")
         );
+        drop(adopted);
         server.join().unwrap();
     }
 
@@ -198,8 +200,8 @@ mod tests {
         let endpoint = format!("ws://{}", listener.local_addr().unwrap());
         let server = std::thread::spawn(move || {
             let (stream, _) = listener.accept().unwrap();
-            let _socket = accept(stream).unwrap();
-            std::thread::sleep(Duration::from_millis(500));
+            let mut socket = accept(stream).unwrap();
+            while socket.read().is_ok() {}
         });
         let (socket, ()) = test_codex_connect(&endpoint).unwrap();
         let ProviderRuntimeBinding::Codex(binding) =
@@ -238,6 +240,7 @@ mod tests {
             "the adopted turn never asks for its record: {:?}",
             adopted.turn_tracker
         );
+        drop(adopted);
         server.join().unwrap();
     }
 }
