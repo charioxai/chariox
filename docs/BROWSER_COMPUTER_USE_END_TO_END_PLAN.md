@@ -166,6 +166,8 @@ not close those deployment and live-validation steps.
 
 ## Managed and ordinary kernel parity
 
+MP-08 / MP-09 / MP-10 / MP-11 — 2026-11-02 rental amendment: [owned kernels and optional control-plane machines](CONTROL_PLANE_MACHINE_BOUNDARY.md) records Miguel’s one-managed-VM product and ordinary-primitives remote work decisions. Its rental aggregate, base-image/boot, Cloud boundary and replacement acceptance scope supersede the older rental-specific requirements below; ordinary runtime parity and current security-anchor review remain required. Historical results keep their original source binding.
+
 Status: open. Do not mark this work complete until every ledger item below has
 reviewed source proof and fresh-machine Path-1 evidence. For this plan, a
 provider-level destructive rebuild of the existing Hetzner allocation may
