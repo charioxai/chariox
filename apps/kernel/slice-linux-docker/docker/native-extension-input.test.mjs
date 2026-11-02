@@ -84,7 +84,7 @@ test('MP-08/MP-10/MP-11 a pinned popup-free extension cannot receive native agen
     while(Date.now()<deadline){const found=(await controls(label)).find(match);if(found)return found;await delay(200)}
     assert.fail('Chrome accessibility control ready: '+label+'; visible fixture controls: '+JSON.stringify((await controls('')).map(node=>node.name)));
    };
-   const menu=await control('Extensions',node=>node.name==='Extensions');await click(menu);
+   const menu=await control('Extensions menu',node=>node.name==='Extensions menu');await click(menu);
    const pin=await control('Pin',node=>node.name.includes('MP11'));await click(pin);
    await adapter.request({op:'input',surface_id:base.surface_id,generation:base.generation,input:{kind:'key',key:'Escape'}},{});await delay(200);
    const action=(await controls('MP11')).find(node=>node.name==='MP11 Popup Free Action');assert(action);
