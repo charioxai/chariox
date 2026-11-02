@@ -3,6 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {BrowserCdpClient} from './browser-controller-cdp.mjs';
 import {KernelBrowserHost} from './kernel-browser-host.mjs';
+import {HostDownloads} from './kernel-browser-downloads.mjs';
 import {InputArbiter} from './kernel-browser-chrome-window.mjs';
 for(const pendingActive of [false,true])test('MP-08/MP-10/MP-11 newly active native tab gets its own document proof without querying a loading background renderer; pending active='+pendingActive,async()=>{
  const calls=[],viewport={css_width:1280,css_height:800,device_scale_factor:1,desktop_pixel_width:1280,desktop_pixel_height:800};
@@ -18,7 +19,7 @@ for(const pendingActive of [false,true])test('MP-08/MP-10/MP-11 newly active nat
  for(const target of ['old','new'])browser.sessionsByTarget.set(target,target+'-session');
  browser.documentIdsByTarget.set('old','old-doc');browser.viewportByTarget.set('old',{key:JSON.stringify({width:1280,height:800,deviceScaleFactor:1,mobile:false,screenWidth:1280,screenHeight:800})});
  if(pendingActive){browser.documentIdsByTarget.set('new','last-committed');browser.viewportByTarget.set('new',browser.viewportByTarget.get('old'));}
- const host={downloads:{bindings:new Map()},header:{update(){},history(){return null}},browser,chromium:{desktop:{binding:()=>({})}},generation:1,layouts:new Map(),layoutRevisions:new Map(),observations:0,observed:0,activeTarget:'old',tabs:new Map([['old-tab',{tab_id:'old-tab',target_id:'old',document_id:'old-doc'}]]),streams:new Map(),tabGroups:{active:async()=> 'new'},viewport:()=>viewport,tabState(){return {tabs:[...this.tabs.values()]};},save:async()=>{},retireNativeForeground:async()=>{}};
+ const host={downloads:new HostDownloads({ownerRoot:"tab-discovery-test"}),header:{update(){},history(){return null}},browser,chromium:{desktop:{binding:()=>({})}},generation:1,layouts:new Map(),layoutRevisions:new Map(),observations:0,observed:0,activeTarget:'old',tabs:new Map([['old-tab',{tab_id:'old-tab',target_id:'old',document_id:'old-doc'}]]),streams:new Map(),tabGroups:{active:async()=> 'new'},viewport:()=>viewport,tabState(){return {tabs:[...this.tabs.values()]};},save:async()=>{},retireNativeForeground:async()=>{}};
  host.reconcile=options=>KernelBrowserHost.prototype.reconcile.call(host,options);
  let documentProofs=0;host.displayTarget=command=>{documentProofs++;return KernelBrowserHost.prototype.displayTarget.call(host,command);};
  const arbiter=new InputArbiter(host,{current:()=>({tabbed:{window_generation:2,isCurrent:()=>true}})});
