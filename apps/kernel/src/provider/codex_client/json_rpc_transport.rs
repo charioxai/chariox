@@ -105,9 +105,12 @@ impl CodexClient {
             }
             if message.id.as_ref() == Some(&json!(request_id)) {
                 if let Some(error) = rpc_error_message(&message) {
-                    // The app-server's own answer to a turn request is the
-                    // provider's refusal; every other method stays a protocol fault.
-                    let failure = if matches!(method, "turn/start" | "turn/steer") {
+                    // Thread preparation is part of prompt dispatch too. Preserve
+                    // provider refusals there before protocol framing hides the code.
+                    let failure = if matches!(
+                        method,
+                        "turn/start" | "turn/steer" | "thread/start" | "thread/resume"
+                    ) {
                         DaemonError::ProviderRefusal { message: error }
                     } else {
                         self.protocol_error(method, error)

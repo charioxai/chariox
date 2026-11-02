@@ -188,3 +188,34 @@ fn ea2_75_exact_capacity_diagnostic_is_typed_and_kept_out_of_person_facing_text(
     assert!(!failure.notice().contains(REFUSAL));
     assert!(failure.notice().contains("another model"));
 }
+
+#[test]
+fn ea2_75_thread_preparation_errors_keep_their_provider_code() {
+    use crate::provider::{TurnOutcome, TurnOutcomeKind};
+    for method in ["thread/start", "thread/resume"] {
+        let (endpoint, server) = codex_server(
+            method,
+            Some(json!({
+                "code": -32000, "message": "Request rejected", "data": {"codexErrorInfo": "internalServerError"}
+            })),
+        );
+        let (socket, _) = connect(&endpoint).unwrap();
+        let mut state = CodexRuntimeState::pending(
+            endpoint,
+            (method == "thread/resume").then(|| "thread".to_string()),
+            socket,
+            1,
+        );
+        let envelope = PromptEnvelope::new("prompt", "", Vec::new(), PromptManifest::current());
+        submit_codex_prompt(&run(), &mut state, &envelope).unwrap();
+        let drained = drain_codex_events(&run(), &mut state, None).unwrap();
+        let failure = TurnOutcome::classify("codex", drained.terminal_failure.as_deref().unwrap());
+        drop(state);
+        server.join().unwrap();
+        assert_eq!(
+            (failure.kind, failure.retryable),
+            (TurnOutcomeKind::Other, true),
+            "{method}"
+        );
+    }
+}
