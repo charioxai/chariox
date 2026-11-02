@@ -181,6 +181,12 @@ mod tests {
         let mut adopted = adopt(handover);
         let turn = adopted.adopted_turn.take().unwrap();
         continue_turn(&mut adopted, turn);
+        adopted
+            .socket
+            .get_ref()
+            .tcp()
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
 
         assert_eq!(adopted.buffered_notifications, [read_ahead]);
         assert_eq!(adopted.active_turn_id.as_deref(), Some("notification-turn"));
