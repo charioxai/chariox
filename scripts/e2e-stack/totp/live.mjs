@@ -25,7 +25,6 @@ assert.ok([1, 2].includes(dpr))
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 const name = `vtotp-${dpr}-${Date.now()}`
 const passphrase = randomBytes(32).toString('hex')
-const bootstrapSecret = randomBytes(24).toString('hex')
 const results = { MP: ['MP-08', 'MP-09', 'MP-10', 'MP-11'], dpr, client: 'terminal-os', provider: 'codex', model: 'gpt-6-luna', effort: 'low', interactions: [], localFixture: true, accepted: false }
 const record = async () => writeFile(path.join(evidence, 'result.json'), JSON.stringify(results, null, 2) + '\n', { mode: 0o600 })
 const variant = (value, key) => { assert.ok(value[key], `expected ${key}, received ${Object.keys(value).join(',')}`); return value[key] }
@@ -229,7 +228,6 @@ try {
       const title = String(interaction.title ?? '')
       let value
       if (/Unlock Chariox Vault/.test(title)) value = passphrase
-      else if (/TOTP bootstrap/.test(title)) value = bootstrapSecret
       else if (/TOTP enrollment key/.test(title)) value = `otpauth://totp/Local:fixture?secret=${site.supplySeedToOwner()}&issuer=Local`
       else if (/TOTP recovery codes/.test(title)) value = JSON.stringify([site.backupCodeForOwner()])
       else if (/Authorize sudo window|Run one sudo task/.test(title)) value = passphrase
@@ -256,14 +254,16 @@ try {
     }
   }
   const request = (id, injection, title) => JSON.stringify({ credential: { id, allowed_hosts: [new URL(site.origin).host], allowed_uses: ['browser'], injection }, prompt: { title, message: 'Enter the disposable local test-site value in the protected field.', timeout_sec: 180 }, overwrite: false })
-  await submit('Use chariox.request_credential_secret with ' + request('bootstrap', { kind: 'browser' }, 'TOTP bootstrap') + '. This creates the disposable test Vault. Do not use shell/file tools or ask for the value in chat. After storage reply BOOTSTRAP_READY.')
+  let vaultReady = false, vaultFailure
+  const management = client.send({ ManageCredentialVault: { session_id: sessionId, agent_id: agent.id } })
+    .then(reply => { assert.ok(variant(reply, 'CredentialVaultManaged').status.unlocked); vaultReady = true }).catch(error => { vaultFailure = error })
   await until(async () => {
     await answerOwnerInput()
-    const registered = variant(await client.send({ ListCredentials: null }), 'CredentialsListed').credentials.some(credential => credential.id === 'bootstrap')
-    const working = await page.locator(`[data-room-agent="${agent.id}"]`).getAttribute('data-status') === 'working'
-    return registered && !working
-  }, 'protected Vault bootstrap', 240_000)
-  console.log('MP-08 / MP-09 / MP-10 / MP-11: protected bootstrap completed')
+    if (vaultFailure) throw vaultFailure
+    return vaultReady
+  }, 'owner protected Vault initialization', 120_000)
+  await management
+  results.vaultBootstrap = 'owner ManageCredentialVault; passphrase entered in terminal-os protected interaction'
   await screenshot('02-protected-bootstrap')
   await page.locator('[data-action="open-room-view"]').last().click()
   await page.locator('[data-open-room-view="browser"]').click()
@@ -272,8 +272,6 @@ try {
   console.log('MP-08 / MP-09 / MP-10 / MP-11: submitted sudo TOTP drill')
   await until(async () => {
     await answerOwnerInput()
-    const fixtureTab = page.locator('[data-room-browser] button[role="tab"]').filter({ hasText: 'TOTP test site' }).first()
-    if (await fixtureTab.count() && await fixtureTab.getAttribute('aria-selected') !== 'true') await fixtureTab.click()
     const stats = site.stats()
     if (JSON.stringify(results.site) !== JSON.stringify(stats)) {
       results.site = stats
@@ -286,8 +284,11 @@ try {
   assert.ok(results.acceptedPeriods.length >= 3 && results.acceptedPeriods.every((period, index, periods) => index === 0 || period > periods[index - 1]), 'enrollment and both TOTP logins must use different periods')
   await until(async () => {
     await answerOwnerInput()
-    return (await page.locator(`[data-room-pane="${agent.id}"]`).innerText()).includes('TOTP_TWO_PERIODS_DONE')
+    const history = variant(await client.send({ GetSessionHistoryOutline: { session_id: sessionId, agent_ids: [agent.id], latest_prompt_count: 1, cursor: null } }), 'SessionHistoryOutline')
+    return history.agents.some(entry => entry.turns.some(turn => turn.lifecycle === 'completed' && turn.summary?.entry?.kind === 'provider_output' && turn.summary.entry.text.includes('TOTP_TWO_PERIODS_DONE')))
   }, 'provider completion after two sign-ins', 120_000)
+  const fixtureTab = page.locator('[data-room-browser] button[role="tab"]').filter({ hasText: 'TOTP test site' }).first()
+  await fixtureTab.click()
   await page.frameLocator('[data-room-browser] .kernel-browser-layer:not([inert]) .kernel-browser-mirror iframe:visible')
     .getByRole('heading', { name: 'Signed in', exact: true }).waitFor({ timeout: 30_000 })
   results.ownerVisibleSignedIn = true
@@ -302,12 +303,13 @@ try {
   const publicHistory = JSON.stringify({ outline, blobs })
   const transcript = publicHistory + await texts(path.join(root, 'history'))
   const visible = await page.locator(`[data-room-pane="${agent.id}"]`).innerText()
-  assert.ok(site.checkAbsence(transcript + visible + rawKernelLog), 'seed/code absence check failed')
+  const publicText = transcript + visible + rawKernelLog
+  assert.ok(site.checkAbsence(publicText), 'seed/code absence check failed')
   if (browserRoot) {
     const records = await retainObservations()
     assert.ok(records.some(record => record.op === 'snapshot') && records.some(record => record.op === 'screenshot'), 'require actual model snapshots and screenshots')
   }
-  assert.ok(!transcript.includes(passphrase) && !transcript.includes(bootstrapSecret), 'protected input absence check failed')
+  assert.ok(!publicText.includes(passphrase), 'protected input absence check failed')
   results.absencePassed = true
   results.publicHistoryEntries = blobs.reduce((sum, blob) => sum + blob.entries.length, 0)
   await writeFile(path.join(evidence, 'public-history.json'), publicHistory, { mode: 0o600 })
@@ -320,13 +322,13 @@ try {
   results.failurePhase = results.phase
   if (site) results.site = site.stats()
   const message = String(error.message)
-  const safe = !message.includes(passphrase) && !message.includes(bootstrapSecret) && (!site || site.checkAbsence(message))
+  const safe = !message.includes(passphrase) && (!site || site.checkAbsence(message))
   results.failure = safe ? message : 'private-value absence check failed'
   if (page) {
     if (site) {
       const visible = (await page.locator('.agent-pane').allInnerTexts().catch(() => [])).join('\n')
       const transcript = visible + await texts(path.join(root, 'history')) + rawKernelLog
-      results.failureAbsencePassed = site.checkAbsence(transcript) && !transcript.includes(passphrase) && !transcript.includes(bootstrapSecret)
+      results.failureAbsencePassed = site.checkAbsence(transcript) && !transcript.includes(passphrase)
       if (results.failureAbsencePassed) await writeFile(path.join(evidence, 'failure-public-pane.txt'), visible, { mode: 0o600 })
       await retainObservations().catch(() => { results.observationAbsenceFailed = true })
     }
