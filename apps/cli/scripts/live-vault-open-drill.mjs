@@ -62,7 +62,7 @@ async function navigate(url){
  await omni.fill(url);await omni.press('Enter')
  await page.waitForFunction(host=>[...document.querySelectorAll('.desktop iframe')].some(f=>{
   try{return f.offsetWidth>0&&f.style.visibility!=='hidden'&&f.contentDocument?.body?.innerText.includes(host)}catch{return false}
- }),new URL(url).hostname==='github.com'?'Sign in to GitHub':'GitLab',{timeout:60000})
+ }),new URL(url).hostname==='github.com'?'Sign in to GitHub':'Log in',{timeout:60000})
 }
 async function prepareBrowser(){
  const ready=marker+'_BROWSER_READY',failed=marker+'_BROWSER_SETUP_FAILED'
@@ -113,8 +113,8 @@ async function prepareBrowser(){
   await writeFile(output+'/field-protection.json',JSON.stringify(fields,null,2))
   check('mirrored DOM omits protected password or carries only bullets',fields.some(f=>f.loginPresent)&&fields.every(f=>f.inputs.every(input=>input.safeValue)))
   await shot('generated-and-filled')
-  await navigate('https://gitlab.com/users/sign_in');await shot('other-origin-before-use')
-  await submit(`MP-08 / MP-09 / MP-10 / MP-11: reuse the exact credential_id generated in the previous turn, without generating or changing an entry. Get a fresh snapshot of the current GitLab sign-in tab and attempt chariox.kernel_browser_paste_secret into its Password input with submit=false. This must be refused because the entry belongs to https://github.com. Do not submit, sign in, request sudo or approvals, or inspect/copy a secret. Finish with exactly ${marker}_OTHER_ORIGIN_REFUSED only if the actual fill tool refuses the origin; otherwise exactly ${marker}_WRONG_ORIGIN_FAILED.`,marker+'_OTHER_ORIGIN_REFUSED',marker+'_WRONG_ORIGIN_FAILED')
+  await navigate('https://www.djangoproject.com/accounts/login/');await shot('other-origin-before-use')
+  await submit(`MP-08 / MP-09 / MP-10 / MP-11: reuse the exact credential_id generated in the previous turn, without generating or changing an entry. Get a fresh snapshot of the current Django project sign-in tab at https://www.djangoproject.com/accounts/login/ and attempt chariox.kernel_browser_paste_secret into its Password input with submit=false. This must be refused because the entry belongs to https://github.com. Do not submit, sign in, request sudo or approvals, or inspect/copy a secret. Finish with exactly ${marker}_OTHER_ORIGIN_REFUSED only if the actual fill tool refuses the origin; otherwise exactly ${marker}_WRONG_ORIGIN_FAILED.`,marker+'_OTHER_ORIGIN_REFUSED',marker+'_WRONG_ORIGIN_FAILED')
   await shot('other-origin-refused')
  }
  check('encrypted hosted WebSocket used',sockets.some(url=>url.startsWith('wss://')))
