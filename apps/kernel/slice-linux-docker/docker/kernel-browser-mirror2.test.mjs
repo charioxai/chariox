@@ -749,6 +749,27 @@ test('MP-11 #1016 @95ed0bdc8 review 1: a protection change retires cached credit
  assert(!JSON.stringify(replayed).includes('old secret'),'the replay carries no pre-protection value');
 });
 
+test('F-5 a page resize during an observation re-snapshots the stream without refusing input as a stale protection policy', async () => {
+ const policy={targets:[],values:[]},tab={tab_id:'t',target_id:'T',document_id:'D1'};
+ const connection={isOpen:()=>true,send:async()=>({})};
+ const world={connection,sessionId:'S',frame:{loaderId:'D1'},ref:'m'};
+ const stream={id:'s',wire:2,chain:Promise.resolve(),tab_id:'t',world,issued:0,document_id:null,policy:null,fallback:null,header:{},resources:new Map(),attrSequence:new Map(),ownScrolls:new Map(),frames:new Map(),frameSlots:new Map(),frameSlot:0,tileKeys:''};
+ let revision=0;
+ const host={protection:policy,generation:1,pageSize,layoutRevision:()=>revision,scales:new Map(),tabs:new Map([['t',tab]]),displayTarget:async()=>tab,mirrorTarget:async()=>tab,browser:{connection,documentIdsByTarget:new Map([['T','D1']]),sessionsByTarget:new Map([['T','S']])}};
+ const mirror=new Mirror2({host,streams:new Map([['s',stream]]),require:()=>stream});
+ mirror.evaluate=async(_,expression)=>expression==='m.snapshot()'?{root:'n1',nodes:[{id:'n1',parent:null,kind:'element',tag:'input',attrs:{}}],sheets:[],resources:[],scroll:[0,0],focused:null,selection:null,fragment:null,snapshot_complete:true}:{ops:[],changed:[],resources:[],sheets:[],scroll:[0,0],focused:null,selection:null};
+ mirror.frames={attach:async()=>({records:[],ops:[],opaque:[]}),drain:async()=>({ops:[],resources:[],changed:[]}),project:(_,source)=>source,opaqueBoxes:async()=>[]};mirror.materialize=async()=>[];mirror.sheetOps=async()=>[];mirror.tiles=async()=>[];mirror.markClosedHosts=async()=>{};
+ const credit=(command_id,after)=>mirror.next(stream,{subscription_id:'s',generation:1,command_id,after_sequence:after,wait_ms:0},'scope');
+ const first=await credit('c1',0);
+ // The viewer's first resize of a cold kernel lands while a packet is being observed.
+ const observed=mirror.layoutKey('t');revision++;
+ assert.throws(()=>mirror.layoutMoved(stream,tab,observed),/layout changed during observation/);
+ const refusal=await mirror.resolveInput(stream,tab,{subscription_id:'s',sequence:first.sequence,action:{kind:'text',text:'a'}},'scope').then(()=>null,error=>error);
+ assert(!/stale mirror protection policy/.test(refusal?.message??''),'the click or key made at that moment is not refused: nothing protected changed');
+ const next=await credit('c2',first.sequence);
+ assert.equal(next.reset,true,'the stream still re-snapshots at the new size');
+});
+
 test('MP-11 #1016 @3a955d73c review 1: a packet still encoding when protection changes is retired, never returned or remembered', async () => {
  const policy={targets:[],values:[]},tab={tab_id:'t',target_id:'T',document_id:'D1'};
  const connection={isOpen:()=>true,send:async()=>({})};

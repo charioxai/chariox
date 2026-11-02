@@ -159,6 +159,10 @@ export class KernelBrowserHost {
     // The kernel's JSON has its own key order: compare the fields, or the first request would retire every bound stream.
     const fields = ({ values, targets, unknown }) => JSON.stringify([values, targets, unknown]);
     if (fields(policy) === fields(this.protection)) return {};
+    const before = this.protection, changed = (a, b) => Number(JSON.stringify(a) !== JSON.stringify(b));
+    // Counts only: which part of the policy replaced every bound stream.
+    this.timing?.event?.('protection_replaced', { values_before: before.values.length, values_after: policy.values.length, values_changed: changed(before.values, policy.values),
+      targets_before: before.targets.length, targets_after: policy.targets.length, targets_changed: changed(before.targets, policy.targets), unknown_before: Number(before.unknown === true), unknown_after: Number(policy.unknown === true) });
     this.protection = policy;
     this.stateSignal.notify();
     await this.desktopDisplay.retireSource();
@@ -188,6 +192,7 @@ export class KernelBrowserHost {
     ])].slice(0, TAB_LIMIT);
     data.active_tab_id = this.pendingActive?.tab_id ?? active?.tab_id ?? null;
     data.active_app_origin = this.pendingActive?.app_origin ?? appRestoreOrigin(active?.url) ?? null;
+    data.window_layout = this.resizeSettled ? { width: this.resizeSettled.width, height: this.resizeSettled.height } : null;
     const serialized = JSON.stringify(data);
     if (serialized === this.lastSaved) return;
     await writeFile(`${name}.new`, serialized, { mode: 0o600 });
@@ -308,6 +313,7 @@ export class KernelBrowserHost {
       await this.syncTabGroups(this.savedGroups,{restore:true});
       await this.save();
       await this.rebindWindows();
+      await this.restoreWindowLayout(saved.window_layout, signal);
       this.recovery.watch(connection);
       this.stateSignal.notify();
     } catch (error) { await this.stop({ recovering: true, preserveDesktop }); throw error; }
@@ -375,7 +381,7 @@ export class KernelBrowserHost {
   // Protocol 560/168: a viewer narrower than the canonical desktop gets the Tab laid out at its own size.
   // The newest subscription owns the layout until an explicit shared-window resize takes precedence; null restores the canonical page.
   pageSize(tabId) { const l = this.layouts.get(tabId); return l ? { width: l.width, height: l.height } : { width: geometry.width, height: geometry.height }; }
-  noteLayout(tabId, before) { const now = this.pageSize(tabId); if (now.width !== before.width || now.height !== before.height) this.layoutRevisions.set(tabId, this.layoutRevision(tabId) + 1); }
+  noteLayout(tabId, before) { const now = this.pageSize(tabId); if (now.width !== before.width || now.height !== before.height) { this.layoutRevisions.set(tabId, this.layoutRevision(tabId) + 1); this.timing?.event?.('page_layout_changed', { width_delta: now.width - before.width, height_delta: now.height - before.height }); } }
   layoutRevision(tabId) { return this.layoutRevisions.get(tabId) ?? 0; }
   async setLayout(tab, subscriptionId, layout) {
     if(subscriptionId!=='resize'&&this.layouts.get(tab.tab_id)?.subscriptionId==='resize')return;
@@ -383,6 +389,16 @@ export class KernelBrowserHost {
     await this.browser.setLayout?.(tab.target_id, layout);
     if (layout) this.layouts.set(tab.tab_id, { ...layout, subscriptionId }); else this.layouts.delete(tab.tab_id);
     this.noteLayout(tab.tab_id, before);
+  }
+
+  // A restarted browser opens at its default size. The viewer that sized it before would resize it again right after it
+  // attached, and that re-snapshots the page it is typing into. Give the window that size again before anyone attaches.
+  async restoreWindowLayout(layout, signal) {
+    const tab = this.tabs.values().next().value;
+    if (!tab || !Number.isSafeInteger(layout?.width) || !Number.isSafeInteger(layout?.height)) return;
+    // Not restoring it changes nothing but speed: the next viewer resizes the window as it always did.
+    try { await resizeBrowserPage(this, tab, { width: layout.width, height: layout.height, generation: this.generation }, signal); }
+    catch { this.timing('window_layout_restore_failed', timestamp()); }
   }
 
   releaseLayout(tabId, subscriptionId) {

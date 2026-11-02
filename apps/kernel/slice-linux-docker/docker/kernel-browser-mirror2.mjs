@@ -262,10 +262,12 @@ export class Mirror2 {
   // MP-11: nothing built under the old protection (early packet, cached replies, resend history) reaches the viewer.
   // Protocol 560/168: the page size a packet describes (and the layout changes seen, so A->B->A differs); a stream whose last packet described another one resets.
   layoutKey(tabId) { const size = this.host.pageSize?.(tabId); return size ? `${size.width}x${size.height}#${this.host.layoutRevision?.(tabId) ?? 0}` : ''; }
-  // The observation consumed the page's pending changes: a refused packet retires the stream base, so the next credit re-snapshots.
+  // The observation consumed the page's pending changes: a refused packet retires the stream base. The stream's layout key
+  // differs from the page's now, so the next credit re-snapshots. Its protection policy is unchanged: input keeps its admission.
   layoutMoved(stream, tab, layoutKey) {
     if (this.layoutKey(tab.tab_id) === layoutKey) return;
-    stream.policy = null; throw new Error('MP-11: mirror layout changed during observation');
+    this.host.timing?.event?.('mirror2_layout_moved', {});
+    throw new Error('MP-11: mirror layout changed during observation');
   }
   invalidate(stream) { stream.policy = null; stream.early = null; stream.replies = null; stream.history = null; stream.historyBytes = 0; stream.resources.clear(); }
   dispose(stream) {
