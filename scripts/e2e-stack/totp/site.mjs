@@ -46,6 +46,7 @@ export async function startTotpSite({ now = () => Date.now() } = {}) {
   let enabled = false
   const startCounter = Math.floor(now() / 30_000)
   const stats = { enrollmentSuccesses: 0, loginSuccesses: 0, rejectedCodes: 0, replayRejections: 0, backupSuccesses: 0 }
+  const acceptedPeriods = []
   const backupCodes = new Set(Array.from({ length: 8 }, () => randomBytes(6).toString('hex')))
   const injectedValues = new Set([seedText, ...backupCodes])
   const parseCookies = (header = '') => Object.fromEntries(header.split(';').map(part => part.trim().split('=').map(decodeURIComponent)))
@@ -78,6 +79,7 @@ export async function startTotpSite({ now = () => Date.now() } = {}) {
         if (counter === null) { stats.rejectedCodes++; return send(res, 401, page('<p>Invalid or replayed code</p><a href="/enable">Try again</a>')) }
         if (!session) return send(res, 401, page('<p>Enrollment session expired</p>'))
         enabled = true; injectedValues.add(body.get('code')); session.enrolled = true; session.lastCounter = counter; lastAcceptedCounter = counter; stats.enrollmentSuccesses++
+        acceptedPeriods.push(counter)
         return send(res, 200, page('<h1>Two-factor authentication enabled</h1><a href="/logout">Log out</a>'))
       }
       if (req.method === 'GET' && req.url === '/logout') {
@@ -100,7 +102,7 @@ export async function startTotpSite({ now = () => Date.now() } = {}) {
         }
         const id = randomBytes(24).toString('hex')
         injectedValues.add(usedBackup ? backup : body.get('code'))
-        if (!usedBackup) lastAcceptedCounter = counter
+        if (!usedBackup) { lastAcceptedCounter = counter; acceptedPeriods.push(counter) }
         sessions.set(id, { authenticated: true, enrolled: true, lastCounter: counter ?? -1 })
         if (usedBackup) stats.backupSuccesses++; else stats.loginSuccesses++
         return send(res, 200, page('<h1>Signed in</h1><a href="/logout">Log out</a>'), `${COOKIE}=${id}; HttpOnly; SameSite=Strict; Path=/`)
@@ -113,6 +115,7 @@ export async function startTotpSite({ now = () => Date.now() } = {}) {
     origin: `http://127.0.0.1:${server.address().port}`,
     close: () => new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve())),
     stats: () => ({ ...stats }),
+    acceptedPeriods: () => [...acceptedPeriods],
     // The caller may present this value in an owner-controlled setup interaction; never log or persist it.
     supplySeedToOwner: () => seedText,
     backupCodeForOwner: () => [...backupCodes][0],

@@ -31,8 +31,13 @@ copies provider credentials. On the root builder, it copies only browser source
 assets into its own scratch and runs the real browser host as `ubuntu`, with
 Chromium's sandbox enabled. The Playwright viewer is a separate test browser.
 
-The harness records kernel/head identity, screenshots, owner interaction
-counts, private boolean value-absence checks and cleanup. It stops only its own
+The harness records kernel/head identity, screenshots/video, accepted TOTP
+periods, owner interaction counts, private boolean value-absence checks and
+cleanup. On the root builder, `observe-browser.mjs` uses the production host
+and scheduler and retains its returned agent snapshots/screenshots before the
+kernel's final metadata scrub. It never records requests or protection policy.
+These observations let the reviewer inspect actual model-bound masked pixels
+separately from owner screenshots. It stops only its own
 kernel/browser processes and removes its own state/workspace/scratch. The
 explicit policy fence is tested separately on the base by
 `secret::tests::totp_inputs_compute_codes_instead_of_returning_the_seed`;
@@ -46,5 +51,10 @@ The source host needs the standard product browser setup, including a usable
 Chromium sandbox (see `deploy/local-linux/install-root.sh`). On the root builder,
 `CHARIOX_TOTP_SOURCE_CHROME` may name an owned copy of pinned Chrome 155.0.8059.79.
 Its parent directories must be traversable by the unprivileged browser user.
+For this functional drill on Ubuntu's restricted-userns host, it may instead
+name the installed `/opt/google/chrome/chrome`, whose package supplies the
+AppArmor sandbox profile. The adapter runs headless with a clean environment,
+as in the hosted Browser functional drills. The result records its actual
+version; this override supplies no pinned-browser performance evidence.
 A `browser_sandbox_unavailable` result blocks the browser leg; do not disable
 the sandbox to turn the drill green.

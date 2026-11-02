@@ -19,7 +19,7 @@ const profile = required('CHARIOX_TOTP_PROFILE')
 const root = required('CHARIOX_TOTP_STATE')
 const evidence = required('CHARIOX_TOTP_EVIDENCE')
 const origin = process.env.CHARIOX_TOTP_ORIGIN
-assert.ok(origin?.startsWith('https://pr') && origin.includes('vtotp.'), 'use this lane’s owned hosted new-UI stack')
+assert.match(origin ?? '', /^https:\/\/pr\d+-vtotp[a-z0-9-]*\./, 'use this lane’s owned hosted new-UI stack')
 const dpr = Number(process.env.DPR ?? 1)
 assert.ok([1, 2].includes(dpr))
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
@@ -91,7 +91,7 @@ try {
     CHARIOX_DAEMON_ID: name, CHARIOX_DAEMON_ALIAS: name, CHARIOX_MACHINE_ALIAS: name, CODEX_HOME: profile, TMPDIR: process.env.TMPDIR,
     CHARIOX_KERNEL_BROWSER_DISPLAY: '1', CHARIOX_KERNEL_BROWSER_MIRROR: '1' }
   if (process.getuid?.() === 0) {
-    // The real host adapter and pinned Chromium run as a normal Unix user.
+    // The real host adapter and Chromium run as a normal Unix user.
     // Never disable Chromium's sandbox or change permissions on shared paths.
     browserRoot = await mkdtemp('/opt/vtotp-browser-')
     results.browserScratch = browserRoot
@@ -105,13 +105,14 @@ try {
     const sourceChrome = process.env.CHARIOX_TOTP_SOURCE_CHROME ?? '/usr/lib/chariox/browser/chromium/155.0.8059.79/chrome-linux64/chrome'
     assert.ok(sourceChrome.startsWith('/'), 'source Chromium must be an absolute path')
     results.sourceBrowserVersion = execFileSync(sourceChrome, ['--version'], { encoding: 'utf8' }).trim()
-    assert.ok(results.sourceBrowserVersion.includes('155.0.8059.79'), 'use product-pinned Chrome for Testing')
     const wrapper = path.join(browserRoot, 'node-host')
+    const observer = path.join(browserRoot, 'observe-browser.mjs')
+    await cp(new URL('./observe-browser.mjs', import.meta.url), observer)
     const quote = value => "'" + value.replaceAll("'", "'\\''") + "'"
-    await writeFile(wrapper, `#!/bin/sh\nset -eu\n[ "$#" -eq 3 ] && [ "$2" = stdio ]\nexec /usr/bin/setpriv --reuid=${uid} --regid=${gid} --clear-groups /usr/bin/env -i PATH=/usr/local/bin:/usr/bin:/bin HOME=${quote(owned)} TMPDIR=${quote(owned)} CHARIOX_KERNEL_BROWSER_EXECUTABLE=${quote(sourceChrome)} CHARIOX_KERNEL_BROWSER_DISPLAY=1 CHARIOX_KERNEL_BROWSER_MIRROR=1 /usr/bin/node "$1" stdio ${quote(owned)}\n`, { mode: 0o700 })
+    await writeFile(wrapper, `#!/bin/sh\nset -eu\n[ "$#" -eq 3 ] && [ "$2" = stdio ]\nexec /usr/bin/setpriv --reuid=${uid} --regid=${gid} --clear-groups /usr/bin/env -i PATH=/usr/local/bin:/usr/bin:/bin HOME=${quote(owned)} TMPDIR=${quote(owned)} CHARIOX_KERNEL_BROWSER_EXECUTABLE=${quote(sourceChrome)} CHARIOX_KERNEL_BROWSER_HEADLESS=1 CHARIOX_KERNEL_BROWSER_DISPLAY=1 CHARIOX_KERNEL_BROWSER_MIRROR=1 /usr/bin/node ${quote(observer)} "$1" ${quote(owned)}\n`, { mode: 0o700 })
     stateEnvironment.CHARIOX_BROWSER_CONTROLLER_NODE = wrapper
     stateEnvironment.CHARIOX_KERNEL_BROWSER_SCRIPT = path.join(assets, 'kernel-browser-host.mjs')
-    results.browserAdapter = 'real host adapter as ubuntu; sandbox enabled; headed pinned Chromium'
+    results.browserAdapter = 'real host adapter as ubuntu; sandbox enabled; headless Chromium; functional drill only'
   }
   const log = createWriteStream(path.join(evidence, 'kernel.private.log'), { mode: 0o600 })
   kernel = spawnOwned(binary, [], { cwd: workspace, env: stateEnvironment, stdio: ['ignore', 'pipe', 'pipe'], detached: true })
@@ -138,7 +139,8 @@ try {
   viewer = trackOwnedProcess(browserServer.process())
   results.viewerPid = viewer.pid
   browser = await chromium.connect(browserServer.wsEndpoint())
-  const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: dpr })
+  const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: dpr,
+    recordVideo: { dir: path.join(evidence, 'video'), size: { width: 1440, height: 900 } } })
   for (const permission of ['local-network-access', 'local-network', 'loopback-network']) { try { await context.grantPermissions([permission], { origin }) } catch {} }
   page = await context.newPage()
   await page.goto(origin + '/validation/ready')
@@ -253,7 +255,18 @@ try {
   await page.locator('[data-room-browser]').waitFor({ timeout: 60_000 })
   await submit('/sudo Complete this local 2FA test using Chariox browser tools. First call chariox.request_credential_secret with ' + request('authenticator', { kind: 'totp' }, 'TOTP enrollment key') + '. Then load the kernel browser tools and navigate to ' + site.origin + '/enable. Find the observed Authentication code input and fill it only using chariox.kernel_browser_paste_secret credential_id=authenticator, submit=false. Take a browser snapshot and screenshot BEFORE clicking enable; verify the filled field is redacted. Click the observed enable button and verify Two-factor authentication enabled. Log out. Wait at least 31 seconds using a shell sleep (do not calculate or read any codes). Sign in by filling the observed Authentication code field with the same credential handle; click login and verify Signed in. Log out, wait at least another 31 seconds, then repeat sign in in another period. Never read/echo any key or code, never use page evaluation or direct HTTP to submit a code. Use fresh observed node_ref/document_id/generation for every fill. After both TOTP sign-ins succeeded, call chariox.request_credential_secret with ' + request('recovery', { kind: 'backup_codes' }, 'TOTP recovery codes') + '. Then log out and sign in once more by filling the observed Backup code field only with chariox.kernel_browser_paste_secret credential_id=recovery and clicking login. Keep tools moving until both TOTP sign-ins and the backup-code sign-in succeeded; report TOTP_TWO_PERIODS_DONE. Do not finish early.')
   console.log('MP-08 / MP-09 / MP-10 / MP-11: submitted sudo TOTP drill')
-  await until(async () => { await answerOwnerInput(); const stats = site.stats(); if (JSON.stringify(results.site) !== JSON.stringify(stats)) { results.site = stats; await record() }; return stats.enrollmentSuccesses === 1 && stats.loginSuccesses >= 2 && stats.backupSuccesses === 1 }, 'agent enrollment and two-period sign-in', 480_000)
+  await until(async () => {
+    await answerOwnerInput()
+    const stats = site.stats()
+    if (JSON.stringify(results.site) !== JSON.stringify(stats)) {
+      results.site = stats
+      results.acceptedPeriods = site.acceptedPeriods()
+      await record()
+      await screenshot(`progress-${stats.enrollmentSuccesses}-${stats.loginSuccesses}-${stats.backupSuccesses}`)
+    }
+    return stats.enrollmentSuccesses === 1 && stats.loginSuccesses >= 2 && stats.backupSuccesses === 1
+  }, 'agent enrollment and two-period sign-in', 480_000)
+  assert.ok(results.acceptedPeriods.length >= 3 && results.acceptedPeriods.every((period, index, periods) => index === 0 || period > periods[index - 1]), 'enrollment and both TOTP logins must use different periods')
   await until(async () => {
     await answerOwnerInput()
     return (await page.locator(`[data-room-pane="${agent.id}"]`).innerText()).includes('TOTP_TWO_PERIODS_DONE')
@@ -270,6 +283,16 @@ try {
   const transcript = publicHistory + await texts(path.join(root, 'history'))
   const visible = await page.locator(`[data-room-pane="${agent.id}"]`).innerText()
   assert.ok(site.checkAbsence(transcript + visible + rawKernelLog), 'seed/code absence check failed')
+  if (browserRoot) {
+    const observations = path.join(browserRoot, 'owned', 'observations')
+    const captured = await texts(observations)
+    assert.ok(site.checkAbsence(captured), 'model observation absence check failed')
+    const records = captured.trim().split('\n').filter(Boolean).map(line => JSON.parse(line))
+    assert.ok(records.some(record => record.op === 'snapshot') && records.some(record => record.op === 'screenshot'), 'require actual model snapshots and screenshots')
+    assert.ok(records.every(record => record.absencePassed), 'host observation absence check failed')
+    await cp(observations, path.join(evidence, 'model-observations'), { recursive: true })
+    results.modelObservations = records.map(({ op, absencePassed, filledTargets }) => ({ op, absencePassed, filledTargets }))
+  }
   assert.ok(!transcript.includes(passphrase) && !transcript.includes(bootstrapSecret), 'protected input absence check failed')
   results.absencePassed = true
   results.publicHistoryEntries = blobs.reduce((sum, blob) => sum + blob.entries.length, 0)

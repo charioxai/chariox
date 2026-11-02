@@ -31,20 +31,24 @@ test('enrollment rejects invalid codes; enabled TOTP signs in at the next time s
   const replay = await post(site.origin, '/login', { code: loginCode })
   assert.equal(replay.status, 401)
   assert.match(replay.text, /Invalid or replayed code/)
+  assert.deepEqual(site.acceptedPeriods(), [Math.floor(now / 30_000) - 1, Math.floor(now / 30_000)])
   assert.deepEqual(site.stats(), { enrollmentSuccesses: 1, loginSuccesses: 1, rejectedCodes: 2, replayRejections: 1, backupSuccesses: 0 })
 })
 
 test('a backup code can be used once as a sibling sign-in credential', async t => {
-  const site = await startTotpSite()
+  const now = 1_800_000_000_000
+  const site = await startTotpSite({ now: () => now })
   t.after(() => site.close())
   const enrollment = await fetch(`${site.origin}/enable`)
   const cookie = enrollment.headers.get('set-cookie').split(';', 1)[0]
-  const code = totpAt(Buffer.from(decodeBase32(site.supplySeedToOwner())), Date.now())
+  const code = totpAt(Buffer.from(decodeBase32(site.supplySeedToOwner())), now)
   assert.equal((await post(site.origin, '/enable', { code }, cookie)).status, 200)
+  assert.deepEqual(site.acceptedPeriods(), [Math.floor(now / 30_000)])
   const backup = site.backupCodeForOwner()
   assert.equal((await post(site.origin, '/login', { backup })).status, 200)
   assert.equal((await post(site.origin, '/login', { backup })).status, 401)
   assert.equal(site.stats().backupSuccesses, 1)
+  assert.equal(site.acceptedPeriods().length, 1, 'recovery does not count as a TOTP period')
 })
 
 test('absence checks cover factor values even before a successful submission', async t => {
