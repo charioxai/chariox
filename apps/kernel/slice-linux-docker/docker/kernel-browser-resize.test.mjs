@@ -14,14 +14,14 @@ function fixture(){
 test('MP-08/MP-10 resize changes native bounds and page layout without closing mirrors',async()=>{
  const {host,tab,calls,stream}=fixture();assert.deepEqual(await resizeBrowserPage(host,tab,command),{width:900,height:600});
  assert.equal(calls[1],'viewport_resize');assert.equal(calls[2],'close_source');assert.deepEqual(host.windowLayout,{width:900,height:600});
- assert.deepEqual(calls[3],['Browser.setWindowBounds',{windowId:7,bounds:{width:900,height:688}}]);
- assert.deepEqual(calls[4],['layout','resize',{width:900,height:600}]);assert.equal(stream.css_width,900);assert.equal(stream.css_height,600);
+ assert.deepEqual(calls.find(call=>Array.isArray(call)&&call[0]==='Browser.setWindowBounds'),['Browser.setWindowBounds',{windowId:7,bounds:{width:900,height:688}}]);
+ assert.deepEqual(calls.find(call=>Array.isArray(call)&&call[0]==='layout'),['layout','resize',{width:900,height:600}]);assert.equal(stream.css_width,900);assert.equal(stream.css_height,600);
  const count=calls.length;await resizeBrowserPage(host,tab,command);assert.equal(calls.length,count+1,'same size reads the current window but produces no intermediate resizes');
 });
 test('MP-08/MP-10 resize refreshes a cached page rectangle before measuring the native window inset',async()=>{
  const {host,tab,calls}=fixture();let refreshed=false;
  host.chromeWindows.current=()=>({tabbed:{scale:1,page_rect:refreshed?{width:1280,height:800}:{width:1600,height:1000}}});
- host.chromeWindows.resolve=async()=>{refreshed=true;assert.equal(calls.length,0,'refresh precedes the CDP window measurement')};
+ host.chromeWindows.resolve=async()=>{refreshed=true;assert(!calls.some(call=>Array.isArray(call)&&call[0]==='Browser.setWindowBounds'),'refresh precedes the resize mutation')};
  assert.deepEqual(await resizeBrowserPage(host,tab,command),{width:900,height:600});
  assert(refreshed);assert.deepEqual(calls.find(call=>Array.isArray(call)&&call[0]==='Browser.setWindowBounds'),['Browser.setWindowBounds',{windowId:7,bounds:{width:900,height:688}}]);
 });
@@ -80,4 +80,45 @@ test('MP-08/MP-10 a retried resize completes a partially applied one across ever
  assert(calls.includes('reset t')&&calls.includes('reset u')&&calls.includes('rebind'),'streams invalidated and windows re-bound: '+calls);
  // Once complete, the same size is a no-op again.
  calls.length=0;await resizeBrowserPage(host,tabs.get('t'),command);assert.deepEqual(calls,[]);
+});
+
+test('MP-08/MP-10 resize waits for a native fit to settle before measuring shared window geometry',async()=>{
+ const {withWindowGeometry}=await import('./kernel-browser-window-geometry.mjs');
+ const {fitNativeViewport}=await import('./kernel-browser-native-viewport.mjs');
+ const {host,tab}=fixture();let bounds={width:1280,height:888,windowState:'normal'},fitting=false,release;
+ const held=new Promise(resolve=>{release=resolve}),calls=[];
+ const connection={async send(method,params){
+  calls.push(method);
+  if(method==='Browser.setWindowBounds')bounds={...bounds,...params.bounds};
+  return {windowId:7,bounds:{...bounds}};
+ }};
+ host.browser.resolvePageTarget=async()=>({connection,sessionId:'s'});
+ host.chromeWindows.current=()=>({tabbed:{scale:1,page_rect:{width:1280,height:800}}});
+ const fit=withWindowGeometry(connection,()=>fitNativeViewport({connection,windowId:7,sessionId:'s',width:1280,height:800,wait:async()=>{},measure:async()=>{fitting=true;await held;return {width:1280,height:800}}}));
+ while(!fitting)await new Promise(resolve=>setImmediate(resolve));
+ const before=calls.length,resize=resizeBrowserPage(host,tab,command);resize.catch(()=>{});
+ await new Promise(resolve=>setImmediate(resolve));
+ try{assert.equal(calls.length,before,'resize must not measure a fitting window')}finally{release()}
+ await fit;assert.deepEqual(await resize,{width:900,height:600});
+});
+
+test('MP-08/MP-10 compositor shutdown runs outside the window geometry lane',async()=>{
+ const {withWindowGeometry}=await import('./kernel-browser-window-geometry.mjs');
+ const {host,tab}=fixture(),{connection}=await host.browser.resolvePageTarget(tab.target_id);
+ host.closeCompositors=()=>withWindowGeometry(connection,async()=>{});
+ const timeout=new Promise((_,reject)=>{const timer=setTimeout(()=>reject(Error('geometry lane deadlocked during close')),1000);timer.unref()});
+ await Promise.race([resizeBrowserPage(host,tab,command),timeout]);
+});
+
+test('MP-08/MP-11 a native capture retired while waiting cannot fit a stale layout',async()=>{
+ const {withWindowGeometry}=await import('./kernel-browser-window-geometry.mjs');
+ const {LinuxCapture}=await import('./kernel-browser-native.mjs');
+ let release,current=true,calls=0;
+ const connection={send:async()=>{calls++;return {}}};
+ const held=withWindowGeometry(connection,()=>new Promise(resolve=>{release=resolve}));
+ while(!release)await new Promise(resolve=>setImmediate(resolve));
+ const capture={connection,pageWindow:null,valid:()=>current};
+ const read=LinuxCapture.prototype.prepareReadback.call(capture);read.catch(()=>{});
+ current=false;release();await held;
+ await assert.rejects(read,/native attestation retired/);assert.equal(calls,0);
 });
