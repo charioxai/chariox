@@ -41,6 +41,43 @@ fn resource() -> Value {
         "revoke":{"kind":"url", "url":"https://example.com/projects/demo/settings"}})
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn resource_register_command_capture_is_automatic_and_idempotent() {
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    elevate(&f);
+    let path = f
+        .state
+        .owned
+        .config_projection
+        .snapshot()
+        .user_config
+        .credential_vault
+        .path;
+    crate::secret::unlock_chariox_encrypted_vault(
+        path,
+        PASSKEY,
+        crate::secret::VaultUnlockLease::KernelShutdown,
+    )
+    .unwrap();
+    let args = json!({"request_id":"register-command", "host":"api.example.com",
+        "argv":["/usr/bin/printf", "register-capture-synthetic"]});
+    let captured = call(&f, "chariox.vault.capture_command", args.clone())
+        .await
+        .unwrap();
+    call(&f, "chariox.vault.capture_command", args)
+        .await
+        .unwrap();
+    let listed = call(&f, LIST, json!({})).await.unwrap();
+    let rows = listed["resources"].as_array().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["credential_id"], captured["credential_id"]);
+    assert_eq!(rows[0]["kind"], "credential");
+    assert_eq!(rows[0]["service"], "api.example.com");
+    assert!(!listed.to_string().contains("register-capture-synthetic"));
+}
+
 #[tokio::test]
 async fn resource_register_forwarded_calls_use_home_state_and_reject_stale_context() {
     crate::test_support::isolated_env_test!();

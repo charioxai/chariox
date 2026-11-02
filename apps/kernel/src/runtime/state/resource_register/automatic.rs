@@ -17,6 +17,7 @@ impl KernelRuntimeState {
         if !matches!(
             kind,
             "vault_generate"
+                | "vault_capture"
                 | "captured"
                 | "capture_browser"
                 | "capture_command"
