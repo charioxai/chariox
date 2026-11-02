@@ -17,7 +17,8 @@ export function installPagePermissionShim(bindingName, responseName) {
       else statuses.get(name).delete(ref);
     }
   };
-  Object.defineProperty(globalThis, responseName, {value:(id, value) => {
+  Object.defineProperty(globalThis, responseName, {value:(id, value, permission) => {
+    if (id === null && covered.has(permission)) { update(permission, value); return; }
     const item = pending.get(id); if (!item) return;
     pending.delete(id); clearTimeout(item.timer); update(item.permission, value); item.resolve(value);
   }});

@@ -75,6 +75,10 @@ export class BrowserPagePermissions {
       if (this.requests.get(dialog.dialog_id) !== r) throw invalid();
       this.decisions.set(`${r.origin}:${r.permission}`, setting);
       await this.retire(dialog.dialog_id, setting);
+      const replied = new Set(r.waiters.map(w => `${w.sessionId}:${w.contextId}`));
+      await Promise.all([...this.contexts.values()].filter(c => c.origin === r.origin && !replied.has(`${c.sessionId}:${c.contextId}`)).map(c =>
+        this.owner.connection?.send('Runtime.evaluate', {expression:`globalThis[${JSON.stringify(responseName)}]?.(null,${JSON.stringify(setting)},${JSON.stringify(r.permission)})`, contextId:c.contextId, returnByValue:true}, c.sessionId).catch(() => {})));
+
     } catch (error) {
       await this.retire(dialog.dialog_id); throw error;
     }

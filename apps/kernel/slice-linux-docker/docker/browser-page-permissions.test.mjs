@@ -97,3 +97,13 @@ test('MP-08/09/10/11 failed native grant denies the page and leaves no cached al
     assert.equal(f.permissions.decisions.size, 0);
   } finally { f.permissions.clear(); }
 });
+
+
+test('MP-08/09/10/11 an origin decision updates permission status in its other live pages', async () => {
+  const f = fixture();
+  try {
+    f.permissions.observe({method:'Runtime.executionContextCreated',sessionId:'s',params:{context:{id:9,origin:'https://example.test',auxData:{isDefault:true,frameId:'other'}}}});
+    f.request('notifications'); await f.permissions.answer(f.owner.dialogDefaults.pending()[0], true);
+    assert.ok(f.calls.some(c => c.method === 'Runtime.evaluate' && c.params.contextId === 9 && c.params.expression.includes('(null,"granted","notifications")')));
+  } finally { f.permissions.clear(); }
+});
