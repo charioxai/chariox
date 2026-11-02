@@ -285,20 +285,25 @@ async fn owner_unlocks(f: &Fixture, session: &str, during: impl FnOnce()) {
 }
 
 #[tokio::test]
-async fn vopen_generation_survives_sudo_revocation_during_vault_unlock() {
+async fn vopen_generation_survives_sudo_expiry_during_vault_unlock() {
     crate::test_support::isolated_env_test!();
     let f = fixture();
     let turn = elevated(&f);
     let pending = generate(&f, "signup", SITE);
     let unlock = owner_unlocks(&f, &turn.session_id, || {
         f.state
-            .revoke_sudo(Some("local"), Some(&turn.entry_id), "explicit_revoke")
-            .unwrap();
+            .owned
+            .sudo_turns
+            .lock()
+            .unwrap()
+            .get_mut(&turn.entry_id)
+            .unwrap()
+            .deadline = Some(std::time::Instant::now());
     });
     let (result, ()) = tokio::join!(pending, unlock);
     assert!(
         result.is_ok(),
-        "sudo revocation does not gate ordinary Vault generation"
+        "sudo expiry does not gate ordinary Vault generation: {result:?}"
     );
     assert_eq!(crate::credential::load_user_credentials().unwrap().len(), 1);
 }
@@ -702,16 +707,24 @@ async fn queued_generation_ignores_sudo_end(expire: bool) {
             .unwrap();
     }
     drop(guard);
-    let result = pending
-        .await
-        .expect("ordinary generation survives sudo expiry or revocation");
-    assert_eq!(result["created"], true);
-    assert_eq!(crate::credential::load_user_credentials().unwrap().len(), 1);
+    let result = pending.await;
+    if expire {
+        assert_eq!(result.unwrap()["created"], true);
+        assert_eq!(crate::credential::load_user_credentials().unwrap().len(), 1);
+    } else {
+        assert!(
+            result.is_err(),
+            "a cancelled prompt cannot commit a delayed write"
+        );
+        assert!(crate::credential::load_user_credentials()
+            .unwrap()
+            .is_empty());
+    }
     f.state.shutdown_cleanup().await.unwrap();
 }
 
 #[tokio::test]
-async fn vopen_generation_storage_wait_survives_revoked_window() {
+async fn vopen_generation_storage_wait_rejects_cancelled_prompt() {
     crate::test_support::isolated_env_test!();
     queued_generation_ignores_sudo_end(false).await;
 }
@@ -766,9 +779,10 @@ async fn vopen_cards_ask_each_time_and_never_resolve_without_approval() {
                         .owned
                         .pending_interactions
                         .write()
-                        .keys()
-                        .find(|id| id.starts_with("vault-card-"))
-                        .cloned();
+                        .values()
+                        .filter_map(|pending| pending.kernel_wide_interaction.as_ref())
+                        .find(|interaction| interaction.id().starts_with("vault-card-"))
+                        .map(|interaction| interaction.id().to_owned());
                     if let Some(id) = id {
                         break id;
                     }
@@ -845,9 +859,11 @@ async fn vopen_agent_is_rechecked_after_the_final_storage_barrier() {
         result = &mut pending => panic!("generation passed its held storage barrier: {result:?}"),
         _ = tokio::time::sleep(Duration::from_millis(30)) => {}
     }
-    let mut ended = f.run.clone();
-    ended.mark_ended();
-    f.state.owned.provider_run_projection.update(ended);
+    f.state
+        .owned
+        .provider_store
+        .mark_run_ended_provider_only(&f.request.session_id, f.run.id())
+        .unwrap();
     drop(guard);
     assert!(pending.await.is_err());
     assert!(crate::credential::load_user_credentials()

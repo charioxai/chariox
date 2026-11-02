@@ -32,6 +32,20 @@ impl KernelRuntimeState {
             .ok_or_else(|| error("Vault operations require an agent"))?;
         let agent = self.owned.agent_store.get_agent(agent_id)?;
         let session = self.owned.session_store.get_session(run.session_id())?;
+        let prompt = self
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, agent_id);
+        if prompt.as_ref().is_some_and(|p| {
+            matches!(
+                p.status(),
+                crate::session::PromptStatus::Cancelling
+                    | crate::session::PromptStatus::Cancelled
+                    | crate::session::PromptStatus::Completed
+            )
+        }) {
+            return Err(error("the Vault operation's submitting prompt ended"));
+        }
         if run.state() == crate::provider::ProviderRunState::Ended
             || agent.session_id() != session.id()
             || agent.owner_user_id() != session.owner_user_id()

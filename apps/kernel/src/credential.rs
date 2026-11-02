@@ -61,7 +61,11 @@ impl CharioxCredentialRegistry {
         &self,
         credential: UserCredentialConfig,
     ) -> Result<(UserCredentialConfig, PathBuf), DaemonError> {
-        self.validate_upsert(&credential)?;
+        self.validate_upsert(&credential)
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "credential.upsert",
+                message: error.to_string(),
+            })?;
         ensure_private_dir(&self.root, "credential.upsert")?;
         let path = self.path_for(&credential.id)?;
         let payload =

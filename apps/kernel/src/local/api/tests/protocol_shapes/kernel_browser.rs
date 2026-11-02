@@ -753,7 +753,7 @@ fn mp08_mp11_vault_fill_941_shape_and_hash() {
     let bytes = include_bytes!("kernel-browser-vault-fill-941.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "4273123ab6d1136c3caf8a1cf55e7ed048afd385812b0ad49740038581010dad"
+        "58f8bea7ae5ba0d57d9ae5e1dd60be5d5336f0cbcece848c3544bf942a8e525f"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     let request: LocalDaemonRequest = serde_json::from_value(fixture["request"].clone()).unwrap();
