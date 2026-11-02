@@ -248,6 +248,18 @@ impl KernelRuntimeState {
             &context.leased_agent_id,
             &context.worker_provider_run_id,
         );
+        if matches!(
+            tool_name.as_str(),
+            super::super::resource_register::RECORD
+                | super::super::resource_register::LIST
+                | super::super::resource_register::SET_REVOKE
+                | super::super::resource_register::REVOKE
+        ) {
+            return self
+                .with_room_provider_origin(Some(&context.home_agent_id), Some(&run))
+                .resource_register_for_run(&run, &tool_name, arguments)
+                .await;
+        }
         self.with_room_provider_origin(Some(&context.home_agent_id), Some(&run))
             .dispatch_meta_runtime_tool_call_for_agent(
                 &context.home_session_id,

@@ -497,6 +497,7 @@ mod prompt;
 mod prompt_activity_owned_state;
 mod prompt_cancellation_owned_state;
 mod prompt_dispatch;
+mod resource_register;
 mod room_pin;
 mod session_activity_owned_state;
 use external_command_authority::ExternalCommandAuthority;

@@ -54,6 +54,8 @@ mod relaunch_tests;
 #[cfg(test)]
 mod remote_command_tests;
 #[cfg(test)]
+mod resource_register_tests;
+#[cfg(test)]
 mod task_scope_tests;
 #[cfg(test)]
 mod tests;

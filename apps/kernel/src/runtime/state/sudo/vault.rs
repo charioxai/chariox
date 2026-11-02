@@ -80,7 +80,9 @@ impl KernelRuntimeState {
         let handle = generated_handle(&turn, &args.request_id);
         let registry = crate::credential::CharioxCredentialRegistry::user()?;
         if let Some(existing) = registry.get(&handle)? {
-            return committed(&existing, &turn, &origin);
+            let result = committed(&existing, &turn, &origin)?;
+            self.record_vault_resource(&existing)?;
+            return Ok(result);
         }
         let _unlock = self
             .ensure_vault_unlocked_for_agent(&turn.session_id, &turn.agent_id, "vault_generate")
@@ -137,7 +139,11 @@ impl KernelRuntimeState {
             }),
             // A concurrent retry committed first: return that handle, never a new value.
             Err(stored) => match registry.get(&handle)? {
-                Some(existing) => committed(&existing, &turn, &origin),
+                Some(existing) => {
+                    let result = committed(&existing, &turn, &origin)?;
+                    self.record_vault_resource(&existing)?;
+                    Ok(result)
+                }
                 None => Err(stored),
             },
         }

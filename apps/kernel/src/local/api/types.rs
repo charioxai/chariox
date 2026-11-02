@@ -19,6 +19,7 @@ mod browser_import;
 mod capability;
 mod cloud_relay;
 mod config_capabilities;
+mod created_resource;
 mod daemon;
 mod dictation;
 mod disposable_worker;
@@ -70,6 +71,7 @@ pub use browser_import::*;
 pub use capability::*;
 pub use cloud_relay::*;
 pub use config_capabilities::*;
+pub use created_resource::*;
 pub use daemon::*;
 pub use dictation::*;
 pub use disposable_worker::*;
@@ -451,4 +453,5 @@ pub use workspace::*;
 /// `--no-wait` requests and report one holder's status (`GetKernelAccessStatus`; peer 387).
 /// MP-08/MP-10/MP-11: 941 adds person Vault fill and audience-specific display masking (peer 390).
 /// MP-08/MP-09/MP-10/MP-11: 943 adds the `env` and `file` credential uses and injection kinds (Vault capture/use by command and file).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 943;
+/// Resource register 944 adds project-scoped record/list/revoke tools and metadata.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 944;
