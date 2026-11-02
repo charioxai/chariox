@@ -79,9 +79,13 @@ test('MP-08/MP-10/MP-11 a pinned popup-free extension cannot receive native agen
     assert.equal(await new Promise(resolve=>helper.once('exit',resolve)),0);return JSON.parse(output);
    };
    const click=async(point,agent=false)=>adapter.request({op:'input',surface_id:base.surface_id,generation:base.generation,...(agent?{_agent_input:true}:{}),input:{kind:'click',x:point.x,y:point.y}},{});
-   await delay(1000);
-   const menu=(await controls('Extensions')).find(node=>node.name==='Extensions');assert(menu);await click(menu);await delay(200);
-   const pin=(await controls('Pin')).find(node=>node.name.includes('MP11'));assert(pin);await click(pin);
+   const control=async(label,match)=>{
+    const deadline=Date.now()+10000;
+    while(Date.now()<deadline){const found=(await controls(label)).find(match);if(found)return found;await delay(200)}
+    assert.fail('Chrome accessibility control ready: '+label);
+   };
+   const menu=await control('Extensions',node=>node.name==='Extensions');await click(menu);
+   const pin=await control('Pin',node=>node.name.includes('MP11'));await click(pin);
    await adapter.request({op:'input',surface_id:base.surface_id,generation:base.generation,input:{kind:'key',key:'Escape'}},{});await delay(200);
    const action=(await controls('MP11')).find(node=>node.name==='MP11 Popup Free Action');assert(action);
    const worker=async()=> (await cdp.send('Target.getTargets')).targetInfos.find(target=>target.type==='service_worker'&&target.url===`chrome-extension://${id}/background.js`);
