@@ -299,7 +299,9 @@ async fn concurrent_process_exit_reports_one_diagnostic() {
 // two settlement entries (output pump or liveness) sees the tree end.
 async fn stopped_from_health_ends_cancelled(via_liveness: bool) {
     let worktree = crate::test_support::TestWorktree::new("stop-from-health");
-    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let mut app = DaemonApp::bootstrap(config).unwrap();
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(worktree.session_request())
         .unwrap();
@@ -407,6 +409,18 @@ async fn assert_stopped_from_health_read_plainly(
         )
         .collect::<Vec<_>>()
         .join("\n");
+    let tasks = format!(
+        "{:?}",
+        runtime
+            .owned
+            .durable_state_store
+            .agent_tasks(Some(session_id), Some(agent_id))
+            .unwrap()
+    );
+    assert!(
+        !tasks.contains("Provider run failed"),
+        "the stopped turn's task is cancelled, not failed: {tasks}"
+    );
     for internal in [
         "Provider error",
         "session controller",

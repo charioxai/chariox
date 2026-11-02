@@ -291,7 +291,10 @@ impl KernelRuntimeState {
         }
         // Provider EOF/error cannot promote a partial answer to done. Task
         // bookkeeping is best-effort: the prompt failure path below always runs.
-        let task_settlement = if owned.config_projection.snapshot().room_agent_tools {
+        let task_settlement = if !failure.is_error() {
+            // A stop the person made (from Health) ends the task as a Stop does.
+            owned.settle_stopped_agent_task(session_id, &agent_id, &active_prompt, provider_run_id)
+        } else if owned.config_projection.snapshot().room_agent_tools {
             let settle = || -> Result<_, DaemonError> {
                 let prepared = crate::app::KernelPreparedPromptSubmission {
                     session_id: session_id.into(),
