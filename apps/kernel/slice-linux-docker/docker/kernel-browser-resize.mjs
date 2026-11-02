@@ -1,5 +1,6 @@
 // MP-08/MP-10/MP-11: a mutation of the owned Tab, not a new observation attachment.
 import {assertNotCancelled} from './browser-controller-actions.mjs';
+import {withWindowGeometry} from './kernel-browser-window-geometry.mjs';
 import {pageLimit} from './kernel-browser-geometry.mjs';
 export async function resizeBrowserPage(host,tab,command,signal){
  const {width,height}=command;
@@ -10,6 +11,8 @@ export async function resizeBrowserPage(host,tab,command,signal){
  const previous=host.pageSize(tab.tab_id);
  const browser=host.browser,{connection,sessionId}=await browser.resolvePageTarget(tab.target_id);
  const current=()=>{assertNotCancelled(signal);if(host.browser!==browser||host.generation!==command.generation||host.tabs.get(tab.tab_id)?.target_id!==tab.target_id)throw Error('browser resize target retired; refresh the browser view and try again');};
+ current();
+ const measure=async()=>{
  current();
  let page;
  if(host.chromium?.desktop?.binding?.()){
@@ -26,13 +29,17 @@ export async function resizeBrowserPage(host,tab,command,signal){
  const inset={width:bounds.width-page.width,height:bounds.height-page.height};
  if(![inset.width,inset.height].every(Number.isSafeInteger)||inset.width<0||inset.width>64||inset.height<0||inset.height>256)throw Error('browser window geometry unavailable; refresh the browser view and resize again');
  const outer={width:width+inset.width,height:height+inset.height};
- // Tab layouts commit one by one: a resize that failed part-way is complete only once all its steps ran again.
+ return {windowId,bounds,outer};
+ };
+ // Capture fits share the window, including while display credits run beside input.
+ const measured=await withWindowGeometry(connection,measure);
  const complete=!host.windowLayout||host.resizeSettled===host.windowLayout;
- if(complete&&previous.width===width&&previous.height===height&&bounds.width===outer.width&&bounds.height===outer.height)return {width,height};
- // Measure the owned window's real inset. A guessed 87-DIP toolbar can leave
- // an odd native band, which the video producer correctly refuses.
+ if(complete&&previous.width===width&&previous.height===height&&measured.bounds.width===measured.outer.width&&measured.bounds.height===measured.outer.height)return {width,height};
  host.chromeWindows?.retire('viewport_resize');
+ // A compositor may be waiting for a fit. Drain it outside the geometry lane.
  await host.closeCompositors();current();
+ return withWindowGeometry(connection,async()=>{
+ const {windowId,outer}=await measure();
  await connection.send('Browser.setWindowBounds',{windowId,bounds:outer});current();
  // Every Tab shares the one window: all of them, and Tabs opened later, are laid out at its size.
  const layout=host.windowLayout={width,height};
@@ -43,4 +50,5 @@ export async function resizeBrowserPage(host,tab,command,signal){
  host.resizeSettled=layout;
  await host.save?.();
  return {width,height};
+ });
 }
