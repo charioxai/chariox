@@ -1011,7 +1011,7 @@ impl KernelRuntimeState {
                 binding,
                 provider_run_id: stale_provider_run_id,
                 termination: Some(crate::provider::ProviderRunTermination::host_lost(
-                    &diagnostic,
+                    diagnostic,
                     crate::session::unix_epoch_ms(),
                 )),
                 diagnostic: None,
