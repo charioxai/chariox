@@ -1024,9 +1024,9 @@ async fn vrec_owner_created_entry_fills_and_audits_refusal_without_sudo() {
         .unwrap()
         .vault_activity("owner-other-site")
         .unwrap();
-    assert!(refused
-        .iter()
-        .any(|event| event.event.starts_with("Use refused")));
+    assert!(refused.iter().any(|event| event
+        .event
+        .starts_with("Use refused for http://127.0.0.1:8123 by ")));
     owner(crate::local::OwnerVaultRequest::Reveal { id: id.clone() })
         .await
         .unwrap();

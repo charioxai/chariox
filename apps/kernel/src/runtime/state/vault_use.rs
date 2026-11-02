@@ -4,6 +4,19 @@ use super::*;
 use crate::config::{UserCredentialConfig, VaultUseTarget, VaultValueKind};
 use crate::runtime::kernel_access::error;
 
+fn vault_use_destination(target: &VaultUseTarget) -> String {
+    match target {
+        VaultUseTarget::Site { origin }
+        | VaultUseTarget::CommandStdin { origin }
+        | VaultUseTarget::Totp { origin }
+        | VaultUseTarget::WebAuthn { origin, .. } => origin.clone(),
+        VaultUseTarget::CommandEnvironment { name, origin } => {
+            format!("{name} for {origin}")
+        }
+        VaultUseTarget::File { path } => path.clone(),
+    }
+}
+
 #[derive(Clone)]
 pub(super) struct VaultAgentContext {
     pub(super) run: crate::provider::RuntimeProviderRun,
@@ -101,8 +114,13 @@ impl KernelRuntimeState {
         actor: &str,
     ) -> Result<(), DaemonError> {
         if self.require_unlocked_vault().is_ok() {
-            self.home_runtime_secret_service()?
-                .record_vault_activity(id, &format!("Use refused for {target:?} by {actor}"))?;
+            self.home_runtime_secret_service()?.record_vault_activity(
+                id,
+                &format!(
+                    "Use refused for {} by {actor}",
+                    vault_use_destination(target)
+                ),
+            )?;
         }
         Ok(())
     }
@@ -131,16 +149,7 @@ impl KernelRuntimeState {
         }
         if binding.value_kind == VaultValueKind::PaymentCard {
             let id = format!("vault-card-{:016x}", rand::random::<u64>());
-            let destination = match target {
-                VaultUseTarget::Site { origin }
-                | VaultUseTarget::CommandStdin { origin }
-                | VaultUseTarget::Totp { origin }
-                | VaultUseTarget::WebAuthn { origin, .. } => origin.clone(),
-                VaultUseTarget::CommandEnvironment { name, origin } => {
-                    format!("{name} for {origin}")
-                }
-                VaultUseTarget::File { path } => path.clone(),
-            };
+            let destination = vault_use_destination(target);
             let label = credential.description.as_deref().unwrap_or(&credential.id);
             let interaction = crate::session::RuntimeInteraction::for_kernel_operation(
                 &id,
