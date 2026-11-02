@@ -246,7 +246,8 @@ impl KernelRuntimeState {
             custom_reply,
             None,
             false,
-        )
+        )?;
+        self.schedule_question_answer_delivery(interaction_id)
     }
 
     pub(super) fn create_terminal_credential_interaction(
@@ -406,7 +407,7 @@ impl KernelRuntimeState {
             )
             .await?;
         self.owned
-            .resolve_terminal_runtime_interaction(
+            .resolve_attributed_terminal_runtime_interaction(
                 session_id,
                 interaction_id,
                 choice_id,
@@ -414,13 +415,14 @@ impl KernelRuntimeState {
                 caller_user_id,
                 authorization.verified,
                 connection_class,
+                self.interaction_answerer.as_ref(),
             )
             .map_err(|error| {
                 self.owned
                     .closed_interaction_error(session_id, interaction_id, error)
             })?;
         self.audit_interaction_answered(session_id, interaction_id, choice_id, connection_class);
-        Ok(())
+        self.schedule_question_answer_delivery(interaction_id)
     }
 
     /// Who closed a decision and through which connection; never the reply text.

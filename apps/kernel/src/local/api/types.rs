@@ -444,4 +444,6 @@ pub use workspace::*;
 /// `KernelBrowser` state (`active_tab_id`, `can_go_back`, `can_go_forward`, `favicon_png_base64`).
 /// MP-08/MP-10/MP-11: 934 acknowledges the leased projection drain (peer 383).
 /// MP-08/MP-10/MP-11: 935 binds the leased prompt completion to its exact prompt and worker run (peer 384).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 935;
+/// MP-08/MP-10/MP-11: 936 adds non-blocking task-owned questions (`asking_task_id` on interactions, answered
+/// through `RespondToInteraction`; peer 385).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 936;

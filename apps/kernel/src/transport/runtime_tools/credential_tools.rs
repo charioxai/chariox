@@ -114,6 +114,8 @@ pub struct RequestPopupCustomChoiceArgs {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RequestPopupArgs {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait: Option<bool>,
     pub message: String,
     pub choices: Vec<RequestPopupChoiceArgs>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -504,11 +506,12 @@ pub fn credential_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: REQUEST_POPUP_TOOL.to_string(),
-            description: "Request a synchronous Chariox popup in the current agent pane. Supply at least one choice; use one OK/acknowledge choice for a blocking notice. The tool call blocks until the user answers or the timeout resolves. Set default_on_timeout to an existing choice id to return that reply on timeout; omit it to return status timed_out with no choice_id or reply.".to_string(),
+            description: "Ask a question through the shared Chariox interaction card. Use wait:false for questions you can keep working without: returns interaction_id and registration_id immediately; the attributed answer arrives in your durable event inbox and wakes you after you yield or finish this turn. Continue tools while pending, or yield on registration_id. Omit wait (or use true) only when work cannot continue without the answer; this blocks until an answer or timeout. Supply at least one fixed choice. Set default_on_timeout to an existing choice id to return that reply on timeout; omit it to return status timed_out with no choice_id or reply.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["message", "choices"],
                 "properties": {
+                    "wait": {"type": "boolean", "default": true},
                     "title": {"type": "string"},
                     "message": {"type": "string"},
                     "level": {

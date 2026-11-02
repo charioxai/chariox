@@ -166,6 +166,10 @@ fn conformance_evidence() -> BTreeMap<&'static str, BTreeMap<&'static str, Vec<E
                             &["mp11_room_pin_588_194_snapshot_and_hash", "LOCAL_DAEMON_PROTOCOL_VERSION", "RELAY_PEER_PROTOCOL_VERSION"],
                         ),
                         evidence(
+                            "apps/kernel/src/local/api/tests/protocol_shapes/async_questions.rs",
+                            &["LOCAL_DAEMON_PROTOCOL_VERSION", "RELAY_PEER_PROTOCOL_VERSION", "asking_task_id", "RespondToInteraction"],
+                        ),
+                        evidence(
                             "apps/kernel/src/local/api/tests/protocol_shapes/native_spawn_slice.rs",
                             &["LOCAL_DAEMON_PROTOCOL_VERSION", "RequestNativeProviderTurnInteraction"],
                         ),
