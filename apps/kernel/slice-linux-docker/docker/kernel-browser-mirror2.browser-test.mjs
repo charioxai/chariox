@@ -1150,6 +1150,19 @@ test("MP-11: every Vault-filled non-password field is masked like the pixel path
     assert(rows(packet.nodes).some(r => r.tag === "input" && r.attrs.id === "p" && /^•+$/.test(r.form?.value)), "MP-11: the password field stays a field showing dots");
   }));
 
+test("VAUDIT S3: a captured value shown as page text is a mask in the mirror", () => mirrored(
+  '<p>API keys</p><code id="k">sk_test_51VaudMirrorCaptured</code>', async ({ next, host }) => {
+    const tab = [...host.tabs.values()][0], { connection, sessionId } = await host.browser.resolvePageTarget(tab.target_id);
+    const { root } = await connection.send("DOM.getDocument", { depth: 0 }, sessionId);
+    const { nodeId } = await connection.send("DOM.querySelector", { nodeId: root.nodeId, selector: "#k" }, sessionId);
+    const { node } = await connection.send("DOM.describeNode", { nodeId }, sessionId);
+    const value = "sk_test_51VaudMirrorCaptured", value_hash = createHash("sha256").update(value).digest("hex");
+    await host.protect({ values: [value], targets: [{ kind: "browser", target_id: tab.target_id, document_id: tab.document_id, node_ref: `backend:${node.backendNodeId}`, value_hash, fill_revision: 1 }] });
+    const packet = await next(0, true), wire = JSON.stringify(packet);
+    assert.equal(packet.nodes.filter(row => row[2] === 4).length, 1, "VAUDIT S3: the captured code element is a mask");
+    assert(!wire.includes(value) && wire.includes("API keys"), "VAUDIT S3: the value never travels; the rest of the page does");
+  }));
+
 // Decision G (GitHub ref picker): the click's focus must not leave in a packet of its own ahead of the overlay the
 // click renders a frame later; one packet carries both.
 test("MP-10: a click that focuses a button and renders its overlay a frame later reaches the viewer as one packet", () => mirrored(

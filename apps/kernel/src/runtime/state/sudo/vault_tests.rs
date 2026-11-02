@@ -302,7 +302,8 @@ while IFS= read -r request; do
  [ -f "$1/opened" ] && tabs="$tabs"',{"tab_id":"host-tab-new","document_id":"doc-login"}'
  case "$request" in
   *'"method":"health"'*) printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s,"diagnostic_code":null}}\n' "$id" "$$" ;;
-  *'"method":"host.secret"'*) printf '%s' "$request" | sed -n 's/.*"text":"\([^"]*\)".*/\1/p' > "$1/echo"; printf '%s' "$request" | sed -n 's/.*"_app_view_tab":"\([^"]*\)".*/\1/p' > "$1/app_view_tab"; printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
+  *'"method":"host.secret"'*'"op":"capture"'*) printf '%s' "$request" > "$1/capture"; printf '{"id":%s,"ok":true,"result":{"value":"vaudit-captured-fixture-value"}}\n' "$id" ;;
+  *'"method":"host.secret"'*) printf '%s' "$request" | grep -o '"plain_target":true' > "$1/plain" || true; printf '%s' "$request" | sed -n 's/.*"text":"\([^"]*\)".*/\1/p' > "$1/echo"; printf '%s' "$request" | sed -n 's/.*"_app_view_tab":"\([^"]*\)".*/\1/p' > "$1/app_view_tab"; printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
   *'"method":"host.'*'"op":"open"'*) : > "$1/opened"; printf '{"id":%s,"ok":true,"result":{"generation":1,"tab_id":"host-tab-new","tabs":[%s,{"tab_id":"host-tab-new","document_id":"doc-login"}]}}\n' "$id" "$tabs" ;;
   *'"op":"state"'*|*'"op":"start"'*) printf '{"id":%s,"ok":true,"result":{"generation":1,"tabs":[%s]}}\n' "$id" "$tabs" ;;
   *'"op":"snapshot"'*) : > "$1/snapshot-observed"; echo=$(cat "$1/echo" 2>/dev/null || true); printf '{"id":%s,"ok":true,"result":{"snapshot":{"browser_generation":1,"target_id":"target-login","document_id":"doc-login","snapshot_revision":1,"accessibility_nodes":[],"dom_documents":[{"document_index":0,"url":"http://127.0.0.1:8123/login","owner_node_ref":null}],"shadow_roots":[],"dom_nodes":[{"node_ref":"backend:7","parent_ref":null,"document_index":0,"node_type":1,"node_name":"INPUT","text":"echo %s","attributes":{"type":"password","id":"password"},"bounds":null}]}}}\n' "$id" "$echo" ;;
@@ -732,4 +733,128 @@ async fn a06_generation_storage_wait_rechecks_revoked_window() {
 async fn a06_generation_storage_wait_rechecks_expired_window() {
     crate::test_support::isolated_env_test!();
     queued_generation_loses_authority(true).await;
+}
+
+const CAPTURE: &str = "chariox.vault.capture_browser";
+const FILL: &str = "chariox.vault.fill_field";
+const CAPTURED: &str = "vaudit-captured-fixture-value";
+
+fn capture_args(request_id: &str) -> Value {
+    json!({"request_id": request_id, "tab_id": "host-tab-new", "generation": 1,
+        "document_id": "doc-login", "node_ref": "backend:7", "reveal_node_ref": "backend:7",
+        "label": "Stripe secret key"})
+}
+
+// VAUDIT S3: the kernel reveals, reads and protects a page value; the model gets a handle.
+#[tokio::test]
+async fn vaudit_s3_capture_browser_stores_and_protects_a_page_value() {
+    crate::test_support::isolated_env_test!();
+    let login = login_room().await;
+    let f = &login.f;
+    unlock(f);
+    assert!(
+        names(f).iter().any(|name| name == CAPTURE) && names(f).iter().any(|name| name == FILL)
+    );
+    let ordinary = call(f, CAPTURE, capture_args("sk")).await.unwrap_err();
+    assert!(ordinary.to_string().contains("requires a live sudo window"));
+    assert!(
+        !login.root.path().join("capture").exists(),
+        "no reveal without elevation"
+    );
+    elevated(f);
+    let result = call(f, CAPTURE, capture_args("sk")).await.unwrap();
+    assert!(
+        !result.to_string().contains(CAPTURED),
+        "the model never gets the value"
+    );
+    let handle = result["credential_id"].as_str().unwrap().to_string();
+    assert!(handle.starts_with("cap-"));
+    assert_eq!(result["label"], "Stripe secret key");
+    assert_eq!(result["use_on"], json!([SITE]));
+    let request = std::fs::read_to_string(login.root.path().join("capture")).unwrap();
+    for field in [
+        r#""reveal_node_ref":"backend:7""#,
+        r#""read":"node""#,
+        r#""expected_document_url":"http://127.0.0.1:8123/login""#,
+    ] {
+        assert!(request.contains(field), "capture request lacks {field}");
+    }
+    assert_eq!(stored(f, &handle).as_str(), CAPTURED);
+    let credential = crate::credential::CharioxCredentialRegistry::user()
+        .unwrap()
+        .get(&handle)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        credential.metadata.unwrap().created_by_kind.as_deref(),
+        Some("vault_capture")
+    );
+    // Registered for masking before the barrier opened: value and page node.
+    let scope = crate::runtime::kernel_browser_host::KernelBrowserHost::profile_key("local");
+    let protection = &f.state.owned.kernel_browser_secret_observations;
+    let policy: Value = serde_json::from_str(&protection.capture_policy(&scope).unwrap()).unwrap();
+    assert!(policy["targets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|target| target["node_ref"] == "backend:7"
+            && target["value_hash"]
+                == format!(
+                    "{:x}",
+                    <sha2::Sha256 as sha2::Digest>::digest(CAPTURED.as_bytes())
+                )));
+    assert_eq!(
+        protection.scrub_text_or_withhold(&scope, &format!("key {CAPTURED}")),
+        "key [redacted]"
+    );
+    // A retry returns the same handle without a second read.
+    std::fs::remove_file(login.root.path().join("capture")).unwrap();
+    let again = call(f, CAPTURE, capture_args("sk")).await.unwrap();
+    assert_eq!(
+        (again["credential_id"].as_str(), again["created"].as_bool()),
+        (Some(handle.as_str()), Some(false))
+    );
+    assert!(!login.root.path().join("capture").exists());
+}
+
+// VAUDIT S3: fill_field puts a captured value into a plain field on an allowed origin only.
+#[tokio::test]
+async fn vaudit_s3_fill_field_fills_plain_targets_on_the_exact_origin() {
+    crate::test_support::isolated_env_test!();
+    let login = login_room().await;
+    let f = &login.f;
+    unlock(f);
+    elevated(f);
+    let handle = call(f, CAPTURE, capture_args("sk")).await.unwrap()["credential_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let mut https = capture_args("https-only");
+    https["use_on"] = json!(["https://127.0.0.1:8123"]);
+    let https = call(f, CAPTURE, https).await.unwrap()["credential_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        call(f, FILL, paste_args(&https)).await.is_err(),
+        "a scheme downgrade is refused"
+    );
+    assert_eq!(inserted(&login), None);
+    assert_eq!(
+        call(f, FILL, paste_args(&handle)).await.unwrap(),
+        json!({"inserted": true})
+    );
+    assert_eq!(inserted(&login).as_deref(), Some(CAPTURED));
+    assert_eq!(
+        std::fs::read_to_string(login.root.path().join("plain"))
+            .unwrap()
+            .trim(),
+        r#""plain_target":true"#
+    );
+    // The ordinary paste keeps its password-only host contract.
+    std::fs::remove_file(login.root.path().join("plain")).unwrap();
+    call(f, PASTE, paste_args(&handle)).await.unwrap();
+    assert!(std::fs::read_to_string(login.root.path().join("plain"))
+        .unwrap()
+        .is_empty());
 }
