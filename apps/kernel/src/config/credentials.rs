@@ -209,6 +209,7 @@ pub enum UserCredentialUse {
     Computer,
     Mcp,
     Provider,
+    Env,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -237,6 +238,8 @@ pub enum UserCredentialInjectionConfig {
     Browser,
     Computer,
     Provider,
+    Totp(super::TotpConfig),
+    BackupCodes,
 }
 
 fn default_hmac_timestamp_header() -> String {
@@ -293,7 +296,35 @@ pub fn validate_credentials(credentials: &[UserCredentialConfig]) -> Result<(), 
             UserCredentialInjectionConfig::Browser => {}
             UserCredentialInjectionConfig::Computer => {}
             UserCredentialInjectionConfig::Provider => {}
+            UserCredentialInjectionConfig::Totp(config) => {
+                config.validate()?;
+                validate_factor_source(credential)?;
+            }
+            UserCredentialInjectionConfig::BackupCodes => validate_factor_source(credential)?,
         }
+    }
+    Ok(())
+}
+
+fn validate_factor_source(credential: &UserCredentialConfig) -> Result<(), DaemonError> {
+    if !matches!(credential.source, UserCredentialSourceConfig::Vault { .. }) {
+        return Err(DaemonError::InvalidConfig {
+            field: "credentials.source",
+            message: "TOTP and backup codes must be stored in the Vault",
+        });
+    }
+    if credential.allowed_uses.is_empty()
+        || credential.allowed_uses.iter().any(|usage| {
+            !matches!(
+                usage,
+                UserCredentialUse::Browser | UserCredentialUse::Pty | UserCredentialUse::Env
+            )
+        })
+    {
+        return Err(DaemonError::InvalidConfig {
+            field: "credentials.allowed_uses",
+            message: "TOTP and backup codes require explicit browser, pty or env uses",
+        });
     }
     Ok(())
 }

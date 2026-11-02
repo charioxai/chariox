@@ -21,7 +21,7 @@ struct PasteArgs {
 pub(super) fn paste_spec() -> RuntimeToolSpec {
     RuntimeToolSpec {
         name: PASTE.into(),
-        description: "MD-5: insert a Vault credential into an observed editable text field in a user-domain tab. Use tab/generation/document_id/node_ref from a fresh snapshot. Secret bytes never enter tool arguments/results. Default submit=false; use ordinary input to click a separate sign-in button.".into(),
+        description: "MD-5: insert a Vault credential into an observed editable text field in a user-domain tab. Use tab/generation/document_id/node_ref from a fresh snapshot. Secret bytes never enter tool arguments/results. TOTP handles compute a current code at insertion; backup_codes consumes an unused code. Default submit=false; use ordinary input to click a separate sign-in button.".into(),
         input_schema: json!({"type":"object","properties":{"credential_id":{"type":"string"},"tab_id":{"type":"string"},"generation":{"type":"integer","minimum":1},"document_id":{"type":"string"},"node_ref":{"type":"string"},"submit":{"type":"boolean","default":false}},"required":["credential_id","tab_id","generation","document_id","node_ref"],"additionalProperties":false}),
     }
 }
@@ -207,6 +207,12 @@ impl KernelRuntimeState {
                 .validate_browser_secret_input_for_target_url(&args.credential_id, &url)?,
             session,
         )?;
+        self.vault_credential_elevation_allows(
+            session,
+            agent.id(),
+            self.home_runtime_secret_service()?
+                .validate_browser_secret_input_for_target_url(&args.credential_id, &url)?,
+        )?;
         let protection = &self.owned.kernel_browser_secret_observations;
         let scope = KernelBrowserHost::profile_key(user);
         // MP-11 A06: discovery fixes the protection epoch the fill relies on.
@@ -243,6 +249,16 @@ impl KernelRuntimeState {
             service.validate_browser_secret_input_for_target_url(&args.credential_id, &url)?,
             session,
         )?;
+        let credential = service
+            .validate_browser_secret_input_for_target_url(&args.credential_id, &url)?
+            .clone();
+        self.vault_credential_elevation_allows(session, agent.id(), &credential)?;
+        let state = self.clone();
+        let session_id = session.to_owned();
+        let agent_id = agent.id().to_owned();
+        let admission = admission.with_authority(move || {
+            state.vault_credential_elevation_allows(&session_id, &agent_id, &credential).is_ok()
+        });
         self.insert_kernel_browser_secret(user, &admission, &args, &service, url, None)
             .await?;
         Ok(RuntimeToolResult {
@@ -328,9 +344,6 @@ impl KernelRuntimeState {
     ) -> Result<(), DaemonError> {
         let protection = &self.owned.kernel_browser_secret_observations;
         let scope = KernelBrowserHost::profile_key(user);
-        let secret = zeroize::Zeroizing::new(
-            service.browser_secret_input_for_target_url(&args.credential_id, &url)?,
-        );
         // Reuse Room registration before any input handler, including failures.
         let snapshot = self
             .kernel_browser_bound_operation(
@@ -344,11 +357,14 @@ impl KernelRuntimeState {
         let target = snapshot["snapshot"]["target_id"]
             .as_str()
             .ok_or_else(|| host_error("MD-5: missing target identity".into()))?;
+        let secret = zeroize::Zeroizing::new(
+            service.browser_secret_input_for_target_url(&args.credential_id, &url)?,
+        );
         let action = BrowserLocatorAction::Fill {
             text: secret.to_string(),
             append: false,
             submit: args.submit,
-            expected_document_url: Some(url),
+            expected_document_url: Some(url.clone()),
         };
         let command =
             crate::transport::room_browser_controller::RoomBrowserControllerCommand::Action {
@@ -361,6 +377,16 @@ impl KernelRuntimeState {
             };
         protection.register_command(&scope, &command)?;
         let mut params = json!({"tab_id":args.tab_id,"generation":args.generation,"document_id":args.document_id,"node_ref":args.node_ref,"action":action});
+        // OTP and recovery forms commonly use plain inputs. The registered
+        // target protects model observations without changing the owner's field.
+        params["vault_factor_input"] = matches!(
+            service
+                .validate_browser_secret_input_for_target_url(&args.credential_id, &url)?
+                .injection,
+            crate::config::UserCredentialInjectionConfig::Totp(_)
+                | crate::config::UserCredentialInjectionConfig::BackupCodes
+        )
+        .into();
         // MP-08/MP-11: the fill is the agent's input to an App Tab too.
         if admission.is_agent() {
             self.claim_app_view_tab(user, admission, &mut params)?;

@@ -454,4 +454,5 @@ pub use workspace::*;
 /// MP-08/MP-10/MP-11: 941 adds person Vault fill and audience-specific display masking (peer 390).
 /// MP-08/MP-09/MP-10/MP-11: 943 adds the `env` and `file` credential uses and injection kinds (Vault capture/use by command and file).
 /// Resource register 944 adds project-scoped record/list/revoke tools and metadata.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 944;
+/// Vault TOTP 945 adds computed factor input and sibling backup-code credentials.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 945;

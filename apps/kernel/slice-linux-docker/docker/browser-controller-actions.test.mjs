@@ -687,12 +687,33 @@ function protectedCodeFixture(type, hook = () => {}) {
     }
   }
   const connection = new Connection();
-  const fill = (maskCode = true, expectedUrl = "https://example.test/verification") => performBrowserAction({
+  const fill = (maskCode = true, expectedUrl = "https://example.test/verification", factorInput = false) => performBrowserAction({
     connection, sessionId: "session-a", targetId: "target-a", documentId: "loader-a", nodeRef: "backend:104",
-    action: { kind: "fill", text: "am7-code-canary", expected_document_url: expectedUrl, mask_code_input: maskCode },
+    action: { kind: "fill", text: "am7-code-canary", expected_document_url: expectedUrl, mask_code_input: maskCode, vault_factor_input: factorInput },
     timeoutMs: 500, sleep: async () => {},
   });
   return { field, connection, fill };
+}
+
+for (const type of ["text", "tel", "number", "password"]) {
+  test(`MP-08/MP-10/MP-11 Vault factor fills ${type} without changing its owner presentation`, async () => {
+    const f = protectedCodeFixture(type);
+    const result = await f.fill(false, undefined, true);
+    assert.equal(result.action_kind, "fill");
+    assert.equal(f.field.value, "am7-code-canary");
+    assert.equal(f.field.type, type);
+    assert.equal(JSON.stringify(result).includes("am7-code-canary"), false);
+  });
+}
+
+for (const condition of ["readonly", "disabled", "url-change", "checkbox"]) {
+  test(`MP-08/MP-10/MP-11 Vault factor refuses ${condition} before input`, async () => {
+    const f = protectedCodeFixture(condition === "checkbox" ? "checkbox" : "text");
+    if (["readonly", "disabled"].includes(condition)) f.field.attributes.set(condition, "");
+    await assert.rejects(f.fill(false, condition === "url-change" ? "https://example.test/other" : undefined, true));
+    assert.equal(f.field.value, "");
+    assert.deepEqual(f.field.events, []);
+  });
 }
 
 for (const type of ["text", "tel", "number", "search", "password", "textarea"]) {

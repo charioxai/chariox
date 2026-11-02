@@ -175,7 +175,8 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// MP-08/MP-10/MP-11: peer 390 carries Vault fill audience masking.
 /// MP-08/MP-09/MP-10/MP-11: 392 carries local 943 `env` and `file` credentials.
 /// Resource register 393 carries local 944 resource metadata and tool calls.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 393;
+/// Vault TOTP 394 carries local 945 factor credential metadata.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 394;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;

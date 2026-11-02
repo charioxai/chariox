@@ -1,0 +1,43 @@
+{
+  "local": 945,
+  "relayPeer": 394,
+  "credentials": [
+    {
+      "id": "service-totp",
+      "source": {
+        "type": "vault",
+        "key": "service-totp"
+      },
+      "allowed_hosts": [
+        "https://example.com"
+      ],
+      "allowed_uses": [
+        "browser",
+        "pty",
+        "env"
+      ],
+      "injection": {
+        "kind": "totp",
+        "algorithm": "sha256",
+        "digits": 8,
+        "period_s": 30
+      }
+    },
+    {
+      "id": "service-backup",
+      "source": {
+        "type": "vault",
+        "key": "service-backup"
+      },
+      "allowed_hosts": [
+        "https://example.com"
+      ],
+      "allowed_uses": [
+        "browser"
+      ],
+      "injection": {
+        "kind": "backup_codes"
+      }
+    }
+  ]
+}

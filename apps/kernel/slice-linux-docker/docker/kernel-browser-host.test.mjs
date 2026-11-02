@@ -926,6 +926,22 @@ test("MP-08/MP-10/MP-11 owner code flag reaches the bound controller action", ()
   assert.equal(denied.ok, false);
   assert.equal(captured, null, "a non-terminal code exception cannot reach physical input");
 }));
+
+test("MP-08/MP-10/MP-11 kernel factor fill reaches the bound controller without owner masking", () => using(async ({ host }) => {
+  const url = "https://example.test/verification";
+  const opened = await host.request({ op: "open", url });
+  const tab = opened.tabs[0];
+  let captured;
+  host.browser.performAction = async action => { captured = action; return {}; };
+  const result = await host.handle({ id: "factor", method: "host.secret", params: {
+    tab_id: tab.tab_id, generation: opened.generation, document_id: tab.document_id,
+    node_ref: "backend:104", observed_by: "agent:factor-user", vault_factor_input: true,
+    action: { kind: "fill", text: "fixture-only-code", expected_document_url: url },
+  } });
+  assert.equal(result.ok, true);
+  assert.equal(captured.action.vault_factor_input, true);
+  assert.notEqual(captured.action.mask_code_input, true);
+}));
 test('MP-11 agent native input cannot bypass App human-channel admission', () => using(async ({host}) => {
   await host.request({op:'open',url:'https://example.com'});
   host.browser.appTabs={apps:new Map([['app',{targetId:'target-1'}]])};
