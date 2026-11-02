@@ -82,6 +82,14 @@ impl KernelRuntimeState {
         label: &str,
         issued: IssuedCredential,
     ) -> Result<RuntimeToolResult, DaemonError> {
+        // A claim can outlive the Vault lease opened before registration.
+        let _unlock = self
+            .ensure_vault_unlocked_for_agent(
+                &authority.actor.session_id,
+                &authority.actor.agent_id,
+                "agent_auth_store",
+            )
+            .await?;
         authority.check()?;
         let now = crate::session::unix_epoch_ms();
         let credential = UserCredentialConfig {
