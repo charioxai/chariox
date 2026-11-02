@@ -46,6 +46,71 @@ impl KernelRuntimeState {
         id
     }
 
+    /// One open choice for `agent_id`, watched by a fresh grant; returns the grant.
+    pub(crate) fn open_watched_decision_for_test(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        interaction_id: &str,
+    ) -> String {
+        use crate::session::{
+            RuntimeInteraction, RuntimeInteractionChoice, RuntimeInteractionKind,
+            RuntimeInteractionLevel,
+        };
+        let grant = self.insert_access_grant_for_test(session_id);
+        self.subscribe_outside_part(
+            &grant,
+            true,
+            vec![EventTarget {
+                kernel: self.owned.config_projection.snapshot().daemon_id,
+                session_id: session_id.into(),
+                agent_id: Some(agent_id.into()),
+            }],
+        )
+        .unwrap();
+        let interaction = RuntimeInteraction::new(
+            interaction_id,
+            agent_id,
+            RuntimeInteractionKind::Choice,
+            RuntimeInteractionLevel::Info,
+            Some("Which colour?".to_string()),
+            "Pick one",
+            vec![RuntimeInteractionChoice::new("red", "Red", "red", None)],
+            None,
+            Some(300),
+            Some("red".to_string()),
+        );
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        self.owned
+            .register_runtime_interaction(session_id, interaction, tx, None, None, None)
+            .unwrap();
+        grant
+    }
+
+    /// How the watched decision `interaction_id` was recorded as closed.
+    pub(crate) fn closed_decision_via_for_test(
+        &self,
+        grant: &str,
+        interaction_id: &str,
+    ) -> serde_json::Value {
+        let events = self
+            .outside_store()
+            .outside_list(grant, None, 100)
+            .unwrap()
+            .unwrap()
+            .events;
+        events
+            .into_iter()
+            .map(|event| serde_json::to_value(event).unwrap())
+            .find(|event| {
+                event["refs"]["interaction_id"] == interaction_id
+                    && event["value"]["state"] == "resolved"
+            })
+            .map_or(serde_json::Value::Null, |event| {
+                event["value"]["resolution"]["via"].clone()
+            })
+    }
+
     pub(crate) fn use_kernel_ancestor_holder_for_test(&self) -> String {
         let (_, parent) = process::inspect(std::process::id()).unwrap();
         let mut state = self.owned.kernel_access.lock().unwrap();
