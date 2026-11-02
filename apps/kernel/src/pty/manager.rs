@@ -176,7 +176,19 @@ fn spawn_failed(provider_run_id: &str, error: &(dyn std::error::Error + 'static)
     let shortage = std::iter::successors(Some(error), |error| error.source())
         .filter_map(|error| error.downcast_ref::<std::io::Error>())
         .filter_map(std::io::Error::raw_os_error)
-        .find_map(|errno| resource_refusal(errno).map(|refusal| (errno, refusal)));
+        .find_map(|errno| resource_refusal(errno).map(|refusal| (errno, refusal)))
+        .or_else(|| {
+            // portable-pty 0.8.1 formats openpty's IO error instead of retaining
+            // its source. Decode only that allocation error at this boundary.
+            let detail = error.to_string();
+            let errno = detail
+                .strip_prefix("failed to openpty: Os { code: ")?
+                .split_once(',')?
+                .0
+                .parse()
+                .ok()?;
+            resource_refusal(errno).map(|refusal| (errno, refusal))
+        });
     if let Some((errno, refusal)) = shortage {
         crate::logging::warn_with_fields(
             "pty.spawn",
