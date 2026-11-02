@@ -103,6 +103,13 @@ async function capture(name) {
 }
 const diagnostics = []
 const claimed = new Set()
+let ownerDecisionSequence = 0
+async function captureOwnerDecision() {
+  const name = `owner-decision-${++ownerDecisionSequence}`
+  await capture(name)
+  result.owner_decisions ??= []
+  result.owner_decisions.push({ screenshot: `${name}.png`, stage: result.stage })
+}
 async function interact() {
   // Every answer goes through the actual new UI's controls.
   const passkey = page.locator('[data-passkey-prompt]')
@@ -110,7 +117,7 @@ async function interact() {
     const approve = passkey.locator('[data-passkey-popup-approve]')
     if (await approve.isEnabled()) {
       await passkey.locator('[data-passkey-popup-input]').fill(passphrase)
-      await capture('owner-decision')
+      await captureOwnerDecision()
       await approve.click()
     }
     return
@@ -118,6 +125,7 @@ async function interact() {
   const secretDetail = page.locator('[data-interaction-detail]:has(input[type="password"])')
   if (await secretDetail.count()) {
     await secretDetail.locator('input[type="password"]').fill(passphrase)
+    await captureOwnerDecision()
     await secretDetail.locator('button.work-editor-save').click()
     return
   }
