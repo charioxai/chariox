@@ -38,6 +38,7 @@ test('MP-08/09/10/11 permission requests share state, answer, timeout, session a
     await evaluate('navigator.geolocation.getCurrentPosition(()=>{window.geo="ok"},e=>{window.geo=e.code});undefined');
     const geo = await pending('geolocation'); await answer(geo,'accept');
     assert.equal(await evaluate('navigator.permissions.query({name:"geolocation"}).then(s=>s.state)'), 'granted');
+    assert.equal(await evaluate('Permissions.prototype.query.call(navigator.permissions,{name:"geolocation"}).then(s=>s.state)'), 'granted', 'Chromium must receive the real native grant');
     await assert.rejects(answer(geo,'accept'), {code:'browser_dialog_invalid'});
     await evaluate('Notification.requestPermission().then(s=>window.notified=s);undefined');
     const notifications = await pending('notifications'); await answer(notifications,'dismiss');
