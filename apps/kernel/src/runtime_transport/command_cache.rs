@@ -203,6 +203,9 @@ pub(crate) fn request_is_cacheable(request: &LocalDaemonRequest) -> bool {
     !matches!(
         request,
         LocalDaemonRequest::RequestKernelSudo(_)
+            // Owner inputs and revealed values stay out of transport receipts.
+            // Each operation must also recheck current owner/unlock authority.
+            | LocalDaemonRequest::OwnerVault(_)
             | LocalDaemonRequest::RequestVaultSecret(_)
             | LocalDaemonRequest::ExtendKernelSudo(_)
             | LocalDaemonRequest::RenewKernelSudoRequester(_)
@@ -1046,6 +1049,7 @@ fn should_persist_completed_result(fingerprint: &CommandFingerprint) -> bool {
     !matches!(
         fingerprint.command_type.as_str(),
         "kernel_browser"
+            | "vault.owner"
             | "notes"
             | "credential_enrollment.interaction.request"
             | "interaction.respond"

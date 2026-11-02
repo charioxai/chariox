@@ -2075,6 +2075,8 @@ inside the executor. Agents, elevated agents, KA callers, forwarded Host callers
 and other users cannot invoke it; the external response boundary withholds the
 entire response family. Secret wrappers redact Debug and command payloads are
 redacted before history/traces. No event or public state broadcasts the value.
+Owner requests bypass the transport command cache and automatic client replay;
+owner results are also excluded when loading or compacting persisted receipts.
 
 Owner records and their Activity are one encrypted Vault catalogue, under the
 existing observation mutation guard. New values never enter the credential
