@@ -1,0 +1,112 @@
+{
+  "local": 957,
+  "peer": 406,
+  "requests": [
+    {
+      "OwnerVault": {
+        "action": "list"
+      }
+    },
+    {
+      "OwnerVault": {
+        "action": "create",
+        "kind": "Password",
+        "name": "GitHub",
+        "usage": "github.com",
+        "value": "owner-input"
+      }
+    },
+    {
+      "OwnerVault": {
+        "action": "generate",
+        "kind": "Password",
+        "name": "GitHub",
+        "usage": "github.com"
+      }
+    },
+    {
+      "OwnerVault": {
+        "action": "reveal",
+        "id": "entry"
+      }
+    },
+    {
+      "OwnerVault": {
+        "action": "activity",
+        "id": "entry"
+      }
+    },
+    {
+      "OwnerVault": {
+        "action": "replace",
+        "id": "entry",
+        "value": "owner-input"
+      }
+    },
+    {
+      "OwnerVault": {
+        "action": "delete",
+        "id": "entry"
+      }
+    }
+  ],
+  "responses": [
+    {
+      "OwnerVault": {
+        "result": {
+          "action": "list",
+          "entries": [
+            {
+              "created_at_ms": 1,
+              "created_by": "user",
+              "id": "entry",
+              "kind": "Password",
+              "name": "GitHub",
+              "updated_at_ms": 1,
+              "usage": "github.com"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "OwnerVault": {
+        "result": {
+          "action": "saved",
+          "id": "entry"
+        }
+      }
+    },
+    {
+      "OwnerVault": {
+        "result": {
+          "action": "revealed",
+          "id": "entry",
+          "value": "owner-input"
+        }
+      }
+    },
+    {
+      "OwnerVault": {
+        "result": {
+          "action": "activity",
+          "events": [
+            {
+              "at_ms": 2,
+              "event": "Viewed by owner"
+            }
+          ],
+          "id": "entry"
+        }
+      }
+    },
+    {
+      "OwnerVault": {
+        "result": {
+          "action": "deleted",
+          "id": "entry"
+        }
+      }
+    }
+  ]
+}

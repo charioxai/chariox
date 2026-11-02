@@ -244,6 +244,7 @@ pub(crate) fn restricted_request(request: &LocalDaemonRequest) -> bool {
             | LocalDaemonRequest::GetKernelAccessStatus(_)
             | LocalDaemonRequest::CoverKernelAccessProcess(_)
                 | LocalDaemonRequest::ManageCredentialVault(_)
+                | LocalDaemonRequest::OwnerVault(_)
                 | LocalDaemonRequest::UnlockCredentialVault(_)
                 // Raw credential configs can contain literal injection headers.
                 | LocalDaemonRequest::GetCredential(_)
@@ -280,4 +281,12 @@ pub(crate) fn restricted_request(request: &LocalDaemonRequest) -> bool {
             if protected_config(&config.path))
         || matches!(request, LocalDaemonRequest::UnsetUserConfigValue(config)
             if protected_config(&config.path))
+}
+
+#[cfg(test)]
+#[test]
+fn owner_vault_is_not_a_kernel_access_operation() {
+    assert!(restricted_request(&LocalDaemonRequest::OwnerVault(
+        crate::local::OwnerVaultRequest::Reveal { id: "entry".into() }
+    )));
 }

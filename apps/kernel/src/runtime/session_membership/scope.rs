@@ -812,6 +812,7 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::SetUserConfigValue(_)
         | LocalDaemonRequest::SetWorkspaceLiveSyncMode(_)
         | LocalDaemonRequest::UnsetUserConfigValue(_)
+        | LocalDaemonRequest::OwnerVault(_)
         | LocalDaemonRequest::SetCredentialSecret(_)
         | LocalDaemonRequest::DeleteCredentialSecret(_)
         | LocalDaemonRequest::GetCredentialVaultStatus(_)

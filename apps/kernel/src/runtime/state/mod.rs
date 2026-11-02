@@ -569,6 +569,7 @@ mod claude_token_first_use;
 mod provider_login_workflow;
 mod runtime_interaction_owned_state;
 pub(crate) use runtime_interaction_owned_state::interaction_waits;
+mod owner_vault;
 mod runtime_interaction_state;
 mod runtime_notice_owned_state;
 mod runtime_state_views;

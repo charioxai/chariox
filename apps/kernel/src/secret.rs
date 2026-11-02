@@ -569,6 +569,50 @@ impl RuntimeSecretService {
         })
     }
 
+    /// The owner catalogue is not a credential handle and never enters the shared cache.
+    pub(crate) fn owner_vault_catalogue(&self) -> Result<Option<Zeroizing<String>>, DaemonError> {
+        self.vault_store
+            .find_secret(self.vault_service_name()?, OWNER_VAULT_CATALOGUE_KEY)
+            .map(|value| value.map(Zeroizing::new))
+    }
+
+    pub(crate) fn save_owner_vault_catalogue(
+        &self,
+        value: Option<&str>,
+    ) -> Result<(), DaemonError> {
+        let service = self.vault_service_name()?;
+        let previous = self
+            .vault_store
+            .find_secret(service, OWNER_VAULT_CATALOGUE_KEY)?
+            .map(Zeroizing::new);
+        let commit = match value {
+            Some(value) => self
+                .vault_store
+                .set_secret(service, OWNER_VAULT_CATALOGUE_KEY, value),
+            None => self
+                .vault_store
+                .delete_secret(service, OWNER_VAULT_CATALOGUE_KEY),
+        };
+        if let Err(error) = commit {
+            // A Vault write can fail after rename, during directory fsync.
+            let rollback = match previous {
+                Some(previous) => self.vault_store.set_secret(
+                    service,
+                    OWNER_VAULT_CATALOGUE_KEY,
+                    previous.as_str(),
+                ),
+                None => self
+                    .vault_store
+                    .delete_secret(service, OWNER_VAULT_CATALOGUE_KEY),
+            };
+            if rollback.is_err() {
+                return Err(DaemonError::MachineRequest { code: "vault_owner_recovery_required".into(), message: "The Vault change could not be rolled back. Restore the Vault backup before retrying.".into() });
+            }
+            return Err(error);
+        }
+        Ok(())
+    }
+
     /// A kernel speech request resolves its owner-scoped handle just for this request.
     /// Do not populate or consult the process cache: relocking/deleting a Vault entry applies immediately.
     pub(crate) fn vault_secret_for_dictation(
@@ -733,6 +777,7 @@ impl RuntimeSecretService {
                     })
             }
             UserCredentialSourceConfig::Vault { key } => {
+                validate_vault_key(key)?;
                 let service = self.vault_service_name()?;
                 let key = key.trim();
                 self.ensure_vault_cache_available()?;
@@ -982,7 +1027,15 @@ fn expand_user_path(path: &str) -> PathBuf {
     PathBuf::from(path)
 }
 
+pub(crate) const OWNER_VAULT_CATALOGUE_KEY: &str = "chariox-owner-vault-catalogue";
+
 fn validate_vault_key(key: &str) -> Result<(), DaemonError> {
+    if key.trim() == OWNER_VAULT_CATALOGUE_KEY {
+        return Err(secret_error(
+            "credential_vault",
+            "The owner Vault catalogue is not a credential value.".into(),
+        ));
+    }
     if key.trim().is_empty() {
         return Err(secret_error(
             "credential_vault",

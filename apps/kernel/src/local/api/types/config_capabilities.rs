@@ -448,3 +448,73 @@ pub struct ListMcpServersRequest {
 pub struct ListSkillsRequest {
     pub workspace_id: Option<String>,
 }
+
+/// Owner-client Vault operations. The use is opaque until the shared use schema lands.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
+pub enum OwnerVaultRequest {
+    List {},
+    Create {
+        name: String,
+        kind: String,
+        usage: String,
+        value: VaultPassphrase,
+    },
+    Generate {
+        name: String,
+        kind: String,
+        usage: String,
+    },
+    Reveal {
+        id: String,
+    },
+    Activity {
+        id: String,
+    },
+    Replace {
+        id: String,
+        value: VaultPassphrase,
+    },
+    Delete {
+        id: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OwnerVaultEntry {
+    pub id: String,
+    pub name: String,
+    pub kind: String,
+    pub usage: String,
+    pub created_by: String,
+    pub created_at_ms: u64,
+    pub updated_at_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OwnerVaultActivity {
+    pub at_ms: u64,
+    pub event: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub enum OwnerVaultResult {
+    List {
+        entries: Vec<OwnerVaultEntry>,
+    },
+    Saved {
+        id: String,
+    },
+    Deleted {
+        id: String,
+    },
+    Revealed {
+        id: String,
+        value: VaultPassphrase,
+    },
+    Activity {
+        id: String,
+        events: Vec<OwnerVaultActivity>,
+    },
+}
