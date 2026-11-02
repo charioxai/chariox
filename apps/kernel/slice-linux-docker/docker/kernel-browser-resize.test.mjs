@@ -8,7 +8,7 @@ function fixture(){
  const stream={tab_id:'t',invalidate(){calls.push('stream_reset')}};
  const host={generation:1,tabs:new Map([['t',tab]]),displays:new Map([['s',stream]]),pageSize:()=>old,
   browser:{resolvePageTarget:async()=>({sessionId:'s',connection:{send:async(m,p)=>{calls.push([m,p]);if(m==='Browser.setWindowBounds')Object.assign(bounds,p.bounds);return {windowId:7,bounds:{...bounds}};}}})},
-  chromium:{desktop:{binding:()=>({})}},chromeWindows:{current:()=>({tabbed:{scale:1,page_rect:{width:old.width,height:old.height}}}),retire:reason=>calls.push(reason)},closeCompositors:async()=>calls.push('close_source'),setLayout:async(t,owner,size)=>{calls.push(['layout',owner,size]);Object.assign(old,size)},stateSignal:{notify(){}},rebindWindows:async()=>calls.push('rebind')};
+  chromium:{desktop:{binding:()=>({})}},chromeWindows:{resolve:async()=>{},current:()=>({tabbed:{scale:1,page_rect:{width:old.width,height:old.height}}}),retire:reason=>calls.push(reason)},closeCompositors:async()=>calls.push('close_source'),setLayout:async(t,owner,size)=>{calls.push(['layout',owner,size]);Object.assign(old,size)},stateSignal:{notify(){}},rebindWindows:async()=>calls.push('rebind')};
  return {host,tab,calls,stream};
 }
 test('MP-08/MP-10 resize changes native bounds and page layout without closing mirrors',async()=>{
@@ -17,6 +17,18 @@ test('MP-08/MP-10 resize changes native bounds and page layout without closing m
  assert.deepEqual(calls[3],['Browser.setWindowBounds',{windowId:7,bounds:{width:900,height:688}}]);
  assert.deepEqual(calls[4],['layout','resize',{width:900,height:600}]);assert.equal(stream.css_width,900);assert.equal(stream.css_height,600);
  const count=calls.length;await resizeBrowserPage(host,tab,command);assert.equal(calls.length,count+1,'same size reads the current window but produces no intermediate resizes');
+});
+test('MP-08/MP-10 resize refreshes a cached page rectangle before measuring the native window inset',async()=>{
+ const {host,tab,calls}=fixture();let refreshed=false;
+ host.chromeWindows.current=()=>({tabbed:{scale:1,page_rect:refreshed?{width:1280,height:800}:{width:1600,height:1000}}});
+ host.chromeWindows.resolve=async()=>{refreshed=true;assert.equal(calls.length,0,'refresh precedes the CDP window measurement')};
+ assert.deepEqual(await resizeBrowserPage(host,tab,command),{width:900,height:600});
+ assert(refreshed);assert.deepEqual(calls.find(call=>Array.isArray(call)&&call[0]==='Browser.setWindowBounds'),['Browser.setWindowBounds',{windowId:7,bounds:{width:900,height:688}}]);
+});
+test('MP-08/MP-11 a target retired while refreshing geometry cannot resize its replacement',async()=>{
+ const {host,tab,calls}=fixture();host.chromeWindows.resolve=async()=>{host.generation=2};
+ await assert.rejects(resizeBrowserPage(host,tab,command),/target retired/);
+ assert(!calls.some(call=>Array.isArray(call)&&call[0]==='Browser.setWindowBounds'));
 });
 for(const bad of [{width:0},{width:900.5},{height:NaN},{width:1921},{height:1081}])test('MP-08/MP-11 malformed or oversized resize fails before native mutation '+JSON.stringify(bad),async()=>{
  const {host,tab,calls}=fixture();await assert.rejects(resizeBrowserPage(host,tab,{...command,...bad}),/viewport between/);assert.deepEqual(calls,[]);
@@ -55,7 +67,7 @@ test('MP-08/MP-10 a retried resize completes a partially applied one across ever
   pageSize:proto.pageSize,noteLayout:proto.noteLayout,layoutRevision:proto.layoutRevision,setLayout:proto.setLayout,
   browser:{setLayout:async target=>{if(target==='U'&&failU-->0)throw Error('layout unavailable');calls.push('layout '+target)},
    resolvePageTarget:async()=>({sessionId:'s',connection:{send:async(m,p)=>{if(m==='Browser.setWindowBounds')Object.assign(bounds,p.bounds);return {windowId:7,bounds:{...bounds}};}}})},
-  chromium:{desktop:{binding:()=>({})}},chromeWindows:{current:()=>({tabbed:{scale:1,page_rect:{width:bounds.width,height:bounds.height-88}}}),retire:()=>{}},
+  chromium:{desktop:{binding:()=>({})}},chromeWindows:{resolve:async()=>{},current:()=>({tabbed:{scale:1,page_rect:{width:bounds.width,height:bounds.height-88}}}),retire:()=>{}},
   closeCompositors:async()=>{},stateSignal:{notify(){}},rebindWindows:async()=>calls.push('rebind')};
  host.browser.resolvePageTarget=host.browser.resolvePageTarget.bind(host.browser);
  await assert.rejects(resizeBrowserPage(host,tabs.get('t'),command),/layout unavailable/);
