@@ -722,7 +722,7 @@ fn mp08_mp10_browser_header_937_shape_and_hash() {
     let bytes = include_bytes!("browser-header-937.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "a44a8f1693358f4d9b631f8973fe62c72848dcab8cb3fdf3b399eb6a03d33f1e"
+        "5d98d10071e82aa851fce47a35902a5a3308c4961b97abf52d750b90599fe419"
     );
     let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     let response: LocalDaemonResponse =
