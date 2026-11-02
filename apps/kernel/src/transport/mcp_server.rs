@@ -122,7 +122,7 @@ async fn handle_http_request_inner(
     // Operators reverse-proxy only this public path. MCP retains its existing
     // bind address and authentication; directory discovery needs no run token.
     if request.uri().path() == "/.well-known/http-message-signatures-directory" {
-        if !matches!(*request.method(), Method::GET | Method::HEAD) {
+        if *request.method() != Method::GET {
             return Ok(empty_response(StatusCode::METHOD_NOT_ALLOWED));
         }
         let authority = request
@@ -142,14 +142,7 @@ async fn handle_http_request_inner(
             response = response.header(name, value);
         }
         return response
-            .body(
-                Full::new(Bytes::from(if request.method() == Method::HEAD {
-                    Vec::new()
-                } else {
-                    body
-                }))
-                .boxed_unsync(),
-            )
+            .body(Full::new(Bytes::from(body)).boxed_unsync())
             .map_err(|_| DaemonError::LocalTransport {
                 operation: "web_bot_auth_directory",
                 message: "directory response encoding failed".into(),

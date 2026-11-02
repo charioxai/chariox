@@ -65,6 +65,7 @@ export function createWebBotAuthSigner(input) {
     notBefore,
     expiresAt,
     projectId,
+    policyRevision: input.policy_revision,
     active: true,
     destroy() {
       this.active = false;
@@ -137,6 +138,8 @@ export class BrowserWebBotAuth {
     this.pendingBySession = new Map();
     this.sessionByTab = new Map();
     this.unsignedSessions = new Set();
+    this.policyRevision = 0;
+    this.allowedProjects = null;
   }
 
   async configureTab(tabId, input) {
@@ -170,11 +173,32 @@ export class BrowserWebBotAuth {
       signer.destroy();
       throw new Error("Web Bot Auth signing key is not currently valid");
     }
+    if (this.policyRevision > 0 && signer.policyRevision === undefined) {
+      signer.destroy();
+      throw new Error("Web Bot Auth policy changed; retry the browser operation");
+    }
+    if (signer.policyRevision !== undefined) {
+      if (!Number.isSafeInteger(signer.policyRevision) || signer.policyRevision < 0
+          || signer.policyRevision < this.policyRevision) {
+        signer.destroy();
+        throw new Error("Web Bot Auth policy changed; retry the browser operation");
+      }
+      if (signer.policyRevision > this.policyRevision) {
+        this.policyRevision = signer.policyRevision;
+        this.allowedProjects = null;
+      }
+    }
+    if ((this.allowedProjects !== null && (signer.projectId === undefined
+          || !this.allowedProjects.has(signer.projectId)))) {
+      signer.destroy();
+      throw new Error("Web Bot Auth project is not enabled by the current policy");
+    }
     const attachedSession = this.sessionByTab.get(tabId);
     if (previous && previous.active && previous.keyId === signer.keyId
         && previous.signatureAgent === signer.signatureAgent
         && previous.notBefore === signer.notBefore && previous.expiresAt === signer.expiresAt) {
       previous.projectId = signer.projectId;
+      previous.policyRevision = signer.policyRevision;
       signer.destroy();
       return { configured: true, kid: previous.keyId };
     }
@@ -242,10 +266,13 @@ export class BrowserWebBotAuth {
     if (disabled) this.unsignedSessions.delete(sessionId);
   }
 
-  applyProjectPolicy(projects, reset) {
+  applyProjectPolicy(projects, reset, revision = 0) {
     if (!Array.isArray(projects) || projects.some((project) => typeof project !== "string" || !project)
-        || typeof reset !== "boolean") throw badConfig();
+        || typeof reset !== "boolean" || !Number.isSafeInteger(revision) || revision < 0) throw badConfig();
+    if (revision < this.policyRevision) return;
+    this.policyRevision = revision;
     const enabledProjects = new Set(projects);
+    this.allowedProjects = enabledProjects;
     for (const [tabId, signer] of this.byTab) {
       if (!reset && (signer.projectId === undefined || enabledProjects.has(signer.projectId))) continue;
       signer.active = false;

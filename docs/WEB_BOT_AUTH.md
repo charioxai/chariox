@@ -57,6 +57,9 @@ covered. Keys pass only through the trusted controller pipe; they are not browse
 page data or tool results. Owner takeover retains the tab's operator identity.
 Project opt-out clears that project's live browser signer without interrupting
 other projects. Local App asset interception retains its own Fetch ownership.
+After a browser restart, previously signed tabs wait for an agent operation to
+reload signing material before restoring their saved URL. Their title explains
+that an agent must resume the tab; owner-only observation does not unlock the Vault.
 
 The `Signature-Agent` member points directly to the well-known directory URL,
 as required by draft-01. Key ids are RFC 7638 JWK SHA-256 thumbprints. Each

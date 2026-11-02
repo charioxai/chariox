@@ -102,14 +102,44 @@ test("MP-08/MP-09/MP-10/MP-11 configures Web Bot Auth before a Tab's first navig
   assert.ok(create >= 0 && enable > create && navigate > enable);
 }));
 
+test("MP-08/MP-09/MP-10/MP-11 restores opted-in tabs only after the signer is attached", () => using(async ({ host, sent }, root) => {
+  const tabId = "host-tab-wba-restore";
+  await writeFile(path.join(root, "tabs.json"), JSON.stringify({
+    generation: 4,
+    tabs: [{ tab_id: tabId, url: "https://example.test/restored", web_bot_auth: true, web_bot_auth_project_id: "project-a" }],
+  }));
+  await host.start();
+  assert.equal(sent.some(({ method, params }) => method === "Page.navigate" && params.url === "https://example.test/restored"), false,
+    "opted-in restore URL stays pending until a signer is available");
+  assert.equal(host.tabState().tabs.find(tab => tab.tab_id === tabId)?.title,
+    "Web Bot Auth restore requires an agent to resume this tab");
+
+  const configure = host.browser.configureWebBotAuth;
+  host.browser.configureWebBotAuth = async (id, signer, targetId) => {
+    const result = await configure(id, signer, targetId);
+    if (signer && targetId) await host.browser.attachWebBotAuth(id, targetId, `session-${targetId}`);
+    return result;
+  };
+  const now = Math.floor(Date.now() / 1000);
+  const signer = { private_key: "A".repeat(43), signature_agent: "https://agents.example.test",
+    not_before: now - 10, expires_at: now + 10, project_id: "project-a", policy_revision: 1 };
+  const response = await host.handle({ id: 702, method: "host.browser", params: {
+    op: "state", tab_id: tabId, generation: host.generation, _web_bot_auth: signer,
+  } });
+  assert.equal(response.ok, true, JSON.stringify(response));
+  const fetchEnable = sent.findIndex(({ method }) => method === "Fetch.enable");
+  const restoreNavigation = sent.findIndex(({ method, params }) => method === "Page.navigate" && params.url === "https://example.test/restored");
+  assert.ok(fetchEnable >= 0 && restoreNavigation > fetchEnable, JSON.stringify(sent.map(({ method, params }) => [method, params])));
+}));
+
 test("MP-08/MP-09/MP-10/MP-11 project WBA policy acknowledges without signer data", () => using(async ({ host }) => {
   await host.request({ op: "open", url: "https://example.test/" });
   let applied;
-  host.browser.webBotAuth.applyProjectPolicy = (projects, reset) => { applied = { projects, reset }; };
+  host.browser.webBotAuth.applyProjectPolicy = (projects, reset, revision) => { applied = { projects, reset, revision }; };
   const response = await host.handle({ id: "wba-policy", method: "host.web_bot_auth_policy", params: {
-    projects: ["enabled-project"], reset: false,
+    projects: ["enabled-project"], reset: false, revision: 4,
   } });
-  assert.deepEqual(applied, { projects: ["enabled-project"], reset: false });
+  assert.deepEqual(applied, { projects: ["enabled-project"], reset: false, revision: 4 });
   assert.equal(response.ok, true);
   assert.deepEqual(response.result, { updated: true });
   assert.equal(JSON.stringify(response).includes("private_key"), false);

@@ -95,6 +95,7 @@ export async function startVerifierServer({
   if (expectedCredential !== undefined && (typeof expectedCredential !== 'string' || !expectedCredential.length)) throw new Error('invalid verifier credential fixture')
   const verifier = createWebBotAuthVerifier({ allowedDirectoryUrls, allowedDirectoryOrigins })
   const counts = { verified: 0, denied: 0, routes: {} }
+  let navigationProof
   const server = createServer(async (request, response) => {
     let body
     try {
@@ -114,6 +115,13 @@ export async function startVerifierServer({
       return
     }
     await record({ event: 'web_bot_auth_verification', outcome: 'verified', route, method: safeMethod(request.method), status: 200 })
+    if (request.method === 'GET' && request.url === '/') {
+      // Only a public, body-free navigation proof is available to the drill.
+      // Never retain cookies, authorization, query parameters or tool requests.
+      const headers = Object.fromEntries(['host', 'signature-agent', 'signature-input', 'signature']
+        .map(name => [name, request.headers[name]]).filter(([, value]) => typeof value === 'string'))
+      navigationProof = { method: 'GET', url: '/', headers, body: new Uint8Array(), scheme: request.socket.encrypted ? 'https' : 'http' }
+    }
     if (request.url === '/' || request.url?.startsWith('/?')) {
       response.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }).end('<!doctype html><html><head><title>Web Bot Auth verifier</title></head><body><img alt="" src="/assets/pixel.png"><script src="/assets/agent.js"></script><main id="result">ready</main></body></html>')
       return
@@ -147,6 +155,7 @@ export async function startVerifierServer({
     url,
     address,
     events: () => ({ ...counts, routes: Object.fromEntries(Object.entries(counts.routes).map(([route, values]) => [route, { ...values }])) }),
+    navigationProof: () => navigationProof ? structuredClone(navigationProof) : undefined,
     close: () => {
       if (!closing) closing = new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve({ ...counts, routes: Object.fromEntries(Object.entries(counts.routes).map(([route, values]) => [route, { ...values }])) })))
       return closing

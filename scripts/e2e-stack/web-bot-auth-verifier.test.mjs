@@ -5,7 +5,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
-import { startVerifierServer } from './web-bot-auth-verifier.mjs'
+import { createWebBotAuthVerifier, startVerifierServer } from './web-bot-auth-verifier.mjs'
 
 const b64url = value => Buffer.from(value).toString('base64url')
 const thumbprint = x => createHash('sha256').update(JSON.stringify({ crv: 'Ed25519', kty: 'OKP', x })).digest('base64url')
@@ -112,6 +112,13 @@ test('MP-08/09/10/11 local Web Bot Auth verifier accepts signed requests and rej
     const html = await page.text()
     assert.match(html, /<img[^>]+src="\/assets\/pixel\.png"/)
     assert.match(html, /<script[^>]+src="\/assets\/agent\.js"/)
+    const proof = verifier.navigationProof()
+    assert.deepEqual(Object.keys(proof.headers).sort(), ['host', 'signature', 'signature-agent', 'signature-input'])
+    assert.equal((await createWebBotAuthVerifier({ allowedDirectoryUrls: [directoryUrl] }).verifyRequest(proof)).ok, true)
+    assert.equal((await createWebBotAuthVerifier({ allowedDirectoryUrls: [directoryUrl] }).verifyRequest({ ...proof, url: '/tampered' })).ok, false)
+    publishedKeys = []
+    assert.equal((await createWebBotAuthVerifier({ allowedDirectoryUrls: [directoryUrl] }).verifyRequest(proof)).reason, 'unknown_or_inactive_key')
+    publishedKeys = [key]
 
     for (const route of ['/assets/pixel.png', '/assets/agent.js']) {
       const url = `${origin}${route}`

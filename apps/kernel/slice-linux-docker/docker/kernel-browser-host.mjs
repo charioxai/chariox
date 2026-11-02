@@ -116,6 +116,8 @@ export class KernelBrowserHost {
     this.generation = 0;
     this.observations = 0; this.observed = 0;
     this.tabs = new Map();
+    this.webBotAuthRestoreUrls = new Map();
+    this.webBotAuthProjects = new Map();
     this.popupEvidence = new BrowserPopupEvidence(TAB_LIMIT);
     this.displays = new Map();
     this.displayTeardowns = new Set();
@@ -180,7 +182,13 @@ export class KernelBrowserHost {
     const name = path.join(this.root, "tabs.json");
     const active = [...this.tabs.values()].find(tab => tab.target_id === this.activeTarget);
     const data = { generation: this.generation, active_tab_id: active?.tab_id ?? null, groups: this.savedGroups,
-      tabs: [...this.tabs.values()].filter(tab => !this.browser?.appTabs?.apps || ![...this.browser.appTabs.apps.values()].some(app => app.targetId === tab.target_id)).slice(0, TAB_LIMIT).map(({ tab_id, url }) => ({ tab_id, url: redactObservation(url, this.protection.values) === url ? restorationUrl(url) : "about:blank" })) };
+      tabs: [...this.tabs.values()].filter(tab => !this.browser?.appTabs?.apps || ![...this.browser.appTabs.apps.values()].some(app => app.targetId === tab.target_id)).slice(0, TAB_LIMIT).map(({ tab_id, url }) => {
+        const deferred = this.webBotAuthRestoreUrls.get(tab_id);
+        const projectId = this.webBotAuthProjects.get(tab_id) ?? deferred?.projectId;
+        const restoreUrl = deferred?.url ?? url;
+        const safeUrl = redactObservation(restoreUrl, this.protection.values) === restoreUrl ? restorationUrl(restoreUrl) : "about:blank";
+        return { tab_id, url: safeUrl, ...(projectId ? { web_bot_auth: true, web_bot_auth_project_id: projectId } : {}) };
+      }) };
     // App intent remains kernel-owned; only its origin selects the restored view.
     data.app_origins = [...new Set([
       ...[...(this.browser?.appTabs?.apps?.values() ?? [])].map(app => appRestoreOrigin(app.origin)).filter(Boolean),
@@ -297,7 +305,14 @@ export class KernelBrowserHost {
       for (const tab of saved.tabs.slice(0, TAB_LIMIT)) {
         if (typeof tab.tab_id !== "string" || !tab.tab_id.startsWith("host-tab-")) throw new Error("MD-2: invalid saved tab identity");
         assertNotCancelled(signal);
-        await this.createTab(restorationUrl(tab.url), tab.tab_id, { signal, background: true });
+        const url = restorationUrl(tab.url);
+        const defer = tab.web_bot_auth === true && typeof tab.web_bot_auth_project_id === "string" && url !== "about:blank";
+        if (defer) this.webBotAuthProjects.set(tab.tab_id, tab.web_bot_auth_project_id);
+        await this.createTab(defer ? "about:blank" : url, tab.tab_id, {
+          signal,
+          background: true,
+          ...(defer ? { deferredWebBotAuthRestoreUrl: url, webBotAuthProjectId: tab.web_bot_auth_project_id } : {}),
+        });
       }
       // MP-08/MP-10: restore the registry in one inventory pass. A loading
       // background page must not delay every subsequent Tab's creation.
@@ -509,7 +524,11 @@ export class KernelBrowserHost {
     const _tab_creation_actions = this.popupEvidence.inventory([...this.tabs.values()]);
     const dialogs = this.pendingDialogs();
     return redactObservation({ state: "ready", generation: this.generation, _observation: this.observed, _tab_creation_actions,
-      active_tab_id: active, downloads: this.downloads.state(), tabs: [...this.tabs.values()].map(({ target_id, opener_target_id, ...tab }) => ({ ...tab, ...this.header.read(tab) })), dialogs, viewport:this.viewport(), chrome_window: this.chromeWindow(),
+      active_tab_id: active, downloads: this.downloads.state(), tabs: [...this.tabs.values()].map(({ target_id, opener_target_id, ...tab }) => ({
+        ...tab,
+        ...this.header.read(tab),
+        ...(this.webBotAuthRestoreUrls.has(tab.tab_id) ? { title: "Web Bot Auth restore requires an agent to resume this tab" } : {}),
+      })), dialogs, viewport:this.viewport(), chrome_window: this.chromeWindow(),
       // MP-11: whether Chromium's managed policies apply, or only the kernel's CDP lockdown layer.
       browser_lockdown: this.chromium?.policy ?? null }, this.protection.values);
   }
@@ -680,18 +699,20 @@ export class KernelBrowserHost {
     const state = await this.reconcile();
     return { ...state, tab_id: tabId };
   }
-  async createTab(url, tabId, { signal, background = false, downloadSession = "browser-viewer" } = {}) {
+  async createTab(url, tabId, { signal, background = false, downloadSession = "browser-viewer", deferredWebBotAuthRestoreUrl, webBotAuthProjectId } = {}) {
     requireBrowserMemory();
     if (this.tabs.size >= TAB_LIMIT) throw new Error("MD-2: host tab limit reached");
     const connection = await this.browser.ensureConnection();
     const browser = this.browser;
     assertNotCancelled(signal);
-    const targetUrl = navigationUrl(url);
+    const deferredRestore = typeof deferredWebBotAuthRestoreUrl === "string" ? navigationUrl(deferredWebBotAuthRestoreUrl) : null;
+    const targetUrl = deferredRestore ? "about:blank" : navigationUrl(url);
     const signFirstNavigation = browser.webBotAuth?.byTab.has(tabId) === true;
     const canAttachFetch = signFirstNavigation && typeof browser.ensureTargetSession === "function";
     const { targetId } = await connection.send("Target.createTarget", { url: canAttachFetch ? "about:blank" : targetUrl, ...(background ? { background: true } : {}) });
     if (browser !== this.browser) throw new BrowserActionError('browser_unavailable', 'MP-08: browser restarted; interrupted action was not replayed');
     this.tabs.set(tabId, { tab_id: tabId, target_id: targetId, url, title: "", document_id: "" });
+    if (deferredRestore) this.webBotAuthRestoreUrls.set(tabId, { url: deferredRestore, projectId: webBotAuthProjectId });
     this.downloads.bind(this.tabs.get(tabId), downloadSession);
     this.observed = ++this.observations;
     try {
@@ -705,6 +726,23 @@ export class KernelBrowserHost {
       if (browser.closePageTarget) await browser.closePageTarget(connection, targetId).catch(() => {});
       throw error;
     }
+  }
+  async resumeWebBotAuthRestore(tabId, { allowUnsigned = false } = {}) {
+    const deferred = this.webBotAuthRestoreUrls.get(tabId);
+    if (!deferred) return;
+    if (!allowUnsigned && !this.browser?.webBotAuth?.byTab?.has(tabId)) return;
+    const tab = this.tabs.get(tabId);
+    if (!tab) {
+      this.webBotAuthRestoreUrls.delete(tabId);
+      this.webBotAuthProjects.delete(tabId);
+      return;
+    }
+    const connection = await this.browser.ensureConnection();
+    const sessionId = await this.browser.ensureTargetSession(connection, tab.target_id);
+    await connection.send("Page.navigate", { url: deferred.url }, sessionId);
+    this.webBotAuthRestoreUrls.delete(tabId);
+    tab.url = deferred.url;
+    this.stateSignal.notify();
   }
   async target(command) {
     const started = timestamp();
@@ -823,7 +861,12 @@ export class KernelBrowserHost {
       if (typeof command.tab_id !== "string" || !command.tab_id) throw new Error("invalid Web Bot Auth tab id");
       await this.start({ signal });
       const tab = this.tabs.get(command.tab_id);
-      return this.browser.configureWebBotAuth(command.tab_id, command.signer, tab?.target_id);
+      const result = await this.browser.configureWebBotAuth(command.tab_id, command.signer, tab?.target_id);
+      if (command.signer === null) this.webBotAuthProjects.delete(command.tab_id);
+      else if (this.browser.webBotAuth?.byTab.has(command.tab_id)) this.webBotAuthProjects.set(command.tab_id, command.signer.project_id);
+      await this.resumeWebBotAuthRestore(command.tab_id, { allowUnsigned: command.signer === null });
+      await this.save();
+      return result;
     }
     // MP-11: observation never launches/relaunches the browser.
     await this.start({ signal, allowStart: !["cancel_download", "dialog", "state", "snapshot", "screenshot", "unsubscribe", "display_subscribe", "display_attach", "display_suspend", "display_resume", "display_park", "display_input_target", "resize", "note_selection", "pointer_cursor", "mirror_subscribe", "mirror_next", "mirror_close", "chrome_window_follow"].includes(command.op) });
@@ -969,6 +1012,8 @@ export class KernelBrowserHost {
       this.scrolling.delete(tab.tab_id);
       await this.browser.manageTab({ ...binding, action: "close" }, { signal });
       await this.browser.clearWebBotAuth?.(tab.tab_id);
+      this.webBotAuthProjects.delete(tab.tab_id);
+      this.webBotAuthRestoreUrls.delete(tab.tab_id);
       for (const observed of this.observedDocuments.values()) observed.delete(tab.tab_id);
       const state = await this.reconcile();
       await this.rebindWindows();
@@ -984,6 +1029,7 @@ export class KernelBrowserHost {
         await this.browser.manageTab({...binding,action:'activate'},{signal});
       }
       const navigated = await this.browser.navigate({ ...binding, url: navigationUrl(command.url) }, { signal });
+      this.webBotAuthRestoreUrls.delete(tab.tab_id);
       // MP-08/MP-10: answer at commit, like a browser's address bar; the page loads
       // into attached views and later state reads reconcile its title.
       if (navigated?.download_started) return this.observe(this.tabState(), null, scope);
@@ -1134,7 +1180,15 @@ export class KernelBrowserHost {
       }
       if (request.method === "host.web_bot_auth_policy") {
         const params = request.params ?? {};
-        this.browser?.webBotAuth?.applyProjectPolicy(params.projects, params.reset);
+        this.browser?.webBotAuth?.applyProjectPolicy(params.projects, params.reset, params.revision ?? 0);
+        if (!params.reset) {
+          for (const [tabId, projectId] of this.webBotAuthProjects) {
+            if (typeof projectId === "string" && params.projects.includes(projectId)) continue;
+            this.webBotAuthProjects.delete(tabId);
+            await this.resumeWebBotAuthRestore(tabId, { allowUnsigned: true });
+          }
+        }
+        if (this.browser) await this.save();
         return { id: request.id, ok: true, result: { updated: true } };
       }
       if (request.method === "host.secret") {
@@ -1150,7 +1204,12 @@ export class KernelBrowserHost {
         if (this.protection.unknown) throw new Error("MD-5: observation registry unavailable");
         const tab = await this.target(params);
         if (tab.document_id !== params.document_id) throw new UserDomainRefusal("stale_reference");
-        if (webBotAuth !== undefined) await this.browser.configureWebBotAuth(params.tab_id, webBotAuth, tab.target_id);
+        if (webBotAuth !== undefined) {
+          await this.browser.configureWebBotAuth(params.tab_id, webBotAuth, tab.target_id);
+          if (webBotAuth === null) this.webBotAuthProjects.delete(params.tab_id);
+          else if (this.browser.webBotAuth?.byTab.has(params.tab_id)) this.webBotAuthProjects.set(params.tab_id, webBotAuth.project_id);
+          await this.resumeWebBotAuthRestore(params.tab_id, { allowUnsigned: webBotAuth === null });
+        }
         // MP-08/MP-11: a Vault fill is the agent's input to an App Tab too,
         // recorded before the field's input/change handlers can run.
         const { app, agent } = this.appAgent(tab, params, true);
@@ -1237,6 +1296,11 @@ export class KernelBrowserHost {
           if (typeof params.tab_id === "string") {
             const tab = this.tabs.get(params.tab_id);
             await this.browser.configureWebBotAuth(params.tab_id, webBotAuth, tab?.target_id);
+            if (webBotAuth === null) this.webBotAuthProjects.delete(params.tab_id);
+            else if (this.browser.webBotAuth?.byTab.has(params.tab_id)) this.webBotAuthProjects.set(params.tab_id, webBotAuth.project_id);
+            if (params.op !== "navigate") {
+              await this.resumeWebBotAuthRestore(params.tab_id, { allowUnsigned: webBotAuth === null });
+            }
           }
         }
         let result;

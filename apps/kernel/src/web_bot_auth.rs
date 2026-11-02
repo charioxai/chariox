@@ -445,12 +445,10 @@ mod tests {
             .unwrap();
         let public = VerifyingKey::from_bytes(x.as_slice().try_into().unwrap()).unwrap();
         public.verify(base.as_bytes(), &signature).is_ok()
-            && body
-                .map(|bytes| {
-                    headers["Content-Digest"]
-                        == format!("sha-256=:{}:", STANDARD.encode(Sha256::digest(bytes)))
-                })
-                .unwrap_or(true)
+            && body.map_or(true, |bytes| {
+                headers["Content-Digest"]
+                    == format!("sha-256=:{}:", STANDARD.encode(Sha256::digest(bytes)))
+            })
     }
 
     #[test]

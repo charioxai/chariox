@@ -51,9 +51,13 @@ impl KernelRuntimeState {
         session_id: &str,
         agent_id: &str,
     ) -> Result<serde_json::Value, DaemonError> {
+        // Capture before Vault preparation so a policy change during the wait
+        // cannot install stale signing material in a newly started browser.
+        let revision = self.owned.kernel_browser_host.web_bot_auth_revision();
         Ok(
             match self.web_bot_auth_signer(session_id, agent_id).await? {
                 Some(signer) => serde_json::json!({
+                    "policy_revision": revision,
                 "project_id": self.owned.session_store.get_session(session_id)?.project_id(),
                     "private_key": signer.private_key_base64url().as_str(),
                     "signature_agent": signer.signature_agent_origin(),

@@ -273,6 +273,27 @@ test("project policy clears only disabled projects and continues their later req
   await browser.webBotAuth.clearTab("tab-enabled");
 });
 
+test("stale signer material cannot re-enable a project after a newer policy revision", async () => {
+  const sent = [];
+  const connection = { isOpen: () => true, async send(method, params, sessionId) { sent.push({ method, params, sessionId }); return {}; } };
+  const browser = new BrowserCdpClient({ connectionFactory: async () => connection });
+  browser.connection = connection;
+  browser.webBotAuth.applyProjectPolicy(["project-a"], false, 4);
+  const stale = signerInput();
+  stale.project_id = "project-a";
+  stale.policy_revision = 3;
+  await assert.rejects(browser.webBotAuth.configureTab("stale-tab", stale), /policy changed/);
+  assert.equal(browser.webBotAuth.byTab.has("stale-tab"), false);
+  assert.equal(sent.some(({ method }) => method === "Fetch.enable"), false);
+
+  const disabled = signerInput();
+  disabled.project_id = "project-b";
+  disabled.policy_revision = 4;
+  await assert.rejects(browser.webBotAuth.configureTab("disabled-tab", disabled), /project is not enabled/);
+  assert.equal(browser.webBotAuth.byTab.has("disabled-tab"), false);
+  await browser.webBotAuth.clearAll();
+});
+
 test("non-loopback HTTP and credential-bearing targets are rejected; non-HTTP stays unsigned", () => {
   const signer = createWebBotAuthSigner(signerInput());
   assert.throws(() => signWebBotAuthRequest({ method: "GET", url: "http://example.test/private" }, signer), /HTTPS/);
