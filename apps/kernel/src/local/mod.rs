@@ -10,6 +10,7 @@ pub use api::{
     WorkflowNotificationSource, WorkflowNotificationSourceSummary, WorkflowNotificationStatus,
     WorkflowNotificationSubscription, WorkflowNotificationTargetKind,
 };
+pub use api::{CreatedResource, CreatedResourceState, ResourceRevokeMethod};
 mod api;
 pub use api::{
     AgentDeadline, AgentDeadlineState, GetAgentDeadlineRequest, SetAgentDeadlineRequest,

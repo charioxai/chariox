@@ -19,6 +19,7 @@ mod browser_import;
 mod capability;
 mod cloud_relay;
 mod config_capabilities;
+mod created_resource;
 mod daemon;
 mod dictation;
 mod disposable_worker;
@@ -70,6 +71,7 @@ pub use browser_import::*;
 pub use capability::*;
 pub use cloud_relay::*;
 pub use config_capabilities::*;
+pub use created_resource::*;
 pub use daemon::*;
 pub use dictation::*;
 pub use disposable_worker::*;
@@ -447,4 +449,5 @@ pub use workspace::*;
 /// MP-08/MP-10/MP-11: 936 adds non-blocking task-owned questions (`asking_task_id` on interactions, answered
 /// through `RespondToInteraction`; peer 385).
 /// Browser downloads 937 adds bounded Room artifacts and cancellation.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 937;
+/// Resource register 944 adds project-scoped record/list/revoke tools and metadata.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 944;

@@ -234,6 +234,7 @@ impl KernelRuntimeState {
             .metadata
             .as_ref()
             .and_then(|metadata| metadata.session_id.clone());
+        let resource_metadata = credential.clone();
         let key = match &credential.source {
             crate::config::UserCredentialSourceConfig::Vault { key } => Some(key.clone()),
             _ => None,
@@ -257,6 +258,7 @@ impl KernelRuntimeState {
                     source?;
                     protection?;
                 }
+                self.record_vault_resource(&resource_metadata)?;
                 Ok(result)
             })
         })

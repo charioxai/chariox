@@ -196,6 +196,7 @@ impl KernelRuntimeState {
                 input_schema: serde_json::json!({"type":"object","required":["request"],"properties":{"request":{"type":"object"}},"additionalProperties":false}),
             });
             specs.push(super::sudo::vault_generate_spec());
+            specs.extend(super::resource_register::specs());
         }
         if self.meta_runtime_tool_specs_enabled_for_auth_token(auth_token) {
             let room_tools = self.room_agent_tools_enabled();
@@ -364,6 +365,15 @@ impl KernelRuntimeState {
             Box::pin(self.try_kernel_browser_tool(auth_token, tool_name, arguments.clone())).await
         {
             return result;
+        }
+        if matches!(
+            tool_name,
+            super::resource_register::RECORD
+                | super::resource_register::LIST
+                | super::resource_register::REVOKE
+                | super::resource_register::SET_REVOKE
+        ) {
+            return Box::pin(self.resource_register_tool(auth_token, tool_name, arguments)).await;
         }
         if tool_name == super::sudo::VAULT_GENERATE {
             return Box::pin(self.vault_generate(auth_token, arguments)).await;
