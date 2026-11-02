@@ -3,6 +3,7 @@ use super::{error, KernelRuntimeState, KernelSudoTurn};
 use crate::config::{UserCredentialConfig, UserCredentialInjectionConfig};
 use crate::error::DaemonError;
 
+#[derive(Clone, Copy)]
 pub(crate) enum VaultCaller<'a> {
     AuthToken(&'a str),
     ProviderRun(&'a str),
@@ -20,17 +21,20 @@ impl KernelRuntimeState {
             VaultCaller::ProviderRun(run) => self.sudo_for_provider_run(run),
         }
         .map_err(|_| error(format!("{operation} requires a live sudo window")))?;
-        // An enrolled kernel's owner acts as its Cloud user; map it as MD-5 does.
-        if self.provider_account_authority_owner_user_id(&turn.owner_user_id)
-            != crate::session::DEFAULT_LOCAL_USER_ID
-            || self
-                .owned
-                .config_projection
-                .snapshot()
-                .user_config
-                .credential_vault
-                .agent_management
-                == crate::config::CredentialVaultAgentManagementPolicy::Deny
+        // Token-based creation/fill keeps the owner's Vault-management policy.
+        // Run-based register metadata and existing factor use retain their sudo
+        // admission even when the owner has disabled agent Vault management.
+        if matches!(caller, VaultCaller::AuthToken(_))
+            && (self.provider_account_authority_owner_user_id(&turn.owner_user_id)
+                != crate::session::DEFAULT_LOCAL_USER_ID
+                || self
+                    .owned
+                    .config_projection
+                    .snapshot()
+                    .user_config
+                    .credential_vault
+                    .agent_management
+                    == crate::config::CredentialVaultAgentManagementPolicy::Deny)
         {
             return Err(error("the owner's Vault is not available to this agent"));
         }

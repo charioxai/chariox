@@ -1001,15 +1001,31 @@ async fn vaudit_s3_fill_field_fills_plain_targets_on_the_exact_origin() {
 }
 
 #[tokio::test]
-async fn vault_token_and_run_tools_share_owner_policy_during_sudo() {
+async fn vault_tools_preserve_owner_policy_and_share_sudo_revocation() {
     crate::test_support::isolated_env_test!();
     let f = fixture();
     unlock(&f);
-    elevated(&f);
+    let turn = elevated(&f);
     let mut config = f.state.owned.config_projection.snapshot();
     config.user_config.credential_vault.agent_management =
         crate::config::CredentialVaultAgentManagementPolicy::Deny;
     f.state.owned.config_projection.update(config);
+    assert!(generate(&f, "shared-policy", SITE)
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("the owner's Vault is not available"));
+    // Register metadata remains available: it does not create or read a Vault value.
+    call(
+        &f,
+        crate::runtime::state::resource_register::LIST,
+        json!({}),
+    )
+    .await
+    .unwrap();
+    f.state
+        .revoke_sudo(Some("local"), Some(&turn.entry_id), "explicit_revoke")
+        .unwrap();
     for (tool, args) in [
         (
             VAULT_GENERATE,
@@ -1017,12 +1033,13 @@ async fn vault_token_and_run_tools_share_owner_policy_during_sudo() {
         ),
         (crate::runtime::state::resource_register::LIST, json!({})),
     ] {
-        let failure = call(&f, tool, args).await.unwrap_err();
         assert!(
-            failure
+            call(&f, tool, args)
+                .await
+                .unwrap_err()
                 .to_string()
-                .contains("the owner's Vault is not available"),
-            "{tool}: {failure}"
+                .contains("requires a live sudo window"),
+            "{tool}"
         );
     }
     assert!(crate::credential::load_user_credentials()
