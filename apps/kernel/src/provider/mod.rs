@@ -822,3 +822,6 @@ mod tests {
         )
     }
 }
+
+#[cfg(test)]
+pub(crate) use opencode_runtime::assert_native_non_retryability as assert_opencode_native_non_retryability;
