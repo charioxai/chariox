@@ -540,7 +540,8 @@ where
                         active.push_back(transfer);
                         if let Some(binary) = binary {
                             usage.sent(&scope, &binary);
-                            if !write(&mut writer, binary).await {
+                            // The checkpoint is already queued; one flush carries both frames.
+                            if writer.feed(binary).await.is_err() {
                                 return "write_failed";
                             }
                         }
@@ -1531,5 +1532,82 @@ mod binary_reply_regression {
             ),
             "response correlation keeps the reply lane"
         );
+    }
+}
+
+#[cfg(test)]
+mod checkpoint_batch_tests {
+    use super::*;
+    use std::{
+        pin::Pin,
+        task::{Context, Poll},
+    };
+    struct Batches {
+        pending: Vec<Message>,
+        sent: mpsc::UnboundedSender<Vec<Message>>,
+    }
+    impl Sink<Message> for Batches {
+        type Error = std::io::Error;
+        fn poll_ready(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+        fn start_send(mut self: Pin<&mut Self>, frame: Message) -> Result<(), Self::Error> {
+            self.pending.push(frame);
+            Ok(())
+        }
+        fn poll_flush(
+            mut self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            let frames = std::mem::take(&mut self.pending);
+            if !frames.is_empty() {
+                let _ = self.sent.send(frames);
+            }
+            Poll::Ready(Ok(()))
+        }
+        fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            self.poll_flush(cx)
+        }
+    }
+    #[tokio::test]
+    async fn mp08_small_binary_reply_and_receipt_checkpoint_flush_together() {
+        let (sent, mut batches) = mpsc::unbounded_channel();
+        let (tx, rx) = mpsc::channel(4);
+        let (_acks, receipts) = mpsc::channel(4);
+        let (_control, controls) = mpsc::channel(4);
+        let bytes = crate::binary_response::encode(
+            &crate::binary_response::ResponseHeader::ClientResponse {
+                request_id: "request".into(),
+                sender_public_key: "public".into(),
+                nonce: "AAAAAAAAAAAAAAAA".into(),
+            },
+            &[7; 16],
+        )
+        .unwrap();
+        tx.send(Message::Binary(bytes.into())).await.unwrap();
+        let task = tokio::spawn(run_writer(
+            Batches {
+                pending: Vec::new(),
+                sent,
+            },
+            rx,
+            true,
+            true,
+            receipts,
+            controls,
+            WriterUsage::fixture(false),
+        ));
+        let batch = tokio::time::timeout(std::time::Duration::from_secs(1), batches.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        task.abort();
+        assert_eq!(
+            batch.len(),
+            2,
+            "an already queued checkpoint must share the reply flush"
+        );
+        assert!(matches!(&batch[0],Message::Binary(b) if b.starts_with(b"CXR2")));
+        assert!(matches!(&batch[1],Message::Text(t) if t.contains("transport_chunk")));
     }
 }
