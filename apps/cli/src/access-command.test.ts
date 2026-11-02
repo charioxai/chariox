@@ -87,3 +87,20 @@ test("access cover names one pid to the kernel and prints the grant id and the p
     await kernel.close()
   }
 })
+
+test("an unknown access verb or --help is a usage answer, not a crash", async () => {
+  const previous = { err: process.stderr.write, exit: process.exitCode }
+  let err = ""
+  process.stderr.write = ((chunk: string) => { err += chunk; return true }) as typeof process.stderr.write
+  try {
+    for (const verb of ["--help", "bogus"]) {
+      process.exitCode = undefined
+      assert.equal(await runAccessCommand(["access", verb]), true)
+      assert.equal(JSON.parse(err.trim().split("\n").pop()!).error.code, "usage", verb)
+      assert.equal(process.exitCode, 2, verb)
+    }
+  } finally {
+    process.stderr.write = previous.err
+    process.exitCode = previous.exit
+  }
+})
