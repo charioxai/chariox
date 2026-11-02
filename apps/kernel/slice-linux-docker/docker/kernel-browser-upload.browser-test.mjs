@@ -70,6 +70,7 @@ test('native snapshot upload submits matching names, sizes and hashes, refusing 
     assert.equal((JSON.parse(await readFile(staging, 'utf8'))).filter(entry => entry.owner.pid === process.pid).length, 0);
   } finally {
     await host.stop();
+    if (host.chromium.browserUser) await rm(host.chromium.browserUser.root, { recursive: true, force: true });
     await new Promise(resolve => server.close(resolve));
     await rm(root, { recursive: true, force: true });
   }
