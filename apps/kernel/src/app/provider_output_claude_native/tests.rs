@@ -2830,6 +2830,30 @@ fn claude_transcript_result_keeps_the_tool_name_and_input_of_its_call() {
     let _ = fs::remove_dir_all(dir);
 }
 
+// MP-08 / MP-09 / MP-10 / MP-11: after a stop from Health Claude repairs the dangling call on resume with a
+// result of its own; that is no tool output for the person to read.
+#[test]
+fn claude_resume_repair_of_an_interrupted_call_is_not_a_tool_result() {
+    let dir = std::env::temp_dir().join(format!(
+        "chariox-claude-transcript-repair-test-{}",
+        std::process::id()
+    ));
+    let _ = fs::create_dir_all(&dir);
+    let transcript = dir.join("session.jsonl").display().to_string();
+    let repair = serde_json::json!({
+        "type": "user", "uuid": "user-repair",
+        "message": { "role": "user", "content": [
+            { "type": "tool_result", "tool_use_id": "toolu_gone", "is_error": true,
+              "content": "[Tool call interrupted: the session ended before this call's result was recorded, so its outcome is unknown. Check whether it took effect before relying on it or running it again.]" }
+        ] }
+    });
+    fs::write(&transcript, format!("{repair}\n")).expect("repair should write");
+    let drain = drain_claude_transcript_file(&transcript, &mut ClaudeTranscriptCursor::default());
+
+    assert!(drain.chunks.is_empty(), "{:?}", drain.chunks);
+    let _ = fs::remove_dir_all(dir);
+}
+
 #[test]
 fn claude_transcript_result_with_an_image_block_carries_the_image_not_its_base64_text() {
     let dir = std::env::temp_dir().join(format!(
