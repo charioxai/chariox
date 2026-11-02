@@ -412,7 +412,7 @@ test('MP-11 a refused compositor attestation is cached per document with backoff
   if(method==='Page.startScreencast')for(const handler of handlers)handler({method:'Page.screencastFrame',sessionId:session,params:{data:encodePng(1280,800,Buffer.alloc(1280*800*4,255)),sessionId:1}});
   return result;
  };
- const stream={codec:'avc1.420033',device_scale_factor:1};
+ const stream={subscription_id:'host-display-a',codec:'avc1.420033',device_scale_factor:1};host.displays.set(stream.subscription_id,stream);
  for(let n=0;n<4;n++)assert.equal(await host.compositorFor(tab,stream),null);
  assert.equal(attempts,1,'credits cannot rebuild a refused source');
  host.compositors.get(tab.tab_id).retryAt=-Infinity;
@@ -420,6 +420,27 @@ test('MP-11 a refused compositor attestation is cached per document with backoff
  assert(host.compositors.get(tab.tab_id).retryAt>performance.now()+1500,'consecutive refusals back off further');
  pages.get(tab.target_id).document_id='next';tab.document_id='next';
  assert.equal(await host.compositorFor(tab,stream),null);assert.equal(attempts,3,'a new document retries at once');
+ host.displays.delete(stream.subscription_id);
+}));
+// F-5 (b3, browserfix r5): a credit still in flight when its display was removed started a compositor that nobody
+// stopped; its protected capture per screencast frame held the sample lane, and each typed key waited 30-50 ms.
+test('MP-08/MP-10 a credit for a removed display starts no compositor',()=>using(async({host,sent})=>{
+ const opened=await host.request({op:'open',url:'about:blank'}),tab=host.tabs.get(opened.tab_id);
+ const stream={subscription_id:'host-display-gone',codec:'avc1.420033',device_scale_factor:1};host.displays.set(stream.subscription_id,stream);
+ const resolve=host.browser.resolvePageTarget.bind(host.browser);
+ host.browser.resolvePageTarget=async target=>{const page=await resolve(target);host.displays.delete(stream.subscription_id);return page};
+ const screencasts=sent.filter(c=>c.method==='Page.startScreencast').length;
+ assert.equal(await host.compositorFor(tab,stream),null);
+ assert.equal(host.compositors.has(tab.tab_id),false,'no compositor is left for the removed display');
+ assert.equal(sent.filter(c=>c.method==='Page.startScreencast').length,screencasts,'no screencast starts');
+}));
+test('MP-08/MP-10 removing the last display stops the compositor before the stream closes',()=>using(async({host})=>{
+ const opened=await host.request({op:'open',url:'about:blank'}),tab=host.tabs.get(opened.tab_id),order=[];
+ const source={close:async()=>{order.push('compositor')}};
+ host.compositors.set(tab.tab_id,{source,ready:Promise.resolve(source)});
+ const stream={subscription_id:'host-display-last',tab_id:tab.tab_id,close:async()=>{order.push('stream')}};host.displays.set(stream.subscription_id,stream);
+ await host.removeDisplay(stream);
+ assert.deepEqual(order,['compositor','stream']);assert.equal(host.compositors.has(tab.tab_id),false);
 }));
 test('MP-11 overlapping saves serialize the shared tabs.json.new writer',()=>using(async({host},root)=>{
  await host.request({op:'open',url:'about:blank'});

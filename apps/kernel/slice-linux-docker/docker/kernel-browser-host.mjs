@@ -444,6 +444,8 @@ export class KernelBrowserHost {
       }});
       source??=new CompositorSource({connection,sessionId,tab,scale:stream.device_scale_factor,policy,timing:this.timing,width:this.pageSize(tab.tab_id).width*stream.device_scale_factor,height:this.pageSize(tab.tab_id).height*stream.device_scale_factor,format:'jpeg',acquire:()=>this.sampleLane(tab).run('input',()=>this.browser.inputCapture.hold(connection,sessionId)),
         screenshot:clip=>this.displayScreenshot(tab,clip),protect:()=>this.displayScreenshot(tab),allowed:p=>this.protection===p&&!p.unknown&&!p.values.length&&!p.targets.length&&this.generation===generation});
+      // A credit still in flight for a removed display starts no compositor: nothing would stop it.
+      if(this.displays.get(stream.subscription_id)!==stream){if(source instanceof LinuxCapture)await source.close();return null;}
       const created={source,document:tab.document_id,policy};
       created.ready=source instanceof LinuxCapture?Promise.resolve(source):source.start().catch(()=>{created.refusals=refusals+1;created.retryAt=performance.now()+Math.min(30_000,1000*2**refusals);return null;});
       entry=created;this.compositors.set(tab.tab_id,entry);
@@ -710,10 +712,12 @@ export class KernelBrowserHost {
     if(!stream||this.displays.get(stream.subscription_id)!==stream)return;
     clearTimeout(stream.timer);
     if(stream.source_kind==='desktop')return this.desktopDisplay.remove(stream);
-    this.displays.delete(stream.subscription_id);await stream.close();
-    if(![...this.displays.values()].some(s=>s.tab_id===stream.tab_id)){
-      await this.closeCompositors(stream.tab_id);await this.releaseTabScale(stream.tab_id);
-    }
+    this.displays.delete(stream.subscription_id);
+    const displayed=()=>[...this.displays.values()].some(s=>s.tab_id===stream.tab_id);
+    // The Tab's compositor serves only its displays: stop its captures before the stream's slower close.
+    if(!displayed())await this.closeCompositors(stream.tab_id);
+    await stream.close();
+    if(!displayed())await this.releaseTabScale(stream.tab_id);
   }
   async displayResumeBinding(stream,signal) {
     assertNotCancelled(signal);
