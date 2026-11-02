@@ -29,17 +29,20 @@ test("--no-wait is a flag of access request and changes nothing else", () => {
   assert.throws(() => parseAccessRequest(["--no-wait", "--no-wait"], () => 43))
 })
 
-async function statusOf(answer: Parameters<typeof replyWith>[2], runtimeDir: string, holder: number): Promise<{ out: string; exit: number | undefined }> {
+async function statusOf(answer: Parameters<typeof replyWith>[2], runtimeDir: string, holder: number): Promise<{ out: string; err: string; exit: number | undefined }> {
   const kernel = await startFakeKernel((socket, frame) => replyWith(socket, frame, answer))
-  const previous = { out: console.log, dir: process.env.XDG_RUNTIME_DIR, exit: process.exitCode }
+  const previous = { out: console.log, err: process.stderr.write, dir: process.env.XDG_RUNTIME_DIR, exit: process.exitCode }
   let out = ""
+  let err = ""
   console.log = (line: string) => { out += line }
+  process.stderr.write = ((chunk: string) => { err += chunk; return true }) as typeof process.stderr.write
   process.env.XDG_RUNTIME_DIR = runtimeDir
   try {
     await runAccessCommand(["access", "status", "--holder-pid", String(holder), "--socket", kernel.path])
-    return { out, exit: process.exitCode as number | undefined }
+    return { out, err, exit: process.exitCode as number | undefined }
   } finally {
     console.log = previous.out
+    process.stderr.write = previous.err
     if (previous.dir === undefined) delete process.env.XDG_RUNTIME_DIR; else process.env.XDG_RUNTIME_DIR = previous.dir
     process.exitCode = previous.exit
     await kernel.close()
@@ -60,6 +63,18 @@ test("access status reports granted, ended, pending and not_requested from a pro
       writeFileSync(join(dir, "access-waiter-4242.pid"), invalid, { mode: 0o600 })
       assert.equal((await statusOf(refusal("kernel_access_not_covered"), dir, 4242)).out, '{"status":"not_requested"}')
     }
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test("access status of a process the kernel would refuse says how to get covered, like the refusal does", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "chx-status-"))
+  const hint = { error: { code: "kernel_access_not_covered", message: "To cover a background process you started, run `chariox access cover --pid <its pid>`.", retryable: false } }
+  try {
+    const orphan = await statusOf(hint, dir, 4243)
+    assert.equal(orphan.out, '{"status":"not_requested"}')
+    assert.equal(orphan.err.trim(), hint.error.message)
+    writeFileSync(join(dir, "access-waiter-4242.pid"), String(process.pid), { mode: 0o600 })
+    assert.equal((await statusOf(hint, dir, 4242)).err, "", "a request still waiting for the user needs no hint")
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
@@ -88,12 +103,25 @@ test("access cover names one pid to the kernel and prints the grant id and the p
   }
 })
 
-test("an unknown access verb or --help is a usage answer, not a crash", async () => {
+test("access --help prints the usage and exits 0", async () => {
+  const printed: string[] = []
+  const log = console.log
+  const previous = process.exitCode
+  console.log = (line: string) => { printed.push(line) }
+  try {
+    process.exitCode = undefined
+    assert.equal(await runAccessCommand(["access", "--help"]), true)
+    assert.match(printed.join("\n"), /chariox access request/)
+    assert.ok(!process.exitCode)
+  } finally { console.log = log; process.exitCode = previous }
+})
+
+test("an unknown access verb is a usage answer, not a crash", async () => {
   const previous = { err: process.stderr.write, exit: process.exitCode }
   let err = ""
   process.stderr.write = ((chunk: string) => { err += chunk; return true }) as typeof process.stderr.write
   try {
-    for (const verb of ["--help", "bogus"]) {
+    for (const verb of ["bogus"]) {
       process.exitCode = undefined
       assert.equal(await runAccessCommand(["access", verb]), true)
       assert.equal(JSON.parse(err.trim().split("\n").pop()!).error.code, "usage", verb)

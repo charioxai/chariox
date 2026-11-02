@@ -7,7 +7,7 @@ import { kernelSocketConfigRoot } from "@chariox/kernel-client/kernel-unix-socke
 import { LocalIpcClient, LocalIpcError } from "@chariox/kernel-client/ipc"
 import type { KernelAccessCoveredResponse, KernelAccessGrantedResponse, KernelAccessGrantsListedResponse, KernelAccessRevokedResponse } from "@chariox/kernel-client/kernel-types"
 import { CommandFailure, parseFlags, usageOf } from "./agent-command-table.js"
-import { probeKernel, reportFailure } from "./kernels-command.js"
+import { failureOf, probeKernel, reportFailure } from "./kernels-command.js"
 
 const WAITER_START_TIMEOUT_MS = 10_000
 // The kernel verifies the holder through the requester's live parent chain, so
@@ -120,8 +120,11 @@ async function accessStatus(argv: string[]): Promise<void> {
   } catch (error) {
     const code = error instanceof LocalIpcError ? error.code : null
     if (code === "kernel_access_ended") status = "ended"
-    else if (code === "kernel_access_not_covered") status = waiterAlive(holder) ? "pending" : "not_requested"
-    else throw error
+    else if (code === "kernel_access_not_covered") {
+      status = waiterAlive(holder) ? "pending" : "not_requested"
+      // The refusal's own hint: a status of "not_requested" alone is a dead end for an uncovered process.
+      if (status === "not_requested") process.stderr.write(`${failureOf(error).message}\n`)
+    } else throw error
   }
   console.log(JSON.stringify({ status }))
 }
@@ -130,6 +133,10 @@ const ACCESS_USAGE = [usageOf("access request"), usageOf("access status"), usage
 
 export async function runAccessCommand(argv: string[]): Promise<boolean> {
   if (argv[0] !== "access") return false
+  if (argv[1] === "--help") {
+    console.log(ACCESS_USAGE)
+    return true
+  }
   const direct = { request: requestAccess, status: accessStatus, cover: coverProcess }[argv[1] ?? ""]
   try {
     if (direct) await direct(argv.slice(2))
