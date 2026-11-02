@@ -2,8 +2,8 @@
 
 The kernel owns a durable inventory of resources an agent created for a project.
 Each row records service, kind, name/URL, optional Vault credential handle,
-created-by agent, creation time, revoke method and revocation state. No Vault
-value enters a row, tool result or event. Rows survive session and agent deletion.
+created-by agent, creation time, revoke method and revocation state. The kernel
+records metadata and handles without opening the Vault. Rows survive session and agent deletion.
 Listing uses creation order, with resource ID as the stable tie-breaker.
 
 ## Tools
@@ -69,8 +69,9 @@ links, owner URLs and a service that echoes the injected key; storage tests cove
 owner/project isolation, stale requests and restart recovery.
 
 `scripts/e2e-stack/resource-register/live.mjs` drives the production Cloud
-`terminal-os` entry on an owned hosted stack with real official Codex/Claude agents, a real local relay and
-a disposable service that issues and revokes keys. It has a red-on-base mode and
+`terminal-os` entry on an owned hosted stack with real official Codex/Claude
+agents, a hosted WSS relay and a disposable service that issues and revokes keys.
+It has a red-on-base mode and
 records screenshots, recordings, service results, model IDs, public history, a private
 absence check and cleanup outside the repository. It is a development drill,
 not real-service AU-11 acceptance; the latter stays NOT RUN until owner accounts
