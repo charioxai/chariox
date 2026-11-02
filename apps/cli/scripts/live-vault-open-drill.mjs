@@ -42,12 +42,20 @@ async function relayOnly(){
  return carriers
 }
 async function submit(prompt,success,failure){
+ await page.evaluate(()=>{
+  const selector='[data-passkey-prompt],[data-interaction-id],section[data-kernel-interaction-id]'
+  const probe={seen:document.querySelectorAll(selector).length,observer:null}
+  probe.observer=new MutationObserver(()=>{probe.seen+=document.querySelectorAll(selector).length})
+  probe.observer.observe(document.body,{childList:true,subtree:true})
+  window.__vopenInteractionProbe=probe
+ })
  const field=page.locator('[data-prompt-input]');await field.click();await field.fill(prompt);await field.press('Enter')
  await page.waitForFunction(({success,failure})=>[...document.querySelectorAll('.pane-transcript-reply')]
   .some(e=>e.innerText.includes(success)||e.innerText.includes(failure)),{success,failure},{timeout:240000})
  const replies=await page.locator('.pane-transcript-reply').allInnerTexts()
  check(success,replies.some(reply=>reply.includes(success))&&!replies.some(reply=>reply.includes(failure)))
- check('no owner interaction or sudo popup',await page.locator('[data-passkey-prompt],[data-interaction-id]').count()===0)
+ const seen=await page.evaluate(()=>{const probe=window.__vopenInteractionProbe;probe.observer.disconnect();return probe.seen})
+ check('no owner interaction or sudo popup during Vault cell',seen===0)
 }
 async function navigate(url){
  const omni=page.locator('.kernel-browser-omnibox').first();await omni.waitFor({timeout:60000})
@@ -65,7 +73,7 @@ async function prepareBrowser(){
  for(;;){
   const cards=page.locator('section[data-kernel-interaction-id]')
   for(let i=0;i<await cards.count();i++){
-   const card=cards.nth(i),text=await card.innerText()
+   const card=cards.nth(i),text=(await card.getAttribute('aria-label')??'')+' '+await card.innerText()
    assert.ok(/Chariox resource access/i.test(text)&&/browser/i.test(text)&&!/(?:sudo|payment card)/i.test(text),'only ordinary browser admission is approved during setup')
    await shot('browser-admission-before-vault-cell')
    await card.locator('button[data-kernel-interaction-choice="allow"]').click()
@@ -76,7 +84,8 @@ async function prepareBrowser(){
   assert.ok(Date.now()<deadline,'browser admission setup completed')
   await page.waitForTimeout(250)
  }
- check('ordinary browser access prepared before Vault cell',await page.locator('section[data-kernel-interaction-id]').count()===0)
+ await page.waitForFunction(()=>document.querySelectorAll('section[data-kernel-interaction-id]').length===0,{},{timeout:10000})
+ check('ordinary browser access prepared before Vault cell',true)
  await shot('browser-ready-before-vault-cell')
 }
  await page.goto(origin+'/validation/ready')
