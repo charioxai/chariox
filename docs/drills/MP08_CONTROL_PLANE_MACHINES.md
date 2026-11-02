@@ -38,6 +38,8 @@ adds no Health placement or alternative UI.
    stale capability/revision, and a mismatched enrolled target/key. Sign the
    connected client out, then prove subsequent requests cannot dispatch. Normal
    session refresh must preserve the binding; a new login requires reconnection.
+   Also approve a grant before Cloud login: after enrollment the owner must still
+   see and revoke it, and the next agent gateway request must be refused.
 7. Use the identical OSS binary self-hosted. Discovery is empty and forged rents
    fail before dispatch; ordinary paired-kernel exec/files still work.
 8. Before any paid drill record live operator counters, reservation and the

@@ -162,7 +162,7 @@ mod tests {
             &config,
             &state,
             &command,
-            &router.kernel_gateway(),
+            router.kernel_gateway(),
             &ControlPlaneRequest::Capabilities {},
         )
         .await
@@ -179,15 +179,9 @@ mod tests {
             capability_revision: "forged".into(),
             request_id: "one".into(),
         };
-        let error = execute(
-            &config,
-            &state,
-            &command,
-            &router.kernel_gateway(),
-            &acquire,
-        )
-        .await
-        .unwrap_err();
+        let error = execute(&config, &state, &command, router.kernel_gateway(), &acquire)
+            .await
+            .unwrap_err();
         assert!(error.to_string().contains("control_plane_grant_required"));
     }
 }
