@@ -33,6 +33,8 @@ pub enum LocalDaemonResponse {
     VaultSecretStatusReported { interaction_id: String, credential_id: String, status: VaultSecretStatus },
     KernelSudoExtended { turn: KernelSudoTurn },
     KernelAccessGranted { grant: KernelAccessGrant, },
+    /// Protocol 938: a `--no-wait` request's answer and `GetKernelAccessStatus`.
+    KernelAccessStatus { status: KernelAccessStatus },
     /// Protocol 641: the grant now covers this process by name.
     KernelAccessCovered { grant_id: String, process: CoveredProcess, },
     KernelAccessGrantsListed { grants: Vec<KernelAccessGrant>, sudo_turns: Vec<KernelSudoTurn>, },

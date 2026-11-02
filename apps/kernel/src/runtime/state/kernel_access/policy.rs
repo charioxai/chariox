@@ -241,6 +241,7 @@ pub(crate) fn restricted_request(request: &LocalDaemonRequest) -> bool {
         || matches!(
             request,
             LocalDaemonRequest::RequestKernelAccess(_)
+            | LocalDaemonRequest::GetKernelAccessStatus(_)
             | LocalDaemonRequest::CoverKernelAccessProcess(_)
                 | LocalDaemonRequest::ManageCredentialVault(_)
                 | LocalDaemonRequest::UnlockCredentialVault(_)

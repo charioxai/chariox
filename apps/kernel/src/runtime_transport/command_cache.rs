@@ -213,6 +213,7 @@ pub(crate) fn request_is_cacheable(request: &LocalDaemonRequest) -> bool {
             // fingerprinted, cached or replayed.
             | LocalDaemonRequest::RespondToHandoff(_)
             | LocalDaemonRequest::RequestKernelAccess(_)
+            | LocalDaemonRequest::GetKernelAccessStatus(_)
             | LocalDaemonRequest::CoverKernelAccessProcess(_)
             | LocalDaemonRequest::RevokeKernelAccessGrant(_)
             | LocalDaemonRequest::BeginAppPublisherEnrollment(_)

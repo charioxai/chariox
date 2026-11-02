@@ -665,6 +665,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::AddSshMachine(_) => "machine.ssh.add",
         LocalDaemonRequest::RemoveSshMachine(_) => "machine.ssh.remove",
         LocalDaemonRequest::RequestKernelAccess(_) => "kernel_access.request",
+        LocalDaemonRequest::GetKernelAccessStatus(_) => "kernel_access.status",
         LocalDaemonRequest::CoverKernelAccessProcess(_) => "kernel_access.cover",
         LocalDaemonRequest::RequestKernelSudo(_) => "kernel_access.sudo_request",
         LocalDaemonRequest::RequestVaultSecret(_) => "kernel_access.vault_secret_request",

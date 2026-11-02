@@ -324,6 +324,27 @@ pub(crate) fn peer(_: &tokio::net::UnixStream) -> io::Result<ProcessIdentity> {
     Err(invalid())
 }
 
+/// Whether the process lives in a PID namespace below the kernel's, such as the one a
+/// provider sandbox creates for each tool command. `NSpid` lists one pid per namespace
+/// level from the kernel's view down to the process's own.
+#[cfg(target_os = "linux")]
+pub(crate) fn in_nested_pid_namespace(pid: u32) -> io::Result<bool> {
+    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).map_err(classify)?;
+    let levels = status
+        .lines()
+        .find_map(|line| line.strip_prefix("NSpid:"))
+        .ok_or_else(invalid)?
+        .split_whitespace()
+        .count();
+    Ok(levels > 1)
+}
+
+/// Other systems have no PID namespaces.
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn in_nested_pid_namespace(_: u32) -> io::Result<bool> {
+    Ok(false)
+}
+
 /// Compare process birth in the OS clock domain. Same-tick births fail closed.
 #[cfg(target_os = "linux")]
 pub(crate) fn birth_cutoff() -> io::Result<u64> {

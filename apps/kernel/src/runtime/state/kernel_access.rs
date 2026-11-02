@@ -10,6 +10,22 @@ use crate::runtime::kernel_access::{
 use crate::session::{RuntimeInteraction, RuntimeInteractionChoice};
 use std::time::{Duration, Instant};
 
+pub(crate) enum AccessSubmission {
+    /// A standing holder: admitted without a popup.
+    Granted(KernelAccessGrant),
+    Pending(PendingAccess),
+}
+
+/// A request recorded as pending; `decide_kernel_access` asks the owner and ends it.
+pub(crate) struct PendingAccess {
+    generation: u64,
+    summary: KernelAccessGrant,
+    pub(crate) holder: ProcessIdentity,
+    key: (u32, u64, String),
+    timeout_sec: u64,
+    extend_notice_minutes: u32,
+}
+
 mod holder_exit;
 
 impl KernelRuntimeState {
@@ -532,13 +548,40 @@ impl KernelRuntimeState {
         peer: ProcessIdentity,
         request: RequestKernelAccessRequest,
     ) -> Result<KernelAccessGrant, DaemonError> {
-        if process::inspect(std::process::id()).is_ok_and(|(kernel, _)| kernel.contains(&peer)) {
+        match self.submit_kernel_access(&peer, &request)? {
+            AccessSubmission::Granted(grant) => Ok(grant),
+            AccessSubmission::Pending(pending) => {
+                self.decide_kernel_access(pending, Some(&peer)).await
+            }
+        }
+    }
+
+    /// The holder a request or status from `peer` is about: the named pid, which must be the
+    /// peer or an OS ancestor, or else the one the kernel picks from the peer's host ancestry.
+    pub(crate) fn access_holder(
+        &self,
+        peer: &ProcessIdentity,
+        holder_pid: Option<u32>,
+    ) -> Result<ProcessIdentity, DaemonError> {
+        match holder_pid {
+            Some(pid) => process::holder(peer, pid).map_err(|_| Refusal::NotCovered.error()),
+            None => crate::runtime::kernel_access::requester::default_holder(peer)
+                .map_err(|error| crate::runtime::kernel_access::error(error.to_string())),
+        }
+    }
+
+    /// Validates a request and records it as pending, or admits a standing holder at once.
+    pub(crate) fn submit_kernel_access(
+        &self,
+        peer: &ProcessIdentity,
+        request: &RequestKernelAccessRequest,
+    ) -> Result<AccessSubmission, DaemonError> {
+        if process::inspect(std::process::id()).is_ok_and(|(kernel, _)| kernel.contains(peer)) {
             return Err(error(
                 "kernel-launched processes cannot request external access",
             ));
         }
-        let holder =
-            process::holder(&peer, request.holder_pid).map_err(|_| Refusal::NotCovered.error())?;
+        let holder = self.access_holder(peer, request.holder_pid)?;
         let daemon_config = self.owned.config_projection.snapshot();
         let config = daemon_config.user_config.kernel_access.clone();
         let term = request
@@ -568,44 +611,61 @@ impl KernelRuntimeState {
                     .iter()
                     .any(|entry| entry.harness == harness && entry.executable == holder.executable)
             });
-        let generation = {
-            let mut state = self
-                .owned
-                .kernel_access
-                .lock()
-                .expect("access state poisoned");
-            if state
-                .pending
-                .keys()
-                .any(|p| p.0 == holder.pid && p.1 == holder.start)
-                || state.grants.values().any(|grant| grant.holder == holder)
-            {
-                return Err(error("this holder already has a grant or pending request"));
-            }
-            if standing {
-                // The owner approved this harness and executable in the config file; the
-                // grant is an ordinary until-exit grant, audited with its own reason.
-                let id = summary.grant_id.clone();
-                self.admit_grant_because(
-                    &mut state,
-                    id,
-                    summary.clone(),
-                    holder,
-                    None,
-                    Some("standing_policy"),
-                )?;
-                return Ok(summary);
-            }
-            state.pending.insert(key.clone(), summary.clone());
-            state.generation
-        };
+        let mut state = self
+            .owned
+            .kernel_access
+            .lock()
+            .expect("access state poisoned");
+        if state
+            .pending
+            .keys()
+            .any(|p| p.0 == holder.pid && p.1 == holder.start)
+            || state.grants.values().any(|grant| grant.holder == holder)
+        {
+            return Err(error("this holder already has a grant or pending request"));
+        }
+        state.request_outcomes.retain(|(known, _)| known != &holder);
+        if standing {
+            // The owner approved this harness and executable in the config file; the
+            // grant is an ordinary until-exit grant, audited with its own reason.
+            self.admit_grant_because(
+                &mut state,
+                id,
+                summary.clone(),
+                holder,
+                None,
+                Some("standing_policy"),
+            )?;
+            return Ok(AccessSubmission::Granted(summary));
+        }
+        state.pending.insert(key.clone(), summary.clone());
+        Ok(AccessSubmission::Pending(PendingAccess {
+            generation: state.generation,
+            summary,
+            holder,
+            key,
+            timeout_sec: u64::from(config.request_timeout_minutes) * 60,
+            extend_notice_minutes: config.grant_extend_notice_minutes,
+        }))
+    }
+
+    /// Asks the owner and admits the grant. `requester` is the blocking caller, which must
+    /// still be there; a `--no-wait` request binds to the holder alone.
+    pub(crate) async fn decide_kernel_access(
+        &self,
+        pending: PendingAccess,
+        requester: Option<&ProcessIdentity>,
+    ) -> Result<KernelAccessGrant, DaemonError> {
+        let PendingAccess {
+            generation,
+            summary,
+            holder,
+            key,
+            timeout_sec,
+            extend_notice_minutes,
+        } = pending;
         let result = self
-            .access_decision(
-                &summary,
-                &holder,
-                "grant",
-                u64::from(config.request_timeout_minutes) * 60,
-            )
+            .access_decision(&summary, &holder, "grant", timeout_sec)
             .await;
         let mut state = self
             .owned
@@ -617,11 +677,13 @@ impl KernelRuntimeState {
             .remove(&key)
             .is_some_and(|pending| pending.grant_id == summary.grant_id);
         let term = result?;
-        // The requester sat inside the holder when the request arrived (checked above), and
-        // the grant binds to the holder identity the owner saw, not to the requester. A
-        // `--no-wait` waiter is re-parented once its shell exits, minutes before the owner
-        // decides, so only the holder and the (still waiting) requester have to be there.
-        if !admitted || state.generation != generation || !holder.alive() || !peer.alive() {
+        // The requester sat inside the holder when the request arrived (checked on submit),
+        // and the grant binds to the holder identity the owner saw, not to the requester.
+        if !admitted
+            || state.generation != generation
+            || !holder.alive()
+            || requester.is_some_and(|peer| !peer.alive())
+        {
             // Ending the request also locks the access store to track owed audit work.
             drop(state);
             self.audit_access(&summary, "revoked", Some("authorization_invalidated"))?;
@@ -636,12 +698,89 @@ impl KernelRuntimeState {
                 summary.expires_at_ms = Some(
                     crate::session::unix_epoch_ms().saturating_add(u64::from(minutes) * 60_000),
                 );
-                Some(GrantClock::new(minutes, config.grant_extend_notice_minutes))
+                Some(GrantClock::new(minutes, extend_notice_minutes))
             }
             KernelAccessTerm::UntilHolderExits => None,
         };
+        let id = summary.grant_id.clone();
         self.admit_grant(&mut state, id, summary.clone(), holder, clock)?;
         Ok(summary)
+    }
+
+    /// Where the holder's access stands, for that identity only: never the caller's grant
+    /// reported for another process.
+    pub(crate) fn kernel_access_status(
+        &self,
+        peer: &ProcessIdentity,
+        holder_pid: Option<u32>,
+    ) -> Result<KernelAccessStatus, DaemonError> {
+        let holder = match holder_pid {
+            Some(pid) => process::holder(peer, pid).map_err(|_| Refusal::HolderOutside.error())?,
+            None => self.access_holder(peer, None)?,
+        };
+        self.sweep_kernel_access();
+        // Without a named holder, a grant that covers the caller is its access too.
+        let covering = match holder_pid {
+            None => self.access_grants_for(peer).ok().unwrap_or_default(),
+            Some(_) => Vec::new(),
+        };
+        let state = self
+            .owned
+            .kernel_access
+            .lock()
+            .expect("access state poisoned");
+        let grant = state
+            .grants
+            .values()
+            .find(|grant| grant.holder == holder)
+            .map(Grant::listed)
+            .or_else(|| covering.first().map(Grant::listed));
+        let pending = state
+            .pending
+            .keys()
+            .any(|p| p.0 == holder.pid && p.1 == holder.start);
+        let ended = state
+            .ended
+            .iter()
+            .find(|(known, _)| known == &holder)
+            .map(|(_, refusal)| KernelAccessStatusReason {
+                code: refusal.code().into(),
+                message: refusal.message().into(),
+            })
+            .or_else(|| {
+                state
+                    .request_outcomes
+                    .iter()
+                    .find(|(known, _)| known == &holder)
+                    .map(|(_, reason)| reason.clone())
+            });
+        let (state, reason) = match (grant.is_some(), pending, ended) {
+            (true, _, _) => (KernelAccessHolderState::Granted, None),
+            (false, true, _) => (KernelAccessHolderState::Pending, None),
+            (false, false, Some(reason)) => (KernelAccessHolderState::Ended, Some(reason)),
+            (false, false, None) => (KernelAccessHolderState::NotRequested, None),
+        };
+        Ok(KernelAccessStatus {
+            state,
+            holder_pid: holder.pid,
+            holder_harness: crate::runtime::kernel_access::requester::project(&holder)
+                .provider_harness,
+            holder_executable: holder.executable,
+            grant,
+            reason,
+        })
+    }
+
+    pub(crate) fn remember_access_request_outcome(
+        &self,
+        holder: &ProcessIdentity,
+        reason: KernelAccessStatusReason,
+    ) {
+        self.owned
+            .kernel_access
+            .lock()
+            .expect("access state poisoned")
+            .remember_request_outcome(holder, reason);
     }
 
     /// Records a granted request and makes it live.

@@ -22,7 +22,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   {
     name: "access request",
     flags: [{ name: "--until-exit" }, { name: "--minutes", value: "N" }, { name: "--no-wait" }, HOLDER, SOCKET],
-    summary: "ask the user to approve access for you; prints the grant. In a shell with a command timeout use --no-wait, then poll access status --holder-pid PID until granted",
+    summary: "ask the user to approve access for you; prints the grant. In a shell with a command timeout use --no-wait, then poll access status until granted. The kernel picks your harness as holder (--holder-pid takes a host pid); in a sandbox, make the kernel socket's directory writable",
   },
   { name: "access status", flags: [HOLDER, SOCKET], summary: "granted, pending, ended (with the reason) or not_requested" },
   {
