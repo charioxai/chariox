@@ -851,6 +851,124 @@ async fn repeated_stop_finishes_committed_workflow_cancellation() {
     );
 }
 
+fn idle_workflow_prompt_fixture() -> InterruptFixture {
+    let fixture = interrupt_fixture();
+    let owned = &fixture.runtime.owned;
+    let session = owned
+        .session_store
+        .get_session(&fixture.session_id)
+        .unwrap();
+    let active = owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&session, &fixture.target_agent_id)
+        .unwrap();
+    owned
+        .cancel_local_prompt(
+            &fixture.session_id,
+            &fixture.target_agent_id,
+            active.source_attachment_id(),
+        )
+        .unwrap()
+        .unwrap();
+    owned
+        .finalize_local_prompt_cancellation_deferring_queue_head(
+            &fixture.session_id,
+            &fixture.target_agent_id,
+            active.id(),
+            Some("interrupt-provider-run"),
+        )
+        .unwrap();
+    fixture
+}
+
+#[tokio::test]
+async fn queued_dispatch_respects_existing_promotion_owner() {
+    let fixture = idle_workflow_prompt_fixture();
+    let owned = &fixture.runtime.owned;
+    let session = owned
+        .session_store
+        .get_session(&fixture.session_id)
+        .unwrap();
+    let _promotion = owned
+        .prompt_state_owner
+        .try_claim_idle_queue_promotion(&session, &fixture.target_agent_id)
+        .unwrap();
+    let dispatch = owned
+        .advance_next_queued_prompt_dispatch(
+            &fixture.session_id,
+            &fixture.target_agent_id,
+            "interrupt-provider-run",
+        )
+        .unwrap();
+    assert!(
+        dispatch.is_none(),
+        "another promoter owns provider preparation"
+    );
+    assert!(owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&session, &fixture.target_agent_id)
+        .is_none());
+}
+
+#[tokio::test]
+async fn blocked_workflow_retry_respects_existing_promotion_owner() {
+    let fixture = idle_workflow_prompt_fixture();
+    let owned = &fixture.runtime.owned;
+    let session = owned
+        .session_store
+        .get_session(&fixture.session_id)
+        .unwrap();
+    let _promotion = owned
+        .prompt_state_owner
+        .try_claim_idle_queue_promotion(&session, &fixture.target_agent_id)
+        .unwrap();
+    let dispatches = owned.workflow_retry_blocked_claims();
+    assert!(
+        dispatches.local.is_empty(),
+        "retry must wake the shared promoter"
+    );
+    assert!(dispatches
+        .project_queue_promotions
+        .contains(&(fixture.session_id.clone(), fixture.target_agent_id.clone())));
+    assert!(owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&session, &fixture.target_agent_id)
+        .is_none());
+}
+
+#[tokio::test]
+async fn cancellation_defers_workflow_head_until_provider_preparation() {
+    let fixture = interrupt_fixture();
+    let owned = &fixture.runtime.owned;
+    let session = owned
+        .session_store
+        .get_session(&fixture.session_id)
+        .unwrap();
+    let active = owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&session, &fixture.target_agent_id)
+        .unwrap();
+    owned
+        .cancel_local_prompt(
+            &fixture.session_id,
+            &fixture.target_agent_id,
+            active.source_attachment_id(),
+        )
+        .unwrap()
+        .unwrap();
+    let cancellation = owned
+        .finalize_local_prompt_cancellation_with_queued_advance(
+            &fixture.session_id,
+            &fixture.target_agent_id,
+            active.id(),
+            Some("interrupt-provider-run"),
+        )
+        .unwrap();
+    assert!(cancellation.cancellation.started_next.is_none());
+    assert!(cancellation.dispatch.is_none());
+    assert!(cancellation.queue_head_deferred);
+}
+
 #[tokio::test]
 async fn cancel_append_failure_preserves_interrupt_state_and_retries_once() {
     run_interrupt_append_failure_regression(false).await;
