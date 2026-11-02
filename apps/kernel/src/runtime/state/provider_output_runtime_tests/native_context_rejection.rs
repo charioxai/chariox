@@ -447,7 +447,7 @@ async fn rejection_scenario(scenario: NativeContextScenario) {
         // The visible error arrived in earlier PTY chunks; this poll has no new bytes.
         fs::write(
             worktree.path().join("permission-recent.txt"),
-            "Credit balance is too low",
+            "API Error: 400 Credit balance is too low",
         )
         .unwrap();
     } else {
