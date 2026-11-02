@@ -91,6 +91,10 @@ impl Services {
                     accepted = aeds.accept() => accepted.unwrap(),
                 };
                 let mut connection_id = String::new();
+                #[allow(
+                    clippy::result_large_err,
+                    reason = "The WebSocket callback requires the HTTP error response type"
+                )]
                 let mut socket = tokio_tungstenite::accept_hdr_async(
                     stream,
                     |request: &tokio_tungstenite::tungstenite::handshake::server::Request,
