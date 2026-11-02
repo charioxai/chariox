@@ -2936,3 +2936,24 @@ test('MP-08/MP-09/MP-10/MP-11 host state, cancellation and Room cleanup use the 
   const directory=host.downloads.root; await host.stop();
   const {access}=await import('node:fs/promises'); await assert.rejects(access(directory));
 }));
+
+test("MP-08/MP-09/MP-10/MP-11 signed Vault fills retain factor and plain target admission", () => using(async ({ host }) => {
+  const url = "https://example.test/verification";
+  const opened = await host.request({ op: "open", url });
+  const tab = opened.tabs[0];
+  const order = [];
+  host.browser.configureWebBotAuth = async () => { order.push("sign"); };
+  host.browser.performAction = async ({ action }) => { order.push(action); return {}; };
+  for (const flag of ["vault_factor_input", "plain_target"]) {
+    const result = await host.handle({ id: flag, method: "host.secret", params: {
+      tab_id: tab.tab_id, generation: opened.generation, document_id: tab.document_id,
+      node_ref: "backend:104", observed_by: "agent:factor-user", [flag]: true,
+      _web_bot_auth: { project_id: "project-fixture" },
+      action: { kind: "fill", text: "fixture-only-value", expected_document_url: url },
+    } });
+    assert.equal(result.ok, true);
+    assert.equal(order.at(-2), "sign");
+    assert.equal(order.at(-1)[flag], true);
+    assert.equal(order.at(-1).mask_code_input, false);
+  }
+}));
