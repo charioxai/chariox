@@ -511,12 +511,6 @@ impl KernelRuntimeState {
         &self,
         caller: &crate::runtime::command::KernelCommand,
     ) -> Result<(String, String), DaemonError> {
-        use sha2::{Digest, Sha256};
-        if self.slice_kernel_id().is_some() {
-            return Err(host_error(
-                "MD-3: the home kernel owns the user-domain browser".into(),
-            ));
-        }
         if caller
             .terminal_lifetime
             .as_ref()
@@ -524,20 +518,35 @@ impl KernelRuntimeState {
         {
             return Err(host_error("MD-3: terminal connection closed".into()));
         }
+        self.kernel_browser_terminal_actor(&caller.caller)
+    }
+    /// The user and browser actor of an authenticated terminal, from its caller alone.
+    pub(crate) fn kernel_browser_terminal_actor(
+        &self,
+        caller: &crate::runtime::command::KernelCaller,
+    ) -> Result<(String, String), DaemonError> {
+        use sha2::{Digest, Sha256};
+        if self.slice_kernel_id().is_some() {
+            return Err(host_error(
+                "MD-3: the home kernel owns the user-domain browser".into(),
+            ));
+        }
         if !caller.is_terminal_caller() {
             return Err(host_error("MD-3: authenticated terminal required".into()));
         }
         let user = self.provider_account_authority_owner_user_id(
-            &crate::runtime::command::command_caller_user_id(caller),
+            &crate::runtime::command::caller_user_id(caller),
         );
-        let bytes = serde_json::to_vec(&caller.caller)
-            .map_err(|_| host_error("MD-3: invalid caller".into()))?;
+        let bytes =
+            serde_json::to_vec(caller).map_err(|_| host_error("MD-3: invalid caller".into()))?;
         Ok((user, format!("terminal:{:x}", Sha256::digest(bytes))))
     }
-    pub(crate) fn kernel_browser_terminal_disconnected(&self, user: &str, actor: &str) {
-        self.owned
-            .kernel_browser_host
-            .disconnect_terminal(user, actor);
+    /// Holds the actor of `context` registered until the connection that uses it ends.
+    pub(crate) fn kernel_browser_terminal_lease(
+        &self,
+        (user, actor): &(String, String),
+    ) -> crate::runtime::kernel_browser_host::TerminalLease {
+        self.owned.kernel_browser_host.lease_terminal(user, actor)
     }
 
     /// MD-3/display: typed internal seam for the coordinator-owned public adapter.
