@@ -1,7 +1,7 @@
 // MP-08 / MP-10 / MP-11: one process-bound grant for the whole local kernel.
 import assert from "node:assert/strict"
 import { test } from "node:test"
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { parseAccessRequest, runAccessCommand } from "./access-command.js"
@@ -61,6 +61,34 @@ test("access status reports granted, ended, pending and not_requested from a pro
       assert.equal((await statusOf(refusal("kernel_access_not_covered"), dir, 4242)).out, '{"status":"not_requested"}')
     }
   } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test("a waiter that ends without a grant leaves its reason for access status, and a new request clears it", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "chx-outcome-"))
+  const previous = { dir: process.env.XDG_RUNTIME_DIR, waiter: process.env.CHARIOX_ACCESS_WAITER, exit: process.exitCode, err: console.error }
+  const refusal = { error: { code: "access_refused", message: "the user refused access", retryable: false } }
+  const kernel = await startFakeKernel((socket, frame) => replyWith(socket, frame, refusal))
+  try {
+    process.env.XDG_RUNTIME_DIR = dir
+    process.env.CHARIOX_ACCESS_WAITER = "1"
+    console.error = () => {}
+    await runAccessCommand(["access", "request", "--until-exit", "--holder-pid", "4242", "--socket", kernel.path])
+    delete process.env.CHARIOX_ACCESS_WAITER
+    const notCovered = { error: { code: "kernel_access_not_covered", message: "x", retryable: false } }
+    const ended = JSON.parse((await statusOf(notCovered, dir, 4242)).out)
+    assert.equal(ended.status, "ended")
+    assert.equal(ended.reason, "access_refused")
+    assert.ok(ended.message.includes("the user refused access"), ended.message)
+    assert.equal(statSync(join(dir, "access-waiter-4242.outcome")).mode & 0o777, 0o600)
+    assert.equal((await statusOf(notCovered, dir, 4243)).out, '{"status":"not_requested"}')
+  } finally {
+    console.error = previous.err
+    process.exitCode = previous.exit
+    if (previous.dir === undefined) delete process.env.XDG_RUNTIME_DIR; else process.env.XDG_RUNTIME_DIR = previous.dir
+    if (previous.waiter === undefined) delete process.env.CHARIOX_ACCESS_WAITER; else process.env.CHARIOX_ACCESS_WAITER = previous.waiter
+    await kernel.close()
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 test("access cover names one pid to the kernel and prints the grant id and the process it now covers", async () => {

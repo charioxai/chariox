@@ -12,7 +12,9 @@ const SESSION: &str = "access-session";
 mod cover;
 mod credential_authority;
 mod outbound_credentials;
+mod standing;
 mod vault_secret;
+mod waiter;
 
 #[test]
 #[ignore = "subprocess entry point"]
@@ -599,6 +601,13 @@ impl Kernel {
         Self::start_with_fixture(false, true).await
     }
     async fn start_with_fixture(sudo: bool, credential_session: bool) -> Self {
+        Self::start_with_env(sudo, credential_session, &[]).await
+    }
+    async fn start_with_env(
+        sudo: bool,
+        credential_session: bool,
+        extra_env: &[(&str, &Path)],
+    ) -> Self {
         // Keep macOS's 104-byte sockaddr_un limit, including the temporary prefix.
         let root = std::env::temp_dir().join(format!("a{:08x}", rand::random::<u32>()));
         std::fs::create_dir(&root).unwrap();
@@ -614,6 +623,7 @@ impl Kernel {
             )
             .env("CHARIOX_HOME", root.join("state"))
             .env("HOME", root.join("home"))
+            .envs(extra_env.iter().copied())
             .env_remove("CLAUDE_CONFIG_DIR")
             .env_remove("CODEX_HOME")
             .stdout(Stdio::null())

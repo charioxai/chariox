@@ -22,9 +22,9 @@ export const COMMANDS: readonly CommandSpec[] = [
   {
     name: "access request",
     flags: [{ name: "--until-exit" }, { name: "--minutes", value: "N" }, { name: "--no-wait" }, HOLDER, SOCKET],
-    summary: "ask the user to approve access for you; prints the grant",
+    summary: "ask the user to approve access for you; prints the grant. In a shell with a command timeout use --no-wait, then poll access status --holder-pid PID until granted",
   },
-  { name: "access status", flags: [HOLDER, SOCKET], summary: "granted, pending, ended or not_requested" },
+  { name: "access status", flags: [HOLDER, SOCKET], summary: "granted, pending, ended (with the reason) or not_requested" },
   {
     name: "access cover",
     flags: [{ name: "--pid", value: "PID", required: true }, SOCKET],
@@ -185,7 +185,7 @@ export function guideText(): string {
     "1. Ask once: chariox access request --until-exit",
     "   It waits while the user decides; exit 0 and a printed grant mean approved: go on to step 2.",
     "   If a command prints a pointer or says the user must approve, show it to the user verbatim and wait.",
-    "   If your tool calls time out, add --no-wait (exit 6), then poll chariox access status.",
+    "   If your tool calls time out, add --no-wait (exit 6), then poll chariox access status until granted (lasts until your harness exits).",
     "2. List kernels: chariox kernels (a name is the machine name, or <machine>/<label> when the machine runs several of your kernels)",
     "3. Send a request (one JSON object on stdin): chariox request --kernel NAME < request.json",
     "   Always pass --kernel for another kernel; without it the request runs on this one.",

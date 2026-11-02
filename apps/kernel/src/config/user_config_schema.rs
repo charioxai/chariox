@@ -112,6 +112,7 @@ pub(super) fn entries() -> Vec<UserConfigSchemaEntry> {
         entry("kernel_access.grant_max_minutes", "u32", &[], true, true, "runtime_policy", "live", "Maximum access-grant term in minutes; defaults to 1440; cannot exceed 1440."),
         entry("kernel_access.grant_extend_notice_minutes", "u32", &[], true, true, "runtime_policy", "live", "Minutes before expiry to offer an extension; defaults to 5."),
         entry("kernel_access.request_timeout_minutes", "u32", &[], true, true, "runtime_policy", "live", "Minutes to wait for an access-request answer; defaults to 10."),
+        entry("kernel_access.standing_holders", "array", &[], false, false, "none", "live", "Development only, edited by hand in the config file: [[kernel_access.standing_holders]] entries with harness (codex, claude or opencode) and the holder's exact executable path. A matching holder's until-exit access request is admitted without an owner popup. Any process of that executable under your user can obtain access, so leave it empty on shared or production kernels."),
         entry("kernel.websocket_host", "string", &[], true, true, "restart_required", "boot", "Kernel websocket bind host."),
         entry("kernel.websocket_port", "port", &[], true, true, "restart_required", "boot", "Kernel websocket bind port."),
         entry("kernel.runtime_mcp_host", "string", &[], true, true, "restart_required", "boot", "Runtime MCP bind host."),

@@ -539,12 +539,8 @@ impl KernelRuntimeState {
         }
         let holder =
             process::holder(&peer, request.holder_pid).map_err(|_| Refusal::NotCovered.error())?;
-        let config = self
-            .owned
-            .config_projection
-            .snapshot()
-            .user_config
-            .kernel_access;
+        let daemon_config = self.owned.config_projection.snapshot();
+        let config = daemon_config.user_config.kernel_access.clone();
         let term = request
             .term
             .unwrap_or(KernelAccessTerm::Minutes(config.grant_default_minutes));
@@ -566,6 +562,12 @@ impl KernelRuntimeState {
             term,
             expires_at_ms: None,
         };
+        let standing = term == KernelAccessTerm::UntilHolderExits
+            && summary.holder_harness.is_some_and(|harness| {
+                crate::config::read_standing_holders(daemon_config.user_config_path())
+                    .iter()
+                    .any(|entry| entry.harness == harness && entry.executable == holder.executable)
+            });
         let generation = {
             let mut state = self
                 .owned
@@ -579,6 +581,20 @@ impl KernelRuntimeState {
                 || state.grants.values().any(|grant| grant.holder == holder)
             {
                 return Err(error("this holder already has a grant or pending request"));
+            }
+            if standing {
+                // The owner approved this harness and executable in the config file; the
+                // grant is an ordinary until-exit grant, audited with its own reason.
+                let id = summary.grant_id.clone();
+                self.admit_grant_because(
+                    &mut state,
+                    id,
+                    summary.clone(),
+                    holder,
+                    None,
+                    Some("standing_policy"),
+                )?;
+                return Ok(summary);
             }
             state.pending.insert(key.clone(), summary.clone());
             state.generation
@@ -601,7 +617,11 @@ impl KernelRuntimeState {
             .remove(&key)
             .is_some_and(|pending| pending.grant_id == summary.grant_id);
         let term = result?;
-        if !admitted || state.generation != generation || !holder.contains(&peer) {
+        // The requester sat inside the holder when the request arrived (checked above), and
+        // the grant binds to the holder identity the owner saw, not to the requester. A
+        // `--no-wait` waiter is re-parented once its shell exits, minutes before the owner
+        // decides, so only the holder and the (still waiting) requester have to be there.
+        if !admitted || state.generation != generation || !holder.alive() || !peer.alive() {
             // Ending the request also locks the access store to track owed audit work.
             drop(state);
             self.audit_access(&summary, "revoked", Some("authorization_invalidated"))?;
@@ -633,7 +653,20 @@ impl KernelRuntimeState {
         holder: ProcessIdentity,
         clock: Option<GrantClock>,
     ) -> Result<(), DaemonError> {
-        self.audit_access_of_holder(&summary, Some(&holder), "granted", None)?;
+        self.admit_grant_because(state, id, summary, holder, clock, None)
+    }
+
+    /// `reason` marks a grant the owner did not approve in a popup.
+    fn admit_grant_because(
+        &self,
+        state: &mut AccessState,
+        id: String,
+        summary: KernelAccessGrant,
+        holder: ProcessIdentity,
+        clock: Option<GrantClock>,
+        reason: Option<&str>,
+    ) -> Result<(), DaemonError> {
+        self.audit_access_of_holder(&summary, Some(&holder), "granted", reason)?;
         state.grants.insert(
             id,
             Grant {
