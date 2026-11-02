@@ -768,18 +768,38 @@ impl RuntimeSecretService {
         // MP-08/MP-10/MP-11 A06: generated credentials authorize one exact
         // origin, including scheme and effective port. Legacy host-only generated
         // entries fail closed; the owner can regenerate for the intended origin.
-        if credential
+        // VAUDIT S3: a value captured from a page for browser use lists the
+        // exact origins where it may be filled.
+        let kind = credential
             .metadata
             .as_ref()
-            .and_then(|metadata| metadata.created_by_kind.as_deref())
-            == Some("vault_generate")
-        {
+            .and_then(|metadata| metadata.created_by_kind.as_deref());
+        if kind == Some("vault_generate") {
             return if credential.allowed_hosts == [target.origin().ascii_serialization()] {
                 Ok(())
             } else {
                 Err(secret_error(
                     "credential_policy",
                     "generated credential is not allowed for this origin".into(),
+                ))
+            };
+        }
+        if kind == Some("vault_capture")
+            && matches!(credential.injection, UserCredentialInjectionConfig::Browser)
+        {
+            return if credential
+                .allowed_hosts
+                .contains(&target.origin().ascii_serialization())
+            {
+                Ok(())
+            } else {
+                Err(secret_error(
+                    "credential_policy",
+                    format!(
+                        "credential `{}` may only be filled on {}",
+                        credential.id,
+                        credential.allowed_hosts.join(", ")
+                    ),
                 ))
             };
         }
