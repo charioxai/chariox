@@ -189,13 +189,7 @@ impl KernelRuntimeState {
         if let Some((operation_id, fingerprint)) = durable_identity.as_ref() {
             prompt = prompt.with_durable_operation(operation_id, fingerprint);
         }
-        let obligation =
-            self.register_room_dispatch_obligation(sender, "message", Some(target.id()))?;
-        let prepared = crate::runtime::room_dispatch_registration::reject_if_failed(
-            &self.owned.durable_state_store,
-            obligation.as_deref(),
-            self.prepare_local_active_prompt_steer_dispatch(session.id(), &prompt),
-        )?;
+        let prepared = self.prepare_local_active_prompt_steer_dispatch(session.id(), &prompt)?;
         if let Some(dispatch) = prepared {
             let _permit = self
                 .provider_runtime_lanes
@@ -206,21 +200,12 @@ impl KernelRuntimeState {
                 sender.id(),
                 &sender_prompt_id,
             )? {
-                self.record_room_dispatch_receipt(obligation.as_deref(), false, None)?;
                 return Ok(agent_message_failure(
                     "sender turn is no longer running; agent message was not sent",
                 ));
             }
             self.enqueue_prompt_dispatch(&dispatch)
-                .await
-                .map_err(|error| {
-                    crate::runtime::room_dispatch_registration::dispatch_error(
-                        obligation.as_deref(),
-                        None,
-                        Some(&prompt_id),
-                        error,
-                    )
-                })?;
+                .await?;
             let mut sequence = None;
             if let Some(active_prompt_id) = dispatch.target_active_prompt_id.as_deref() {
                 match self.owned.append_steering_prompt_history(
@@ -283,7 +268,6 @@ impl KernelRuntimeState {
             {
                 store.record(operation_id, fingerprint, result.clone());
             }
-            self.record_room_dispatch_receipt(obligation.as_deref(), true, Some(&prompt_id))?;
             return Ok(result);
         }
         if !self.agent_message_sender_prompt_is_running(
@@ -291,22 +275,13 @@ impl KernelRuntimeState {
             sender.id(),
             &sender_prompt_id,
         )? {
-            self.record_room_dispatch_receipt(obligation.as_deref(), false, None)?;
             return Ok(agent_message_failure(
                 "sender turn is no longer running; agent message was not sent",
             ));
         }
         if let Some(provider_run_id) = self
             .steer_remote_agent_message(session.id(), &prompt, None)
-            .await
-            .map_err(|error| {
-                crate::runtime::room_dispatch_registration::dispatch_error(
-                    obligation.as_deref(),
-                    None,
-                    Some(&prompt_id),
-                    error,
-                )
-            })?
+            .await?
         {
             let result = crate::transport::runtime_tools::RuntimeToolResult {
                 ok: true,
@@ -326,7 +301,6 @@ impl KernelRuntimeState {
             {
                 store.record(operation_id, fingerprint, result.clone());
             }
-            self.record_room_dispatch_receipt(obligation.as_deref(), true, Some(&prompt_id))?;
             return Ok(result);
         }
         if !self.agent_message_sender_prompt_is_running(
@@ -334,7 +308,6 @@ impl KernelRuntimeState {
             sender.id(),
             &sender_prompt_id,
         )? {
-            self.record_room_dispatch_receipt(obligation.as_deref(), false, None)?;
             return Ok(agent_message_failure(
                 "sender turn is no longer running; agent message was not sent",
             ));
@@ -349,15 +322,7 @@ impl KernelRuntimeState {
                 },
                 false,
             )
-            .await
-            .map_err(|error| {
-                crate::runtime::room_dispatch_registration::dispatch_error(
-                    obligation.as_deref(),
-                    None,
-                    Some(&prompt_id),
-                    error,
-                )
-            })?;
+            .await?;
         if let (crate::session::PromptSubmissionOutcome::Started { prompt }, Some(dispatch)) =
             (&submission.outcome, submission.dispatch.as_ref())
         {
@@ -395,14 +360,12 @@ impl KernelRuntimeState {
         {
             store.record(operation_id, fingerprint, result.clone());
         }
-        self.finish_room_dispatch(obligation.as_deref(), Some(&prompt_id), || {
-            if let Some(dispatch) = submission.dispatch.take() {
-                self.spawn_prompt_dispatch(dispatch, self.provider_runtime_lanes.clone());
-            }
-            if let Some(dispatch) = submission.remote_dispatch.take() {
-                self.spawn_remote_prompt_dispatch(dispatch);
-            }
-        })?;
+        if let Some(dispatch) = submission.dispatch.take() {
+            self.spawn_prompt_dispatch(dispatch, self.provider_runtime_lanes.clone());
+        }
+        if let Some(dispatch) = submission.remote_dispatch.take() {
+            self.spawn_remote_prompt_dispatch(dispatch);
+        }
         Ok(result)
     }
 
