@@ -2692,3 +2692,15 @@ test('MP-08/MP-10 protocol933 portable header follows Chromium without a native 
  const tab=state.tabs.find(t=>t.tab_id===second.tab_id);assert.equal(tab.can_go_back,true);assert.equal(tab.can_go_forward,false);assert.equal(tab.favicon_png_base64,png);
  assert(state.tabs.some(t=>t.tab_id===first.tab_id));
 }));
+test("MP-11: the kernel's policy with its own key order is the same policy and keeps bound mirror streams current", async () => {
+  const host = new KernelBrowserHost("/unused-policy-order", { chromium: { start: async () => { throw new Error("must not launch"); } } });
+  const bound = host.protection;
+  let invalidated = 0;
+  host.mirror.invalidate = () => { invalidated++; };
+  // The kernel serializes its policy with sorted keys.
+  await host.protect(JSON.parse('{"targets":[],"unknown":false,"values":[]}'));
+  assert.equal(invalidated, 0);
+  assert.ok(host.protection === bound, "a mirror stream bound to the first policy must stay current");
+  await host.protect(JSON.parse('{"targets":[],"unknown":false,"values":["synthetic-protected-value"]}'));
+  assert.equal(invalidated, 1);
+});

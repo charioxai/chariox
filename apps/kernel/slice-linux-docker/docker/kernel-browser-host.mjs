@@ -151,7 +151,9 @@ export class KernelBrowserHost {
   }
   async protect(policy) {
     if (!Array.isArray(policy.values) || policy.values.length > 256 || policy.values.some(value => typeof value !== "string" || !value) || !Array.isArray(policy.targets)) throw new Error("MD-5: invalid protection policy");
-    if (JSON.stringify(policy) === JSON.stringify(this.protection)) return {};
+    // The kernel's JSON has its own key order: compare the fields, or the first request would retire every bound stream.
+    const fields = ({ values, targets, unknown }) => JSON.stringify([values, targets, unknown]);
+    if (fields(policy) === fields(this.protection)) return {};
     this.protection = policy;
     this.stateSignal.notify();
     await this.desktopDisplay.retireSource();
