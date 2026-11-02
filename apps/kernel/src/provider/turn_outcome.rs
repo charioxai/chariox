@@ -219,10 +219,13 @@ impl TurnOutcome {
     /// Types a harness error from the code its adapter framed (see
     /// `provider_coded_failure_text`), then from the words of the error.
     pub(crate) fn classify(adapter_key: &str, text: &str) -> Self {
-        tracing::info!(
-            adapter_key,
-            diagnostic = %crate::secret_redaction::redact_secrets(text),
-            "provider reported a turn failure"
+        crate::logging::info_with_fields(
+            "daemon.provider",
+            "provider reported a turn failure",
+            serde_json::json!({
+                "adapter_key": adapter_key,
+                "diagnostic": crate::secret_redaction::redact_secrets(text),
+            }),
         );
         let text = text.strip_prefix(DISPATCH_PREFIX).unwrap_or(text);
         let text = text.strip_prefix(SUBSTITUTABLE_PREFIX).unwrap_or(text);
@@ -449,6 +452,25 @@ mod tests {
             "The provider could not complete this request."
         );
         assert!(!outcome.notice().contains("API Error"));
+    }
+
+    #[test]
+    fn ea2_75_native_diagnostics_reach_the_kernel_log_with_secrets_redacted() {
+        let capture = crate::logging::capture::start();
+        let diagnostic = "Codex error [server_overloaded]: Selected model is at capacity. Please try a different model.";
+        let outcome = TurnOutcome::classify("codex", diagnostic);
+        assert!(capture
+            .records()
+            .iter()
+            .any(|record| record.contains(diagnostic)));
+        assert!(!outcome.notice().contains(diagnostic));
+        let secret = "sk-ant-abcdefghijklmnop0123456789";
+        TurnOutcome::classify("claude", &format!("Claude StopFailure [server_error]: API Error: 500 for Authorization: Bearer {secret}"));
+        let records = capture.records();
+        assert!(records
+            .iter()
+            .any(|record| record.contains("API Error: 500")));
+        assert!(records.iter().all(|record| !record.contains(secret)));
     }
 
     #[test]

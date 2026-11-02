@@ -334,10 +334,13 @@ impl KernelRuntimeState {
         if let Some(diagnostic) =
             terminal_diagnostic.filter(|diagnostic| !diagnostic.trim().is_empty())
         {
-            tracing::info!(
-                provider_run_id,
-                diagnostic = %crate::secret_redaction::redact_secrets(diagnostic),
-                "provider terminal diagnostic"
+            crate::logging::info_with_fields(
+                "daemon.provider",
+                "provider terminal diagnostic",
+                serde_json::json!({
+                    "provider_run_id": provider_run_id,
+                    "diagnostic": crate::secret_redaction::redact_secrets(diagnostic),
+                }),
             );
         }
         let provider_run = self
