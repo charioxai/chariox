@@ -15,6 +15,7 @@ use crate::local::{
     WaitingRoomPublicWorkflowNodeSummary, WaitingRoomPublicWorkflowSummary,
 };
 use crate::runtime::metaagent_event::MetaagentEventStore;
+use crate::runtime::projection::DaemonConfigProjectionStore;
 use crate::runtime::waiting_room_activity::{
     waiting_room_agent_activity_summary, waiting_room_session_activity_summary,
     waiting_room_workflow_activity_summary,
@@ -47,6 +48,32 @@ struct CachedLaunchTarget {
 struct CachedWorktreeLabel {
     expires_at_ms: u64,
     label: Option<String>,
+}
+
+/// The waiting room's caller: the id it authenticated as, and the room-member identity each
+/// room stores for it (`room_member_user_id_in`, the one owner-alias rule).
+pub(crate) struct WaitingRoomCaller<'a> {
+    user_id: &'a str,
+    config: &'a DaemonConfigProjectionStore,
+}
+
+impl<'a> WaitingRoomCaller<'a> {
+    pub(crate) fn new(user_id: &'a str, config: &'a DaemonConfigProjectionStore) -> Self {
+        Self { user_id, config }
+    }
+
+    fn user_id(&self) -> &str {
+        self.user_id
+    }
+
+    fn member_id_in(&self, session: &RuntimeSession) -> String {
+        self.config
+            .room_member_user_id_in(session.owner_user_id(), self.user_id)
+    }
+
+    fn is_member_of(&self, session: &RuntimeSession) -> bool {
+        session.has_member(&self.member_id_in(session))
+    }
 }
 
 #[derive(Clone, Default)]
@@ -94,19 +121,19 @@ impl WaitingRoomSessionSummaryProjectionStore {
         metaagent_events: &MetaagentEventStore,
         external_working_generation: u64,
         external_working_agents: &BTreeMap<String, BTreeSet<String>>,
-        caller_user_id: &str,
+        caller: &WaitingRoomCaller,
     ) -> ProjectedSessionSummaries {
         let metaagent_event_revision = metaagent_events.revision();
         let mut state = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(cached) = state.get(caller_user_id).filter(|cached| {
+        if let Some(cached) = state.get(caller.user_id()).filter(|cached| {
             cached.session_revision == session_revision
                 && cached.metaagent_event_revision == metaagent_event_revision
                 && cached.external_working_generation == external_working_generation
                 && &cached.external_working_agents == external_working_agents
-                && cached_session_sources_match(cached, runtime_sessions, caller_user_id)
+                && cached_session_sources_match(cached, runtime_sessions, caller)
         }) {
             return ProjectedSessionSummaries {
                 revision: cached.projection_revision,
@@ -114,12 +141,12 @@ impl WaitingRoomSessionSummaryProjectionStore {
             };
         }
 
-        let previous = state.get(caller_user_id);
+        let previous = state.get(caller.user_id());
         let can_reuse_entries = previous
             .is_some_and(|cached| cached.metaagent_event_revision == metaagent_event_revision);
         let entries = runtime_sessions
             .iter()
-            .filter(|session| session.has_member(caller_user_id))
+            .filter(|session| caller.is_member_of(session))
             .map(|session| {
                 let session_id = session.id().to_string();
                 let previous_entry = previous.and_then(|cached| cached.entries.get(&session_id));
@@ -132,7 +159,7 @@ impl WaitingRoomSessionSummaryProjectionStore {
                         waiting_room_session_summaries_from_refs(
                             std::iter::once(session.as_ref()),
                             metaagent_events,
-                            caller_user_id,
+                            caller,
                         )
                         .into_iter()
                         .next()
@@ -144,7 +171,7 @@ impl WaitingRoomSessionSummaryProjectionStore {
                     &mut summary,
                     session,
                     external_working_agents.get(&session_id),
-                    caller_user_id,
+                    caller,
                 );
                 if cached.is_none() && can_reuse_entries {
                     if let Some(previous_entry) = previous_entry {
@@ -186,7 +213,7 @@ impl WaitingRoomSessionSummaryProjectionStore {
             Arc::from(projected.into_boxed_slice())
         };
         state.insert(
-            caller_user_id.to_string(),
+            caller.user_id().to_string(),
             CachedSessionSummaries {
                 session_revision,
                 metaagent_event_revision,
@@ -221,7 +248,7 @@ impl WaitingRoomSessionSummaryProjectionStore {
         remote_kernels: Vec<RelayKernelPresence>,
         terminals: Vec<TerminalRecord>,
         generated_at_ms: u64,
-        caller_user_id: &str,
+        caller: &WaitingRoomCaller,
     ) -> Result<WaitingRoomPublicSnapshot, DaemonError> {
         let projected_sessions = self.project(
             runtime_sessions,
@@ -229,7 +256,7 @@ impl WaitingRoomSessionSummaryProjectionStore {
             metaagent_events,
             external_working_generation,
             external_working_agents,
-            caller_user_id,
+            caller,
         );
         let auxiliary_fingerprint = waiting_room_snapshot_auxiliary_fingerprint(
             runtime_projects,
@@ -246,7 +273,7 @@ impl WaitingRoomSessionSummaryProjectionStore {
             .snapshots
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(cached) = snapshots.get(caller_user_id).filter(|cached| {
+        if let Some(cached) = snapshots.get(caller.user_id()).filter(|cached| {
             cached.session_summary_revision == projected_sessions.revision
                 && cached.auxiliary_fingerprint == auxiliary_fingerprint
         }) {
@@ -269,11 +296,8 @@ impl WaitingRoomSessionSummaryProjectionStore {
                 || archived_project_ids.contains(session.project_id.as_str())
         });
         enrich_waiting_room_agent_slice_placements(&mut sessions, slices);
-        let projects = waiting_room_public_project_summaries(
-            runtime_projects,
-            runtime_sessions,
-            caller_user_id,
-        );
+        let projects =
+            waiting_room_public_project_summaries(runtime_projects, runtime_sessions, caller);
         let snapshot = build_waiting_room_public_snapshot_from_summaries(
             sessions,
             projects,
@@ -290,7 +314,7 @@ impl WaitingRoomSessionSummaryProjectionStore {
         self.snapshot_build_count
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         snapshots.insert(
-            caller_user_id.to_string(),
+            caller.user_id().to_string(),
             CachedWaitingRoomPublicSnapshot {
                 session_summary_revision: projected_sessions.revision,
                 auxiliary_fingerprint,
@@ -310,12 +334,12 @@ impl WaitingRoomSessionSummaryProjectionStore {
 fn cached_session_sources_match(
     cached: &CachedSessionSummaries,
     runtime_sessions: &[Arc<RuntimeSession>],
-    caller_user_id: &str,
+    caller: &WaitingRoomCaller,
 ) -> bool {
     let mut visible_session_count = 0;
     for session in runtime_sessions
         .iter()
-        .filter(|session| session.has_member(caller_user_id))
+        .filter(|session| caller.is_member_of(session))
     {
         visible_session_count += 1;
         if !cached
@@ -345,7 +369,7 @@ pub(crate) fn build_waiting_room_public_snapshot(
     remote_kernels: Vec<RelayKernelPresence>,
     terminals: Vec<TerminalRecord>,
     generated_at_ms: u64,
-    caller_user_id: &str,
+    caller: &WaitingRoomCaller,
 ) -> Result<WaitingRoomPublicSnapshot, DaemonError> {
     let runtime_sessions = runtime_sessions
         .into_iter()
@@ -362,7 +386,7 @@ pub(crate) fn build_waiting_room_public_snapshot(
         remote_kernels,
         terminals,
         generated_at_ms,
-        caller_user_id,
+        caller,
     )
 }
 
@@ -382,7 +406,7 @@ pub(crate) fn build_waiting_room_public_snapshot_from_shared(
     remote_kernels: Vec<RelayKernelPresence>,
     terminals: Vec<TerminalRecord>,
     generated_at_ms: u64,
-    caller_user_id: &str,
+    caller: &WaitingRoomCaller,
 ) -> Result<WaitingRoomPublicSnapshot, DaemonError> {
     let sessions = waiting_room_session_summaries_from_refs(
         runtime_sessions
@@ -390,7 +414,7 @@ pub(crate) fn build_waiting_room_public_snapshot_from_shared(
             .map(AsRef::as_ref)
             .filter(|session| session.status() != crate::session::SessionStatus::Ended),
         metaagent_events,
-        caller_user_id,
+        caller,
     );
     build_waiting_room_public_snapshot_from_summaries(
         sessions,
@@ -427,7 +451,7 @@ pub(crate) fn build_waiting_room_public_snapshot_from_cached_shared(
     remote_kernels: Vec<RelayKernelPresence>,
     terminals: Vec<TerminalRecord>,
     generated_at_ms: u64,
-    caller_user_id: &str,
+    caller: &WaitingRoomCaller,
 ) -> Result<WaitingRoomPublicSnapshot, DaemonError> {
     summary_projection.project_snapshot(
         runtime_sessions,
@@ -445,7 +469,7 @@ pub(crate) fn build_waiting_room_public_snapshot_from_cached_shared(
         remote_kernels,
         terminals,
         generated_at_ms,
-        caller_user_id,
+        caller,
     )
 }
 
@@ -831,18 +855,19 @@ fn hash_waiting_room_version(
 fn waiting_room_session_summaries(
     sessions: Vec<RuntimeSession>,
     metaagent_events: &MetaagentEventStore,
-    caller_user_id: &str,
+    caller: &WaitingRoomCaller,
 ) -> Vec<WaitingRoomPublicSessionSummary> {
-    waiting_room_session_summaries_from_refs(sessions.iter(), metaagent_events, caller_user_id)
+    waiting_room_session_summaries_from_refs(sessions.iter(), metaagent_events, caller)
 }
 
 fn refresh_waiting_room_projected_activity(
     summary: &mut WaitingRoomPublicSessionSummary,
     session: &RuntimeSession,
     external_working_agent_ids: Option<&BTreeSet<String>>,
-    caller_user_id: &str,
+    caller: &WaitingRoomCaller,
 ) {
-    summary.activity = waiting_room_session_activity_summary(session, caller_user_id);
+    let member_id = caller.member_id_in(session);
+    summary.activity = waiting_room_session_activity_summary(session, &member_id);
     for agent_summary in &mut summary.agents {
         let Some(agent) = session
             .agents()
@@ -851,8 +876,7 @@ fn refresh_waiting_room_projected_activity(
         else {
             continue;
         };
-        agent_summary.activity =
-            waiting_room_agent_activity_summary(session, agent, caller_user_id);
+        agent_summary.activity = waiting_room_agent_activity_summary(session, agent, &member_id);
     }
     let Some(external_working_agent_ids) = external_working_agent_ids else {
         return;
@@ -888,14 +912,15 @@ fn refresh_waiting_room_projected_activity(
 fn waiting_room_session_summaries_from_refs<'a>(
     sessions: impl IntoIterator<Item = &'a RuntimeSession>,
     metaagent_events: &MetaagentEventStore,
-    caller_user_id: &str,
+    caller: &WaitingRoomCaller,
 ) -> Vec<WaitingRoomPublicSessionSummary> {
     let mut workspace_labels: HashMap<String, Option<String>> = HashMap::new();
     let mut worktree_labels: HashMap<(String, String), Option<String>> = HashMap::new();
     sessions
         .into_iter()
-        .filter(|session| session.has_member(caller_user_id))
+        .filter(|session| caller.is_member_of(session))
         .map(|session| {
+            let member_id = caller.member_id_in(session);
             let workspace_id = session.workspace_id().to_string();
             let worktree_id = session.worktree_id().to_string();
             let workspace_label = workspace_labels
@@ -931,13 +956,13 @@ fn waiting_room_session_summaries_from_refs<'a>(
                     .filter(|member| member.user_id() != session.owner_user_id())
                     .count(),
                 pending_collaboration_invite_count: pending_session_invite_count(session),
-                activity: waiting_room_session_activity_summary(session, caller_user_id),
+                activity: waiting_room_session_activity_summary(session, &member_id),
                 agents: waiting_room_public_agent_summaries(
                     session,
                     metaagent_events,
                     workspace_label.clone(),
                     &mut worktree_labels,
-                    caller_user_id,
+                    &member_id,
                 ),
                 workflows: waiting_room_public_workflow_summaries(session),
             }
@@ -950,7 +975,7 @@ fn waiting_room_public_agent_summaries(
     metaagent_events: &MetaagentEventStore,
     workspace_label: Option<String>,
     worktree_labels: &mut HashMap<(String, String), Option<String>>,
-    caller_user_id: &str,
+    member_id: &str,
 ) -> Vec<WaitingRoomPublicAgentSummary> {
     let mut agents = session
         .agents()
@@ -991,7 +1016,7 @@ fn waiting_room_public_agent_summaries(
                 worktree_label,
                 runtime_placement: waiting_room_agent_runtime_placement(session, agent),
                 extension_grants: agent.extension_grants().to_vec(),
-                activity: waiting_room_agent_activity_summary(session, agent, caller_user_id),
+                activity: waiting_room_agent_activity_summary(session, agent, member_id),
                 metaagent_event_counts: agent
                     .is_metaagent()
                     .then(|| metaagent_events.counts(agent.id())),
@@ -1084,7 +1109,7 @@ fn enrich_waiting_room_agent_slice_placements(
 fn waiting_room_public_project_summaries(
     projects: &[RuntimeProject],
     sessions: &[Arc<RuntimeSession>],
-    caller_user_id: &str,
+    caller: &WaitingRoomCaller,
 ) -> Vec<WaitingRoomPublicProjectSummary> {
     let mut summaries = projects
         .iter()
@@ -1093,7 +1118,7 @@ fn waiting_room_public_project_summaries(
                 .iter()
                 .map(AsRef::as_ref)
                 .filter(|session| {
-                    session.project_id() == project.id() && session.has_member(caller_user_id)
+                    session.project_id() == project.id() && caller.is_member_of(session)
                 })
                 .collect::<Vec<_>>();
             WaitingRoomPublicProjectSummary {
@@ -1278,12 +1303,26 @@ mod tests {
         build_waiting_room_public_snapshot, build_waiting_room_public_snapshot_from_cached_shared,
         enrich_waiting_room_agent_slice_placements, infer_waiting_room_launch_target,
         waiting_room_activity_revision, waiting_room_session_summaries,
-        waiting_room_structural_version, WaitingRoomSessionSummaryProjectionStore,
+        waiting_room_structural_version, WaitingRoomCaller,
+        WaitingRoomSessionSummaryProjectionStore,
     };
     use crate::session::{
         RuntimeProject, RuntimeProjectKind, RuntimeSession, SessionStatus, WorkflowDefinition,
         WorkflowRun, WorkflowRunStatus,
     };
+
+    pub(super) fn caller(user_id: &'static str) -> WaitingRoomCaller<'static> {
+        let config = Box::leak(Box::new(
+            crate::runtime::projection::DaemonConfigProjectionStore::new(
+                crate::config::DaemonConfig::for_tests(),
+            ),
+        ));
+        WaitingRoomCaller::new(user_id, config)
+    }
+
+    fn local_caller() -> WaitingRoomCaller<'static> {
+        caller(crate::session::DEFAULT_LOCAL_USER_ID)
+    }
 
     struct LaunchEnvironment {
         home: Option<std::ffi::OsString>,
@@ -1509,11 +1548,8 @@ mod tests {
         }));
         session.set_agents(vec![agent]);
         let metaagent_events = MetaagentEventStore::default();
-        let mut summaries = waiting_room_session_summaries(
-            vec![session],
-            &metaagent_events,
-            crate::session::DEFAULT_LOCAL_USER_ID,
-        );
+        let mut summaries =
+            waiting_room_session_summaries(vec![session], &metaagent_events, &local_caller());
 
         assert_eq!(summaries[0].activity.error_agent_count, 0);
         assert!(!summaries[0].agents[0].activity.error);
@@ -1578,7 +1614,7 @@ mod tests {
             let mut summaries = waiting_room_session_summaries(
                 vec![session],
                 &MetaagentEventStore::default(),
-                crate::session::DEFAULT_LOCAL_USER_ID,
+                &local_caller(),
             );
 
             enrich_waiting_room_agent_slice_placements(
@@ -1652,7 +1688,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             1,
-            crate::session::DEFAULT_LOCAL_USER_ID,
+            &local_caller(),
         )
         .expect("active project should project");
         assert_eq!(active.sessions.len(), 1);
@@ -1691,7 +1727,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             2,
-            crate::session::DEFAULT_LOCAL_USER_ID,
+            &local_caller(),
         )
         .expect("archived project should project");
         assert_eq!(archived.sessions.len(), 1);
@@ -1728,7 +1764,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             3,
-            crate::session::DEFAULT_LOCAL_USER_ID,
+            &local_caller(),
         )
         .expect("restored project should project");
         assert_eq!(restored.sessions.len(), 1);
@@ -1769,7 +1805,7 @@ mod tests {
         let rows = waiting_room_session_summaries(
             vec![session],
             &MetaagentEventStore::default(),
-            crate::session::DEFAULT_LOCAL_USER_ID,
+            &local_caller(),
         );
         assert_eq!(
             rows[0]
@@ -1797,11 +1833,8 @@ mod tests {
         session.add_attachment("cli-1".to_string());
 
         let metaagent_events = MetaagentEventStore::default();
-        let summaries = waiting_room_session_summaries(
-            vec![session],
-            &metaagent_events,
-            crate::session::DEFAULT_LOCAL_USER_ID,
-        );
+        let summaries =
+            waiting_room_session_summaries(vec![session], &metaagent_events, &local_caller());
 
         assert_eq!(summaries.len(), 1);
         let summary = &summaries[0];
@@ -1868,11 +1901,8 @@ mod tests {
             .read(metaagent.id(), &event.event_id)
             .expect("event should read");
 
-        let summaries = waiting_room_session_summaries(
-            vec![session],
-            &metaagent_events,
-            crate::session::DEFAULT_LOCAL_USER_ID,
-        );
+        let summaries =
+            waiting_room_session_summaries(vec![session], &metaagent_events, &local_caller());
 
         let agents = &summaries[0].agents;
         let metaagent_summary = agents
@@ -1934,11 +1964,8 @@ mod tests {
         session.create_workflow(workflow);
 
         let metaagent_events = MetaagentEventStore::default();
-        let summaries = waiting_room_session_summaries(
-            vec![session],
-            &metaagent_events,
-            crate::session::DEFAULT_LOCAL_USER_ID,
-        );
+        let summaries =
+            waiting_room_session_summaries(vec![session], &metaagent_events, &local_caller());
 
         assert_eq!(summaries[0].workflows.len(), 1);
         assert_eq!(
@@ -1997,7 +2024,7 @@ mod tests {
                 Vec::new(),
                 Vec::new(),
                 generated_at_ms,
-                crate::session::DEFAULT_LOCAL_USER_ID,
+                &local_caller(),
             )
             .expect("waiting-room workflow activity should project")
         };
@@ -2052,7 +2079,7 @@ mod tests {
             &metaagent_events,
             0,
             &BTreeMap::new(),
-            crate::session::DEFAULT_LOCAL_USER_ID,
+            &local_caller(),
         );
         let same_revision = projection.project(
             &sessions,
@@ -2060,7 +2087,7 @@ mod tests {
             &metaagent_events,
             0,
             &BTreeMap::new(),
-            crate::session::DEFAULT_LOCAL_USER_ID,
+            &local_caller(),
         );
         assert!(Arc::ptr_eq(&first.summaries, &same_revision.summaries));
         assert_eq!(first.revision, same_revision.revision);
@@ -2071,7 +2098,7 @@ mod tests {
             &metaagent_events,
             0,
             &BTreeMap::new(),
-            crate::session::DEFAULT_LOCAL_USER_ID,
+            &local_caller(),
         );
         assert!(Arc::ptr_eq(
             &first.summaries,
@@ -2090,7 +2117,7 @@ mod tests {
             &metaagent_events,
             0,
             &BTreeMap::new(),
-            crate::session::DEFAULT_LOCAL_USER_ID,
+            &local_caller(),
         );
         assert!(Arc::ptr_eq(
             &first.summaries,
@@ -2134,7 +2161,7 @@ mod tests {
             &metaagent_events,
             1,
             &external_working_agents,
-            crate::session::DEFAULT_LOCAL_USER_ID,
+            &local_caller(),
         );
         assert_eq!(working.summaries[0].activity.working_agent_count, 1);
         assert_eq!(working.summaries[0].activity.active_prompt_count, 1);
@@ -2150,7 +2177,7 @@ mod tests {
             &metaagent_events,
             2,
             &BTreeMap::new(),
-            crate::session::DEFAULT_LOCAL_USER_ID,
+            &local_caller(),
         );
         assert_eq!(settled.summaries[0].activity.working_agent_count, 0);
         assert_eq!(settled.summaries[0].activity.active_prompt_count, 0);
@@ -2193,7 +2220,7 @@ mod tests {
             &metaagent_events,
             1,
             &external_working_agents,
-            crate::session::DEFAULT_LOCAL_USER_ID,
+            &local_caller(),
         );
         let settled = projection.project(
             &sessions,
@@ -2201,7 +2228,7 @@ mod tests {
             &metaagent_events,
             2,
             &BTreeMap::new(),
-            crate::session::DEFAULT_LOCAL_USER_ID,
+            &local_caller(),
         );
 
         assert_eq!(working.summaries[0].activity.working_agent_count, 1);
@@ -2252,7 +2279,7 @@ mod tests {
                 Vec::new(),
                 Vec::new(),
                 generated_at_ms,
-                crate::session::DEFAULT_LOCAL_USER_ID,
+                &local_caller(),
             )
             .expect("waiting room snapshot should project")
         };
@@ -2292,7 +2319,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             400,
-            crate::session::DEFAULT_LOCAL_USER_ID,
+            &local_caller(),
         )
         .expect("timestamp-only waiting room snapshot should project");
         assert_eq!(projection.snapshot_build_count(), 1);
@@ -2327,7 +2354,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             500,
-            crate::session::DEFAULT_LOCAL_USER_ID,
+            &local_caller(),
         )
         .expect("changed waiting room snapshot should project");
         assert_eq!(projection.snapshot_build_count(), 2);
@@ -2396,7 +2423,7 @@ mod tests {
                 revoked: false,
             }],
             42,
-            crate::session::DEFAULT_LOCAL_USER_ID,
+            &local_caller(),
         )
         .expect("snapshot builds");
 
@@ -2428,14 +2455,14 @@ mod tests {
         let initial = waiting_room_session_summaries(
             vec![session.clone()],
             &metaagent_events,
-            crate::session::DEFAULT_LOCAL_USER_ID,
+            &local_caller(),
         );
 
         session.note_prompt_sent_at("missing-agent", 42);
         let activity_only = waiting_room_session_summaries(
             vec![session.clone()],
             &metaagent_events,
-            crate::session::DEFAULT_LOCAL_USER_ID,
+            &local_caller(),
         );
         assert_eq!(
             waiting_room_structural_version(&initial, &[], &[], false, None, None).unwrap(),
@@ -2447,11 +2474,8 @@ mod tests {
         );
 
         session.set_alias(Some("renamed".to_string()));
-        let structural_change = waiting_room_session_summaries(
-            vec![session],
-            &metaagent_events,
-            crate::session::DEFAULT_LOCAL_USER_ID,
-        );
+        let structural_change =
+            waiting_room_session_summaries(vec![session], &metaagent_events, &local_caller());
         assert_ne!(
             waiting_room_structural_version(&activity_only, &[], &[], false, None, None).unwrap(),
             waiting_room_structural_version(&structural_change, &[], &[], false, None, None)
@@ -2471,7 +2495,11 @@ mod owner15_projection_tests {
             "Project",
             crate::session::RuntimeProjectKind::Named,
         );
-        let mut projects = super::waiting_room_public_project_summaries(&[project], &[], "u");
+        let mut projects = super::waiting_room_public_project_summaries(
+            &[project],
+            &[],
+            &super::tests::caller("u"),
+        );
         let before =
             super::waiting_room_structural_version(&[], &projects, &[], false, None, None).unwrap();
         projects[0].pinned = true;

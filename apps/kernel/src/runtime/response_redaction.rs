@@ -5,9 +5,13 @@ use crate::runtime::provider_process_control::provider_processes_visible_to_user
 use crate::runtime::session_projection_refresh::redact_agent_activity_for_session;
 use crate::session::RuntimeSession;
 
+/// `caller_user_id` is the identity the room stores for the caller (what the caller may see);
+/// `authenticated_user_id` is who the caller authenticated as. They differ only for the enrolled
+/// owner in a room that predates enrollment, and each owns the resources stored under it.
 pub(crate) fn redact_response_for_user(
     response: LocalDaemonResponse,
     caller_user_id: &str,
+    authenticated_user_id: &str,
     provider_run_projection: &ProviderRunProjectionStore,
     workflow_run_context: Option<&RuntimeSession>,
     workflow_history: Option<&crate::durable_state::DurableKernelStateStore>,
@@ -244,11 +248,16 @@ pub(crate) fn redact_response_for_user(
         LocalDaemonResponse::AgentsListed { agents } => LocalDaemonResponse::AgentsListed {
             agents: agents
                 .into_iter()
-                .filter(|agent| agent.owner_user_id() == caller_user_id)
+                .filter(|agent| {
+                    agent.owner_user_id() == caller_user_id
+                        || agent.owner_user_id() == authenticated_user_id
+                })
                 .collect(),
         },
         LocalDaemonResponse::ProviderRun { provider_run } => {
-            if !provider_run.owned_by(caller_user_id) {
+            if !provider_run.owned_by(caller_user_id)
+                && !provider_run.owned_by(authenticated_user_id)
+            {
                 return Err(DaemonError::OwnershipAccessDenied {
                     user_id: caller_user_id.to_string(),
                     owner_user_id: provider_run.owner_user_id().to_string(),
@@ -716,6 +725,7 @@ mod tests {
         redact_response_for_user(
             response,
             caller_user_id,
+            caller_user_id,
             &ProviderRunProjectionStore::default(),
             Some(session),
             None,
@@ -753,6 +763,7 @@ mod tests {
                 LocalDaemonResponse::SessionResolved {
                     session: session.clone(),
                 },
+                caller,
                 caller,
                 &projection,
                 None,
@@ -836,6 +847,7 @@ mod tests {
         for run in [active, archived] {
             assert!(redact_response_for_user(
                 LocalDaemonResponse::WorkflowRun { workflow_run: run },
+                "collaborator",
                 "collaborator",
                 &ProviderRunProjectionStore::default(),
                 Some(&session),
@@ -925,6 +937,7 @@ mod tests {
         let LocalDaemonResponse::SessionState { session, .. } = redact_response_for_user(
             session_state_response(),
             "member",
+            "member",
             &ProviderRunProjectionStore::default(),
             None,
             None,
@@ -941,6 +954,7 @@ mod tests {
             LocalDaemonResponse::TriggerDeliveryResent {
                 session: session_with_a_private_trigger_firing(),
             },
+            "member",
             "member",
             &ProviderRunProjectionStore::default(),
             None,
@@ -975,6 +989,7 @@ mod tests {
             | LocalDaemonResponse::AgentTriggerDeleted { session, .. }) = redact_response_for_user(
                 response,
                 "member",
+                "member",
                 &ProviderRunProjectionStore::default(),
                 None,
                 None,
@@ -998,6 +1013,7 @@ mod tests {
             let (LocalDaemonResponse::TriggerDeliveryResent { session }
             | LocalDaemonResponse::SessionState { session, .. }) = redact_response_for_user(
                 response,
+                crate::session::DEFAULT_LOCAL_USER_ID,
                 crate::session::DEFAULT_LOCAL_USER_ID,
                 &ProviderRunProjectionStore::default(),
                 None,

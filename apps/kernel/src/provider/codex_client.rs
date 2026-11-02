@@ -51,6 +51,8 @@ use permission::{codex_permission_policy, workspace_live_sync_codex_permission_g
 pub(crate) use auth::normalize_codex_usage;
 pub use auth::{ProviderAuthStatus, ProviderLoginStart};
 pub use health::{codex_endpoint_is_healthy, CODEX_ENDPOINT_STARTUP_TIMEOUT};
+#[cfg(test)]
+pub(crate) use interrupt_cleanup::CODEX_INTERRUPT_ANSWER_DEADLINE;
 pub(crate) use notifications::codex_error_text;
 pub use notifications::CodexNotification;
 #[cfg(unix)]

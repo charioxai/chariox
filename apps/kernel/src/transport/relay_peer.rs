@@ -166,7 +166,11 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// Landing union 381 pairs the embedded local union with local 932; it carries peers 375 to 380 and
 /// takes 381 for the HTTP trigger variants (allocated as 386).
 /// Browser header 382 carries the local 933 header state.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 382;
+/// MP-08/MP-10/MP-11: 383 acknowledges the leased projection drain; it pairs with local 934.
+/// MP-08/MP-10/MP-11: 384 binds `CompleteLeasedPrompt` to the exact home prompt and worker provider run, so a late
+/// completion cannot end the prompt that replaced it; it pairs with local 935.
+/// MP-08/MP-10/MP-11: 385 pairs the embedded local union with local 936 (non-blocking task-owned questions).
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 385;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;
@@ -179,6 +183,10 @@ pub const REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE: &str =
 pub const REMOTE_PROVIDER_ACCOUNT_UNUSABLE_CODE: &str = "provider_account_unusable";
 pub(crate) const ADMIT_LEASED_PROMPT_ACCOUNT_OPERATION: &str = "admit leased prompt account";
 pub(crate) const ENSURE_REMOTE_PROVIDER_ACCOUNT_OPERATION: &str = "ensure remote provider account";
+/// The worker refused a completion because the prompt it names is not the leased
+/// agent's current prompt (already finished, or replaced by a later one).
+pub const LEASED_PROMPT_NOT_CURRENT_CODE: &str = "leased_prompt_not_current";
+pub const LEASED_PROMPT_RUN_CHANGED_CODE: &str = "leased_prompt_run_changed";
 pub const PROJECT_ENVIRONMENT_SETUP_NOT_FOUND_CODE: &str = "project_environment_setup_not_found";
 pub const PROJECT_ENVIRONMENT_SETUP_REJECTED_CODE: &str = "project_environment_setup_rejected";
 
@@ -987,9 +995,15 @@ pub enum RelayPeerRequest {
         provider_run_id: String,
         #[serde(default)]
         pump_output: bool,
+        /// Peer 383: the last projection sequence the home applied for this leased
+        /// agent. The worker keeps a drained projection until this acknowledges it.
+        acknowledged_projection_sequence: u64,
     },
+    /// Peer 384: names the exact prompt it completes, like `CancelLeasedPrompt`.
     CompleteLeasedPrompt {
         leased_agent_id: String,
+        home_prompt_id: String,
+        worker_provider_run_id: String,
     },
     ObserveLeasedGitAfter {
         leased_agent_id: String,
@@ -1385,6 +1399,9 @@ pub enum RelayPeerResponse {
     LeasedRuntimeProjectionDrained {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         event: Option<RelayPeerEvent>,
+        /// Present when the worker retains `event` until the home acknowledges it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        projection_sequence: Option<u64>,
     },
     LeasedPromptCompleted {
         provider_run_id: Option<String>,

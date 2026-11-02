@@ -93,7 +93,7 @@ async fn leased_prompt_steer_delivers_once_and_resets_for_the_next_turn() {
     {
         let mut app = app.lock().await;
         crate::app::RemoteLeaseRuntime::new(&mut app)
-            .complete_leased_prompt(&leased_agent.id)
+            .settle_leased_prompt(&leased_agent.id)
             .expect("first leased prompt should complete");
         let (_, outcome) = crate::app::RemoteLeaseRuntime::new(&mut app)
             .submit_leased_prompt_with_workflow_context(

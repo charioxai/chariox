@@ -43,9 +43,6 @@ pub(crate) async fn authorize_session_membership(
             message: "hosted service identity is not authorized for this request".to_string(),
         });
     }
-    if is_implicit_local_session_caller(command) {
-        return Ok(DEFAULT_LOCAL_USER_ID.to_string());
-    }
     if matches!(
         request,
         LocalDaemonRequest::CreateSession(_) | LocalDaemonRequest::JoinSessionInvite(_)
@@ -60,82 +57,56 @@ pub(crate) async fn authorize_session_membership(
             command_session_user_id(command).unwrap_or_else(|| DEFAULT_LOCAL_USER_ID.to_string())
         );
     };
-    let user_id = command_session_user_id(command).ok_or_else(|| {
-        DaemonError::MissingSessionCallerIdentity {
-            operation: command.command_type.clone(),
-        }
-    })?;
-
-    // MP-08/MP-11: the enrolled terminal still owns its OS-local session.
-    // Use the local identity for membership and session projection only; the
-    // command retains the authenticated enrolled ID for interaction authority.
-    if command.is_terminal_caller() {
-        if let SessionMembershipScope::SessionId(session_id) = &scope {
-            if runtime_state.is_legacy_local_terminal_owner(session_id, &user_id) {
-                return Ok(DEFAULT_LOCAL_USER_ID.to_string());
+    // A local terminal without a user skips room membership, never the backing-session policy.
+    let implicit_local = is_implicit_local_session_caller(command);
+    let user_id = if implicit_local {
+        DEFAULT_LOCAL_USER_ID.to_string()
+    } else {
+        command_session_user_id(command).ok_or_else(|| {
+            DaemonError::MissingSessionCallerIdentity {
+                operation: command.command_type.clone(),
             }
+        })?
+    };
+
+    for session in scope_sessions(runtime_state, session_projection, scope).await? {
+        ensure_not_leased_backing(runtime_state, &session).await?;
+        if !implicit_local && !is_member(runtime_state, command, &session, &user_id) {
+            return Err(DaemonError::SessionAccessDenied {
+                session_id: session.id().to_string(),
+                user_id,
+            });
         }
     }
+    Ok(user_id)
+}
 
-    match scope {
-        SessionMembershipScope::AllSessions => Ok(user_id),
-        SessionMembershipScope::SessionId(session_id) => {
-            ensure_session_member(runtime_state, session_projection, &session_id, &user_id).await?;
-            Ok(user_id)
+/// The identity the addressed room stores for an admitted caller, for the projections that
+/// show the room to its member (what that member may see). Ownership checks never use it:
+/// they keep the authenticated identity and relate it to the owner with `acts_for_owner`.
+pub(crate) fn request_room_member_user_id(
+    runtime_state: &KernelRuntimeState,
+    command: &KernelCommand,
+    request: &LocalDaemonRequest,
+    user_id: &str,
+) -> String {
+    if !command.is_terminal_caller() && !command.is_sudo_command() {
+        return user_id.to_string();
+    }
+    // A provider run carries no session scope of its own; it belongs to the room it ran in.
+    if let LocalDaemonRequest::GetProviderRun(run_request) = request {
+        return runtime_state
+            .provider_run_session_id(&run_request.provider_run_id)
+            .map_or_else(
+                || user_id.to_string(),
+                |session_id| runtime_state.room_member_user_id(&session_id, user_id),
+            );
+    }
+    match request_session_scope(request) {
+        Some(SessionMembershipScope::SessionId(session_id)) => {
+            runtime_state.room_member_user_id(&session_id, user_id)
         }
-        SessionMembershipScope::SessionIds(session_ids) => {
-            for session_id in session_ids {
-                ensure_session_member(runtime_state, session_projection, &session_id, &user_id)
-                    .await?;
-            }
-            Ok(user_id)
-        }
-        SessionMembershipScope::SessionRef {
-            session_ref,
-            workspace_id,
-        } => {
-            let session = resolve_session_for_membership(
-                runtime_state,
-                session_projection,
-                &session_ref,
-                workspace_id.as_deref(),
-            )
-            .await?;
-            if !session.has_member(&user_id) {
-                return Err(DaemonError::SessionAccessDenied {
-                    session_id: session.id().to_string(),
-                    user_id,
-                });
-            }
-            Ok(user_id)
-        }
-        SessionMembershipScope::DeleteSessionRef {
-            session_ref,
-            workspace_id,
-        } => {
-            let session_id = runtime_state
-                .resolve_session_ref_id_for_delete(&session_ref, workspace_id.as_deref())
-                .await?;
-            let session = runtime_state.session_snapshot(&session_id).await?;
-            if !session.has_member(&user_id) {
-                return Err(DaemonError::SessionAccessDenied {
-                    session_id,
-                    user_id,
-                });
-            }
-            Ok(user_id)
-        }
-        SessionMembershipScope::AttachmentId(attachment_id) => {
-            let session_id = if let Some(session_id) =
-                session_projection.session_id_for_attachment(&attachment_id)
-            {
-                session_id
-            } else {
-                runtime_state.attachment_session_id(&attachment_id).await?
-            };
-            ensure_session_member(runtime_state, session_projection, &session_id, &user_id).await?;
-            Ok(user_id)
-        }
+        _ => user_id.to_string(),
     }
 }
 
@@ -166,30 +137,104 @@ fn hosted_service_request_is_authorized(
     }
 }
 
-async fn ensure_session_member(
+/// Membership of the room as the caller's own identity, or as the room's `local` member when the
+/// caller is the enrolled owner's terminal or an admitted sudo command.
+fn is_member(
+    runtime_state: &KernelRuntimeState,
+    command: &KernelCommand,
+    session: &crate::session::RuntimeSession,
+    user_id: &str,
+) -> bool {
+    // Sudo admission rechecks the exact live grant before this membership check.
+    if command.is_terminal_caller() || command.is_sudo_command() {
+        runtime_state.is_room_member(session, user_id)
+    } else {
+        session.has_member(user_id)
+    }
+}
+
+/// The home kernel is the session authority for a leased agent, so clients never reach its
+/// backing session on the worker. The same hidden flag that keeps the session out of lists marks it.
+async fn ensure_not_leased_backing(
+    runtime_state: &KernelRuntimeState,
+    session: &crate::session::RuntimeSession,
+) -> Result<(), DaemonError> {
+    if !session.is_hidden() {
+        return Ok(());
+    }
+    let session_id = session.id().to_string();
+    let backing_session_id = session_id.clone();
+    let home_session_id = runtime_state
+        .with_app_side_effect(move |app| {
+            crate::app::RemoteLeaseRuntime::new(app)
+                .leased_backing_home_session(&backing_session_id)
+        })
+        .await;
+    match home_session_id {
+        Some(home_session_id) => Err(DaemonError::LeasedBackingSessionRefused {
+            session_id,
+            home_session_id,
+        }),
+        None => Ok(()),
+    }
+}
+
+async fn session_by_id(
     runtime_state: &KernelRuntimeState,
     session_projection: &SessionStateProjectionStore,
     session_id: &str,
-    user_id: &str,
-) -> Result<(), DaemonError> {
-    if let Some(session) = session_projection.get(session_id) {
-        if session.has_member(user_id) {
-            return Ok(());
+) -> Result<crate::session::RuntimeSession, DaemonError> {
+    match session_projection.get(session_id) {
+        Some(session) => Ok(session),
+        None => runtime_state.session_snapshot(session_id).await,
+    }
+}
+
+/// The sessions a request addresses, in the order the caller named them.
+async fn scope_sessions(
+    runtime_state: &KernelRuntimeState,
+    session_projection: &SessionStateProjectionStore,
+    scope: SessionMembershipScope,
+) -> Result<Vec<crate::session::RuntimeSession>, DaemonError> {
+    let session_ids = match scope {
+        SessionMembershipScope::AllSessions => Vec::new(),
+        SessionMembershipScope::SessionId(session_id) => vec![session_id],
+        SessionMembershipScope::SessionIds(session_ids) => session_ids,
+        SessionMembershipScope::SessionRef {
+            session_ref,
+            workspace_id,
+        } => {
+            return Ok(vec![
+                resolve_session_for_membership(
+                    runtime_state,
+                    session_projection,
+                    &session_ref,
+                    workspace_id.as_deref(),
+                )
+                .await?,
+            ]);
         }
-        return Err(DaemonError::SessionAccessDenied {
-            session_id: session.id().to_string(),
-            user_id: user_id.to_string(),
-        });
+        SessionMembershipScope::DeleteSessionRef {
+            session_ref,
+            workspace_id,
+        } => vec![
+            runtime_state
+                .resolve_session_ref_id_for_delete(&session_ref, workspace_id.as_deref())
+                .await?,
+        ],
+        SessionMembershipScope::AttachmentId(attachment_id) => vec![if let Some(session_id) =
+            session_projection.session_id_for_attachment(&attachment_id)
+        {
+            session_id
+        } else {
+            runtime_state.attachment_session_id(&attachment_id).await?
+        }],
+    };
+    let mut sessions = Vec::with_capacity(session_ids.len());
+    for session_id in session_ids {
+        sessions.push(session_by_id(runtime_state, session_projection, &session_id).await?);
     }
-    let session = runtime_state.session_snapshot(session_id).await?;
-    if session.has_member(user_id) {
-        Ok(())
-    } else {
-        Err(DaemonError::SessionAccessDenied {
-            session_id: session.id().to_string(),
-            user_id: user_id.to_string(),
-        })
-    }
+    Ok(sessions)
 }
 
 async fn resolve_session_for_membership(

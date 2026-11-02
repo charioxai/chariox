@@ -8,7 +8,7 @@ use super::*;
 mod agent_events;
 mod agent_messaging;
 mod agent_process_permission;
-mod agent_wakes;
+pub(super) mod agent_wakes;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod app;
 mod capability_registry;
@@ -20,6 +20,7 @@ mod extension_registration_tool;
 mod extension_request_tool;
 mod home_connector_executor;
 mod home_extension_authorizer;
+mod popup;
 pub(super) fn authorize_remote_home_context_for_peer(
     state: &KernelRuntimeState,
     context: &crate::transport::relay_peer::RemoteExtensionInvocationContext,

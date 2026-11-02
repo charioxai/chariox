@@ -118,6 +118,7 @@ mod passkey_prompts;
 pub(crate) use passkey_prompts::INTERACTION_CLOSED;
 #[cfg(test)]
 pub(crate) use passkey_prompts::PASSKEY_ALREADY_ANSWERED;
+mod legacy_room_owner;
 mod native_catalog_refresh;
 mod owner_context_review;
 mod project_environment_export;
@@ -192,6 +193,7 @@ pub(crate) struct KernelRuntimeState {
     /// MP-08 / MP-11: the transport admitted this command from a terminal
     /// (local token or relay client), not from a granted or launched agent.
     terminal_caller: bool,
+    interaction_answerer: Option<crate::runtime::command::KernelCaller>,
     relay_peer_authority: Option<crate::runtime::relay_peer_authority::RelayPeerAuthority>,
     forwarded_peer_binding: Option<forwarded_peer_authority::ForwardedPeerBinding>,
     #[cfg(test)]
@@ -213,6 +215,7 @@ pub(crate) struct KernelRuntimeState {
     /// before this field was set, and the Room terminal service and wake registry hold it weakly,
     /// so dropping the runtime frees the kernel instead of leaving a cycle.
     terminal_wake_driver: Option<Arc<terminal_wake::TerminalWakeDriver>>,
+    interaction_wake_driver: Option<Arc<interaction_wake::InteractionWakeDriver>>,
     /// MP-08/MP-09/MP-11: terminals retain this callback weakly so it cannot
     /// own the runtime state that owns the terminal service.
     managed_terminal_activity: Option<Arc<dyn Fn() + Send + Sync>>,
@@ -367,6 +370,7 @@ struct KernelRuntimeOwnedState {
     task_settlement_revisions: Arc<std::sync::Mutex<BTreeMap<String, u64>>>,
     agent_wakes: Arc<agent_wake_scheduler::AgentWakeMonitor>,
     relay_state: Arc<tokio::sync::RwLock<crate::transport::relay_client::RelayClientState>>,
+    slice_private_relay_connectors: crate::transport::relay_client::SlicePrivateRelayConnectors,
     notification_inventory_projection: crate::runtime::projection::RemoteRelayInventoryProjectionStore,
     remote_prompt_projection_drains:
         remote_prompt_claim_runtime::RemotePromptProjectionDrainClaimStore,
@@ -374,7 +378,6 @@ struct KernelRuntimeOwnedState {
     remote_prompt_recoveries: remote_prompt_claim_runtime::RemotePromptRecoveryClaimStore,
     remote_steer_receipt_reconciliations:
         Arc<std::sync::Mutex<BTreeSet<(String, String, String)>>>,
-    slice_private_relay_connectors: Arc<Mutex<BTreeMap<String, SlicePrivateRelayConnector>>>,
     agent_trigger_gateways: agent_trigger_gateway::AgentTriggerGatewayStore,
     workflow_publication_runtimes:
         crate::runtime::state::workflow_publication_runtime_lifecycle::WorkflowPublicationRuntimeProcessStore,
@@ -445,13 +448,6 @@ type RemoteWorkspaceLiveSyncInvocationResult = (
     crate::transport::runtime_tools::RuntimeToolResult,
     Vec<crate::transport::relay_peer::RemoteWorkspaceLiveSyncArtifactState>,
 );
-
-struct SlicePrivateRelayConnector {
-    relay_url: String,
-    state: Arc<tokio::sync::RwLock<crate::transport::relay_client::RelayClientState>>,
-    shutdown_tx: tokio::sync::watch::Sender<bool>,
-    task: std::thread::JoinHandle<()>,
-}
 
 mod agent_archive_runtime_state;
 mod agent_config_owned_state;
@@ -547,6 +543,7 @@ mod provider_prompt_failure_runtime;
 mod provider_prompt_settlement_runtime;
 mod provider_substitute_runtime;
 mod relay_peer_runtime_state;
+mod remote_completion_harvest;
 mod remote_native_provider_launch;
 mod remote_prompt_claim_runtime;
 mod remote_prompt_dispatch_execution_runtime;
@@ -561,6 +558,7 @@ mod remote_provider_failure_runtime;
 #[cfg(test)]
 mod remote_queue_advance_tests;
 mod restart_recovery_runtime;
+mod worker_lease_trust;
 pub(crate) use restart_recovery_runtime::is_internal_recovery_prompt_attachment;
 mod agent_batch_runtime_state;
 mod claude_token_checks;
@@ -600,6 +598,8 @@ mod kernel_computer_runtime;
 mod leased_computer_runtime;
 #[cfg(test)]
 mod leased_computer_runtime_tests;
+#[cfg(test)]
+mod leased_worker_route_tests;
 mod notes_runtime;
 mod structured_provider_output_runtime;
 mod terminal_runtime_state;
@@ -782,6 +782,7 @@ impl KernelRuntimeState {
             provider_process_projection,
             provider_launch_failure_retries,
             relay_state,
+            slice_private_relay_connectors,
             notification_inventory_projection,
             legacy_workflow_history,
             agent_runtime_projection,
@@ -804,6 +805,7 @@ impl KernelRuntimeState {
                         app.provider_process_projection_store(),
                         app.provider_launch_failure_retry_store(),
                         app.relay_client_state(),
+                        app.connected_relays().slice_private,
                         app.remote_relay_inventory_projection_store(),
                         app.legacy_workflow_history_store(),
                         app.agent_runtime_projection_store(),
@@ -994,6 +996,7 @@ impl KernelRuntimeState {
             room_provider_origin: None,
             room_request_origin: None,
             terminal_caller: false,
+            interaction_answerer: None,
             relay_peer_authority: None,
             forwarded_peer_binding: None,
             #[cfg(test)]
@@ -1008,6 +1011,7 @@ impl KernelRuntimeState {
             restart_recovery_dispatched: Arc::new(std::sync::Mutex::new(BTreeSet::new())),
             claude_session_grants: claude_permission_rules::StandingGrants::default(),
             terminal_wake_driver: None,
+            interaction_wake_driver: None,
             managed_terminal_activity: None,
             owned: KernelRuntimeOwnedState {
                 app_control,
@@ -1154,7 +1158,7 @@ impl KernelRuntimeState {
                 remote_steer_receipt_reconciliations: Arc::new(std::sync::Mutex::new(
                     BTreeSet::new(),
                 )),
-                slice_private_relay_connectors: Arc::new(Mutex::new(BTreeMap::new())),
+                slice_private_relay_connectors,
                 agent_trigger_gateways: Default::default(),
                 workflow_publication_runtimes:
                     crate::runtime::state::workflow_publication_runtime_lifecycle::WorkflowPublicationRuntimeProcessStore::default(),
@@ -1164,6 +1168,7 @@ impl KernelRuntimeState {
         };
         runtime.link_room_terminals_to_managed_kernel();
         runtime.register_terminal_wake_driver();
+        runtime.register_interaction_wake_driver();
         runtime.owned.record_managed_activity_transition();
         runtime.recover_sudo_notices();
         // Access grants are process-bound and never survive a kernel restart.
@@ -1489,6 +1494,7 @@ mod agent_wake_cancellation;
 mod agent_wake_scheduler;
 mod agent_workflow_tasks;
 mod agent_workspace_loss;
+mod interaction_wake;
 mod leased_task_connectivity;
 mod leased_worker_stop_obligation;
 mod room_dispatch_obligation;

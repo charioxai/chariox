@@ -574,6 +574,8 @@ Remote native TUI composition:
 - worker output, notices, completions, and permission interactions MUST return to the home kernel through existing leased runtime projection and native interaction relay paths
 - relay peer protocol v3 extends leased runtime projection with an optional worker `provider_run` snapshot. The home kernel MUST project that worker-owned run onto the home session/agent, including any resolved `provider_session_id` and resume state, because some providers such as Codex only expose the durable thread id after the first turn rather than at launch time.
 - relay peer protocol v7 correlates projected completions with `home_prompt_id`. Workers retain the latest settled completion for pull-based replay, and home kernels MUST ignore a stale replay when that prompt is no longer active. This makes a completion recoverable when a fire-and-forget worker projection is lost without allowing the replay to settle a later queued turn.
+- relay peer protocol 383 (local 934) acknowledges pulled projections; both kernels must speak 383. Each `drain_leased_runtime_projection` carries the required `acknowledged_projection_sequence`, the last projection sequence the home applied for that leased agent (persisted by the home). A worker answering with `projection_sequence` keeps that projection and answers every later drain with it until a drain acknowledges it, then drains new output. A reply lost on the way home (a relay writer closing at reconnect, a home timeout) is therefore answered again: no output is lost, and the home applies each sequence once. The worker no longer pushes a projection after a steer; the home's next drain carries it. A home recovering a settled worker receipt (restart, cancellation) applies and acknowledges the retained output of that run before its completion.
+- relay peer protocol 384 (local 935) binds `complete_leased_prompt` to the exact prompt it completes: the request carries `home_prompt_id` and `worker_provider_run_id`, like `cancel_leased_prompt`. The worker completes the leased agent's prompt only when it is still that home prompt on that worker run; a completion of an earlier or already finished prompt is refused with `leased_prompt_not_current` and changes nothing, so the current turn keeps running. A home treats that refusal as the prompt having settled on the worker. When the home prompt is still the one running but on another provider run (a relaunch the home has not followed yet), the worker refuses with the distinct code `leased_prompt_run_changed`; that prompt has not settled, so the home keeps its turn active and retries the completion once it follows the successor run. Both kernels must speak 217.
 - relay peer protocol v8 carries an optional exact worker-local skill requirement set for native TUI launch and prompt submission. Standard workers validate matching local package hashes without receiving package payloads; home-managed slices may materialize packages first. Workers project the validated set onto the leased backing agent so per-prompt hidden skill context stays worker-local and grant revocations cannot leave stale skills active.
 - relay peer protocol v9 adds idempotent queued-prompt steering for leased agents. The home kernel keeps queue/history authority and removes the queued prompt only after the worker acknowledges provider delivery; the worker keys delivery by the home queued prompt ID, rejects stale active-turn targets, and replays acknowledgements without injecting duplicate provider input.
 - relay peer protocol v10 forwards provider-targeted terminal resizes to leased worker PTYs. The worker validates that the requested provider run belongs to the leased agent and acknowledges the applied dimensions; the home kernel does not report a remote resize as successful before that acknowledgement.
@@ -755,6 +757,17 @@ when their bytes arrive after its prompt boundary. Both kernels must speak 181;
 178 workers do not provide this identity. Ordinary failed completions retain the
 worker termination and settle as failed work.
 
+MP-08 / MP-10 / MP-11: 934/383 makes the leased projection drain acknowledged
+(see the leased runtime projection rules above). A kernel on an older peer cannot
+drain an acknowledged projection.
+
+MP-08 / MP-10 / MP-11: 935/384 binds the leased prompt completion to its exact prompt
+(see the leased prompt rules above). 590 stays reciprocal for upgrade and rollback; 373 is
+the oldest unpinned intermediate removed to make room. The worker also refuses every client
+request (attach, prompt, mutation, read) on the hidden backing session of a leased agent with
+`leased_backing_session_refused`, naming the home session, including a local terminal that carries
+no user (the local membership exemption does not cover it); peer requests from the home are unaffected.
+
 MP-08 / MP-10 / MP-11: coordinator-allocated 513/121 adds the paired terminal
 actor normalization for display metadata/credits and the historical workflow
 read policy. A run with neither immutable agent creator nor invoking-user proof
@@ -830,6 +843,47 @@ and shows wait reason/deadline and aggregate unresolved obligations. Web and
 native clients must consume the same projection; client integration is required
 before claiming visibility on those clients.
 
+MP-08 / MP-09 / MP-10 / MP-11, local protocol **936**, relay peer **385**:
+`chariox.request_popup` accepts optional `wait` (default `true`). Blocking
+questions keep their existing response and turn lifetime. With `wait:false`,
+the tool returns `{interaction_id, registration_id}` immediately. Its ordinary
+`RuntimeInteraction` adds optional `asking_task_id`; older clients can ignore
+that field and answer using the unchanged `RespondToInteraction` request.
+No additional card or client request is introduced.
+
+An async question is the `interaction` kind of the existing durable wake
+registry. The asking task owns its obligation and completion registration;
+`events.yield` may include that registration alongside other sources. A turn
+whose only unresolved obligations are questions may finish normally: settlement
+retains those registrations as a wait. Other unfinished work still requires
+normal completion or an explicit valid yield. The question survives native turn
+completion and kernel restart, including its original absolute deadline.
+The retained wait uses the latest outstanding question deadline, bounded by
+clients' four-digit ISO year range. If any such question has no timeout, the wait
+uses `9999-12-31T23:59:59.999Z` (`253_402_300_799_999` milliseconds since the Unix
+epoch), so an unrelated periodic retention cap cannot spend provider wake turns.
+
+A failed provider turn keeps the task blocked with the provider failure reason
+and its pending questions intact. The owner must reconcile and resume or cancel;
+a question does not convert a failed turn into a healthy wait. Answers remain
+in the durable inbox for reconciliation after owner resumption; automatic
+delivery cannot restart the blocked provider.
+
+The first admitted answer commits a `source_completed` inbox event with the
+resolution in `payload.public_answer`: `interaction_id`, `status`, `choice_id`,
+exact `reply`, authenticated `answered_by`, `user_id`, `agent_id`, `client_id`
+and `connection_class`, plus the usual wake/task attribution. The existing
+inbox delivery and provider acceptance machinery starts the next idle turn;
+retries cannot produce another occurrence. Session membership and existing
+grants govern who may answer. A deadline produces `status:"timed_out"` with
+the fixed default choice/reply when configured, or null choice/reply otherwise;
+its answerer fields are null. Stop, task cancellation or agent/session removal
+withdraws the question without applying its timeout default. Withdrawal uses
+`source_lost`, including the existing `public_answer.cancelled:true` receipt
+when a task cancels its wake. An ended asking task receives no new provider
+turn. Resolution commits before projection removal, so restart closes a leftover
+resolved card.
+
 Ordinary provider runs receive `chariox.events.subscribe`, `subscriptions`,
 `unsubscribe`, `inbox`, `ack`, `yield` and `blocked`. Each requires current
 `task_id` and `origin_prompt_id`; room/run/turn fences precede resource lookup
@@ -859,7 +913,8 @@ tasks, including physical resource settlement after cancellation. The canonical
 admission and settlement, so cancellation also releases the parent's wait.
 This lineage is private kernel storage and adds no serialized client fields.
 
-A final answer with unresolved obligations gets one persisted corrective turn,
+A final answer with unresolved obligations other than the async-question wait
+described above gets one persisted corrective turn,
 then blocks if still invalid. Unfinished work without a live wake source is
 corrected or shown as blocked, never silently left idle. The kernel sweeps every
 30 seconds. Three consecutive settled wake turns without real progress block
@@ -6213,3 +6268,12 @@ prompt names the label and the hosts; an existing one needs `overwrite` and the 
 or the origin of the enrolled Cloud; with neither the request fails with `secret_link_unavailable`. Other refusals:
 `vault_locked`, `secret_request_exists`, `secret_request_invalid`, `secret_request_denied`, `secret_request_unknown`.
 Focused checks: `cargo test -p chariox-kernel --lib vault_secret`.
+
+### Acknowledged leased projection drain — local 934 / relay peer 383
+
+A worker keeps a drained leased projection until the home kernel acknowledges it, so a lost
+reply or a home restart cannot lose output. `drain_leased_runtime_projection` carries the
+required `acknowledged_projection_sequence`; `leased_runtime_projection_drained` carries the
+optional `projection_sequence` of the event it retains. Both kernels must speak peer 383. The
+managed-upgrade list is [629, 636, 911, 923, 934]. Focused checks:
+`cargo test -p chariox-kernel --lib protocol_shapes` and `pnpm protocol:conformance`.

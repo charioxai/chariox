@@ -107,6 +107,7 @@ impl KernelRuntimeOwnedState {
                 responder: std::sync::Arc::new(std::sync::Mutex::new(Some(responder))),
                 kernel_wide_interaction: Some(interaction),
                 user_domain_interaction: None,
+                async_task_id: None,
             },
         );
         drop(pending);
@@ -166,6 +167,7 @@ impl KernelRuntimeOwnedState {
             interaction.id().into(),
             super::super::PendingInteraction {
                 goal_approval: None,
+                async_task_id: None,
                 session_id: scope.into(),
                 session_store_identity: self.session_store.weak_identity(),
                 agent_lifetime: None,

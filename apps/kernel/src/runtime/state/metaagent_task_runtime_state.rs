@@ -358,9 +358,8 @@ impl KernelRuntimeState {
             config.apply_remote_relay_override(relay_url, relay_token);
         }
         self.authorize_current_external_command()?;
-        match tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            crate::transport::relay_client::send_peer_request_via_temporary_connection_authorized(
+        match tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            self.enqueue_leased_worker_request_authorized(
                 &config,
                 chariox_relay::protocol::ClientTarget {
                     daemon_id: Some(remote_execution.worker_kernel_id.clone()),
@@ -372,8 +371,11 @@ impl KernelRuntimeState {
                 },
                 std::time::Duration::from_secs(5),
                 || self.authorize_current_external_command(),
-            ),
-        )
+            )
+            .await?
+            .wait()
+            .await
+        })
         .await
         {
             Ok(Ok(
@@ -1038,3 +1040,7 @@ mod tests {
         assert!(parse_meta_slash_command("/meta\tTabbed task").is_some());
     }
 }
+
+#[cfg(test)]
+#[path = "metaagent_task_runtime_state/route_tests.rs"]
+mod route_tests;

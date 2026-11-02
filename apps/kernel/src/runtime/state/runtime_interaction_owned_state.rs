@@ -48,6 +48,31 @@ fn interaction_reference_error(
 }
 
 impl KernelRuntimeOwnedState {
+    /// Whether the caller is the owner a decision is bound to, in the room it was raised in.
+    /// Takes the session store's read lock: under that lock use `is_decision_owner_in`.
+    fn is_decision_owner(
+        &self,
+        session_id: &str,
+        caller_user_id: Option<&str>,
+        owner: &str,
+    ) -> bool {
+        caller_user_id.is_some_and(|caller| self.acts_for_owner(session_id, caller, owner))
+    }
+
+    /// `is_decision_owner` for a room owner already read; a kernel-wide decision has no room.
+    fn is_decision_owner_in(
+        &self,
+        room_owner: Option<&str>,
+        caller_user_id: Option<&str>,
+        owner: &str,
+    ) -> bool {
+        caller_user_id.is_some_and(|caller| {
+            caller == owner
+                || room_owner
+                    .is_some_and(|room_owner| self.acts_for_owner_in(room_owner, caller, owner))
+        })
+    }
+
     /// The owner and operation of a pending decision whose chosen choice needs
     /// the passkey, when the caller owns that decision and it has not expired
     /// (its popup is closed then, so no passkey is checked for it).
@@ -71,7 +96,7 @@ impl KernelRuntimeOwnedState {
         let owner = pending
             .kernel_operation_owner
             .clone()
-            .filter(|owner| self.answers_for_owner(owner, caller_user_id))?;
+            .filter(|owner| self.is_decision_owner(session_id, caller_user_id, owner))?;
         let interaction = if let Some(interaction) = pending
             .kernel_wide_interaction
             .or(pending.user_domain_interaction)
@@ -140,9 +165,8 @@ impl KernelRuntimeOwnedState {
     }
 
     /// Carries the authenticated answering connection into the locked resolver.
-    // Keep the shared terminal answer contract used across runtime interaction callers.
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn resolve_terminal_runtime_interaction(
+    pub(super) fn resolve_attributed_terminal_runtime_interaction(
         &self,
         session_id: &str,
         interaction_id: &str,
@@ -151,16 +175,19 @@ impl KernelRuntimeOwnedState {
         caller_user_id: Option<&str>,
         passkey_verified: bool,
         connection_class: Option<crate::local::KernelConnectionClass>,
+        answerer: Option<&crate::runtime::command::KernelCaller>,
     ) -> Result<(), DaemonError> {
-        self.resolve_runtime_interaction_inner(
+        self.resolve_runtime_interaction_authorized(
             session_id,
             interaction_id,
             choice_id,
             custom_reply,
             caller_user_id,
             passkey_verified,
+            None,
             false,
             connection_class == Some(crate::local::KernelConnectionClass::Terminal),
+            answerer,
         )
     }
 
@@ -209,6 +236,7 @@ impl KernelRuntimeOwnedState {
             None,
             take_host,
             terminal_answer,
+            None,
         )
     }
 
@@ -225,6 +253,7 @@ impl KernelRuntimeOwnedState {
         authorizing_terminal: Option<&str>,
         take_host: bool,
         terminal_answer: bool,
+        answerer: Option<&crate::runtime::command::KernelCaller>,
     ) -> Result<(), DaemonError> {
         let _mutation = self
             .pending_interactions
@@ -269,7 +298,7 @@ impl KernelRuntimeOwnedState {
             .kernel_operation_owner
             .as_deref()
             .or(pending.terminal_credential_owner.as_deref())
-            .is_some_and(|owner| !self.answers_for_owner(owner, caller_user_id))
+            .is_some_and(|owner| !self.is_decision_owner(session_id, caller_user_id, owner))
         {
             return Err(interaction_reference_error(
                 session_id,
@@ -327,6 +356,20 @@ impl KernelRuntimeOwnedState {
                     .cloned()
             })
             .ok_or_else(|| interaction_error("interaction is not active"))?;
+        if interaction.asking_task_id().is_some()
+            && interaction.timeout_sec().is_some_and(|seconds| {
+                interaction
+                    .requested_at_ms()
+                    .saturating_add(seconds.saturating_mul(1000))
+                    <= crate::session::unix_epoch_ms()
+            })
+        {
+            drop(sessions);
+            drop(activity_mutation);
+            drop(_mutation);
+            self.timeout_runtime_interaction(session_id, interaction_id)?;
+            return Err(interaction_error("Question deadline elapsed"));
+        }
         let review = super::owner_context_review::is_owner_context_review(&interaction);
         if let Some(owner) = pending
             .kernel_operation_owner
@@ -338,11 +381,16 @@ impl KernelRuntimeOwnedState {
             } else {
                 owner.to_owned()
             };
-            if !self.answers_for_owner(&owner, caller_user_id)
-                || (review
-                    && session.as_ref().is_none_or(|session| {
-                        self.owner_context_review_owner(session.owner_user_id()) != owner
-                    }))
+            if !self.is_decision_owner_in(
+                session
+                    .as_ref()
+                    .map(crate::session::RuntimeSession::owner_user_id),
+                caller_user_id,
+                &owner,
+            ) || (review
+                && session.as_ref().is_none_or(|session| {
+                    self.owner_context_review_owner(session.owner_user_id()) != owner
+                }))
             {
                 return Err(interaction_error(
                     "Only the operation owner can answer this decision",
@@ -365,7 +413,18 @@ impl KernelRuntimeOwnedState {
             ));
         }
         if take_host
-            && (pending.kernel_operation_owner.as_deref() != caller_user_id
+            && (!pending
+                .kernel_operation_owner
+                .as_deref()
+                .is_some_and(|owner| {
+                    self.is_decision_owner_in(
+                        session
+                            .as_ref()
+                            .map(crate::session::RuntimeSession::owner_user_id),
+                        caller_user_id,
+                        owner,
+                    )
+                })
                 || !interaction.kernel_operation_id().is_some_and(|subject| {
                     subject
                         .strip_prefix("host_action:")
@@ -473,6 +532,16 @@ impl KernelRuntimeOwnedState {
         {
             return Err(interaction_error("Kernel operation decision expired"));
         }
+        self.record_async_question_resolution(
+            &interaction,
+            &super::PendingInteractionResolution {
+                status: "answered",
+                choice_id: Some(choice_id.into()),
+                reply: Some(resolved_reply.clone()),
+            },
+            caller_user_id,
+            answerer,
+        )?;
         if let Some(terminal) = authorizing_terminal {
             self.sudo_turns
                 .lock()
@@ -631,6 +700,20 @@ impl KernelRuntimeOwnedState {
         if !self.agent_interaction_is_live(&pending) {
             return self.withdraw_agent_interaction_locked(interaction_id, &pending);
         }
+        if pending.async_task_id.is_some() {
+            let session = self.session_store.get_session(session_id)?;
+            let interaction = session
+                .active_interactions()
+                .iter()
+                .find(|i| i.id() == interaction_id)
+                .ok_or_else(|| interaction_error("question is not active"))?;
+            self.record_async_question_resolution(
+                interaction,
+                &timeout_runtime_interaction_resolution(interaction),
+                None,
+                None,
+            )?;
+        }
         let consume = || {
             self.pending_interactions.write().remove(interaction_id);
             if pending.passkey_prompt.is_some() {
@@ -744,7 +827,11 @@ fn timeout_runtime_interaction_resolution(
         };
     };
     super::PendingInteractionResolution {
-        status: "answered",
+        status: if interaction.asking_task_id().is_some() {
+            "timed_out"
+        } else {
+            "answered"
+        },
         choice_id: Some(choice.id().to_string()),
         reply: Some(choice.reply().to_string()),
     }

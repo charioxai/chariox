@@ -58,12 +58,22 @@ impl KernelRuntimeState {
         reason: &str,
     ) -> Result<usize, DaemonError> {
         let revoked = {
+            // Interaction resolution takes the session writer before sudo_turns.
+            let sessions = self.owned.session_store.read();
             let mut access = self.owned.sudo_turns.lock().expect("access state poisoned");
             let ids = access
                 .iter()
                 .filter(|(key, turn)| {
                     id.is_none_or(|id| id == key.as_str())
-                        && owner.is_none_or(|owner| owner == turn.owner_user_id)
+                        && owner.is_none_or(|owner| {
+                            sessions.get_session(&turn.session_id).is_ok_and(|session| {
+                                self.owned.acts_for_owner_in(
+                                    session.owner_user_id(),
+                                    owner,
+                                    &turn.owner_user_id,
+                                )
+                            })
+                        })
                 })
                 .map(|(id, _)| id.clone())
                 .collect::<Vec<_>>();
@@ -121,12 +131,21 @@ impl KernelRuntimeState {
 
     pub(crate) fn list_sudo_turns(&self, owner: &str) -> Vec<KernelSudoTurn> {
         self.sweep_sudo();
+        let sessions = self.owned.session_store.read();
         self.owned
             .sudo_turns
             .lock()
             .expect("access state poisoned")
             .values()
-            .filter(|turn| turn.owner_user_id == owner)
+            .filter(|turn| {
+                sessions.get_session(&turn.session_id).is_ok_and(|session| {
+                    self.owned.acts_for_owner_in(
+                        session.owner_user_id(),
+                        owner,
+                        &turn.owner_user_id,
+                    )
+                })
+            })
             .cloned()
             .collect()
     }
