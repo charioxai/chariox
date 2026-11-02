@@ -3,7 +3,7 @@ import test from "node:test"
 import { readdirSync, readFileSync } from "node:fs"
 import { COMMANDS, EXIT_CODES, REQUEST_EXAMPLES, CommandFailure, exitCodeFor, guideText, parseArguments, usageOf } from "./agent-command-table.js"
 import {
-  attachToSessionRequest, cancelActivePromptRequest, createSessionRequest, endSessionRequest, getSessionStateRequest,
+  attachToSessionRequest, cancelActivePromptRequest, createSessionRequest, destroyAgentRequest, endSessionRequest, getSessionStateRequest,
   listProjectsRequest, listSessionsRequest, respondToInteractionRequest, searchWorkspaceDirectoriesRequest, spawnAgentRequest, submitPromptRequest,
 } from "./ipc-requests.js"
 
@@ -107,7 +107,7 @@ function requestFields(struct: string): { name: string; required: boolean }[] | 
 test("every request example is one kernel request variant with the kernel's field names", () => {
   assert.deepEqual(REQUEST_EXAMPLES.map(entry => Object.keys(entry.body)[0]), [
     "ListSessions", "ListProjects", "SearchWorkspaceDirectories", "CreateSession", "AttachToSession", "GetSessionState",
-    "SpawnAgent", "SubmitPrompt", "CancelActivePrompt", "RunShellCommand", "EndSession", "RequestKernelSudo", "RespondToInteraction",
+    "SpawnAgent", "SubmitPrompt", "CancelActivePrompt", "DestroyAgent", "RunShellCommand", "EndSession", "RequestKernelSudo", "RespondToInteraction",
   ])
   const guide = guideText()
   for (const { body } of REQUEST_EXAMPLES) {
@@ -130,9 +130,10 @@ test("request examples equal what the kernel-client builders produce", () => {
   const byName = new Map(REQUEST_EXAMPLES.map(entry => [Object.keys(entry.body)[0]!, entry.body]))
   const built = [
     listSessionsRequest(), listProjectsRequest(), searchWorkspaceDirectoriesRequest("NAME", 20), createSessionRequest("/PATH", "/PATH"),
-    attachToSessionRequest("SESSION_ID", "CLIENT_NAME"), getSessionStateRequest("SESSION_ID"), spawnAgentRequest("SESSION_ID", "codex"),
+    attachToSessionRequest("SESSION_ID", "CLIENT_NAME"), getSessionStateRequest("SESSION_ID"),
+    spawnAgentRequest("SESSION_ID", "codex", undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, "PROFILE_ID"),
     submitPromptRequest("SESSION_ID", "ATTACHMENT_ID", null, "PROMPT", []), cancelActivePromptRequest("SESSION_ID", "ATTACHMENT_ID", null),
-    endSessionRequest("SESSION_ID"), respondToInteractionRequest("SESSION_ID", "INTERACTION_ID", "CHOICE_ID"),
+    destroyAgentRequest("SESSION_ID", "AGENT_ID"), endSessionRequest("SESSION_ID"), respondToInteractionRequest("SESSION_ID", "INTERACTION_ID", "CHOICE_ID"),
   ]
   for (const request of built) assert.deepEqual(byName.get(Object.keys(request)[0]!), request)
 })
@@ -145,6 +146,11 @@ test("the guide tells the agent to read parse errors and to give state-changing 
 
 test("the guide names the terminal ID returned by terminal open", () => {
   assert.match(guideText(), /terminal\.terminal_id/)
+})
+
+test("the guide shows how to destroy an agent after spawning it", () => {
+  assert.match(guideText(), /"DestroyAgent":\{"session_id":"SESSION_ID","agent_id":"AGENT_ID"\}/)
+  assert.match(guideText(), /"account_profile":"PROFILE_ID"/)
 })
 
 test("the guide steps cover watching a kernel and an attachment that is kept alive", () => {
