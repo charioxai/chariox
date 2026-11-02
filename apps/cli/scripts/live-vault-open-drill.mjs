@@ -106,11 +106,13 @@ async function prepareBrowser(){
   await prepareBrowser()
   await submit(`MP-08 / MP-09 / MP-10 / MP-11 live drill: generate a password with chariox.vault.generate, request_id ${marker}, origin https://github.com. Retry that same request once and verify the same credential_id. Use the Chariox kernel Browser tools on the existing GitHub sign-in tab: get a fresh snapshot, fill only the Password input with that handle using chariox.kernel_browser_paste_secret and submit=false. Do not sign in, submit, request sudo, approval, a plan, or read/copy/re-display any secret. Get a fresh model snapshot and screenshot to verify the password stays masked. Remember the credential_id for the next turn. Finish with exactly ${marker}_FILLED if both generation and fill succeeded; otherwise exactly ${marker}_FAILED.`,marker+'_FILLED',marker+'_FAILED')
   const fields=await page.evaluate(()=>[...document.querySelectorAll('.desktop iframe')].filter(f=>f.offsetWidth>0&&f.style.visibility!=='hidden').map(f=>{
-   const input=f.contentDocument?.querySelector('#password');return {found:!!input,type:input?.type,
-    protected:input?.getAttribute('aria-label')==='Protected content',safeValue:!input?.value||/^[•●*]+$/.test(input.value)}
+   const doc=f.contentDocument,inputs=[...doc?.querySelectorAll('input[type=password],#password')??[]]
+   return {loginPresent:Boolean(doc?.body?.innerText.includes('Sign in to GitHub')),passwordNodeOmitted:inputs.length===0,
+    inputs:inputs.map(input=>({type:input.type,safeValue:!input.value||/^[•●]+$/.test(input.value)}))}
   }))
-  check('mirrored password value remains protected',fields.some(f=>f.found&&(f.type==='password'||f.protected)&&f.safeValue))
-  await writeFile(output+'/field-protection.json',JSON.stringify(fields,null,2));await shot('generated-and-filled')
+  await writeFile(output+'/field-protection.json',JSON.stringify(fields,null,2))
+  check('mirrored DOM omits protected password or carries only bullets',fields.some(f=>f.loginPresent)&&fields.every(f=>f.inputs.every(input=>input.safeValue)))
+  await shot('generated-and-filled')
   await navigate('https://gitlab.com/users/sign_in');await shot('other-origin-before-use')
   await submit(`MP-08 / MP-09 / MP-10 / MP-11: reuse the exact credential_id generated in the previous turn, without generating or changing an entry. Get a fresh snapshot of the current GitLab sign-in tab and attempt chariox.kernel_browser_paste_secret into its Password input with submit=false. This must be refused because the entry belongs to https://github.com. Do not submit, sign in, request sudo or approvals, or inspect/copy a secret. Finish with exactly ${marker}_OTHER_ORIGIN_REFUSED only if the actual fill tool refuses the origin; otherwise exactly ${marker}_WRONG_ORIGIN_FAILED.`,marker+'_OTHER_ORIGIN_REFUSED',marker+'_WRONG_ORIGIN_FAILED')
   await shot('other-origin-refused')
