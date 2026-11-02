@@ -307,7 +307,8 @@ export class KernelDirect<TIdentity> {
       await abortable(offer.peer.setRemoteDescription({ type: "answer", sdp: grant.answer }), input.signal!)
       const socket = await this.adoptCarrier(input, keypair, grant, new DataChannelSocket(offer.peer, offer.channel) as unknown as WebSocket)
       if (this.closed || input.signal?.aborted) { socket.close(); return null }
-      this.lease(kernelRef).keeper.add({ socket, grant, input, keypair, sequence: 1, expiresAtMs: grant.expiresAtMs })
+      // A sibling lane may outlive the caller that opened this carrier.
+      this.lease(kernelRef).keeper.add({ socket, grant, input: { ...input, signal: this.lifetime.signal }, keypair, sequence: 1, expiresAtMs: grant.expiresAtMs })
       state.cooldownMs = 0
       state.cooldownUntilMs = 0
       state.proven = true
