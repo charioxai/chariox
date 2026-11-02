@@ -54,12 +54,17 @@ export class HostDownloads {
       if (this.records.has(guid)) return;
       const target = this.browser.targetsByFrame?.get(params.frameId);
       const binding = this.bindings.get(target) ?? {tab_id:null,session:"browser-viewer"};
-      if (this.records.size >= 200) {
-        this.track(this.connection.send('Browser.cancelDownload',{guid}).catch(() => {}));
-        return;
-      }
       const name = path.basename(String(params.suggestedFilename ?? 'download').replaceAll('\\','/')).slice(0,255) || 'download';
       const record = {download_id:guid,...binding,name,state:'in_progress',bytes:0,path:null,reserved:0,reason:null};
+      if (this.records.size >= 200) {
+        // Keep one bounded refusal receipt so reaching the record cap is visible in state.
+        this.rejection = {...record,state:'failed',reason:'download_count_limit'};
+        this.track(this.connection.send('Browser.cancelDownload',{guid}).catch(() => {
+          record.reason = 'cancellation_failed';
+        }).then(() => this.removeBytes(record)));
+        this.notify();
+        return;
+      }
       this.records.set(guid, record);
       if (this.endedSessions.has(binding.session)) { record.reason = 'session_ended'; this.track(this.requestCancel(record)); }
       this.notify();
@@ -110,7 +115,7 @@ export class HostDownloads {
     } finally { record.finishing = false; this.notify(); }
   }
   state() {
-    return [...this.records.values()].filter(record => record.tab_id !== null).map(({download_id,tab_id,name,state,bytes,path,reason}) => ({download_id,tab_id,name,state,bytes,path,...(reason ? {reason} : {})}));
+    return [...this.records.values(),...(this.rejection ? [this.rejection] : [])].filter(record => record.tab_id !== null).map(({download_id,tab_id,name,state,bytes,path,reason}) => ({download_id,tab_id,name,state,bytes,path,...(reason ? {reason} : {})}));
   }
   async cancel(guid, tab) {
     const record = this.records.get(guid);
@@ -124,6 +129,7 @@ export class HostDownloads {
   }
   async cleanupSession(session) {
     this.endedSessions.add(session);
+    if (this.rejection?.session === session) this.rejection = null;
     const records = [...this.records.values()].filter(record => record.session === session);
     for (const record of records) {
       if (record.state === 'in_progress' && !record.finishing) await this.connection.send('Browser.cancelDownload',{guid:record.download_id});
@@ -137,6 +143,6 @@ export class HostDownloads {
     this.off?.(); this.off = null;
     await this.settle();
     if (this.root) await rm(this.root,{recursive:true,force:true});
-    this.root = null; this.records.clear(); this.bindings.clear(); this.endedSessions.clear();
+    this.root = null; this.records.clear(); this.bindings.clear(); this.endedSessions.clear(); this.rejection = null;
   }
 }

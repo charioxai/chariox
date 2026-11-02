@@ -72,3 +72,16 @@ test('MP-08/MP-10 a replacement controller removes artifacts from its stopped pr
   try { await assert.rejects(access(saved)); assert.deepEqual(replacement.state(),[]); }
   finally { await replacement.close(); }
 }));
+
+
+test('MP-08/MP-10 the bounded record cap reports the refused download and removes its bytes', () => using(async ({downloads,begin,sent}) => {
+  for(let index=0;index<200;index++)begin(`download-${index}`);
+  await writeFile(path.join(downloads.spool,'overflow'),'partial');
+  begin('overflow');await downloads.settle();
+  assert.equal(downloads.state().length,201);
+  assert.equal(downloads.state().at(-1).reason,'download_count_limit');
+  assert.equal(sent.at(-1).method,'Browser.cancelDownload');
+  await assert.rejects(access(path.join(downloads.spool,'overflow')));
+  begin('latest-overflow');await downloads.settle();
+  assert.equal(downloads.state().length,201);assert.equal(downloads.state().at(-1).download_id,'latest-overflow');
+}));
