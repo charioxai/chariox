@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, writeFile, realpath, rm, symlink, readFile, stat } from
 import { tmpdir } from "node:os";
 import path from "node:path";
 import nodeTest from "node:test";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { uploadBrowserFiles } from "./browser-controller-files.mjs";
 import { BrowserUploadStaging, uploadCopyTimeoutMs } from "./browser-controller-upload-staging.mjs";
@@ -11,6 +11,31 @@ import { BrowserUploadStaging, uploadCopyTimeoutMs } from "./browser-controller-
 // Procfs identity and kernel-held flock are Linux runtime contracts.
 const test = (name, run) => nodeTest(name, { skip: process.platform !== "linux" }, run);
 const platformFixture = {};
+
+test("owned CDP pipe uploads retain bytes until explicit browser retirement", async t => {
+  const root = await realpath(await mkdtemp(path.join(tmpdir(), "chariox-pipe-upload-")));
+  const child = spawn('python3', ['-c', 'import time; time.sleep(60)', '--remote-debugging-pipe'], { stdio: 'ignore' });
+  const stop = async () => {
+    if (!Number.isSafeInteger(child.pid) || child.pid <= 1) throw Error('invalid fixture PID');
+    if (child.exitCode === null && child.signalCode === null) {
+      const exited = new Promise(resolve => child.once('exit', resolve));
+      process.kill(child.pid, 'SIGTERM');
+      await exited;
+    }
+  };
+  t.after(async () => { await stop(); await rm(root, { recursive: true, force: true }); });
+  const file = path.join(root, 'report.txt'); await writeFile(file, 'approved');
+  const stager = new BrowserUploadStaging({ root: path.join(root, 'staging') });
+  const browserIdentity = 'pipe:11111111-1111-4111-8111-111111111111';
+  const connection = { async send() { return { processInfo: [{ type: 'browser', id: child.pid }] }; } };
+  const upload = await stager.prepare({ files: [file], metadata: [await approvedMetadata(file)], browserIdentity, connection });
+  await upload.markExposed(); await upload.discard();
+  assert.equal(await readFile(upload.files[0], 'utf8'), 'approved');
+  await assert.rejects(stager.retirePipe(browserIdentity), /retirement/);
+  await stop();
+  await stager.retirePipe(browserIdentity);
+  await assert.rejects(readFile(upload.files[0]), { code: 'ENOENT' });
+});
 
 async function ownedBrowser(t, root) {
   const previous = process.env.CHARIOX_BROWSER_LIFECYCLE_ROOT;

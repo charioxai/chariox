@@ -72,6 +72,7 @@ export class BrowserUploadStaging {
         { timeout: 2000, killSignal: "SIGKILL", maxBuffer: 8192 }, (error, _output, stderr) => {
           if (!error) resolve();
           else reject(denied(stderr.includes("quota is full") ? "upload staging quota is full; verified browser retirement is required"
+            : stderr.includes("pipe browser retirement is not proven") ? "pipe browser retirement is not proven"
             : "upload staging transaction unavailable; retained data requires reconciliation"));
         });
       child.stdin.on("error", () => {});
@@ -87,7 +88,8 @@ export class BrowserUploadStaging {
       || metadata.reduce((sum, item) => sum + item.size, 0) > 512 * 1024 * 1024) {
       throw denied("upload staging requires a bounded approved file set");
     }
-    if (typeof browserIdentity !== "string" || !/^wss?:\/\/[^\s]+\/devtools\/browser\/[A-Za-z0-9-]+$/.test(browserIdentity)) {
+    const pipe = typeof browserIdentity === 'string' && /^pipe:[a-f0-9-]{36}$/.test(browserIdentity);
+    if (typeof browserIdentity !== "string" || (!pipe && !/^wss?:\/\/[^\s]+\/devtools\/browser\/[A-Za-z0-9-]+$/.test(browserIdentity))) {
       throw denied("upload staging requires an observed physical browser identity");
     }
     const bytes = metadata.reduce((sum, item) => sum + item.size, 0);
@@ -103,7 +105,7 @@ export class BrowserUploadStaging {
     const browserPid = processes?.processInfo?.find(item => item.type === "browser")?.id;
     const root = await this.transaction({ action: "reserve", entry: { id, browser, bytes, count: files.length },
       maximumBytes: this.maximumBytes, maximumFiles: this.maximumFiles,
-      browserPid, browserPort: Number(new URL(browserIdentity).port) });
+      browserPid, ...(pipe ? { browserPipe: true } : { browserPort: Number(new URL(browserIdentity).port) }) });
     const leaseRoot = path.join(root, id);
     let exposed = false;
     const discard = async () => {
@@ -170,7 +172,23 @@ export class BrowserUploadStaging {
       throw denied("upload staging failed before files were exposed");
     }
   }
+
+  // Only the owned host shutdown path calls this after settling its browser tree.
+  async retirePipe(browserIdentity) {
+    if (!/^pipe:[a-f0-9-]{36}$/.test(browserIdentity)) throw denied('invalid pipe browser retirement');
+    await this.transaction({ action: 'retirePipe', browser: createHash('sha256').update(browserIdentity).digest('hex') });
+  }
 }
 
 const defaultStaging = new BrowserUploadStaging();
-export const stageBrowserUploadFiles = options => defaultStaging.prepare(options);
+export const stageBrowserUploadFiles = async options => {
+  const result = await defaultStaging.prepare(options);
+  if (options.browserIdentity.startsWith('pipe:')) options.connection.hasStagedUploads = true;
+  return result;
+};
+export const retirePipeBrowserUploads = async connection => {
+  if (connection?.hasStagedUploads) {
+    await defaultStaging.retirePipe(connection.browserInstanceId);
+    connection.hasStagedUploads = false;
+  }
+};

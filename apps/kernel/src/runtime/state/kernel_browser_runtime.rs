@@ -104,6 +104,9 @@ struct BrowserToolArguments {
     document_id: Option<String>,
 }
 fn browser_tool_params(arguments: serde_json::Value) -> Result<serde_json::Value, DaemonError> {
+    if arguments["command"]["input"]["kind"] == "upload" {
+        return super::kernel_browser_upload::params(arguments);
+    }
     let request: BrowserToolArguments = serde_json::from_value(arguments)
         .map_err(|error| host_error(super::kernel_browser_command_error::public_reason(&error)))?;
     if matches!(
@@ -808,8 +811,8 @@ impl KernelRuntimeState {
                     input_schema: serde_json::json!({"type":"object","properties":{"agent":{"type":"string","minLength":1},"resources":{"type":"array","minItems":1,"maxItems":64,"items":{"type":"object","properties":{"kind":{"type":"string","enum":["browser_tab","app_view"]},"tab_id":{"type":"string"},"view_id":{"type":"string"}},"required":["kind"]}}},"required":["agent","resources"],"additionalProperties":false}), });
             }
             tools.push(RuntimeToolSpec { name: BROWSER.into(),
-                description: "MD-3: control the user's kernel browser outside sessions/slices. Read state/snapshot/screenshot to obtain tab IDs, generation and document_id; input requires the observed document_id beside command and accepts click/text/key/scroll; click/scroll x,y are CSS pixels inside the state viewport (screenshot pixels / device_scale_factor). Pending dialogs appear in state.dialogs; answer with dialog using its dialog_id, tab_id, document_id, generation and action accept/dismiss (optional prompt_text, empty allowed). Vault input is separate.".into(),
-                input_schema: serde_json::json!({"type":"object","properties":{"document_id":{"type":"string","minLength":1,"maxLength":256},"command":{"type":"object","properties":{"op":{"type":"string","enum":["start","state","stop","open","close","navigate","snapshot","input","dialog","screenshot"]},"tab_id":{"type":"string"},"generation":{"type":"integer","minimum":1},"url":{"type":"string"},"subscription_id":{"type":"string"},"document_id":{"type":"string","minLength":1,"maxLength":256},"dialog_id":{"type":"string","minLength":1,"maxLength":256},"action":{"type":"string","enum":["accept","dismiss"]},"prompt_text":{"type":"string","maxLength":2048},"input":{"type":"object","properties":{"kind":{"type":"string","enum":["click","text","key","scroll"]},"x":{"type":"integer","minimum":0,"maximum":1279},"y":{"type":"integer","minimum":0,"maximum":799},"text":{"type":"string","maxLength":16384},"key":{"type":"string","minLength":1,"maxLength":16,"description":"Named navigation/editing key or a single printable character; validated by the shared browser input path."},"modifiers":{"type":"integer","minimum":0,"maximum":15,"description":"Optional bounded CDP keyboard bitset: Alt=1, Ctrl=2, Meta=4, Shift=8; omitted means zero."},"delta_x":{"type":"integer","minimum":-10000,"maximum":10000},"delta_y":{"type":"integer","minimum":-10000,"maximum":10000}},"required":["kind"],"additionalProperties":false}},"required":["op"],"additionalProperties":false}},"required":["command"],"additionalProperties":false}), });
+                description: "MD-3: control the user's kernel browser outside sessions/slices. Read state/snapshot/screenshot to obtain tab IDs, generation and document_id; input requires the observed document_id beside command and accepts click/text/key/scroll/upload; upload uses target=node_ref from snapshot and path (or paths, 1 through 20 files, 512 MiB total) inside the Room workspace; traversal and symlink escapes are refused; only input type=file is supported, not drop zones or chooser buttons; click/scroll x,y are CSS pixels inside the state viewport (screenshot pixels / device_scale_factor). Pending dialogs appear in state.dialogs; answer with dialog using its dialog_id, tab_id, document_id, generation and action accept/dismiss (optional prompt_text, empty allowed). Vault input is separate.".into(),
+                input_schema: serde_json::json!({"type":"object","properties":{"document_id":{"type":"string","minLength":1,"maxLength":256},"command":{"type":"object","properties":{"op":{"type":"string","enum":["start","state","stop","open","close","navigate","snapshot","input","dialog","screenshot"]},"tab_id":{"type":"string"},"generation":{"type":"integer","minimum":1},"url":{"type":"string"},"subscription_id":{"type":"string"},"document_id":{"type":"string","minLength":1,"maxLength":256},"dialog_id":{"type":"string","minLength":1,"maxLength":256},"action":{"type":"string","enum":["accept","dismiss"]},"prompt_text":{"type":"string","maxLength":2048},"input":{"type":"object","properties":{"kind":{"type":"string","enum":["click","text","key","scroll","upload"]},"target":{"type":"string","description":"Upload: node_ref from a fresh snapshot of an input type=file."},"path":{"type":"string","minLength":1,"maxLength":4096,"description":"Upload: a file relative to the Room workspace, or an absolute path inside it. Use path or paths."},"paths":{"type":"array","minItems":1,"maxItems":20,"items":{"type":"string","minLength":1,"maxLength":4096}},"x":{"type":"integer","minimum":0,"maximum":1279},"y":{"type":"integer","minimum":0,"maximum":799},"text":{"type":"string","maxLength":16384},"key":{"type":"string","minLength":1,"maxLength":16,"description":"Named navigation/editing key or a single printable character; validated by the shared browser input path."},"modifiers":{"type":"integer","minimum":0,"maximum":15,"description":"Optional bounded CDP keyboard bitset: Alt=1, Ctrl=2, Meta=4, Shift=8; omitted means zero."},"delta_x":{"type":"integer","minimum":-10000,"maximum":10000},"delta_y":{"type":"integer","minimum":-10000,"maximum":10000}},"required":["kind"],"additionalProperties":false}},"required":["op"],"additionalProperties":false}},"required":["command"],"additionalProperties":false}), });
         }
         tools
     }
@@ -902,6 +905,10 @@ impl KernelRuntimeState {
                 });
         }
         let mut params = browser_tool_params(arguments)?;
+        if params["input"]["kind"] == "upload" {
+            params["_upload_roots"] =
+                serde_json::json!([self.room_project_directory(run.session_id())?]);
+        }
         self.claim_app_view_tab(&user, &admission, &mut params)?;
         let payload = self
             .kernel_browser_operation_admitted(&user, Some(admission), "host.browser", params)
@@ -1229,6 +1236,29 @@ mod document_tests {
                 "MP-11: never reflect arbitrary parameters or values"
             );
         }
+    }
+
+    #[test]
+    fn mcp_upload_uses_the_document_bound_input_lane() {
+        let arguments = serde_json::json!({"document_id":"doc","command":{
+            "op":"input","tab_id":"tab","generation":1,
+            "input":{"kind":"upload","target":"backend:7","path":"report.txt"}
+        }});
+        let params = browser_tool_params(arguments.clone()).unwrap();
+        assert_eq!(params["input"]["kind"], "upload");
+        assert_eq!(params["document_id"], "doc");
+        assert_eq!(params["focused_agent"], true);
+        for extra in ["_upload_roots", "_agent_input"] {
+            let mut invalid = arguments.clone();
+            invalid["command"][extra] = serde_json::json!(["/"]);
+            assert!(browser_tool_params(invalid).is_err());
+        }
+        let mut invalid = arguments.clone();
+        invalid.as_object_mut().unwrap().remove("document_id");
+        assert!(browser_tool_params(invalid).is_err());
+        let mut invalid = arguments;
+        invalid["command"]["input"]["paths"] = serde_json::json!(["other.txt"]);
+        assert!(browser_tool_params(invalid).is_err());
     }
 
     #[test]

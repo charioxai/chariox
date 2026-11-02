@@ -1,6 +1,8 @@
 import {displayGeometry as geometry, pageLimit, chromeBandHeight, featureOn} from './kernel-browser-geometry.mjs';
 // MD-2: host Chromium lifetime. Never touches a slice or an existing Chrome.
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { retirePipeBrowserUploads } from './browser-controller-upload-staging.mjs';
 import { access, mkdir, readlink, open } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -173,6 +175,7 @@ export class HostChromium {
     const collectStderr=chunk=>{if(startupStderr.length<8192)startupStderr+=chunk.toString('utf8').slice(0,8192-startupStderr.length);};
     child.stderr.on('data',collectStderr);
     const connection = connectCdpPipe(child.stdio[3], child.stdio[4]);
+    connection.browserInstanceId = `pipe:${randomUUID()}`;
     if (this.desktop?.binding()) fenceScreenshotPresentation(connection);
     this.connection = connection;
     child.once('error', error => { spawnCode=error.code; void connection.close(); });
@@ -222,6 +225,7 @@ export class HostChromium {
     if (!exited()) await new Promise(resolve => child.once("exit", resolve));
     await connection?.close();
     if (keepDesktop) await this.desktop.stopBrowser(); else { await this.desktop?.stop(); this.display = null; }
+    await retirePipeBrowserUploads(connection);
     await this.temporaryDirectory?.close(); this.temporaryDirectory = null;
   }
 }
