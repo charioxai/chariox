@@ -60,7 +60,6 @@ export type WorkflowNodeCommandDeps = WorkflowNodeInstructionsCommandDeps & {
   ) => Promise<WorkflowNodePayload>
   grantAgentMcp?: (agentRef: string, name: string) => Promise<AgentInstance>
   getAppInstallation?: (installationId: string) => Promise<AppInstallationSummary | null>
-  grantAgentApp?: (agentRef: string, installationId: string) => Promise<AgentInstance>
   revokeAgentApp?: (agentRef: string, installationId: string) => Promise<AgentInstance>
   revokeAgentMcp?: (agentRef: string, name: string) => Promise<AgentInstance>
   grantAgentSkill?: (agentRef: string, name: string) => Promise<AgentInstance>
@@ -408,10 +407,7 @@ async function grantNodeExtension(
 ): Promise<AgentInstance> {
   if (kind === "mcp" && deps.grantAgentMcp) return deps.grantAgentMcp(agentRef, name)
   if (kind === "skill" && deps.grantAgentSkill) return deps.grantAgentSkill(agentRef, name)
-  if (kind === "app" && deps.grantAgentApp) {
-    if (args.some((arg) => ["--environment", "--credential", "--allow"].includes(arg))) throw new Error("App bindings take only an installation ID")
-    return deps.grantAgentApp(agentRef, name)
-  }
+  if (kind === "app") throw new Error("Apps are not assigned: the agent that needs an installed App asks for it itself")
   if (kind === "script" && deps.grantAgentScript) {
     const environment = readOption(args, "--environment")
     if (!environment) throw new Error("script grants require --environment <name>")

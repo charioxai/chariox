@@ -11,7 +11,7 @@ async fn app_dev_owner_revoke_is_preserved_until_a_requested_regrant() {
         let store = &runtime.owned.durable_state_store;
         let _catalog = crate::durable_state::app_state::fixture_catalog(store);
         let granted = runtime
-            .grant_agent_app(&agent, ExtensionGrant::app("installed"), "alice", None)
+            .grant_agent_app(&agent, ExtensionGrant::app("installed"), "alice")
             .await
             .unwrap();
         // A failed choice append used to leave a live grant beside the old
@@ -25,7 +25,7 @@ async fn app_dev_owner_revoke_is_preserved_until_a_requested_regrant() {
             )
             .unwrap();
         let retried = runtime
-            .grant_agent_app(&agent, ExtensionGrant::app("installed"), "alice", None)
+            .grant_agent_app(&agent, ExtensionGrant::app("installed"), "alice")
             .await
             .unwrap();
         assert_eq!(granted.extension_grants(), retried.extension_grants());
@@ -55,7 +55,7 @@ async fn app_dev_owner_revoke_is_preserved_until_a_requested_regrant() {
             .dev_app_automatic_binding_enabled(&agent, "installed")
             .unwrap());
         runtime
-            .grant_agent_app(&agent, ExtensionGrant::app("installed"), "alice", None)
+            .grant_agent_app(&agent, ExtensionGrant::app("installed"), "alice")
             .await
             .unwrap();
         assert!(store

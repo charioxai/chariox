@@ -30,6 +30,7 @@ impl KernelRuntimeState {
         {
             return Err(unavailable());
         }
+        let installation_owner = self.app_reach(agent).owner;
         // Captured at submission, before any wait for an on-demand start.
         let turn_id = self.app_call_turn_id(agent, caller_run_id, remote.is_some());
         let turn_cancelled = Arc::new(self.app_call_turn_cancellation(agent));
@@ -53,11 +54,11 @@ impl KernelRuntimeState {
         let lease_result = tokio::select! {
             biased;
             _ = authority_lost() => return Err(unavailable()),
-            result = self.app_lease_on_demand(agent.owner_user_id(), &tool.name) => result,
+            result = self.app_lease_on_demand(&installation_owner, &tool.name) => result,
         };
         let lease = match lease_result {
             Ok(lease) => lease,
-            Err(_) if self.app_updating(agent.owner_user_id(), &tool.name).await => {
+            Err(_) if self.app_updating(&installation_owner, &tool.name).await => {
                 return Err(coded(app_call_errors::updating()));
             }
             Err(error) => return Err(error),
@@ -316,22 +317,14 @@ fn require_binding(
     Ok(())
 }
 
-// MP-11: revoke/regrant cannot revive a retained call from the old grant.
+// The binding must still be there, on the same worker placement.
 fn same_binding(
     current: &crate::agent::AgentInstance,
     expected: &crate::agent::AgentInstance,
     name: &str,
 ) -> bool {
-    let grant = |agent: &crate::agent::AgentInstance| {
-        agent
-            .extension_grants()
-            .iter()
-            .find(|grant| grant.kind == ExtensionKind::App && grant.name == name)
-            .map(|grant| grant.app_grant.clone())
-    };
     current.has_extension_grant(ExtensionKind::App, name)
         && current.remote_execution() == expected.remote_execution()
-        && grant(current) == grant(expected)
 }
 
 #[cfg(test)]

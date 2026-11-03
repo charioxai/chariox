@@ -54,21 +54,10 @@ pub(crate) async fn execute_grant_agent_extension_request(
     request: GrantAgentExtensionRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     match request.kind {
-        ExtensionKind::App => {
-            let grant = crate::extension::ExtensionGrant {
-                kind: crate::extension::ExtensionKind::App,
-                name: request.name,
-                environment: request.environment,
-                credential: request.credential,
-                max_safety: request.max_safety,
-                app_grant: None,
-            };
-            grant.validate_app_binding()?;
-            let agent = runtime_state
-                .grant_agent_extension(&request.agent_ref, grant, caller_user_id)
-                .await?;
-            Ok(LocalDaemonResponse::AgentExtensionGranted { agent })
-        }
+        ExtensionKind::App => Err(DaemonError::LocalTransport {
+            operation: "agent.extension.grant",
+            message: "Apps are not assigned: the agent that needs an installed App asks for it with request_extension".into(),
+        }),
         ExtensionKind::Mcp => {
             ensure_mcp_exists(request.workspace_id.as_deref(), &request.name)?;
             let agent = runtime_state

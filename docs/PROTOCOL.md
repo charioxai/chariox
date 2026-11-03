@@ -176,16 +176,17 @@ its source or survive source revocation. Grant projections include absolute
 expiry have live kernel wakes that cancel in-flight work and subscription scopes.
 
 App bindings use the existing trusted installation, admitted publisher key and
-capability checks. Issued bindings carry an optional `app_grant` generation,
-absolute expiry and prompt/delegation attribution; agents cannot submit this
-issued authority as grant input. App grants default to 8 hours and child
-bindings inherit the parent's deadline. Revocation removes only bindings
-actually delegated from that generation, wakes retained calls and prevents an
-old call or expiry wake from adopting a replacement binding. Recovery rearms
-absolute expiry; an untimed legacy binding needs fresh owner approval in room
-mode, and recovery without a live expiry executor fails closed. Recovery
-removals record the normal `agent.extension_revoked` event and
-`home_extension.grant.revoked` audit. Leased, remote and slice agents cannot acquire these user-domain
+capability checks. An agent discovers the installed Apps of its Room with
+`chariox.list_extensions` and exposes one to itself with
+`chariox.request_extension` (`kind: "app"`): the kernel binds it at once, with
+no person and no prompt, and the agent's tool catalog then lists the App's tools
+and the `chariox.app_view_*` tools. A person does not assign Apps
+(`GrantAgentExtension` with kind `app` is refused; `RevokeAgentExtension`
+unbinds). A binding carries no expiry or delegation: it is exposure, and every
+call still goes through the installation's own checks. A guest's agent binds the
+Room owner's Apps inside the invited Room only; a Dev installation is reachable
+from its own Room only. An agent's calls into an App view need no browser claim.
+Leased, remote and slice agents cannot acquire these user-domain
 resources; they use their Room Browser/Computer route.
 
 Clients consuming this metadata require local 462; relay peer shapes are

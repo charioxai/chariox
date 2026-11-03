@@ -11,13 +11,12 @@ import {
   type CapabilityCommandHandlerDeps,
 } from "./capability-command-handlers.js"
 
-test("App bindings use the existing slash grant path without a second remote confirmation", async () => {
+test("a person cannot assign an App with the slash grant; unbinding stays", async () => {
   const harness = capabilityHarness(agent({ remote: true }))
   await handleExtensionSlashCommand(harness.deps, parseSlashCommand("/extension grant app agent-1 installed") as Extract<ReturnType<typeof parseSlashCommand>, { kind: "extension" }>)
-  await handleExtensionSlashCommand(harness.deps, parseSlashCommand("/extension grant app agent-1 installed --credential secret") as Extract<ReturnType<typeof parseSlashCommand>, { kind: "extension" }>)
-  assert.deepEqual(harness.grants, ["app:agent-1:installed"])
-  assert.deepEqual(harness.notices, [])
-  assert.deepEqual(harness.footers, ["info:bound App installed to agent-1", "error:App bindings take only an installation ID"])
+  await handleExtensionSlashCommand(harness.deps, parseSlashCommand("/extension revoke app agent-1 installed") as Extract<ReturnType<typeof parseSlashCommand>, { kind: "extension" }>)
+  assert.deepEqual(harness.grants, [])
+  assert.deepEqual(harness.footers, ["error:Apps are not assigned: the agent that needs an installed App asks for it itself", "info:unbound App installed from agent-1"])
 })
 
 test("extension slash command grants an explicit home-proxy grant at once and says where it runs", async () => {
@@ -170,12 +169,12 @@ test("a vault passphrase change reports its own outcome", async () => {
   assert.deepEqual(harness.footers, ["info:vault passphrase changed"])
 })
 
-for (const kind of ["app", "mcp", "skill", "script"]) {
+for (const kind of ["mcp", "skill", "script"]) {
   test(`extension ${kind} footer uses the agent alias`, async () => {
     const harness = capabilityHarness(agent({ agent_ref: "a1b2c3d4", alias: "agent-2" }))
     await handleExtensionSlashCommand(harness.deps,
       parseSlashCommand(`/extension grant ${kind} a1b2c3d4 lookup${kind === "script" ? " --env py" : ""}`) as Extract<ReturnType<typeof parseSlashCommand>, { kind: "extension" }>)
-    assert.deepEqual(harness.footers, [`info:${kind === "app" ? "bound App" : `granted ${kind === "mcp" ? "MCP" : kind}`} lookup to agent-2`])
+    assert.deepEqual(harness.footers, [`info:granted ${kind === "mcp" ? "MCP" : kind} lookup to agent-2`])
   })
 }
 
@@ -189,7 +188,7 @@ function capabilityHarness(agent: AgentInstance, options: {
   const auditRequests: Array<{ agentRef: string; limit: number | null | undefined }> = []
   let syncRetries = 0
   const deps: CapabilityCommandHandlerDeps = {
-    grantAgentApp: async (agentRef, name) => { grants.push(`app:${agentRef}:${name}`); return agent },
+    revokeAgentApp: async () => agent,
     appendNotice: (message) => notices.push(message),
     flashFooter: (message, tone) => footers.push(`${tone}:${message}`),
     resolveSessionAgent: (reference) => reference === agent.agent_ref || reference === agent.id

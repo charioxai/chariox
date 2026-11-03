@@ -122,7 +122,7 @@ export function importSkillsRequest(workspaceId: string | null, provider: string
 export function grantAgentExtensionRequest(
   workspaceId: string | null,
   agentRef: string,
-  kind: "mcp" | "skill" | "script" | "connector" | "app",
+  kind: "mcp" | "skill" | "script" | "connector",
   name: string,
   environment?: string | null,
   options?: { credential?: string | null; maxSafety?: string | null } | null,

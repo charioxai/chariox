@@ -168,11 +168,12 @@ impl KernelRuntimeState {
                 .collect();
             manifest.tools.extend(
                 self.app_control()
-                    .app_extension_tools_for_agent(agent, &occupied)
+                    .app_extension_tools_for_agent(&self.app_reach(agent), &occupied)
                     .map_err(|error| DaemonError::LocalTransport {
                         operation: "remote App tool catalog",
                         message: error.to_string(),
-                    })?,
+                    })?
+                    .0,
             );
             manifest.tools.extend(Self::remote_app_view_tools(agent));
         }

@@ -820,7 +820,6 @@ impl KernelRuntimeState {
             .collect::<Vec<_>>();
         self.owned
             .ensure_agent_owner(agent.id(), caller_user_id, "destroy agent")?;
-        self.revoke_agent_app_capability_grants(&agent).await?;
         self.authorize_current_external_command()?;
         // Relay projection ingestion also owns the app lock. Keep the worker
         // acknowledgement and home deletion in one critical section so an
@@ -1004,9 +1003,6 @@ impl KernelRuntimeState {
             .await?;
         self.stop_managed_environment_for_session_lifecycle(session_id)
             .await;
-        for agent in owned.agent_store.get_session_agents(session_id) {
-            self.revoke_agent_app_capability_grants(&agent).await?;
-        }
         let worker_agents = self.agents_leased_to_workers(session_id);
         let (session, terminated_run_ids) = owned.end_session(session_id)?;
         self.end_room_terminals(session_id);

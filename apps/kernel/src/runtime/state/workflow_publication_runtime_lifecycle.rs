@@ -46,7 +46,7 @@ const PUBLICATION_RUNTIME_START_TIMEOUT: Duration = Duration::from_secs(60);
 const PUBLICATION_RUNTIME_START_POLL: Duration = Duration::from_millis(50);
 const PUBLICATION_GATEWAY_PARENT_PIPE_ENV: &str = "CHARIOX_PUBLICATION_EXIT_ON_STDIN_CLOSE";
 /// P1.20: the runtime keys of App-bound deployment copies.
-pub(super) const DEPLOYMENT_COPY_KEY_PREFIX: &str = "deployment:";
+pub(crate) const DEPLOYMENT_COPY_KEY_PREFIX: &str = "deployment:";
 const PACKAGE_DIGEST_MISMATCH: &str =
     "publication package digest no longer matches the bound deployment";
 

@@ -30,7 +30,7 @@ impl KernelRuntimeState {
             return Ok(Vec::new());
         };
         let mut specs = self
-            .app_tools_for_agent(&agent, occupied, permit)?
+            .app_tools_for_agent(&self.app_reach(&agent), occupied, permit)?
             .into_iter()
             .map(|tool| RuntimeToolSpec {
                 name: tool.tool_name,
@@ -65,7 +65,7 @@ impl KernelRuntimeState {
         let control = self.app_control().clone();
         // Listed without any App: one that cannot start yet is refreshed
         // when it starts.
-        control.note_listing(&agent, &BTreeSet::new());
+        control.note_listing(&self.app_reach(&agent), &BTreeSet::new());
         if !control.begin_catalog_refresh(agent.id()) {
             return;
         }
@@ -82,8 +82,9 @@ impl KernelRuntimeState {
                             .agent_store
                             .get_agent(&agent)
                             .is_ok_and(|agent| {
-                                control.seed_bound_dormant(&agent);
-                                control.has_active_apps_for_agent(&agent)
+                                let reach = state.app_reach(&agent);
+                                control.seed_bound_dormant(&reach);
+                                control.has_active_apps_for_agent(&reach)
                             })
                     })
                     .await
@@ -111,7 +112,10 @@ impl KernelRuntimeState {
             return false;
         };
         self.app_agent_for_provider_run(run)
-            .is_ok_and(|agent| self.app_control().has_active_apps_for_agent(&agent))
+            .is_ok_and(|agent| {
+                self.app_control()
+                    .has_active_apps_for_agent(&self.app_reach(&agent))
+            })
     }
 
     /// A cheap snapshot only decides whether current App trust needs a bounded
@@ -138,7 +142,7 @@ impl KernelRuntimeState {
     /// The App tools the agent's provider lists.
     fn app_tools_for_agent(
         &self,
-        agent: &crate::agent::AgentInstance,
+        reach: &crate::runtime::app_control::AppReach,
         occupied: &[RuntimeToolSpec],
         permit: Option<&tokio::sync::OwnedSemaphorePermit>,
     ) -> Result<Vec<RemoteExtensionTool>, DaemonError> {
@@ -146,11 +150,12 @@ impl KernelRuntimeState {
         match permit {
             Some(permit) => self
                 .app_control()
-                .app_extension_listing_admitted(agent, &occupied, permit),
+                .app_extension_listing_admitted(reach, &occupied, permit),
             None => self
                 .app_control()
-                .app_extension_tools_for_agent(agent, &occupied),
+                .app_extension_tools_for_agent(reach, &occupied),
         }
+        .map(|(tools, _)| tools)
         .map_err(app_error)
     }
 
@@ -225,7 +230,11 @@ impl KernelRuntimeState {
             let published_elsewhere = base.iter().any(|tool| tool.name == name);
             let tool = state
                 .app_control()
-                .app_extension_tools_for_agent_admitted(&agent, &occupied_names(&base), &permit)
+                .app_extension_tools_for_agent_admitted(
+                    &state.app_reach(&agent),
+                    &occupied_names(&base),
+                    &permit,
+                )
                 .map_err(app_error)?
                 .into_iter()
                 .find(|tool| tool.tool_name == name);
@@ -270,7 +279,7 @@ impl KernelRuntimeState {
         else {
             return false;
         };
-        self.app_updating(agent.owner_user_id(), &installation)
+        self.app_updating(&self.app_reach(agent).owner, &installation)
             .await
     }
 
@@ -326,7 +335,11 @@ impl KernelRuntimeState {
                 .collect();
             let current = state
                 .app_control()
-                .app_extension_tools_for_agent_admitted(&agent, &occupied, &permit)
+                .app_extension_tools_for_agent_admitted(
+                    &state.app_reach(&agent),
+                    &occupied,
+                    &permit,
+                )
                 .map_err(app_error)?
                 .into_iter()
                 .find(|tool| tool.tool_name == hinted.tool_name);
@@ -336,7 +349,7 @@ impl KernelRuntimeState {
                     && state
                         .owned
                         .durable_state_store
-                        .app_update_underway(agent.owner_user_id(), &hinted.name)
+                        .app_update_underway(&state.app_reach(&agent).owner, &hinted.name)
                         .unwrap_or(false);
                 return Err(if updating {
                     coded(crate::runtime::app_call_errors::updating())

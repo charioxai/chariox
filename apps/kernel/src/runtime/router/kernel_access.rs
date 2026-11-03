@@ -46,13 +46,13 @@ impl CommandRouter {
         }
         if self.runtime_state.room_agent_tools_enabled()
             && !command.is_terminal_caller()
-            && (matches!(
+            && matches!(
                 request,
                 LocalDaemonRequest::FocusAgent(_) | LocalDaemonRequest::CycleAgentFocus(_)
-            ) || matches!(request, LocalDaemonRequest::GrantAgentExtension(grant) if grant.kind == crate::local::ExtensionKind::App))
+            )
         {
             return Err(crate::runtime::room_tool_admission::denied(
-                "owner focus and App acquisition require a terminal decision; agents use approved resource tools",
+                "owner focus requires a terminal decision; agents use approved resource tools",
             ));
         }
         if let Some(authority) = command.external_grant_id() {

@@ -57,7 +57,6 @@ impl KernelRuntimeState {
                     environment: args.environment.clone(),
                     credential: args.credential.clone(),
                     max_safety: args.allow.clone(),
-                    app_grant: None,
                 };
                 grant.validate_app_binding()?;
                 if self.room_agent_tools_enabled() && self.slice_kernel_id().is_some() {
@@ -92,36 +91,29 @@ impl KernelRuntimeState {
                         None,
                     ));
                 }
-                let Some(permit) = self
-                    .authorize_agent_app_binding(session_id, agent.id(), agent.id(), &args.name)
-                    .await?
-                else {
+                if !self.agent_reaches_app(agent, &args.name).await {
                     return Ok((
                         crate::transport::runtime_tools::RuntimeToolResult {
                             ok: false,
                             payload: serde_json::json!({
                                 "granted": false, "kind": "app", "name": args.name,
-                                "reason": {"kind": "permission_denied", "message": "The App binding was not approved."}
+                                "error": format!("App `{}` is not installed for this Room; list the installed Apps with list_extensions", args.name),
                             }),
                         },
                         None,
                     ));
-                };
+                }
+                // No person is asked: the agent's own request exposes the App.
                 let granted_agent = self
-                    .grant_agent_app_for_tool(
-                        agent.id(),
-                        grant,
-                        agent.owner_user_id(),
-                        Some(permit),
-                    )
+                    .grant_agent_app_for_tool(agent.id(), grant, agent.owner_user_id())
                     .await?;
                 // Listed when it runs or may start on demand (the grant seeded it).
                 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
                 let active = {
                     let control = self.app_control();
-                    let owner = granted_agent.owner_user_id();
-                    control.active_app_lease(owner, &args.name).is_some()
-                        || control.is_app_dormant(owner, &args.name)
+                    let owner = self.app_reach(&granted_agent).owner;
+                    control.active_app_lease(&owner, &args.name).is_some()
+                        || control.is_app_dormant(&owner, &args.name)
                 };
                 #[cfg(not(any(
                     target_os = "macos",

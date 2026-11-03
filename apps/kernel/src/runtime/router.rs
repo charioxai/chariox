@@ -217,7 +217,6 @@ mod tests {
     mod agent_messaging;
     mod agent_triggers;
     mod app_bindings;
-    mod app_capability_grants;
     #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
     mod app_open;
     #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]

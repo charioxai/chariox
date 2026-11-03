@@ -810,7 +810,7 @@ impl KernelRuntimeState {
                     .map_err(|_| agent_not_granted())?;
                 if agent.id() != actor.id
                     || agent.session_id() != session
-                    || agent.owner_user_id() != binding.owner
+                    || self.app_reach(&agent).owner != binding.owner
                 {
                     return Err(agent_not_granted());
                 }
@@ -835,7 +835,7 @@ impl KernelRuntimeState {
         tracked: &mut ViewCall,
     ) -> Result<Value, BrowserAppViewError> {
         let unavailable = || view_error("APP_UNAVAILABLE", "The App is not running");
-        // MP-08/MP-11: an agent's call needs its own App grant before any lease,
+        // MP-08/MP-11: an agent's call needs its own App binding before any lease,
         // tool or host action (clipboard, links) runs.
         let authority = crate::runtime::app_view_authority::AppViewAuthority::new(
             self.owned.agent_store.clone(),
@@ -844,22 +844,11 @@ impl KernelRuntimeState {
                 ViewCaller::Owner(_) => None,
             },
             &binding.installation,
-            tracked.browser_grant(),
-            match &caller {
-                ViewCaller::Agent(agent) => {
-                    Some(self.app_binding_epoch(agent.id(), &binding.installation))
-                }
-                ViewCaller::Owner(_) => None,
-            },
         );
         authority.check()?;
-        let cancelled = authority.clone();
-        let operation_budget = tracked
-            .operation_budget()
-            .fork(move || cancelled.is_cancelled());
+        let operation_budget = tracked.operation_budget();
         let leased = tokio::select! {
             result = self.app_lease_on_demand(&binding.owner, &binding.installation) => result,
-            () = authority.cancelled() => return Err(agent_not_granted()),
             () = tracked.cancelled() => return Err(view_error("CANCELLED", "The calling view went away")),
         };
         let lease = match leased {
@@ -926,7 +915,6 @@ impl KernelRuntimeState {
         .map_err(|_| unavailable())??;
         // Dropping the pending reply makes the worker peer send `cancel`.
         let reply = tokio::select! {
-            () = authority.cancelled() => return Err(agent_not_granted()),
             reply = response.receive() => reply
                 .map_err(|error| coded(app_call_errors::worker_call_error(&error)))?,
             () = tracked.cancelled() => {

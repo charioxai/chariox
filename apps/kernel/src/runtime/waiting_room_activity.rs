@@ -248,7 +248,6 @@ mod tests {
             environment: None,
             credential: None,
             max_safety: None,
-            app_grant: None,
         });
         agent.set_remote_extension_manifest_sync(sync);
         agent

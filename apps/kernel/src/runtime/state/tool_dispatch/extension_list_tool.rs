@@ -181,10 +181,11 @@ impl KernelRuntimeState {
         };
 
         let (apps, apps_next_cursor) = if matches!(kind, "all" | "app") {
+            let reach = self.app_reach(agent);
             let page = self
                 .owned
                 .durable_state_store
-                .list_app_installations(agent.owner_user_id(), args.apps_cursor.as_deref(), 100)
+                .list_app_installations(&reach.owner, args.apps_cursor.as_deref(), 100)
                 .map_err(|_| DaemonError::LocalTransport {
                     operation: "runtime_tool_list_extensions",
                     message: "App installation inventory is unavailable".into(),
@@ -194,11 +195,16 @@ impl KernelRuntimeState {
             // not. The start gate answers that without loading the release.
             let control = self.app_control();
             let store = &self.owned.durable_state_store;
-            let owner = agent.owner_user_id();
+            let owner = reach.owner.as_str();
+            let deployments = store
+                .app_installation_deployments(owner)
+                .unwrap_or_default();
             let apps = page
                 .installations
                 .into_iter()
-                .filter(|installation| installation.visible_in_room(Some(agent.session_id())))
+                .filter(|installation| {
+                    reach.admits(installation, deployments.get(&installation.installation_id))
+                })
                 .map(|installation| {
                     let id = installation.installation_id.as_str();
                     let granted =

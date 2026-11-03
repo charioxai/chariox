@@ -509,6 +509,9 @@ export async function executeExtensionCommand(
   if (action === "grant" && kind === "script" && !environment) {
     return { ok: false, message: "usage: extension grant script <agent-ref> <name> --env <environment>" }
   }
+  if (action === "grant" && kind === "app") {
+    return { ok: false, message: "Apps are not assigned: the agent that needs an installed App asks for it itself" }
+  }
   const request = action === "grant"
     ? grantAgentExtensionRequest(context.workspace, agentRef, kind, name, environment, {
       credential: readOption(parsed.args, "--credential"),

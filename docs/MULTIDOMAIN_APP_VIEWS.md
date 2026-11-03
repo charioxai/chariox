@@ -113,11 +113,13 @@ waiting room and while a Room is attached. The TUI projects the same Tab as
 text and sends its input through the kernel browser.
 A focused or granted agent may input in (including a Vault fill), navigate
 within the App origin and close an App Tab after the kernel claimed
-`UserDomainResource::AppView` in its own grant; the host refuses agent
-mutations without that claim. Each page call
+`UserDomainResource::AppView` in its own grant; the host refuses browser
+mutations without that claim. An agent's App view actions
+(`chariox.app_view_invoke` and the other `app_view_*` tools) need no claim:
+the agent's own App binding is the only requirement. Each page call
 carries who drove the Tab. An agent-driven call runs as that agent
 (`Actor::Agent`, `agent_id`, `room_id`, running turn) and only while the agent
-still holds the App view and its own App grant (rechecked at enqueue and
+still holds its own App binding (rechecked at enqueue and
 reply; otherwise `AGENT_APP_NOT_GRANTED`); it never borrows the owner's App
 authority. Who a call runs as comes only from the input the kernel host
 dispatched into that Tab, recorded by the controller; the page cannot name it.

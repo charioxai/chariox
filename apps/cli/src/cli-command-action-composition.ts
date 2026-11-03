@@ -21,7 +21,7 @@ import { openExternalUrl } from "./external-url.js"
 import type { ProviderLoginLinkOptions } from "./provider-login-link.js"
 import type { SessionSelection } from "./session-lifecycle.js"
 import { formatAgentLabel } from "./agent-label.js"
-import { grantAgentApp, revokeAgentApp } from "./app-binding-api.js"
+import { revokeAgentApp } from "./app-binding-api.js"
 import {
   defaultRoomScreenshotOutputRoot,
   downloadRoomEnvironmentScreenshot,
@@ -812,7 +812,6 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
       if ((response.AppRequestFailed as { code: string } | undefined)?.code === "not_found") return null
       throw new Error("App installation status unavailable")
     },
-    grantAgentApp: (agentRef, installationId) => grantAgentApp(client, pendingWorkspaceTarget(), agentRef, installationId),
     revokeAgentApp: (agentRef, installationId) => revokeAgentApp(client, agentRef, installationId),
     revokeAgentScript: (agentRef, name) => revokeAgentScript(client, agentRef, name),
     listCredentials: () => listCredentials(client),

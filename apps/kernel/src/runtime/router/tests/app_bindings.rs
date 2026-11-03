@@ -295,73 +295,87 @@ async fn self_grant_of_an_already_bound_app_changes_nothing_and_asks_nothing() {
 }
 
 #[tokio::test]
-async fn ask_app_self_grant_waits_for_the_existing_permission_interaction() {
-    let fixture = Fixture::new();
-    let (app, router, session, agent, auth) =
-        fixture.router(crate::provider::AgentPermissionLevel::Required);
-    for choice in ["deny", "allow"] {
-        let state = router.runtime_state.clone();
-        let token = auth.clone();
-        let pending = tokio::spawn(async move {
-            state
+async fn an_agents_own_request_binds_an_installed_app_at_once_without_asking_a_person() {
+    for level in [
+        crate::provider::AgentPermissionLevel::Yolo,
+        crate::provider::AgentPermissionLevel::Required,
+    ] {
+        let fixture = Fixture::new();
+        let (app, router, session, agent, auth) = fixture.router(level);
+        // Discovery: the installed App is listed for the agent, not yet exposed.
+        let listed = router
+            .runtime_state
+            .dispatch_authenticated_runtime_tool_call(
+                &auth,
+                crate::transport::runtime_tools::LIST_EXTENSIONS_TOOL,
+                serde_json::json!({"kind":"app"}),
+            )
+            .await
+            .unwrap();
+        let apps = listed.payload["extensions"]["apps"].as_array().unwrap();
+        assert!(apps
+            .iter()
+            .any(|app| app["name"] == "installed" && app["granted"] == false));
+        assert!(!granted(&app, &agent).await);
+        // Exposure: the request itself binds; nothing waits for a decision.
+        let result = timeout(
+            Duration::from_secs(2),
+            router
+                .runtime_state
                 .dispatch_authenticated_runtime_tool_call(
-                    &token,
+                    &auth,
                     crate::transport::runtime_tools::REQUEST_EXTENSION_TOOL,
                     serde_json::json!({"kind":"app","name":"installed"}),
-                )
-                .await
-        });
-        let interaction_id = timeout(Duration::from_secs(2), async {
-            loop {
-                if let Some(id) = app
-                    .lock()
-                    .await
-                    .sessions()
-                    .get_session(&session)
-                    .unwrap()
-                    .active_interaction_for_agent(&agent)
-                    .map(|i| i.id().to_string())
-                {
-                    break id;
-                }
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
+                ),
+        )
         .await
+        .expect("an App request must not wait for a person")
         .unwrap();
-        assert!(
-            !pending.is_finished(),
-            "Ask must not grant before the user decides"
-        );
-        let request =
-            LocalDaemonRequest::RespondToInteraction(crate::local::RespondToInteractionRequest {
-                session_id: session.clone(),
-                interaction_id,
-                choice_id: choice.into(),
-                custom_reply: None,
-                passkey: None,
-                passkey_remember_minutes: None,
-            });
-        let mut command = KernelCommand::from_local_request(
-            format!("app-binding-{choice}"),
-            None,
-            None,
-            &request,
-        );
-        command.caller.user_id = Some("alice".into());
-        router.dispatch(command, request).await.unwrap();
-        let result = timeout(Duration::from_secs(2), pending)
+        assert!(result.ok);
+        assert!(granted(&app, &agent).await);
+        assert!(app
+            .lock()
             .await
+            .sessions()
+            .get_session(&session)
             .unwrap()
-            .unwrap()
+            .active_interaction_for_agent(&agent)
+            .is_none());
+        // An App that is not installed is refused with a reason.
+        let missing = router
+            .runtime_state
+            .dispatch_authenticated_runtime_tool_call(
+                &auth,
+                crate::transport::runtime_tools::REQUEST_EXTENSION_TOOL,
+                serde_json::json!({"kind":"app","name":"missing"}),
+            )
+            .await
             .unwrap();
-        assert_eq!(result.ok, choice == "allow");
-        let current = app.lock().await.agents().get_agent(&agent).unwrap();
-        assert_eq!(
-            current.has_extension_grant(ExtensionKind::App, "installed"),
-            choice == "allow"
-        );
+        assert!(!missing.ok);
+        assert!(!granted_app(&app, &agent, "missing").await);
     }
+}
+
+#[tokio::test]
+async fn a_person_cannot_assign_an_app_to_an_agent() {
+    let fixture = Fixture::new();
+    let (_app, router, _session, agent, _auth) =
+        fixture.router(crate::provider::AgentPermissionLevel::Required);
+    let request =
+        LocalDaemonRequest::GrantAgentExtension(crate::local::GrantAgentExtensionRequest {
+            workspace_id: None,
+            agent_ref: agent.clone(),
+            kind: crate::local::ExtensionKind::App,
+            name: "installed".into(),
+            environment: None,
+            credential: None,
+            max_safety: None,
+        });
+    let command = KernelCommand::from_local_request("assign-app", None, None, &request);
+    let error = router.dispatch(command, request).await.unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("asks for it with request_extension"));
 }
 
 async fn granted(app: &Arc<Mutex<DaemonApp>>, agent: &str) -> bool {
@@ -731,8 +745,12 @@ async fn a_saturated_listing_omits_a_cold_app_and_refreshes_once_a_slot_frees() 
     // The shared projection (a leased agent's manifest) answers the same way.
     let bound = app.lock().await.agents().get_agent(&agent).unwrap();
     assert!(control
-        .app_extension_tools_for_agent(&bound, &std::collections::BTreeSet::new())
+        .app_extension_tools_for_agent(
+            &router.runtime_state.app_reach(&bound),
+            &std::collections::BTreeSet::new()
+        )
         .unwrap()
+        .0
         .is_empty());
     drop(permits);
     timeout(Duration::from_secs(5), async {
@@ -871,8 +889,9 @@ async fn uninstall_keeps_missing_binding_visible_without_tools_or_a_reinstall_re
     let bound = app.lock().await.agents().get_agent(&agent).unwrap();
     assert!(state
         .app_control()
-        .app_extension_tools_for_agent(&bound, &std::collections::BTreeSet::new())
+        .app_extension_tools_for_agent(&state.app_reach(&bound), &std::collections::BTreeSet::new())
         .unwrap()
+        .0
         .is_empty());
     // Exercise the actual reinstall request and its approval boundary, rather
     // than invoking the helper directly: skipping the gate must fail this test.

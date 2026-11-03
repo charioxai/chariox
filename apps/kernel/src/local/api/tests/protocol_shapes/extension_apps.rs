@@ -95,10 +95,10 @@ fn app_bindings_use_the_shared_extension_request_contract() {
     );
 }
 
-// MP-08/MP-10/MP-11 A05: persisted and projected App grants are kernel issued.
+// An App binding is plain exposure: the agent asked for the installation, and
+// nothing else (no expiry, delegation or prompt witness) is part of the row.
 #[test]
-fn capability_app_authority_protocol_462_shape_and_hash() {
-    use sha2::{Digest, Sha256};
+fn app_binding_is_a_plain_extension_grant() {
     assert_eq!(
         crate::local::LOCAL_DAEMON_PROTOCOL_VERSION,
         crate::test_support::expected_local_protocol_version()
@@ -107,25 +107,12 @@ fn capability_app_authority_protocol_462_shape_and_hash() {
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
         crate::test_support::expected_relay_peer_protocol_version()
     );
-    let mut grant = crate::extension::ExtensionGrant::app("installed");
-    grant.app_grant = Some(crate::extension::AppCapabilityGrant {
-        grant_id: "grant-1".into(),
-        expires_at_ms: 28_800_001,
-        prompt_id: Some("prompt-1".into()),
-        delegated_by_agent_id: Some("parent".into()),
-        delegated_from_grant_id: Some("grant-parent".into()),
-    });
+    let grant = crate::extension::ExtensionGrant::app("installed");
     let value = serde_json::to_value(&grant).unwrap();
-    assert_eq!(
-        format!("{:x}", Sha256::digest(serde_json::to_vec(&value).unwrap())),
-        "f3c23ca0b26737a55b1bb6edd84edcedcf5c43ea52daa4b23207763218f9ca38"
-    );
+    assert_eq!(value, serde_json::json!({"kind": "app", "name": "installed"}));
     assert_eq!(
         serde_json::from_value::<crate::extension::ExtensionGrant>(value).unwrap(),
         grant
     );
-    assert!(
-        grant.validate_app_binding().is_err(),
-        "MP-11: issued authority cannot be submitted as a grant request"
-    );
+    assert!(grant.validate_app_binding().is_ok());
 }

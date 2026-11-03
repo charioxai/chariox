@@ -7,7 +7,7 @@
 
 use super::*;
 use crate::runtime::{
-    app_view_authority::{self, AppViewAuthority},
+    app_view_authority::AppViewAuthority,
     app_views::AppViewBinding,
     browser_controller_app_view::{
         BrowserAppViewError as ViewError, BrowserAppViewRequest, ViewAgentAnswer, ViewAgentCallKind,
@@ -277,8 +277,8 @@ impl KernelRuntimeState {
         }
     }
 
-    /// Open granted Apps without a viewer, then read their actions and state. A view that cannot
-    /// be read is listed with the reason instead of failing the others.
+    /// Open the Apps the agent asked for without a viewer, then read their actions and state. A
+    /// view that cannot be read is listed with the reason instead of failing the others.
     async fn view_catalog(&self, agent: &crate::agent::AgentInstance) -> Value {
         let mut views = Vec::new();
         for installation in agent.granted_extension_names(ExtensionKind::App) {
@@ -403,13 +403,8 @@ impl KernelRuntimeState {
         }
         let opened_target;
         let target = if agent.has_extension_grant(ExtensionKind::App, target) {
-            let authority = AppViewAuthority::new(
-                self.owned.agent_store.clone(),
-                Some(agent),
-                target,
-                None,
-                Some(self.app_binding_epoch(agent.id(), target)),
-            );
+            let authority =
+                AppViewAuthority::new(self.owned.agent_store.clone(), Some(agent), target);
             authority.check()?;
             let mut retired = None;
             let existing = match self.bound_view(agent, target) {
@@ -445,11 +440,11 @@ impl KernelRuntimeState {
             opened_target = if let Some(target) = existing {
                 target
             } else {
-                // Finish registration even if the grant is revoked during Open,
+                // Finish registration even if the agent is archived during Open,
                 // so the pump can retire the Tab. Reopen a retired binding once.
                 let opened = self
                     .ensure_room_app_view(
-                        agent.owner_user_id(),
+                        &self.app_reach(agent).owner,
                         agent.session_id(),
                         target,
                         crate::runtime::browser_controller_app_view::AppViewProjection::Agent {
@@ -475,12 +470,10 @@ impl KernelRuntimeState {
             target
         };
         let mut context = self.bound_view(agent, target)?;
-        let lease = tokio::select! {
-            result = self.app_lease_on_demand(&context.binding.owner, &context.binding.installation) => {
-                result.map_err(|_| failure("APP_UNAVAILABLE", "The App is not running"))?
-            }
-            () = context.authority.cancelled() => return Err(app_view_authority::not_granted()),
-        };
+        let lease = self
+            .app_lease_on_demand(&context.binding.owner, &context.binding.installation)
+            .await
+            .map_err(|_| failure("APP_UNAVAILABLE", "The App is not running"))?;
         if lease.catalog().generation() != context.binding.generation {
             return Err(failure(
                 "APP_VIEW_STALE",
@@ -492,13 +485,14 @@ impl KernelRuntimeState {
     }
 
     /// A user-domain App is reachable only through its owner's retained view
-    /// record and an exact grant on that record's installation.
+    /// record and an App the agent asked for.
     async fn bound_user_view(
         &self,
         agent: &crate::agent::AgentInstance,
         requested: &str,
     ) -> Result<Option<ViewContext>, ViewError> {
-        let canonical_owner = self.provider_account_authority_owner_user_id(agent.owner_user_id());
+        let canonical_owner =
+            self.provider_account_authority_owner_user_id(&self.app_reach(agent).owner);
         let views = self.app_control().user_views().clone();
         for owner in self.user_domain_owner_aliases(&canonical_owner) {
             for listed in views.list(&owner) {
@@ -555,8 +549,6 @@ impl KernelRuntimeState {
                     self.owned.agent_store.clone(),
                     Some(agent),
                     &binding.installation,
-                    None,
-                    Some(self.app_binding_epoch(agent.id(), &binding.installation)),
                 );
                 authority.check()?;
                 let (_, signed_actions) = self
@@ -568,12 +560,10 @@ impl KernelRuntimeState {
                             "The signed App release changed; reopen the view",
                         )
                     })?;
-                let lease = tokio::select! {
-                    result = self.app_lease_on_demand(&binding.owner, &binding.installation) => {
-                        result.map_err(|_| failure("APP_UNAVAILABLE", "The App is not running"))?
-                    }
-                    () = authority.cancelled() => return Err(app_view_authority::not_granted()),
-                };
+                let lease = self
+                    .app_lease_on_demand(&binding.owner, &binding.installation)
+                    .await
+                    .map_err(|_| failure("APP_UNAVAILABLE", "The App is not running"))?;
                 let declared = lease.catalog().app_catalog().ui_actions().to_vec();
                 if lease.catalog().generation() != binding.generation || declared != signed_actions
                 {
@@ -624,6 +614,7 @@ impl KernelRuntimeState {
         target: &str,
     ) -> Result<ViewContext, ViewError> {
         let session = agent.session_id();
+        let owner = self.app_reach(agent).owner;
         let views = self.app_control().views();
         let target = views
             .binding_state(session, target)
@@ -633,7 +624,7 @@ impl KernelRuntimeState {
                     .bound_views(session)
                     .into_iter()
                     .find(|(_, binding)| {
-                        binding.installation == target && binding.owner == agent.owner_user_id()
+                        binding.installation == target && binding.owner == owner
                     })
                     .map(|(target, _)| target)
             })
@@ -646,10 +637,10 @@ impl KernelRuntimeState {
         let (binding, reloading) = views
             .binding_state(session, &target)
             .ok_or_else(|| failure("unknown_view", "the view was closed"))?;
-        if binding.owner != agent.owner_user_id() {
+        if binding.owner != owner {
             return Err(failure(
                 "unknown_view",
-                "no such view is open for your App authority in this Room",
+                "no such view is open for you in this Room",
             ));
         }
         if reloading {
@@ -662,8 +653,6 @@ impl KernelRuntimeState {
             self.owned.agent_store.clone(),
             Some(agent),
             &binding.installation,
-            None,
-            Some(self.app_binding_epoch(agent.id(), &binding.installation)),
         );
         authority.check()?;
         Ok(ViewContext {
@@ -688,10 +677,7 @@ impl KernelRuntimeState {
             .views()
             .agent_queue(&context.queue_session, &context.target)
             .ok_or_else(|| failure("unknown_view", "the view was closed"))?;
-        let turn = tokio::select! {
-            turn = queue.lock_owned() => turn,
-            () = context.authority.cancelled() => return Err(app_view_authority::not_granted()),
-        };
+        let turn = queue.lock_owned().await;
         self.view_still_bound(context)?;
         Ok(turn)
     }
@@ -870,27 +856,25 @@ impl KernelRuntimeState {
             wait_ms: changes.map(|(_, wait)| wait),
             deadline_ms: ACTION_DEADLINE_MS,
         };
-        let reply = tokio::select! {
-            reply = async {
-                match &context.host {
-                    ViewHost::Room => self.app_view_command::<Value>(&context.session, request).await,
-                    ViewHost::User { owner, browser_generation, .. } => {
-                        use crate::runtime::state::app_view_host::{
-                            AppViewHost, KernelBrowserAppViewHost,
-                        };
-                        KernelBrowserAppViewHost {
-                            state: self,
-                            owner,
-                            generation: Some(*browser_generation),
-                        }
-                        .command(request)
-                        .await
-                        .map(|value| value.unwrap_or(Value::Null))
-                    }
+        let reply = match &context.host {
+            ViewHost::Room => self.app_view_command::<Value>(&context.session, request).await,
+            ViewHost::User {
+                owner,
+                browser_generation,
+                ..
+            } => {
+                use crate::runtime::state::app_view_host::{AppViewHost, KernelBrowserAppViewHost};
+                KernelBrowserAppViewHost {
+                    state: self,
+                    owner,
+                    generation: Some(*browser_generation),
                 }
-            } => reply.map_err(|error| failure("view_unavailable", error.to_string()))?,
-            () = context.authority.cancelled() => return Err(app_view_authority::not_granted()),
-        };
+                .command(request)
+                .await
+                .map(|value| value.unwrap_or(Value::Null))
+            }
+        }
+        .map_err(|error| failure("view_unavailable", error.to_string()))?;
         match ViewAgentAnswer::from_controller(reply) {
             Some(ViewAgentAnswer::Value(value)) => Ok(value),
             Some(ViewAgentAnswer::Error(error)) => Err(error),
@@ -955,13 +939,14 @@ impl KernelRuntimeState {
             Some("deny".into()),
         )
         .with_native_origin(self.owned.capture_native_interaction_origin(agent.session_id(), agent.id(), run_id));
-        let answer = tokio::select! {
-            answer = crate::runtime::native_interaction_bridge::request_provider_native_interaction(
-                self, agent.session_id(), interaction, "app_view_action_approval") => {
-                answer.map_err(|error| failure("approval_unavailable", error.to_string()))?
-            }
-            () = context.authority.cancelled() => return Err(app_view_authority::not_granted()),
-        };
+        let answer = crate::runtime::native_interaction_bridge::request_provider_native_interaction(
+            self,
+            agent.session_id(),
+            interaction,
+            "app_view_action_approval",
+        )
+        .await
+        .map_err(|error| failure("approval_unavailable", error.to_string()))?;
         if answer.status != "answered"
             || !matches!(
                 answer.choice_id.as_deref(),

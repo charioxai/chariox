@@ -282,6 +282,9 @@ export async function executeWorkflowNodeCommand(
     }
     const resolved = await resolveWorkflowNodeAgent(deps, sessionId, workflowRef, nodeId)
     if (!resolved.ok) return resolved
+    if (extensionAction === "grant" && kind === "app") {
+      return { ok: false, message: "Apps are not assigned: the agent that needs an installed App asks for it itself" }
+    }
     const response = extensionAction === "grant"
       ? await deps.client.send(grantAgentExtensionRequest(
         context.workspace,

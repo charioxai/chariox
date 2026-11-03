@@ -28,6 +28,8 @@ mod workers;
 pub(crate) use workers::AppWorkerPublisher;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod catalog;
+mod reach;
+pub(crate) use reach::AppReach;
 #[cfg(all(
     test,
     any(target_os = "macos", all(target_os = "linux", target_env = "gnu"))

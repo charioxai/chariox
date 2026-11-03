@@ -581,11 +581,15 @@ impl DaemonApp {
             let occupied = tools.iter().map(|tool| tool.tool_name.clone()).collect();
             tools.extend(
                 self.app_control_service()
-                    .app_extension_tools_for_agent(agent, &occupied)
+                    .app_extension_tools_for_agent(
+                        &crate::runtime::app_control::AppReach::for_agent(agent, Some(&session)),
+                        &occupied,
+                    )
                     .map_err(|error| DaemonError::LocalTransport {
                         operation: "remote App tool catalog",
                         message: error.to_string(),
-                    })?,
+                    })?
+                    .0,
             );
             tools.extend(crate::runtime::state::KernelRuntimeState::remote_app_view_tools(agent));
         }

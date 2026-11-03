@@ -35,7 +35,6 @@ export type CapabilityCommandHandlerDeps = {
   importMcpServers?: (provider: string, name?: string | null) => Promise<McpImportOutcome>
   getMcpServer?: (name: string) => Promise<CharioxMcpServerConfig>
   grantAgentMcp?: (agentRef: string, name: string) => Promise<AgentInstance>
-  grantAgentApp?: (agentRef: string, installationId: string) => Promise<AgentInstance>
   revokeAgentApp?: (agentRef: string, installationId: string) => Promise<AgentInstance>
   revokeAgentMcp?: (agentRef: string, name: string) => Promise<AgentInstance>
   listSkills?: () => Promise<CharioxSkillMetadata[]>
@@ -723,13 +722,10 @@ export async function handleExtensionSlashCommand(
   const environment = readOption(command.args, "--env")
   if (!agentRef || !name) return deps.flashFooter(`usage: /extension ${action} <mcp|skill|script|connector|app> <agent-ref> <name> [--env <environment>]`, "error")
   if (kind === "app") {
-    if (command.args.some((arg) => ["--env", "--credential", "--allow"].includes(arg))) {
-      return deps.flashFooter("App bindings take only an installation ID", "error")
-    }
-    const handler = action === "grant" ? deps.grantAgentApp : deps.revokeAgentApp
-    if (!handler) return deps.flashFooter(`App ${action} is not available`, "error")
-    const agent = await handler(agentRef, name)
-    deps.flashFooter(`${action === "grant" ? "bound" : "unbound"} App ${name} ${action === "grant" ? "to" : "from"} ${formatAgentLabel(agent)}`, "info")
+    if (action === "grant") return deps.flashFooter("Apps are not assigned: the agent that needs an installed App asks for it itself", "error")
+    if (!deps.revokeAgentApp) return deps.flashFooter("App revoke is not available", "error")
+    const agent = await deps.revokeAgentApp(agentRef, name)
+    deps.flashFooter(`unbound App ${name} from ${formatAgentLabel(agent)}`, "info")
     return
   }
   if (kind === "mcp") {

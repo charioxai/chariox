@@ -569,7 +569,6 @@ fn validates_node_extension_grant_shape() {
         environment: None,
         credential: None,
         max_safety: Some("admin".to_string()),
-        app_grant: None,
     });
 
     let report = definition.validate_with_limits(&WorkflowCodeLimitsConfig::default());

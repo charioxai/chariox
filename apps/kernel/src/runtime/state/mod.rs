@@ -64,6 +64,7 @@ mod app_event_delivery_owned_state;
 mod app_event_pump_runtime;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod app_inbox_runtime;
+mod app_reach_runtime;
 mod app_runtime_state;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod app_set_runtime;
@@ -282,7 +283,6 @@ struct KernelRuntimeOwnedState {
     leased_computer_grants: Arc<
         std::sync::Mutex<BTreeMap<String, crate::transport::relay_peer::LeasedComputerGrant>>,
     >,
-    app_grant_epochs: Arc<capability_grant_runtime::AppGrantEpochs>,
     browser_controller_processes:
         crate::runtime::browser_controller_process::BrowserControllerProcessStore,
     browser_import_admission: crate::runtime::browser_import_admission::BrowserImportAdmission,
@@ -1071,7 +1071,6 @@ impl KernelRuntimeState {
                 dictation,
                 leased_computer_changes: Default::default(),
                 leased_computer_grants: Default::default(),
-                app_grant_epochs: Arc::default(),
                 browser_controller_processes:
                     crate::runtime::browser_controller_process::BrowserControllerProcessStore::from_environment(),
                 browser_import_admission:
@@ -1193,7 +1192,6 @@ impl KernelRuntimeState {
         runtime.recover_sudo_notices();
         // Access grants are process-bound and never survive a kernel restart.
         runtime.retire_notification_grants(None);
-        runtime.recover_app_grant_expiries();
         runtime
     }
 

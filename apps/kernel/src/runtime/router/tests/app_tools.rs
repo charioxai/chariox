@@ -272,7 +272,7 @@ fn actual_app_tools_follow_current_binding_for_ordinary_and_meta_provider_runs()
         bound.push(granted.clone());
         let collision = control
             .app_extension_tools_for_agent(
-                &granted,
+                &router.runtime_state.app_reach(&granted),
                 &std::collections::BTreeSet::from([name.clone()]),
             )
             .expect_err("App names must not replace an existing runtime tool");
@@ -387,8 +387,12 @@ fn actual_app_tools_follow_current_binding_for_ordinary_and_meta_provider_runs()
     let control = router.runtime_state.app_control();
     control.forget_app_dormant("alice", "installed");
     assert!(control
-        .app_extension_tools_for_agent(&bound[1], &std::collections::BTreeSet::new())
+        .app_extension_tools_for_agent(
+            &router.runtime_state.app_reach(&bound[1]),
+            &std::collections::BTreeSet::new(),
+        )
         .unwrap()
+        .0
         .iter()
         .any(|tool| tool.tool_name == name));
     // A user stop keeps them out until an explicit start.

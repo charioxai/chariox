@@ -2,9 +2,8 @@
 //! The same installation binding is intersected with actual activated owners;
 //! the metadata grants no authority to a later invocation.
 
-use super::AppControlService;
+use super::{reach::AppReach, AppControlService};
 use crate::{
-    agent::AgentInstance,
     durable_state::app_tools::AppToolsError,
     extension::{
         ExtensionAuthority, ExtensionDefinitionOrigin, ExtensionExecutionLocation, ExtensionKind,
@@ -25,28 +24,24 @@ impl AppControlService {
     /// see `note_listing`.
     pub(crate) fn app_extension_tools_for_agent(
         &self,
-        agent: &AgentInstance,
+        reach: &AppReach,
         occupied: &BTreeSet<String>,
-    ) -> Result<Vec<RemoteExtensionTool>, AppToolsError> {
-        if !agent
-            .extension_grants()
-            .iter()
-            .any(|grant| grant.kind == ExtensionKind::App)
-        {
-            return Ok(Vec::new());
+    ) -> Result<(Vec<RemoteExtensionTool>, BTreeSet<String>), AppToolsError> {
+        if reach.granted.is_empty() {
+            return Ok(Default::default());
         }
         // Seeding reads releases, so it runs under an App admission slot.
         let Ok(permit) = self.try_admit() else {
             // Saturated: an agent whose Apps neither run nor are dormant gets
             // no App tools now, as before seeding; a running App's tools must
             // not silently disappear.
-            if self.has_active_apps_for_agent(agent) {
+            if self.has_active_apps_for_agent(reach) {
                 return Err(crate::runtime::app_worker::AppWorkerError::Busy.into());
             }
-            self.note_listing(agent, &BTreeSet::new());
-            return Ok(Vec::new());
+            self.note_listing(reach, &BTreeSet::new());
+            return Ok(Default::default());
         };
-        self.app_extension_listing_admitted(agent, occupied, &permit)
+        self.app_extension_listing_admitted(reach, occupied, &permit)
     }
 
     /// The tools an agent's provider lists, under the caller's App admission
@@ -54,13 +49,13 @@ impl AppControlService {
     /// bound Apps the listing left out (`note_listing`).
     pub(crate) fn app_extension_listing_admitted(
         &self,
-        agent: &AgentInstance,
+        reach: &AppReach,
         occupied: &BTreeSet<String>,
         _permit: &tokio::sync::OwnedSemaphorePermit,
-    ) -> Result<Vec<RemoteExtensionTool>, AppToolsError> {
-        let (tools, listed) = self.project_for_agent(agent, occupied)?;
-        self.note_listing(agent, &listed);
-        Ok(tools)
+    ) -> Result<(Vec<RemoteExtensionTool>, BTreeSet<String>), AppToolsError> {
+        let (tools, listed) = self.project_for_agent(reach, occupied)?;
+        self.note_listing(reach, &listed);
+        Ok((tools, listed))
     }
 
     /// Caller obtained this AppControl service's shared permit before entering
@@ -68,23 +63,23 @@ impl AppControlService {
     /// A dispatch resolving a tool: nothing is listed, so nothing is recorded.
     pub(crate) fn app_extension_tools_for_agent_admitted(
         &self,
-        agent: &AgentInstance,
+        reach: &AppReach,
         occupied: &BTreeSet<String>,
         _permit: &tokio::sync::OwnedSemaphorePermit,
     ) -> Result<Vec<RemoteExtensionTool>, AppToolsError> {
-        Ok(self.project_for_agent(agent, occupied)?.0)
+        Ok(self.project_for_agent(reach, occupied)?.0)
     }
 
     /// The agent's App tools and the installations they come from. The caller
     /// holds an App admission slot.
     fn project_for_agent(
         &self,
-        agent: &AgentInstance,
+        reach: &AppReach,
         occupied: &BTreeSet<String>,
     ) -> Result<(Vec<RemoteExtensionTool>, BTreeSet<String>), AppToolsError> {
-        self.seed_bound_dormant(agent);
-        let leases = self.bound_app_leases(agent);
-        let dormant = self.bound_dormant_catalogs(agent);
+        self.seed_bound_dormant(reach);
+        let leases = self.bound_app_leases(reach);
+        let dormant = self.bound_dormant_catalogs(reach);
         let catalogs = leases
             .iter()
             .map(|lease| lease.catalog().clone())
@@ -95,42 +90,37 @@ impl AppControlService {
         }
         let current = self
             .store
-            .current_app_catalogs(agent.owner_user_id(), &catalogs)?;
+            .current_app_catalogs(&reach.owner, &catalogs)?;
         self.project_app_tools(current, leases, &dormant, occupied)
     }
 
     /// A listing showed the agent the bound Apps in `listed`: the others are
     /// remembered, so the agent's catalog is refreshed once one starts; a
     /// listed App needs no refresh.
-    pub(crate) fn note_listing(&self, agent: &AgentInstance, listed: &BTreeSet<String>) {
-        for grant in agent.extension_grants() {
-            if grant.kind != ExtensionKind::App {
-                continue;
-            }
-            if listed.contains(&grant.name) {
-                self.workers
-                    .forget_unlisted(agent.owner_user_id(), &grant.name, agent.id());
+    pub(crate) fn note_listing(&self, reach: &AppReach, listed: &BTreeSet<String>) {
+        for name in &reach.granted {
+            if listed.contains(name) {
+                self.workers.forget_unlisted(&reach.owner, name, &reach.agent);
             } else {
-                self.workers
-                    .note_unlisted(agent.owner_user_id(), &grant.name, agent.id());
+                self.workers.note_unlisted(&reach.owner, name, &reach.agent);
             }
         }
     }
 
     /// A revoked binding needs no refresh when its App starts.
-    pub(crate) fn forget_unlisted_binding(&self, agent: &AgentInstance, installation: &str) {
+    pub(crate) fn forget_unlisted_binding(&self, reach: &AppReach, installation: &str) {
         self.workers
-            .forget_unlisted(agent.owner_user_id(), installation, agent.id());
+            .forget_unlisted(&reach.owner, installation, &reach.agent);
     }
 
     /// A binding saved while its App neither runs nor is dormant lists no
     /// tools yet: the agent's catalog is refreshed once the App starts.
-    pub(crate) fn note_unlisted_binding(&self, agent: &AgentInstance, installation: &str) {
-        let owner = agent.owner_user_id();
+    pub(crate) fn note_unlisted_binding(&self, reach: &AppReach, installation: &str) {
+        let owner = reach.owner.as_str();
         if self.active_app_lease(owner, installation).is_none()
             && !self.is_app_dormant(owner, installation)
         {
-            self.workers.note_unlisted(owner, installation, agent.id());
+            self.workers.note_unlisted(owner, installation, &reach.agent);
         }
     }
 
@@ -155,13 +145,9 @@ impl AppControlService {
     /// listed before the first call starts it, also after a kernel restart. A
     /// user stop, a failed generation or a revoked publisher keeps it unlisted.
     /// The caller holds an App admission slot.
-    pub(crate) fn seed_bound_dormant(&self, agent: &AgentInstance) {
-        for grant in agent.extension_grants() {
-            if grant.kind == ExtensionKind::App
-                && agent.has_extension_grant(ExtensionKind::App, &grant.name)
-            {
-                self.seed_dormant(agent.owner_user_id(), &grant.name);
-            }
+    pub(crate) fn seed_bound_dormant(&self, reach: &AppReach) {
+        for name in &reach.granted {
+            self.seed_dormant(&reach.owner, name);
         }
     }
 
@@ -184,25 +170,23 @@ impl AppControlService {
         }
     }
 
-    pub(crate) fn has_active_apps_for_agent(&self, agent: &AgentInstance) -> bool {
-        !self.bound_app_leases(agent).is_empty() || !self.bound_dormant_catalogs(agent).is_empty()
+    pub(crate) fn has_active_apps_for_agent(&self, reach: &AppReach) -> bool {
+        !self.bound_app_leases(reach).is_empty() || !self.bound_dormant_catalogs(reach).is_empty()
     }
 
     fn bound_dormant_catalogs(
         &self,
-        agent: &AgentInstance,
+        reach: &AppReach,
     ) -> Vec<std::sync::Arc<chariox_app_runtime::app_outbox::EventCatalog>> {
-        self.dormant_app_catalogs(agent.owner_user_id())
+        self.dormant_app_catalogs(&reach.owner)
             .into_iter()
-            .filter(|catalog| {
-                agent.has_extension_grant(ExtensionKind::App, catalog.installation_id())
-            })
+            .filter(|catalog| reach.granted.contains(catalog.installation_id()))
             .collect()
     }
 
     fn bound_app_leases(
         &self,
-        agent: &AgentInstance,
+        reach: &AppReach,
     ) -> Vec<crate::runtime::app_worker::AppWorkerLease> {
         let mut leases = Vec::new();
         let mut cursor: Option<(String, String)> = None;
@@ -219,9 +203,8 @@ impl AppControlService {
                 )
             });
             leases.extend(page.into_iter().filter(|lease| {
-                lease.owner() == agent.owner_user_id()
-                    && agent
-                        .has_extension_grant(ExtensionKind::App, lease.catalog().installation_id())
+                lease.owner() == reach.owner
+                    && reach.granted.contains(lease.catalog().installation_id())
             }));
             if !full {
                 break;
