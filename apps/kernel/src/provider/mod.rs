@@ -200,6 +200,9 @@ pub(crate) fn adapter_key_for_provider(provider: &str) -> &str {
     match provider {
         "default" => "opencode",
         "claude-headless" | "claude-p" => "claude",
+        // Deferred queue promotion may relaunch these structured fixtures.
+        #[cfg(test)]
+        "slow-structured" | "lost-ack-structured" => "dev-stub",
         value => value,
     }
 }

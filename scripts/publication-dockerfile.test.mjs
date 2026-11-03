@@ -63,7 +63,8 @@ test("publication Rust build consumes the workspace lock and every kernel path d
     "COPY packages/app-runtime packages/app-runtime",
     "COPY packages/app-wit packages/app-wit",
     "COPY packages/app-wasm-worker packages/app-wasm-worker",
-    "COPY packages/app-sdk packages/app-sdk",
+    "COPY packages/app-sdk-rust packages/app-sdk-rust",
+    "COPY packages/app-sdk-tools packages/app-sdk-tools",
   ]) {
     const copy = rustStage.indexOf(requiredCopy)
     assert.ok(copy >= 0, `the Rust stage must include ${requiredCopy}`)

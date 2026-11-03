@@ -447,14 +447,14 @@ test("rejects symlinked artifacts, duplicate manifest entries, and unknown execu
   })
 })
 
-test("captures schema-3 releases with the current 18-artifact Path-1 inventory (MP-11-RD-F5)", async () => {
+test("captures schema-3 releases with the current 16-artifact Path-1 inventory (MP-11-RD-F5)", async () => {
   await withFixture({ dataVolumeArtifacts: true, manifestPatch: { schemaVersion: 3, managedUpdateEvidenceVersion: 1 } }, async (fixture) => {
     const evidence = await capturePath1ReviewedRelease(fixture.options)
-    assert.equal(evidence.artifactBindings.length, 18)
+    assert.equal(evidence.artifactBindings.length, 16)
     const manifest = JSON.parse(Buffer.from(evidence.releaseManifestBase64, "base64"))
     assert.equal(manifest.schemaVersion, 3)
     assert.equal(manifest.managedUpdateEvidenceVersion, 1)
-    assert.deepEqual(evidence.artifactBindings.slice(10, 13).map(({ name }) => name), DATA_VOLUME_ARTIFACTS.map(([name]) => name))
+    assert.deepEqual(evidence.artifactBindings.slice(8, 11).map(({ name }) => name), DATA_VOLUME_ARTIFACTS.map(([name]) => name))
     for (const artifact of evidence.artifactBindings) assert.equal(artifact.sha256, artifact.actualSha256)
   })
 })
@@ -542,6 +542,6 @@ test("MP-11-RD-F5 schema-3 inventory agrees with the current packager artifact o
   await withFixture({ dataVolumeArtifacts: true, manifestPatch: { schemaVersion: 3, managedUpdateEvidenceVersion: 1 } }, async fixture => {
     const evidence = await verifyPath1ReviewedRelease(fixture.options)
     assert.deepEqual(evidence.artifactBindings.map(({ name, path }) => [name, path]), packaged)
-    assert.equal(JSON.parse(Buffer.from(evidence.builderAttestationBase64, "base64")).artifacts.length, 6)
+    assert.equal(JSON.parse(Buffer.from(evidence.builderAttestationBase64, "base64")).artifacts.length, 5)
   })
 })
