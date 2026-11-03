@@ -159,9 +159,10 @@ try {
  } else {
   // The #917 setup-token enrolment: the lane account's token goes to the kernel's Vault, never to a file or log.
   const token=readFileSync(process.env.LSUB_CLAUDE_TOKEN_FILE,'utf8').trim();privateValues.push(token)
-  await fixture.send({SetProviderAccountCredential:{provider:'claude',account_profile:'vpaste-drill',value:token,run:false,overwrite:true}})
-  const listed=(await fixture.send({ListProviderAccountProfiles:{provider:'claude'}}))
-  profile=Object.values(listed).flat().flat().find(item=>item?.label==='vpaste-drill'||item?.profile_id==='vpaste-drill')??{profile_id:'vpaste-drill'}
+  profile=(await fixture.send({CreateProviderAccountProfile:{provider:'claude',label:'vpaste drill'}})).ProviderAccountProfile.profile
+  await fixture.send({SetProviderAccountCredential:{session_id:null,agent_id:null,provider:'claude',account_profile:profile.profile_id,value:token,run:false,overwrite:false}})
+  const verified=(await fixture.send({RefreshProviderAccountProfile:{provider:'claude',account_profile:profile.profile_id}})).ProviderAccountProfile.profile
+  check('Claude drill profile authenticated',verified.auth_state!=='Unauthorized')
  }
  const worktrees=(await fixture.send({ListWorkspaceWorktrees:{workspace_id:fixture.workspace}})).WorkspaceWorktreesListed.worktrees
  const model=process.env.LSUB_MODEL??(providerName==='claude'?'claude-haiku-5-5':'gpt-6-luna')
