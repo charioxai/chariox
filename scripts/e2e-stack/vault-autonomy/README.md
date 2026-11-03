@@ -173,3 +173,7 @@ directory with `chariox-kernel` and `chariox-relay`), `TCAP_PROFILE_HOME` (a
 product-linked Codex profile copy), `TCAP_GITEA`, `TCAP_ORIGIN` (an owned
 `pr<N>-vgaps*` hosted stack), `TCAP_EVIDENCE`, `TCAP_BUILD_MANIFEST`,
 `TCAP_CLOUD_HEAD`, `TCAP_DPR` and `TCAP_MODE`.
+
+## Agent-driven account rows
+
+`room-driver/` runs AU-03, AU-04, AU-08 and AU-16 with a real Room agent and a person for the steps only a person can do (see its README).
