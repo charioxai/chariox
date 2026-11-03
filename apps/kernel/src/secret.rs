@@ -27,6 +27,8 @@ mod vault;
 pub(crate) use vault::remove_installed_transferred_vault;
 use vault::vault_store_for_config;
 pub(crate) use vault::vault_store_for_config as web_bot_auth_vault_store;
+#[cfg(unix)]
+pub(crate) use vault::{adopt_vault_unlocks, hand_over_vault_unlocks};
 pub use vault::{
     change_chariox_encrypted_vault_passphrase, chariox_encrypted_vault_status,
     chariox_vault_single_use_unlocked, clear_all_chariox_encrypted_vault_unlocks,

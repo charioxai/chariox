@@ -1,7 +1,6 @@
 //! The agent's terminal tools: thin calls into the Room terminal service,
 //! typed as the calling agent.
 
-use super::workspace_live_sync_permission::allow_deny_choices;
 use super::*;
 use crate::local::{RoomTerminalOperation, RoomTerminalResult};
 use crate::room_terminal::{RoomTerminalWatch, TerminalActor, MAX_WAIT};
@@ -262,8 +261,9 @@ impl KernelRuntimeState {
     /// person's approval: the agent's own permission level for its shell
     /// commands. A live /sudo turn of the run, local or on the home of a leased
     /// agent, or Yolo asks nothing. Required asks through the Room's
-    /// RuntimeInteraction, which every client in the Room shows. `Some` is the
-    /// refusal to return.
+    /// RuntimeInteraction, which every client in the Room shows, until a person
+    /// answers "Allow for this session": that holds for the agent until its
+    /// permissions change or the session ends. `Some` is the refusal to return.
     async fn ask_before_typing(
         &self,
         provider_run: &crate::provider::RuntimeProviderRun,
@@ -281,6 +281,9 @@ impl KernelRuntimeState {
         if level != crate::provider::AgentPermissionLevel::Required {
             return Ok(None);
         }
+        if self.terminal_input_grants.is_allowed(agent_id) {
+            return Ok(None);
+        }
         let shown: String = typed.chars().take(500).collect();
         let interaction = crate::session::RuntimeInteraction::new(
             format!(
@@ -292,7 +295,7 @@ impl KernelRuntimeState {
             crate::session::RuntimeInteractionLevel::Warning,
             Some("Terminal input approval".to_string()),
             format!("Allow this agent to type into a terminal?\n\n{shown}"),
-            allow_deny_choices(),
+            terminal_input_choices(),
             None,
             None,
             None,
@@ -308,8 +311,13 @@ impl KernelRuntimeState {
                     format!("approval dropped before resolution: {error}"),
                 )
             })?;
-        if resolution.choice_id.as_deref() == Some("allow") {
-            return Ok(None);
+        match resolution.choice_id.as_deref() {
+            Some("allow_once") => return Ok(None),
+            Some("allow_session") => {
+                self.terminal_input_grants.allow(agent_id);
+                return Ok(None);
+            }
+            _ => {}
         }
         Ok(Some(RuntimeToolResult {
             ok: false,
@@ -321,6 +329,30 @@ impl KernelRuntimeState {
             }),
         }))
     }
+}
+
+fn terminal_input_choices() -> Vec<crate::session::RuntimeInteractionChoice> {
+    use crate::session::{RuntimeInteractionChoice, RuntimeInteractionChoiceStyle};
+    vec![
+        RuntimeInteractionChoice::new(
+            "allow_once",
+            "Allow once",
+            "allow",
+            Some(RuntimeInteractionChoiceStyle::Primary),
+        ),
+        RuntimeInteractionChoice::new(
+            "allow_session",
+            "Allow for this session",
+            "allow_session",
+            Some(RuntimeInteractionChoiceStyle::Secondary),
+        ),
+        RuntimeInteractionChoice::new(
+            "deny",
+            "Deny",
+            "deny",
+            Some(RuntimeInteractionChoiceStyle::Danger),
+        ),
+    ]
 }
 
 /// A terminal tool call with its arguments checked once.

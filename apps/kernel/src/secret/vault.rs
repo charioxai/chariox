@@ -610,6 +610,85 @@ pub fn chariox_encrypted_vault_status(
     })
 }
 
+/// The live unlocks as bytes for a hot reload to carry into the next program
+/// through memory only: per Vault its path, key, expiry and single-use flag.
+/// Expiry is an absolute time, so the lease keeps running instead of starting
+/// over. Expired unlocks are left out.
+#[cfg(unix)]
+pub(crate) fn hand_over_vault_unlocks() -> Result<Zeroizing<Vec<u8>>, DaemonError> {
+    use std::os::unix::ffi::OsStrExt;
+    let now_ms = crate::session::unix_epoch_ms();
+    let unlocked = unlocked_vaults()
+        .lock()
+        .map_err(|error| secret_error(format!("Chariox vault unlock state poisoned: {error}")))?;
+    let mut body = Zeroizing::new(Vec::new());
+    for (path, vault) in unlocked
+        .iter()
+        .filter(|(_, vault)| !vault.is_expired(now_ms))
+    {
+        let path = path.as_os_str().as_bytes();
+        body.extend_from_slice(&(path.len() as u32).to_be_bytes());
+        body.extend_from_slice(path);
+        body.extend_from_slice(vault.key.as_ref());
+        body.extend_from_slice(&vault.expires_at_ms.unwrap_or(u64::MAX).to_be_bytes());
+        body.push(u8::from(vault.single_use));
+    }
+    Ok(body)
+}
+
+/// Restores the unlocks `hand_over_vault_unlocks` wrote; returns how many.
+/// A body that does not parse restores none.
+#[cfg(unix)]
+pub(crate) fn adopt_vault_unlocks(body: &[u8]) -> Result<usize, DaemonError> {
+    use std::os::unix::ffi::OsStrExt;
+    fn take<'a>(rest: &mut &'a [u8], len: usize) -> Option<&'a [u8]> {
+        let (head, tail) = rest.split_at_checked(len)?;
+        *rest = tail;
+        Some(head)
+    }
+    let malformed = || secret_error("the handed-over Vault unlocks are malformed".to_string());
+    let mut rest = body;
+    let mut adopted = Vec::new();
+    while !rest.is_empty() {
+        let path_len = u32::from_be_bytes(
+            take(&mut rest, 4)
+                .ok_or_else(malformed)?
+                .try_into()
+                .map_err(|_| malformed())?,
+        ) as usize;
+        let path = PathBuf::from(std::ffi::OsStr::from_bytes(
+            take(&mut rest, path_len).ok_or_else(malformed)?,
+        ));
+        let mut key = Zeroizing::new([0u8; KEY_LEN]);
+        key.copy_from_slice(take(&mut rest, KEY_LEN).ok_or_else(malformed)?);
+        let expires_at_ms = u64::from_be_bytes(
+            take(&mut rest, 8)
+                .ok_or_else(malformed)?
+                .try_into()
+                .map_err(|_| malformed())?,
+        );
+        let single_use = match take(&mut rest, 1).ok_or_else(malformed)? {
+            [0] => false,
+            [1] => true,
+            _ => return Err(malformed()),
+        };
+        adopted.push((
+            path,
+            UnlockedVault {
+                key,
+                expires_at_ms: (expires_at_ms != u64::MAX).then_some(expires_at_ms),
+                single_use,
+            },
+        ));
+    }
+    let count = adopted.len();
+    unlocked_vaults()
+        .lock()
+        .map_err(|error| secret_error(format!("Chariox vault unlock state poisoned: {error}")))?
+        .extend(adopted);
+    Ok(count)
+}
+
 pub fn clear_all_chariox_encrypted_vault_unlocks() -> Result<(), DaemonError> {
     unlocked_vaults()
         .lock()
@@ -1961,6 +2040,79 @@ mod tests {
             assert!(is_chariox_vault_locked_error(&result.unwrap_err()));
             assert!(removed.is_none(), "expired Zeroizing key must be removed");
         }
+    }
+
+    fn unlocked_test_vault(name: &str, lease: VaultUnlockLease) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "chariox-{name}-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        create_chariox_encrypted_vault_for_test(&path, "correct horse battery").unwrap();
+        unlock_existing_chariox_encrypted_vault(&path, "correct horse battery", lease)
+            .unwrap()
+            .expect("the passphrase opens the test Vault");
+        path
+    }
+
+    // A hot reload keeps the Vault unlocked with the same lease: what the new
+    // program restores opens the Vault and expires when the old one would have.
+    #[cfg(unix)]
+    #[test]
+    fn handed_over_unlock_opens_the_vault_with_its_lease() {
+        let path = unlocked_test_vault("handover-ttl", VaultUnlockLease::TtlMinutes(30));
+        let store = CharioxEncryptedCredentialVaultStore::new(&path);
+        store.set_secret("svc", "key", "value").unwrap();
+        let before = chariox_encrypted_vault_status(&path).unwrap();
+        let body = hand_over_vault_unlocks().unwrap();
+
+        lock_chariox_encrypted_vault(&path).unwrap();
+        assert!(!chariox_encrypted_vault_status(&path).unwrap().unlocked);
+        assert!(is_chariox_vault_locked_error(
+            &store.get_secret("svc", "key").unwrap_err()
+        ));
+
+        adopt_vault_unlocks(&body).unwrap();
+        assert_eq!(chariox_encrypted_vault_status(&path).unwrap(), before);
+        assert_eq!(store.get_secret("svc", "key").unwrap(), "value");
+        lock_chariox_encrypted_vault(&path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn handed_over_unlock_keeps_single_use_and_no_expiry() {
+        let single = unlocked_test_vault("handover-single", VaultUnlockLease::SingleUse);
+        let shutdown = unlocked_test_vault("handover-shutdown", VaultUnlockLease::KernelShutdown);
+        let body = hand_over_vault_unlocks().unwrap();
+        clear_all_chariox_encrypted_vault_unlocks().unwrap();
+        adopt_vault_unlocks(&body).unwrap();
+        assert!(chariox_vault_single_use_unlocked(&single).unwrap());
+        let status = chariox_encrypted_vault_status(&shutdown).unwrap();
+        assert!(status.unlocked && status.expires_at_ms.is_none());
+        lock_chariox_encrypted_vault(&single).unwrap();
+        lock_chariox_encrypted_vault(&shutdown).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn expired_unlock_is_not_handed_over() {
+        let path = unlocked_test_vault("handover-expired", VaultUnlockLease::TtlMinutes(30));
+        expire_chariox_encrypted_vault_for_test(&path);
+        let body = hand_over_vault_unlocks().unwrap();
+        lock_chariox_encrypted_vault(&path).unwrap();
+        adopt_vault_unlocks(&body).unwrap();
+        assert!(!chariox_encrypted_vault_status(&path).unwrap().unlocked);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn malformed_handed_over_unlocks_restore_nothing() {
+        let path = unlocked_test_vault("handover-malformed", VaultUnlockLease::TtlMinutes(30));
+        let body = hand_over_vault_unlocks().unwrap();
+        lock_chariox_encrypted_vault(&path).unwrap();
+        let cut = &body[..body.len() - 1];
+        assert!(adopt_vault_unlocks(cut).is_err());
+        assert!(!chariox_encrypted_vault_status(&path).unwrap().unlocked);
     }
 
     #[test]
