@@ -138,11 +138,6 @@ impl KernelRuntimeState {
                 .private_runtime_state_root(),
         )?;
         run.set_metadata_only_discovery(scratch.0.clone());
-        eprintln!(
-            "DRAFT-DEBUG prompt {} bytes: {:?}",
-            visible_user_prompt.len(),
-            visible_user_prompt.chars().take(200).collect::<String>()
-        );
         let output = run_provider_utility_prompt(
             self,
             run,
@@ -155,11 +150,6 @@ impl KernelRuntimeState {
             DRAFT_TIMEOUT,
         )
         .await?;
-        eprintln!(
-            "DRAFT-DEBUG answer {} bytes: {:?}",
-            output.len(),
-            output.chars().take(300).collect::<String>()
-        );
         Ok(output)
     }
 }
