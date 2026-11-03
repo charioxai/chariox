@@ -1414,6 +1414,76 @@ fn assert_code(f: &Fixture, handle: &str, digits: u32, period: u64) {
     );
 }
 
+// Browser capture can bind a page value to one command environment variable instead of a site.
+#[tokio::test]
+async fn capture_browser_binds_a_page_value_to_one_command_environment() {
+    crate::test_support::isolated_env_test!();
+    let login = login_room().await;
+    let f = &login.f;
+    unlock(f);
+    let binding =
+        json!({"target":{"kind":"command_environment","name":"RESEND_API_KEY","origin":SITE}});
+    let mut args = capture_args("env");
+    args["use_binding"] = binding.clone();
+    let result = call(f, CAPTURE, args.clone()).await.unwrap();
+    assert!(
+        !result.to_string().contains(CAPTURED),
+        "the model never gets the value"
+    );
+    let handle = result["credential_id"].as_str().unwrap().to_string();
+    let service = f.state.home_runtime_secret_service().unwrap();
+    let target = crate::config::VaultUseTarget::CommandEnvironment {
+        name: "RESEND_API_KEY".into(),
+        origin: SITE.into(),
+    };
+    assert_eq!(
+        service
+            .workspace_secret_input_for_target(&handle, &target)
+            .unwrap(),
+        CAPTURED
+    );
+    let other = crate::config::VaultUseTarget::CommandEnvironment {
+        name: "OTHER_KEY".into(),
+        origin: SITE.into(),
+    };
+    assert!(
+        service
+            .workspace_secret_input_for_target(&handle, &other)
+            .is_err(),
+        "one entry, one use"
+    );
+    assert!(
+        service
+            .browser_secret_input_for_target_url(&handle, &format!("{SITE}/login"))
+            .is_err(),
+        "a command-bound entry is not a site password"
+    );
+    let again = call(f, CAPTURE, args).await.unwrap();
+    assert_eq!(
+        (again["credential_id"].as_str(), again["created"].as_bool()),
+        (Some(handle.as_str()), Some(false))
+    );
+
+    std::fs::remove_file(login.root.path().join("capture")).unwrap();
+    let mut both = capture_args("both");
+    both["use_binding"] = binding;
+    both["use_on"] = json!([SITE]);
+    assert!(
+        call(f, CAPTURE, both).await.is_err(),
+        "a site and a command use are exclusive"
+    );
+    let mut outside = capture_args("outside");
+    outside["use_binding"] = json!({"target":{"kind":"file","path":"/etc/capture-target"}});
+    assert!(
+        call(f, CAPTURE, outside).await.is_err(),
+        "a file outside the workspace is refused"
+    );
+    assert!(
+        !login.root.path().join("capture").exists(),
+        "a refused destination reveals nothing"
+    );
+}
+
 // VAUDIT S3: fill_field puts a captured value into a plain field on an allowed origin only.
 #[tokio::test]
 async fn vaudit_s3_fill_field_fills_plain_targets_on_the_exact_origin() {

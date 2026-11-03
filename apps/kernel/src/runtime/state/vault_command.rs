@@ -9,6 +9,9 @@ mod capture;
 mod files;
 mod use_env;
 
+pub(in crate::runtime::state) use capture::{
+    capture_binding_schema, committed as committed_capture, service_host, Captured,
+};
 pub(crate) use capture::{capture_command_spec, VAULT_CAPTURE_COMMAND};
 pub(crate) use files::{capture_file_spec, write_file_spec, VAULT_CAPTURE_FILE, VAULT_WRITE_FILE};
 pub(crate) use use_env::{use_env_spec, VAULT_USE_ENV};
@@ -26,7 +29,7 @@ fn command_timeout(seconds: Option<u64>) -> Result<Duration, DaemonError> {
     }
 }
 
-fn validate_capture_binding(
+pub(in crate::runtime::state) fn validate_capture_binding(
     run: &crate::provider::RuntimeProviderRun,
     binding: &crate::config::VaultUseBinding,
 ) -> Result<(), DaemonError> {

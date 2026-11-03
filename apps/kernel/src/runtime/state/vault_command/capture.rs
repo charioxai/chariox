@@ -70,7 +70,7 @@ pub(crate) fn capture_command_spec() -> RuntimeToolSpec {
     }
 }
 
-pub(super) fn capture_binding_schema() -> serde_json::Value {
+pub(in crate::runtime::state) fn capture_binding_schema() -> serde_json::Value {
     serde_json::json!({"type":"object","required":["target"],"additionalProperties":false,"properties":{
         "value_kind":{"type":"string","enum":["secret","payment_card"],"default":"secret"},
         "target":{"oneOf":[
@@ -173,7 +173,7 @@ impl KernelRuntimeState {
     }
 
     /// Stores a captured value for kernel-local use (command env/stdin and files).
-    pub(super) async fn store_captured(
+    pub(in crate::runtime::state) async fn store_captured(
         &self,
         context: &VaultAgentContext,
         registry: &crate::credential::CharioxCredentialRegistry,
@@ -232,11 +232,11 @@ impl KernelRuntimeState {
     }
 }
 
-pub(super) struct Captured {
-    pub(super) handle: String,
-    pub(super) host: String,
-    pub(super) label: Option<String>,
-    pub(super) use_binding: crate::config::VaultUseBinding,
+pub(in crate::runtime::state) struct Captured {
+    pub(in crate::runtime::state) handle: String,
+    pub(in crate::runtime::state) host: String,
+    pub(in crate::runtime::state) label: Option<String>,
+    pub(in crate::runtime::state) use_binding: crate::config::VaultUseBinding,
 }
 
 pub(super) fn extract_pattern(how: &Extract) -> Result<Option<regex::Regex>, DaemonError> {
@@ -254,7 +254,7 @@ pub(super) fn extract_pattern(how: &Extract) -> Result<Option<regex::Regex>, Dae
 }
 
 /// A retry returns the committed handle only to the same agent, session and host.
-pub(super) fn committed(
+pub(in crate::runtime::state) fn committed(
     existing: &UserCredentialConfig,
     turn: &VaultAgentContext,
     host: &str,
@@ -294,7 +294,7 @@ pub(super) fn captured_handle(turn: &VaultAgentContext, request_id: &str) -> Str
 }
 
 /// A bare host name (with an optional port), as credential hosts are matched.
-pub(super) fn service_host(raw: &str) -> Result<String, DaemonError> {
+pub(in crate::runtime::state) fn service_host(raw: &str) -> Result<String, DaemonError> {
     let raw = raw.trim();
     let url = url::Url::parse(&format!("https://{raw}"))
         .ok()
