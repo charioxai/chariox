@@ -17,9 +17,9 @@ export type ProjectEnvironmentFile = {
 
 export type SetupState =
   | { readonly state: "notRun" }
-  | { readonly state: "ok"; readonly endedAtMs: number }
-  | { readonly state: "failed"; readonly endedAtMs: number; readonly exitCode: number | null; readonly reason: string | null }
-  | { readonly state: "cancelled"; readonly endedAtMs: number }
+  | { readonly state: "ok"; readonly operationId: string; readonly endedAtMs: number }
+  | { readonly state: "failed"; readonly operationId: string; readonly endedAtMs: number; readonly exitCode: number | null; readonly reason: string | null }
+  | { readonly state: "cancelled"; readonly operationId: string; readonly endedAtMs: number }
   | { readonly state: "running"; readonly operationId: string; readonly startedAtMs: number }
 
 export type ProjectEnvironmentView = {

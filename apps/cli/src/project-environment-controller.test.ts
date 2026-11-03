@@ -20,7 +20,7 @@ function environment(patch: Partial<ProjectEnvironmentView> = {}): ProjectEnviro
     changedAtMs: NOW,
     machineLabel: "Miguel's Mac",
     checkoutPath: "/work/project",
-    setupState: { state: "ok", endedAtMs: NOW - 3 * HOUR },
+    setupState: { state: "notRun" },
     ...patch,
   }
 }
@@ -63,8 +63,8 @@ function harness(initial: ProjectEnvironmentView = environment()) {
   const key = (name: string, extra: Record<string, unknown> = {}) => controller.handleKey({ name, ...extra })
   const type = (text: string) => { for (const char of text) key(char, { sequence: char }) }
   const text = () => controller.view().rows.map((row) => row.text).join("\n")
-  const open = async () => {
-    replies.push({ ProjectEnvironment: { environment: initial } })
+  const open = async (...then: Reply[]) => {
+    replies.push({ ProjectEnvironment: { environment: initial } }, ...then)
     await controller.open("project-1")
   }
   const focusOn = (target: string) => {
@@ -79,7 +79,7 @@ test("the dialog shows one machine line and the four sections from the kernel", 
   await h.open()
   assert.deepEqual(h.requests, [{ GetProjectEnvironment: { projectId: "project-1" } }])
   const text = h.text()
-  assert.match(text, /^Miguel's Mac · Setup ran 3 h ago\s+Run setup/)
+  assert.match(text, /^Miguel's Mac · Setup not run\s+Run setup/)
   for (const part of ["Setup\n  make setup", "Variables\n  PORT=3000", "API_KEY", "In Vault", "DB_URL", "Missing here", "+ Add secret", "Files outside Git", ".env.local", "certs/dev.pem", "Present · 2.0 KB", "+ Add file"]) {
     assert(text.includes(part), `missing ${part} in\n${text}`)
   }
@@ -87,9 +87,9 @@ test("the dialog shows one machine line and the four sections from the kernel", 
 
 test("setup state text covers every state", () => {
   assert.equal(setupStateText({ state: "notRun" }, NOW), "Setup not run")
-  assert.equal(setupStateText({ state: "ok", endedAtMs: NOW - 3 * HOUR }, NOW), "Setup ran 3 h ago")
-  assert.equal(setupStateText({ state: "failed", endedAtMs: NOW - 2 * HOUR, exitCode: 1, reason: null }, NOW), "Setup failed 2 h ago")
-  assert.equal(setupStateText({ state: "cancelled", endedAtMs: NOW - 90_000 }, NOW), "Setup cancelled 1 m ago")
+  assert.equal(setupStateText({ state: "ok", operationId: "op-1", endedAtMs: NOW - 3 * HOUR }, NOW), "Setup ran 3 h ago")
+  assert.equal(setupStateText({ state: "failed", operationId: "op-1", endedAtMs: NOW - 2 * HOUR, exitCode: 1, reason: null }, NOW), "Setup failed 2 h ago")
+  assert.equal(setupStateText({ state: "cancelled", operationId: "op-1", endedAtMs: NOW - 90_000 }, NOW), "Setup cancelled 1 m ago")
   assert.equal(setupStateText({ state: "running", operationId: "o", startedAtMs: NOW }, NOW), "Running")
 })
 
@@ -259,7 +259,7 @@ test("Run setup starts an operation, polls once a second and shows the output ta
   assert.deepEqual(h.scheduled.map((entry) => entry.delayMs), [1000])
 
   h.replies.push({ EnvironmentOperation: { operation: operation({ state: "succeeded", endedAtMs: NOW + 5, exitCode: 0, outputTail: "installing\ncompiling\ndone\n" }) } })
-  h.replies.push({ ProjectEnvironment: { environment: environment({ setupState: { state: "ok", endedAtMs: NOW + 5 } }) } })
+  h.replies.push({ ProjectEnvironment: { environment: environment({ setupState: { state: "ok", operationId: "op-1", endedAtMs: NOW + 5 } }) } })
   h.scheduled.shift()!.callback()
   await h.settle()
   assert.deepEqual(h.requests.at(-1), { GetProjectEnvironment: { projectId: "project-1" } })
@@ -273,7 +273,7 @@ test("Stop cancels the running operation and the record shows cancelled", async 
   await h.open()
   assert.deepEqual(h.scheduled.map((entry) => entry.delayMs), [1000])
   h.replies.push({ EnvironmentOperation: { operation: operation({ operationId: "op-9", state: "cancelled", endedAtMs: NOW + 1 }) } })
-  h.replies.push({ ProjectEnvironment: { environment: environment({ setupState: { state: "cancelled", endedAtMs: NOW + 1 } }) } })
+  h.replies.push({ ProjectEnvironment: { environment: environment({ setupState: { state: "cancelled", operationId: "op-9", endedAtMs: NOW + 1 } }) } })
   h.key("return")
   await h.settle()
   assert.deepEqual(h.requests[1], { CancelEnvironmentOperation: { operationId: "op-9" } })
@@ -287,8 +287,8 @@ test("Stop cancels the running operation and the record shows cancelled", async 
 test("a failed run shows the reason under the script", async () => {
   const h = harness()
   await h.open()
-  h.replies.push({ EnvironmentOperation: { operation: operation({ state: "failed", endedAtMs: NOW, exitCode: 1, reason: "Vault is locked", outputTail: "" }) } })
-  h.replies.push({ ProjectEnvironment: { environment: environment({ setupState: { state: "failed", endedAtMs: NOW, exitCode: 1, reason: "Vault is locked" } }) } })
+  h.replies.push({ EnvironmentOperation: { operation: operation({ state: "failed", operationId: "op-1", endedAtMs: NOW, exitCode: 1, reason: "Vault is locked", outputTail: "" }) } })
+  h.replies.push({ ProjectEnvironment: { environment: environment({ setupState: { state: "failed", operationId: "op-1", endedAtMs: NOW, exitCode: 1, reason: "Vault is locked" } }) } })
   h.key("return")
   await h.settle()
   assert.match(h.text(), /Setup failed just now/)
@@ -340,4 +340,13 @@ test("a paste lands in the active field and is refused when no field is active",
   h.key("return")
   assert.equal(h.controller.handlePaste("\nline two\r\nline three"), true)
   assert(h.text().includes("line three"))
+})
+
+test("a reopened dialog shows the output of the last finished run once", async () => {
+  const finished = environment({ setupState: { state: "failed", operationId: "op-3", endedAtMs: NOW - 2 * HOUR, exitCode: 1, reason: null } })
+  const h = harness(finished)
+  await h.open({ EnvironmentOperation: { operation: operation({ operationId: "op-3", state: "failed", endedAtMs: NOW - 2 * HOUR, exitCode: 1, outputTail: "pnpm install failed\n" }) } })
+  assert.deepEqual(h.requests.map((request) => Object.keys(request)[0]), ["GetProjectEnvironment", "GetEnvironmentOperation"])
+  assert.match(h.text(), /pnpm install failed/)
+  assert.equal(h.scheduled.length, 0, "a finished run is not polled")
 })

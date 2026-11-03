@@ -26,7 +26,7 @@ const view = {
   changedAtMs: 1_700_000_000_000,
   machineLabel: "Miguel's Mac",
   checkoutPath: "/work/project",
-  setupState: { state: "failed", endedAtMs: 1_700_000_100_000, exitCode: 2, reason: null },
+  setupState: { state: "failed", operationId: "op-1", endedAtMs: 1_700_000_100_000, exitCode: 2, reason: null },
 }
 
 const operation = {
@@ -75,9 +75,9 @@ test("responses parse into the typed views", () => {
 test("every setup state parses", () => {
   const states = [
     { state: "notRun" },
-    { state: "ok", endedAtMs: 5 },
-    { state: "cancelled", endedAtMs: 5 },
-    { state: "failed", endedAtMs: 5, exitCode: null, reason: "Kernel restarted" },
+    { state: "ok", operationId: "op-1", endedAtMs: 5 },
+    { state: "cancelled", operationId: "op-1", endedAtMs: 5 },
+    { state: "failed", operationId: "op-1", endedAtMs: 5, exitCode: null, reason: "Kernel restarted" },
     { state: "running", operationId: "op-1", startedAtMs: 5 },
   ]
   for (const setupState of states) {
@@ -97,6 +97,6 @@ test("a malformed record names the field instead of rendering a guess", () => {
   assert.throws(() => projectEnvironmentFromResponse(broken({ revision: -1 })), /"revision" must be a non-negative integer/)
   assert.throws(() => projectEnvironmentFromResponse(broken({ secrets: [{ name: "A", presence: "maybe" }] })), /"presence" is not one of/)
   assert.throws(() => projectEnvironmentFromResponse(broken({ setupState: { state: "paused" } })), /"state" is not one of/)
-  assert.throws(() => projectEnvironmentFromResponse(broken({ setupState: { state: "ok" } })), /missing "endedAtMs"/)
+  assert.throws(() => projectEnvironmentFromResponse(broken({ setupState: { state: "ok", operationId: "op-1" } })), /missing "endedAtMs"/)
   assert.throws(() => environmentOperationFromResponse({ EnvironmentOperation: { operation: { ...operation, outputTail: 1 } } }), /"outputTail" must be text/)
 })

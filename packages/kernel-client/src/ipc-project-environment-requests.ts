@@ -112,10 +112,11 @@ function parseSetupState(value: Json): SetupState {
   const what = "Environment setup state"
   switch (oneOf(value, "state", ["notRun", "ok", "failed", "cancelled", "running"], what)) {
     case "notRun": return { state: "notRun" }
-    case "ok": return { state: "ok", endedAtMs: count(value, "endedAtMs", what) }
-    case "cancelled": return { state: "cancelled", endedAtMs: count(value, "endedAtMs", what) }
+    case "ok": return { state: "ok", operationId: text(value, "operationId", what), endedAtMs: count(value, "endedAtMs", what) }
+    case "cancelled": return { state: "cancelled", operationId: text(value, "operationId", what), endedAtMs: count(value, "endedAtMs", what) }
     case "failed": return {
       state: "failed",
+      operationId: text(value, "operationId", what),
       endedAtMs: count(value, "endedAtMs", what),
       exitCode: nullableInteger(value, "exitCode", what),
       reason: nullableText(value, "reason", what),

@@ -10,7 +10,7 @@ import {
   saveProjectEnvironmentRequest,
   setProjectEnvironmentSecretRequest,
 } from "@chariox/kernel-client/ipc-project-environment-requests"
-import type { EnvironmentOperationView, ProjectEnvironmentView } from "@chariox/kernel-client/kernel-types"
+import type { EnvironmentOperationView, ProjectEnvironmentView, SetupState } from "@chariox/kernel-client/kernel-types"
 import {
   environmentDialogView,
   environmentFocusables,
@@ -112,11 +112,23 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
       if (next.projectId !== projectId) throw new Error("Environment unavailable for this Project")
       setEnvironment(next)
       if (next.setupState.state === "running") poll(next.setupState.operationId)
+      else await showLastRun(next.setupState, mine)
     } catch (error) {
       if (mine !== generation) return
       message = failureText(error)
     }
     deps.render()
+  }
+
+  // A reopened dialog shows the output of the last finished run; if it cannot be read the state row still tells the result.
+  const showLastRun = async (state: SetupState, mine: number) => {
+    if (state.state === "notRun" || state.state === "running" || operation?.operationId === state.operationId) return
+    try {
+      const last = environmentOperationFromResponse(await deps.send(getEnvironmentOperationRequest(state.operationId)))
+      if (mine === generation) operation = last
+    } catch {
+      // The output is a courtesy.
+    }
   }
 
   // Polls the running operation about once a second; the output tail is the only live data.
@@ -311,6 +323,7 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
         if (next.projectId !== project) throw new Error("Environment unavailable for this Project")
         setEnvironment(next)
         if (next.setupState.state === "running") poll(next.setupState.operationId)
+        else await showLastRun(next.setupState, mine)
       } catch (error) {
         if (mine !== generation) return
         message = failureText(error)
