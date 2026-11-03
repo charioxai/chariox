@@ -5,8 +5,7 @@
 const supportedServiceDirectives = new Set([
   "Type", "User", "Group", "Environment", "ExecStartPre", "ExecStart",
   "ExecStartPost", "ExecReload", "Delegate", "DelegateSubgroup", "Restart", "RestartSec",
-  "RestartSteps", "RestartMaxDelaySec", "KillMode", "StateDirectory",
-  "StateDirectoryMode",
+  "RestartSteps", "RestartMaxDelaySec", "KillMode",
 ])
 
 export function parseUnitSections(source) {
@@ -33,9 +32,8 @@ export function parseUnitSections(source) {
   return sections
 }
 
-export function verifyPath1ServicePolicy(source, role) {
-  const label = role === "worker" ? "Path-1 disposable-worker service" : "Path-1 managed bootstrap service"
-  const fail = (message) => { throw new Error(`selected ${label} ${message}`) }
+export function verifyPath1ServicePolicy(source) {
+  const fail = (message) => { throw new Error(`selected Path-1 managed bootstrap service ${message}`) }
   const sections = parseUnitSections(source)
   const lines = sections.get("Service") ?? []
   const unit = sections.get("Unit") ?? []
@@ -46,7 +44,7 @@ export function verifyPath1ServicePolicy(source, role) {
       fail(`is missing or overrides ${required}`)
     }
   }
-  const command = `ExecStart=/usr/local/bin/chariox-managed-bootstrap${role === "worker" ? " --disposable-worker" : ""}`
+  const command = "ExecStart=/usr/local/bin/chariox-managed-bootstrap"
   if (all.filter((line) => line.startsWith("ExecStart=")).length !== 1 || !lines.includes(command)) {
     fail("has an incompatible ExecStart")
   }
@@ -60,7 +58,7 @@ export function verifyPath1ServicePolicy(source, role) {
     ["CHARIOX_HOME", "/home/chariox/.chariox"],
     ["CHARIOX_SLICE_DOCKER_BROKER_SOCKET", "/var/lib/chariox-slice-share/.broker-private/control/control.sock"],
   ]) exact(`Environment=${name}=`, `Environment=${name}=${value}`)
-  if (role === "home") exact("Environment=CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY=", "Environment=CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY=/etc/chariox/trusted-builder-public-key")
+  exact("Environment=CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY=", "Environment=CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY=/etc/chariox/trusted-builder-public-key")
   exact("User=", "User=chariox")
   exact("Group=", "Group=chariox")
   exact("ExecStartPre=", "ExecStartPre=-+/usr/bin/systemctl restart chariox-slice-broker.service")
@@ -107,12 +105,7 @@ export function verifyPath1ServicePolicy(source, role) {
   for (const directive of forbidden) {
     if (all.some((line) => line.includes(directive))) fail(`contains ${directive}`)
   }
-  const state = all.filter((line) => line.startsWith("StateDirectory="))
-  const stateMode = all.filter((line) => line.startsWith("StateDirectoryMode="))
-  if (role === "worker") {
-    exact("StateDirectory=", "StateDirectory=chariox")
-    exact("StateDirectoryMode=", "StateDirectoryMode=0700")
-  } else if (state.length || stateMode.length) fail("contains StateDirectory=")
+  if (all.some((line) => line.startsWith("StateDirectory="))) fail("contains StateDirectory=")
   // Only direct, unquoted one-assignment environment declarations are supported.
   // Otherwise a later quoted/multiple assignment could override a validated HOME.
   if (all.some((line) => /^(EnvironmentFile|PassEnvironment|UnsetEnvironment)=/.test(line)
