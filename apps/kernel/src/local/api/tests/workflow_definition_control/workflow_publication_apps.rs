@@ -1,10 +1,26 @@
 //! Protocol 366/377: App-bound workflow publications carry each release's App plan.
 use super::*;
 use crate::local::{
-    ConfigureAppAutomationRequest, GetWorkflowPublicationRequest, GrantAgentExtensionRequest,
-    UninstallAppRequest,
+    ConfigureAppAutomationRequest, GetWorkflowPublicationRequest, UninstallAppRequest,
 };
 use crate::session::DEFAULT_LOCAL_USER_ID;
+
+/// An agent asks for an installed App: the kernel binds it at once. A person
+/// has no request that assigns one.
+fn bind_app(harness: &LocalRouterTestHarness, agent: &str, installation: &str) {
+    let runtime = harness.runtime_state();
+    harness
+        .block_on_test_task(async move {
+            runtime
+                .grant_agent_extension(
+                    agent,
+                    crate::extension::ExtensionGrant::app(installation),
+                    DEFAULT_LOCAL_USER_ID,
+                )
+                .await
+        })
+        .expect("the workflow agent is granted the App");
+}
 
 /// A harness whose local owner has the fixture App `installed`
 /// (`com.example.state`, outgoing event `changed`) with its stored release.
@@ -137,19 +153,7 @@ fn an_app_granted_to_a_workflow_agent_is_packaged_per_release() {
     let root = temp_root("grant");
     let harness = harness_with_app(&root);
     let graph = create_publication_test_graph(&harness, "app-grant");
-    harness
-        .dispatch(LocalDaemonRequest::GrantAgentExtension(
-            GrantAgentExtensionRequest {
-                workspace_id: None,
-                agent_ref: graph.agent_id.clone(),
-                kind: crate::local::ExtensionKind::App,
-                name: "installed".into(),
-                environment: None,
-                credential: None,
-                max_safety: None,
-            },
-        ))
-        .expect("the workflow agent is granted the App");
+    bind_app(&harness, &graph.agent_id, "installed");
     let publication = publish(&harness, &graph, "todo-grant", "ingress");
 
     let (digest, files) = export(&harness, &graph, publication.id()).expect("export");
@@ -510,19 +514,7 @@ fn only_a_successful_export_records_and_persists_the_app_plan() {
     let root = temp_root("failed-export");
     let harness = harness_with_app(&root);
     let graph = create_publication_test_graph(&harness, "app-failed-export");
-    harness
-        .dispatch(LocalDaemonRequest::GrantAgentExtension(
-            GrantAgentExtensionRequest {
-                workspace_id: None,
-                agent_ref: graph.agent_id.clone(),
-                kind: crate::local::ExtensionKind::App,
-                name: "installed".into(),
-                environment: None,
-                credential: None,
-                max_safety: None,
-            },
-        ))
-        .unwrap();
+    bind_app(&harness, &graph.agent_id, "installed");
     let publication = publish(&harness, &graph, "todo-failed-export", "ingress");
     let pinned = || match harness
         .dispatch(LocalDaemonRequest::GetWorkflowPublication(
@@ -591,19 +583,7 @@ fn preparing_deployment_apps_asks_once_and_records_the_answer() {
     let root = temp_root("consent");
     let harness = harness_with_app(&root);
     let graph = create_publication_test_graph(&harness, "app-consent");
-    harness
-        .dispatch(LocalDaemonRequest::GrantAgentExtension(
-            GrantAgentExtensionRequest {
-                workspace_id: None,
-                agent_ref: graph.agent_id.clone(),
-                kind: crate::local::ExtensionKind::App,
-                name: "installed".into(),
-                environment: None,
-                credential: None,
-                max_safety: None,
-            },
-        ))
-        .unwrap();
+    bind_app(&harness, &graph.agent_id, "installed");
     let publication = publish(&harness, &graph, "todo-consent", "ingress");
     let digest = std::cell::RefCell::new(format!("sha256:{}", "a".repeat(64)));
     let prepare_for = |request_id: &str, deployment_id: &str, release_id: &str| {

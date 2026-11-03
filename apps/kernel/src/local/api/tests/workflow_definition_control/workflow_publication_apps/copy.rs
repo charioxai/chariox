@@ -18,19 +18,7 @@ struct Deployed {
 
 fn deployed(harness: &LocalRouterTestHarness, label: &str, consent: bool) -> Deployed {
     let graph = create_publication_test_graph(harness, label);
-    harness
-        .dispatch(LocalDaemonRequest::GrantAgentExtension(
-            GrantAgentExtensionRequest {
-                workspace_id: None,
-                agent_ref: graph.agent_id.clone(),
-                kind: crate::local::ExtensionKind::App,
-                name: "installed".into(),
-                environment: None,
-                credential: None,
-                max_safety: None,
-            },
-        ))
-        .unwrap();
+    bind_app(harness, &graph.agent_id, "installed");
     let publication = publish(harness, &graph, label, "event_based");
     harness
         .dispatch(LocalDaemonRequest::ConfigureAppAutomation(

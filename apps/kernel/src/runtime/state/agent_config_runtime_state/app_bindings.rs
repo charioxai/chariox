@@ -357,6 +357,9 @@ impl KernelRuntimeState {
         self.app_control()
             .views()
             .set_revoked(agent.session_id(), agent.id(), name, true);
+        self.app_control()
+            .views()
+            .forget_agent_approvals(agent.id(), name);
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
         self.app_control()
             .forget_unlisted_binding(&self.app_reach(agent), name);

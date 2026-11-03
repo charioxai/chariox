@@ -687,14 +687,6 @@ async fn an_existing_session_action_approval_skips_the_next_prompt_and_revocatio
         .await
         .unwrap();
     rig.grant().await;
-    assert_eq!(
-        rig.runtime
-            .approve_view_action(rig.run.id(), &rig.agent, &context, &action, &input)
-            .await
-            .unwrap_err()
-            .code,
-        "AGENT_APP_NOT_GRANTED"
-    );
     let context = rig.context(declared());
     let approve =
         rig.runtime
