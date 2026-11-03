@@ -1,4 +1,5 @@
 import { fileTransfer } from './transfer.mjs';
+import { untilOwnerAnswers } from './owner-wait.mjs';
 import declarations from '../schemas/ui-actions.json' with { type: 'json' };
 import { MAX_ROWS, MAX_COLUMNS, encodeCsv } from './csv.mjs';
 import { emptyWorkbook, validateWorkbook, workbookFromCsv, workbookFile, parseWorkbookFile, usedBounds } from './workbook.mjs';
@@ -151,7 +152,7 @@ export async function attachWorkbook(api, bridge) {
       if (!input.name?.endsWith('.univer.json')) throw new Error('Use a .univer.json filename');
       await calculated(); return transfer.write( { name: input.name, text: workbookFile(book().save()), offer: input.offer ?? false });
     },
-    pick_file: input => caller.call('pick_file', input),
+    pick_file: input => untilOwnerAnswers(() => caller.call('pick_file', input)),
     };
   };
 

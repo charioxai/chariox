@@ -1,5 +1,6 @@
 import { checkedScene, sceneJSON } from './scene.js';
 import { restore, serializeAsJSON } from '@excalidraw/excalidraw';
+import { untilOwnerAnswers } from './owner-wait.js';
 
 // The backend and Excalidraw serialize the same scene with different key order
 // and whitespace. Compare scene content so opening a view cannot bump its CAS.
@@ -64,7 +65,7 @@ export function persistence(chariox, api, loaded) {
       if (failure) throw failure;
       let request = { name: filename(name) };
       if (!name) {
-        const { grants } = await caller.call('pick_file', {});
+        const { grants } = await untilOwnerAnswers(() => caller.call('pick_file', {}));
         if (!grants.length) return { cancelled: true };
         request = { grantId: grants[0] };
       }
