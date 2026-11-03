@@ -180,18 +180,23 @@ function remoteMachineHarness(kernelOverrides: Record<string, unknown> = {}) {
   }
 }
 
-test("machine add shows the single-use enrollment command in the footer only", async () => {
+test("machine add shows the single-use enrollment command in a toast, readable and pasteable whole", async () => {
   const labels: unknown[] = []
-  const footers: { message: string; tone: string }[] = []
+  const footers: { message: string; tone: string; display: string | undefined }[] = []
   const notices: string[] = []
-  const deps = { flashFooter: (message: string, tone: string) => footers.push({ message, tone }), appendNotice: (m: string) => notices.push(m),
-    issueOwnMachineEnrollment: async (label?: string) => { labels.push(label); return { command: " (curl -fsSL https://dl.example/install.sh | sh)", expires_at: "2026-11-03T13:10:00Z" } },
+  const command = " (setup_script=$(curl -fsSL https://dl.example/install.sh) && printf '%s\\n' ket_abc | sh -c \"$setup_script\" sh --enroll --api-url https://example.test)"
+  const deps = { flashFooter: (message: string, tone: string, display?: string) => footers.push({ message, tone, display }), appendNotice: (m: string) => notices.push(m),
+    issueOwnMachineEnrollment: async (label?: string) => { labels.push(label); return { command, expires_at: "2026-11-03T13:10:00Z" } },
   }
   await handleRemoteMachineSlashCommand(deps, { kind: "machine", raw: "/machine add build box", args: ["add", "build", "box"] })
   await handleRemoteMachineSlashCommand(deps, { kind: "machine", raw: "/machine add", args: ["add"] })
   assert.deepEqual(labels, ["build box", undefined])
   assert.equal(footers.length, 2)
-  assert.match(footers[0]!.message, /before 2026-11-03T13:10:00Z:\n\(curl -fsSL https:\/\/dl\.example\/install\.sh \| sh\)$/)
+  // The footer line would clip the command; a toast shows all of it.
+  assert.deepEqual(footers.map(f => f.display), ["toast", "toast"])
+  const shown = footers[0]!.message.split("\n").slice(1)
+  assert.ok(shown.length > 1 && shown.slice(0, -1).every(line => line.endsWith(" \\")), "each broken line ends in a shell continuation")
+  assert.equal(shown.join("\n").replaceAll(" \\\n", " "), command.trim())
   assert.deepEqual(notices, [])
 })
 

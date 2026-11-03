@@ -293,10 +293,15 @@ function upsertRemoteMachine(
 }
 
 // The command holds a single-use code, so it goes to the footer for its owner and never into the transcript.
+/** The toast wraps at spaces, which would split a pasted command into several; break it at shell continuations instead. */
+function enrollmentCommandForDisplay(command: string): string {
+  return command.trim().replace(" && ", " && \\\n").replace(" | ", " | \\\n").replace(" --api-url ", " \\\n--api-url ")
+}
+
 async function enrollOwnMachine(deps: RemoteMachineCommandHandlerDeps, machineLabel: string): Promise<void> {
   if (!deps.issueOwnMachineEnrollment) { deps.flashFooter("usage: /machine add [name]", "error", "toast"); return }
   try {
     const { command, expires_at } = await deps.issueOwnMachineEnrollment(machineLabel || undefined)
-    deps.flashFooter(`Run this once in the new machine's shell before ${expires_at}:\n${command.trim()}`, "info")
+    deps.flashFooter(`Run this once in the new machine's shell before ${expires_at}:\n${enrollmentCommandForDisplay(command)}`, "info", "toast")
   } catch (error) { deps.flashFooter(error instanceof Error ? error.message : "could not prepare the enrollment command", "error", "toast") }
 }
