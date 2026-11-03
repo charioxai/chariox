@@ -1127,6 +1127,10 @@ pub struct WorkflowGateRequest {
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "The bounded Test evaluation is an infrequent request with the same typed wire envelope"
+)]
 pub enum WorkflowGateAction {
     Entries {
         after: Option<String>,

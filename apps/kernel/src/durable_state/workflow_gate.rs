@@ -174,6 +174,10 @@ pub(crate) enum Operation {
         reason: String,
     },
 }
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Keep journal results owned across the sole writer acknowledgement"
+)]
 pub(crate) enum Outcome {
     Unit,
     Entry(Entry),
