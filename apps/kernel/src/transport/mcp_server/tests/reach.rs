@@ -124,6 +124,23 @@ fn reach_need_follows_the_agents_own_room_authority() {
         "kernel-wide file access needs /sudo in the agent's own room"
     );
     assert_eq!(
+        reach_need(&parse(
+            serde_json::json!({"ControlPlane": {"action": "acquire",
+            "capability_revision": "r", "request_id": "q"}})
+        )),
+        ReachNeed::Room,
+        "renting is room-level"
+    );
+    assert_eq!(
+        reach_need(&parse(
+            serde_json::json!({"ControlPlane": {"action": "delete_saved_state",
+            "allocation_ref": "a", "saved_state_ref": "s", "capability_revision": "r",
+            "request_id": "q", "expected_revision": 1}})
+        )),
+        ReachNeed::Sudo,
+        "deleting a saved machine state needs /sudo"
+    );
+    assert_eq!(
         reach_need(&parse(serde_json::json!(
             {"RoomTerminal": {"session_id": "s", "operation": {"operation": "exec_list"}}}
         ))),

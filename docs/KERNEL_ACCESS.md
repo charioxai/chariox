@@ -43,7 +43,7 @@ The identity is the agent's own live provider run (`reach:<run>`); it ends with 
 | The request | Without /sudo | In a live /sudo window of the agent's own turn |
 | --- | --- | --- |
 | Discover and read: sessions, agents, history, recall | allowed | allowed |
-| Attach, message and steer agents; a room's terminals and workspace files; machines (`ControlPlane`) | allowed | allowed |
+| Attach, message and steer agents; a room's terminals and workspace files; machines (`ControlPlane`, except deleting a saved state) | allowed | allowed |
 | Anything else a /sudo window adds at home (settings, extensions, renames, kernel-wide files, ...) | refused: `reach_requires_sudo` | allowed |
 | The /sudo exclusion list (`RequestKernelSudo`, `RespondToInteraction`, deletes, events, ...) | refused: `excluded_for_agents` | refused |
 | The human-only set (passkeys, Vault, pairing, relay, Cloud identity, protected settings) | refused: `human_only` | refused |

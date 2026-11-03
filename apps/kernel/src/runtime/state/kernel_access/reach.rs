@@ -41,6 +41,13 @@ pub(crate) fn reach_need(request: &LocalDaemonRequest) -> ReachNeed {
     if sudo_request_forbidden(request) {
         return ReachNeed::Excluded;
     }
+    // Deleting a saved machine state loses the user's data, so it needs /sudo like every other destructive request.
+    if matches!(
+        request,
+        LocalDaemonRequest::ControlPlane(ControlPlaneRequest::DeleteSavedState { .. })
+    ) {
+        return ReachNeed::Sudo;
+    }
     // The room tools: discover and read sessions, agents and history, attach, message
     // and steer agents, a room's own terminals and workspace files, and machines under
     // the rental rule. Kernel-wide file access and every other kernel mutation need /sudo.
