@@ -703,3 +703,54 @@ async fn mk03_environment_discovery_does_not_borrow_the_fenced_move_agent() {
         "the replacement utility session is temporary"
     );
 }
+
+#[tokio::test]
+async fn mp08_environment_discovery_skips_an_idle_agent_with_a_broken_login() {
+    use crate::managed_context::development::*;
+
+    let worktree = crate::test_support::TestWorktree::new("discovery-broken-login");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    let (session, mut agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    agent.set_provider("opencode");
+    app.agents().restore_agent(agent.clone());
+    app.provider_account_profile_registry()
+        .update_observation(
+            agent.owner_user_id(),
+            "opencode",
+            agent.provider_account_profile(),
+            crate::account_profile::ProviderAccountAuthState::Expired,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let project = runtime
+        .owned
+        .session_store
+        .get_project(session.project_id())
+        .unwrap();
+    let repositories = vec![DevelopmentRepositorySelection {
+        workspace_id: session.workspace_id().into(),
+        worktree_id: None,
+        worktree_path: worktree.path().to_path_buf(),
+        role: DevelopmentRepositoryRole::Primary,
+    }];
+    let (_, utility_agent, cleanup) = runtime
+        .environment_utility_identity(&project, &repositories)
+        .await
+        .unwrap();
+    assert_ne!(
+        utility_agent,
+        agent.id(),
+        "an idle agent whose provider login is expired cannot run discovery"
+    );
+    assert!(
+        cleanup.is_some(),
+        "the replacement utility session is temporary"
+    );
+}

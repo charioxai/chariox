@@ -461,6 +461,26 @@ impl KernelRuntimeState {
         Ok(manifest)
     }
 
+    /// An idle agent whose provider login is known to be broken cannot run discovery.
+    fn utility_login_usable(
+        &self,
+        agent: &crate::agent::AgentInstance,
+    ) -> Result<bool, DaemonError> {
+        match self
+            .provider_account_profile_registry()
+            .require_agent_authenticated(
+                agent.owner_user_id(),
+                agent,
+                "discover Project environment",
+            )
+            .or_else(tolerate_unverified_login)
+        {
+            Ok(()) => Ok(true),
+            Err(DaemonError::ProviderProfileRefused { .. }) => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+
     pub(super) async fn environment_utility_identity(
         &self,
         project: &crate::session::RuntimeProject,
@@ -483,6 +503,7 @@ impl KernelRuntimeState {
                 {
                     moving.get_or_insert(agent);
                 } else if idle.is_none()
+                    && self.utility_login_usable(&agent)?
                     && !session
                         .active_interactions()
                         .iter()
@@ -526,18 +547,36 @@ impl KernelRuntimeState {
         }
         let response = self.create_session_response(request).await?;
         match response {
-            LocalDaemonResponse::SessionCreated { session, agent, .. } => Ok((
-                session.id().into(),
-                agent.id().into(),
-                Some(EnvironmentUtilityCleanup {
+            LocalDaemonResponse::SessionCreated { session, agent, .. } => {
+                let cleanup = EnvironmentUtilityCleanup {
                     runtime: self.clone(),
                     session_id: session.id().into(),
-                }),
-            )),
+                };
+                // The new agent runs on its provider's default account; fail now with the reason.
+                self.provider_account_profile_registry()
+                    .require_agent_authenticated(
+                        agent.owner_user_id(),
+                        &agent,
+                        "discover Project environment",
+                    )
+                    .or_else(tolerate_unverified_login)?;
+                Ok((session.id().into(), agent.id().into(), Some(cleanup)))
+            }
             _ => Err(environment_failure(
                 "environment utility session could not be created",
             )),
         }
+    }
+}
+
+/// An unverified login may still work; only a known-broken one is refused up front.
+fn tolerate_unverified_login(error: DaemonError) -> Result<(), DaemonError> {
+    match error {
+        DaemonError::ProviderProfileRefused {
+            reason: crate::error::ProviderProfileRefusal::Unverified,
+            ..
+        } => Ok(()),
+        other => Err(other),
     }
 }
 
