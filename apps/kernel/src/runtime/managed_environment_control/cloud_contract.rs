@@ -157,8 +157,8 @@ pub(in crate::runtime) struct EnvironmentSummary {
     auto_stop_policy: AutoStopPolicy,
     #[serde(default, deserialize_with = "deserialize_optional_timestamp")]
     runtime_started_at: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_running_agent_count")]
-    running_agent_count: Option<u8>,
+    #[serde(default)]
+    working_agent_count: Option<u8>,
     #[serde(default, deserialize_with = "deserialize_optional_timestamp")]
     last_activity_reported_at: Option<String>,
     #[serde(default, deserialize_with = "deserialize_optional_timestamp")]
@@ -171,17 +171,6 @@ pub(in crate::runtime) struct EnvironmentSummary {
     last_error_message: Option<String>,
     created_at: String,
     updated_at: String,
-}
-
-fn deserialize_running_agent_count<'de, D>(deserializer: D) -> Result<Option<u8>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let value = Option::<u8>::deserialize(deserializer)?;
-    match value {
-        Some(0 | 1) | None => Ok(value),
-        Some(_) => Err(serde::de::Error::custom("running agent count is invalid")),
-    }
 }
 
 fn deserialize_optional_timestamp<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
@@ -349,7 +338,7 @@ impl From<EnvironmentSummary> for ManagedEnvironmentSummary {
             context_manifest_digest: value.context_manifest_digest,
             auto_stop_policy: value.auto_stop_policy.into(),
             runtime_started_at: value.runtime_started_at,
-            running_agent_count: value.running_agent_count,
+            working_agent_count: value.working_agent_count,
             last_activity_reported_at: value.last_activity_reported_at,
             last_activity_changed_at: value.last_activity_changed_at,
             auto_stop_warning_at: value.auto_stop_warning_at,

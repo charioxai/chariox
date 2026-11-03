@@ -153,7 +153,7 @@ fn run_workspace_claim_conflict_scenario(ready_tx: mpsc::SyncSender<()>) {
         crate::runtime::router::CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
     let runtime = router.runtime_state();
     runtime.owned.note_prompt_started(provider_run.id());
-    assert_eq!(runtime.managed_running_agent_count(), 1);
+    assert_eq!(runtime.managed_working_agent_count(), 1);
 
     let session_state = runtime
         .owned
@@ -233,7 +233,7 @@ fn run_workspace_claim_conflict_scenario(ready_tx: mpsc::SyncSender<()>) {
     assert_eq!(runtime.owned.workspace_coordinator.active_claims().len(), 1);
     assert!(runtime.owned.active_turns.get(provider_run.id()).is_none());
     assert_eq!(
-        runtime.managed_running_agent_count(),
+        runtime.managed_working_agent_count(),
         1,
         "queued work must continue to count as managed activity after the active turn settles"
     );

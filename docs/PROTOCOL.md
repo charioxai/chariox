@@ -2686,7 +2686,7 @@ Workflow trigger and deployment direction:
   delivery, retries, reporter restart, and kernel restart. A later transition,
   including a rapid busy-to-idle cycle, receives its own later timestamp.
   Managed-environment signatures cover `accountId`, `activityChangedAt`,
-  `environmentId`, `kernelId`, `machineId`, `runningAgentCount`, and `sequence`;
+  `environmentId`, `kernelId`, `machineId`, `workingAgentCount`, and `sequence`;
   disposable-worker signatures replace `environmentId` with `allocationId`.
   Cloud receivers for both routes MUST accept, validate, and persist this signed
   field before protocol-340 kernels are rolled out; producer and receiver must
@@ -6361,3 +6361,15 @@ only. The native worker ships beside the kernel, enters containment before its
 identity handshake, and exposes only the versioned App WIT world through the
 kernel capability broker. The replaced engine's launch, runtime enrollment and
 privileged storage-helper paths are removed. Reinstall unsupported stored Apps.
+
+### Working agents in the managed activity report — local 970 / relay peer 419
+
+The signed managed activity report carries `workingAgentCount` (0–255) in place of the binary
+`runningAgentCount`. An agent counts as working when it runs a turn, has a prompt, decision or owned
+process in flight, or is idle but something it registered can wake it: an enabled agent trigger, an
+armed wake (timer, watched process, terminal), a live completion subscription, a waiting task or a
+task blocked on an owner decision. Zero means the machine has nothing to wait for, so Cloud's
+auto-stop counts down only at zero. Work no agent owns (a terminal command, a workflow run) counts as
+one. Kernels older than 970 are re-provisioned. The managed-upgrade list is [629, 636, 970]. Focused
+checks: `cargo test -p chariox-kernel --lib managed_working_agents` and
+`node --test scripts/protocol-versions.test.mjs`.

@@ -216,7 +216,7 @@ fn assert_busy_activity_is_durable(runtime: &KernelRuntimeState) {
     let (_, observation, transition_sequence) = runtime
         .managed_activity_report_snapshot_with_transition()
         .expect("managed activity observation should remain durable");
-    assert_eq!(observation.running_agent_count, 1);
+    assert_eq!(observation.working_agent_count, 1);
     assert!(transition_sequence > 0);
 }
 
