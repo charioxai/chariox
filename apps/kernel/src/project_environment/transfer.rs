@@ -23,6 +23,7 @@ const MAX_IMPORT_TOTAL_BYTES: u64 = 128 * 1024 * 1024;
 pub(crate) const SOURCE_OFFLINE: &str = "Source offline";
 
 /// What the source holds, without any value.
+#[derive(Clone)]
 pub(crate) struct SourceSnapshot {
     pub label: String,
     pub record: Option<ProjectEnvironmentRecord>,
@@ -469,10 +470,16 @@ pub(crate) fn source_holdings(
     project_id: &str,
     vault: &dyn CredentialVaultStore,
     checkout: &Path,
-) -> Result<(Option<ProjectEnvironmentRecord>, Vec<String>, Vec<String>), DaemonError> {
+    label: String,
+) -> Result<SourceSnapshot, DaemonError> {
     let record = store.load(project_id)?;
     let Some(listed) = &record else {
-        return Ok((None, Vec::new(), Vec::new()));
+        return Ok(SourceSnapshot {
+            label,
+            record: None,
+            secrets: Vec::new(),
+            files: Vec::new(),
+        });
     };
     let service = project_environment_vault_service(project_id);
     let mut secrets = Vec::new();
@@ -495,7 +502,12 @@ pub(crate) fn source_holdings(
         })
         .cloned()
         .collect();
-    Ok((record, secrets, files))
+    Ok(SourceSnapshot {
+        label,
+        record,
+        secrets,
+        files,
+    })
 }
 
 #[cfg(test)]
@@ -537,7 +549,7 @@ mod tests {
 
     /// A source that answers from memory, can go offline, and counts what was pulled.
     struct FakeSource {
-        snapshot: Result<(Option<ProjectEnvironmentRecord>, Vec<String>, Vec<String>), SourceError>,
+        snapshot: Result<SourceSnapshot, SourceError>,
         pulls: Mutex<Vec<String>>,
         offline_after_read: bool,
         gate: Option<Arc<tokio::sync::Notify>>,
@@ -546,14 +558,7 @@ mod tests {
 
     impl EnvironmentSource for FakeSource {
         async fn read(&self, _: &str) -> Result<SourceSnapshot, SourceError> {
-            self.snapshot
-                .clone()
-                .map(|(record, secrets, files)| SourceSnapshot {
-                    label: "A".into(),
-                    record,
-                    secrets,
-                    files,
-                })
+            self.snapshot.clone()
         }
         async fn pull_secret(
             &self,
@@ -591,11 +596,12 @@ mod tests {
         files: &[&str],
     ) -> FakeSource {
         FakeSource {
-            snapshot: Ok((
+            snapshot: Ok(SourceSnapshot {
+                label: "A".into(),
                 record,
-                secrets.iter().map(|name| name.to_string()).collect(),
-                files.iter().map(|name| name.to_string()).collect(),
-            )),
+                secrets: secrets.iter().map(|name| name.to_string()).collect(),
+                files: files.iter().map(|name| name.to_string()).collect(),
+            }),
             pulls: Mutex::default(),
             offline_after_read: false,
             gate: None,

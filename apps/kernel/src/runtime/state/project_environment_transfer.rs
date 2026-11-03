@@ -309,13 +309,12 @@ impl KernelRuntimeState {
                 content: Some(RemoteEnvironmentFileBytes::encode(&bytes)),
             });
         }
-        let (record, secrets, files) =
-            source_holdings(&store, project.id(), vault.as_ref(), &checkout)?;
+        let held = source_holdings(&store, project.id(), vault.as_ref(), &checkout, label)?;
         Ok(RelayPeerResponse::ProjectEnvironmentRead {
-            source_label: label,
-            record,
-            secrets,
-            files,
+            source_label: held.label,
+            record: held.record,
+            secrets: held.secrets,
+            files: held.files,
         })
     }
 }
