@@ -16,9 +16,11 @@ const browserCloseModules = [
   "browser-controller-actions.mjs",
   "browser-controller-artifacts.mjs",
   "browser-controller-bar.mjs",
+  "browser-controller-capture.mjs",
   "browser-controller-cdp.mjs",
   "browser-controller-compatibility.mjs",
   "browser-controller-cookie-fence.mjs",
+  "browser-controller-cursor.mjs",
   "browser-controller-dialogs.mjs",
   "browser-controller-events.mjs",
   "browser-controller-files.mjs",
@@ -26,9 +28,22 @@ const browserCloseModules = [
   "browser-controller-history.mjs",
   "browser-controller-image.mjs",
   "browser-controller-input.mjs",
+  "browser-controller-notes.mjs",
   "browser-controller-permissions.mjs",
+  "browser-controller-response-bodies.mjs",
   "browser-controller-snapshot.mjs",
   "browser-controller-upload-staging.mjs",
+  "browser-controller-web-bot-auth.mjs",
+  "browser-focus-world.mjs",
+  "browser-memory.mjs",
+  "browser-observation-regions.mjs",
+  "browser-page-permission-shim.mjs",
+  "browser-page-permissions.mjs",
+  "browser-protection-regions.mjs",
+  "browser-renderer-recovery.mjs",
+  "kernel-browser-geometry.mjs",
+  "kernel-browser-native-worker.mjs",
+  "kernel-browser-pixels.mjs",
 ];
 // slice-screen.sh puts saved App navigations behind placeholders before an
 // owned launch restores the profile's session.
@@ -58,10 +73,19 @@ export function verifyInputs({ sourceRoot = source, fixtureRoot = fixtureSource 
   const browserPackages = "bash chromium chromium-sandbox curl dbus fonts-dejavu fonts-liberation novnc openbox procps python3 tint2 websockify x11-utils x11vnc xdotool xvfb zstd".split(" ");
   assert.deepEqual(packages(fixture).sort(), browserPackages.sort(), "fixture apt package selection drifted");
   for (const name of packages(fixture)) assert.ok(packages(browserStage).includes(name), `fixture apt package drifted: ${name}`);
-  for (const name of launcherFiles) {
-    assert.ok(browserStage.split("\n").some(line => /^(COPY|COPY --chown=slice:slice) /.test(line)
-      && line.endsWith(`apps/kernel/slice-linux-docker/docker/${name} /opt/chariox-slice/${name}`)), `production image omits ${name}`);
+  // Production copies modules one per COPY or grouped into a continued COPY with a directory destination.
+  const packaged = new Set();
+  for (const instruction of browserStage.replace(/\\\n/g, " ").split("\n")) {
+    const words = instruction.trim().split(/\s+/);
+    if (words[0] !== "COPY") continue;
+    const [sources, destination] = [words.slice(1, -1).filter(word => !word.startsWith("--")), words.at(-1)];
+    for (const sourcePath of sources) {
+      const name = sourcePath.slice(sourcePath.lastIndexOf("/") + 1);
+      if (sourcePath === `apps/kernel/slice-linux-docker/docker/${name}`
+        && (destination === "/opt/chariox-slice/" || destination === `/opt/chariox-slice/${name}`)) packaged.add(name);
+    }
   }
+  for (const name of launcherFiles) assert.ok(packaged.has(name), `production image omits ${name}`);
   // A new import of the owned close path must also reach the fixture image.
   const closure = new Set(), pending = ["browser-cdp.mjs"];
   while (pending.length > 0) {
