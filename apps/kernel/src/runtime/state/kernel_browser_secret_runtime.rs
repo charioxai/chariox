@@ -21,7 +21,7 @@ pub(super) struct PasteArgs {
 pub(super) fn paste_spec() -> RuntimeToolSpec {
     RuntimeToolSpec {
         name: PASTE.into(),
-        description: "MD-5: insert a Vault credential into an observed editable text field in a user-domain tab. Use tab/generation/document_id/node_ref from a fresh snapshot. Secret bytes never enter tool arguments/results. TOTP handles compute a current code at insertion; backup_codes consumes an unused code. Default submit=false; use ordinary input to click a separate sign-in button.".into(),
+        description: "MD-5: insert a Vault credential into an observed editable text field in a user-domain tab. Use tab/generation/document_id/node_ref from a fresh snapshot. Secret bytes never enter tool arguments/results. TOTP handles compute a current code at insertion; backup_codes consumes an unused code. Default submit=false; use ordinary input to click a separate sign-in button. With submit=true the field's native form is submitted and the result carries submitted:{navigated,url,title}: a form that navigates is a successful submit, so continue from that page and do not paste again.".into(),
         input_schema: json!({"type":"object","properties":{"credential_id":{"type":"string"},"tab_id":{"type":"string"},"generation":{"type":"integer","minimum":1},"document_id":{"type":"string"},"node_ref":{"type":"string"},"submit":{"type":"boolean","default":false}},"required":["credential_id","tab_id","generation","document_id","node_ref"],"additionalProperties":false}),
     }
 }
@@ -280,27 +280,30 @@ impl KernelRuntimeState {
             &args.credential_id,
             &format!("Use attempted in browser by {}", agent.id()),
         )?;
-        self.insert_kernel_browser_secret(
-            user,
-            &admission,
-            &args,
-            &service,
-            url,
-            SecretFillContext {
-                actor: None,
-                signing_material,
-                plain,
-            },
-        )
-        .await?;
+        let inserted = self
+            .insert_kernel_browser_secret(
+                user,
+                &admission,
+                &args,
+                &service,
+                url,
+                SecretFillContext {
+                    actor: None,
+                    signing_material,
+                    plain,
+                },
+            )
+            .await?;
         service.record_vault_activity(
             &args.credential_id,
             &format!("Used in browser by {}", agent.id()),
         )?;
-        Ok(RuntimeToolResult {
-            ok: true,
-            payload: json!({"inserted":true}),
-        })
+        // A submit that left the page is the submit working: say where it went.
+        let mut payload = json!({"inserted":true});
+        if let Some(submitted) = inserted.get("submitted") {
+            payload["submitted"] = submitted.clone();
+        }
+        Ok(RuntimeToolResult { ok: true, payload })
     }
 
     pub(super) async fn kernel_browser_terminal_paste_secret(
@@ -421,7 +424,7 @@ impl KernelRuntimeState {
         service: &crate::secret::RuntimeSecretService,
         url: String,
         context: SecretFillContext<'_>,
-    ) -> Result<(), DaemonError> {
+    ) -> Result<Value, DaemonError> {
         let protection = &self.owned.kernel_browser_secret_observations;
         let scope = KernelBrowserHost::profile_key(user);
         // Reuse Room registration before any input handler, including failures.
@@ -480,8 +483,7 @@ impl KernelRuntimeState {
             params["observed_by"] = json!(actor);
         }
         self.kernel_browser_bound_operation(user, Some(admission), "host.secret", params, true)
-            .await?;
-        Ok(())
+            .await
     }
 
     pub(super) async fn kernel_browser_secret_target_url(

@@ -3,7 +3,8 @@ import {FOCUS_WORLD,ensureFocusWorld,recordFocusWorld} from './browser-focus-wor
 import { BrowserResponseBodies, responseBufferLimits } from './browser-controller-response-bodies.mjs';
 import { BrowserMemory } from './browser-memory.mjs';
 import { BrowserRendererRecovery } from './browser-renderer-recovery.mjs';
-import { recordBrowserFill, finishBrowserFill } from './browser-protection-regions.mjs';
+import { recordBrowserFill, finishBrowserFill, browserFillReplaced } from './browser-protection-regions.mjs';
+import { awaitSubmitOutcome } from './browser-submit-outcome.mjs';
 import { createHash } from "node:crypto";
 import { BrowserWebBotAuth } from "./browser-controller-web-bot-auth.mjs";
 import { artifactBytes, BrowserArtifactError, BrowserPassiveCapture, readCompletedDownload, withUploadArtifacts } from "./browser-controller-artifacts.mjs";
@@ -1127,8 +1128,23 @@ export class BrowserCdpClient {
             let result;
             try { result = await performBrowserAction(options); }
             catch (error) { await finishBrowserFill(connection, target).catch(() => {}); throw error; }
-            await finishBrowserFill(connection, target);
-            return result;
+            if (!rawRequest.action.submit) {
+              await finishBrowserFill(connection, target);
+              return result;
+            }
+            // A submit may replace the document: report that as the success it is.
+            const { submit_handled_by_page: pageHandled, ...rest } = result;
+            const submitted = await awaitSubmitOutcome({
+              pageHandled,
+              replaced: () => browserFillReplaced(connection, target),
+              page: async () => {
+                const { targetInfo } = await connection.send("Target.getTargetInfo", { targetId });
+                const { result: ready } = await connection.send("Runtime.evaluate", { expression: 'document.readyState !== "loading"', returnByValue: true }, sessionId);
+                return { url: targetInfo.url, title: targetInfo.title, ready: ready?.value === true };
+              },
+            });
+            await finishBrowserFill(connection, target, { submitted: true });
+            return { ...rest, submitted };
           }
           return performBrowserAction(options);
         });

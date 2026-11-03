@@ -321,7 +321,7 @@ while IFS= read -r request; do
   *'"method":"host.secret"'*'"op":"capture"'*'"read":"qr"'*) printf '%s' "$request" > "$1/capture"; printf '{"id":%s,"ok":true,"result":{"value":"%s"}}\n' "$id" "$(cat "$1/qr.b64")" ;;
   *'"method":"host.secret"'*'"op":"capture"'*'"read":"node","reveal_node_ref":null'*) printf '%s' "$request" > "$1/capture"; printf '{"id":%s,"ok":true,"result":{"value":"Or enter the secret: jbsw y3dp ehpk 3pxp"}}\n' "$id" ;;
   *'"method":"host.secret"'*'"op":"capture"'*) printf '%s' "$request" > "$1/capture"; printf '{"id":%s,"ok":true,"result":{"value":"vaudit-captured-fixture-value"}}\n' "$id" ;;
-  *'"method":"host.secret"'*) printf '%s' "$request" | grep -o '"plain_target":true' > "$1/plain" || true; printf '%s' "$request" | sed -n 's/.*"text":"\([^"]*\)".*/\1/p' > "$1/echo"; printf '%s' "$request" | sed -n 's/.*"vault_factor_input":\(true\|false\).*/\1/p' > "$1/factor_input"; printf '%s' "$request" | sed -n 's/.*"_app_view_tab":"\([^"]*\)".*/\1/p' > "$1/app_view_tab"; printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
+  *'"method":"host.secret"'*) printf '%s' "$request" | grep -o '"plain_target":true' > "$1/plain" || true; printf '%s' "$request" | sed -n 's/.*"text":"\([^"]*\)".*/\1/p' > "$1/echo"; printf '%s' "$request" | sed -n 's/.*"vault_factor_input":\(true\|false\).*/\1/p' > "$1/factor_input"; printf '%s' "$request" | sed -n 's/.*"_app_view_tab":"\([^"]*\)".*/\1/p' > "$1/app_view_tab"; if printf '%s' "$request" | grep -q '"submit":true'; then printf '{"id":%s,"ok":true,"result":{"inserted":true,"submitted":{"navigated":true,"url":"http://127.0.0.1:8123/welcome","title":"Welcome"}}}\n' "$id"; else printf '{"id":%s,"ok":true,"result":{}}\n' "$id"; fi ;;
   *'"method":"host.'*'"op":"open"'*) : > "$1/opened"; printf '{"id":%s,"ok":true,"result":{"generation":1,"tab_id":"host-tab-new","tabs":[%s,{"tab_id":"host-tab-new","document_id":"doc-login"}]}}\n' "$id" "$tabs" ;;
   *'"op":"state"'*|*'"op":"start"'*) printf '{"id":%s,"ok":true,"result":{"generation":1,"tabs":[%s]}}\n' "$id" "$tabs" ;;
   *'"op":"snapshot"'*) : > "$1/snapshot-observed"; echo=$(cat "$1/echo" 2>/dev/null || true); printf '{"id":%s,"ok":true,"result":{"snapshot":{"browser_generation":1,"target_id":"target-login","document_id":"doc-login","snapshot_revision":1,"accessibility_nodes":[],"dom_documents":[{"document_index":0,"url":"http://127.0.0.1:8123/login","owner_node_ref":null}],"shadow_roots":[],"dom_nodes":[{"node_ref":"backend:7","parent_ref":null,"document_index":0,"node_type":1,"node_name":"INPUT","text":"echo %s","attributes":{"type":"password","id":"password"},"bounds":null}]}}}\n' "$id" "$echo" ;;
@@ -431,6 +431,29 @@ fn owner_credential(f: &Fixture, id: &str, hosts: &[&str], generated_in: Option<
             false,
         )
         .unwrap();
+}
+
+// A submit that navigates is the submit working: the agent gets the page it landed on, not an error.
+#[tokio::test]
+async fn vpaste_submit_that_navigates_reports_the_resulting_page() {
+    crate::test_support::isolated_env_test!();
+    let login = login_room().await;
+    let f = &login.f;
+    unlock(f);
+    let handle = generate(f, "signup", SITE).await.unwrap()["credential_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let mut args = paste_args(&handle);
+    args["submit"] = json!(true);
+    let result = call(f, PASTE, args).await.unwrap();
+    assert_eq!(
+        result,
+        json!({"inserted": true, "submitted": {"navigated": true,
+            "url": "http://127.0.0.1:8123/welcome", "title": "Welcome"}})
+    );
+    let secret = stored(f, &handle);
+    assert!(!result.to_string().contains(secret.as_str()));
 }
 
 #[tokio::test]

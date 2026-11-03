@@ -80,6 +80,7 @@ export async function performBrowserAction({
           document_id: documentId,
           action_kind: normalizedAction.kind,
           dialog_opened: actionResult.dialogOpened,
+          ...(normalizedAction.submit ? { submit_handled_by_page: actionResult.pageHandledSubmit === true } : {}),
           attempts,
           elapsed_ms: Math.max(0, now() - startedAt),
         };
@@ -411,8 +412,8 @@ async function executeAction(
     return { dialogOpened: false };
   }
   if (action.expectedDocumentUrl !== null) {
-    await secureFillElement(connection, sessionId, objectId, action, inputToken);
-    return { dialogOpened: false };
+    const { pageHandledSubmit } = await secureFillElement(connection, sessionId, objectId, action, inputToken);
+    return { dialogOpened: false, pageHandledSubmit };
   }
   await focusElement(connection, sessionId, objectId, !action.append);
   assertNotCancelled(signal);
@@ -446,7 +447,7 @@ async function secureFillElement(connection, sessionId, objectId, action, inputT
   if ((await bridge("armVaultFill")).exceptionDetails) {
     throw new BrowserActionError("browser_action_failed", "App input caller unavailable; reopen the App");
   }
-  try { await fillSecret(connection, sessionId, objectId, action); }
+  try { return await fillSecret(connection, sessionId, objectId, action); }
   // A page that navigated away has no armed fill left to clear.
   finally { await bridge("clearVaultFill").catch(() => {}); }
 }
@@ -560,8 +561,18 @@ async function fillSecret(connection, sessionId, objectId, action) {
         if (!restoreMaskAfterHandler()) return { ok: false, reason: rejected };
         if (submit) {
           // Form controls named submit/requestSubmit must not shadow DOM methods.
+          // requestSubmit validates first: no submit event means the page refused it.
+          let submitEvent = null;
+          const seen = (event) => { if (event.target === form) submitEvent = event; };
+          ownerWindow.addEventListener("submit", seen, true);
           try { submitForm.call(form); }
           catch { return { ok: false, reason: "form_submit_failed" }; }
+          finally { ownerWindow.removeEventListener("submit", seen, true); }
+          if (!submitEvent && formPrototype.requestSubmit && elementPrototype?.matches?.call(form, ":invalid")) {
+            return { ok: false, reason: "form_validation_failed" };
+          }
+          // A handler that cancels the submit event takes over the submission (XHR, SPA).
+          return { ok: true, pageHandledSubmit: submitEvent?.defaultPrevented === true };
         }
         return { ok: true };
       }`,
@@ -611,6 +622,13 @@ async function fillSecret(connection, sessionId, objectId, action) {
         "browser password field has no native form; use submit=false, then click the observed sign-in button",
       );
     }
+    if (outcome?.reason === "form_validation_failed") {
+      throw new BrowserActionError(
+        "browser_submit_failed",
+        "browser password form was not submitted: form validation failed (another required field is empty or invalid); fill it, then click the observed sign-in button",
+        { reason: outcome.reason },
+      );
+    }
     if (["form_submit_unavailable", "form_submit_failed"].includes(outcome?.reason)) {
       throw new BrowserActionError(
         "browser_submit_failed",
@@ -637,6 +655,7 @@ async function fillSecret(connection, sessionId, objectId, action) {
       { reason: "secure_fill_failed" },
     );
   }
+  return outcome;
 }
 
 async function submitNearestForm(connection, sessionId, objectId, inputToken) {

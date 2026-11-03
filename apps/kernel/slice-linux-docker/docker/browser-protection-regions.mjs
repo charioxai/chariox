@@ -59,19 +59,42 @@ export async function recordBrowserFill(connection, options, value, revision) {
   fillBindings.set(target,{connection,sessionId,backendNodeId});
   filling.get(connection).set(fillKey(target),{target,pending:true});return target;
 }
-export async function finishBrowserFill(connection,target) {
+// The filled document or field is gone: nothing of this fill remains to cover.
+export async function browserFillReplaced(connection,target) {
   const binding=fillBindings.get(target);
   if(!binding||binding.connection!==connection)throw Error('MP-11: fill completion unavailable');
-  const state=await fieldState(connection,binding,{frameId:target.frame_id},binding.backendNodeId);
   const frame=visit(await frameTree(connection,binding.sessionId),target.frame_id);
+  return !frame||frame.loaderId!==target.frame_document_id;
+}
+function completeBrowserFill(connection,target,{retire=false}={}) {
+  const key=fillKey(target);
+  if(retire){if(!retired.has(connection))retired.set(connection,new Set());retired.get(connection).add(key);}
+  const lifecycle=filling.get(connection)?.get(key);
+  if(lifecycle?.target===target)lifecycle.pending=false;
+  fillBindings.delete(target);
+}
+// `submitted`: the fill submitted its form, so the page may replace the
+// document at any moment. Replacement completes the fill; a page that is
+// mid-navigation keeps it pending (covered) until it is replaced.
+export async function finishBrowserFill(connection,target,{submitted=false}={}) {
+  const binding=fillBindings.get(target);
+  if(!binding||binding.connection!==connection)throw Error('MP-11: fill completion unavailable');
+  let state,frame;
+  try {
+    state=await fieldState(connection,binding,{frameId:target.frame_id},binding.backendNodeId);
+    frame=visit(await frameTree(connection,binding.sessionId),target.frame_id);
+  } catch(error) {
+    if(!submitted)throw error;
+    if(await browserFillReplaced(connection,target).catch(()=>false))return completeBrowserFill(connection,target,{retire:true});
+    return;
+  }
+  if(submitted&&(!state.exists||!frame||frame.loaderId!==target.frame_document_id))return completeBrowserFill(connection,target,{retire:true});
   if(!state.exists||!state.editable||!frame||frame.loaderId!==target.frame_document_id)
     throw Error('MP-11: fill completion unavailable');
   // HTML input setters strip newlines; textarea setters normalize CRLF.
   // Bind the actual result before releasing the in-flight capture protection.
   target.value_hash=digest(state.value);
-  const lifecycle=filling.get(connection)?.get(fillKey(target));
-  if(lifecycle?.target===target)lifecycle.pending=false;
-  fillBindings.delete(target);
+  completeBrowserFill(connection,target);
 }
 async function stableFieldState(connection,entry,document,backendNodeId,target,lifecycle) {
   const key=fillKey(target),check=()=>{
@@ -280,7 +303,7 @@ export async function measurePageProtection(connection,sessionId,targetId,policy
       }
 
     }
-    for(const target of targets)if(!seen.has(fillKey(target))){const key=fillKey(target);if(lifecycles.get(key)!==filling.get(connection)?.get(key))throw Error('MP-11: fill changed during protection measurement');if(pendingAtSnapshot.get(key)||lifecycles.get(key)?.pending)throw Error('MP-11: pending fill target unavailable');dead.add(key);}
+    for(const target of targets)if(!seen.has(fillKey(target))){const key=fillKey(target);if(lifecycles.get(key)!==filling.get(connection)?.get(key))throw Error('MP-11: fill changed during protection measurement');if((pendingAtSnapshot.get(key)||lifecycles.get(key)?.pending)&&target.document_id===top.frame.loaderId)throw Error('MP-11: pending fill target unavailable');dead.add(key);}
     await assertBrowserFramesUnchanged(connection,frames);
   },{strict:true});
   return page;

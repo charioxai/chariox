@@ -1262,10 +1262,10 @@ export class KernelBrowserHost {
         const app = this.appForInput(tab, params, true);
         if (app) this.browser.appTabs.noteActivity(tab.target_id);
         const action = { ...params.action, mask_code_input: codeInput, vault_factor_input: factorInput, plain_target: params.plain_target === true };
-        await this.sampleLane(tab).run("input", () => this.browser.performAction({ target_id: tab.target_id, document_id: tab.document_id,
+        const performed = await this.sampleLane(tab).run("input", () => this.browser.performAction({ target_id: tab.target_id, document_id: tab.document_id,
           node_ref: params.node_ref, action, timeout_ms: 10_000 }, { signal }));
         await this.save();
-        return { id: request.id, ok: true, result: { inserted: true } };
+        return { id: request.id, ok: true, result: { inserted: true, ...(performed?.submitted ? { submitted: performed.submitted } : {}) } };
       }
       if (request.method === "host.computer") {
         const observer=(request.params._subscription_owner ? request.params._subscription_owner+':' : '')+(request.params.observed_by??'terminal');
