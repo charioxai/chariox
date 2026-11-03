@@ -713,6 +713,10 @@ pub enum KernelToAedsMessage {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Wire variants carry bounded signed envelopes with the same typed delivery ownership"
+)]
 pub enum AedsToKernelMessage {
     /// Sent first on every connection: a fresh, single-use nonce the kernel must sign.
     Challenge {

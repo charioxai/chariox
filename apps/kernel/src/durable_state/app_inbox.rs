@@ -74,6 +74,10 @@ pub(crate) enum AppInboxOperation {
 }
 
 #[derive(Debug, PartialEq)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Keep each validated bounded inbox receipt owned through the writer response"
+)]
 pub(crate) enum AppInboxOutcome {
     Routes(Vec<(InboxRoute, InboxCounts)>),
     Route(Option<InboxRoute>),
