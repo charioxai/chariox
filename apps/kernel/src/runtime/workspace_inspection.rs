@@ -12,7 +12,6 @@ use std::time::{Duration, Instant};
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) enum Inspection {
     ProjectResolution(super::project_resolution_preparation::Input),
-    Labels(super::waiting_room_git_metadata::Query),
     Worktrees {
         workspace: String,
         current: Option<String>,
@@ -28,7 +27,6 @@ pub(crate) enum Metadata {
             super::project_resolution_preparation::Failure,
         >,
     ),
-    Labels(super::waiting_room_git_metadata::Value),
     Worktrees {
         workspace: String,
         worktrees: Vec<WorkspaceWorktreeRecord>,
@@ -63,7 +61,7 @@ async fn inspect_until(
         },
         Metadata::GitOverview(overview) => LocalDaemonResponse::WorkspaceGitOverview { overview },
         Metadata::Files(listing) => LocalDaemonResponse::WorkspaceFilesListed { listing },
-        Metadata::Labels(_) | Metadata::ProjectResolution(_) => return Err(unavailable()),
+        Metadata::ProjectResolution(_) => return Err(unavailable()),
     })
 }
 pub(crate) fn unavailable() -> DaemonError {
@@ -83,9 +81,6 @@ pub(crate) fn measure(inspection: Inspection) -> Result<Metadata, DaemonError> {
         Inspection::ProjectResolution(input) => Ok(Metadata::ProjectResolution(
             super::project_resolution_preparation::measure(input),
         )),
-        Inspection::Labels(query) => {
-            super::waiting_room_git_metadata::measure(query).map(Metadata::Labels)
-        }
         Inspection::Worktrees { workspace, current } => {
             let worktrees = super::workspace_worktrees::list_workspace_worktrees(
                 &workspace,

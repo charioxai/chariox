@@ -162,7 +162,6 @@ pub(crate) mod user_config_policy;
 pub(crate) mod user_domain_access;
 pub(crate) mod waiting_room_activity;
 pub(crate) mod waiting_room_control;
-pub(crate) mod waiting_room_git_metadata;
 mod waiting_room_launch_directory;
 pub(crate) mod waiting_room_public_projection;
 pub(crate) mod waiting_room_sessions;
