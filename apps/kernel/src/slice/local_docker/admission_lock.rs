@@ -207,11 +207,10 @@ mod tests {
         if unsafe { libc::geteuid() } != 0 {
             return; // Cross-UID proof runs on the disposable root builder.
         }
-        // The ordinary UID must not depend on a private TMPDIR or checkout.
-        let fixture = Fixture::new_in(Path::new("/var/tmp"));
-        let executable = fixture.0.join("worker-test");
-        std::fs::copy(std::env::current_exe().unwrap(), &executable).unwrap();
-        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // The filesystem root is traversable by the probe even when TMPDIR or
+        // host temp directories have private ancestors. Only this owned fixture
+        // needs public traversal; it is removed when the test ends.
+        let fixture = Fixture::new_in(Path::new("/"));
         let provisioned = crate::process_spawn::command("python3")
             .arg(concat!(
                 env!("CARGO_MANIFEST_DIR"),
@@ -232,7 +231,7 @@ mod tests {
         let probe = |blocked| {
             // This bootstraps an ordinary kernel identity. Workload pre-exec
             // hooks cannot write procfs after this fixture drops its root UID.
-            let mut command = std::process::Command::new(&executable);
+            let mut command = std::process::Command::new("/proc/self/exe");
             command
                 .args(["--exact", "slice::local_docker::admission_lock::tests::provisioned_root_lock_uses_kernel_opener_as_ordinary_uid"])
                 .uid(65534)

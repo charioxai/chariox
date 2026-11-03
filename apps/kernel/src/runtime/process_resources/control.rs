@@ -20,6 +20,11 @@ pub struct ProcessControlResult {
 }
 
 pub(super) enum WatchCommand {
+    #[cfg(test)]
+    PauseSampling {
+        reply: mpsc::SyncSender<Result<Vec<String>, String>>,
+        resume: mpsc::Receiver<()>,
+    },
     Shutdown,
     /// The owner ended; jobs that left it keep running under the watch until they end.
     Release,
@@ -40,6 +45,19 @@ pub(super) enum WatchCommand {
         process_id: String,
         reply: mpsc::SyncSender<Result<Vec<String>, String>>,
     },
+}
+
+/// The monitor acknowledges between samples. Dropping the sender resumes it,
+/// including when the test panics while arranging the ownership transition.
+#[cfg(test)]
+pub(crate) fn pause_sampling_for_key(key: &str) -> mpsc::Sender<()> {
+    let (resume, resumed) = mpsc::channel();
+    ask(key, |reply| WatchCommand::PauseSampling {
+        reply,
+        resume: resumed,
+    })
+    .expect("the sampler reaches its barrier");
+    resume
 }
 
 pub(crate) fn stop_for_key(key: &str, process_id: Option<String>) -> Result<Vec<String>, String> {

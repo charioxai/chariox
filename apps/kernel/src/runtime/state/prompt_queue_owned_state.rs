@@ -649,6 +649,13 @@ impl KernelRuntimeOwnedState {
         agent_id: &str,
         provider_run_id: &str,
     ) -> Result<Option<crate::app::KernelPromptDispatch>, DaemonError> {
+        let session = self.session_store.get_session(session_id)?;
+        let Some(_promotion) = self
+            .prompt_state_owner
+            .try_claim_idle_queue_promotion(&session, agent_id)
+        else {
+            return Ok(None);
+        };
         self.advance_queued_prompt_dispatch_for_head(session_id, agent_id, provider_run_id, None)
     }
 
