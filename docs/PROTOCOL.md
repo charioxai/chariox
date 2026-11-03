@@ -6361,3 +6361,32 @@ only. The native worker ships beside the kernel, enters containment before its
 identity handshake, and exposes only the versioned App WIT world through the
 kernel capability broker. The replaced engine's launch, runtime enrollment and
 privileged storage-helper paths are removed. Reinstall unsupported stored Apps.
+
+### Environments — local 972 / relay peer 421
+
+A Project has one Environment: a saved record (schema 2) with a Setup script, Variables (`.env` text),
+Secret names and Files outside Git. Values never enter the record. Each kernel keeps a Secret's value in
+its own Vault under the Project scope, so presence differs per machine and is computed on every read.
+
+- `GetProjectEnvironment { projectId, checkoutPath? }` answers `ProjectEnvironment { environment }`:
+  the record, each Secret as `present`, `missing` or `locked` (Vault locked), each file as `present` with
+  its size or `missing`, the kernel's label and the Setup state of that checkout (`notRun`, `ok`, `failed`,
+  `cancelled`, `running`; a changed script makes any earlier run `notRun`).
+- `SaveProjectEnvironment` carries the revision the client read. A stale revision answers
+  `ProjectEnvironmentConflict` with the current record and writes nothing.
+- `SetProjectEnvironmentSecret` is owner-only like `OwnerVault`, is never cached or logged with its value
+  and writes the value to this kernel's Vault.
+- `RunProjectEnvironmentSetup { projectId, operationId, checkoutPath? }` runs the script in the checkout with
+  Variables and the present Secrets in its environment. `GetEnvironmentOperation` returns the state and the
+  last 64 KiB of output with Secret values replaced by their names; `CancelEnvironmentOperation` ends the
+  process tree by its exact PID. A run cut off by a kernel restart reads as failed with that reason.
+  Setup never starts by itself.
+- Variables and the present Secrets are environment variables of every provider run, shell capability and
+  Room terminal the kernel starts for the Project. Files outside Git are copied into new worktrees of the
+  Project and travel with moves and slices through the ignore rules.
+- Removed: Detect, PreviewEnvironmentDiff, SaveProjectEnvironmentRevision, Plan, Apply, Check, Retry,
+  Export, PreviewEnvironmentImport, CommitEnvironmentImport, GetProjectEnvironmentManifest,
+  AdjustProjectEnvironment and the four Start/Get/Cancel/Retry `ProjectEnvironmentSetup` requests, the
+  `ProjectEnvironmentSetup` agent utility, the Project's stored setup definition, the Move setup step and the
+  relay peer `*LeasedProjectEnvironment*` requests. Schema 1 Project environments are deleted at start.
+  The development layer of managed contexts and moves no longer carries a Project environment.
