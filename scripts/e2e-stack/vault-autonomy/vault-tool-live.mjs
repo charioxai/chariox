@@ -75,8 +75,9 @@ try {
     })()
     await fixture.send({SubmitPrompt: {session_id: sessionId, attachment_id: attachment, target_agent_id: agentId, prompt: 'Call chariox.request_popup once with title "dead card test", message "wait", one choice {"id":"done","label":"Done","reply":"Done"} and the default blocking wait. Do nothing else and do not call it again.', attachments: []}})
     await watch
+    const popupCalls = records.filter(item => item.kind === 'provider_tool' && /request_popup/.test(text(item.bytes))).map(item => ({secondsAfterAsk: Math.round((item.at - asked) / 1000), status: /"status":"(\w+)"/.exec(text(item.bytes))?.[1], error: /timed out awaiting tools\/call after (\d+)s/.exec(text(item.bytes))?.[0] ?? null}))
     const stillOpen = (await cards()).some(item => item.title === 'dead card test')
-    report.cells.C = {pass: goneAfter !== null && !stillOpen, cardSeen: Boolean(seen), cardOpenedSeconds: seen ? Math.round(((goneAfter === null ? Date.now() : seen + goneAfter * 1000) - seen) / 1000) : null, stillOpenAfter10Minutes: stillOpen}
+    report.cells.C = {popupCalls, pass: goneAfter !== null && !stillOpen, cardSeen: Boolean(seen), cardOpenedSeconds: seen ? Math.round(((goneAfter === null ? Date.now() : seen + goneAfter * 1000) - seen) / 1000) : null, stillOpenAfter10Minutes: stillOpen}
   }
   running = false
   await pumping

@@ -3,6 +3,10 @@ use super::*;
 use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
 use chariox_relay::protocol::ClientTarget;
 
+/// The provider cuts a blocking tool call at 300 s and tells neither the kernel nor the card, so a blocking
+/// card ends itself just before that instead of staying open for a call that is gone.
+const BLOCKING_POPUP_MAX_SECONDS: u64 = 280;
+
 fn popup_error(message: &str) -> DaemonError {
     DaemonError::LocalTransport {
         operation: "runtime_tool_request_popup",
@@ -144,7 +148,16 @@ impl KernelRuntimeState {
             args.message,
             choices,
             custom_choice,
-            args.timeout_sec,
+            if args.wait == Some(false) {
+                args.timeout_sec
+            } else {
+                Some(
+                    args.timeout_sec
+                        .map_or(BLOCKING_POPUP_MAX_SECONDS, |seconds| {
+                            seconds.min(BLOCKING_POPUP_MAX_SECONDS)
+                        }),
+                )
+            },
             default_choice_id.clone(),
         );
         if args.wait == Some(false) {

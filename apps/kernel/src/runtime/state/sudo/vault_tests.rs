@@ -344,6 +344,33 @@ async fn vflag_popup_card_is_withdrawn_when_its_waiting_call_is_gone() {
     assert_eq!(open(), 0);
 }
 
+// MP-08 / MP-09 / MP-10 / MP-11: the provider never tells a card that its waiting call was cut, so a blocking
+// card ends itself before the provider's 300 s cut; only wait:false cards may stay open longer.
+#[tokio::test]
+async fn vflag_blocking_popup_card_ends_before_the_provider_cut() {
+    crate::test_support::isolated_env_test!();
+    for (asked, expected) in [(None, 280), (Some(900), 280), (Some(30), 30)] {
+        let f = fixture();
+        let mut arguments = json!({"message": "Open the page", "choices": [{"id": "done", "label": "Done", "reply": "Done"}]});
+        if let Some(seconds) = asked {
+            arguments["timeout_sec"] = json!(seconds);
+        }
+        let mut waiting = Box::pin(call(&f, "chariox.request_popup", arguments));
+        tokio::select! {
+            result = &mut waiting => panic!("popup resolved by itself: {result:?}"),
+            () = tokio::time::sleep(std::time::Duration::from_millis(300)) => {}
+        }
+        let snapshot = f
+            .state
+            .owned
+            .session_snapshot(&f.request.session_id)
+            .unwrap();
+        let cards = snapshot.active_interactions();
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0].timeout_sec(), Some(expected), "asked {asked:?}");
+    }
+}
+
 #[tokio::test]
 async fn vflag_unknown_runtime_tool_is_not_a_workflow_error() {
     crate::test_support::isolated_env_test!();
