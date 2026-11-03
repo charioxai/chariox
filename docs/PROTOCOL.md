@@ -6229,6 +6229,24 @@ Clients need kernel protocol >=923 (`credentialVaultUnlockMinimumProtocolVersion
 web). The managed-upgrade list is [629, 636, 923]. Focused checks:
 `cargo test -p chariox-kernel --lib vault_unlock` and `node --test scripts/protocol-versions.test.mjs`.
 
+### OSS boundary: retired Cloud controls removed — local 967 / relay peer 416
+
+The 25 local requests that only forwarded to the connected service's account or rental API are gone, with
+their responses: `PairCloudRelayClient`, `PairCloudRelayMachine`, `CreateCloudSessionInvite`,
+`ShowCloudSessionInvite`, `AcceptCloudSessionInvite`, `RevokeCloudSessionInvite`,
+`ListCloudSessionMembers`, `ListCloudCollaborators`, `ListManagedEnvironmentCatalog`,
+`GetManagedEnvironment`, `GetManagedEnvironmentReimagePreflight`, `GetManagedEnvironmentReimageReceipt`,
+`CreateManagedEnvironment`, `RequestManagedEnvironmentLifecycle`, `RequestManagedEnvironmentReimage`,
+`RequestManagedEnvironmentReleaseUpdate`, `GetManagedEnvironmentReleaseUpdate`,
+`PrepareManagedEnvironmentContextTransfer`, `PrepareManagedEnvironmentGitCredentialEnrollment`,
+`KeepManagedEnvironmentRunning` and the five `*DisposableWorker*` requests. Since protocol 491 the kernel
+refused them with `client_cloud_authority_required`; it now answers an unknown variant like any other. Cloud
+account and rental actions belong to the connected service's own client API, and machine acquisition goes
+through the generic `ControlPlane` request. Relay peer 416 pairs the embedded local union with local 967.
+Clients carry no minimum: a kernel older than 967 still knows the names and refuses them. The
+managed-upgrade list is [629, 636, 967]. Focused checks: `cargo test -p chariox-kernel --lib protocol_shapes`
+and `node scripts/oss-boundary-guard.mjs`.
+
 ### Apps v2 — local 966 / relay peer 415
 
 One allocation carries the whole Apps v2 Stage 1 line. Local requests: `BeginAppInstall` and

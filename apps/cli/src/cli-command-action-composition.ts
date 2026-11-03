@@ -156,8 +156,6 @@ import {
   getKernelCloudRelayProfile,
   getRelayStatus,
   logoutCloudRelay,
-  pairKernelCloudRelayClient,
-  pairKernelCloudRelayMachine,
   pollCloudRelayLogin,
   startCloudRelayLogin,
 } from "./relay-api.js"
@@ -681,10 +679,6 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     pollCloudDeviceLogin: (apiUrl, deviceCode) => pollCloudRelayLogin(client, apiUrl, deviceCode),
     openExternalUrl,
     logoutCloudRelay: (_profile, options) => logoutCloudRelay(client, options),
-    pairCloudRelayClient: (_profile, clientId, alias) =>
-      pairKernelCloudRelayClient(client, clientId, alias),
-    pairCloudRelayMachine: (_profile, machineId, alias) =>
-      pairKernelCloudRelayMachine(client, machineId, alias),
     issueCloudClientRelayToken: createInitialCloudClientTokenIssuer(client, options.clientId ?? "chariox-cli"),
     ...(deps.cloudClient ? {
       createCloudSessionInvite: (sessionId: string, inviteOptions: Parameters<CloudClient["collaboration"]["createSessionInvite"]>[1]) => deps.cloudClient!.collaboration.createSessionInvite(sessionId, inviteOptions),

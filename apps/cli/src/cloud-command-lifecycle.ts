@@ -48,11 +48,6 @@ export type CloudCommandLifecycleDeps = {
     | { status: "approved"; profile: RelayCloudProfile }
   >
   openExternalUrl?: (url: string) => Promise<boolean>
-  pairCloudRelayMachine?: (
-    profile: RelayCloudProfile,
-    machineId: string,
-    alias?: string,
-  ) => Promise<RelayCloudProfile>
   issueCloudKernelRelayToken?: (
     profile: RelayCloudProfile,
     daemonId: string,

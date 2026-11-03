@@ -23,7 +23,6 @@ mod control_plane;
 mod created_resource;
 mod daemon;
 mod dictation;
-mod disposable_worker;
 mod event_publication;
 mod external_provider_session;
 mod history;
@@ -76,7 +75,6 @@ pub use control_plane::*;
 pub use created_resource::*;
 pub use daemon::*;
 pub use dictation::*;
-pub use disposable_worker::*;
 pub use event_publication::*;
 pub use external_provider_session::*;
 pub use history::*;
@@ -465,4 +463,6 @@ pub use workspace::*;
 /// Connected service machine requests use the ordinary Chariox access grant.
 /// MP-08/MP-09/MP-10/MP-11: 965 integrates declared Vault uses and enrolled-kernel machine authority (peer414).
 /// MP-08/MP-09/MP-10/MP-11: 966 integrates WASM Apps with Landing965 (peer415).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 966;
+/// OSS boundary: 967 removes the 25 retired Cloud controls (human session invites and collaborators, relay pairing,
+/// managed-environment and disposable-worker requests) and their responses; peer 416 pairs the embedded union.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 967;

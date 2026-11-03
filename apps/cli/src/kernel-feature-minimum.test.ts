@@ -32,16 +32,11 @@ test("gates browser history and tab lifecycle by their separate existing minima"
 })
 
 test("new optional fields are gated without refusing compatible older shapes", () => {
-  const oldRequest = { CreateManagedEnvironment: {} }
-  assert.doesNotThrow(() => requireKernelFeatureProtocol(oldRequest, 341))
-  assert.throws(() => requireKernelFeatureProtocol({ CreateManagedEnvironment: { managedRepositoryRoot: "/project" } }, 341), /needs protocol ≥342; this kernel is 341/)
   assert.doesNotThrow(() => requireKernelFeatureProtocol(startSliceRequest("slice", false), 370))
   assert.throws(() => requireKernelFeatureProtocol({ StartSlice: { interactive: true } }, 370), /needs protocol ≥371; this kernel is 370/)
   assert.throws(() => requireKernelFeatureProtocol({ RequestNativeProviderTurnInteraction: { origin: {} } }, 388), /needs protocol ≥405; this kernel is 388/)
   assert.doesNotThrow(() => requireKernelFeatureProtocol({ JoinTerminalPairingLink: { pairing_link: "pair" } }, 348))
   assert.throws(() => requireKernelFeatureProtocol({ JoinTerminalPairingLink: { pairing_link: "pair", public_key_thumbprint: "thumbprint" } }, 348), /needs protocol ≥349; this kernel is 348/)
-  assert.throws(() => requireKernelFeatureProtocol({ GetDisposableWorker: { homeKernelId: "k", allocationId: "a" } }, 366), /Disposable worker control needs protocol ≥367; this kernel is 366/)
-  assert.throws(() => requireKernelFeatureProtocol({ KeepManagedEnvironmentRunning: { environmentId: "e" } }, 366), /Managed environment keep running needs protocol ≥367; this kernel is 366/)
 })
 
 test("unknown versions and unrelated requests retain existing transport behavior", () => {

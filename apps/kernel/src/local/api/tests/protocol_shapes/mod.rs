@@ -30,7 +30,6 @@ mod credential_env;
 mod daemon_health;
 mod dictation;
 mod display_resumption;
-mod disposable_worker;
 mod event_publication;
 mod extension_apps;
 mod fresh_remote_relay_inventory;

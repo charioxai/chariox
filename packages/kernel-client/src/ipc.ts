@@ -23,7 +23,7 @@ import WebSocket from "ws"
 import { kernelUpgradeRejectionHandler } from "./websocket-upgrade-rejection.js"
 
 import { getKernelResourceTelemetryRequest } from "./ipc-kernel-control-requests.js"
-import { requireKernelControlCapability } from "./ipc-disposable-worker-requests.js"
+import { requireKernelControlCapability } from "./ipc-control-capability.js"
 import type { KernelEvent } from "./kernel-events.js"
 import type {
   IpcEnvelope,

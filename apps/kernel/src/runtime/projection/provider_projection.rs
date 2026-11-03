@@ -535,10 +535,6 @@ impl ProviderCatalogProjectionStore {
         lock.lock_owned().await
     }
 
-    pub(crate) fn get(&self, ttl: Duration) -> Option<OpenCodeProviderCatalog> {
-        self.get_scoped("", ttl)
-    }
-
     pub(crate) fn get_scoped(
         &self,
         cache_key: &str,
@@ -761,7 +757,7 @@ mod provider_catalog_projection_tests {
         let store = ProviderCatalogProjectionStore::default();
         store.update(catalog("codex"));
 
-        assert!(store.get(Duration::ZERO).is_none());
+        assert!(store.get_scoped("", Duration::ZERO).is_none());
         assert_eq!(
             store
                 .cached()
@@ -808,7 +804,7 @@ mod provider_catalog_projection_tests {
         store.invalidate();
 
         assert!(!store.update_scoped_if_generation("", catalog("opencode"), generation));
-        assert!(store.get(Duration::from_secs(3600)).is_none());
+        assert!(store.get_scoped("", Duration::from_secs(3600)).is_none());
         assert_eq!(
             store
                 .cached()

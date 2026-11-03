@@ -827,8 +827,8 @@ fixtures only. The unchanged activation/recovery/upgrade/service-policy Node
 fixtures pass 130/130 without skips using synthetic releases and mocked host
 services. No VM or staging was contacted. Available builder2 Cloud
 `f6cfd0066d75844dbab795cdf715789ec5fa37d6` is stale/unpaired; no paired Cloud
-result is claimed. The complete trigger/cost/deletion ledger and coordinator
-commands are in `docs/MANAGED_SHUTDOWN_ACCEPTANCE_RUNBOOK.md`. Public command,
+result is claimed. The shutdown-trigger drill and its runbook were retired with the Cloud
+rental controls. Public command,
 source, resource and cleanup receipts remain external under
 `/root/.codex/evidence/browser-resume-20260930/b214/`.
 

@@ -36,106 +36,6 @@
     "why": "generic seam: kernel-to-kernel context transfer; Cloud only issues the transfer ticket"
   },
   {
-    "name": "LocalDaemonRequest::PairCloudRelayClient",
-    "why": "Cloud-only, deleted by OSS-boundary item 1 (retired Cloud controls)"
-  },
-  {
-    "name": "LocalDaemonRequest::PairCloudRelayMachine",
-    "why": "Cloud-only, deleted by OSS-boundary item 1 (retired Cloud controls)"
-  },
-  {
-    "name": "LocalDaemonRequest::CreateCloudSessionInvite",
-    "why": "Cloud-only, deleted by OSS-boundary item 1 (retired Cloud controls)"
-  },
-  {
-    "name": "LocalDaemonRequest::ShowCloudSessionInvite",
-    "why": "Cloud-only, deleted by OSS-boundary item 1 (retired Cloud controls)"
-  },
-  {
-    "name": "LocalDaemonRequest::AcceptCloudSessionInvite",
-    "why": "Cloud-only, deleted by OSS-boundary item 1 (retired Cloud controls)"
-  },
-  {
-    "name": "LocalDaemonRequest::RevokeCloudSessionInvite",
-    "why": "Cloud-only, deleted by OSS-boundary item 1 (retired Cloud controls)"
-  },
-  {
-    "name": "LocalDaemonRequest::ListCloudSessionMembers",
-    "why": "Cloud-only, deleted by OSS-boundary item 1 (retired Cloud controls)"
-  },
-  {
-    "name": "LocalDaemonRequest::ListCloudCollaborators",
-    "why": "Cloud-only, deleted by OSS-boundary item 1 (retired Cloud controls)"
-  },
-  {
-    "name": "LocalDaemonRequest::ListManagedEnvironmentCatalog",
-    "why": "Cloud-only, deleted by OSS-boundary item 1 (retired Cloud controls)"
-  },
-  {
-    "name": "LocalDaemonRequest::CreateDisposableWorker",
-    "why": "Cloud-only, deleted by OSS-boundary item 1 (retired Cloud controls)"
-  },
-  {
-    "name": "LocalDaemonRequest::GetDisposableWorker",
-    "why": "Cloud-only, deleted by OSS-boundary item 1 (retired Cloud controls)"
-  },
-  {
-    "name": "LocalDaemonRequest::ReleaseDisposableWorker",
-    "why": "Cloud-only, deleted by OSS-boundary item 1 (retired Cloud controls)"
-  },
-  {
-    "name": "LocalDaemonRequest::KeepDisposableWorkerRunning",
-    "why": "Cloud-only, deleted by OSS-boundary item 1 (retired Cloud controls)"
-  },
-  {
-    "name": "LocalDaemonRequest::PrepareDisposableWorkerContextTransfer",
-    "why": "Cloud-only, deleted by OSS-boundary item 1 (retired Cloud controls)"
-  },
-  {
-    "name": "LocalDaemonRequest::KeepManagedEnvironmentRunning",
-    "why": "Cloud-only, deleted by OSS-boundary item 1 (retired Cloud controls)"
-  },
-  {
-    "name": "LocalDaemonRequest::GetManagedEnvironment",
-    "why": "Cloud-only, deleted by OSS-boundary item 1 (retired Cloud controls)"
-  },
-  {
-    "name": "LocalDaemonRequest::GetManagedEnvironmentReimagePreflight",
-    "why": "Cloud-only, deleted by OSS-boundary item 1 (retired Cloud controls)"
-  },
-  {
-    "name": "LocalDaemonRequest::GetManagedEnvironmentReimageReceipt",
-    "why": "Cloud-only, deleted by OSS-boundary item 1 (retired Cloud controls)"
-  },
-  {
-    "name": "LocalDaemonRequest::PrepareManagedEnvironmentContextTransfer",
-    "why": "Cloud-only, deleted by OSS-boundary item 1 (retired Cloud controls)"
-  },
-  {
-    "name": "LocalDaemonRequest::PrepareManagedEnvironmentGitCredentialEnrollment",
-    "why": "Cloud-only, deleted by OSS-boundary item 1 (retired Cloud controls)"
-  },
-  {
-    "name": "LocalDaemonRequest::CreateManagedEnvironment",
-    "why": "Cloud-only, deleted by OSS-boundary item 1 (retired Cloud controls)"
-  },
-  {
-    "name": "LocalDaemonRequest::RequestManagedEnvironmentLifecycle",
-    "why": "Cloud-only, deleted by OSS-boundary item 1 (retired Cloud controls)"
-  },
-  {
-    "name": "LocalDaemonRequest::RequestManagedEnvironmentReimage",
-    "why": "Cloud-only, deleted by OSS-boundary item 1 (retired Cloud controls)"
-  },
-  {
-    "name": "LocalDaemonRequest::RequestManagedEnvironmentReleaseUpdate",
-    "why": "Cloud-only, deleted by OSS-boundary item 1 (retired Cloud controls)"
-  },
-  {
-    "name": "LocalDaemonRequest::GetManagedEnvironmentReleaseUpdate",
-    "why": "Cloud-only, deleted by OSS-boundary item 1 (retired Cloud controls)"
-  },
-  {
     "name": "LocalDaemonRequest::ObserveManagedEnvironmentPreReimage",
     "why": "Cloud-only, deleted by OSS-boundary item 3 (rental plan: reimage)"
   },
@@ -145,10 +45,6 @@
   },
   {
     "name": "packages/kernel-client/src/ipc-managed-environment-requests.ts",
-    "why": "Cloud-only, deleted by OSS-boundary item 1 (retired Cloud controls)"
-  },
-  {
-    "name": "packages/kernel-client/src/ipc-disposable-worker-requests.ts",
-    "why": "Cloud-only, deleted by OSS-boundary item 1 (retired Cloud controls)"
+    "why": "Cloud-only, deleted by OSS-boundary item 3 (rental plan): only the response types and the pre-reimage observation builder remain"
   }
 ]

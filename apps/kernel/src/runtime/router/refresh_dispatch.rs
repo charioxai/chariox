@@ -41,27 +41,21 @@ impl CommandRouter {
             | LocalDaemonRequest::StartCloudRelayLogin(_)
             | LocalDaemonRequest::PollCloudRelayLogin(_)
             | LocalDaemonRequest::LogoutCloudRelay(_)
-            | LocalDaemonRequest::PairCloudRelayClient(_)
-            | LocalDaemonRequest::PairCloudRelayMachine(_)
             | LocalDaemonRequest::ConnectCloudRelay(_)
             | LocalDaemonRequest::IssueCloudRelayClientToken(_)
-            | LocalDaemonRequest::ResolveKernelClientConnection(_)
-            | LocalDaemonRequest::CreateCloudSessionInvite(_)
-            | LocalDaemonRequest::ShowCloudSessionInvite(_)
-            | LocalDaemonRequest::AcceptCloudSessionInvite(_)
-            | LocalDaemonRequest::RevokeCloudSessionInvite(_)
-            | LocalDaemonRequest::ListCloudSessionMembers(_)
-            | LocalDaemonRequest::ListCloudCollaborators(_)) => boxed_handler(|| async move {
-                execute_cloud_relay_request(
-                    &self.runtime_state,
-                    &self.config_projection,
-                    &self.provider_catalog_projection,
-                    &self.remote_relay_inventory_projection,
-                    Arc::clone(&self.relay_state),
-                    request,
-                )
-                .await
-            }),
+            | LocalDaemonRequest::ResolveKernelClientConnection(_)) => {
+                boxed_handler(|| async move {
+                    execute_cloud_relay_request(
+                        &self.runtime_state,
+                        &self.config_projection,
+                        &self.provider_catalog_projection,
+                        &self.remote_relay_inventory_projection,
+                        Arc::clone(&self.relay_state),
+                        request,
+                    )
+                    .await
+                })
+            }
             request @ (LocalDaemonRequest::GetUserConfig(_)
             | LocalDaemonRequest::GetUserConfigSchema(_)
             | LocalDaemonRequest::SetUserConfigValue(_)

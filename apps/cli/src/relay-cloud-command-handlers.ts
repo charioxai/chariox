@@ -11,11 +11,6 @@ import { shellQuote } from "./native-tui/launch-environment.js"
 
 export type RelayCloudCommandHandlerDeps = CloudCommandLifecycleDeps & {
   sessionState: () => RuntimeSession
-  pairCloudRelayClient?: (
-    profile: RelayCloudProfile,
-    clientId: string,
-    alias?: string,
-  ) => Promise<RelayCloudProfile>
   issueCloudClientRelayToken?: (
     profile: RelayCloudProfile,
     targetDaemonAlias: string,

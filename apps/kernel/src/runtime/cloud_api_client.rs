@@ -16,9 +16,8 @@ mod device_poll;
 mod http;
 pub(crate) use device_poll::post_cloud_device_poll;
 pub(crate) use http::{
-    cloud_error_code, cloud_error_is_retryable, cloud_url_component, get_cloud_json,
-    get_cloud_json_authenticated, get_cloud_kernel_directory, is_stale_cloud_link_error,
-    normalize_cloud_api_url, post_cloud_acknowledged, post_cloud_json,
+    cloud_error_code, cloud_error_is_retryable, cloud_url_component, get_cloud_kernel_directory,
+    is_stale_cloud_link_error, normalize_cloud_api_url, post_cloud_acknowledged, post_cloud_json,
     post_cloud_json_authenticated, post_cloud_json_dynamic, post_cloud_json_with_timeout,
     post_cloud_to_file, CLOUD_PRESENCE_REQUEST_TIMEOUT, CLOUD_RELAY_TOKEN_REQUEST_TIMEOUT,
 };
@@ -28,11 +27,6 @@ mod gateway_client;
 mod terminal_client;
 pub(crate) use gateway_client::register_cloud_gateway_client;
 pub(crate) use terminal_client::{issue_cloud_terminal_client_token, CloudTerminalClientOptions};
-mod session_collaboration;
-pub(crate) use session_collaboration::{
-    accept_cloud_session_invite, create_cloud_session_invite, list_cloud_collaborators,
-    list_cloud_session_members, revoke_cloud_session_invite, show_cloud_session_invite,
-};
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]

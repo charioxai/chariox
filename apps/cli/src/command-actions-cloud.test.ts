@@ -73,11 +73,6 @@ test("relay cloud login without args uses device flow", async () => {
         },
       }
     },
-    pairCloudRelayMachine: async (profile: Record<string, unknown>, machineId: string, alias?: string) => ({
-      ...profile,
-      machineId,
-      machineAlias: alias ?? "laptop",
-    }),
     issueCloudMachineRelayToken: async (_profile: Record<string, unknown>, daemonId: string, machineId: string) => {
       assert.equal(daemonId, "daemon-1")
       assert.equal(machineId, "machine-1")
@@ -321,9 +316,6 @@ test("/cloud link triggers hosted device login flow", async () => {
         machineAlias: "laptop",
       },
     }),
-    pairCloudRelayMachine: async () => {
-      throw new Error("device login must not pair the already-provisioned machine again")
-    },
     issueCloudMachineRelayToken: async () => ({
       relayUrl: "wss://relay.example",
       relayToken: "relay-token",
@@ -490,7 +482,6 @@ test("MP-08 / MP-11 retired relay cloud pair-machine refuses without storing a m
   let saved = false
   const handlers = createCommandActionHandlers(makeCommandDeps({
     flashFooter: (message: string) => { footers.push(message) },
-    pairCloudRelayMachine: async () => { throw new Error("retired kernel human Cloud control must not be called") },
     saveCloudRelayProfile: async () => { saved = true },
   }))
 

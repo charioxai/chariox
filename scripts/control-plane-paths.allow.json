@@ -34,8 +34,7 @@
   {
     "path": "/managed-environments",
     "callers": [
-      "apps/cli/src/managed-environment-api.ts",
-      "apps/kernel/src/runtime/managed_environment_control.rs"
+      "apps/cli/src/managed-environment-api.ts"
     ],
     "why": "Cloud-only, deleted by OSS-boundary items 2 and 3 (rental plan): the rental API belongs to Cloud web and the Cloud control plane",
     "seam": "none; the path goes away"
@@ -43,8 +42,7 @@
   {
     "path": "/managed-environments/{}",
     "callers": [
-      "apps/cli/src/managed-environment-api.ts",
-      "apps/kernel/src/runtime/managed_environment_control.rs"
+      "apps/cli/src/managed-environment-api.ts"
     ],
     "why": "Cloud-only, deleted by OSS-boundary items 2 and 3 (rental plan): the rental API belongs to Cloud web and the Cloud control plane",
     "seam": "none; the path goes away"
@@ -52,16 +50,7 @@
   {
     "path": "/managed-environments/{}/context-transfer",
     "callers": [
-      "apps/cli/src/managed-environment-api.ts",
-      "apps/kernel/src/runtime/managed_environment_control.rs"
-    ],
-    "why": "Cloud-only, deleted by OSS-boundary items 2 and 3 (rental plan): the rental API belongs to Cloud web and the Cloud control plane",
-    "seam": "none; the path goes away"
-  },
-  {
-    "path": "/managed-environments/{}/git-credential-enrollment",
-    "callers": [
-      "apps/kernel/src/runtime/managed_environment_control.rs"
+      "apps/cli/src/managed-environment-api.ts"
     ],
     "why": "Cloud-only, deleted by OSS-boundary items 2 and 3 (rental plan): the rental API belongs to Cloud web and the Cloud control plane",
     "seam": "none; the path goes away"
@@ -69,8 +58,7 @@
   {
     "path": "/managed-environments/{}/lifecycle",
     "callers": [
-      "apps/cli/src/managed-environment-api.ts",
-      "apps/kernel/src/runtime/managed_environment_control.rs"
+      "apps/cli/src/managed-environment-api.ts"
     ],
     "why": "Cloud-only, deleted by OSS-boundary items 2 and 3 (rental plan): the rental API belongs to Cloud web and the Cloud control plane",
     "seam": "none; the path goes away"
@@ -78,8 +66,7 @@
   {
     "path": "/managed-environments/{}/reimage",
     "callers": [
-      "apps/cli/src/managed-environment-api.ts",
-      "apps/kernel/src/runtime/managed_environment_control.rs"
+      "apps/cli/src/managed-environment-api.ts"
     ],
     "why": "Cloud-only, deleted by OSS-boundary items 2 and 3 (rental plan): the rental API belongs to Cloud web and the Cloud control plane",
     "seam": "none; the path goes away"
@@ -87,16 +74,7 @@
   {
     "path": "/managed-environments/{}/reimage/preflight",
     "callers": [
-      "apps/cli/src/managed-environment-api.ts",
-      "apps/kernel/src/runtime/managed_environment_control.rs"
-    ],
-    "why": "Cloud-only, deleted by OSS-boundary items 2 and 3 (rental plan): the rental API belongs to Cloud web and the Cloud control plane",
-    "seam": "none; the path goes away"
-  },
-  {
-    "path": "/managed-environments/{}/reimage/receipt",
-    "callers": [
-      "apps/kernel/src/runtime/managed_environment_control.rs"
+      "apps/cli/src/managed-environment-api.ts"
     ],
     "why": "Cloud-only, deleted by OSS-boundary items 2 and 3 (rental plan): the rental API belongs to Cloud web and the Cloud control plane",
     "seam": "none; the path goes away"
@@ -104,16 +82,7 @@
   {
     "path": "/managed-environments/{}/reimage/stop",
     "callers": [
-      "apps/cli/src/managed-environment-reimage-stop.ts",
-      "apps/kernel/src/runtime/managed_environment_control/reimage_stop.rs"
-    ],
-    "why": "Cloud-only, deleted by OSS-boundary items 2 and 3 (rental plan): the rental API belongs to Cloud web and the Cloud control plane",
-    "seam": "none; the path goes away"
-  },
-  {
-    "path": "/managed-environments/{}/release-update",
-    "callers": [
-      "apps/kernel/src/runtime/managed_environment_control.rs"
+      "apps/cli/src/managed-environment-reimage-stop.ts"
     ],
     "why": "Cloud-only, deleted by OSS-boundary items 2 and 3 (rental plan): the rental API belongs to Cloud web and the Cloud control plane",
     "seam": "none; the path goes away"
@@ -121,8 +90,7 @@
   {
     "path": "/managed-environments/options",
     "callers": [
-      "apps/cli/src/managed-environment-api.ts",
-      "apps/kernel/src/runtime/managed_environment_control.rs"
+      "apps/cli/src/managed-environment-api.ts"
     ],
     "why": "Cloud-only, deleted by OSS-boundary items 2 and 3 (rental plan): the rental API belongs to Cloud web and the Cloud control plane",
     "seam": "none; the path goes away"
