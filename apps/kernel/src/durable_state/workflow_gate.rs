@@ -502,7 +502,7 @@ pub(super) fn execute(db: &mut Connection, request: Request) -> bool {
                     return Err(error("gate entry already handed or terminal"));
                 }
                 let requested = id.clone();
-                let parent:Option<String>=tx.query_row("SELECT b.entry_id FROM workflow_gate_members m JOIN workflow_gate_batches b ON b.group_id=m.group_id WHERE m.entry_id=?1 AND b.closed=0",[&id],|r|r.get(0)).optional().map_err(sql)?;
+                let parent:Option<String>=tx.query_row("SELECT b.entry_id FROM workflow_gate_members m JOIN workflow_gate_batches b ON b.group_id=m.group_id JOIN workflow_gate_entries p ON p.entry_id=b.entry_id WHERE m.entry_id=?1 AND p.disposition NOT IN ('queued','dropped','failed','expired','cancelled')",[&id],|r|r.get(0)).optional().map_err(sql)?;
                 let mut s = load(&tx, parent.as_deref().unwrap_or(&id))?
                     .filter(|s| s.admission.owner == owner)
                     .ok_or_else(|| error("gate entry not found"))?;

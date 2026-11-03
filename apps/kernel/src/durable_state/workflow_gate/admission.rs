@@ -268,7 +268,7 @@ pub(super) fn current_stored(tx: &Transaction<'_>, s: &Stored) -> Result<bool> {
     if s.batch.is_some() {
         for id in ids(tx,"SELECT entry_id FROM workflow_gate_members WHERE group_id IN (SELECT group_id FROM workflow_gate_batches WHERE entry_id=?1)",[&s.entry.entry_id])? {
             let member=load(tx,&id)?.ok_or_else(||error("gate batch member missing"))?;
-            if !current(tx,&member.admission)? || source_authority(tx,&member.admission)?!=member.source_authority {return Ok(false);}
+            if member.entry.disposition != Disposition::Batched || !current(tx,&member.admission)? || source_authority(tx,&member.admission)?!=member.source_authority {return Ok(false);}
         }
     }
     Ok(true)
