@@ -1,6 +1,7 @@
 //! The kernel's offline WIT admission boundary. No App code is instantiated.
 
 mod contract;
+pub mod gate;
 
 use std::{collections::BTreeSet, fmt};
 
@@ -57,6 +58,9 @@ type Result<T> = std::result::Result<T, ComponentError>;
 /// This checks WIT only: callers must also check trust, resources, kernel
 /// features, worker availability and platform containment before activation.
 pub fn check_component(bytes: &[u8], world: &str) -> Result<()> {
+    if world == gate::WORLD {
+        return gate::check(bytes);
+    }
     let admission = match world {
         APP_WORLD => "app-admission",
         MIGRATION_WORLD => "app-migrations-admission",

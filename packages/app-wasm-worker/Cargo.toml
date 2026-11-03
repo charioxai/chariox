@@ -7,6 +7,7 @@ description = "Async component worker for kernel-owned App installations"
 
 [features]
 test-support = []
+gate-drills = []
 
 [dependencies]
 libc = "0.2.172"
@@ -48,3 +49,8 @@ wat = "=1.262.0"
 name = "containment"
 path = "tests/containment.rs"
 harness = false
+
+[[test]]
+name = "gate-drill"
+path = "tests/gate-drill.rs"
+required-features = ["gate-drills"]

@@ -34,6 +34,12 @@ pub(crate) struct JitCode {
 }
 
 pub(crate) fn engine() -> wasmtime::Result<(Engine, Arc<JitCode>)> {
+    with_configuration(crate::engine::configuration())
+}
+
+pub(crate) fn with_configuration(
+    mut config: wasmtime::Config,
+) -> wasmtime::Result<(Engine, Arc<JitCode>)> {
     let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
     wasmtime::ensure!(page_size > 0, "JIT page size unavailable");
     let page_size = page_size as usize;
@@ -42,7 +48,6 @@ pub(crate) fn engine() -> wasmtime::Result<(Engine, Arc<JitCode>)> {
         page_size,
         mappings: Mutex::new(Vec::new()),
     });
-    let mut config = crate::engine::configuration();
     config.with_custom_code_memory(Some(code.clone()));
     Ok((Engine::new(&config)?, code))
 }

@@ -44,7 +44,7 @@ unsafe extern "C" {
     fn csops(pid: libc::pid_t, operation: u32, address: *mut c_void, size: usize) -> c_int;
 }
 
-pub(super) fn enter(files: &[PathBuf]) -> io::Result<()> {
+pub(super) fn enter(files: &[PathBuf], cpu_seconds: Option<u64>) -> io::Result<()> {
     close_extra_descriptors()?;
     let mut flags: u32 = 0;
     if unsafe {
@@ -64,7 +64,7 @@ pub(super) fn enter(files: &[PathBuf]) -> io::Result<()> {
         ));
     }
     signing_policy()?;
-    super::ceilings()?;
+    super::ceilings(cpu_seconds)?;
     // Seatbelt matches resolved paths (for example /var is /private/var).
     let files = files
         .iter()

@@ -8,6 +8,11 @@ pub(super) const UNCONTAINED: &[u8; 8] = b"CXAWC001";
 pub(super) enum PreparedLaunch {
     #[cfg(any(test, feature = "test-fixtures"))]
     Fixture(LaunchRecord),
+    Gate {
+        generation: String,
+        entry_id: String,
+        module_sha256: String,
+    },
     Wasm {
         generation: String,
         installation: String,
@@ -25,7 +30,7 @@ impl PreparedLaunch {
         match self {
             #[cfg(any(test, feature = "test-fixtures"))]
             Self::Fixture(record) => &record.generation,
-            Self::Wasm { generation, .. } => generation,
+            Self::Wasm { generation, .. } | Self::Gate { generation, .. } => generation,
         }
     }
     pub fn installation(&self) -> &str {
@@ -33,6 +38,7 @@ impl PreparedLaunch {
             #[cfg(any(test, feature = "test-fixtures"))]
             Self::Fixture(record) => &record.installation,
             Self::Wasm { installation, .. } => installation,
+            Self::Gate { entry_id, .. } => entry_id,
         }
     }
     pub fn release_digest(&self) -> &str {
@@ -40,13 +46,14 @@ impl PreparedLaunch {
             #[cfg(any(test, feature = "test-fixtures"))]
             Self::Fixture(record) => &record.release_digest,
             Self::Wasm { release_digest, .. } => release_digest,
+            Self::Gate { module_sha256, .. } => module_sha256,
         }
     }
     pub fn encode(&self) -> Result<Vec<u8>, WorkerError> {
         match self {
             #[cfg(any(test, feature = "test-fixtures"))]
             Self::Fixture(record) => record.encode(),
-            Self::Wasm { .. } => {
+            Self::Wasm { .. } | Self::Gate { .. } => {
                 self.validate()?;
                 Ok(Vec::new())
             }
@@ -77,7 +84,11 @@ impl PreparedLaunch {
         Ok(())
     }
     pub fn ready(&self) -> Vec<u8> {
-        let mut frame = b"CXAWR001".to_vec();
+        let mut frame = if matches!(self, Self::Gate { .. }) {
+            b"CXGWR001".to_vec()
+        } else {
+            b"CXAWR001".to_vec()
+        };
         for value in [
             self.generation(),
             self.installation(),
