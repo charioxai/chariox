@@ -153,11 +153,8 @@ impl KernelRuntimeState {
     ) -> Result<Result<crate::agent::AgentInstance, NotBound>, DaemonError> {
         self.authorize_current_external_command()?;
         grant.validate_app_binding()?;
-        self.owned.ensure_agent_extension_authority(
-            agent_ref,
-            caller_user_id,
-            "bind agent App",
-        )?;
+        self.owned
+            .ensure_agent_extension_authority(agent_ref, caller_user_id, "bind agent App")?;
         let agent = self
             .owned
             .agent_store
@@ -183,11 +180,8 @@ impl KernelRuntimeState {
         let checked = tokio::task::spawn_blocking(move || {
             state.authorize_current_external_command()?;
             let _permit = permit;
-            let binding = store.check_app_binding_in_room(
-                &reach.owner,
-                &installation_id,
-                Some(&reach.room),
-            );
+            let binding =
+                store.check_app_binding_in_room(&reach.owner, &installation_id, Some(&reach.room));
             // MP-11 SB-03: writer completion cannot revive a stale provider.
             state.authorize_current_external_command()?;
             #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]

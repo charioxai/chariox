@@ -109,8 +109,14 @@ mod tests {
     }
 
     fn room(id: &str, owner: &str) -> crate::session::RuntimeSession {
-        let mut session =
-            crate::session::RuntimeSession::new(id, None, "workspace", "/repo", "machine", "kernel");
+        let mut session = crate::session::RuntimeSession::new(
+            id,
+            None,
+            "workspace",
+            "/repo",
+            "machine",
+            "kernel",
+        );
         session.set_owner_user_id(owner);
         session
     }
@@ -119,7 +125,10 @@ mod tests {
     fn a_guests_agent_reaches_the_room_owners_apps_in_that_room_only() {
         let guest = agent("invited-room", "guest");
         let reach = AppReach::for_agent(&guest, Some(&room("invited-room", "host")));
-        assert_eq!(reach.owner, "host", "the Room owner's installations, not the guest's");
+        assert_eq!(
+            reach.owner, "host",
+            "the Room owner's installations, not the guest's"
+        );
         assert_eq!(reach.room, "invited-room");
         let release = installation(InstallationChannel::Release, None);
         assert!(reach.admits(&release, None));
@@ -145,8 +154,14 @@ mod tests {
         deployed.deployment = Some("deployment-1".into());
         let tagged = "deployment-1".to_owned();
         assert!(plain.admits(&release, None));
-        assert!(!plain.admits(&release, Some(&tagged)), "an ordinary agent never reaches a copy");
+        assert!(
+            !plain.admits(&release, Some(&tagged)),
+            "an ordinary agent never reaches a copy"
+        );
         assert!(deployed.admits(&release, Some(&tagged)));
-        assert!(!deployed.admits(&release, None), "a deployed agent reaches its copies only");
+        assert!(
+            !deployed.admits(&release, None),
+            "a deployed agent reaches its copies only"
+        );
     }
 }

@@ -59,6 +59,8 @@ impl AppViewAuthority {
 pub(crate) fn not_granted() -> BrowserAppViewError {
     BrowserAppViewError {
         code: "AGENT_APP_NOT_GRANTED".into(),
-        message: "This agent has not asked for this App yet; request it with chariox.request_extension".into(),
+        message:
+            "This agent has not asked for this App yet; request it with chariox.request_extension"
+                .into(),
     }
 }

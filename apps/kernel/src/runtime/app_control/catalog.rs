@@ -88,9 +88,7 @@ impl AppControlService {
         if catalogs.is_empty() {
             return Ok(Default::default());
         }
-        let current = self
-            .store
-            .current_app_catalogs(&reach.owner, &catalogs)?;
+        let current = self.store.current_app_catalogs(&reach.owner, &catalogs)?;
         self.project_app_tools(current, leases, &dormant, occupied)
     }
 
@@ -100,7 +98,8 @@ impl AppControlService {
     pub(crate) fn note_listing(&self, reach: &AppReach, listed: &BTreeSet<String>) {
         for name in &reach.granted {
             if listed.contains(name) {
-                self.workers.forget_unlisted(&reach.owner, name, &reach.agent);
+                self.workers
+                    .forget_unlisted(&reach.owner, name, &reach.agent);
             } else {
                 self.workers.note_unlisted(&reach.owner, name, &reach.agent);
             }
@@ -120,7 +119,8 @@ impl AppControlService {
         if self.active_app_lease(owner, installation).is_none()
             && !self.is_app_dormant(owner, installation)
         {
-            self.workers.note_unlisted(owner, installation, &reach.agent);
+            self.workers
+                .note_unlisted(owner, installation, &reach.agent);
         }
     }
 

@@ -111,11 +111,10 @@ impl KernelRuntimeState {
         let [run] = runs.as_slice() else {
             return false;
         };
-        self.app_agent_for_provider_run(run)
-            .is_ok_and(|agent| {
-                self.app_control()
-                    .has_active_apps_for_agent(&self.app_reach(&agent))
-            })
+        self.app_agent_for_provider_run(run).is_ok_and(|agent| {
+            self.app_control()
+                .has_active_apps_for_agent(&self.app_reach(&agent))
+        })
     }
 
     /// A cheap snapshot only decides whether current App trust needs a bounded

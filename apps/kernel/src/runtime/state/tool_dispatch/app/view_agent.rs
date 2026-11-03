@@ -623,9 +623,7 @@ impl KernelRuntimeState {
                 views
                     .bound_views(session)
                     .into_iter()
-                    .find(|(_, binding)| {
-                        binding.installation == target && binding.owner == owner
-                    })
+                    .find(|(_, binding)| binding.installation == target && binding.owner == owner)
                     .map(|(target, _)| target)
             })
             .ok_or_else(|| {
@@ -857,7 +855,10 @@ impl KernelRuntimeState {
             deadline_ms: ACTION_DEADLINE_MS,
         };
         let reply = match &context.host {
-            ViewHost::Room => self.app_view_command::<Value>(&context.session, request).await,
+            ViewHost::Room => {
+                self.app_view_command::<Value>(&context.session, request)
+                    .await
+            }
             ViewHost::User {
                 owner,
                 browser_generation,
@@ -939,14 +940,15 @@ impl KernelRuntimeState {
             Some("deny".into()),
         )
         .with_native_origin(self.owned.capture_native_interaction_origin(agent.session_id(), agent.id(), run_id));
-        let answer = crate::runtime::native_interaction_bridge::request_provider_native_interaction(
-            self,
-            agent.session_id(),
-            interaction,
-            "app_view_action_approval",
-        )
-        .await
-        .map_err(|error| failure("approval_unavailable", error.to_string()))?;
+        let answer =
+            crate::runtime::native_interaction_bridge::request_provider_native_interaction(
+                self,
+                agent.session_id(),
+                interaction,
+                "app_view_action_approval",
+            )
+            .await
+            .map_err(|error| failure("approval_unavailable", error.to_string()))?;
         if answer.status != "answered"
             || !matches!(
                 answer.choice_id.as_deref(),

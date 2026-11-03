@@ -41,7 +41,12 @@ impl AppViews {
     /// Unbinding an App ends the lasting approvals the agent gave for it, so a
     /// later binding asks again.
     pub(crate) fn forget_agent_approvals(&self, agent: &str, installation: &str) {
-        for views in self.0.lock().unwrap_or_else(|e| e.into_inner()).values_mut() {
+        for views in self
+            .0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .values_mut()
+        {
             views
                 .action_approvals
                 .retain(|(approved_by, _, app, _), _| approved_by != agent || app != installation);
