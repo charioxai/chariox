@@ -26,7 +26,7 @@ pub(super) struct Worker {
 )]
 impl Worker {
     pub(super) async fn start(retries: Vec<&str>) -> Self {
-        Self::start_with(retries, None, 13, None).await
+        Self::start_with(retries, None, 15, None).await
     }
     pub(super) async fn start_component(component: &std::path::Path, tools: usize) -> Self {
         Self::start_with(vec![], Some(component), tools, None).await
