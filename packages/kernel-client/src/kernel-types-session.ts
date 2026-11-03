@@ -108,6 +108,7 @@ export type SessionProjectSelection =
 
 export type RuntimeProject = {
   pinned?: boolean
+  standalone?: boolean
   pinned_at_ms?: number | null
   id: string
   owner_user_id: string

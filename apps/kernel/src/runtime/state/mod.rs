@@ -129,12 +129,17 @@ pub(crate) use passkey_prompts::PASSKEY_ALREADY_ANSWERED;
 mod legacy_room_owner;
 mod native_catalog_refresh;
 mod owner_context_review;
+mod project_environment_apply;
+mod project_environment_apply_capabilities;
+mod project_environment_check;
+mod project_environment_detect;
 mod project_environment_export;
 mod project_environment_files;
 mod project_environment_manifest;
 mod project_environment_placement;
 mod project_environment_remote;
 mod project_environment_review;
+mod project_environment_revision;
 mod project_environment_worker_export;
 mod project_environment_workspaces;
 mod project_prompt_promotion;
@@ -502,6 +507,8 @@ mod metaagent_task_runtime_state;
 pub(crate) use metaagent_task_runtime_state::parse_meta_slash_command;
 mod active_prompt_steering;
 mod external_command_authority;
+mod project_resolution;
+pub(crate) use project_resolution::{PreparedProjectEntry, PreparedSessionWorkspace};
 mod project_runtime_state;
 mod prompt;
 mod prompt_activity_owned_state;
@@ -548,6 +555,7 @@ pub(crate) use provider_process_runtime_state::*;
 mod forwarded_peer_authority;
 mod leased_profile_transition_runtime;
 mod project_environment_setup;
+pub(crate) use project_environment_setup::prepare_setup_paths;
 pub(crate) use project_environment_setup::restore_agent_move_preparation_environment;
 mod provider_auth_recovery;
 #[cfg(test)]
@@ -1522,3 +1530,8 @@ mod terminal_wake;
 mod terminal_wake_worker;
 // MD-3: typed internal seam for display integration; public protocol remains coordinator-owned.
 pub(crate) use kernel_browser_runtime::{KernelBrowserDisplayRequest, KernelBrowserPushCredit};
+#[cfg(test)]
+mod project_environment_detect_observation_tests;
+
+#[cfg(test)]
+mod project_environment_apply_binding_deadline_tests;

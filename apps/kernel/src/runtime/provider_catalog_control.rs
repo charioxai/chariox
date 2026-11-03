@@ -59,8 +59,11 @@ pub(crate) async fn execute_get_provider_catalog_request(
     config_projection: &DaemonConfigProjectionStore,
     account_profiles: &crate::account_profile::ProviderAccountProfileRegistry,
     owner_user_id: &str,
-    request: crate::local::GetProviderCatalogRequest,
+    mut request: crate::local::GetProviderCatalogRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
+    let summary_only = request.summary_only;
+    let focus_provider = request.provider.clone();
+    request.summary_only = false;
     let catalog = load_catalog(
         provider_catalog_projection,
         config_projection,
@@ -70,7 +73,13 @@ pub(crate) async fn execute_get_provider_catalog_request(
         true,
     )
     .await?;
-    Ok(LocalDaemonResponse::ProviderCatalog { catalog })
+    Ok(LocalDaemonResponse::ProviderCatalog {
+        catalog: super::provider_catalog_read_view::catalog_read_view(
+            catalog,
+            summary_only,
+            focus_provider.as_deref(),
+        ),
+    })
 }
 
 /// What a catalog read can honestly answer. `Revalidating` means the scope has no

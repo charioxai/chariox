@@ -118,6 +118,11 @@ fn main() -> Result<(), chariox_kernel::DaemonError> {
             });
         }
         kernel_arguments::Command::Run => {}
+        kernel_arguments::Command::MeasureEnvironmentFiles(request, result, budget) => {
+            return chariox_kernel::project_environment::run_files_measurement_worker(
+                &request, &result, budget,
+            );
+        }
     }
     #[cfg(unix)]
     chariox_kernel::hot_reload::remember_start();

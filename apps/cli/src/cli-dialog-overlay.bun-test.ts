@@ -29,16 +29,30 @@ for (const [width, height] of [[80, 24], [60, 24], [40, 24]] as const) {
     const harness = await createTestRenderer({ width, height, useThread: false })
     const overlayBox = new BoxRenderable(harness.renderer, { position: "absolute", left: 0, top: 0, width, height })
     harness.renderer.root.add(overlayBox)
-    const controller = createProjectEnvironmentReadController({ send: async () => { throw new Error("not available") }, render() {}, pageSize: () => projectEnvironmentPageSize(height), textWidth: () => projectEnvironmentTextWidth(width) })
+    const snapshot={schema_version:1,local_project_id:"project",lineage:{project_id:"lineage",environment_id:"env"},revision:0,content_digest:"digest",parent_revision_digest:null,evidence_digest:null,project_requirements:[],folders:[],proposals:[],observations:[],operations:[],delivered_capabilities:{enabled_environment_operations:["get"],supported_schema:1}}
+    const controller = createProjectEnvironmentReadController({ send: async () => ({ProjectEnvironment:{environment:snapshot}}), render() {}, pageSize: () => projectEnvironmentPageSize(height), textWidth: () => projectEnvironmentTextWidth(width) })
     try {
       await controller.open("project")
-      renderCliDialogOverlay({ overlayBox, renderer: harness.renderer, dimensions: { width, height }, mode: "environment", onDismiss() {}, sessions: [], normalizeSessionBrowserIndex: () => 0, terminalPairing: null, terminalPairingQrLines: [], hotkeySections: [], environmentLines: controller.visibleLines() })
-      await harness.renderOnce()
-      const frame = harness.captureCharFrame().split("\n").map(row => row.trim()).join(" ").replace(/\s+/g, " ")
-      for (const phrase of ["cannot check or change", "them here.", "After the next release"]) assert(frame.includes(phrase), `clipped ${phrase}: ${frame}`)
+      const frames:string[]=[]
+      for(let page=0;page<80;page++) {
+        renderCliDialogOverlay({ overlayBox, renderer: harness.renderer, dimensions: { width, height }, mode: "environment", onDismiss() {}, sessions: [], normalizeSessionBrowserIndex: () => 0, terminalPairing: null, terminalPairingQrLines: [], hotkeySections: [], environmentLines: controller.visibleLines() })
+        await harness.renderOnce()
+        frames.push(harness.captureCharFrame().split("\n").map(row=>row.trim()).join(" ").replace(/\s+/g," "))
+        controller.handleKey({name:"down"})
+      }
+      const seen=frames.join(" ")
+      for (const phrase of ["An Environment lists", "cannot change them yet.", "Update Chariox on this machine to edit."]) assert(seen.includes(phrase), `unreachable ${phrase}`)
     } finally { harness.renderer.destroy() }
   })
 }
+
+// MP-08 / MP-10 / MP-11: transport failures get their own honest fixture.
+test("Environment transport failure shows connection guidance and Refresh",async()=>{
+  const controller=createProjectEnvironmentReadController({send:async()=>{throw new Error("not available")},render(){},pageSize:()=>16,textWidth:()=>72})
+  await controller.open("project")
+  assert.deepEqual(controller.visibleLines(),["An Environment lists what this project needs on this machine.","Environment unavailable. Check the kernel connection and refresh.","r · Refresh"])
+  controller.close()
+})
 
 test("session browser keeps nonzero ERROR visible at 80 columns", async () => {
   const harness = await createTestRenderer({ width: 80, height: 24, useThread: false })

@@ -21,8 +21,42 @@ impl ProjectEnvironmentStore {
         &self,
         project: &crate::session::RuntimeProject,
     ) -> Result<ProjectEnvironment, DaemonError> {
-        // Reads serialize only durable identity anchors, never export/review admission.
+        self.snapshot_locked(project)
+    }
+
+    pub(crate) fn snapshot_locked(
+        &self,
+        project: &crate::session::RuntimeProject,
+    ) -> Result<ProjectEnvironment, DaemonError> {
+        let mut snapshot = self.snapshot_live_bindings_locked(project)?;
+        self.attach_revision(&mut snapshot)?;
+        Ok(snapshot)
+    }
+
+    // MP-08 / MP-10 / MP-11: Detect reads current attachments, independently of saved specification.
+    pub(crate) fn snapshot_live_bindings_locked(
+        &self,
+        project: &crate::session::RuntimeProject,
+    ) -> Result<ProjectEnvironment, DaemonError> {
         let identity_lock = self.identity_lock(project.id())?;
+        self.snapshot_bindings_with_identity(project, identity_lock)
+    }
+    // MP-08 / MP-10 / MP-11: Check shares its deadline with the identity lock.
+    pub(super) fn snapshot_until(
+        &self,
+        project: &crate::session::RuntimeProject,
+        deadline: std::time::Instant,
+    ) -> Result<ProjectEnvironment, DaemonError> {
+        let lock = self.lock_extension_until(project.id(), "identity.lock", deadline)?;
+        let mut snapshot = self.snapshot_bindings_with_identity(project, lock)?;
+        self.attach_revision(&mut snapshot)?;
+        Ok(snapshot)
+    }
+    fn snapshot_bindings_with_identity(
+        &self,
+        project: &crate::session::RuntimeProject,
+        identity_lock: ProjectEnvironmentLock,
+    ) -> Result<ProjectEnvironment, DaemonError> {
         let path = self.path(project.id()).with_extension("identity.json");
         let mut options = OpenOptions::new();
         options.read(true);
@@ -110,11 +144,13 @@ impl ProjectEnvironmentStore {
         }
         drop(identity_lock);
         let legacy = self.load(project.id())?;
-        Ok(project_environment_snapshot(
+        let mut snapshot = project_environment_snapshot(
             project,
             anchors.lineage,
             &anchors.folder_ids,
             legacy.as_ref(),
-        ))
+        );
+        self.attach_detection(&mut snapshot)?;
+        Ok(snapshot)
     }
 }

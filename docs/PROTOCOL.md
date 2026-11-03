@@ -6361,3 +6361,18 @@ only. The native worker ships beside the kernel, enters containment before its
 identity handshake, and exposes only the versioned App WIT world through the
 kernel capability broker. The replaced engine's launch, runtime enrollment and
 privileged storage-helper paths are removed. Reinstall unsupported stored Apps.
+
+### Project Environment restack — local 968 / relay peer 417
+
+Local 968 carries the Project Environment work on top of Apps v2 (966): Detect, preview diff, Save revision, Plan, Apply,
+Check, operation read/cancel/retry and standalone Project resolution. Export, preview import and commit import still answer
+`EnvironmentUnsupportedFeature`. Relay peer 417 carries the embedded local union.
+
+`GetProjectEnvironment` accepts an optional `view` with a known specification digest and a bounded proposal page. Omitting it
+returns the full read. `ProjectEnvironmentView` returns the snapshot digest, kernel observation time, proposal count/cursor and
+operation item counts with the requested projection. The selected kernel retains Project and operation authority.
+
+`ResolveProject { project_id?, workspace_id, create_if_missing }` returns `ProjectResolved { project? }` through the ordinary
+kernel request dispatcher. A lookup never creates a Project or session. Explicit setup validates the owned workspace and journals
+a standalone Project before publishing its durable ID. Standalone Projects remain available without a running agent or visible
+session.

@@ -283,3 +283,11 @@ pub struct DeleteSessionRequest {
     pub session_ref: String,
     pub workspace_id: Option<String>,
 }
+
+// MP-08 / MP-10 / MP-11: caller-owned Project resolution never creates a session.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResolveProjectRequest {
+    pub project_id: Option<String>,
+    pub workspace_id: String,
+    pub create_if_missing: bool,
+}

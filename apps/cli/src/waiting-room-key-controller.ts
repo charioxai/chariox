@@ -30,12 +30,13 @@ export type WaitingRoomKeyControllerDeps = {
   getSessions: () => SessionListEntry[]
   getProviderCatalog: () => ProviderCatalog
   getRemoteState: () => WaitingRoomRemoteState
+  getWorkspacePath?: () => string | undefined
   getThemeRegistry?: () => ThemeRegistry
   reconcileWaitingRoom: (state: WaitingRoomState) => void
   setWaitingRoomState: (state: WaitingRoomState) => void
   rebuildTranscript: () => void
   applyLifecycleAction: (action: WaitingRoomSessionLifecycleAction) => void
-  openProjectEnvironment?: (projectId: string) => void
+  openProjectEnvironment?: (projectId: string | null, workspaceId?: string) => void
   pinProject?: (projectId: string, pinned: boolean) => void
   beginNewProject?: () => void
   beginProjectRename?: (projectId: string, currentName: string) => void
@@ -119,6 +120,10 @@ export function createWaitingRoomKeyController(
       }
       if (event.eventType !== "release" && !promptFocused && !event.ctrl && !event.meta && !event.alt && !event.super) {
         const state = deps.getWaitingRoomState()
+        if (state.focus === "workspace" && event.name === "v") {
+          deps.openProjectEnvironment?.(null, deps.getWorkspacePath?.())
+          return true
+        }
         const project = state.focus === "project-entry"
           ? waitingRoomProjectsForNavigation(deps.getRemoteState().projects)[state.projectIndex ?? 0]
           : null
@@ -127,7 +132,7 @@ export function createWaitingRoomKeyController(
           return true
         }
         if (project && event.name === "v") {
-          deps.openProjectEnvironment?.(project.id)
+          deps.openProjectEnvironment?.(project.id, project.workspace_id)
           return true
         }
         if (project && event.name === "e") {

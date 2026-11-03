@@ -21,7 +21,7 @@ impl std::fmt::Debug for ResolvedProjectEnvironment {
     }
 }
 
-pub(crate) fn environment_error(message: &'static str) -> DaemonError {
+pub(crate) fn environment_error(message: impl Into<String>) -> DaemonError {
     DaemonError::LocalTransport {
         operation: "Project environment",
         message: message.into(),
@@ -155,6 +155,12 @@ pub(crate) fn read_environment_file(
     root: &Path,
     relative: &str,
 ) -> Result<Zeroizing<String>, DaemonError> {
+    #[cfg(test)]
+    if let Some(marker) = std::env::var_os("CHARIOX_TYPED_CHECK_STALL_MARKER") {
+        std::fs::write(marker, std::process::id().to_string()).unwrap();
+        std::thread::sleep(std::time::Duration::from_secs(2));
+    }
+
     let mut bytes = Zeroizing::new(Vec::new());
     open_workspace_file(root, relative)?
         .take(1024 * 1024 + 1)
@@ -189,6 +195,22 @@ pub fn resolve_project_environment(
     workspace_environment: &BTreeMap<String, BTreeMap<String, Zeroizing<String>>>,
     vault: &dyn CredentialVaultStore,
 ) -> Result<ResolvedProjectEnvironment, DaemonError> {
+    resolve_project_environment_with_reader(
+        manifest,
+        workspaces,
+        workspace_environment,
+        vault,
+        &mut read_environment_file,
+    )
+}
+
+pub(super) fn resolve_project_environment_with_reader(
+    manifest: &ProjectEnvironmentManifest,
+    workspaces: &BTreeMap<String, PathBuf>,
+    workspace_environment: &BTreeMap<String, BTreeMap<String, Zeroizing<String>>>,
+    vault: &dyn CredentialVaultStore,
+    read: &mut impl FnMut(&Path, &str) -> Result<Zeroizing<String>, DaemonError>,
+) -> Result<ResolvedProjectEnvironment, DaemonError> {
     manifest.validate().map_err(environment_error)?;
     let service = project_environment_vault_service(&manifest.project_id);
     let mut resolved = ResolvedProjectEnvironment {
@@ -202,33 +224,38 @@ pub fn resolve_project_environment(
             resolved.unresolved.push(skipped);
             continue;
         }
+        // MP-11: export/refresh share the same public-source fence as launch.
+        if entry.classification == ProjectEnvironmentClassification::NonSecret
+            && project_environment_public_source_protected(&entry.locator)
+        {
+            return Err(environment_error("Protected public source binding"));
+        }
         let root = workspaces
             .get(&entry.workspace_id)
             .ok_or_else(|| environment_error("manifest workspace not selected"))?;
         let key = project_environment_vault_key(entry);
         let result = match &entry.locator {
-            ProjectEnvironmentLocator::EnvFile { path, key } => read_environment_file(root, path)
-                .and_then(|text| {
-                    let mut value = None;
-                    for line in text.lines() {
-                        if let Some(next) =
-                            parse_environment_assignment(line, key).map_err(environment_error)?
-                        {
-                            // A duplicate is ambiguous rather than a silent last-value win.
-                            if value.is_some() {
-                                return Err(environment_error("duplicate environment assignment"));
-                            }
-                            value = Some(Zeroizing::new(next));
+            ProjectEnvironmentLocator::EnvFile { path, key } => read(root, path).and_then(|text| {
+                let mut value = None;
+                for line in text.lines() {
+                    if let Some(next) =
+                        parse_environment_assignment(line, key).map_err(environment_error)?
+                    {
+                        // A duplicate is ambiguous rather than a silent last-value win.
+                        if value.is_some() {
+                            return Err(environment_error("duplicate environment assignment"));
                         }
+                        value = Some(Zeroizing::new(next));
                     }
-                    value.ok_or_else(|| environment_error("referenced environment value missing"))
-                }),
+                }
+                value.ok_or_else(|| environment_error("referenced environment value missing"))
+            }),
             ProjectEnvironmentLocator::WorkspaceEnvironment { name } => workspace_environment
                 .get(&entry.workspace_id)
                 .and_then(|env| env.get(name))
                 .cloned()
                 .ok_or_else(|| environment_error("referenced workspace environment value missing")),
-            ProjectEnvironmentLocator::ConfigFile { path } => read_environment_file(root, path),
+            ProjectEnvironmentLocator::ConfigFile { path } => read(root, path),
             ProjectEnvironmentLocator::Vault { service, key } => {
                 vault.get_secret(service, key).map(Zeroizing::new)
             }

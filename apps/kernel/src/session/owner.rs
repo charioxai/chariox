@@ -102,11 +102,12 @@ impl SessionStateStore {
 
     pub(crate) fn list_visible_projects(
         &self,
+        caller_user_id: &str,
         include_archived: bool,
         is_member: impl Fn(&RuntimeSession) -> bool,
     ) -> Vec<RuntimeProject> {
         self.read()
-            .list_visible_projects(include_archived, is_member)
+            .list_visible_projects(caller_user_id, include_archived, is_member)
     }
 
     pub(crate) fn get_project(&self, project_id: &str) -> Result<RuntimeProject, DaemonError> {
@@ -626,6 +627,13 @@ impl SessionStateStore {
         session_id: &str,
     ) -> Result<(RuntimeSession, Option<RuntimeProject>), DaemonError> {
         self.write().delete_session_with_project_cleanup(session_id)
+    }
+
+    pub(crate) fn delete_session_retaining_project(
+        &self,
+        session_id: &str,
+    ) -> Result<(RuntimeSession, Option<RuntimeProject>), DaemonError> {
+        self.write().delete_session_retaining_project(session_id)
     }
 
     pub(crate) fn set_active_provider_run(

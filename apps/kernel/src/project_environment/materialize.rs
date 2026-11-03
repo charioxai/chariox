@@ -23,7 +23,10 @@ pub fn project_environment_launch_bindings(
             {
                 continue;
             }
-            if project_environment_protected_name(&entry.name) {
+            if project_environment_protected_name(&entry.name)
+                || (entry.classification == ProjectEnvironmentClassification::NonSecret
+                    && project_environment_public_name_protected(&entry.name))
+            {
                 return Err(environment_error(
                     "Project environment cannot override kernel launch controls",
                 ));

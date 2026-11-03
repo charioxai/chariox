@@ -1,6 +1,47 @@
 use super::*;
 
 #[test]
+fn mp08_mp10_discovery_indexed_decisions_preserve_kernel_evidence() {
+    let known = entry("NEEDED", ProjectEnvironmentLocator::Missing);
+    let input = ProjectEnvironmentDiscoveryInput {
+        project_id: "project".into(),
+        evidence_digest: "a".repeat(64),
+        references: vec![known.clone()],
+        previous_manifest: None,
+        changed_paths: BTreeMap::new(),
+        private_files: vec![],
+        revision: None,
+    };
+    // MP-08 / MP-10 / MP-11: models copy an explicit kernel index instead
+    // of counting entries in a large inventory or indexing unrelated hints.
+    let prompt = project_environment_discovery_prompt(&input).unwrap();
+    let metadata: serde_json::Value =
+        serde_json::from_str(prompt.split_once("Metadata:\n").unwrap().1).unwrap();
+    assert_eq!(metadata["references"][0]["reference_index"], 0);
+    assert_eq!(metadata["references"][0]["evidence"]["name"], "NEEDED");
+    let output = serde_json::json!({"schema_version":1,"project_id":"project",
+        "evidence_digest":"a".repeat(64), "entries":[{"reference_index":0,"classification":"non_secret"}],
+        "private_files":[],"toolchain_hints":[],"package_hints":[],"service_hints":[]});
+    let manifest =
+        parse_project_environment_discovery_decisions(&output.to_string(), &input).unwrap();
+    let mut expected = known;
+    expected.classification = ProjectEnvironmentClassification::NonSecret;
+    assert_eq!(manifest.entries, vec![expected]);
+    for invalid in [
+        serde_json::json!([{"reference_index":1,"classification":"non_secret"}]),
+        serde_json::json!([{"reference_index":0,"classification":"non_secret","locator":{"kind":"missing"}}]),
+        serde_json::json!([{"reference_index":0,"classification":"non_secret"},{"reference_index":0,"classification":"secret"}]),
+    ] {
+        let mut invalid_output = output.clone();
+        invalid_output["entries"] = invalid;
+        assert!(
+            parse_project_environment_discovery_decisions(&invalid_output.to_string(), &input)
+                .is_err()
+        );
+    }
+}
+
+#[test]
 fn mp08_mp10_skipped_inputs_do_not_block_available_bindings_or_transfer() {
     let fixture = Fixture::new();
     let manifest = fixture_manifest(vec![entry("MISSING", ProjectEnvironmentLocator::Missing)]);
@@ -311,6 +352,7 @@ fn mp08_store_persists_the_evidence_of_a_workspace_with_tens_of_thousands_of_fil
     let mut manifest = fixture_manifest(vec![]);
     manifest.evidence_digest = evidence.digest();
     let state = StoredProjectEnvironment {
+        apply_owned_bindings: Default::default(),
         source: None,
         manifest,
         evidence,
@@ -351,6 +393,7 @@ fn mp08_evidence_refresh_is_incremental_and_kernel_copies_are_independent() {
     let mut manifest = fixture_manifest(vec![]);
     manifest.evidence_digest = original.digest();
     let state = StoredProjectEnvironment {
+        apply_owned_bindings: Default::default(),
         source: None,
         manifest,
         evidence: original.clone(),
@@ -614,6 +657,7 @@ fn mp08_export_reuses_discovery_but_resolves_current_values_and_new_target_entri
     .unwrap();
     target_store
         .save(&StoredProjectEnvironment {
+            apply_owned_bindings: Default::default(),
             source: None,
             manifest: target_manifest,
             evidence: evidence.clone(),
@@ -745,6 +789,7 @@ fn mp08_project_cleanup_removes_only_its_captured_values() {
         .unwrap();
     store
         .save(&StoredProjectEnvironment {
+            apply_owned_bindings: Default::default(),
             source: None,
             manifest,
             evidence,
@@ -1090,6 +1135,7 @@ fn review_state() -> StoredProjectEnvironment {
         reason: "Personal Project instructions".into(),
     });
     StoredProjectEnvironment {
+        apply_owned_bindings: Default::default(),
         source: None,
         manifest,
         evidence,
@@ -2271,4 +2317,27 @@ fn mp08_mp10_mp11_foreign_owned_mounted_config_is_private_and_transactional() {
             "no transaction backup remains"
         );
     }
+}
+// MP-08 / MP-10 / MP-11: the kernel retains every reference even for sparse decisions.
+#[test]
+fn discovery_sparse_decisions_keep_uncertain_references_secret() {
+    let mut known = entry("NEEDED", ProjectEnvironmentLocator::Missing);
+    known.classification = ProjectEnvironmentClassification::NonSecret;
+    let input = ProjectEnvironmentDiscoveryInput {
+        project_id: "project".into(),
+        evidence_digest: "a".repeat(64),
+        changed_paths: Default::default(),
+        previous_manifest: None,
+        references: vec![known.clone()],
+        private_files: vec![],
+        revision: None,
+    };
+    let output = serde_json::json!({"schema_version":1,"project_id":"project","evidence_digest":"a".repeat(64),"entries":[]});
+    known.classification = ProjectEnvironmentClassification::Secret;
+    assert_eq!(
+        parse_project_environment_discovery_decisions(&output.to_string(), &input)
+            .unwrap()
+            .entries,
+        vec![known]
+    );
 }

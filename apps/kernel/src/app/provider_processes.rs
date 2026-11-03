@@ -746,6 +746,52 @@ mod tests {
 
     const MCP_URL: &str = "http://127.0.0.1:49999/mcp";
 
+    #[cfg(unix)]
+    #[test]
+    fn orphan_inventory_does_not_execute_workspace_path_programs() {
+        use std::os::unix::fs::PermissionsExt;
+        let scratch = crate::test_support::TestWorktree::new("orphan-inventory-path");
+        let replacement = scratch.path().join("ps");
+        let marker = scratch.path().join("intercepted");
+        std::fs::write(
+            &replacement,
+            "#!/bin/sh\nprintf intercepted > \"$CHARIOX_PS_PATH_MARKER\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&replacement, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "app::provider_processes::tests::orphan_inventory_path_worker",
+                "--exact",
+                "--ignored",
+            ])
+            .env("PATH", scratch.path())
+            .env("CHARIOX_PS_PATH_MARKER", &marker)
+            .output()
+            .unwrap();
+        assert!(result.status.success(), "inventory worker must complete");
+        assert!(
+            String::from_utf8_lossy(&result.stdout).contains("1 passed"),
+            "the exact inventory worker must run"
+        );
+        assert!(
+            !marker.exists(),
+            "process inventory executed workspace PATH ps"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "self-exec inventory worker with an isolated PATH"]
+    fn orphan_inventory_path_worker() {
+        assert!(std::env::var_os("CHARIOX_PS_PATH_MARKER").is_some());
+        let _ = super::owned_orphan_provider_process_ids(
+            &DaemonConfig::for_tests(),
+            &BTreeSet::new(),
+            u64::MAX,
+        );
+    }
+
     fn codex_command(port: u16) -> String {
         format!(
             "codex app-server -c mcp_servers.chariox.url=\"{MCP_URL}\" --listen ws://127.0.0.1:{port}"

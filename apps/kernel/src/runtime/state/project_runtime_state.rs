@@ -80,7 +80,7 @@ impl KernelRuntimeState {
     ) -> Vec<crate::session::RuntimeProject> {
         self.owned
             .session_store
-            .list_visible_projects(true, |session| {
+            .list_visible_projects(caller_user_id, true, |session| {
                 self.owned.is_room_member(session, caller_user_id)
             })
     }
@@ -121,6 +121,19 @@ impl KernelRuntimeState {
         workspace_ids: Vec<String>,
         caller_user_id: &str,
     ) -> Result<crate::session::RuntimeProject, DaemonError> {
+        self.owned.session_store.read().ensure_project_owner(
+            project_id,
+            caller_user_id,
+            "project.workspaces.update",
+        )?;
+        let store = crate::project_environment::ProjectEnvironmentStore::new(
+            &self
+                .owned
+                .config_projection
+                .snapshot()
+                .private_runtime_state_root(),
+        );
+        let _lock = store.lock_briefly_async(project_id).await?;
         let project = self.owned.session_store.update_project_workspaces(
             project_id,
             workspace_ids,

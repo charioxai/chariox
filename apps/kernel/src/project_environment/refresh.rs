@@ -103,6 +103,10 @@ pub fn prepare_project_environment_export(
         .cloned()
         .collect();
     let state = StoredProjectEnvironment {
+        apply_owned_bindings: previous
+            .as_ref()
+            .map(|s| s.apply_owned_bindings.clone())
+            .unwrap_or_default(),
         source: previous.as_ref().and_then(|state| state.source.clone()),
         manifest,
         evidence,

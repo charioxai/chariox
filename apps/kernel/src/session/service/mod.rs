@@ -301,6 +301,7 @@ pub struct SessionService {
 
 mod core;
 mod durable_queue;
+mod project_resolution;
 mod retired_sessions;
 pub(crate) use durable_queue::{PreparedWorkflowQueueRun, WorkflowQueueRun};
 mod agent_triggers;

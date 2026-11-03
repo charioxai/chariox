@@ -184,7 +184,7 @@ pub(crate) fn agent() -> ureq::Agent {
     agent_builder().build()
 }
 
-fn agent_builder_with_resolver<R>(resolve: R) -> ureq::AgentBuilder
+pub(crate) fn agent_builder_with_resolver<R>(resolve: R) -> ureq::AgentBuilder
 where
     R: ureq::Resolver + 'static,
 {

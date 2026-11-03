@@ -14,7 +14,7 @@ pub(super) const OUTPUT_LIMIT: usize = 1024 * 1024;
 const READ_BUDGET: usize = 64 * 1024;
 
 #[derive(Debug)]
-pub(super) enum CaptureError {
+pub(crate) enum CaptureError {
     Io(io::Error),
     TimedOut,
     OutputLimit,
@@ -26,44 +26,44 @@ impl From<io::Error> for CaptureError {
     }
 }
 
-pub(super) fn capture(mut command: Command, timeout: Duration) -> Result<Output, CaptureError> {
+pub(crate) fn capture(command: Command, timeout: Duration) -> Result<Output, CaptureError> {
+    capture_cancellable(command, timeout, || false)
+}
+pub(crate) fn capture_cancellable(
+    mut command: Command,
+    timeout: Duration,
+    mut cancelled: impl FnMut() -> bool,
+) -> Result<Output, CaptureError> {
     let deadline = Instant::now() + timeout;
     command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let mut process = platform::Process::spawn(&mut command)?;
-    let mut stdout = Vec::new();
-    let mut stderr = Vec::new();
+    let mut stdout = zeroize::Zeroizing::new(Vec::new());
+    let mut stderr = zeroize::Zeroizing::new(Vec::new());
     loop {
-        drain(
-            process.child.stdout.as_mut().expect("captured stdout"),
-            &mut stdout,
-            stderr.len(),
-        )?;
-        drain(
-            process.child.stderr.as_mut().expect("captured stderr"),
-            &mut stderr,
-            stdout.len(),
-        )?;
-        if let Some(status) = process.child.try_wait()? {
+        if cancelled() {
+            return Err(io::Error::new(io::ErrorKind::Interrupted, "owned probe cancelled").into());
+        }
+        #[cfg(unix)]
+        process.observe_descendants()?;
+        drain(stdout_pipe(&mut process), &mut stdout, stderr.len())?;
+        drain(stderr_pipe(&mut process), &mut stderr, stdout.len())?;
+        #[cfg(unix)]
+        let status = process.try_wait()?;
+        #[cfg(windows)]
+        let status = process.child.try_wait()?;
+        if let Some(status) = status {
             // A successful launcher can leave pipe writers behind. End them
             // before collecting the bytes already buffered in our pipes.
             process.stop()?;
-            while drain(
-                process.child.stdout.as_mut().expect("captured stdout"),
-                &mut stdout,
-                stderr.len(),
-            )? {}
-            while drain(
-                process.child.stderr.as_mut().expect("captured stderr"),
-                &mut stderr,
-                stdout.len(),
-            )? {}
+            while drain(stdout_pipe(&mut process), &mut stdout, stderr.len())? {}
+            while drain(stderr_pipe(&mut process), &mut stderr, stdout.len())? {}
             return Ok(Output {
                 status,
-                stdout,
-                stderr,
+                stdout: std::mem::take(&mut *stdout),
+                stderr: std::mem::take(&mut *stderr),
             });
         }
         if Instant::now() >= deadline {
@@ -77,6 +77,27 @@ pub(super) fn capture(mut command: Command, timeout: Duration) -> Result<Output,
     }
 }
 
+fn stdout_pipe(process: &mut platform::Process) -> &mut std::process::ChildStdout {
+    #[cfg(unix)]
+    {
+        process.stdout_mut()
+    }
+    #[cfg(windows)]
+    {
+        process.child.stdout.as_mut().expect("captured stdout")
+    }
+}
+fn stderr_pipe(process: &mut platform::Process) -> &mut std::process::ChildStderr {
+    #[cfg(unix)]
+    {
+        process.stderr_mut()
+    }
+    #[cfg(windows)]
+    {
+        process.child.stderr.as_mut().expect("captured stderr")
+    }
+}
+
 // Return true only when this iteration used its read budget. Flooding either
 // stream cannot starve the other stream or the process deadline.
 fn drain<P: Read + platform::Pipe>(
@@ -84,7 +105,7 @@ fn drain<P: Read + platform::Pipe>(
     bytes: &mut Vec<u8>,
     other_len: usize,
 ) -> Result<bool, CaptureError> {
-    let mut buffer = [0_u8; 8192];
+    let mut buffer = zeroize::Zeroizing::new([0_u8; 8192]);
     let mut read = 0;
     while read < READ_BUDGET {
         let available = platform::available(pipe)?;

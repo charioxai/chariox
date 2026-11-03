@@ -95,6 +95,8 @@ fn validate_local_worker_target(
 mod project_environment_setup_ack;
 #[path = "project_environment_setup_dispatch.rs"]
 mod project_environment_setup_dispatch;
+#[path = "project_environment_setup_failure.rs"]
+mod project_environment_setup_failure;
 #[path = "project_environment_setup_policy.rs"]
 mod project_environment_setup_policy;
 #[path = "project_environment_setup_scratch.rs"]
@@ -113,6 +115,25 @@ use project_environment_setup_storage::{
     RemoteSetupRecoveryDecision, RemoteSetupRecoveryReservationGuard, SetupEntry, SetupExecution,
 };
 use project_environment_setup_validation::*;
+
+#[path = "project_environment_apply_setup.rs"]
+mod apply_setup;
+pub(super) use apply_setup::{
+    apply_setup_cleanup_settled, apply_setup_requirement, setup_commands_completed,
+    setup_retry_is_settled,
+};
+
+// MP-08 / MP-10 / MP-11: metadata-only self-exec preparation reuses worker path policy.
+pub(crate) fn prepare_setup_paths(
+    workspace: &str,
+    home: &Path,
+    project: &str,
+    worker: &str,
+) -> Result<(PathBuf, PathBuf), DaemonError> {
+    let workspace = canonical_worker_workspace(workspace, Some(home.as_os_str()))?;
+    let preparation = WorkerPreparationHome::for_project_worker(&workspace, home, project, worker)?;
+    Ok((workspace, preparation.path().to_path_buf()))
+}
 
 pub(super) fn current_worker_platform() -> String {
     actual_worker_platform()
@@ -829,12 +850,9 @@ impl KernelRuntimeState {
         };
         let provider_run = match provider_context {
             Ok(result) => result,
-            Err(_) => {
-                store.mark_failed(
-                    &execution.operation_id,
-                    attempt,
-                    "worker_provider_context_unavailable",
-                    "the prepared worker provider context is unavailable",
+            Err(error) => {
+                project_environment_setup_failure::record_provider_readiness_failure(
+                    store, &execution, attempt, &error,
                 );
                 return;
             }

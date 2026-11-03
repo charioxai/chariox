@@ -1,3 +1,4 @@
+import { waitingRoomInventoryWithDirectTarget } from "./waiting-room-direct-target-inventory.js"
 import { waitingRoomSessionRecencyMs } from "@chariox/kernel-client/waiting-room-activity"
 import { createWaitingRoomRetainedRows } from "./waiting-room-retained-rows.js"
 import {
@@ -83,7 +84,7 @@ export type WaitingRoomInventoryRefreshController = {
   loadSessionHistory(): Promise<void>
   refreshNow(): Promise<void>
   refresh(): Promise<void>
-  invalidate(): void
+  invalidate(connectedSnapshot?: WaitingRoomInventory): void
 }
 
 export function createWaitingRoomInventoryRefreshController(
@@ -120,7 +121,7 @@ export function createWaitingRoomInventoryRefreshController(
 
   const restoreCachedInventory = () => {
     options.setAvailableSessions(visibleSessions(inventoriesByKernel, directTargetKernelId))
-    const snapshots = [...inventoriesByKernel.values()].filter(snapshot => !directTargetKernelId || snapshot.kernelId === directTargetKernelId)
+    const snapshots = [...inventoriesByKernel.values()].filter(snapshot => !directTargetKernelId || snapshot.kernelId === directTargetKernelId).map(snapshot => waitingRoomInventoryWithDirectTarget(snapshot, directTargetKernelId))
     const machines = [...new Map(snapshots.flatMap(snapshot => snapshot.remoteMachines).map(row => [row.machine_id, row])).values()]
     const kernels = [...new Map(snapshots.flatMap(snapshot => snapshot.remoteKernels).map(row => [row.kernel_id, row])).values()]
     options.setRemoteMachines(retainedMachines.restore(machines).map(row => ({ ...row, online: false })))
@@ -245,6 +246,7 @@ export function createWaitingRoomInventoryRefreshController(
   }
 
   const applySupplementalInventory = (snapshot: WaitingRoomInventory) => {
+    snapshot = waitingRoomInventoryWithDirectTarget(snapshot, directTargetKernelId)
     const localPresence = mergeLocalKernelPresence(
       snapshot.remoteMachines,
       snapshot.remoteKernels,
@@ -290,12 +292,13 @@ export function createWaitingRoomInventoryRefreshController(
     options.setExternalProviderSessionsPage?.(externalProviderSessionPageState(externalProviderSessionsPage))
   }
 
-  const refreshProjectionScope = () => {
+  const refreshProjectionScope = (connectedSnapshot?: WaitingRoomInventory) => {
     const nextScopeKey = options.getCacheScopeKey?.() ?? null
     const nextDirectTargetKernelId = currentDirectTargetKernelId(options)
     const cacheScopeChanged = nextScopeKey !== cacheScopeKey
     const directTargetChanged = nextDirectTargetKernelId !== directTargetKernelId
-    if (!cacheScopeChanged && !directTargetChanged) {
+    const verifiedTarget = connectedSnapshot?.kernelId === nextDirectTargetKernelId ? connectedSnapshot : undefined
+    if (!cacheScopeChanged && !directTargetChanged && !verifiedTarget) {
       return
     }
     if (cacheScopeChanged) {
@@ -306,6 +309,11 @@ export function createWaitingRoomInventoryRefreshController(
         inventoriesByKernel.set(inventory.kernelId, inventory)
         lastPresenceByKernel.set(inventory.kernelId, nowMs())
       }
+    }
+    if (verifiedTarget) {
+      rememberInventory(verifiedTarget)
+      lastPresenceByKernel.set(verifiedTarget.kernelId, nowMs())
+      options.persistInventory?.(verifiedTarget)
     }
     directTargetKernelId = nextDirectTargetKernelId
     activeKernelId = null
@@ -453,8 +461,10 @@ export function createWaitingRoomInventoryRefreshController(
         return
       }
       refreshProjectionScope()
+      const current = activeKernelId ? inventoriesByKernel.get(activeKernelId) : undefined
+      const connected = current ? waitingRoomInventoryWithDirectTarget({ ...current, remoteMachines: machines }, directTargetKernelId) : null
       const localPresence = mergeLocalKernelPresence(
-        machines,
+        connected?.remoteMachines ?? machines,
         [],
         options.getLocalKernelPresences?.() ?? [],
         activeKernelId,
@@ -473,8 +483,8 @@ export function createWaitingRoomInventoryRefreshController(
       })
       return pendingRefresh
     },
-    invalidate() {
-      refreshProjectionScope()
+    invalidate(connectedSnapshot) {
+      refreshProjectionScope(connectedSnapshot)
       inventoryVersion = null
       inventoryInvalidated = true
     },

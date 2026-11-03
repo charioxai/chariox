@@ -13,7 +13,15 @@ pub(crate) struct AgentOutputSeenAck {
 impl KernelRuntimeState {
     pub(crate) async fn create_session_response(
         &self,
+        request: crate::session::CreateSessionRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.create_prepared_session_response(request, None).await
+    }
+
+    pub(crate) async fn create_prepared_session_response(
+        &self,
         mut request: crate::session::CreateSessionRequest,
+        prepared_workspace: Option<crate::runtime::state::PreparedSessionWorkspace>,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         // Every session-create path (local, sliced, remote) starts from here:
         // the first agent gets a real provider, never the `default` placeholder.
@@ -56,6 +64,9 @@ impl KernelRuntimeState {
             request = prepare_local_session_worktree_placement(request)?;
         }
         request = canonicalize_session_workspace(request);
+        if slice_ref.is_none() && kernel_ref.is_none() {
+            request = self.apply_prepared_session_workspace(request, prepared_workspace)?;
+        }
         let existing_project_ids = self
             .owned
             .session_store
@@ -1046,11 +1057,47 @@ impl KernelRuntimeState {
         &self,
         session_id: &str,
     ) -> Result<crate::session::RuntimeSession, DaemonError> {
+        self.delete_session_id_with_project_retention(session_id, false)
+            .await
+    }
+
+    /// MP-08 / MP-10 / MP-11: retire only the session this utility created, retaining its Project.
+    pub(crate) async fn delete_environment_utility_session(
+        &self,
+        created: &crate::session::RuntimeSession,
+    ) -> Result<crate::session::RuntimeSession, DaemonError> {
+        let session = self.owned.session_store.get_session(created.id())?;
+        // Hidden sessions intentionally have no Project ID. Bind to their creation snapshot,
+        // so cleanup also settles when the source Project was deleted during discovery.
+        if session.owner_user_id() != created.owner_user_id()
+            || session.workspace_id() != created.workspace_id()
+            || session.worktree_id() != created.worktree_id()
+            || session.project_id() != created.project_id()
+            || session.is_hidden() != created.is_hidden()
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "environment.utility.cleanup",
+                message: "utility session binding mismatch".into(),
+            });
+        }
+        self.delete_session_id_with_project_retention(created.id(), true)
+            .await
+    }
+
+    async fn delete_session_id_with_project_retention(
+        &self,
+        session_id: &str,
+        retain_project: bool,
+    ) -> Result<crate::session::RuntimeSession, DaemonError> {
         let session_id = session_id.to_string();
         let owned = &self.owned;
         let session_before_delete = owned.session_store.get_session(&session_id)?;
         let durable_session = owned.session_end_snapshot(&session_id)?;
-        let durable_project_delete = owned.project_removed_by_session_delete(&session_id)?;
+        let durable_project_delete = if retain_project {
+            None
+        } else {
+            owned.project_removed_by_session_delete(&session_id)?
+        };
         let _vault_observation_guard = self.vault_observation_mutation_guard().await;
         // Revoke the bound worker copy while its Room/slice binding still exists.
         if self
@@ -1073,8 +1120,11 @@ impl KernelRuntimeState {
         self.stop_managed_environment_for_session_lifecycle(&session_id)
             .await;
         let worker_agents = self.agents_leased_to_workers(&session_id);
-        let (session, terminated_run_ids, removed_project) =
-            owned.delete_session(session_before_delete)?;
+        let (session, terminated_run_ids, removed_project) = if retain_project {
+            owned.delete_session_with_project_retention(session_before_delete, true)?
+        } else {
+            owned.delete_session(session_before_delete)?
+        };
         // Swept only now: the Room is gone, so an open that raced the delete
         // fails its own Room check instead of outliving this sweep.
         self.end_room_terminals(&session_id);
@@ -1280,11 +1330,14 @@ impl Drop for UnpublishedSessionGuard {
 fn prepare_local_session_worktree_placement(
     mut request: crate::session::CreateSessionRequest,
 ) -> Result<crate::session::CreateSessionRequest, DaemonError> {
-    crate::git_worktree_placement::preflight_existing_absolute_directory(
+    let admitted = crate::git_worktree_placement::preflight_existing_absolute_directory(
         &request.workspace_id,
         "workspace_id",
         "session.create",
     )?;
+    // MP-02 / MP-08 / MP-10 / MP-11: preserve the shared filesystem preflight's
+    // canonical spelling before Git normalization, just like Project resolution.
+    request.workspace_id = admitted.canonical_path.to_string_lossy().into_owned();
     crate::git_worktree_placement::preflight_existing_absolute_directory(
         &request.worktree_id,
         "worktree_id",
@@ -1364,7 +1417,10 @@ fn session_request_provider(request: &crate::session::CreateSessionRequest) -> O
         .filter(|provider| !provider.trim().is_empty() && *provider != "default")
 }
 
-fn kernel_ref_matches_local_config(config: &crate::config::DaemonConfig, kernel_ref: &str) -> bool {
+pub(super) fn kernel_ref_matches_local_config(
+    config: &crate::config::DaemonConfig,
+    kernel_ref: &str,
+) -> bool {
     let kernel_ref = kernel_ref.trim();
     !kernel_ref.is_empty()
         && (config.daemon_id == kernel_ref || config.daemon_alias.as_deref() == Some(kernel_ref))

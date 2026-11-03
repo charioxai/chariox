@@ -179,6 +179,62 @@ impl CommandRouter {
                     .await
                     .map(Some)
             })),
+            LocalDaemonRequest::DetectProjectEnvironment(request) => Some(Box::pin(async move {
+                self.runtime_state
+                    .detect_project_environment(request.clone(), caller_user_id)
+                    .await
+                    .map(Some)
+            })),
+            LocalDaemonRequest::PreviewEnvironmentDiff(request) => Some(Box::pin(async move {
+                self.runtime_state
+                    .preview_environment_diff(request.clone(), caller_user_id)
+                    .await
+                    .map(Some)
+            })),
+            LocalDaemonRequest::SaveProjectEnvironmentRevision(request) => {
+                Some(Box::pin(async move {
+                    self.runtime_state
+                        .save_project_environment_revision(request.clone(), caller_user_id)
+                        .await
+                        .map(Some)
+                }))
+            }
+            LocalDaemonRequest::CheckProjectEnvironment(request) => Some(Box::pin(async move {
+                self.runtime_state
+                    .check_project_environment(request.clone(), caller_user_id)
+                    .await
+                    .map(Some)
+            })),
+            LocalDaemonRequest::GetEnvironmentOperation(request) => Some(Box::pin(async move {
+                self.runtime_state
+                    .get_environment_operation(request.clone(), caller_user_id)
+                    .await
+                    .map(Some)
+            })),
+            LocalDaemonRequest::PlanProjectEnvironment(request) => Some(Box::pin(async move {
+                self.runtime_state
+                    .plan_project_environment(request.clone(), caller_user_id)
+                    .await
+                    .map(Some)
+            })),
+            LocalDaemonRequest::ApplyProjectEnvironment(request) => Some(Box::pin(async move {
+                self.runtime_state
+                    .apply_project_environment(request.clone(), caller_user_id)
+                    .await
+                    .map(Some)
+            })),
+            LocalDaemonRequest::CancelEnvironmentOperation(request) => Some(Box::pin(async move {
+                self.runtime_state
+                    .cancel_environment_operation(request.clone(), caller_user_id)
+                    .await
+                    .map(Some)
+            })),
+            LocalDaemonRequest::RetryEnvironmentOperation(request) => Some(Box::pin(async move {
+                self.runtime_state
+                    .retry_environment_operation(request.clone(), caller_user_id)
+                    .await
+                    .map(Some)
+            })),
             request if request.unsupported_environment_capability().is_some() => {
                 Some(Box::pin(async move {
                     Ok(Some(LocalDaemonResponse::EnvironmentUnsupportedFeature {
@@ -192,6 +248,7 @@ impl CommandRouter {
             LocalDaemonRequest::GetProjectEnvironment(request) => Some(Box::pin(async move {
                 self.runtime_state
                     .get_project_environment(request.clone(), caller_user_id)
+                    .await
                     .map(Some)
             })),
             LocalDaemonRequest::GetProjectEnvironmentManifest(request) => {

@@ -22,6 +22,7 @@ fn client_catalog_revisions_534_142_are_versioned_and_hashed() {
             provider: Some("codex".into()),
             account_profiles: [("codex".into(), "work".into())].into(),
             execution_location: crate::local::api::ProviderCatalogExecutionLocation::Local,
+            summary_only: false,
         });
     let response = LocalDaemonResponse::ClientCatalogRevisions {
         revisions: crate::local::ClientCatalogRevisions {
