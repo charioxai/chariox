@@ -513,7 +513,7 @@ export async function executeExtensionCommand(
     return { ok: false, message: "Apps are not assigned: the agent that needs an installed App asks for it itself" }
   }
   const request = action === "grant"
-    ? grantAgentExtensionRequest(context.workspace, agentRef, kind, name, environment, {
+    ? grantAgentExtensionRequest(context.workspace, agentRef, kind as Exclude<typeof kind, "app">, name, environment, {
       credential: readOption(parsed.args, "--credential"),
       maxSafety: readOption(parsed.args, "--allow"),
     })

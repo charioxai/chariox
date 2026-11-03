@@ -77,7 +77,7 @@ pub fn extension_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
     let canonical = vec![
         RuntimeToolSpec {
             name: LIST_EXTENSIONS_TOOL.to_string(),
-            description: "List Chariox-managed extensions available in this workspace, including whether they are already granted to the current agent. Use this before requesting an extension. App inventory returns at most 100 installations; pass apps_next_cursor as apps_cursor with kind app to fetch the next page.".to_string(),
+            description: "List Chariox-managed extensions available in this workspace, including the installed Apps (an App adds tools for its own domain, such as drawing or spreadsheets) and whether they are already granted to the current agent. When a task needs a capability none of your tools offers, look here first, then request what fits. App inventory returns at most 100 installations; pass apps_next_cursor as apps_cursor with kind app to fetch the next page.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -96,7 +96,7 @@ pub fn extension_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: REQUEST_EXTENSION_TOOL.to_string(),
-            description: "Request access to a Chariox-managed MCP, skill, script, or connector for the current agent. Script requests require an environment. Connector requests may include an allow safety level and credential handle.".to_string(),
+            description: "Request access to a Chariox-managed MCP, skill, script, connector or installed App for the current agent. An App is exposed at once, without asking a person, and its tools are listed after the next tool refresh. Script requests require an environment. Connector requests may include an allow safety level and credential handle.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["kind", "name"],

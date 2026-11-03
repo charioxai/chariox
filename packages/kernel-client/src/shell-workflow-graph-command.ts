@@ -289,7 +289,7 @@ export async function executeWorkflowNodeCommand(
       ? await deps.client.send(grantAgentExtensionRequest(
         context.workspace,
         resolved.agentRef,
-        kind,
+        kind as Exclude<typeof kind, "app">,
         name,
         readOption(args, "--environment"),
         { credential: readOption(args, "--credential"), maxSafety: readOption(args, "--allow") },
