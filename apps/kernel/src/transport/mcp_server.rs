@@ -21,7 +21,6 @@ const JSON_RPC_VERSION: &str = "2.0";
 
 type HttpBody = UnsyncBoxBody<Bytes, Infallible>;
 
-mod cancel;
 mod catalog;
 mod catalog_stream;
 #[cfg(test)]
@@ -345,9 +344,6 @@ async fn handle_json_rpc_value(
     };
     let id = payload.get("id").cloned();
     if id.is_none() {
-        if method == "notifications/cancelled" {
-            cancel::cancel(auth_token, payload.get("params").unwrap_or(&Value::Null));
-        }
         return Ok(empty_response(StatusCode::ACCEPTED));
     }
 
@@ -464,13 +460,9 @@ async fn handle_json_rpc_value(
                 .cloned()
                 .unwrap_or_else(|| serde_json::json!({}));
             let previous_catalog = catalog::snapshot(&router, auth_token);
-            let call = cancel::InFlightCall::begin(auth_token, id.as_ref().unwrap_or(&Value::Null));
-            let result = tokio::select! {
-                result = router.dispatch_authenticated_runtime_tool_call(auth_token, tool_name, arguments) => result,
-                () = call.cancelled.notified() => {
-                    return Ok(json_rpc_error_response(id, -32800, "request cancelled by the client"));
-                }
-            };
+            let result = router
+                .dispatch_authenticated_runtime_tool_call(auth_token, tool_name, arguments)
+                .await;
             match result {
                 // Claude Code's `--permission-prompt-tool` contract: the result
                 // is exactly one text block holding the JSON-stringified
