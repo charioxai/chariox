@@ -37,7 +37,7 @@ fn case(filter: &mut Vec<libc::sock_filter>, syscall: libc::c_long, body: &[libc
     filter.push(load(0));
 }
 
-pub(super) fn enter(files: &[std::path::PathBuf]) -> io::Result<()> {
+pub(super) fn enter(files: &[std::path::PathBuf], cpu_seconds: Option<u64>) -> io::Result<()> {
     // Descriptor cleanup must precede threads sharing the descriptor table.
     // The epoch ticker and Tokio threads must all be born after this point.
     if std::fs::read_dir("/proc/self/task")?.count() != 1 {
@@ -61,8 +61,8 @@ pub(super) fn enter(files: &[std::path::PathBuf]) -> io::Result<()> {
     {
         return Err(io::Error::last_os_error());
     }
-    super::ceilings()?;
-    if !files.is_empty() {
+    super::ceilings(cpu_seconds)?;
+    if !files.is_empty() || cpu_seconds.is_some() {
         super::landlock::restrict(files)?;
     }
     let pid = unsafe { libc::getpid() };
@@ -316,7 +316,7 @@ pub(super) fn enter(files: &[std::path::PathBuf]) -> io::Result<()> {
     }
     // Landlock above confines these to the installation's data and tmp. Mode,
     // owner and timestamp changes stay out: Landlock does not mediate them.
-    if !files.is_empty() {
+    if !files.is_empty() || cpu_seconds.is_some() {
         for syscall in [
             libc::SYS_openat,
             libc::SYS_openat2,

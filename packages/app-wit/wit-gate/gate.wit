@@ -1,0 +1,23 @@
+package chariox:workflow-gate@1.0.0;
+
+interface evaluator {
+    record input { entry-json: string }
+    record configuration {
+        workflow-revision: string,
+        config-sha256: string,
+        config-json: string,
+    }
+    record state { workflow-json: string, binding-json: string }
+    record route { node-id: string, payload-json: string, prompt: option<string> }
+    record batch-value { key: string, flush-at-ms: u64, payload-json: string }
+    variant decision {
+        run(list<route>),
+        drop,
+        defer-until(u64),
+        batch(batch-value),
+    }
+    record output { decision: decision, state: state, reason: string, logs: list<string> }
+    evaluate: func(input: input, configuration: configuration, state: state) -> output;
+}
+
+world gate { export evaluator; }

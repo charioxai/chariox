@@ -10,6 +10,7 @@ async fn completion_race(cancelled: bool) {
         engine: crate::engine::engine().unwrap(),
         stop: Arc::new(AtomicBool::new(false)),
         ticker: None,
+        gate: false,
     };
     let root = std::path::PathBuf::from(
         std::env::var("CHARIOX_WORKER_DRILL_DIR").expect("run scripts/wasi-drill.sh"),

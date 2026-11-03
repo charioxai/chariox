@@ -7,6 +7,7 @@
 //! on its bounded blocking service, never drop it on an async coordinator. A
 //! cancellation clone is nonblocking; cancellation does not release admission.
 
+pub mod gate;
 mod host_disk;
 mod monitor;
 mod private_data;

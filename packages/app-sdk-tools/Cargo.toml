@@ -38,3 +38,7 @@ required-features = ["component-drills"]
 name = "excalidraw-files-drill"
 path = "../../examples/apps/excalidraw/test/files-drill.rs"
 required-features = ["component-drills"]
+
+[[bin]]
+name = "chariox-gate-component"
+path = "src/gate_main.rs"
