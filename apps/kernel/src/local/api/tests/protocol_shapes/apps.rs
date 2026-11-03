@@ -78,7 +78,7 @@ fn app_installation_protocol_shapes_are_versioned_and_preserve_generations() {
     let encoded = serde_json::to_vec(&snapshot).unwrap();
     assert_eq!(
         format!("{:x}", Sha256::digest(&encoded)),
-        "6515133774bc4cd6f5a943abefef81a966a44a0d7d082e6c0d2aa0d6ca912991"
+        "1de1a2038844df42db6b357f2b5d94a0b2a6fc02e581e2ed8191aa4c3de8ae05"
     );
     assert!(serde_json::from_value::<LocalDaemonRequest>(
         serde_json::json!({"ListAppInstallations": {"owner_id": "other"}})
@@ -273,7 +273,7 @@ fn app_worker_control_and_automation_shapes_are_versioned_and_owner_free() {
     );
     assert_eq!(
         digest,
-        "d6ef051ad7e4cda125c1ac1f3db9fd2e082056a697e0de681b777eec0ce81a06"
+        "2a549079483ac43adc5202e10ae046b563047e7c499e21e645308ca2de3c4827"
     );
     assert!(serde_json::from_value::<LocalDaemonRequest>(
         serde_json::json!({"ControlAppWorker": {"installation_id": "todo", "action": "start", "owner_id": "other"}})

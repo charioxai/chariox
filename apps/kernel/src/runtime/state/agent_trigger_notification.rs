@@ -165,7 +165,10 @@ impl KernelRuntimeState {
         }
         let home = self.owned.config_projection.snapshot().daemon_id;
         let guest = caller != owner;
-        let (local, _, _) = self.owned.durable_state_store.notification_inventory(owner)?;
+        let (local, _, _) = self
+            .owned
+            .durable_state_store
+            .notification_inventory(owner)?;
         let mut sources = {
             let sessions = self.owned.session_store.read();
             summaries(
@@ -178,7 +181,11 @@ impl KernelRuntimeState {
             )
         };
         if !guest {
-            sources.extend(self.owned.durable_state_store.notification_cached_sources(owner)?);
+            sources.extend(
+                self.owned
+                    .durable_state_store
+                    .notification_cached_sources(owner)?,
+            );
         }
         for used in (1..=words.len()).rev() {
             let name = words[..used].join(" ");

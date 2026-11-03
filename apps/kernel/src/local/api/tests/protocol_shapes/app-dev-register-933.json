@@ -1,5 +1,5 @@
 {
-  "local_protocol": 966,
+  "local_protocol": 973,
   "requests": [
     {
       "BeginAppInstall": {
@@ -53,7 +53,8 @@
         "active_release": null,
         "pending_generation": "2",
         "admission_paused": false,
-        "data_kept": true
+        "data_kept": true,
+        "events": []
       }
     }
   }

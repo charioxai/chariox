@@ -748,9 +748,7 @@ impl CommandRouter {
                     .iter()
                     .any(|t| t.id() == trigger_id && t.agent_id() == actor.id())
                 {
-                    return Err(meta_command_error(
-                        "an agent removes only its own triggers",
-                    ));
+                    return Err(meta_command_error("an agent removes only its own triggers"));
                 }
                 Ok(LocalDaemonRequest::DeleteAgentTrigger(
                     crate::local::DeleteAgentTriggerRequest {

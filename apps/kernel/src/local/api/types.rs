@@ -464,5 +464,5 @@ pub use workspace::*;
 /// MP-08/MP-09/MP-10/MP-11: 963 binds every captured Vault entry to one declared use (peer412).
 /// Connected service machine requests use the ordinary Chariox access grant.
 /// MP-08/MP-09/MP-10/MP-11: 965 integrates declared Vault uses and enrolled-kernel machine authority (peer414).
-/// MP-08/MP-09/MP-10/MP-11: 966 integrates WASM Apps with Landing965 (peer415).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 966;
+/// MP-08/MP-09/MP-10/MP-11: 973 adds per-exit workflow notification sources, agent notification triggers and drops subscription options (peer422).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 973;

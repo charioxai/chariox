@@ -1316,7 +1316,10 @@ async fn concurrent_registry_add() {
 // MP-08 / MP-10 / MP-11 (VS-S4-1, VS-S4-2): a room agent subscribes itself and only itself.
 #[test]
 fn room_admission_agent_subscribes_only_itself_to_a_notification() {
-    run_large_stack_async_test("room-notification-subscribe", room_notification_subscription);
+    run_large_stack_async_test(
+        "room-notification-subscribe",
+        room_notification_subscription,
+    );
 }
 
 async fn room_notification_subscription() {
@@ -1406,7 +1409,12 @@ async fn room_notification_subscription() {
                 .collect::<Vec<_>>()
         }
     };
-    let created = room_command(&router, &auth, "trigger notification pipeline Summarize what failed").await;
+    let created = room_command(
+        &router,
+        &auth,
+        "trigger notification pipeline Summarize what failed",
+    )
+    .await;
     assert!(created.ok, "{:?}", created.payload);
     assert_eq!(created.payload["response"]["type"], "AgentTriggerCreated");
     let own = triggers(a.id().to_string()).await;
@@ -1416,7 +1424,10 @@ async fn room_notification_subscription() {
         own[0].source(),
         crate::session::AgentTriggerSource::Notification { display_name, .. } if display_name == "pipeline"
     ));
-    assert!(triggers(peer.id().to_string()).await.is_empty(), "a peer is never subscribed");
+    assert!(
+        triggers(peer.id().to_string()).await.is_empty(),
+        "a peer is never subscribed"
+    );
 
     for refused in [
         "trigger notification pipeline --agent peer",
@@ -1443,9 +1454,13 @@ async fn room_notification_subscription() {
         )
         .unwrap();
     assert!(
-        !room_command(&router, &auth, &format!("trigger remove {}", peer_trigger.id()))
-            .await
-            .ok
+        !room_command(
+            &router,
+            &auth,
+            &format!("trigger remove {}", peer_trigger.id())
+        )
+        .await
+        .ok
     );
     let removed = room_command(&router, &auth, &format!("trigger remove {}", own[0].id())).await;
     assert!(removed.ok, "{:?}", removed.payload);
