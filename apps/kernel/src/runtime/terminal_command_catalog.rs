@@ -410,7 +410,6 @@ mod tests {
             ("workflow-queue-move", "/workflow queue move "),
             ("workflow-queue-clear", "/workflow queue clear "),
             ("workflow-queue-flush", "/workflow queue flush "),
-            ("workflow-queue-retry", "/workflow queue retry "),
             ("workflow-queue-remove", "/workflow queue remove "),
             ("workflow-cancel", "/workflow cancel "),
             ("workflow-pause", "/workflow pause "),

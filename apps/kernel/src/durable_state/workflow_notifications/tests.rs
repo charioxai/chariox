@@ -200,6 +200,19 @@ impl Fixture {
         status: WorkflowRunStatus,
         message: &str,
     ) {
+        let exit = self.exit_of(w);
+        self.complete_through(w, &exit, id, queue, status, message);
+    }
+    /// A run that ends through the given exit node.
+    pub(crate) fn complete_through(
+        &mut self,
+        w: &str,
+        exit: &str,
+        id: &str,
+        queue: Option<&str>,
+        status: WorkflowRunStatus,
+        message: &str,
+    ) {
         let node_run = format!("node-run-{id}");
         let mut r = WorkflowRun::new(
             id,
@@ -210,7 +223,7 @@ impl Fixture {
             None,
             vec![WorkflowNodeRun::new(
                 &node_run,
-                self.exit_of(w),
+                exit.to_owned(),
                 "agent",
                 0,
                 WorkflowNodeRunStatus::Completed,
@@ -1159,4 +1172,85 @@ fn mp08_mp11_notification_occurrences_are_bounded_without_replaying_completions(
     let before = count();
     f.persist();
     assert_eq!(count(), before);
+}
+
+// MP-08 / MP-10 (VS-S1-1, VS-S1-2): each exit is its own source, named by ordinal once more than
+// one exit notifies, and a run notifies only through the exit it ended at.
+#[test]
+fn two_exits_are_independent_sources_named_by_ordinal() {
+    let mut f = Fixture::new();
+    let (pipeline, _, _) = f.workflow("pipeline");
+    let (consumer, _, consumer_publication) = f.workflow("consumer");
+    let mut session = f.sessions.get_session(&f.session).unwrap();
+    let mut agents = session.agents().to_vec();
+    agents.push(AgentInstance::new(
+        "agent-2",
+        "agent-ref-2",
+        session.id(),
+        None,
+        "dev-stub",
+        None,
+        None,
+        None,
+        GridPosition::new(0, 1, 1, 1),
+    ));
+    session.set_agents(agents);
+    f.sessions.restore_session(session);
+    let second = f
+        .sessions
+        .add_workflow_node(&f.session, &pipeline, "agent-2")
+        .unwrap();
+    let mut session = f.sessions.get_session(&f.session).unwrap();
+    session
+        .workflow_mut(&pipeline)
+        .unwrap()
+        .node_mut(second.id())
+        .unwrap()
+        .set_can_complete_workflow_run(true);
+    f.sessions.restore_session(session);
+    f.persist();
+    let first_exit = f.exit_of(&pipeline);
+    let second_exit = second.id().to_owned();
+
+    let first = f.source_of_exit(&pipeline, &first_exit);
+    let only_first = f
+        .store
+        .notification_inventory("local")
+        .unwrap()
+        .0
+        .into_iter()
+        .filter(|s| s.enabled && s.workflow_id == pipeline)
+        .count();
+    assert_eq!(only_first, 1);
+    let second_source = f.source_of_exit(&pipeline, &second_exit);
+    assert_ne!(first.source_id, second_source.source_id);
+    f.attach(&second_source, &consumer, &consumer_publication);
+
+    // A run that ends through the first exit does not notify the second exit's subscriber.
+    f.complete_through(
+        &pipeline,
+        &first_exit,
+        "through-first",
+        None,
+        WorkflowRunStatus::Completed,
+        "approved",
+    );
+    assert!(f.candidates(false).is_empty());
+    f.complete_through(
+        &pipeline,
+        &second_exit,
+        "through-second",
+        None,
+        WorkflowRunStatus::Completed,
+        "rejected",
+    );
+    let candidates = f.candidates(false);
+    assert_eq!(candidates.len(), 1);
+    let (_, envelope) = &candidates[0];
+    assert_eq!(envelope.source_id, second_source.source_id);
+    assert_eq!(envelope.occurrence_id, "through-second");
+    assert_eq!(envelope.output.message(), "rejected");
+    // With both exits notifying, the name carries the exit's position among the workflow's exits.
+    assert_eq!(envelope.display_name, "pipeline-2");
+    cleanup(f);
 }

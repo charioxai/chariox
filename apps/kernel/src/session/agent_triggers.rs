@@ -242,6 +242,10 @@ impl AgentTrigger {
     }
 
     /// A notification trigger always queues: its busy policy is fixed.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Every field of a new notification trigger is required and distinct."
+    )]
     pub(crate) fn notification(
         id: String,
         agent_id: &str,
