@@ -1,29 +1,28 @@
 use super::*;
-use crate::managed_bootstrap::state::{disposable_worker_binding_digest, DisposableWorkerBinding};
 
 #[test]
-fn ordinary_bootstrap_rejects_legacy_worker_records_without_mutation() {
+fn ordinary_bootstrap_rejects_worker_shaped_records_without_mutation() {
     crate::test_support::isolated_env_test!();
     let _lock = crate::env_lock::lock();
     for with_receipt in [false, true] {
         let fixture = Fixture::new("legacy-worker-rejection");
         let previous_home = std::env::var_os("CHARIOX_HOME");
         std::env::set_var("CHARIOX_HOME", &fixture.config.chariox_home);
-        let binding = DisposableWorkerBinding {
-            allocation_id: "allocation-1".into(),
-            expected_home_kernel_id: "home-kernel-1".into(),
-            user_id: "owner-1".into(),
-            realm_id: "realm-1".into(),
-            worker_machine_id: "worker-machine".into(),
-            worker_kernel_id: "worker-kernel".into(),
-            image_digest: format!("sha256:{}", "c".repeat(64)),
-            runtime_release_digest: fixture.release_digest.clone(),
-            manager_operation_id: "operation-1".into(),
-            manager_operation_fence: 7,
-            manager_request_digest: format!("sha256:{}", "d".repeat(64)),
-            sender_key_thumbprint: format!("sha256:{}", "e".repeat(64)),
-        };
-        let binding_digest = disposable_worker_binding_digest(&binding).unwrap();
+        let binding = serde_json::json!({
+            "allocationId": "allocation-1",
+            "expectedHomeKernelId": "home-kernel-1",
+            "userId": "owner-1",
+            "realmId": "realm-1",
+            "workerMachineId": "worker-machine",
+            "workerKernelId": "worker-kernel",
+            "imageDigest": format!("sha256:{}", "c".repeat(64)),
+            "runtimeReleaseDigest": fixture.release_digest.clone(),
+            "managerOperationId": "operation-1",
+            "managerOperationFence": 7,
+            "managerRequestDigest": format!("sha256:{}", "d".repeat(64)),
+            "senderKeyThumbprint": format!("sha256:{}", "e".repeat(64)),
+        });
+        let binding_digest = format!("sha256:{}", "f".repeat(64));
         let envelope = serde_json::to_vec(&serde_json::json!({
             "schemaVersion": 1, "cloudApiUrl": "https://cloud.example.test",
             "token": format!("dwboot_{}", "a".repeat(43)),
@@ -53,10 +52,8 @@ fn ordinary_bootstrap_rejects_legacy_worker_records_without_mutation() {
         fixture.cleanup();
         let error = result.expect_err("legacy worker must not become an ordinary registration");
         assert!(
-            error
-                .to_string()
-                .contains("legacy disposable worker bootstrap is unsupported"),
-            "{error}"
+            error.to_string().contains("managed bootstrap"),
+            "a worker-shaped record is not a managed bootstrap document: {error}"
         );
         assert_eq!(after_envelope, Some(envelope));
         assert_eq!(

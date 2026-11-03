@@ -686,7 +686,7 @@ export const SOURCE_AUDIT_RULES = Object.freeze([
     id: "managed-bootstrap-machine-profile-shape", sourceCommit: OSS_RUNTIME,
     path: "apps/kernel/src/managed_bootstrap/cloud.rs",
     blob: "746bdf16a934fa34f30795d52e0f9e7f3896145e",
-    ranges: [[48, 64]],
+    ranges: [[36, 52]],
     classification: "machine_bound_deployment_enrollment",
     rationale: "The deny-unknown-fields bootstrap profile contains only Cloud metadata and a machine credential; it has no account CloudSession/operator-token field. This is enrollment authority, not a provider account export.",
     anchors: [["managed_only_branch", "ManagedCloudRelayProfile"]],

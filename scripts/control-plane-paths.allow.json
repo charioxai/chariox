@@ -195,30 +195,6 @@
     "seam": "event gateway"
   },
   {
-    "path": "/v1/disposable-workers/activity",
-    "callers": [
-      "apps/kernel/src/runtime/managed_kernel_activity.rs"
-    ],
-    "why": "Cloud-only, deleted by OSS-boundary item 6 (rental plan item 1): duplicate bootstrap and activity aggregate for disposable workers",
-    "seam": "none; the path goes away"
-  },
-  {
-    "path": "/v1/disposable-workers/bootstrap/confirm",
-    "callers": [
-      "apps/kernel/src/managed_bootstrap/worker.rs"
-    ],
-    "why": "Cloud-only, deleted by OSS-boundary item 6 (rental plan item 1): duplicate bootstrap and activity aggregate for disposable workers",
-    "seam": "none; the path goes away"
-  },
-  {
-    "path": "/v1/disposable-workers/bootstrap/exchange",
-    "callers": [
-      "apps/kernel/src/managed_bootstrap/worker.rs"
-    ],
-    "why": "Cloud-only, deleted by OSS-boundary item 6 (rental plan item 1): duplicate bootstrap and activity aggregate for disposable workers",
-    "seam": "none; the path goes away"
-  },
-  {
     "path": "/v1/event-generators",
     "callers": [
       "apps/kernel/src/runtime/event_catalog_control.rs"

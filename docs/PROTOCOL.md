@@ -6247,6 +6247,13 @@ Clients carry no minimum: a kernel older than 967 still knows the names and refu
 managed-upgrade list is [629, 636, 967]. Focused checks: `cargo test -p chariox-kernel --lib protocol_shapes`
 and `node scripts/oss-boundary-guard.mjs`.
 
+No serialized shape changes with the disposable-worker removal that followed: `chariox-managed-bootstrap
+--disposable-worker`, its exchange and confirm calls, the `DisposableWorker` envelope and receipt variants of the
+managed bootstrap, and the managed-activity reporter's `/v1/disposable-workers/activity` mode are gone. The
+managed-activity HTTP contract (protocol 340) now has the single `/v1/managed-kernels/activity` endpoint. What
+remains of the worker is the receipt reader that gates managed-context import and project setup on a
+`RemoteLeaseWorker`; nothing in this repository writes that receipt.
+
 ### Apps v2 — local 966 / relay peer 415
 
 One allocation carries the whole Apps v2 Stage 1 line. Local requests: `BeginAppInstall` and

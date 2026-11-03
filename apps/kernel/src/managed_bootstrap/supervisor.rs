@@ -563,19 +563,6 @@ pub(super) fn spawn_with_broker_lease(
 }
 
 #[cfg(all(test, unix))]
-pub(super) fn install_test_broker_lease(stream: UnixStream) -> io::Result<()> {
-    let reader = stream.try_clone()?;
-    let lease = BROKER_LEASE.get_or_init(|| Mutex::new(None));
-    *lease
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(BrokerLease {
-        reader: BufReader::new(reader),
-        writer: stream,
-    });
-    Ok(())
-}
-
-#[cfg(all(test, unix))]
 pub(super) fn clear_test_broker_lease() {
     let lease = BROKER_LEASE.get_or_init(|| Mutex::new(None));
     *lease

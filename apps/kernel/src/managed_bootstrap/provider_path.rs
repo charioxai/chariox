@@ -37,12 +37,6 @@ pub(super) fn resolve_login_path(home: &Path) -> OsString {
     resolve_login_path_with_fallback(home)
 }
 
-/// Keep a disposable worker's local provider tools available if its login
-/// profile cannot be probed.
-pub(super) fn resolve_worker_login_path(home: &Path) -> OsString {
-    resolve_login_path_with_fallback(home)
-}
-
 fn resolve_login_path_with_fallback(home: &Path) -> OsString {
     match probe_login_path(home) {
         Ok(path) => path,
@@ -439,7 +433,7 @@ mod tests {
 
         let expected_path = format!("{}:{BOOTSTRAP_PATH}", home.0.join(".local/bin").display());
         let started = Instant::now();
-        let path = resolve_worker_login_path(&home.0);
+        let path = resolve_login_path(&home.0);
         assert_eq!(path, OsString::from(&expected_path));
         let elapsed = started.elapsed();
         assert!(elapsed >= PROBE_TIMEOUT);

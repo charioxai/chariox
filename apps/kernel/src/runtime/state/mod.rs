@@ -892,13 +892,9 @@ impl KernelRuntimeState {
                 &durable_state_store,
             );
         let config = config_projection.snapshot();
-        let managed_activity_kernel_id = (managed_kernel_registration.is_some()
-            || (config.kernel_runtime_role == crate::config::KernelRuntimeRole::RemoteLeaseWorker
-                && std::env::var_os(crate::managed_bootstrap::worker::ACTIVITY_RECEIPT_ENV)
-                    .filter(|value| !value.is_empty())
-                    .map(std::path::PathBuf::from)
-                    .is_some_and(|path| path.exists())))
-        .then(|| config.daemon_id.clone());
+        let managed_activity_kernel_id = managed_kernel_registration
+            .is_some()
+            .then(|| config.daemon_id.clone());
         let managed_activity_transitions =
             managed_activity_persistence::ManagedActivityTransitionState::new(
                 durable_state_store.clone(),
