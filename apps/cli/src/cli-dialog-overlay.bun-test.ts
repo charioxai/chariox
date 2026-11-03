@@ -30,7 +30,7 @@ for (const [width, height] of [[80, 24], [60, 24], [40, 24]] as const) {
     const overlayBox = new BoxRenderable(harness.renderer, { position: "absolute", left: 0, top: 0, width, height })
     harness.renderer.root.add(overlayBox)
     const snapshot={schema_version:1,local_project_id:"project",lineage:{project_id:"lineage",environment_id:"env"},revision:0,content_digest:"digest",parent_revision_digest:null,evidence_digest:null,project_requirements:[],folders:[],proposals:[],observations:[],operations:[],delivered_capabilities:{enabled_environment_operations:["get"],supported_schema:1}}
-    const controller = createProjectEnvironmentReadController({ send: async () => ({ProjectEnvironment:{environment:snapshot}}), render() {}, pageSize: () => projectEnvironmentPageSize(height), textWidth: () => projectEnvironmentTextWidth(width) })
+    const controller = createProjectEnvironmentReadController({ send: async () => ({ProjectEnvironmentView:{view:{observed_at_ms:Date.now(),snapshot_digest:snapshot.content_digest,proposal_count:0,proposal_offset:0,next_proposal_offset:null,operation_item_counts:[],environment:snapshot,proposals:[]}}}), render() {}, pageSize: () => projectEnvironmentPageSize(height), textWidth: () => projectEnvironmentTextWidth(width) })
     try {
       await controller.open("project")
       const frames:string[]=[]
