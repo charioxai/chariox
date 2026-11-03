@@ -63,8 +63,9 @@ impl KernelRuntimeState {
                 .iter()
                 .any(|session| session.worktree_id() == requested)
             || project.workspace_ids().iter().any(|id| {
-                crate::runtime::workspace_worktrees::list_workspace_worktrees(id, None)
-                    .is_ok_and(|worktrees| worktrees.iter().any(|worktree| worktree.path == requested))
+                crate::runtime::workspace_worktrees::list_workspace_worktrees(id, None).is_ok_and(
+                    |worktrees| worktrees.iter().any(|worktree| worktree.path == requested),
+                )
             });
         if !known {
             return Err(environment_error(
