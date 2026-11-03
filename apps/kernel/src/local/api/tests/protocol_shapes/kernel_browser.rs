@@ -586,7 +586,7 @@ fn mp08_mp10_mp11_mirror_completion_550_158_snapshot_hash() {
     let bytes = include_bytes!("browser-mirror2-completion-550.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "b96638f010656b84b03368b18a0355bba2968f63a57d39cbdec3980982abcc79"
+        "f65434ae15ebd011d9d00ad74302856656dbdfe4242f343df4288dfa0124192e"
     );
     let value: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(value["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
@@ -689,7 +689,7 @@ fn browser_resize_protocol629_snapshot() {
     let bytes = include_bytes!("browser-resize-629.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "857666bb9691f5f4335b4bf8add523f957eb0c4cce397643ce4b5421a399bf9f"
+        "993615aaafef79bc0c6defcb00d27e62aff2959a64c744f3ac99de727b783177"
     );
     let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     let request: LocalDaemonRequest = serde_json::from_value(snapshot["request"].clone()).unwrap();
@@ -730,7 +730,7 @@ fn mp08_mp10_browser_header_937_shape_and_hash() {
     let bytes = include_bytes!("browser-header-937.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "6bd45f3a41fd3f856ddc9392420ad15d080d7f6a1060f975951f418684c27058"
+        "f287a3e2e96113e7d05a91198f61b66b1e048dcdee8a489f7dc7272d56fe8d04"
     );
     let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     let response: LocalDaemonResponse =
@@ -753,7 +753,7 @@ fn mp08_mp11_vault_fill_941_shape_and_hash() {
     let bytes = include_bytes!("kernel-browser-vault-fill-941.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "badc746525358c2f577aa255cad7a2405af2c4f2efd8217a9a7a62bcdc80fc10"
+        "b42f224ecae564f9b2259c14fe3c4d58d40489cd6b4e7421ff461bc14aa9e541"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     let request: LocalDaemonRequest = serde_json::from_value(fixture["request"].clone()).unwrap();

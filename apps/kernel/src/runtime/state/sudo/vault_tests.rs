@@ -1228,6 +1228,10 @@ async fn vaudit_s3_capture_browser_stores_and_protects_a_page_value() {
     assert!(handle.starts_with("cap-"));
     assert_eq!(result["label"], "Stripe secret key");
     assert_eq!(result["use_on"], json!([SITE]));
+    let mut multiple = capture_args("multiple-sites");
+    multiple["use_on"] = json!([SITE, "https://other.example.com"]);
+    assert!(call(f, CAPTURE, multiple).await.is_err());
+
     let request = std::fs::read_to_string(login.root.path().join("capture")).unwrap();
     for field in [
         r#""reveal_node_ref":"backend:7""#,
@@ -1242,6 +1246,19 @@ async fn vaudit_s3_capture_browser_stores_and_protects_a_page_value() {
         .get(&handle)
         .unwrap()
         .unwrap();
+    assert_eq!(
+        credential
+            .metadata
+            .as_ref()
+            .unwrap()
+            .use_binding
+            .as_ref()
+            .unwrap()
+            .target,
+        crate::config::VaultUseTarget::Site {
+            origin: SITE.into()
+        }
+    );
     assert_eq!(
         credential.metadata.unwrap().created_by_kind.as_deref(),
         Some("vault_capture")

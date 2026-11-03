@@ -61,6 +61,15 @@ pub(super) fn committed(
             != Some(authority.actor.session_id.as_str())
         || existing.allowed_hosts != [authority.resource.origin().ascii_serialization()]
         || existing.description.as_deref() != Some(label)
+        || metadata
+            .and_then(|m| m.use_binding.as_ref())
+            .is_none_or(|binding| {
+                binding.target
+                    != crate::config::VaultUseTarget::Site {
+                        origin: authority.resource.origin().ascii_serialization(),
+                    }
+                    || binding.value_kind != crate::config::VaultValueKind::Secret
+            })
     {
         return Err(error(
             "request_id already names another auth.md credential; use a new request_id",
@@ -105,7 +114,14 @@ impl KernelRuntimeState {
                 value: "Bearer ${secret}".into(),
             },
             metadata: Some(UserCredentialMetadataConfig {
-                use_binding: None,
+                use_binding: Some(crate::config::VaultUseBinding {
+                    target: crate::config::VaultUseTarget::Site {
+                        origin: http::endpoint(&issued.resource)?
+                            .origin()
+                            .ascii_serialization(),
+                    },
+                    value_kind: crate::config::VaultValueKind::Secret,
+                }),
                 created_by_kind: Some("agent_auth".into()),
                 created_by_id: Some(authority.actor.agent_id.clone()),
                 session_id: Some(authority.actor.session_id.clone()),

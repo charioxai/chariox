@@ -128,14 +128,16 @@ grant lock before resource/subscription registration or inventory projection;
 revocation followed by refocus cannot adopt an old call's result into a fresh
 grant. A final live cancellation/provider-run check fences returned results.
 
-### MP-08 / MP-09 / MP-10 / MP-11: Vault capture and use by command and file (local 943)
+### MP-08 / MP-09 / MP-10 / MP-11: one-use Vault capture (local 963 / peer 412)
 
-Local 943 and relay peer 392 add the kernel-local credential uses and
-injection kinds `env` and `file` (`{"allowed_uses":["env","file"],
-"injection":{"kind":"env"}}`). The sudo MCP tools
-`chariox.vault.capture_command`, `chariox.vault.use_env`,
-`chariox.vault.capture_file` and `chariox.vault.write_file` add no request or
-event shape. See [Sudo windows](KERNEL_SUDO.md).
+Command and file capture require `use_binding`, using the existing typed
+`VaultUseBinding`: one environment name plus origin, stdin origin, or absolute
+canonical workspace file path. Only its matching use and injection are granted.
+Retries preserve the binding; unbound workspace entries are refused rather
+than inferred. Browser capture permits at most one `use_on` origin and stores
+a Site binding; auth.md registration stores the issued resource Site binding.
+Ordinary operations need no sudo or task approval; payment cards always ask.
+See [capture and use](KERNEL_SUDO.md#vault-capture-and-use-by-command-and-file-vaudit-s2-s4).
 
 ### MP-08 / MP-10 / MP-11: A06 Vault generation and login (local 469)
 

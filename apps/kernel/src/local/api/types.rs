@@ -459,4 +459,5 @@ pub use workspace::*;
 /// Protocol 950 advertises the answering kernel protocol in RelayStatus.
 /// MP-08 / MP-09 / MP-10 / MP-11: 954 adds nullable cumulative process disk I/O (peer403).
 /// MP-08/MP-09/MP-10/MP-11: 960 integrates Machines and canonical owner/agent Vault uses (peer409).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 960;
+/// MP-08/MP-09/MP-10/MP-11: 963 binds every captured Vault entry to one declared use (peer412).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 963;
