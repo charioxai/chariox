@@ -206,6 +206,7 @@ pub(crate) fn request_is_cacheable(request: &LocalDaemonRequest) -> bool {
             // Owner inputs and revealed values stay out of transport receipts.
             // Each operation must also recheck current owner/unlock authority.
             | LocalDaemonRequest::OwnerVault(_)
+            | LocalDaemonRequest::SetProjectEnvironmentSecret(_)
             | LocalDaemonRequest::RequestVaultSecret(_)
             | LocalDaemonRequest::ExtendKernelSudo(_)
             | LocalDaemonRequest::RenewKernelSudoRequester(_)

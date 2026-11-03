@@ -92,14 +92,12 @@ test("integration received-event listing and replay require protocol 911", () =>
   }
 })
 
-// MP-08 / MP-10: VERSION(P01).
-test("standalone and reserved Project Environment operations require protocol 487", () => {
-  for (const kind of ["GetProjectEnvironment", "ApplyProjectEnvironment", "PreviewEnvironmentImport", "CommitEnvironmentImport"]) {
-    assert.throws(() => requireKernelFeatureProtocol({ [kind]: {} }, 472), /Project Environment needs protocol ≥487/)
-    assert.doesNotThrow(() => requireKernelFeatureProtocol({ [kind]: {} }, 487))
+test("the Environment requests require protocol 973", () => {
+  for (const kind of ["GetProjectEnvironment", "SaveProjectEnvironment", "SetProjectEnvironmentSecret", "RunProjectEnvironmentSetup", "ImportProjectEnvironmentEntries", "DraftProjectEnvironment", "RunRemoteProjectEnvironmentSetup", "RemoteEnvironmentOperation", "CheckProjectEnvironment", "ResolveEnvironmentProposal", "GetEnvironmentOperation", "CancelEnvironmentOperation"]) {
+    assert.throws(() => requireKernelFeatureProtocol({ [kind]: {} }, 972), /Project Environment needs protocol ≥973/)
+    assert.doesNotThrow(() => requireKernelFeatureProtocol({ [kind]: {} }, 973))
   }
 })
-
 
 test("MD-stack user App and browser surfaces require union protocol 443", () => {
   for (const name of ["OpenUserAppView", "ListUserAppViews", "CloseUserAppView", "GetUserAppViewFrontend", "CallUserAppView", "SubscribeUserAppViews", "AnswerUserDomainInteraction"]) {

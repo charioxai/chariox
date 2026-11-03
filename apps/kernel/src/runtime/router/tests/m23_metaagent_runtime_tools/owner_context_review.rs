@@ -7,9 +7,9 @@ fn mp08_mp11_kernel_only_owner_review_rejects_meta_and_agent_answers() {
     run_large_stack_async_test("kernel-only-human-review", kernel_only_human_review);
 }
 
-// MP-08/MP-11: the Project branch must enforce the same owner-only rule.
+// A Project's Environment holds names and text only, so copying a Project asks the owner nothing.
 #[test]
-fn mp08_mp11_source_project_owner_review_rejects_meta_and_agent_answers() {
+fn source_project_copy_opens_no_owner_review() {
     crate::test_support::isolated_env_test!();
     run_large_stack_async_test("project-human-review", source_project_human_review);
 }
@@ -86,9 +86,8 @@ async fn human_review(source_project: bool, legacy_local: bool) {
     let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
     let runtime = router.runtime_state();
 
-    for choice in ["cancel", "continue"] {
-        let context = format!("human-only-{choice}");
-        let development = if source_project {
+    if source_project {
+        let development =
             crate::managed_context::package::ManagedContextDevelopmentSelection::SourceProject {
                 project_id: session.project_id().into(),
                 repositories: vec![
@@ -99,10 +98,24 @@ async fn human_review(source_project: bool, legacy_local: bool) {
                         worktree_id: None,
                     },
                 ],
-            }
-        } else {
-            crate::managed_context::package::ManagedContextDevelopmentSelection::Empty
-        };
+            };
+        runtime
+            .review_credential_free_owner_context(
+                &development,
+                "project-copy",
+                "Owner target machine",
+            )
+            .await
+            .unwrap();
+        let snapshot = runtime.session_snapshot(session.id()).await.unwrap();
+        assert!(snapshot.active_interactions().is_empty());
+        return;
+    }
+
+    for choice in ["cancel", "continue"] {
+        let context = format!("human-only-{choice}");
+        let development =
+            crate::managed_context::package::ManagedContextDevelopmentSelection::Empty;
         let reviewer = runtime.clone();
         let task = tokio::spawn(async move {
             reviewer
@@ -116,10 +129,11 @@ async fn human_review(source_project: bool, legacy_local: bool) {
         let interaction = tokio::time::timeout(std::time::Duration::from_secs(10), async {
             loop {
                 let snapshot = runtime.session_snapshot(session.id()).await.unwrap();
-                if let Some(review) = snapshot.active_interactions().iter().find(|i| {
-                    i.id().starts_with("owner-context:")
-                        || i.id().starts_with("project-environment:")
-                }) {
+                if let Some(review) = snapshot
+                    .active_interactions()
+                    .iter()
+                    .find(|i| i.id().starts_with("owner-context:"))
+                {
                     break review.clone();
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -140,16 +154,8 @@ async fn human_review(source_project: bool, legacy_local: bool) {
             !attempted.as_ref().is_ok_and(|result| result.ok),
             "MP-11 retired Meta approval bypassed owner review: {attempted:?}",
         );
-        if source_project {
-            assert_eq!(interaction.agent_id(), Some(worker.id()));
-            assert!(
-                serde_json::to_value(&interaction).unwrap()["project_environment_review"]
-                    .is_object()
-            );
-        } else {
-            assert!(interaction.agent_id().is_none());
-            assert!(interaction.kernel_operation_id().is_some());
-        }
+        assert!(interaction.agent_id().is_none());
+        assert!(interaction.kernel_operation_id().is_some());
         assert!(runtime
             .resolve_runtime_interaction(session.id(), &id, "continue", None)
             .await

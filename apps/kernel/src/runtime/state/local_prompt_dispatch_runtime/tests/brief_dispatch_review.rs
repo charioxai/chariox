@@ -735,7 +735,7 @@ async fn room_retirement_between_brief_chunks_never_replays_the_next_utility_inp
 #[tokio::test]
 async fn native_utility_protection_gate_runs_before_any_prompt_write() {
     let fixture = PausedBrief::new(false, false).await;
-    let scratch = super::super::super::project_environment_export::MetadataUtilityScratch::new(
+    let scratch = super::super::super::metadata_utility_scratch::MetadataUtilityScratch::new(
         &fixture
             .runtime
             .owned

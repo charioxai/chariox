@@ -677,25 +677,6 @@ async function observeAttachments(identity) {
   })
 }
 
-async function observeProjectSetup(identity) {
-  const evidence = parseJsonEnv("CHARIOX_PARITY_PROJECT_SETUP_EVIDENCE_JSON")
-  const {
-    assertProjectSetupProof,
-    observeManagedOrdinaryProjectSetup,
-  } = await import("./lib/managed-ordinary-project-setup-observer.mjs")
-  const observation = await observeManagedOrdinaryProjectSetup(evidence, {
-    environment: process.env,
-  })
-  // The environment supplies only the operation selector. The acceptance
-  // result comes from the observer's production kernel API transport and its
-  // complete Ready, identity, definition, and validation checks.
-  assertProjectSetupProof(observation)
-  return identityResult(identity, {
-    project_setup_ok: true,
-    project_setup_proof: observation,
-  })
-}
-
 const REPOSITORY_ROOT_REQUIREMENTS = Object.freeze({
   repository_root_default: "default_root_correct",
   repository_root_custom: "custom_root_persisted",
@@ -926,7 +907,6 @@ async function observe(values) {
   if (rowId === "MP-08" && checkId === "session_agent_launch") return observeSessionAgent(identity)
   if (rowId === "MP-08" && checkId === "terminal_file_git") return observeTerminalFileGit(identity, values)
   if (rowId === "MP-08" && checkId === "attachments_permissions_capabilities") return observeAttachments(identity)
-  if (rowId === "MP-08" && checkId === "project_setup") return observeProjectSetup(identity)
   if (rowId === "MP-08" && checkId === "resource_limits") return observeResourceLimits(identity)
   if (rowId === "MP-08" && checkId === "structured_errors") return observeStructuredErrors(identity)
   if (rowId === "MP-08" && checkId === "protocol_behavior") return observeProtocol(identity)

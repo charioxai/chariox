@@ -183,7 +183,7 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// Peer 412 carries local963 one-use Vault capture bindings.
 /// Peer 414 carries local965 integrated Vault and machine contracts.
 /// Peer415 carries local966 WASM Apps plus Landing965 contracts.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 415;
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 422;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;
@@ -200,8 +200,6 @@ pub(crate) const ENSURE_REMOTE_PROVIDER_ACCOUNT_OPERATION: &str = "ensure remote
 /// agent's current prompt (already finished, or replaced by a later one).
 pub const LEASED_PROMPT_NOT_CURRENT_CODE: &str = "leased_prompt_not_current";
 pub const LEASED_PROMPT_RUN_CHANGED_CODE: &str = "leased_prompt_run_changed";
-pub const PROJECT_ENVIRONMENT_SETUP_NOT_FOUND_CODE: &str = "project_environment_setup_not_found";
-pub const PROJECT_ENVIRONMENT_SETUP_REJECTED_CODE: &str = "project_environment_setup_rejected";
 
 // MP-08/MP-09/MP-10/MP-11 A10: start and queries use the exact admitted lease.
 // Preserve the serialized peer action and its existing public Rust fields.
@@ -226,14 +224,6 @@ pub enum LeasedWatchedProcessAction {
         binding: crate::durable_state::agent_lifecycle::LeasedProcessBinding,
     },
 }
-// MP-08 / MP-10 / MP-11 public transfer binding. Values are target-sealed at the source worker.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ProjectEnvironmentExportTarget {
-    pub context_id: String,
-    pub kernel_id: String,
-    pub public_key: String,
-}
-
 /// Home-selected execution identity for a leased prompt. Contains no credentials.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelayAgentExecutionProfile {
@@ -241,25 +231,6 @@ pub struct RelayAgentExecutionProfile {
     pub account_profile: String,
     pub model: Option<String>,
     pub effort: Option<String>,
-}
-
-/// Status returned by the worker for a project-environment setup operation.
-/// A utility-generated definition is staged while the worker remains in
-/// Preparing; the home persists it and acknowledges its digest before worker
-/// validation may begin.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RelayProjectEnvironmentSetupStatus {
-    pub status: crate::local::ProjectEnvironmentSetupStatus,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub definition: Option<crate::session::ProjectEnvironmentDefinition>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RelayProjectEnvironmentSetupDefinitionAck {
-    pub operation_id: String,
-    pub attempt: u32,
-    pub project_id: String,
-    pub definition_digest: String,
 }
 
 impl From<&crate::agent::AgentInstance> for RelayAgentExecutionProfile {
@@ -564,6 +535,38 @@ impl std::fmt::Debug for RemoteCredentialSecretInput {
     }
 }
 
+/// A Project file's bytes (base64) inside an encrypted kernel-to-kernel response; it can hold secrets.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct RemoteEnvironmentFileBytes(String);
+
+impl RemoteEnvironmentFileBytes {
+    pub fn encode(bytes: &[u8]) -> Self {
+        use base64::Engine;
+        Self(base64::engine::general_purpose::STANDARD.encode(bytes))
+    }
+
+    pub fn decode(&self) -> Option<zeroize::Zeroizing<Vec<u8>>> {
+        use base64::Engine;
+        base64::engine::general_purpose::STANDARD
+            .decode(&self.0)
+            .ok()
+            .map(zeroize::Zeroizing::new)
+    }
+}
+
+impl Drop for RemoteEnvironmentFileBytes {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.0);
+    }
+}
+
+impl std::fmt::Debug for RemoteEnvironmentFileBytes {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("[redacted Project file bytes]")
+    }
+}
+
 /// One provider launch secret carried only inside an encrypted kernel-to-kernel
 /// request. The worker validates the provider/profile binding, moves the value
 /// into its in-memory launch environment, and never writes it to a provider
@@ -767,6 +770,32 @@ fn default_workspace_live_sync_invocation_attempt() -> u32 {
 pub enum RelayPeerRequest {
     AgentMove {
         request: crate::agent_move::peer::AgentMovePeerRequest,
+    },
+    /// A kernel of the same user starts, reads or stops a Setup run on this kernel.
+    RunProjectEnvironmentSetup {
+        project_id: String,
+        operation_id: String,
+        checkout_path: Option<String>,
+    },
+    GetProjectEnvironmentOperation {
+        operation_id: String,
+    },
+    CancelProjectEnvironmentOperation {
+        operation_id: String,
+    },
+    /// A kernel of the same user asks what this kernel holds of a Project's Environment.
+    ReadProjectEnvironment {
+        project_id: String,
+    },
+    PullProjectEnvironmentSecret {
+        project_id: String,
+        name: String,
+    },
+    /// One slice of a Project file, starting at `offset`; a message stays well under the relay's bound.
+    PullProjectEnvironmentFile {
+        project_id: String,
+        path: String,
+        offset: u64,
     },
     ListWorkflowNotificationSources {
         protocol_version: u32,
@@ -1027,54 +1056,6 @@ pub enum RelayPeerRequest {
         home_prompt_id: String,
         worker_provider_run_id: String,
     },
-    ResolveLeasedProjectEnvironmentSetupTarget {
-        leased_agent_id: String,
-        home_session_id: String,
-        home_agent_id: String,
-    },
-    StartLeasedProjectEnvironmentSetup {
-        leased_agent_id: String,
-        operation_id: String,
-        attempt: u32,
-        project_id: String,
-        home_session_id: String,
-        home_agent_id: String,
-        #[serde(default, skip_serializing_if = "String::is_empty")]
-        workspace_id: String,
-        target_worker_id: String,
-        target_platform: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        definition: Option<crate::session::ProjectEnvironmentDefinition>,
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        validation_commands: Vec<String>,
-    },
-    AcknowledgeLeasedProjectEnvironmentSetupDefinition {
-        leased_agent_id: String,
-        operation_id: String,
-        attempt: u32,
-        project_id: String,
-        home_session_id: String,
-        home_agent_id: String,
-        definition_digest: String,
-    },
-    GetLeasedProjectEnvironmentSetupStatus {
-        leased_agent_id: String,
-        operation_id: String,
-        home_session_id: String,
-        home_agent_id: String,
-    },
-    CancelLeasedProjectEnvironmentSetup {
-        leased_agent_id: String,
-        operation_id: String,
-        home_session_id: String,
-        home_agent_id: String,
-    },
-    RetryLeasedProjectEnvironmentSetup {
-        leased_agent_id: String,
-        operation_id: String,
-        home_session_id: String,
-        home_agent_id: String,
-    },
     LeasedWatchedProcess {
         leased_agent_id: String,
         action: LeasedWatchedProcessAction,
@@ -1169,38 +1150,6 @@ pub enum RelayPeerRequest {
         interaction_id: String,
         login: Option<crate::session::RuntimeProviderLogin>,
     },
-    ExportLeasedProjectEnvironment {
-        context: RemoteSkillSyncContext,
-        interactive: bool,
-        target_name: String,
-        target: Option<ProjectEnvironmentExportTarget>,
-    },
-    FetchProjectPrivateFile {
-        context: RemoteNativeInteractionContext,
-        workspace_id: String,
-        path: String,
-    },
-    UseLeasedProjectEnvironment {
-        context: RemoteSkillSyncContext,
-        project_id: String,
-    },
-    ReadLeasedProjectPrivateFile {
-        context: RemoteSkillSyncContext,
-        workspace_id: String,
-        path: String,
-    },
-    ReadLeasedProjectEnvironment {
-        context: RemoteSkillSyncContext,
-        adjust: bool,
-    },
-    InstallLeasedProjectEnvironment {
-        context: RemoteSkillSyncContext,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        source_kernel_id: Option<String>,
-        layer: crate::managed_context::development::DevelopmentProjectEnvironment,
-        /// Source workspace -> mounted repository basename; never arbitrary target paths.
-        workspace_directories: std::collections::BTreeMap<String, String>,
-    },
     EnsureRemoteSkillPackages {
         context: RemoteSkillSyncContext,
         packages: Vec<CharioxSkillPackage>,
@@ -1281,6 +1230,30 @@ impl RelayPeerRequest {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RelayPeerResponse {
+    ProjectEnvironmentRead {
+        source_label: String,
+        record: Option<crate::project_environment::ProjectEnvironmentRecord>,
+        /// Secret names the source's Vault holds a value for.
+        secrets: Vec<String>,
+        /// Listed Files that exist in the source's checkout.
+        files: Vec<String>,
+    },
+    ProjectEnvironmentOperation {
+        operation: crate::local::EnvironmentOperationView,
+    },
+    /// The source will not hand the Environment over (unknown Project, Vault locked, ...).
+    ProjectEnvironmentRefused {
+        reason: String,
+    },
+    ProjectEnvironmentSecretPulled {
+        value: Option<RemoteCredentialSecretInput>,
+    },
+    ProjectEnvironmentFilePulled {
+        /// The whole file's size, so the receiver knows when it has everything.
+        size_bytes: u64,
+        /// The slice at the requested offset; absent when the file is not there.
+        content: Option<RemoteEnvironmentFileBytes>,
+    },
     AgentMove {
         response: crate::agent_move::peer::AgentMovePeerResponse,
     },
@@ -1439,28 +1412,6 @@ pub enum RelayPeerResponse {
         cancellation: PromptCancellation,
     },
     LeasedSudoUpdated,
-    LeasedProjectEnvironmentSetupTargetResolved {
-        worker_id: String,
-        platform: String,
-    },
-    LeasedProjectEnvironmentSetupStarted {
-        setup: RelayProjectEnvironmentSetupStatus,
-    },
-    LeasedProjectEnvironmentSetupDefinitionAcknowledged {
-        operation_id: String,
-        attempt: u32,
-        project_id: String,
-        definition_digest: String,
-    },
-    LeasedProjectEnvironmentSetupStatus {
-        setup: RelayProjectEnvironmentSetupStatus,
-    },
-    LeasedProjectEnvironmentSetupCancelled {
-        setup: RelayProjectEnvironmentSetupStatus,
-    },
-    LeasedProjectEnvironmentSetupRetried {
-        setup: RelayProjectEnvironmentSetupStatus,
-    },
     WorkflowRuntimeToolHandled {
         result: crate::transport::runtime_tools::RuntimeToolResult,
     },
@@ -1516,24 +1467,6 @@ pub enum RelayPeerResponse {
         resolution: crate::provider::ProviderNativeInteractionResolution,
     },
     NativeInteractionUpdated {},
-    LeasedProjectEnvironmentExport {
-        manifest: crate::project_environment::ProjectEnvironmentManifest,
-        evidence: crate::project_environment::ProjectEnvironmentEvidence,
-        layer: Option<crate::managed_context::development::DevelopmentProjectEnvironment>,
-    },
-    ProjectPrivateFile {
-        bytes: RelayManagedContextChunk,
-    },
-    LeasedProjectEnvironment {
-        manifest: Option<crate::project_environment::ProjectEnvironmentManifest>,
-        adjustment_started: bool,
-    },
-    LeasedProjectEnvironmentUsed {
-        exists: bool,
-    },
-    LeasedProjectEnvironmentInstalled {
-        project_id: String,
-    },
     RemoteSkillPackagesEnsured {
         materialized: Vec<RemoteSkillMaterialization>,
     },
@@ -1788,231 +1721,6 @@ mod tests {
                 snapshot.pointer("/provider_termination/category"),
                 Some(&serde_json::json!(category)),
             );
-        }
-    }
-
-    #[test]
-    fn leased_project_setup_target_resolution_is_versioned_at_protocol_66() {
-        assert_eq!(
-            RELAY_PEER_PROTOCOL_VERSION,
-            crate::test_support::expected_relay_peer_protocol_version()
-        );
-        let request = RelayPeerRequest::ResolveLeasedProjectEnvironmentSetupTarget {
-            leased_agent_id: "leased-agent-1".to_string(),
-            home_session_id: "home-session-1".to_string(),
-            home_agent_id: "home-agent-1".to_string(),
-        };
-        let request_wire = serde_json::to_value(&request).expect("request should serialize");
-        assert_eq!(
-            request_wire,
-            serde_json::json!({
-                "kind": "resolve_leased_project_environment_setup_target",
-                "leased_agent_id": "leased-agent-1",
-                "home_session_id": "home-session-1",
-                "home_agent_id": "home-agent-1",
-            })
-        );
-        assert_eq!(
-            serde_json::from_value::<RelayPeerRequest>(request_wire)
-                .expect("request should deserialize"),
-            request
-        );
-
-        let response = RelayPeerResponse::LeasedProjectEnvironmentSetupTargetResolved {
-            worker_id: "worker-machine-1".to_string(),
-            platform: "linux-x86_64".to_string(),
-        };
-        let response_wire = serde_json::to_value(&response).expect("response should serialize");
-        assert_eq!(
-            response_wire,
-            serde_json::json!({
-                "kind": "leased_project_environment_setup_target_resolved",
-                "worker_id": "worker-machine-1",
-                "platform": "linux-x86_64",
-            })
-        );
-        assert_eq!(
-            serde_json::from_value::<RelayPeerResponse>(response_wire)
-                .expect("response should deserialize"),
-            response
-        );
-    }
-
-    #[test]
-    fn project_environment_setup_relay_shapes_round_trip_at_protocol_66() {
-        assert_eq!(
-            RELAY_PEER_PROTOCOL_VERSION,
-            crate::test_support::expected_relay_peer_protocol_version()
-        );
-        let definition = crate::session::ProjectEnvironmentDefinition {
-            schema_version: 1,
-            origin: crate::session::ProjectEnvironmentDefinitionOrigin::UtilityGenerated,
-            source: crate::session::ProjectEnvironmentDefinitionSource::Devcontainer,
-            target_platform: "linux-x86_64".to_string(),
-            source_path: Some(".devcontainer/devcontainer.json".to_string()),
-            inputs: vec![
-                crate::session::ProjectEnvironmentInput {
-                    kind: crate::session::ProjectEnvironmentInputKind::Recipe,
-                    path: ".devcontainer/devcontainer.json".to_string(),
-                    sha256: format!("sha256:{}", "a".repeat(64)),
-                },
-                crate::session::ProjectEnvironmentInput {
-                    kind: crate::session::ProjectEnvironmentInputKind::Lockfile,
-                    path: "Cargo.lock".to_string(),
-                    sha256: format!("sha256:{}", "b".repeat(64)),
-                },
-            ],
-            path_entries: vec![crate::session::ProjectEnvironmentPathEntry {
-                base: crate::session::ProjectEnvironmentPathBase::Workspace,
-                path: ".venv/bin".to_string(),
-            }],
-            setup_steps: vec![crate::session::ProjectEnvironmentSetupStep {
-                kind: crate::session::ProjectEnvironmentSetupStepKind::Command,
-                command: "command -v sh".to_string(),
-            }],
-            validation_commands: vec!["command -v sh".to_string()],
-        };
-        let requests = vec![
-            RelayPeerRequest::ResolveLeasedProjectEnvironmentSetupTarget {
-                leased_agent_id: "leased-agent-1".to_string(),
-                home_session_id: "home-session-1".to_string(),
-                home_agent_id: "home-agent-1".to_string(),
-            },
-            RelayPeerRequest::StartLeasedProjectEnvironmentSetup {
-                leased_agent_id: "leased-agent-1".to_string(),
-                operation_id: "setup-1".to_string(),
-                attempt: 2,
-                project_id: "project-1".to_string(),
-                home_session_id: "home-session-1".to_string(),
-                home_agent_id: "home-agent-1".to_string(),
-                workspace_id: "worker-worktree-1".to_string(),
-                target_worker_id: "worker-machine-1".to_string(),
-                target_platform: "linux-x86_64".to_string(),
-                definition: Some(definition.clone()),
-                validation_commands: Vec::new(),
-            },
-            RelayPeerRequest::AcknowledgeLeasedProjectEnvironmentSetupDefinition {
-                leased_agent_id: "leased-agent-1".to_string(),
-                operation_id: "setup-1".to_string(),
-                attempt: 2,
-                project_id: "project-1".to_string(),
-                home_session_id: "home-session-1".to_string(),
-                home_agent_id: "home-agent-1".to_string(),
-                definition_digest: "sha256:definition".to_string(),
-            },
-            RelayPeerRequest::GetLeasedProjectEnvironmentSetupStatus {
-                leased_agent_id: "leased-agent-1".to_string(),
-                operation_id: "setup-1".to_string(),
-                home_session_id: "home-session-1".to_string(),
-                home_agent_id: "home-agent-1".to_string(),
-            },
-            RelayPeerRequest::CancelLeasedProjectEnvironmentSetup {
-                leased_agent_id: "leased-agent-1".to_string(),
-                operation_id: "setup-1".to_string(),
-                home_session_id: "home-session-1".to_string(),
-                home_agent_id: "home-agent-1".to_string(),
-            },
-            RelayPeerRequest::RetryLeasedProjectEnvironmentSetup {
-                leased_agent_id: "leased-agent-1".to_string(),
-                operation_id: "setup-1".to_string(),
-                home_session_id: "home-session-1".to_string(),
-                home_agent_id: "home-agent-1".to_string(),
-            },
-        ];
-        let start_wire = serde_json::to_value(&requests[1]).expect("setup Start should encode");
-        assert_eq!(
-            start_wire.pointer("/attempt"),
-            Some(&serde_json::json!(2)),
-            "recovery Start must carry the home-authoritative attempt",
-        );
-        let acknowledgment_wire =
-            serde_json::to_value(&requests[2]).expect("definition acknowledgment should encode");
-        assert_eq!(
-            acknowledgment_wire,
-            serde_json::json!({
-                "kind": "acknowledge_leased_project_environment_setup_definition",
-                "leased_agent_id": "leased-agent-1",
-                "operation_id": "setup-1",
-                "attempt": 2,
-                "project_id": "project-1",
-                "home_session_id": "home-session-1",
-                "home_agent_id": "home-agent-1",
-                "definition_digest": "sha256:definition",
-            })
-        );
-        let request_snapshot = serde_json::to_string(&acknowledgment_wire)
-            .expect("definition acknowledgment snapshot should encode");
-        let request_hash = Sha256::digest(request_snapshot.as_bytes());
-        assert_eq!(
-            format!("{request_hash:x}"),
-            "d1787e56279249e317c632dfeb8b3a9ca31043b12c5b0e30faf15bdc5409c2f5",
-        );
-        for request in requests {
-            let encoded = serde_json::to_value(&request).expect("setup request should encode");
-            let decoded: RelayPeerRequest =
-                serde_json::from_value(encoded).expect("setup request should decode");
-            assert_eq!(decoded, request);
-        }
-
-        let setup = RelayProjectEnvironmentSetupStatus {
-            status: crate::local::ProjectEnvironmentSetupStatus {
-                operation_id: "setup-1".to_string(),
-                project_id: "project-1".to_string(),
-                session_id: "home-session-1".to_string(),
-                agent_id: "home-agent-1".to_string(),
-                worker_id: "worker-machine-1".to_string(),
-                platform: "linux-x86_64".to_string(),
-                phase: crate::local::ProjectEnvironmentSetupPhase::Ready,
-                attempt: 1,
-                progress_percent: 100,
-                definition_digest: Some("sha256:definition".to_string()),
-                validation: None,
-                message: Some("ready".to_string()),
-                failure_code: None,
-                failure_message: None,
-                retryable: false,
-                created_at_ms: 1,
-                updated_at_ms: 2,
-            },
-            definition: Some(definition),
-        };
-        let acknowledgment =
-            RelayPeerResponse::LeasedProjectEnvironmentSetupDefinitionAcknowledged {
-                operation_id: "setup-1".to_string(),
-                attempt: 2,
-                project_id: "project-1".to_string(),
-                definition_digest: "sha256:definition".to_string(),
-            };
-        let acknowledgment_wire = serde_json::to_value(&acknowledgment)
-            .expect("definition acknowledgment response should encode");
-        let response_snapshot = serde_json::to_string(&acknowledgment_wire)
-            .expect("definition acknowledgment response snapshot should encode");
-        let response_hash = Sha256::digest(response_snapshot.as_bytes());
-        assert_eq!(
-            format!("{response_hash:x}"),
-            "0a26c7a2b75e0decf598a3efc789ddd150e156436fb3d4684b14bcc6105ecdf8",
-        );
-        for response in [
-            RelayPeerResponse::LeasedProjectEnvironmentSetupTargetResolved {
-                worker_id: "worker-machine-1".to_string(),
-                platform: "linux-x86_64".to_string(),
-            },
-            RelayPeerResponse::LeasedProjectEnvironmentSetupStarted {
-                setup: setup.clone(),
-            },
-            acknowledgment,
-            RelayPeerResponse::LeasedProjectEnvironmentSetupStatus {
-                setup: setup.clone(),
-            },
-            RelayPeerResponse::LeasedProjectEnvironmentSetupCancelled {
-                setup: setup.clone(),
-            },
-            RelayPeerResponse::LeasedProjectEnvironmentSetupRetried { setup },
-        ] {
-            let encoded = serde_json::to_value(&response).expect("setup response should encode");
-            let decoded: RelayPeerResponse =
-                serde_json::from_value(encoded).expect("setup response should decode");
-            assert_eq!(decoded, response);
         }
     }
 
@@ -2346,109 +2054,6 @@ mod native_approval_protocol_tests {
         assert_eq!(
             format!("{:x}", Sha256::digest(encoded)),
             "dee36b9bf4d4a4e4877a46ea81e1be63d696f78ebc07ebf90d964606c6d93084"
-        );
-    }
-}
-
-#[cfg(test)]
-mod project_environment_adjustment_shapes {
-    use super::*;
-    #[test]
-    fn mp08_mp10_mp11_worker_environment_shapes_are_protocol_66() {
-        use sha2::{Digest, Sha256};
-        assert_eq!(
-            RELAY_PEER_PROTOCOL_VERSION,
-            crate::test_support::expected_relay_peer_protocol_version()
-        );
-        let request = RelayPeerRequest::ReadLeasedProjectEnvironment {
-            context: RemoteSkillSyncContext {
-                home_kernel_id: "home".into(),
-                home_session_id: "session".into(),
-                home_agent_id: "agent".into(),
-                leased_agent_id: "lease-agent".into(),
-            },
-            adjust: true,
-        };
-        assert_eq!(
-            serde_json::to_value(&request).unwrap(),
-            serde_json::json!({"kind":"read_leased_project_environment","context":{"home_kernel_id":"home","home_session_id":"session","home_agent_id":"agent","leased_agent_id":"lease-agent"},"adjust":true})
-        );
-        assert_eq!(
-            format!(
-                "{:x}",
-                Sha256::digest(serde_json::to_vec(&request).unwrap())
-            ),
-            "5363ab1fa44a01c413bb812af342afff37dcbadfc647e44ab3f3740cd8598254"
-        );
-        let response = RelayPeerResponse::LeasedProjectEnvironment {
-            manifest: None,
-            adjustment_started: true,
-        };
-        assert_eq!(
-            serde_json::to_value(response).unwrap(),
-            serde_json::json!({"kind":"leased_project_environment","manifest":null,"adjustment_started":true})
-        );
-    }
-}
-
-#[cfg(test)]
-mod project_environment_export_shapes {
-    use super::*;
-    #[test]
-    fn mp08_mp10_mp11_source_export_and_target_reuse_shapes_require_peer_66() {
-        use sha2::{Digest, Sha256};
-        assert_eq!(
-            RELAY_PEER_PROTOCOL_VERSION,
-            crate::test_support::expected_relay_peer_protocol_version()
-        );
-        let value: serde_json::Value = serde_json::from_str(r#"{"kind":"export_leased_project_environment","context":{"home_kernel_id":"home","home_session_id":"session","home_agent_id":"agent","leased_agent_id":"leased-agent"},"interactive":true,"target_name":"second","target":{"context_id":"lease2","kernel_id":"worker2","public_key":"public2"}}"#).unwrap();
-        let request: RelayPeerRequest = serde_json::from_value(value.clone()).unwrap();
-        let roundtrip = serde_json::to_value(request).unwrap();
-        assert_eq!(roundtrip, value);
-        assert_eq!(
-            format!(
-                "{:x}",
-                Sha256::digest(serde_json::to_vec(&roundtrip).unwrap())
-            ),
-            "bf8f113b4f7daf9a8d832eb1ffe5cd11f37e7037849b1bdfa032c8ce1599c99b"
-        );
-        let value: serde_json::Value = serde_json::from_str(r#"{"kind":"read_leased_project_private_file","context":{"home_kernel_id":"home","home_session_id":"session","home_agent_id":"agent","leased_agent_id":"leased-agent"},"workspace_id":"/workspace/app","path":"notes.md"}"#).unwrap();
-        let request: RelayPeerRequest = serde_json::from_value(value.clone()).unwrap();
-        let roundtrip = serde_json::to_value(request).unwrap();
-        assert_eq!(roundtrip, value);
-        assert_eq!(
-            format!(
-                "{:x}",
-                Sha256::digest(serde_json::to_vec(&roundtrip).unwrap())
-            ),
-            "48488ef87272c7cd031a3e2bb67fed41d4485c2f079ec451d93a4fb59ea9dfb1"
-        );
-        let value: serde_json::Value = serde_json::from_str(r#"{"kind":"use_leased_project_environment","context":{"home_kernel_id":"home","home_session_id":"session","home_agent_id":"agent","leased_agent_id":"leased-agent"},"project_id":"project"}"#).unwrap();
-        let request: RelayPeerRequest = serde_json::from_value(value.clone()).unwrap();
-        let roundtrip = serde_json::to_value(request).unwrap();
-        assert_eq!(roundtrip, value);
-        assert_eq!(
-            format!(
-                "{:x}",
-                Sha256::digest(serde_json::to_vec(&roundtrip).unwrap())
-            ),
-            "22f264441bb3be136c64a83c873a36f7e06cbe4c94e402e3d81116b9e57bb283"
-        );
-        let value: serde_json::Value = serde_json::from_str(r#"{"kind":"fetch_project_private_file","context":{"home_session_id":"session","home_agent_id":"agent","leased_agent_id":"leased-agent","worker_provider_run_id":"environment-adjustment"},"workspace_id":"/workspace/app","path":"notes.md"}"#).unwrap();
-        let request: RelayPeerRequest = serde_json::from_value(value.clone()).unwrap();
-        let roundtrip = serde_json::to_value(request).unwrap();
-        assert_eq!(roundtrip, value);
-        assert_eq!(
-            format!(
-                "{:x}",
-                Sha256::digest(serde_json::to_vec(&roundtrip).unwrap())
-            ),
-            "1188d57291152a1dbd2a207426157c32823590a1b8686e6164555dc0c00dae47"
-        );
-        let response = RelayPeerResponse::LeasedProjectEnvironmentUsed { exists: true };
-        assert_eq!(
-            serde_json::to_value(response).unwrap(),
-            serde_json::json!({"kind":"leased_project_environment_used","exists":true})
         );
     }
 }

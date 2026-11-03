@@ -37,9 +37,7 @@ mod managed_environment;
 mod metaagent;
 mod notes;
 mod outside_events;
-mod project_environment_aggregate;
-mod project_environment_manifest;
-mod project_environment_setup;
+mod project_environment;
 mod prompt_control;
 mod prompt_settings;
 mod provider_control;
@@ -90,9 +88,7 @@ pub use managed_environment::*;
 pub use metaagent::*;
 pub use notes::*;
 pub use outside_events::*;
-pub use project_environment_aggregate::*;
-pub use project_environment_manifest::*;
-pub use project_environment_setup::*;
+pub use project_environment::*;
 pub use prompt_control::*;
 pub use prompt_settings::*;
 pub use provider_control::*;
@@ -465,4 +461,7 @@ pub use workspace::*;
 /// Connected service machine requests use the ordinary Chariox access grant.
 /// MP-08/MP-09/MP-10/MP-11: 965 integrates declared Vault uses and enrolled-kernel machine authority (peer414).
 /// MP-08/MP-09/MP-10/MP-11: 966 integrates WASM Apps with Landing965 (peer415).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 966;
+/// Environments 972 replace the Project Environment requests with one saved record per Project,
+/// its presence on this kernel and Setup runs (peer421 drops the leased Project environment requests).
+/// Environments 973 add Import from another kernel of the same user and Draft with agent (peer422).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 973;

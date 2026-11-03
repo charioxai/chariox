@@ -1,6 +1,6 @@
 {
-  "local_protocol": 966,
-  "peer_protocol": 415,
+  "local_protocol": 973,
+  "peer_protocol": 422,
   "abort": {
     "MoveAgentToLocal": {
       "session_id": "room",
@@ -157,8 +157,7 @@
       "requirements": {
         "agent_configuration_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
         "extensions": {},
-        "skills": [],
-        "environment_definition": null
+        "skills": []
       }
     },
     {
@@ -198,8 +197,7 @@
         "target_project_id": "target-project",
         "target_account_profile": "selected",
         "backing_session_id": "backing-room",
-        "backing_agent_id": "backing-agent",
-        "environment_setup_operation_id": null
+        "backing_agent_id": "backing-agent"
       }
     }
   ],
@@ -260,8 +258,7 @@
         "target_project_id": "target-project",
         "target_account_profile": "selected",
         "backing_session_id": "backing-room",
-        "backing_agent_id": "backing-agent",
-        "environment_setup_operation_id": null
+        "backing_agent_id": "backing-agent"
       }
     },
     {
@@ -288,8 +285,7 @@
           "target_project_id": "target-project",
           "target_account_profile": "selected",
           "backing_session_id": "backing-room",
-          "backing_agent_id": "backing-agent",
-          "environment_setup_operation_id": null
+          "backing_agent_id": "backing-agent"
         },
         "committed_at_ms": 1
       }

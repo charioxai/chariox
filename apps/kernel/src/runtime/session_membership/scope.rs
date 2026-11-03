@@ -95,15 +95,6 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::UpdateProviderRunSelection(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
-        LocalDaemonRequest::StartProjectEnvironmentSetup(request) => Some(
-            SessionMembershipScope::SessionId(request.session_id.clone()),
-        ),
-        LocalDaemonRequest::CancelProjectEnvironmentSetup(request) => Some(
-            SessionMembershipScope::SessionId(request.session_id.clone()),
-        ),
-        LocalDaemonRequest::RetryProjectEnvironmentSetup(request) => Some(
-            SessionMembershipScope::SessionId(request.session_id.clone()),
-        ),
         LocalDaemonRequest::ListSessionMembers(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
@@ -633,26 +624,23 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::SubscribeUserAppViews(_)
         | LocalDaemonRequest::AnswerUserDomainInteraction(_)
         | LocalDaemonRequest::AcceptAppHostAction(_)
-        | LocalDaemonRequest::AdjustProjectEnvironment(_)
         | LocalDaemonRequest::ControlPlane(_)
         | LocalDaemonRequest::CreateDisposableWorker(_)
         | LocalDaemonRequest::GetDisposableWorker(_)
         | LocalDaemonRequest::GetManagedEnvironmentReimageReceipt(_)
         | LocalDaemonRequest::GetManagedEnvironmentReleaseUpdate(_)
-        | LocalDaemonRequest::DetectProjectEnvironment(_)
-        | LocalDaemonRequest::PreviewEnvironmentDiff(_)
-        | LocalDaemonRequest::SaveProjectEnvironmentRevision(_)
-        | LocalDaemonRequest::PlanProjectEnvironment(_)
-        | LocalDaemonRequest::ApplyProjectEnvironment(_)
-        | LocalDaemonRequest::CheckProjectEnvironment(_)
         | LocalDaemonRequest::GetEnvironmentOperation(_)
+        | LocalDaemonRequest::SaveProjectEnvironment(_)
+        | LocalDaemonRequest::SetProjectEnvironmentSecret(_)
+        | LocalDaemonRequest::RunProjectEnvironmentSetup(_)
+        | LocalDaemonRequest::ImportProjectEnvironmentEntries(_)
+        | LocalDaemonRequest::DraftProjectEnvironment(_)
+        | LocalDaemonRequest::CheckProjectEnvironment(_)
+        | LocalDaemonRequest::ResolveEnvironmentProposal(_)
+        | LocalDaemonRequest::RunRemoteProjectEnvironmentSetup(_)
+        | LocalDaemonRequest::RemoteEnvironmentOperation(_)
         | LocalDaemonRequest::CancelEnvironmentOperation(_)
-        | LocalDaemonRequest::RetryEnvironmentOperation(_)
-        | LocalDaemonRequest::ExportProjectEnvironment(_)
-        | LocalDaemonRequest::PreviewEnvironmentImport(_)
-        | LocalDaemonRequest::CommitEnvironmentImport(_)
         | LocalDaemonRequest::GetProjectEnvironment(_)
-        | LocalDaemonRequest::GetProjectEnvironmentManifest(_)
         | LocalDaemonRequest::KeepDisposableWorkerRunning(_)
         | LocalDaemonRequest::KeepManagedEnvironmentRunning(_)
         | LocalDaemonRequest::PrepareDisposableWorkerContextTransfer(_)
@@ -728,7 +716,6 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::ArchiveProject(_)
         | LocalDaemonRequest::DeleteProject(_)
         | LocalDaemonRequest::RestoreProject(_)
-        | LocalDaemonRequest::GetProjectEnvironmentSetupStatus(_)
         | LocalDaemonRequest::SearchMetaagentCommands(_)
         | LocalDaemonRequest::GetMetaagentTurnOverview(_)
         | LocalDaemonRequest::GetMetaagentTurnBlob(_)

@@ -3,19 +3,11 @@ use super::*;
 pub fn export_development_context(
     request: DevelopmentContextExportRequest,
 ) -> Result<DevelopmentContextExportResult, DaemonError> {
-    export_development_context_with_environment(request, None)
-}
-
-pub fn export_development_context_with_environment(
-    request: DevelopmentContextExportRequest,
-    environment: Option<DevelopmentProjectEnvironment>,
-) -> Result<DevelopmentContextExportResult, DaemonError> {
-    export_development_context_with_vault(request, environment, None)
+    export_development_context_with_vault(request, None)
 }
 
 pub(crate) fn export_development_context_with_vault(
     request: DevelopmentContextExportRequest,
-    mut environment: Option<DevelopmentProjectEnvironment>,
     vault: Option<&vault_artifacts::ExportVault<'_>>,
 ) -> Result<DevelopmentContextExportResult, DaemonError> {
     validate_export_request(&request)?;
@@ -107,36 +99,10 @@ pub(crate) fn export_development_context_with_vault(
         repositories.push(exported);
     }
 
-    if let Some(layer) = &mut environment {
-        layer.sealed.manifest.validate().map_err(context_error)?;
-        if layer.sealed.manifest.project_id != request.project_id
-            || layer.evidence.digest() != layer.sealed.manifest.evidence_digest
-        {
-            return Err(context_error(
-                "Project environment does not match development export",
-            ));
-        }
-        layer.repository_workspaces = source_repositories
-            .iter()
-            .map(|r| (r.repository_id.clone(), r.source_workspace_id.clone()))
-            .collect();
-        if layer.sealed.manifest.entries.iter().any(|e| {
-            !layer
-                .repository_workspaces
-                .values()
-                .any(|workspace| workspace == &e.workspace_id)
-        }) {
-            return Err(context_error(
-                "Project environment workspace is not selected",
-            ));
-        }
-    }
     let manifest = DevelopmentContextManifest {
         vault_artifacts: vault.map_or_else(Vec::new, |v| v.artifacts()),
         schema_version: if vault.is_some_and(|v| !v.artifacts().is_empty()) {
             VAULT_CONTEXT_SCHEMA_VERSION
-        } else if environment.is_some() {
-            ENVIRONMENT_CONTEXT_SCHEMA_VERSION
         } else if repositories
             .iter()
             .any(|repository| !repository.workspace_kind.is_git())
@@ -147,7 +113,6 @@ pub(crate) fn export_development_context_with_vault(
         },
         project_id: request.project_id,
         repositories,
-        project_environment: environment,
     };
     // The gzip writer is bounded by the room left beside the staged artifacts, so only the bytes
     // actually written are admitted.

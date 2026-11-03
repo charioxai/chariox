@@ -94,7 +94,6 @@ export function createWaitingRoomKernelConnectionController(deps: {
   homeMachineId(): string | null
   currentKernelId(): string | null | undefined
   invalidateInventory(): void
-  clearProjectSetup(): void
   connected(label: string): void
 }) {
   const homeDirectTargetKernelId = deps.initialTargetKernelId?.trim() || null
@@ -160,13 +159,7 @@ export function createWaitingRoomKernelConnectionController(deps: {
         directTargetKernelId = targetInventory.kernelId === deps.homeKernelId() ? homeDirectTargetKernelId : targetInventory.kernelId
         connected?.(targetInventory)
         retainPrevious({
-          commit: async () => {
-            try {
-              await pivot.commit()
-            } finally {
-              deps.clearProjectSetup()
-            }
-          },
+          commit: () => pivot.commit(),
           rollback: async () => {
             try {
               await pivot.rollback()
@@ -189,7 +182,6 @@ export function createWaitingRoomKernelConnectionController(deps: {
     } else {
       await deps.client.replaceClient(nextClient)
       if (!isCurrent()) return false
-      deps.clearProjectSetup()
       connectedMachineId = targetInventory.machineId
       directTargetKernelId = targetInventory.kernelId === deps.homeKernelId() ? homeDirectTargetKernelId : targetInventory.kernelId
       connected?.(targetInventory)

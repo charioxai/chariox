@@ -27,8 +27,7 @@ mod credential_environment;
 #[cfg(test)]
 pub(crate) use credential_environment::{
     record_provider_credential_delivery_for_test, take_provider_lifecycle_failure_for_test,
-    ProviderCredentialDeliveryProbe, ProviderLifecycleFailureInjection,
-    ProviderLifecycleFailureStage,
+    ProviderCredentialDeliveryProbe, ProviderLifecycleFailureStage,
 };
 mod executable_resolution;
 mod external_observation;
@@ -83,13 +82,11 @@ pub(crate) use claude::{
 };
 #[cfg(test)]
 pub(crate) use claude_runtime::claude_runtime_tool_wait_pending;
+#[cfg(test)]
+pub(crate) use claude_runtime::initialize_claude_runtime;
 pub(crate) use claude_runtime::ClaudeRuntimeState;
 pub(crate) use claude_runtime::{begin_claude_runtime_tool_wait, ClaudeRuntimeToolWait};
 pub(crate) use claude_runtime::{bounded_result, bounded_result_images};
-#[cfg(test)]
-pub(crate) use claude_runtime::{
-    drain_claude_events, initialize_claude_runtime, submit_claude_prompt,
-};
 pub(crate) use claude_runtime::{hand_over_claude_runtime, ClaudeHandover};
 pub use codex::{
     codex_catalog_endpoint, logout_codex, plan_codex_launch, resolve_codex_executable,
@@ -128,13 +125,16 @@ pub use launch_contract::{
     LaunchProviderRequest, ProviderLaunchResult, ProviderResumeState, ProviderWriteAccessMode,
     RuntimeMcpBinding,
 };
+#[cfg(test)]
+#[cfg(test)]
+pub(crate) use managed_isolation::managed_provider_isolation_env_remove;
 pub(crate) use managed_isolation::{
     apply_managed_provider_isolation, command_from_provider_launch,
     managed_isolated_utility_command, managed_isolated_utility_launch,
-    managed_provider_control_env_remove, managed_provider_isolation_env_remove,
-    managed_provider_isolation_required, managed_provider_parent_credential_env_remove,
-    provider_account_environment_on_kernel, provider_reported_transcript_on_kernel,
-    MANAGED_SLICE_PUBLICATION_ROOT_ENV, MANAGED_SLICE_SERVICE_ROOT_ENV,
+    managed_provider_control_env_remove, managed_provider_isolation_required,
+    managed_provider_parent_credential_env_remove, provider_account_environment_on_kernel,
+    provider_reported_transcript_on_kernel, MANAGED_SLICE_PUBLICATION_ROOT_ENV,
+    MANAGED_SLICE_SERVICE_ROOT_ENV,
 };
 #[cfg(test)]
 pub(crate) use managed_isolation::{
@@ -417,7 +417,6 @@ pub(crate) fn provider_run_uses_runtime_structured_utility_prompt(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ProviderUtilityExecutionPolicy {
     ExistingRun,
-    ReadOnlyDiscovery,
     /// MP-08: No source reads, commands, MCPs, host instructions or prior thread.
     MetadataOnlyDiscovery,
     /// A provider command on the run's own session, such as Claude's
@@ -431,7 +430,7 @@ impl ProviderUtilityExecutionPolicy {
     }
 
     pub(crate) fn is_read_only_discovery(self) -> bool {
-        matches!(self, Self::ReadOnlyDiscovery | Self::MetadataOnlyDiscovery)
+        matches!(self, Self::MetadataOnlyDiscovery)
     }
 
     /// The prompt goes out as given, without the kernel's turn context.

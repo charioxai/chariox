@@ -13,7 +13,6 @@ use crate::error::DaemonError;
 
 const DEVELOPMENT_CONTEXT_SCHEMA_VERSION: u32 = 2;
 const DIRECTORY_CONTEXT_SCHEMA_VERSION: u32 = 3;
-const ENVIRONMENT_CONTEXT_SCHEMA_VERSION: u32 = 4;
 const VAULT_CONTEXT_SCHEMA_VERSION: u32 = 5;
 const MAX_OVERLAY_FILE_BYTES: u64 = 16 * 1024 * 1024;
 /// Size totals are admitted against real disk and memory (`managed_context::limits`), never a constant;
@@ -83,19 +82,18 @@ pub struct DevelopmentContextManifest {
     pub schema_version: u32,
     pub project_id: String,
     pub repositories: Vec<DevelopmentRepositoryManifest>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub project_environment: Option<DevelopmentProjectEnvironment>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub vault_artifacts: Vec<vault_artifacts::VaultArtifact>,
 }
 
-/// MP-08: Metadata and selected target-sealed values travel with the M28 development layer.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct DevelopmentProjectEnvironment {
-    pub sealed: crate::project_environment::SealedProjectEnvironment,
-    pub evidence: crate::project_environment::ProjectEnvironmentEvidence,
-    pub repository_workspaces: BTreeMap<String, String>,
+/// The authenticated target a development layer's Vault artifacts are opened for.
+#[derive(Clone)]
+pub(crate) struct ContextImportAuthority {
+    pub config: crate::config::DaemonConfig,
+    pub context_id: String,
+    pub source_kernel_id: String,
+    pub source_key_thumbprint: String,
+    pub target_kernel_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -238,7 +236,7 @@ pub(crate) mod vault_artifacts;
 pub(crate) use export::{export_development_context_with_vault, publish_archive_no_clobber};
 
 use archive::write_archive;
-pub use export::{export_development_context, export_development_context_with_environment};
+pub use export::export_development_context;
 use git::{
     charge_overlay_materialization, create_git_bundle, ensure_worktree_root, git_blob_size,
     git_bytes, git_bytes_isolated, git_optional_text, git_output, git_output_isolated, git_text,
@@ -249,9 +247,8 @@ use git::{
 pub use import::import_development_context;
 pub(crate) use import::{
     cleanup_development_context_publication, cleanup_development_context_publication_staging,
-    cleanup_legacy_development_context_publication, import_development_context_with_environment,
-    import_development_context_with_publication,
-    recover_development_context_publication_with_environment,
+    cleanup_legacy_development_context_publication, import_development_context_with_authority,
+    import_development_context_with_publication, recover_development_context_publication,
     recover_pruned_development_context_publication,
     recover_pruned_development_context_publication_for_cleanup,
     recover_pruned_mutable_development_context_publication, register_transfer_workspaces_parent,

@@ -605,34 +605,19 @@ async fn execute_start_slice_request_with_relaunch_manifests(
     let initial_record = runtime_state
         .reconcile_slice_agent_attachments(&initial_record)
         .await?;
-    if initial_record.development_publication.is_none() {
-        if let Some(
-            crate::managed_context::package::ManagedContextDevelopmentSelection::SourceProject {
-                project_id,
-                repositories,
-            },
-        ) = &initial_record.development
-        {
-            if initial_record.source_slice_ref.is_some() {
-                runtime_state
-                    .refresh_slice_source_environment(&initial_record, request.interactive)
-                    .await?;
-            } else {
-                let selections = repositories
-                    .iter()
-                    .map(crate::managed_context::outbound_service::resolve_repository_selection)
-                    .collect::<Result<Vec<_>, _>>()?;
-                // MP-08: Discovery/review happens before the shared M28 private overlay is copied.
-                let _prepared = runtime_state
-                    .refresh_project_environment_state(
-                        project_id,
-                        &selections,
-                        request.interactive,
-                        &initial_record.name,
-                    )
-                    .await?;
-            }
-        }
+    if let Some(
+        crate::managed_context::package::ManagedContextDevelopmentSelection::SourceProject {
+            project_id,
+            ..
+        },
+    ) = &initial_record.development
+    {
+        let checkouts: Vec<std::path::PathBuf> = runtime_state
+            .slice_repository_selections(&initial_record)?
+            .into_iter()
+            .map(|selection| selection.worktree_path)
+            .collect();
+        runtime_state.register_environment_files(project_id, &checkouts)?;
     }
     let materialization_state = runtime_state.clone();
     let materialization_slice = initial_record.clone();

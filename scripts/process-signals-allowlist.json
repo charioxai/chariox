@@ -135,27 +135,6 @@
       "reason": "MP-11 inert regression assertion that the slice runtime start script no longer signals by process name; the string is never executed."
     },
     {
-      "path": "apps/kernel/src/runtime/state/project_environment_setup_recovery.rs",
-      "kind": "rust-group",
-      "text": "let _ = unsafe { libc::kill(-(identity.process_group_id as libc::pid_t), libc::SIGKILL) };",
-      "count": 4,
-      "reason": "MP-11 reviewed (mp11a signal-guards): the persisted lease pins boot id, PID and start ticks, and the leader is held stopped through a pidfd before the group send."
-    },
-    {
-      "path": "apps/kernel/src/runtime/state/project_environment_setup_recovery.rs",
-      "kind": "rust-group",
-      "text": "let result = unsafe { libc::kill(-(identity.process_group_id as libc::pid_t), libc::SIGKILL) };",
-      "count": 2,
-      "reason": "MP-11 reviewed (mp11a signal-guards): the persisted lease pins boot id, PID and start ticks, and the leader is held stopped through a pidfd before the group send."
-    },
-    {
-      "path": "apps/kernel/src/runtime/state/project_environment_setup_recovery.rs",
-      "kind": "rust-group",
-      "text": "let result = unsafe { libc::kill(-(process_group_id as libc::pid_t), 0) };",
-      "count": 1,
-      "reason": "MP-11 reviewed (mp11a signal-guards): signal 0 only probes whether the recorded group still exists."
-    },
-    {
       "path": "packages/app-runtime/src/worker_process/monitor.rs",
       "kind": "rust-group",
       "text": "libc::kill(-self.pid, libc::SIGKILL);",
@@ -168,13 +147,6 @@
       "text": "libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL);",
       "count": 1,
       "reason": "MP-11 reviewed (mp11a signal-guards): the capture child is unreaped when its private group is signalled."
-    },
-    {
-      "path": "apps/kernel/src/runtime/state/project_environment_setup_validation.rs",
-      "kind": "rust-group",
-      "text": "let _ = unsafe { libc::kill(-process_group, libc::SIGKILL) };",
-      "count": 1,
-      "reason": "MP-11 reviewed (mp11a signal-guards G-14, P3): the child's own private group, signalled around its reap; the window is the reap itself."
     },
     {
       "path": "apps/kernel/src/managed_context/scm.rs",

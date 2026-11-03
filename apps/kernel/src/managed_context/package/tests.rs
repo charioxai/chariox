@@ -84,7 +84,7 @@ fn explicit_empty_package_applies_a_real_development_context_without_kernel_stat
         expected_binding: binding,
         development_destination_root: root.join("managed/project"),
         target_private_key: "unused-for-explicit-empty".to_string(),
-        project_environment_target: None,
+        context_import_target: None,
         provider_account_target: None,
         git_credential_target: None,
     })
@@ -267,7 +267,7 @@ fn package_applies_without_a_development_component_when_the_plan_selects_empty()
         expected_binding: binding,
         development_destination_root: fixture.root.join("unused-development"),
         target_private_key: "unused-for-empty-context".to_string(),
-        project_environment_target: None,
+        context_import_target: None,
         provider_account_target: None,
         git_credential_target: None,
     })
@@ -388,7 +388,7 @@ fn provider_account_package_round_trips_replays_without_overwrite_and_rolls_back
         },
         development_destination_root: fixture.root.join("unused-development"),
         target_private_key: "unused-for-empty-context".to_string(),
-        project_environment_target: None,
+        context_import_target: None,
         provider_account_target: Some(provider_target.clone()),
         git_credential_target: None,
     };
@@ -582,7 +582,7 @@ esac
         },
         development_destination_root: fixture.root.join("unused-development"),
         target_private_key: "unused-for-empty-context".to_string(),
-        project_environment_target: None,
+        context_import_target: None,
         provider_account_target: None,
         git_credential_target: Some(target.clone()),
     };
@@ -755,7 +755,7 @@ fn receipt_capacity_is_rejected_before_context_publication() {
         expected_binding: binding,
         development_destination_root: destination.clone(),
         target_private_key: "unused-before-preflight".to_string(),
-        project_environment_target: None,
+        context_import_target: None,
         provider_account_target: None,
         git_credential_target: None,
     };

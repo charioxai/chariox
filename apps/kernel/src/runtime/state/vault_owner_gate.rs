@@ -35,6 +35,9 @@ fn who_may(request: &LocalDaemonRequest) -> Option<(Who, &'static str, &'static 
             "vault_owner_only",
             "Only the owner of this kernel can open its Vault values.",
         ),
+        LocalDaemonRequest::SetProjectEnvironmentSecret(_) => {
+            (Who::Owner, "vault_change_owner_only", wording::CHANGE)
+        }
         LocalDaemonRequest::LockCredentialVault(_) => {
             (Who::Owner, "vault_lock_owner_only", wording::LOCK)
         }

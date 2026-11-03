@@ -250,8 +250,6 @@ pub struct RuntimeInteraction {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     native_origin: Option<NativeInteractionOrigin>,
     requested_at_ms: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    project_environment_review: Option<crate::project_environment::ProjectEnvironmentReview>,
     /// Ephemeral provider-native login UI, never model context or history.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     provider_login: Option<RuntimeProviderLogin>,
@@ -318,7 +316,6 @@ impl RuntimeInteraction {
             default_on_timeout,
             native_origin: None,
             requested_at_ms: unix_epoch_ms(),
-            project_environment_review: None,
             provider_login: None,
             handoff: None,
             requester: None,
@@ -362,14 +359,6 @@ impl RuntimeInteraction {
 
     pub fn with_native_origin(mut self, origin: Option<NativeInteractionOrigin>) -> Self {
         self.native_origin = origin;
-        self
-    }
-
-    pub fn with_project_environment_review(
-        mut self,
-        review: crate::project_environment::ProjectEnvironmentReview,
-    ) -> Self {
-        self.project_environment_review = Some(review);
         self
     }
 
@@ -459,7 +448,6 @@ impl RuntimeInteraction {
             default_on_timeout: None,
             native_origin: None,
             requested_at_ms: unix_epoch_ms(),
-            project_environment_review: None,
             provider_login: None,
             handoff: None,
             requester: None,
