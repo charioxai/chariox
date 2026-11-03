@@ -56,3 +56,28 @@ and batching policy live in the workflow. Build it with the ordinary App Rust
 builder (`packages/app-sdk-tools/build-rust.py`), then package it with the official
 App packer and enroll/install through the normal publisher and capability decisions.
 No fixture installation metadata or Node backend is needed.
+
+Gate admission is kernel-owned for explicit workflow manual/Room, HTTP, schedule,
+App automation and notification entries. Generated agent-trigger workflows reject
+this gate setting. The kernel persists an entry before evaluation; a deferred or
+batched entry has no provider run until its selected routes reach the ordinary
+workflow queue. Room supervision follows the eventual run, and reports a drop or
+failure without inventing a run. Batch aggregates always use queued delivery.
+They preserve every member's provenance and earliest source deadline; cancellation
+of any member cancels the pending aggregate, including an active flush claim.
+
+Build `chariox-app-wasm-worker` with the release profile for actual use. The same
+R5 containment, fuel, memory, CPU and elapsed-time limits apply to upload, Test and
+live evaluation. A debug worker can exceed those limits during compilation.
+
+The journal refuses new admission at its fixed pending/history/body limits.
+Replay bodies compact after seven days or earlier source expiry; inspection then
+returns `replay_compacted_at_ms` and retained decision summaries instead of a
+replayable evaluation. Terminal metadata and source dedupe survive through the
+original deadline plus 30 days. Pending entries are never removed to reclaim
+history space. Module reclamation keeps live workflow and replay references.
+
+This backend slice exposes gate history through the gate entry requests and
+commands. Ordinary workflow run history lists actual runs. Inspector UI and
+utility-agent authoring are separate work; a passing native example does not
+establish the full cross-platform, managed-placement or long-soak gate matrix.
