@@ -39,7 +39,7 @@ fn target() -> ClientTarget {
 
 fn payload(size: usize) -> EncryptedRelayPayload {
     EncryptedRelayPayload {
-        sender_public_key: "daemon-public".to_string(),
+        sender_public_key: "BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".to_string(),
         nonce: "nonce".to_string(),
         ciphertext: "c".repeat(size),
     }
@@ -279,7 +279,7 @@ async fn a_binary_daemon_reply_is_counted_once_at_its_wire_size() {
     let reply = crate::binary_response::from_envelope(&RelayEnvelope::DaemonResponse {
         relay_request_id,
         encrypted_response: Some(EncryptedRelayPayload {
-            sender_public_key: "opaque-key".to_string(),
+            sender_public_key: "BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".to_string(),
             nonce: "abcdefghijklmnop".to_string(),
             ciphertext: base64::engine::general_purpose::STANDARD.encode(vec![0xfe; 5_000]),
         }),

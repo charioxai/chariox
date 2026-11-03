@@ -67,9 +67,9 @@ test("MP-08 MP-10 MP-11 v2 small transfer and binary delivery checkpoint release
   const receiver = new RelayFrameReceiver(), receipts: string[] = []
   const text = '{"kind":"client_event","event_id":1}'
   assert.equal(receiver.receive(chunk(1,0,text.length,text), ack=>receipts.push(ack)),text)
-  assert.equal(receiver.receive(chunk(2,0,0,""), ack=>receipts.push(ack)),null)
+  assert.equal(receiver.receiveBinary(binaryChunk(2,0,0,new Uint8Array()), ack=>receipts.push(ack)),null)
   assert.equal(receipts.length,2)
-  assert.throws(()=>receiver.receive(chunk(2,0,0,""),()=>assert.fail()))
+  assert.throws(()=>receiver.receiveBinary(binaryChunk(2,0,0,new Uint8Array()),()=>assert.fail()))
 })
 
 test("MP-08 MP-10 MP-11 multiplex receiver bounds simultaneous streams and reserved bytes", () => {
@@ -84,4 +84,14 @@ test("MP-08 MP-10 MP-11 multiplex receiver bounds simultaneous streams and reser
   const nested=new RelayFrameReceiver(), text=JSON.stringify({kind:"transport_ack",transfer_id:1,offset:0})
   assert.throws(()=>nested.receive(chunk(1,0,text.length,text),excess))
   for(const invalid of [chunk(2,1,0,""),chunk(2,0,0,"x"),chunk(2,0,2,"")]) assert.throws(()=>nested.receive(invalid,excess))
+})
+
+
+test("MP-08/MP-09/MP-10/MP-11 compact checkpoint retains monotonic receipt credit", () => {
+ const receiver = new RelayFrameReceiver(), receipts: string[] = []
+ const checkpoint = new Uint8Array(16); checkpoint.set([67,88,66,49]); new DataView(checkpoint.buffer).setUint32(4,1)
+ assert.equal(receiver.receiveBinary(checkpoint.buffer, text => receipts.push(text)), null)
+ assert.deepEqual(receipts.map(text => JSON.parse(text)), [{kind:"transport_ack",transfer_id:1,offset:0}])
+ assert.throws(() => receiver.receiveBinary(checkpoint.buffer, () => assert.fail()), /checkpoint/)
+ for(const offset of [8,12]) { const bad=checkpoint.slice(); bad[offset]=1; assert.throws(() => receiver.receiveBinary(bad.buffer, () => assert.fail())) }
 })

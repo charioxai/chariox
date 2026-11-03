@@ -8,7 +8,6 @@ use crate::protocol::{EncryptedRelayPayload, RelayEnvelope};
 pub const PROTOCOL_VERSION: u32 = 98;
 pub const CAPABILITY: &str = "chariox-relay-binary-v98";
 pub const VERSION_HEADER: &str = "x-chariox-relay-protocol";
-const HEADER_LIMIT: usize = 4096;
 const PAYLOAD_LIMIT: usize = 1024 * 1024;
 
 // MP-08/MP-10: preserve the configured path/authority/query exactly.
@@ -39,54 +38,58 @@ pub struct EventHeader {
     pub nonce: String,
 }
 
-impl EventHeader {
-    fn valid(&self) -> bool {
-        matches!(self.kind.as_str(), "daemon_event" | "client_event")
-            && !self.subscription_id.is_empty()
-            && self.subscription_id.len() <= 1024
-            && self.sender_public_key.len() <= 256
-            && !self.sender_public_key.is_empty()
-            && self.nonce.len() == 16
-    }
-}
-
 pub fn decode(bytes: &[u8]) -> Result<(EventHeader, &[u8]), std::io::Error> {
-    let invalid = || {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "invalid encrypted relay event",
-        )
-    };
-    if bytes.len() < 8 || &bytes[..4] != b"CXR1" {
+    use crate::binary_routing::{invalid, read_route};
+    if bytes.len() < 92 || &bytes[..4] != b"CXR1" || bytes[4] > 1 || bytes[15] != 4 {
         return Err(invalid());
     }
-    let len = u32::from_be_bytes(bytes[4..8].try_into().unwrap()) as usize;
-    if !(2..=HEADER_LIMIT).contains(&len) || bytes.len() < 8 + len + 16 {
+    let size = u16::from_be_bytes(bytes[5..7].try_into().unwrap());
+    let event_id = u64::from_be_bytes(bytes[7..15].try_into().unwrap());
+    if event_id > 9_007_199_254_740_991 {
         return Err(invalid());
     }
-    let header: EventHeader = serde_json::from_slice(&bytes[8..8 + len]).map_err(|_| invalid())?;
-    let payload = &bytes[8 + len..];
-    if !header.valid() || payload.len() > PAYLOAD_LIMIT {
+    let (subscription_id, payload) = read_route(size, &bytes[92..])?;
+    if !(16..=PAYLOAD_LIMIT).contains(&payload.len()) {
         return Err(invalid());
     }
-    Ok((header, payload))
+    Ok((
+        EventHeader {
+            kind: if bytes[4] == 0 {
+                "daemon_event"
+            } else {
+                "client_event"
+            }
+            .into(),
+            subscription_id,
+            event_id,
+            sender_public_key: STANDARD.encode(&bytes[15..80]),
+            nonce: STANDARD.encode(&bytes[80..92]),
+        },
+        payload,
+    ))
 }
 
 pub fn encode(header: &EventHeader, ciphertext: &[u8]) -> Result<Vec<u8>, std::io::Error> {
-    let metadata = serde_json::to_vec(header).map_err(std::io::Error::other)?;
-    if !header.valid()
-        || metadata.len() > HEADER_LIMIT
-        || !(16..=PAYLOAD_LIMIT).contains(&ciphertext.len())
+    use crate::binary_routing::{encrypted_fields, invalid, route};
+    let kind = match header.kind.as_str() {
+        "daemon_event" => 0,
+        "client_event" => 1,
+        _ => return Err(invalid()),
+    };
+    if !(16..=PAYLOAD_LIMIT).contains(&ciphertext.len()) || header.event_id > 9_007_199_254_740_991
     {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "invalid encrypted relay event",
-        ));
+        return Err(invalid());
     }
-    let mut bytes = Vec::with_capacity(8 + metadata.len() + ciphertext.len());
+    let (size, id) = route(&header.subscription_id)?;
+    let (key, nonce) = encrypted_fields(&header.sender_public_key, &header.nonce)?;
+    let mut bytes = Vec::with_capacity(92 + id.len() + ciphertext.len());
     bytes.extend_from_slice(b"CXR1");
-    bytes.extend_from_slice(&(metadata.len() as u32).to_be_bytes());
-    bytes.extend_from_slice(&metadata);
+    bytes.push(kind);
+    bytes.extend_from_slice(&size.to_be_bytes());
+    bytes.extend_from_slice(&header.event_id.to_be_bytes());
+    bytes.extend_from_slice(&key);
+    bytes.extend_from_slice(&nonce);
+    bytes.extend_from_slice(&id);
     bytes.extend_from_slice(ciphertext);
     Ok(bytes)
 }
@@ -141,7 +144,7 @@ mod tests {
             kind: "client_event".into(),
             subscription_id: "route".into(),
             event_id: 7,
-            sender_public_key: "opaque-peer-key".into(),
+            sender_public_key: "BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".into(),
             nonce: "abcdefghijklmnop".into(),
         };
         let ciphertext: Vec<_> = (0..65536).map(|n| (n % 256) as u8).collect();
@@ -150,7 +153,7 @@ mod tests {
         use sha2::{Digest, Sha256};
         assert_eq!(
             format!("{:x}", Sha256::digest(&wire)),
-            "40630ddc3753273ffb3d0c6b7f3e86346fcd650579cb032db572cc657fb722d2"
+            "5346ba713dcf998d88aebd03f95899479e850e6a67e3a036bfbd765f5af61db6"
         );
         let (decoded, raw) = decode(&wire).unwrap();
         assert_eq!(decoded.subscription_id, "route");

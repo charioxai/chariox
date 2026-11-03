@@ -153,7 +153,7 @@ async fn mp08_peer96_binary_events_negotiate_per_connection_and_downgrade_for_ei
                 subscription_id: "sub".into(),
                 event_id: 7,
                 encrypted_event: EncryptedRelayPayload {
-                    sender_public_key: "opaque-kernel-key".into(),
+                    sender_public_key: "BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".into(),
                     nonce: "abcdefghijklmnop".into(),
                     ciphertext: base64::engine::general_purpose::STANDARD.encode(&ciphertext),
                 },

@@ -124,14 +124,7 @@ impl Transfer {
                     end,
                 ));
             }
-            let checkpoint = serde_json::to_string(&TransportFrame::TransportChunk {
-                transfer_id: self.id,
-                offset: 0,
-                total_bytes: 0,
-                payload: String::new(),
-            })
-            .ok()?;
-            return Some((Message::Text(checkpoint.into()), 0));
+            return Some((Message::Binary(binary_chunk(self.id, 0, 0, &[]).into()), 0));
         }
         if self.offset == self.text.len() {
             return None;
@@ -755,7 +748,7 @@ mod tests {
                 kind: "client_event".into(),
                 subscription_id: "display".into(),
                 event_id,
-                sender_public_key: "opaque".into(),
+                sender_public_key: "BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".into(),
                 nonce: "abcdefghijklmnop".into(),
             };
             let bytes = crate::binary_event::encode(&header, &[7; 4096]).unwrap();
@@ -783,8 +776,10 @@ mod tests {
             );
             match message {
                 Message::Binary(bytes) => {
-                    let (h, _) = crate::binary_event::decode(&bytes).unwrap();
-                    ids.push(h.event_id);
+                    if let (Some(frame), _) = receiver.receive_binary(&bytes).unwrap() {
+                        let (h, _) = crate::binary_event::decode(&frame).unwrap();
+                        ids.push(h.event_id);
+                    }
                 }
                 Message::Text(text) => {
                     receiver.receive(&text).unwrap();
@@ -967,7 +962,7 @@ mod tests {
             kind: "client_event".into(),
             subscription_id: "display".into(),
             event_id: 1,
-            sender_public_key: "opaque".into(),
+            sender_public_key: "BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".into(),
             nonce: "abcdefghijklmnop".into(),
         };
         let binary = crate::binary_event::encode(&header, &[7; 4096]).unwrap();
@@ -1004,8 +999,14 @@ mod tests {
             assert!(total <= WINDOW_BYTES);
             match message {
                 Message::Binary(b) => {
-                    assert_eq!(&b[..], &binary);
-                    found = true;
+                    let (complete, ack) = receiver.receive_binary(&b).unwrap();
+                    if let Some(bytes) = complete {
+                        assert_eq!(bytes, binary);
+                        found = true;
+                    }
+                    if let Some(ack) = ack {
+                        receipts.push(ack);
+                    }
                 }
                 Message::Text(text) => {
                     let (_, ack) = receiver.receive(&text).unwrap();
@@ -1408,7 +1409,7 @@ mod tests {
             kind: "client_event".into(),
             subscription_id: "display".into(),
             event_id: 1,
-            sender_public_key: "opaque".into(),
+            sender_public_key: "BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".into(),
             nonce: "abcdefghijklmnop".into(),
         };
         let binary = crate::binary_event::encode(&header, &[7; 100 * 1024]).unwrap();
@@ -1427,14 +1428,14 @@ mod tests {
             kind: "client_event".into(),
             subscription_id: "display".into(),
             event_id: 1,
-            sender_public_key: "opaque".into(),
+            sender_public_key: "BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".into(),
             nonce: "abcdefghijklmnop".into(),
         };
         let event = crate::binary_event::encode(&header, &[0xfe; 100 * 1024]).unwrap();
         let response = crate::binary_response::encode(
             &crate::binary_response::ResponseHeader::ClientResponse {
                 request_id: "mirror".into(),
-                sender_public_key: "opaque".into(),
+                sender_public_key: "BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".into(),
                 nonce: "abcdefghijklmnop".into(),
             },
             &[0xfe; 100 * 1024],
@@ -1513,7 +1514,7 @@ mod binary_reply_regression {
         let text = serde_json::to_string(&crate::protocol::RelayEnvelope::ClientResponse {
             request_id: "mirror-request".into(),
             encrypted_response: Some(crate::protocol::EncryptedRelayPayload {
-                sender_public_key: "opaque-key".into(),
+                sender_public_key: "BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".into(),
                 nonce: "abcdefghijklmnop".into(),
                 ciphertext: STANDARD.encode(vec![0xfe; 100 * 1024]),
             }),
@@ -1578,7 +1579,7 @@ mod checkpoint_batch_tests {
         let bytes = crate::binary_response::encode(
             &crate::binary_response::ResponseHeader::ClientResponse {
                 request_id: "request".into(),
-                sender_public_key: "public".into(),
+                sender_public_key: "BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".into(),
                 nonce: "AAAAAAAAAAAAAAAA".into(),
             },
             &[7; 16],
@@ -1608,6 +1609,6 @@ mod checkpoint_batch_tests {
             "an already queued checkpoint must share the reply flush"
         );
         assert!(matches!(&batch[0],Message::Binary(b) if b.starts_with(b"CXR2")));
-        assert!(matches!(&batch[1],Message::Text(t) if t.contains("transport_chunk")));
+        assert!(matches!(&batch[1],Message::Binary(b) if b.len() == 16 && b.starts_with(b"CXB1")));
     }
 }

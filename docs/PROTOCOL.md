@@ -4450,38 +4450,36 @@ binary messages; over the relay they are the encrypted plaintext. The format is
 segments, then the raw segment bytes in order. JSON plaintexts never start with
 `CXD1`. These events are sent only on a display delivery: a local
 `display_subscribe` or a relay subscribe with scope `kernel_browser_display`. Clients
-that never register display delivery never receive `CXD1`. Peer 96 adds an
-optional `CXR1` WebSocket binary relay envelope, negotiated with the
-`chariox-relay-binary-v98` subprotocol: `CXR1`, a big-endian u32 header length,
-a JSON routing header of at most 4 KiB, then 16 B to 1 MiB of ciphertext. The
-relay reads only the routing header. Kernels fall back to JSON/base64 for older
-relays or receivers and for events over 1 MiB. Rollout: deploy a web bundle
-that decodes `CXD1` before kernels at 466 or later serve it Browser display;
-an older bundle cannot parse these frames.
+that never register display delivery never receive `CXD1`. Negotiated
+`chariox-relay-binary-v98` sockets carry opaque `CXR1` events and `CXR2`
+successful encrypted replies. Protocol 961 / peer 410 replaces their JSON routing
+headers with the compact layout below; the old layout is retired. Errors and
+non-binary connections retain their ordinary encrypted JSON transport.
 
-Protocol 722 / relay capability 98 keeps a negotiated CXR1 event binary above
-16 KiB. Bounded `CXB1` frames contain four magic bytes, then big-endian u32
-transfer ID, byte offset and total logical binary byte length, then raw event bytes. The
-whole frame is at most 16 KiB; every non-final payload is exactly 16,368 bytes.
-Text and binary transfers share the existing four-transfer / 128 MiB assembly
-budget and monotonic transfer IDs. Receipts remain text `transport_ack` frames
-with the accepted next byte offset. A complete CXR1 event of at most 16 KiB
-retains its following zero-byte text checkpoint. No fragment enters event
-admission or decryption. The relay stays opaque to ciphertext, and negotiated
-binary events never become JSON/base64 envelopes merely to cross the chunk
-boundary. Non-binary connections retain their encrypted JSON transport.
+Both layouts begin with magic4, kind1 (0 daemon, 1 client), and a big-endian
+u16 route length. CXR1 then carries a big-endian u64 event sequence, raw65
+uncompressed P-256 sender public key (first byte 4), raw12 AES-GCM nonce,
+route bytes and ciphertext. CXR2 omits the event sequence. Route length zero
+means sixteen raw UUID bytes, restored to exactly lowercase canonical hyphenated
+text; all other IDs retain 1–1024 UTF-8 bytes without normalization. Uppercase,
+braced and unhyphenated UUID text retains its exact bytes. Sequences must fit a
+JavaScript safe integer. Ciphertext includes at least the 16-byte tag; events
+retain the 1 MiB payload bound and replies the 64 MiB logical message bound.
+The relay checks only routing and bounds. Daemon replies still pass the pending
+request owner check before the relay replaces the route with the client ID.
+Clients retain sender authentication, request correlation and event replay checks.
 
-Protocol 722 / capability 98 also carries successful encrypted RPC replies as
-`CXR2`: four magic bytes, a big-endian u32 JSON header length, a strict header
-of at most 4 KiB, then raw ciphertext (at least the 16-byte authentication tag).
-The whole logical message is bounded by the existing 64 MiB limit and uses the
-same CXB1 credits and acknowledgements. The daemon header names `relay_request_id`;
-the client header names `request_id`. Both include `kind`, `sender_public_key`
-and the 16-character base64 nonce. Identifiers are nonempty and at most 1,024
-bytes, keys at most 256 bytes. Errors remain JSON. The relay normalizes the
-daemon reply through the existing pending-request owner check before replacing
-the relay request ID with the client request ID. It never decrypts ciphertext.
-No encrypted peer protocol shape changes; peer version stays 239.
+Messages above 16 KiB use bounded `CXB1` frames: magic4 and big-endian u32
+transfer ID, byte offset and total logical binary length, followed by payload.
+Every non-final payload is exactly 16,368 bytes. A complete CXR1/CXR2 message
+of at most 16 KiB is followed by a sixteen-byte CXB1 checkpoint with zero
+offset, zero total and no payload. Its text `transport_ack` receipt accounts for
+both the message and checkpoint. Text empty checkpoints are retired. Checkpoints
+share the monotonic ID space and existing credit ledger; they never dispatch an
+application envelope. Text and binary assembly retain the four-transfer/128 MiB
+budget. Replayed IDs, hidden checkpoint payloads and nonzero checkpoint offsets
+fail before a receipt. Partial chunks never reach decryption or admission.
+
 
 
 The shared presenter accepts desktop pixels only at the exact admitted physical
@@ -6309,10 +6307,11 @@ subscription heartbeats, silence deadlines and lease policy are unchanged.
 Protocol 961 / peer 410 RTC fragments use kinds 4 (last) and 5 (more) for
 CXL2 encrypted replies and events. CXL2 replaces the CXL1 JSON routing
 header with these bytes, in order: four magic bytes `CXL2`, one kind byte
-(0 reply, 1 event), a big-endian u16 UTF-8 route ID length, the raw 12-byte
+(0 reply, 1 event), a big-endian u16 route ID length, the raw 12-byte
 AES-GCM nonce, an event-only big-endian u64 sequence, the route ID, then
 raw ciphertext including its tag. The route ID is the request ID for replies
-or the subscription ID for events; it is nonempty and at most 1024 UTF-8 bytes.
+or the subscription ID for events. A zero length packs exactly sixteen UUID bytes;
+other IDs remain nonempty and at most 1024 UTF-8 bytes with no normalization.
 The ciphertext is at least 16 bytes, and the complete message retains the
 64 MiB transport bound. Clients reject invalid kinds, invalid UTF-8, truncated
 fields and event sequences above the JavaScript safe-integer limit.
@@ -6323,7 +6322,7 @@ its existing authentication and correlation checks; routing bytes grant no
 authority. No public key is accepted from a compact frame. Text handshake and
 refusal frames retain kinds 0/1. Direct clients require protocol 961; CXL1 is
 retired. Reply and event raw-frame snapshots and SHA256 hashes are pinned in
-`direct-compact-961.json`. Hosted CXR1/CXR2 relay framing, encrypted payloads,
+`direct-compact-961.json`. CXR1/CXR2 use the compact routing above. Encrypted payloads,
 10-second renewals, 30-second TTLs and silence deadlines are unchanged.
 
 MP-08/MP-09/MP-10/MP-11: protocol 951 permits `state_wait` up to 10000 ms.

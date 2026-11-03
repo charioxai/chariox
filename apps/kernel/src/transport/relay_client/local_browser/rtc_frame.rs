@@ -20,9 +20,8 @@ pub(super) fn compact(text: &str) -> Result<Option<Vec<u8>>, &'static str> {
         } => (subscription_id, Some(event_id), encrypted),
         _ => return Ok(None),
     };
-    if id.is_empty() || id.len() > 1024 {
-        return Err("invalid direct routing id");
-    }
+    let (size, id) =
+        chariox_relay::binary_routing::route(&id).map_err(|_| "invalid direct routing id")?;
     let nonce = base64::engine::general_purpose::STANDARD
         .decode(&encrypted.nonce)
         .map_err(|_| "invalid direct nonce")?;
@@ -38,12 +37,12 @@ pub(super) fn compact(text: &str) -> Result<Option<Vec<u8>>, &'static str> {
     let mut bytes = Vec::with_capacity(27 + id.len() + ciphertext.len());
     bytes.extend_from_slice(b"CXL2");
     bytes.push(u8::from(event_id.is_some()));
-    bytes.extend_from_slice(&(id.len() as u16).to_be_bytes());
+    bytes.extend_from_slice(&size.to_be_bytes());
     bytes.extend_from_slice(&nonce);
     if let Some(sequence) = event_id {
         bytes.extend_from_slice(&sequence.to_be_bytes());
     }
-    bytes.extend_from_slice(id.as_bytes());
+    bytes.extend_from_slice(&id);
     bytes.extend_from_slice(&ciphertext);
     Ok(Some(bytes))
 }

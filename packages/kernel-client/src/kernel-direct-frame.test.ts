@@ -18,7 +18,7 @@ test("MP-08/MP-09/MP-10/MP-11 binary routing matches kernel reply and event snap
     assert.equal(payload.sender_public_key, "pinned-key")
     assert.equal(payload.nonce, frame.nonce)
     assert.equal(payload.ciphertext, "AAAAAAAAAAAAAAAAAAAAAA==")
-    assert.equal(bytes.length, (frame.event_id === undefined ? 35 : 43) + Buffer.byteLength(frame.id))
+    assert.equal(bytes.length, (frame.event_id === undefined ? 35 : 43) + (bytes.readUInt16BE(5) === 0 ? 16 : Buffer.byteLength(frame.id)))
   }
 })
 

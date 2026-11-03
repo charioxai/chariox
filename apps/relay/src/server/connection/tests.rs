@@ -1170,7 +1170,7 @@ async fn queue_saturation_fault_probe() {
 
 fn encrypted_payload() -> EncryptedRelayPayload {
     EncryptedRelayPayload {
-        sender_public_key: "daemon-public".to_string(),
+        sender_public_key: "BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".to_string(),
         nonce: "nonce".to_string(),
         ciphertext: "ciphertext".to_string(),
     }
@@ -1576,7 +1576,7 @@ async fn mp11_binary_event_routes_only_for_its_registered_daemon_and_realm() {
         kind: "daemon_event".into(),
         subscription_id: "sub".into(),
         event_id: 31,
-        sender_public_key: "opaque-key".into(),
+        sender_public_key: "BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".into(),
         nonce: "abcdefghijklmnop".into(),
     };
     let bytes = crate::binary_event::encode(&header, &[37; 1024]).unwrap();
@@ -1645,7 +1645,7 @@ async fn binary_events_are_counted_under_their_subscription_scope() {
         kind: "daemon_event".into(),
         subscription_id: "sub".into(),
         event_id: 1,
-        sender_public_key: "opaque-key".into(),
+        sender_public_key: "BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".into(),
         nonce: "abcdefghijklmnop".into(),
     };
     let bytes = crate::binary_event::encode(&header, &[1; 4096]).unwrap();

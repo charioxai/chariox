@@ -1,9 +1,9 @@
 //! Opaque successful RPC responses. Routing still uses the existing pending request ledger.
+use crate::binary_routing::invalid;
 use crate::protocol::{EncryptedRelayPayload, RelayEnvelope};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::{Deserialize, Serialize};
 
-const HEADER_LIMIT: usize = 4096;
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ResponseHeader {
@@ -33,52 +33,59 @@ impl ResponseHeader {
             } => (request_id, sender_public_key, nonce),
         }
     }
-    fn valid(&self) -> bool {
-        let (id, key, nonce) = self.fields();
-        !id.is_empty()
-            && id.len() <= 1024
-            && !key.is_empty()
-            && key.len() <= 256
-            && nonce.len() == 16
-    }
-}
-fn invalid() -> std::io::Error {
-    std::io::Error::new(
-        std::io::ErrorKind::InvalidData,
-        "invalid encrypted relay response",
-    )
 }
 pub fn decode(bytes: &[u8]) -> Result<(ResponseHeader, &[u8]), std::io::Error> {
-    if bytes.len() < 8
+    use crate::binary_routing::{invalid, read_route};
+    if bytes.len() < 84
         || !bytes.starts_with(b"CXR2")
+        || bytes[4] > 1
+        || bytes[7] != 4
         || bytes.len() > crate::frame_transport::MAX_MESSAGE_BYTES
     {
         return Err(invalid());
     }
-    let size = u32::from_be_bytes(bytes[4..8].try_into().unwrap()) as usize;
-    if !(2..=HEADER_LIMIT).contains(&size) || bytes.len() < 8 + size + 16 {
+    let size = u16::from_be_bytes(bytes[5..7].try_into().unwrap());
+    let (id, payload) = read_route(size, &bytes[84..])?;
+    if payload.len() < 16 {
         return Err(invalid());
     }
-    let header: ResponseHeader =
-        serde_json::from_slice(&bytes[8..8 + size]).map_err(|_| invalid())?;
-    if !header.valid() {
-        return Err(invalid());
-    }
-    Ok((header, &bytes[8 + size..]))
+    let key = STANDARD.encode(&bytes[7..72]);
+    let nonce = STANDARD.encode(&bytes[72..84]);
+    let header = if bytes[4] == 0 {
+        ResponseHeader::DaemonResponse {
+            relay_request_id: id,
+            sender_public_key: key,
+            nonce,
+        }
+    } else {
+        ResponseHeader::ClientResponse {
+            request_id: id,
+            sender_public_key: key,
+            nonce,
+        }
+    };
+    Ok((header, payload))
 }
 pub fn encode(header: &ResponseHeader, ciphertext: &[u8]) -> Result<Vec<u8>, std::io::Error> {
-    let metadata = serde_json::to_vec(header).map_err(|_| invalid())?;
-    if !header.valid()
-        || metadata.len() > HEADER_LIMIT
-        || ciphertext.len() < 16
-        || metadata.len() + 8 + ciphertext.len() > crate::frame_transport::MAX_MESSAGE_BYTES
+    use crate::binary_routing::{encrypted_fields, invalid, route};
+    let (id, key, nonce) = header.fields();
+    let (size, id) = route(id)?;
+    let (key, nonce) = encrypted_fields(key, nonce)?;
+    if ciphertext.len() < 16
+        || 84 + id.len() + ciphertext.len() > crate::frame_transport::MAX_MESSAGE_BYTES
     {
         return Err(invalid());
     }
-    let mut bytes = Vec::with_capacity(8 + metadata.len() + ciphertext.len());
+    let mut bytes = Vec::with_capacity(84 + id.len() + ciphertext.len());
     bytes.extend_from_slice(b"CXR2");
-    bytes.extend_from_slice(&(metadata.len() as u32).to_be_bytes());
-    bytes.extend_from_slice(&metadata);
+    bytes.push(u8::from(matches!(
+        header,
+        ResponseHeader::ClientResponse { .. }
+    )));
+    bytes.extend_from_slice(&size.to_be_bytes());
+    bytes.extend_from_slice(&key);
+    bytes.extend_from_slice(&nonce);
+    bytes.extend_from_slice(&id);
     bytes.extend_from_slice(ciphertext);
     Ok(bytes)
 }
@@ -146,13 +153,13 @@ mod tests {
         use sha2::{Digest, Sha256};
         let header = ResponseHeader::ClientResponse {
             request_id: "request".into(),
-            sender_public_key: "opaque-key".into(),
+            sender_public_key: "BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".into(),
             nonce: "abcdefghijklmnop".into(),
         };
         let wire = encode(&header, &[0xfe; 16]).unwrap();
         assert_eq!(
             format!("{:x}", Sha256::digest(&wire)),
-            "1e9f9c294223a05c70682865f1740e9812b62316ca82c048a7fd9be2c92f4889"
+            "9f2c23bbee9425608106751d4641bb2f38cdd3294da06efee9104359451ffdad"
         );
     }
     #[test]
@@ -161,7 +168,7 @@ mod tests {
             RelayEnvelope::DaemonResponse {
                 relay_request_id: "relay-mirror".into(),
                 encrypted_response: Some(EncryptedRelayPayload {
-                    sender_public_key: "opaque-key".into(),
+                    sender_public_key: "BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".into(),
                     nonce: "abcdefghijklmnop".into(),
                     ciphertext: STANDARD.encode(vec![0xfe; 100 * 1024]),
                 }),
@@ -170,7 +177,7 @@ mod tests {
             RelayEnvelope::ClientResponse {
                 request_id: "client-mirror".into(),
                 encrypted_response: Some(EncryptedRelayPayload {
-                    sender_public_key: "opaque-key".into(),
+                    sender_public_key: "BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".into(),
                     nonce: "abcdefghijklmnop".into(),
                     ciphertext: STANDARD.encode(vec![0xfe; 100 * 1024]),
                 }),
@@ -186,7 +193,7 @@ mod tests {
     fn response_bounds_and_route_schema_fail_without_echoing_ciphertext() {
         let good = ResponseHeader::ClientResponse {
             request_id: "request".into(),
-            sender_public_key: "opaque-key".into(),
+            sender_public_key: "BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".into(),
             nonce: "abcdefghijklmnop".into(),
         };
         let mut wire = encode(&good, &[0xfe; 16]).unwrap();
@@ -197,7 +204,7 @@ mod tests {
             assert!(encode(
                 &ResponseHeader::ClientResponse {
                     request_id: id,
-                    sender_public_key: "key".into(),
+                    sender_public_key: "BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".into(),
                     nonce: "abcdefghijklmnop".into()
                 },
                 &[1; 16]

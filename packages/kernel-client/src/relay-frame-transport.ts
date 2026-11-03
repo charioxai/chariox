@@ -25,9 +25,15 @@ export class RelayFrameReceiver {
   receiveBinary(data: ArrayBuffer, receipt: (frame: string) => void): ArrayBuffer | null {
     const bytes = new Uint8Array(data)
     if (bytes.length < 4 || bytes[0] !== 67 || bytes[1] !== 88 || bytes[2] !== 66 || bytes[3] !== 49) return data
-    if (bytes.length <= relayBinaryHeaderBytes || bytes.length > relayChunkBytes) throw Error("invalid binary transport chunk bounds")
+    if (bytes.length < relayBinaryHeaderBytes || bytes.length > relayChunkBytes) throw Error("invalid binary transport chunk bounds")
     const header = new DataView(data), id = header.getUint32(4), offset = header.getUint32(8), total = header.getUint32(12)
     const payload = bytes.subarray(relayBinaryHeaderBytes)
+    if (total === 0) {
+      if (!id || offset !== 0 || payload.length !== 0 || id <= this.lastId) throw Error("invalid transport checkpoint")
+      this.lastId = id
+      receipt(JSON.stringify({kind:"transport_ack",transfer_id:id,offset:0}))
+      return null
+    }
     // Full non-final chunks bound fragment storage and receipt pressure.
     if (!id || !total || total > relayMaxMessageBytes || offset > total || payload.length !== Math.min(relayBinaryPayloadBytes, total - offset)) throw Error("invalid binary transport chunk bounds")
     if (this.active.has(id)) throw Error("transport payload type changed")
@@ -64,13 +70,7 @@ export class RelayFrameReceiver {
         || Object.keys(value).sort().join(",") !== "kind,offset,payload,total_bytes,transfer_id") throw Error("invalid transport chunk")
     const bytes = new TextEncoder().encode(payload).length
     if (bytes > relayChunkBytes) throw Error("invalid transport chunk bounds")
-    if (total === 0) {
-      if (offset !== 0 || payload !== "" || id <= this.lastId) throw Error("invalid transport checkpoint")
-      this.lastId = id
-      receipt(JSON.stringify({kind:"transport_ack",transfer_id:id,offset:0}))
-      return null
-    }
-    if (bytes === 0) throw Error("invalid transport chunk bounds")
+    if (total === 0 || bytes === 0) throw Error("invalid transport chunk bounds")
     if (this.binaryActive.has(id)) throw Error("transport payload type changed")
     if (!this.active.has(id)) {
       if (offset !== 0 || id <= this.lastId || this.active.size + this.binaryActive.size >= relayMaxTransfers

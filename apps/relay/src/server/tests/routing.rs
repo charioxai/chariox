@@ -407,7 +407,7 @@ async fn daemon_responses_must_match_pending_request_owner() {
         };
 
         let encrypted_response = EncryptedRelayPayload {
-            sender_public_key: "daemon-public".to_string(),
+            sender_public_key: "BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".to_string(),
             nonce: "abcdefghijklmnop".to_string(),
             ciphertext: {
                 use base64::Engine;
@@ -632,7 +632,7 @@ async fn daemon_events_must_match_subscription_owner() {
     assert_eq!(registry.read().await.subscription_count(), 1);
 
     let encrypted_event = EncryptedRelayPayload {
-        sender_public_key: "daemon-public".to_string(),
+        sender_public_key: "BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".to_string(),
         nonce: "nonce-event".to_string(),
         ciphertext: "ciphertext-event".to_string(),
     };

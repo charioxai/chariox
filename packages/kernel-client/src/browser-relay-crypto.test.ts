@@ -1,3 +1,4 @@
+import { compactRelayTestFrame, testRelayKey } from "./relay-binary-test-helpers.js"
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import * as browser from './browser-relay-crypto.js';
@@ -128,9 +129,7 @@ test('MP-08/MP-10/MP-11 peer96 binary relay events retain authenticated cipherte
   const sender = native.createRelayKeypair();
   const payload = new native.RelayClientIdentity(sender.privateKey).encrypt(receiver.publicKeyBase64, Buffer.from('{"event":"terminal_output"}'));
   const raw = Buffer.from(payload.ciphertext, 'base64');
-  const header = Buffer.from(JSON.stringify({ kind:'client_event', subscription_id:'s', event_id:17, sender_public_key:payload.sender_public_key, nonce:payload.nonce }));
-  const prefix = Buffer.alloc(8); prefix.write('CXR1'); prefix.writeUInt32BE(header.length, 4);
-  const wire = Buffer.concat([prefix, header, raw]);
+  const wire = compactRelayTestFrame({ kind:'client_event', subscription_id:'s', event_id:17, sender_public_key:payload.sender_public_key, nonce:payload.nonce }, raw);
   const decoded = browser.decodeBinaryRelayEvent(wire);
   assert.equal(decoded.event_id, 17);
   assert.equal(decoded.encrypted_event.ciphertext instanceof Uint8Array, true);
@@ -140,7 +139,7 @@ test('MP-08/MP-10/MP-11 peer96 binary relay events retain authenticated cipherte
   await assert.rejects(browser.decryptRelayEvent(receiver.privateKey, browser.decodeBinaryRelayEvent(corrupted).encrypted_event, sender.publicKeyBase64));
   const excessive = wire.slice(); excessive.writeUInt32BE(4097,4);
   assert.throws(() => browser.decodeBinaryRelayEvent(excessive), /bounds/);
-  assert.throws(() => browser.decodeBinaryRelayEvent(wire.subarray(0,8+header.length+15)), /bounds/);
+  assert.throws(() => browser.decodeBinaryRelayEvent(wire.subarray(0,92+1+15)), /bounds/);
 });
 
 
@@ -173,8 +172,7 @@ test('MP-08/MP-09/MP-10/MP-11 negotiated browser connections reassemble and ackn
  globalThis.WebSocket=Socket as unknown as typeof WebSocket;
  try{
   const connection=await browser.connectRelaySocket('wss://example/relay');assert.equal(connection.socket.binaryType,'arraybuffer');
-  const header={kind:'client_event',subscription_id:'display',event_id:1,sender_public_key:'opaque',nonce:'AAAAAAAAAAAAAAAA'},metadata=new TextEncoder().encode(JSON.stringify(header)),payload=new Uint8Array(100*1024).fill(0xfe),event=new Uint8Array(8+metadata.length+payload.length);
-  event.set(new TextEncoder().encode('CXR1'));new DataView(event.buffer).setUint32(4,metadata.length);event.set(metadata,8);event.set(payload,8+metadata.length);
+  const payload=new Uint8Array(100*1024).fill(0xfe),event=compactRelayTestFrame({kind:'client_event',subscription_id:'display',event_id:1,sender_public_key:testRelayKey,nonce:'AAAAAAAAAAAAAAAA'},payload);
   let complete:ReturnType<typeof connection.receive>=null;
   for(let offset=0;offset<event.length;offset+=16368){
    const part=event.subarray(offset,offset+16368),wire=new Uint8Array(16+part.length),view=new DataView(wire.buffer);
@@ -198,7 +196,8 @@ test('MP08 MP09 MP10 MP11 connection reassembles raw RPC response and decrypts i
  try{
   const client=await browser.createRelayKeypair(),daemon=await browser.createRelayKeypair(),plain=JSON.stringify({KernelBrowser:{result:{packet:'public-'.repeat(20000)}}});
   const encrypted=(await browser.encryptRelayPayload(client.publicKeyBase64,plain,daemon)).payload;
-  const header=Buffer.from(JSON.stringify({kind:'client_response',request_id:'mirror-request',sender_public_key:encrypted.sender_public_key,nonce:encrypted.nonce})),wire=Buffer.concat([Buffer.from('CXR2'),Buffer.alloc(4),header,Buffer.from(encrypted.ciphertext,'base64')]);wire.writeUInt32BE(header.length,4);
+  const wire=compactRelayTestFrame({kind:'client_response',request_id:'mirror-request',sender_public_key:encrypted.sender_public_key,nonce:encrypted.nonce},Buffer.from(encrypted.ciphertext,'base64'));
+
   const connection=await browser.connectRelaySocket('wss://example/relay');let received:ReturnType<typeof connection.receive>=null;
   for(let offset=0;offset<wire.length;offset+=16368){const part=wire.subarray(offset,offset+16368),chunk=Buffer.concat([Buffer.from('CXB1'),Buffer.alloc(12),part]);chunk.writeUInt32BE(1,4);chunk.writeUInt32BE(offset,8);chunk.writeUInt32BE(wire.length,12);received=connection.receive(Uint8Array.from(chunk).buffer);}
   assert(received&&typeof received!=='string'&&received.kind==='client_response');assert.equal(received.request_id,'mirror-request');assert.equal(await browser.decryptRelayPayload(client.privateKey,received.encrypted_response,daemon.publicKeyBase64),plain);assert.equal(JSON.parse(acks.at(-1)!).offset,wire.length);
@@ -206,9 +205,8 @@ test('MP08 MP09 MP10 MP11 connection reassembles raw RPC response and decrypts i
 });
 
  test('MP08 MP09 MP10 MP11 CXR2 protocol722 snapshot and strict routing header', async()=>{
- const metadata=Buffer.from(JSON.stringify({kind:'client_response',request_id:'request',sender_public_key:'opaque-key',nonce:'abcdefghijklmnop'}));
- const wire=Buffer.concat([Buffer.from('CXR2'),Buffer.alloc(4),metadata,Buffer.alloc(16,0xfe)]);wire.writeUInt32BE(metadata.length,4);
- const {createHash}=await import('node:crypto');assert.equal(createHash('sha256').update(wire).digest('hex'),'1e9f9c294223a05c70682865f1740e9812b62316ca82c048a7fd9be2c92f4889');
+ const wire=compactRelayTestFrame({kind:'client_response',request_id:'request',sender_public_key:testRelayKey,nonce:'abcdefghijklmnop'},Buffer.alloc(16,0xfe));
+ const {createHash}=await import('node:crypto');assert.equal(createHash('sha256').update(wire).digest('hex'),'9f2c23bbee9425608106751d4641bb2f38cdd3294da06efee9104359451ffdad');
  assert.equal(browser.decodeBinaryRelayResponse(wire).request_id,'request');
  for(const broken of [wire.subarray(0,wire.length-1),Buffer.from(wire)]) { if(broken.length===wire.length)broken[3]=49;assert.throws(()=>browser.decodeBinaryRelayResponse(broken)); }
  });

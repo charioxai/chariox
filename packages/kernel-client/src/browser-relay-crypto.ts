@@ -1,3 +1,4 @@
+import { decodeCompactRelayRouting } from "./relay-binary-routing.js"
 import { RelayFrameReceiver, relayTransportUrl } from "./relay-frame-transport.js"
 import type { EncryptedRelayPayload as RelayPayload } from "./kernel-transport-frames.js"
 
@@ -38,16 +39,8 @@ export async function connectRelaySocket(url: string, binary = true): Promise<Re
 export function decodeBinaryRelayEvent(bytes: Uint8Array): {
   kind: "client_event"; subscription_id: string; event_id: number; encrypted_event: EncryptedRelayPayload
 } {
-  if (bytes.length < 8 || bytes[0] !== 0x43 || bytes[1] !== 0x58 || bytes[2] !== 0x52 || bytes[3] !== 0x31) throw new Error("invalid binary relay event")
-  const size = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(4)
-  if (size < 2 || size > 4096 || bytes.length < 8 + size + 16 || bytes.length - 8 - size > 1024 * 1024) throw new Error("invalid binary relay event bounds")
-  const header = JSON.parse(new TextDecoder().decode(bytes.subarray(8, 8 + size))) as Record<string, unknown>
-  if (header.kind !== "client_event" || typeof header.subscription_id !== "string" || header.subscription_id.length < 1 || header.subscription_id.length > 1024
-    || !Number.isSafeInteger(header.event_id) || (header.event_id as number) < 0
-    || typeof header.sender_public_key !== "string" || header.sender_public_key.length < 1 || header.sender_public_key.length > 256
-    || typeof header.nonce !== "string" || header.nonce.length !== 16) throw new Error("invalid binary relay event header")
-  return { kind: "client_event", subscription_id: header.subscription_id, event_id: header.event_id as number,
-    encrypted_event: { sender_public_key: header.sender_public_key, nonce: header.nonce, ciphertext: bytes.subarray(8 + size) } }
+  const { id, eventId, ...encrypted_event } = decodeCompactRelayRouting(bytes, true)
+  return { kind: "client_event", subscription_id: id, event_id: eventId, encrypted_event }
 }
 
 export type BinaryRelayResponse = {
@@ -57,21 +50,8 @@ export type BinaryRelayResponse = {
   error: null
 }
 export function decodeBinaryRelayResponse(bytes: Uint8Array): BinaryRelayResponse {
-  const invalid = () => new Error("invalid binary relay response")
-  if (bytes.length < 8 || bytes[0] !== 67 || bytes[1] !== 88 || bytes[2] !== 82 || bytes[3] !== 50
-      || bytes.length > 64 * 1024 * 1024) throw invalid()
-  const length = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(4)
-  if (length < 2 || length > 4096 || bytes.length < 8 + length + 16) throw invalid()
-  let header: Record<string, unknown>
-  try { header = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(8, 8 + length))) }
-  catch { throw invalid() }
-  if (!header || typeof header !== "object" || Array.isArray(header)
-      || Object.keys(header).sort().join(",") !== "kind,nonce,request_id,sender_public_key"
-      || header.kind !== "client_response" || typeof header.request_id !== "string" || !header.request_id || header.request_id.length > 1024
-      || typeof header.sender_public_key !== "string" || !header.sender_public_key || header.sender_public_key.length > 256
-      || typeof header.nonce !== "string" || !/^[A-Za-z0-9+/]{16}$/.test(header.nonce)) throw invalid()
-  return { kind: "client_response", request_id: header.request_id,
-    encrypted_response: { sender_public_key: header.sender_public_key, nonce: header.nonce, ciphertext: bytes.subarray(8 + length) }, error: null }
+  const { id, eventId: _, ...encrypted_response } = decodeCompactRelayRouting(bytes, false)
+  return { kind: "client_response", request_id: id, encrypted_response, error: null }
 }
 
 export type RelayKeypair = {

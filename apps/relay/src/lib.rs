@@ -1,6 +1,7 @@
 pub mod auth;
 pub mod binary_event;
 pub mod binary_response;
+pub mod binary_routing;
 pub mod config;
 pub mod frame_transport;
 pub mod meter;

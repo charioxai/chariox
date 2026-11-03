@@ -90,7 +90,7 @@ mod tests {
         let response = RelayEnvelope::DaemonResponse {
             relay_request_id: "relay".into(),
             encrypted_response: Some(EncryptedRelayPayload {
-                sender_public_key: "public".into(),
+                sender_public_key: "BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".into(),
                 nonce: "synthetic".into(),
                 ciphertext: STANDARD.encode([9u8; 16]),
             }),
@@ -124,7 +124,7 @@ mod tests {
             subscription_id: "diagnostic".into(),
             event_id: 1,
             encrypted_event: EncryptedRelayPayload {
-                sender_public_key: "public".into(),
+                sender_public_key: "BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".into(),
                 nonce: "0000000000000000".into(),
                 ciphertext: STANDARD.encode([1u8; 16]),
             },

@@ -12,11 +12,18 @@
     },
     {
       "kind": "client_event",
-      "id": "流-é",
+      "id": "\u6d41-\u00e9",
       "nonce": "AAECAwQFBgcICQoL",
       "wire_hex": "43584c32010006000102030405060708090a0b001fffffffffffffe6b5812dc3a900000000000000000000000000000000",
       "sha256": "2d1bb9ef52e2c28f340b1101ad150ead0e5f4e3af682e1c56923652d3f0902e2",
       "event_id": 9007199254740991
+    },
+    {
+      "kind": "client_response",
+      "id": "01234567-89ab-cdef-0123-456789abcdef",
+      "nonce": "AAAAAAAAAAAAAAAA",
+      "wire_hex": "43584c320000000000000000000000000000000123456789abcdef0123456789abcdef00000000000000000000000000000000",
+      "sha256": "8cc18347880fcca36c3310dd86d3915fdd9057567aea671d35245d247d6cb712"
     }
   ]
 }

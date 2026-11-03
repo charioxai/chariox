@@ -1,5 +1,18 @@
 # Managed Path-1 parity inventory (MP-11)
 
+## MP-08 / MP-09 / MP-10 / MP-11 compact transport routing
+
+Protocol 961 / peer 410 carries raw P-256 sender keys and nonces in opaque
+CXR1/CXR2 relay routing, sixteen-byte CXB1 delivery checkpoints, and lossless
+canonical UUID packing on relay and direct routes. Ordinary and managed kernels
+share the same encoders, pending-request ownership, sender authentication,
+replay and transport-credit checks. UTF-8 routes retain their exact bytes.
+Receipt checkpoints acknowledge transport delivery only. No managed activity,
+authority, 10-second renewal, 30-second TTL or silence deadline changes.
+Focused source checks and scoped hosted drills do not close the wider parity
+matrix or independent security-anchor review.
+
+
 ## MP-08 / MP-09 / MP-10 / MP-11 background carrier demand
 
 Presence/catalog links keep their authenticated relay subscriptions until Room

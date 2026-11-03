@@ -101,13 +101,26 @@ impl FrameReceiver {
         if !bytes.starts_with(BINARY_CHUNK_MAGIC) {
             return Ok((Some(bytes.to_vec()), None));
         }
-        if bytes.len() <= BINARY_CHUNK_HEADER_BYTES || bytes.len() > CHUNK_BYTES {
+        if bytes.len() < BINARY_CHUNK_HEADER_BYTES || bytes.len() > CHUNK_BYTES {
             return Err("invalid binary transport chunk bounds");
         }
         let transfer_id = u32::from_be_bytes(bytes[4..8].try_into().unwrap());
         let offset = u32::from_be_bytes(bytes[8..12].try_into().unwrap()) as usize;
         let total = u32::from_be_bytes(bytes[12..16].try_into().unwrap()) as usize;
         let payload = &bytes[BINARY_CHUNK_HEADER_BYTES..];
+        if total == 0 {
+            if transfer_id == 0 || offset != 0 || !payload.is_empty() || transfer_id <= self.last_id
+            {
+                return Err("invalid transport checkpoint");
+            }
+            self.last_id = transfer_id;
+            let ack = serde_json::to_string(&TransportFrame::TransportAck {
+                transfer_id,
+                offset: 0,
+            })
+            .map_err(|_| "cannot encode transport receipt")?;
+            return Ok((None, Some(ack)));
+        }
         // Full non-final chunks bound both fragment storage and receipt pressure.
         if transfer_id == 0
             || total == 0
@@ -176,22 +189,12 @@ impl FrameReceiver {
             unreachable!()
         };
         let total = total_bytes as usize;
-        if transfer_id == 0 || total > MAX_MESSAGE_BYTES || payload.len() > CHUNK_BYTES {
+        if transfer_id == 0
+            || total == 0
+            || total > MAX_MESSAGE_BYTES
+            || payload.len() > CHUNK_BYTES
+        {
             return Err("invalid transport chunk bounds");
-        }
-        // A zero-byte transfer is the receipt checkpoint immediately after one
-        // bounded binary envelope. It never dispatches an application envelope.
-        if total == 0 {
-            if offset != 0 || !payload.is_empty() || transfer_id <= self.last_id {
-                return Err("invalid transport checkpoint");
-            }
-            self.last_id = transfer_id;
-            let ack = serde_json::to_string(&TransportFrame::TransportAck {
-                transfer_id,
-                offset: 0,
-            })
-            .map_err(|_| "cannot encode transport receipt")?;
-            return Ok((None, Some(ack)));
         }
         if payload.is_empty() {
             return Err("invalid transport chunk bounds");
@@ -325,15 +328,11 @@ mod tests {
     }
     #[test]
     fn receipt_queue_holds_every_frame_the_window_admits() {
-        let smallest = serde_json::to_string(&TransportFrame::TransportChunk {
-            transfer_id: 1,
-            offset: 0,
-            total_bytes: 0,
-            payload: String::new(),
-        })
-        .unwrap();
-        assert!(smallest.len() >= MIN_FRAME_BYTES);
-        assert!(MAX_UNACKED_FRAMES * smallest.len() >= WINDOW_BYTES + SMALL_RESERVE_BYTES);
+        // A checkpoint shares one receipt with its preceding bounded envelope.
+        let smallest = binary_chunk(1, 0, 0, &[]);
+        let combined_min = smallest.len() + 84 + 1 + 16;
+        assert!(combined_min >= MIN_FRAME_BYTES);
+        assert!(MAX_UNACKED_FRAMES * combined_min >= WINDOW_BYTES + SMALL_RESERVE_BYTES);
     }
 
     #[test]
@@ -508,5 +507,27 @@ mod multiplex_tests {
                 .unwrap_err(),
             "nested transport frame"
         );
+    }
+}
+
+#[cfg(test)]
+mod compact_checkpoint_tests {
+    use super::*;
+    #[test]
+    fn compact_checkpoint_preserves_order_and_cannot_hide_payload_or_offset() {
+        let mut receiver = FrameReceiver::default();
+        let bytes = binary_chunk(1, 0, 0, &[]);
+        assert_eq!(bytes.len(), 16);
+        let (payload, receipt) = receiver.receive_binary(&bytes).unwrap();
+        assert!(payload.is_none());
+        assert!(receipt.unwrap().contains("transport_ack"));
+        assert!(receiver.receive_binary(&bytes).is_err());
+        for bad in [
+            binary_chunk(0, 0, 0, &[]),
+            binary_chunk(2, 1, 0, &[]),
+            binary_chunk(2, 0, 0, &[1]),
+        ] {
+            assert!(receiver.receive_binary(&bad).is_err());
+        }
     }
 }
