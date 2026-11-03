@@ -463,4 +463,5 @@ pub use workspace::*;
 /// MP-08/MP-09/MP-10/MP-11: 960 integrates Machines and canonical owner/agent Vault uses (peer409).
 /// MP-08/MP-09/MP-10/MP-11: 963 binds every captured Vault entry to one declared use (peer412).
 /// Connected service machine requests use the ordinary Chariox access grant.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 963;
+/// MP-08/MP-09/MP-10/MP-11: 965 integrates declared Vault uses and enrolled-kernel machine authority (peer414).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 965;

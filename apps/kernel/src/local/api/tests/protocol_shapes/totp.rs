@@ -28,6 +28,6 @@ fn totp_protocol_945_394_snapshot_and_hash() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "e00877984e6e59fac6604806c88dd31a1b6f57accb32b96d46e171360328a1d7"
+        "bd6122eadf915bbd2d61dfe5caa692636afcd4a390ae50d875726e70c386e97d"
     );
 }
