@@ -38,6 +38,7 @@ Chariox is in development: backward compatibility with older kernels, clients an
 4. Cloud signs users in, issues relay tokens and picks relay targets with fresh heartbeats. It never carries runtime traffic and never changes kernel behaviour.
 5. Provider permission prompts resolve through one kernel-owned interaction shown to every client in the session.
 6. Hosted connections use `wss://` behind Caddy. Hosted settings that break these rules must fail loudly.
+7. OSS boundary (OF-18+, `scripts/oss-boundary-guard.mjs`, part of `pnpm lint`): the change adds no compute-provider or Cloud-only business logic to OSS (provider names, APIs, images, sizes, regions, prices, rental or auto-stop policy, Cloud account UI, hard-coded vendor hosts). Any new control-plane API path or Cloud-shaped request is in `scripts/control-plane-paths.allow.json` or `scripts/control-plane-requests.allow.json` with a justification and a generic seam, and the leak list `scripts/oss-boundary-leaks.allow.json` only shrinks: delete an entry in the change that removes its code.
 
 ## Writing clean code
 
