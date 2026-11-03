@@ -494,7 +494,7 @@ impl KernelRuntimeState {
         agent: &crate::agent::AgentInstance,
         requested: &str,
     ) -> Result<Option<ViewContext>, ViewError> {
-        use crate::runtime::app_view_host::{AppViewHost, KernelBrowserAppViewHost};
+        use crate::runtime::state::app_view_host::{AppViewHost, KernelBrowserAppViewHost};
 
         let canonical_owner = self.provider_account_authority_owner_user_id(agent.owner_user_id());
         let views = self.app_control().user_views().clone();
@@ -873,7 +873,9 @@ impl KernelRuntimeState {
                 match &context.host {
                     ViewHost::Room => self.app_view_command::<Value>(&context.session, request).await,
                     ViewHost::User { owner, browser_generation, .. } => {
-                        use crate::runtime::app_view_host::{AppViewHost, KernelBrowserAppViewHost};
+                        use crate::runtime::state::app_view_host::{
+                            AppViewHost, KernelBrowserAppViewHost,
+                        };
                         KernelBrowserAppViewHost {
                             state: self,
                             owner,
