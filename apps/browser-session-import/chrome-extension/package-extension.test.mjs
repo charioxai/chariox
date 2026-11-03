@@ -3,7 +3,8 @@ import {mkdtemp,readFile,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import {extensionIdForPublicKey,packageChromeExtension} from './package-extension.mjs';
+import {controlPlaneWebOrigin,extensionIdForPublicKey,packageChromeExtension} from './package-extension.mjs';
+import {defaultControlPlaneUrl} from '../../../scripts/lib/default-control-plane-url.mjs';
 
 test('packager emits a loadable extension tree and transpiles shared browser modules', async t => {
   assert.ok(process.env.TYPESCRIPT_MODULE,'TYPESCRIPT_MODULE must name an existing TypeScript module');
@@ -44,4 +45,26 @@ test('packager binds the reviewed public key to one stable extension ID',async t
   assert.equal(result.extensionId,expected);
   assert.equal((await readFile(path.join(root,'browser-import-extension-id.txt'),'utf8')).trim(),expected);
   assert.match(expected,/^[a-p]{32}$/);
+});
+
+test('packager takes the web origin from the build-time control-plane source',async t => {
+  const typescript=(await import(process.env.TYPESCRIPT_MODULE)).default;
+  const repository=path.resolve(path.dirname(new URL(import.meta.url).pathname),'../../..');
+  const defaultRoot=await mkdtemp(path.join(tmpdir(),'chariox-default-origin-'));
+  const namedRoot=await mkdtemp(path.join(tmpdir(),'chariox-named-origin-'));
+  t.after(()=>Promise.all([rm(defaultRoot,{recursive:true,force:true}),rm(namedRoot,{recursive:true,force:true})]));
+  await packageChromeExtension(defaultRoot,typescript);
+  const defaultOrigin=new URL(await defaultControlPlaneUrl(repository)).origin;
+  assert.deepEqual(JSON.parse(await readFile(path.join(defaultRoot,'manifest.json'),'utf8')).externally_connectable,
+    {matches:[`${defaultOrigin}/*`]});
+  assert.match(await readFile(path.join(defaultRoot,
+    'apps/browser-session-import/chrome-extension/web-origins.mjs'),'utf8'),
+    new RegExp(`\\["${defaultOrigin.replaceAll('.','\\.')}"\\]`));
+  await packageChromeExtension(namedRoot,typescript,{controlPlaneUrl:'https://service.example/api'});
+  assert.deepEqual(JSON.parse(await readFile(path.join(namedRoot,'manifest.json'),'utf8')).externally_connectable,
+    {matches:['https://service.example/*']});
+  assert.match(await readFile(path.join(namedRoot,
+    'apps/browser-session-import/chrome-extension/web-origins.mjs'),'utf8'),/\["https:\/\/service\.example"\]/);
+  assert.throws(() => controlPlaneWebOrigin('http://service.example'),/absolute https URL/);
+  assert.throws(() => controlPlaneWebOrigin('not a url'),/absolute https URL/);
 });

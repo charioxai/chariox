@@ -5,13 +5,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
-// The one default connected-service URL lives in the kernel client; a build may override it.
-export async function defaultControlPlaneUrl(repository) {
-  const source = await readFile(join(repository, "packages/kernel-client/src/default-control-plane.ts"), "utf8")
-  const url = /DEFAULT_CONTROL_PLANE_URL = "(https:\/\/[A-Za-z0-9.-]+)"/.exec(source)?.[1]
-  if (!url) throw new Error("packages/kernel-client/src/default-control-plane.ts must export DEFAULT_CONTROL_PLANE_URL")
-  return url
-}
+import { defaultControlPlaneUrl } from "./lib/default-control-plane-url.mjs"
 export function renderInstallScript(source, { version, publicKeyHex, releaseBase }) {
   if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version) || !/^[a-f0-9]{64}$/.test(publicKeyHex) || !/^https:\/\/[A-Za-z0-9./_-]+$/.test(releaseBase)) throw new Error("invalid public Setup build inputs")
   return source.replaceAll("@VERSION@", version).replaceAll("@RELEASE_PUBLIC_KEY@", publicKeyHex).replaceAll("@RELEASE_BASE@", releaseBase)

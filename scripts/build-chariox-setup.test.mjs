@@ -25,7 +25,7 @@ test("MP-07 / MP-11 generated Setup entry retains the actionable failure without
 })
 
 test("OSS boundary: Setup's default connected service is the kernel client's one default", async () => {
-  const { defaultControlPlaneUrl } = await import("./build-chariox-setup.mjs")
+  const { defaultControlPlaneUrl } = await import("./lib/default-control-plane-url.mjs")
   const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..")
   const { DEFAULT_CONTROL_PLANE_URL } = await import(join(repository, "packages/kernel-client/dist/default-control-plane.js"))
   assert.equal(await defaultControlPlaneUrl(repository), DEFAULT_CONTROL_PLANE_URL)

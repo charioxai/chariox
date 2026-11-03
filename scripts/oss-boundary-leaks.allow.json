@@ -1,13 +1,5 @@
 [
   {
-    "path": "apps/browser-session-import/chrome-extension/external-port-broker.mjs",
-    "removedBy": "OSS-boundary follow-up: the extension manifest origins come from the Cloud release build, not this repository (not part of item 11)"
-  },
-  {
-    "path": "apps/browser-session-import/chrome-extension/manifest.json",
-    "removedBy": "OSS-boundary follow-up: the extension manifest origins come from the Cloud release build, not this repository (not part of item 11)"
-  },
-  {
     "path": "apps/cli/package.json",
     "removedBy": "OSS-boundary item 2 (delete TUI rental chooser and /machine reimage)"
   },

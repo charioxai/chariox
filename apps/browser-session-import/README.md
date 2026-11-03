@@ -19,6 +19,11 @@ CHARIOX_BROWSER_IMPORT_EXTENSION_PUBLIC_KEY="$reviewed_public_key_base64" \
   node apps/browser-session-import/chrome-extension/package-extension.mjs "$connector_output"
 ```
 
+The packager writes the hosted View's origin into the manifest (`externally_connectable`) and
+`web-origins.mjs`. It takes it from `DEFAULT_CONTROL_PLANE_URL` in
+`packages/kernel-client/src/default-control-plane.ts`, the same source Setup is built from; pass
+`--control-plane-url https://service.example` after the output directory to build for another service.
+
 In `chrome://extensions`, enable Developer mode, choose **Load unpacked**, and
 select `$connector_output`. Remove that disposable directory after unloading the
 extension. A release system may zip the directory contents without changing the
@@ -38,7 +43,7 @@ The hosted product pairing is attended, independently anchored and one-use:
 1. The extension creates a non-extractable P-256 sender key in memory and registers
    only current-profile hostname/store metadata with its MV3 service worker. The
    selected hosted View connects to the signed stable extension ID from exactly
-   `https://chariox.com` or `https://staging.chariox.com` and selects that connector
+   the build's connected-service origin and selects that connector
    session. There is no page message or paste protocol.
 2. The selected authenticated `BrowserKernelClient` obtains a short-lived bootstrap containing a random
    `bootstrap_id`, the selected relay URL, daemon, kernel public key, immutable

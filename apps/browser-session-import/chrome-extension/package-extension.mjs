@@ -2,11 +2,14 @@ import {copyFile,mkdir,readFile,writeFile} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
+import {defaultControlPlaneUrl} from '../../../scripts/lib/default-control-plane-url.mjs';
 
 const repository = fileURLToPath(new URL('../../..',import.meta.url));
 const extensionSource = fileURLToPath(new URL('.',import.meta.url));
 
-export async function packageChromeExtension(output,typescript,{extensionPublicKey} = {}) {
+// The hosted View that may talk to the extension is the build's connected service:
+// the kernel client's default unless the build names another one.
+export async function packageChromeExtension(output,typescript,{extensionPublicKey,controlPlaneUrl} = {}) {
   if (!path.isAbsolute(output) || !typescript?.transpileModule) throw new Error('usage: package-extension.mjs ABSOLUTE_OUTPUT_DIRECTORY');
   const extensionTarget = path.join(output,'apps/browser-session-import/chrome-extension');
   const importTarget = path.join(output,'apps/browser-session-import');
@@ -18,7 +21,11 @@ export async function packageChromeExtension(output,typescript,{extensionPublicK
     'external-port-broker.mjs','web-bridge-protocol.mjs']) {
     await copyFile(path.join(extensionSource,file),path.join(extensionTarget,file));
   }
+  const webOrigin=controlPlaneWebOrigin(controlPlaneUrl ?? await defaultControlPlaneUrl(repository));
+  await writeFile(path.join(extensionTarget,'web-origins.mjs'),
+    `export const browserImportWebOrigins = Object.freeze([${JSON.stringify(webOrigin)}]);\n`);
   const manifest=JSON.parse(await readFile(path.join(extensionSource,'manifest.json'),'utf8'));
+  manifest.externally_connectable={matches:[`${webOrigin}/*`]};
   const extensionId=extensionPublicKey ? extensionIdForPublicKey(extensionPublicKey) : null;
   if (extensionId) {
     manifest.key=extensionPublicKey;
@@ -34,7 +41,8 @@ export async function packageChromeExtension(output,typescript,{extensionPublicK
       '../../packages/kernel-client/src/browser-relay-crypto.ts',
       '../../packages/kernel-client/src/browser-relay-crypto.js'));
   }
-  for (const file of ['browser-import-requests.ts','browser-relay-crypto.ts','kernel-transport-frames.ts']) {
+  for (const file of ['browser-import-requests.ts','browser-relay-crypto.ts','kernel-transport-frames.ts',
+    'relay-frame-transport.ts']) {
     const source = await readFile(path.join(repository,'packages/kernel-client/src',file),'utf8');
     const compiled = typescript.transpileModule(source,{compilerOptions:{
       module:typescript.ModuleKind.ES2022,target:typescript.ScriptTarget.ES2022,
@@ -42,6 +50,15 @@ export async function packageChromeExtension(output,typescript,{extensionPublicK
     await writeFile(path.join(clientTarget,file.replace(/\.ts$/,'.js')),compiled);
   }
   return Object.freeze({extensionId});
+}
+
+export function controlPlaneWebOrigin(value) {
+  let url;
+  try { url=new URL(value); } catch { throw new Error('the control-plane URL must be an absolute https URL'); }
+  if (url.protocol!=='https:' || url.username || url.password) {
+    throw new Error('the control-plane URL must be an absolute https URL');
+  }
+  return url.origin;
 }
 
 export function extensionIdForPublicKey(value) {
@@ -54,9 +71,11 @@ export function extensionIdForPublicKey(value) {
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const output = process.argv[2];
+  const [output,flag,controlPlaneUrl]=process.argv.slice(2);
   const compiler = process.env.TYPESCRIPT_MODULE;
-  if (!output || !compiler) throw new Error('set TYPESCRIPT_MODULE and pass an absolute output directory');
+  if (!output || !compiler || (flag!==undefined && (flag!=='--control-plane-url' || !controlPlaneUrl))) {
+    throw new Error('set TYPESCRIPT_MODULE and pass an absolute output directory [--control-plane-url URL]');
+  }
   await packageChromeExtension(output,(await import(compiler)).default,
-    {extensionPublicKey:process.env.CHARIOX_BROWSER_IMPORT_EXTENSION_PUBLIC_KEY});
+    {extensionPublicKey:process.env.CHARIOX_BROWSER_IMPORT_EXTENSION_PUBLIC_KEY,controlPlaneUrl});
 }

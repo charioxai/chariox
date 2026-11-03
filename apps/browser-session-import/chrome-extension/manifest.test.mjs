@@ -12,9 +12,8 @@ test('MV3 manifest is installable and keeps cookie and host access optional', ()
   assert.deepEqual(manifest.optional_host_permissions,['http://*/*','https://*/*']);
   assert.equal(manifest.host_permissions,undefined);
   assert.equal(manifest.content_scripts,undefined);
-  assert.deepEqual(manifest.externally_connectable,{matches:[
-    'https://chariox.com/*','https://staging.chariox.com/*',
-  ]});
+  // The hosted View's origin is written by the packager from the build's connected service.
+  assert.equal(manifest.externally_connectable,undefined);
   assert.equal(manifest.web_accessible_resources,undefined);
 });
 
