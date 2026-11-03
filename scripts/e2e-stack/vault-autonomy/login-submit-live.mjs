@@ -135,8 +135,6 @@ async function transcriptPastes(files) {
  for(const filename of files) {
   for(const line of (await readFile(filename,'utf8')).split('\n').filter(Boolean)) {
    let entry;try{entry=JSON.parse(line)}catch{continue}
-   const text=JSON.stringify(entry)
-   if(!/kernel_browser_paste_secret/.test(text))continue
    const payload=entry.payload??entry.message??entry
    // Codex: function_call / function_call_output pairs. Claude: tool_use / tool_result content blocks.
    const blocks=[payload,...(Array.isArray(payload.content)?payload.content:[])]
@@ -156,16 +154,19 @@ async function transcriptPastes(files) {
 try {
  fixture=await startKernelFixture(binaryDir,providerName==='claude'?'/root/.local/bin/claude':'/usr/local/bin/codex',{kernelEnvironment:{DISPLAY:process.env.DISPLAY,CHARIOX_ROOM_AGENT_TOOLS:'1',CHARIOX_KERNEL_BROWSER_PORT:'0',CHARIOX_KERNEL_BROWSER_EXECUTABLE:process.env.LSUB_CHROME ?? '/opt/google/chrome/chrome',...(providerName==='claude'?{IS_SANDBOX:'1'}:{})}})
  privateValues.push(fixture.passkey,fixture.bootstrap.relayToken)
- let profile
+ let profile,enrolClaude
  if(providerName==='codex') {
   profile=(await fixture.send({LinkProviderAccountProfile:{provider:'codex',label:'vpaste drill',path:profileHome}})).ProviderAccountProfile.profile
  } else {
   // The #917 setup-token enrolment: the lane account's token goes to the kernel's Vault, never to a file or log.
   const token=readFileSync(process.env.LSUB_CLAUDE_TOKEN_FILE,'utf8').trim();privateValues.push(token)
   profile=(await fixture.send({CreateProviderAccountProfile:{provider:'claude',label:'vpaste drill'}})).ProviderAccountProfile.profile
-  await fixture.send({SetProviderAccountCredential:{session_id:null,agent_id:null,provider:'claude',account_profile:profile.profile_id,value:token,run:false,overwrite:false}})
-  const verified=(await fixture.send({RefreshProviderAccountProfile:{provider:'claude',account_profile:profile.profile_id}})).ProviderAccountProfile.profile
-  check('Claude drill profile authenticated',verified.auth_state!=='Unauthorized')
+  // The token goes into the Vault, which the owner creates in the UI below: enrol once it is unlocked.
+  enrolClaude=async()=>{
+   await fixture.send({SetProviderAccountCredential:{session_id:null,agent_id:null,provider:'claude',account_profile:profile.profile_id,value:token,run:false,overwrite:false}})
+   const verified=(await fixture.send({RefreshProviderAccountProfile:{provider:'claude',account_profile:profile.profile_id}})).ProviderAccountProfile.profile
+   check('Claude drill profile authenticated',verified.auth_state!=='Unauthorized')
+  }
  }
  const worktrees=(await fixture.send({ListWorkspaceWorktrees:{workspace_id:fixture.workspace}})).WorkspaceWorktreesListed.worktrees
  const model=process.env.LSUB_MODEL??(providerName==='claude'?'claude-haiku-5-5':'gpt-6-luna')
@@ -204,6 +205,7 @@ try {
  await page.locator('[data-vault-unlock] input').fill(fixture.passkey)
  await page.locator('[data-vault-unlock] button[type=submit]').click()
  await page.locator('[data-vault-unlock]').waitFor({state:'detached'})
+ await enrolClaude?.()
  await page.locator('.window-frame').filter({has:page.locator('[data-vault-window]')}).locator('[data-action=close-window]').click()
  await openRoom(session.id)
  if(!await page.locator('.kernel-browser-window').count()) {await page.locator('[data-action=open-room-view]').last().click();await page.locator('[data-open-room-view=browser]').click()}
@@ -214,7 +216,8 @@ try {
   gitea=await startGitea({binary:giteaBinary,home:'/home/ubuntu/vpaste-gitea-'+process.pid,user:'drillagent',password:giteaPassword})
   target={origin:gitea.origin,user:'drillagent',password:giteaPassword,loginPath:'/user/login'}
  } else target=publicSite
- serviceSecrets.push(target.password)
+ // The public demo login publishes its password on the page, so the transcript holds it without any Vault involvement.
+ if(site==='gitea')serviceSecrets.push(target.password)
  const created_password=await fixture.send({OwnerVault:{action:'create',kind:'Password',name:marker+' site password',value:target.password,use_binding:{target:{kind:'site',origin:target.origin},value_kind:'secret'}}})
  const passwordId=created_password.OwnerVault.result.id
  check('owner stored the site password in the Vault for the one site',Boolean(passwordId))
