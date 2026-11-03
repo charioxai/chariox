@@ -3,6 +3,7 @@ import type { RuntimeSession } from "./kernel-types-session.js"
 import type { AgentInstance } from "./kernel-types-runtime.js"
 
 export type WorkflowDefinition = {
+  gate?: WorkflowGateDefinition | null
   created_by_agent_id?: string | null
   id: string
   alias: string | null
@@ -63,6 +64,7 @@ export type WorkflowCodeDefinition = {
 }
 
 export type WorkflowCodeWorkflow = {
+  gate?: WorkflowGateDefinition | null
   alias?: string | null
   prompt?: string | null
   flush_agent_context_before_run?: boolean | null
@@ -120,6 +122,7 @@ export type WorkflowCodeEdgeDefinition = {
 }
 
 export type WorkflowCodeEndpointDefinition = {
+  entry_nodes?: string[]
   handle: string
   entry_node: string
   alias?: string | null
@@ -272,6 +275,7 @@ export type WorkflowCodeRunResult = {
 }
 
 export type WorkflowCodeRunInvocation =
+  | { kind: "entry_accepted"; entry: WorkflowGateEntry }
   | {
       kind: "started"
       workflow_run: WorkflowRun
@@ -691,6 +695,7 @@ export type WorkflowDesignOpForwarded = {
 }
 
 export type WorkflowEndpointDefinition = {
+  entry_nodes?: string[]
   id: string
   owner_user_id?: string
   alias: string | null
@@ -915,6 +920,8 @@ export type WorkflowPromptQueueDefinition = {
 }
 
 export type WorkflowQueuedPrompt = {
+  gate_entry_id?: string | null
+  gate_routes?: WorkflowGateRoute[]
   created_by_agent_id?: string | null
   id: string
   queue_id: string
@@ -935,6 +942,7 @@ export type WorkflowQueuedPrompt = {
 }
 
 export type WorkflowPublicationInvocationEnvelope = {
+  http_method?: string | null
   publication_id: string
   hook_id?: string | null
   invocation_id: string
@@ -1150,3 +1158,53 @@ export type RoomWorkflowRunsControlled = {
   inventory: RoomWorkflowInventory
   results: { run_id: string; outcome: "applied" | "unchanged" | "failed"; error?: string | null }[]
 }
+
+export type WorkflowGateDefinition = {
+  abi: "gate_v1"
+  module_sha256: string
+  config: Record<string, unknown>
+  config_sha256: string
+}
+export type WorkflowGateRoute = { node_id: string; payload: unknown; prompt?: string | null }
+export type WorkflowGateEntry = {
+  entry_id: string
+  session_id: string
+  workflow_id: string
+  workflow_revision: number
+  module_sha256: string
+  config_sha256: string
+  binding_id: string
+  disposition: "ready" | "evaluating" | "deferred" | "batched" | "waiting_for_queue" | "queued" | "dropped" | "failed" | "expired" | "cancelled"
+  accepted_at_ms: number
+  deadline_ms: number
+  next_due_at_ms: number | null
+  evaluation_count: number
+  queued_prompt_id: string | null
+  failure: string | null
+  decisions: WorkflowGateDecisionRecord[]
+}
+export type WorkflowGateState = { workflow: Record<string, unknown>; binding: Record<string, unknown> }
+export type WorkflowGateEvaluation = {
+  input: {
+    abi: "gate_v1"; entry_id: string; endpoint_id: string; allowed_entry_nodes: string[]; binding_id: string
+    phase: "trigger" | "resume" | "batch_flush"; accepted_at_ms: number; evaluation_at_ms: number; deadline_ms: number
+    trigger: null | { kind: "app_event" | "workflow_notification" | "http" | "schedule" | "manual"; occurrence_id: string; occurred_at_ms: number | null; data: Record<string, unknown> | null; data_schema: null | { source_kind: string; event_type: string; version: number; sha256: string; schema: Record<string, unknown> }; prompt: string | null; artifacts: unknown[] }
+    batch: null | { key: string; flush_at_ms: number; items: { entry_id: string; payload: unknown }[] }
+  }
+  configuration: { workflow_revision: string; config_sha256: string; config: Record<string, unknown> }
+  state: WorkflowGateState
+}
+export type WorkflowGateOutput = {
+  decision: { kind: "run"; targets: WorkflowGateRoute[] } | { kind: "drop" } | { kind: "defer_until"; at_ms: number } | { kind: "batch"; key: string; flush_at_ms: number; payload: unknown }
+  state: WorkflowGateState; reason: string; logs: string[]
+}
+export type WorkflowGateReport = { outcome: { Ok: WorkflowGateOutput } | { Err: string }; fuel_consumed: number; execution_ms: number; profile: string }
+export type WorkflowGateDecisionRecord = { evaluation_number: number; evaluation: WorkflowGateEvaluation; report: WorkflowGateReport; state_revision_before: number; state_revision_after: number }
+export type WorkflowGateAction =
+  | {kind:"entries";after?:string|null;limit:number}
+  | {kind:"state";binding_id?:string|null}
+  | {kind:"reset_state";reason:string}
+  | { kind: "put_module"; wasm_base64: string; sha256: string }
+  | { kind: "test"; module_sha256: string; evaluation: WorkflowGateEvaluation }
+  | { kind: "entry"; entry_id: string }
+  | { kind: "cancel"; entry_id: string; reason: string }

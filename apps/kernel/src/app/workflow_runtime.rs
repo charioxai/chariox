@@ -111,6 +111,11 @@ impl WorkflowProgression {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorkflowLaunchOutcome {
+    Entry {
+        entry: crate::durable_state::workflow_gate::Entry,
+        workflow: WorkflowDefinition,
+        endpoint: WorkflowEndpointDefinition,
+    },
     Started {
         workflow_run: Box<WorkflowRun>,
         workflow: WorkflowDefinition,
@@ -214,7 +219,10 @@ impl DaemonApp {
                 workflow,
                 endpoint,
             } => Ok((*workflow_run, workflow, endpoint)),
-            WorkflowLaunchOutcome::Enqueued {
+            WorkflowLaunchOutcome::Entry {
+                workflow, endpoint, ..
+            }
+            | WorkflowLaunchOutcome::Enqueued {
                 workflow, endpoint, ..
             } => Err(DaemonError::WorkflowLaunchRejected {
                 session_id: session_id.to_string(),
@@ -1196,6 +1204,9 @@ mod tests {
             .invoke_queued_workflow_prompt(session.id(), queued)
             .expect("workflow run should be admitted without cancelling the user prompt");
         let launched_run_id = match launched {
+            crate::app::workflow_runtime::WorkflowLaunchOutcome::Entry { .. } => {
+                panic!("ungated fixture unexpectedly produced a gate entry")
+            }
             WorkflowLaunchOutcome::Started { workflow_run, .. } => workflow_run.id().to_string(),
             WorkflowLaunchOutcome::Enqueued { .. } => {
                 panic!("direct queued invocation should create the workflow run")
@@ -1320,6 +1331,7 @@ mod tests {
             )
             .expect("event workflow runtime instance should register");
         let app_invocation = crate::session::WorkflowPublicationInvocationEnvelope {
+            http_method: None,
             publication_id: publication.id().to_string(),
             hook_id: Some("automation-1".into()),
             invocation_id: "app-receipt-1".into(),
@@ -1455,6 +1467,9 @@ mod tests {
             .expect("good queued prompt should start");
 
         match outcome {
+            crate::app::workflow_runtime::WorkflowLaunchOutcome::Entry { .. } => {
+                panic!("ungated fixture unexpectedly produced a gate entry")
+            }
             WorkflowLaunchOutcome::Started { workflow, .. } => {
                 assert_eq!(workflow.id(), good_workflow.id());
             }

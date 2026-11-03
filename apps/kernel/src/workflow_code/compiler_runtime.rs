@@ -196,6 +196,7 @@ function createBuilder() {
         ...(options.prompt !== undefined ? { prompt: options.prompt } : {}),
         ...(options.flushAgentContextBeforeRun !== undefined ? { flush_agent_context_before_run: options.flushAgentContextBeforeRun } : {}),
         ...(options.maxConcurrent !== undefined ? { max_concurrent: options.maxConcurrent } : {}),
+        ...(options.gate !== undefined ? { gate: options.gate } : {}),
         ...(options.runOutputSchema !== undefined ? { run_output_schema: ref(options.runOutputSchema, "schema") } : {})
       }
       return api
@@ -280,7 +281,8 @@ function createBuilder() {
     endpoint(entryNode, options = {}) {
       const item = {
         handle: handle("endpoint", options.handle),
-        entry_node: ref(entryNode, "node"),
+        entry_node: ref(Array.isArray(entryNode) ? entryNode[0] : entryNode, "node"),
+        ...(Array.isArray(entryNode) ? { entry_nodes: entryNode.map(node => ref(node,"node")) } : {}),
         ...(options.alias !== undefined ? { alias: options.alias } : {}),
         ...(options.maxInstances !== undefined ? { max_instances: options.maxInstances } : {}),
         ...(options.canvas !== undefined ? { canvas: options.canvas } : {})

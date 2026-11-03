@@ -59,6 +59,7 @@ async fn assert_completed_publication_output_settlement(
         )
         .expect("workflow endpoint should be created");
     let publication_invocation = crate::session::WorkflowPublicationInvocationEnvelope {
+        http_method: None,
         publication_id: "publication-1".to_string(),
         hook_id: Some("hook-1".to_string()),
         invocation_id: "request-1".to_string(),

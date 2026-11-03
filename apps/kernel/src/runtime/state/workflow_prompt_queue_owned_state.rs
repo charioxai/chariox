@@ -633,6 +633,80 @@ impl KernelRuntimeOwnedState {
         plan: crate::session::WorkflowWatchdogTickPlan,
     ) -> Result<WorkflowPromptDispatches, DaemonError> {
         self.workflow_reconcile_live_orphans(&plan.session_id);
+        let workflow = self
+            .session_store
+            .read()
+            .resolve_workflow_ref(&plan.session_id, &plan.workflow_id)?;
+        if workflow.gate().is_some() && plan.enqueue_prompt {
+            self.durable_state_store
+                .with_workflow_runtime_transition_lock(|| {
+                    let mut sessions = self.session_store.write();
+                    let session = sessions.get_session(&plan.session_id)?;
+                    let queued = sessions.prepare_workflow_prompt_with_publication_invocation(
+                        &plan.session_id,
+                        &plan.workflow_id,
+                        &plan.endpoint_id,
+                        Some(plan.invocation_prompt.clone()),
+                        plan.queue_id.as_deref(),
+                        crate::session::WorkflowQueuedPromptSource::Scheduled,
+                        None,
+                        None,
+                    )?;
+                    let schedule = session
+                        .workflow_watchdogs()
+                        .iter()
+                        .find(|s| s.id() == plan.watchdog_id)
+                        .ok_or_else(|| {
+                            crate::durable_state::workflow_gate::error("schedule missing")
+                        })?;
+                    let (data, schema) = crate::durable_state::workflow_gate::schedule::input(
+                        schedule,
+                        plan.scheduled_for_ms,
+                    )?;
+                    let mut admission =
+                        crate::durable_state::workflow_gate::Admission::from_prompt(
+                            &session,
+                            &workflow,
+                            queued,
+                            format!("schedule:{}", plan.watchdog_id),
+                            chariox_app_runtime::workflow_gate::TriggerKind::Schedule,
+                            format!(
+                                "{}:{}:{}",
+                                plan.watchdog_id,
+                                data.get("schedule_revision")
+                                    .and_then(serde_json::Value::as_str)
+                                    .ok_or_else(|| crate::durable_state::workflow_gate::error(
+                                        "schedule revision missing"
+                                    ))?,
+                                plan.scheduled_for_ms
+                            ),
+                            plan.scheduled_for_ms + 7 * 24 * 60 * 60 * 1000,
+                            Some(data),
+                            Some(schema),
+                            None,
+                        )?;
+                    admission.trigger.occurred_at_ms = Some(plan.scheduled_for_ms);
+                    let _guard = self.begin_managed_activity_admission()?;
+                    let crate::durable_state::workflow_gate::Outcome::Scheduled(after) =
+                        self.durable_state_store.gate(
+                            crate::durable_state::workflow_gate::Operation::AcceptScheduled {
+                                admission: Box::new(admission),
+                                session: Box::new(session),
+                                schedule_id: plan.watchdog_id.clone(),
+                            },
+                        )?
+                    else {
+                        return Err(crate::durable_state::workflow_gate::error(
+                            "gate schedule commit invalid",
+                        ));
+                    };
+                    sessions.restore_session(*after);
+                    self.app_control.event_pump().wake();
+                    Ok::<_, DaemonError>(())
+                })?;
+            return Ok(WorkflowPromptDispatches::default());
+        }
+
         if plan.enqueue_prompt {
             self.workflow_admit_prompt_transaction_with_invoker(
                 &plan.session_id,
@@ -868,6 +942,67 @@ impl KernelRuntimeOwnedState {
                 return Err(error);
             }
         };
+        if workflow.gate().is_some() {
+            let entry = self
+                .durable_state_store
+                .with_workflow_runtime_transition_lock(|| {
+                    let mut sessions = self.session_store.write();
+                    let session = sessions.get_session(session_id)?;
+                    let queued = sessions
+                        .prepare_workflow_prompt_with_publication_invocation(
+                            session_id,
+                            workflow.id(),
+                            endpoint.id(),
+                            prompt,
+                            queue_ref,
+                            crate::session::WorkflowQueuedPromptSource::Manual,
+                            None,
+                            publication_invocation.clone(),
+                        )?
+                        .with_creator(creator.map(str::to_string));
+                    let (binding, data, schema) = if let Some(inv) = &publication_invocation {
+                        let (binding, data, schema) = super::workflow_gate_inputs::http(
+                            &sessions,
+                            session_id,
+                            &workflow,
+                            endpoint.id(),
+                            inv,
+                        )?;
+                        (binding, Some(data), schema)
+                    } else {
+                        (format!("manual:{}", endpoint.id()), None, None)
+                    };
+                    let occurrence = publication_invocation
+                        .as_ref()
+                        .map(|i| i.invocation_id.clone())
+                        .unwrap_or_else(|| format!("manual:{:032x}", rand::random::<u128>()));
+                    let admission = crate::durable_state::workflow_gate::Admission::from_prompt(
+                        &session,
+                        &workflow,
+                        queued,
+                        binding,
+                        if publication_invocation.is_some() {
+                            chariox_app_runtime::workflow_gate::TriggerKind::Http
+                        } else {
+                            chariox_app_runtime::workflow_gate::TriggerKind::Manual
+                        },
+                        occurrence,
+                        crate::session::unix_epoch_ms() + 7 * 24 * 60 * 60 * 1000,
+                        data,
+                        schema,
+                        None,
+                    )?;
+                    self.accept_gate_prompt(admission)
+                })?;
+            return Ok((
+                crate::app::workflow_runtime::WorkflowLaunchOutcome::Entry {
+                    entry,
+                    workflow,
+                    endpoint,
+                },
+                WorkflowPromptDispatches::default(),
+            ));
+        }
         let mut committed = false;
         let mut resource_id = None;
         let admitted = self.workflow_admit_prompt_transaction_with_invoker(
@@ -956,6 +1091,7 @@ impl KernelRuntimeOwnedState {
             ));
         };
         let claimed_requested_prompt = match &claimed_outcome {
+            crate::app::workflow_runtime::WorkflowLaunchOutcome::Entry { .. } => false,
             crate::app::workflow_runtime::WorkflowLaunchOutcome::Started {
                 workflow_run, ..
             } => workflow_run.queue_item_id() == Some(queued_prompt.id()),
@@ -1316,7 +1452,11 @@ impl KernelRuntimeOwnedState {
                         return accumulated;
                     }
                 }
-                Ok((crate::app::workflow_runtime::WorkflowLaunchOutcome::Enqueued { .. }, _)) => {}
+                Ok((
+                    crate::app::workflow_runtime::WorkflowLaunchOutcome::Entry { .. }
+                    | crate::app::workflow_runtime::WorkflowLaunchOutcome::Enqueued { .. },
+                    _,
+                )) => {}
                 Err(error) => {
                     if !matches!(self.workflow_pending_entry(session_id), Ok(None)) {
                         return accumulated;

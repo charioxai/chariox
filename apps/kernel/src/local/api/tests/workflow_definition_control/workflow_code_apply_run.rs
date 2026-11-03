@@ -357,7 +357,8 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
             workflow,
             endpoint,
         } => (workflow_run, workflow, endpoint),
-        crate::workflow_code::WorkflowCodeRunInvocation::Enqueued { .. } => {
+        crate::workflow_code::WorkflowCodeRunInvocation::Enqueued { .. }
+        | crate::workflow_code::WorkflowCodeRunInvocation::EntryAccepted { .. } => {
             panic!("single generated-node workflow should start immediately")
         }
     };

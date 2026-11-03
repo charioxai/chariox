@@ -9,7 +9,7 @@ import { renderAgentInteractionStrips } from "./interaction-strip-renderer.js"
 
 const held = (pid: number, position: number, command_line: string): SessionProcess => ({
   process_id: `process-${pid}`, owner: { kind: "agent", id: "agent-1" }, pid, command: "sh",
-  resident_set_bytes: 1, cpu_millis: 0, age_ms: 0, sampled_at_ms: 0,
+  disk_io_bytes: null, resident_set_bytes: 1, cpu_millis: 0, age_ms: 0, sampled_at_ms: 0,
   state: { kind: "held", reason: "memory", position, need_bytes: 6 * 2 ** 30, free_bytes: 2 ** 30, command_line },
 })
 

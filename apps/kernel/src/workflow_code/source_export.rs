@@ -270,6 +270,7 @@ pub(super) fn workflow_code_definition_from_session_workflow(
         schema_version: WORKFLOW_CODE_SCHEMA_VERSION,
         parameters_schema: None,
         workflow: WorkflowCodeWorkflow {
+            gate: workflow.gate().cloned(),
             alias: workflow.alias().map(str::to_string),
             prompt: None,
             flush_agent_context_before_run: Some(workflow.flush_agent_context_before_run()),
@@ -319,6 +320,16 @@ pub(super) fn workflow_code_definition_from_session_workflow(
             .endpoints()
             .iter()
             .map(|endpoint| WorkflowCodeEndpointDefinition {
+                entry_nodes: endpoint
+                    .entry_node_ids()
+                    .into_iter()
+                    .map(|id| {
+                        node_handles
+                            .get(id)
+                            .cloned()
+                            .unwrap_or_else(|| id.to_string())
+                    })
+                    .collect(),
                 handle: endpoint_handles
                     .get(endpoint.id())
                     .cloned()
@@ -552,6 +563,7 @@ impl WorkflowCodeJavascriptWriter {
             &workflow.flush_agent_context_before_run,
         )?;
         push_json_field(&mut fields, "maxConcurrent", &workflow.max_concurrent)?;
+        push_json_field(&mut fields, "gate", &workflow.gate)?;
         push_ref_field(
             &mut fields,
             "runOutputSchema",
@@ -660,7 +672,19 @@ impl WorkflowCodeJavascriptWriter {
         endpoint: &WorkflowCodeEndpointDefinition,
     ) -> Result<(), crate::DaemonError> {
         let var = self.var_for("endpoint", &endpoint.handle);
-        let entry = self.existing_var(&endpoint.entry_node, "node")?;
+        let entry = if endpoint.entry_nodes.len() > 1 {
+            format!(
+                "[{}]",
+                endpoint
+                    .entry_nodes
+                    .iter()
+                    .map(|id| self.existing_var(id, "node"))
+                    .collect::<Result<Vec<_>, _>>()?
+                    .join(", ")
+            )
+        } else {
+            self.existing_var(&endpoint.entry_node, "node")?
+        };
         let mut fields = Vec::new();
         push_json_field(&mut fields, "handle", &Some(endpoint.handle.clone()))?;
         push_json_field(&mut fields, "alias", &endpoint.alias)?;

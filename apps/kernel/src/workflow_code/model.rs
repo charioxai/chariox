@@ -112,6 +112,9 @@ pub struct WorkflowCodeRunResult {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum WorkflowCodeRunInvocation {
+    EntryAccepted {
+        entry: crate::durable_state::workflow_gate::Entry,
+    },
     Started {
         workflow_run: Box<crate::session::WorkflowRun>,
         workflow: crate::session::WorkflowDefinition,
@@ -502,6 +505,8 @@ pub(super) struct StoredWorkflowCodeArtifact {
 #[serde(deny_unknown_fields)]
 pub struct WorkflowCodeWorkflow {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gate: Option<chariox_app_runtime::workflow_gate::Definition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alias: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt: Option<String>,
@@ -599,6 +604,8 @@ pub struct WorkflowCodeEdgeDefinition {
 pub struct WorkflowCodeEndpointDefinition {
     pub handle: String,
     pub entry_node: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub entry_nodes: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alias: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

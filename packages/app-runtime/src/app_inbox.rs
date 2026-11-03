@@ -112,6 +112,9 @@ pub struct InboxSource {
     pub connection_scope: String,
     /// Canonical JSON; `null` when the route takes every occurrence.
     pub filter_json: String,
+    /// Schema and publisher manifest identity captured when the route is admitted.
+    pub payload_schema_json: Option<String>,
+    pub manifest_digest: Option<String>,
 }
 
 impl InboxRoute {
@@ -181,6 +184,18 @@ pub fn initialize(connection: &Connection) -> Result<()> {
              ALTER TABLE app_inbox_routes ADD COLUMN connection_scope TEXT;
              ALTER TABLE app_inbox_routes ADD COLUMN filter_json TEXT;",
         )?;
+    }
+    for column in ["payload_schema_json", "manifest_digest"] {
+        let exists: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('app_inbox_routes') WHERE name=?1)",
+            [column],
+            |r| r.get(0),
+        )?;
+        if !exists {
+            connection.execute_batch(&format!(
+                "ALTER TABLE app_inbox_routes ADD COLUMN {column} TEXT;"
+            ))?;
+        }
     }
     connection.execute_batch(
         "CREATE UNIQUE INDEX IF NOT EXISTS app_inbox_routes_binding ON app_inbox_routes(binding_id);
@@ -270,8 +285,8 @@ pub fn create_route_in(tx: &Connection, route: &InboxRoute, now_ms: u64) -> Resu
     tx.execute(
         "INSERT INTO app_inbox_routes(route_id,owner_id,installation_id,event_name,
             source_event_type,source_event_version,active,created_at_ms,
-            binding_id,generator_id,connection_id,connection_scope,filter_json)
-         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
+            binding_id,generator_id,connection_id,connection_scope,filter_json,payload_schema_json,manifest_digest)
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
         params![
             route.route_id,
             route.owner_id,
@@ -286,6 +301,8 @@ pub fn create_route_in(tx: &Connection, route: &InboxRoute, now_ms: u64) -> Resu
             source.map(|source| &source.connection_id),
             source.map(|source| &source.connection_scope),
             source.map(|source| &source.filter_json),
+            source.and_then(|source| source.payload_schema_json.as_deref()),
+            source.and_then(|source| source.manifest_digest.as_deref()),
         ],
     )
     .map_err(|error| match error {
@@ -371,13 +388,15 @@ fn route_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<InboxRoute> {
                 connection_id: row.get(8)?,
                 connection_scope: row.get(9)?,
                 filter_json: row.get(10)?,
+                payload_schema_json: row.get(11)?,
+                manifest_digest: row.get(12)?,
             }),
             None => None,
         },
     })
 }
 const ROUTE_COLUMNS: &str = "route_id,owner_id,installation_id,event_name,source_event_type,\
-    source_event_version,active,generator_id,connection_id,connection_scope,filter_json";
+    source_event_version,active,generator_id,connection_id,connection_scope,filter_json,payload_schema_json,manifest_digest";
 
 /// Every route an event generator feeds, across owners, for the kernel's
 /// subscription and delivery claims.

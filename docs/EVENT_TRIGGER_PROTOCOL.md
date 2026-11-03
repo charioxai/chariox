@@ -1,6 +1,6 @@
 # Event trigger protocol
 
-Status: implementation contract; local daemon protocol 452 (MP-08 / MP-10).
+Status: implementation contract; local daemon protocol 967 / peer 416 (MP-08 / MP-09 / MP-10 / MP-11).
 
 ## Boundaries
 
@@ -40,6 +40,30 @@ An optional signed `actions` array describes provider actions. Apps access them
 through explicitly granted connections. Workflow notification subscriptions carry
 no provider actions, credentials, reply capability or event runtime tools.
 
+## Typed generator facts (delivery 4, management 5)
+
+Manifest schema version 2 accepts a signed `payload_schema` and `examples` on
+an event definition. Version 1 remains accepted for text-only definitions.
+A schema is a closed Draft 7 object, at most 64 KiB. Its examples are named
+`{name,data}` objects: at most eight, 8 KiB each, 32 KiB together. Each must
+validate against that exact schema. The schema and examples enter the manifest's
+canonical digest and Ed25519 signature. An event type/version is immutable;
+changing its contract requires a new version.
+
+`PublishEventRequest.data` and `EventDeliveryEnvelope.data` are optional JSON
+objects, at most 64 KiB, depth 32, 4,096 values, with safe integers only. A typed
+event requires data matching the publisher schema. A text-only event omits data;
+the kernel never guesses a schema from arbitrary metadata. AEDS provisions the
+producer's schema with its scoped publishing capability. The kernel pins the
+catalog schema and manifest digest when creating the App inbox source, then
+checks delivery data before acknowledging. The signed App incoming schema must
+also accept the complete wrapper, including `data` and `data_schema`.
+
+The wrapper's schema identity contains the source event type/version, canonical
+schema digest and exact schema. Apps can preserve these facts in their own signed
+outgoing event. Inventory, urgency and batching policy belong to the consumer's
+workflow configuration, rather than upstream normalization.
+
 ## Identities
 
 - `generator_id` identifies a publisher-scoped AEGS implementation. It does not
@@ -63,9 +87,10 @@ out declared outgoing occurrences to workflow targets.
 
 ## Delivery
 
-The kernel/AEDS event-delivery wire protocol is version 3. Version 3 carries the
+The kernel/AEDS event-delivery wire protocol is version 4. It carries typed `data`
+and preserves the
 optional provider-owned `reply_context` through `PublishEventRequest` and
-`EventDeliveryEnvelope`; peers that do not advertise version 3 are rejected rather
+`EventDeliveryEnvelope`; peers that do not advertise version 4 are rejected rather
 than silently dropping reply capability.
 
 The kernel maintains one authenticated outbound WebSocket connection to AEDS. It
@@ -352,3 +377,48 @@ MP-08 / MP-11: completion-occurrence diagnostics retain the most recent 4,096
 rows across the kernel. Upgrade, capture and sweep bound this window; durable
 terminal run state retains completion deduplication, and pending App receipts
 are independent of diagnostic retention.
+
+## Pure workflow entry gates (local 967 / peer 416)
+
+An explicit workflow may configure `gate: {abi:"gate_v1", module_sha256,
+config, config_sha256}`. Both digests use `sha256:<hex>`; the configuration digest
+covers canonical JSON. Configuration changes are workflow revisions. Gate-owned
+workflow and binding state are separate, bounded objects, committed only with a
+valid decision. A gate cannot change its configuration.
+
+The owner uploads portable component bytes with `WorkflowGate.put_module` before
+applying the definition. Admission compiles in the contained native App WASM
+worker. The import-free world is
+[`gate.wit`](../packages/app-wit/wit-gate/gate.wit); it grants no App, filesystem,
+network, clock, credential, process or host interface. The profile enforces R5
+containment, 10 million fuel, 256 KiB stack, 16 MiB memory and a 250 ms execution
+limit inside a two-second supervised operation. Floating point and component
+async are refused. Missing worker/containment fails the entry; it never starts a
+provider as a fallback.
+
+App outgoing events, private workflow notifications, schedules, HTTP and manual
+workflow invocation admit a durable entry before inserting a provider prompt.
+A valid decision can `run` an ordered subset of the endpoint's `entry_nodes`,
+`drop`, `defer_until` an absolute UTC time, or `batch` within a binding and fixed
+flush cutoff. Each run target has its own prompt and object payload. The queue
+receives those transformed values; original source text does not remain in the
+provider invocation. Unselected nodes never become Ready.
+
+The journal retains immutable input/config/state snapshots, module/config hashes,
+worker profile, fuel, decision, reason and bounded diagnostics. A claimed evaluation
+interrupted by a kernel crash becomes `gate_interrupted`; recovery does not run it
+again. A decision and both state scopes commit together, before ordinary queue
+handoff. Source receipt ownership and ancestry remain attached through batches.
+Workflow edits, source retirement, cancellation and expiry fence pending work.
+`WorkflowEntryAccepted` reports an entry, not a fictitious queued prompt or run.
+The owner can inspect/test/cancel through `WorkflowGate` without running a provider.
+
+GET URLs with `prompt` remain supported. Prompt is reserved transport text; other
+query parameters form data. Declared string/integer/boolean fields receive exact
+scalar coercion; duplicates, decimals, unsafe integers, unknown closed-schema
+fields and unsupported nested GET values fail. Use POST JSON for nested data.
+The URL ceiling is 8 KiB. An absent endpoint schema preserves query strings.
+
+The source example in [`examples/workflow-gates`](../examples/workflow-gates)
+keeps a passthrough App separate from the advisory workflow's urgency policy.
+Utility-agent authoring and a gate editor are a later slice.

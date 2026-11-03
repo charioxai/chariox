@@ -36,6 +36,8 @@ pub struct WorkflowEndpointDefinition {
     owner_user_id: String,
     alias: Option<String>,
     entry_node_id: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    entry_nodes: Vec<String>,
     #[serde(default = "default_workflow_endpoint_max_instances")]
     max_instances: u16,
 }
@@ -51,6 +53,7 @@ impl WorkflowEndpointDefinition {
             owner_user_id: default_workflow_owner_user_id(),
             alias,
             entry_node_id: entry_node_id.into(),
+            entry_nodes: vec![],
             max_instances: default_workflow_endpoint_max_instances(),
         }
     }
@@ -71,6 +74,16 @@ impl WorkflowEndpointDefinition {
         &self.entry_node_id
     }
 
+    pub fn entry_node_ids(&self) -> Vec<&str> {
+        if self.entry_nodes.is_empty() {
+            vec![self.entry_node_id()]
+        } else {
+            self.entry_nodes.iter().map(String::as_str).collect()
+        }
+    }
+    pub(crate) fn set_entry_nodes(&mut self, nodes: Vec<String>) {
+        self.entry_nodes = nodes;
+    }
     pub fn max_instances(&self) -> u16 {
         self.max_instances
     }
@@ -85,6 +98,7 @@ impl WorkflowEndpointDefinition {
 
     pub fn set_entry_node_id(&mut self, entry_node_id: impl Into<String>) {
         self.entry_node_id = entry_node_id.into();
+        self.entry_nodes.clear();
     }
 
     pub fn set_max_instances(&mut self, max_instances: u16) {

@@ -36,6 +36,7 @@ pub(crate) struct WorkflowCodeSourceDescriptor {
 
 pub(crate) struct WorkflowCodeStructureReplacement {
     pub(crate) alias: Option<String>,
+    pub(crate) gate: Option<chariox_app_runtime::workflow_gate::Definition>,
     pub(crate) prompt: Option<String>,
     pub(crate) flush_agent_context_before_run: bool,
     pub(crate) max_concurrent: u32,
@@ -175,6 +176,8 @@ pub struct WorkflowDefinition {
     id: String,
     alias: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    gate: Option<chariox_app_runtime::workflow_gate::Definition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     prompt: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     controlled_by_metaagent_id: Option<String>,
@@ -208,6 +211,7 @@ impl WorkflowDefinition {
         Self {
             id: id.into(),
             alias,
+            gate: None,
             prompt: None,
             controlled_by_metaagent_id: None,
             created_by_agent_id: None,
@@ -267,6 +271,17 @@ impl WorkflowDefinition {
         self.created_at_ms
     }
 
+    pub(crate) fn set_gate(
+        &mut self,
+        gate: Option<chariox_app_runtime::workflow_gate::Definition>,
+    ) {
+        self.gate = gate;
+        self.bump_revision();
+    }
+    pub fn gate(&self) -> Option<&chariox_app_runtime::workflow_gate::Definition> {
+        self.gate.as_ref()
+    }
+
     pub fn revision(&self) -> u64 {
         self.revision
     }
@@ -310,6 +325,7 @@ impl WorkflowDefinition {
     }
 
     pub(crate) fn replace_code_structure(&mut self, replacement: WorkflowCodeStructureReplacement) {
+        self.gate = replacement.gate;
         self.alias = replacement.alias;
         self.prompt = replacement.prompt;
         self.flush_agent_context_before_run = replacement.flush_agent_context_before_run;

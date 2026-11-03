@@ -242,6 +242,13 @@ impl SessionService {
                     source.alias.clone(),
                     report.node_ids[&source.entry_node].clone(),
                 );
+                endpoint.set_entry_nodes(
+                    source
+                        .entry_nodes
+                        .iter()
+                        .map(|id| report.node_ids[id].clone())
+                        .collect(),
+                );
                 endpoint.set_max_instances(
                     source
                         .max_instances
@@ -310,7 +317,11 @@ impl SessionService {
                     workflow_id: workflow_id.clone(),
                 }
             })?;
+            if definition.workflow.gate.is_some() && workflow.origin().is_some() {
+                return Err(DaemonError::LocalTransport { operation: "workflow_code.rebuild", message: "entry gates require an explicit workflow; generated agent workflows are not supported".into() });
+            }
             workflow.replace_code_structure(crate::session::WorkflowCodeStructureReplacement {
+                gate: definition.workflow.gate.clone(),
                 alias: definition.workflow.alias.clone(),
                 prompt: definition.workflow.prompt.clone(),
                 flush_agent_context_before_run: definition
@@ -614,6 +625,24 @@ impl SessionService {
                     .max_instances
                     .unwrap_or(crate::session::DEFAULT_WORKFLOW_ENDPOINT_MAX_INSTANCES),
             )?;
+            if !endpoint.entry_nodes.is_empty() {
+                let session = self
+                    .store
+                    .get_mut(session_id)
+                    .expect("workflow apply session");
+                session
+                    .workflow_mut(&workflow_id)
+                    .expect("workflow apply definition")
+                    .endpoint_mut(created.id())
+                    .expect("workflow apply endpoint")
+                    .set_entry_nodes(
+                        endpoint
+                            .entry_nodes
+                            .iter()
+                            .map(|id| report.node_ids[id].clone())
+                            .collect(),
+                    );
+            }
             report
                 .endpoint_ids
                 .insert(endpoint.handle.clone(), created.id().to_string());
@@ -798,6 +827,7 @@ impl SessionService {
                     session_id: session_id.to_string(),
                     workflow_id: workflow_id.to_string(),
                 })?;
+        workflow.set_gate(definition.workflow.gate.clone());
         workflow.set_prompt(definition.workflow.prompt.clone());
         if let Some(value) = definition.workflow.flush_agent_context_before_run {
             workflow.set_flush_agent_context_before_run(value);

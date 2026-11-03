@@ -770,6 +770,7 @@ fn opaque_fixture_drill(generator: &str) {
         (875, WorkflowRunStatus::Failed),
     ] {
         let invocation = WorkflowPublicationInvocationEnvelope {
+            http_method: None,
             publication_id: "fixture-app-publication".into(),
             hook_id: Some("fixture-automation".into()),
             invocation_id: format!("pull-{pr}"),
@@ -1145,6 +1146,7 @@ fn notification_prompt_header_is_reserved_before_source_persistence_and_target_a
 
     // Actual completion capture must commit a visible refusal, not an unsendable receipt.
     let invocation = WorkflowPublicationInvocationEnvelope {
+        http_method: None,
         publication_id: "fixture-publication".into(),
         hook_id: None,
         invocation_id: "fixture-occurrence".into(),

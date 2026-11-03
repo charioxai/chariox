@@ -1120,3 +1120,40 @@ pub enum RoomWorkflowRunControlOutcome {
     Unchanged,
     Failed,
 }
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkflowGateRequest {
+    pub session_id: String,
+    pub workflow_ref: String,
+    pub action: WorkflowGateAction,
+}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum WorkflowGateAction {
+    Entries {
+        after: Option<String>,
+        limit: u16,
+    },
+    State {
+        binding_id: Option<String>,
+    },
+    ResetState {
+        reason: String,
+    },
+    PutModule {
+        wasm_base64: String,
+        sha256: String,
+    },
+    Test {
+        module_sha256: String,
+        evaluation: chariox_app_runtime::workflow_gate::Evaluation,
+    },
+    Entry {
+        entry_id: String,
+    },
+    Cancel {
+        entry_id: String,
+        reason: String,
+    },
+}

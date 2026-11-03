@@ -21,6 +21,7 @@ pub(crate) struct PreparedNotification {
     encoded: DurableWorkflowSessionWrite,
     pub after: RuntimeSession,
     queued_id: String,
+    gate: Option<crate::durable_state::workflow_gate::Admission>,
 }
 impl PreparedNotification {
     pub(crate) fn prepare(
@@ -47,29 +48,32 @@ impl PreparedNotification {
             .find(|q| q.id() == sub.queue_id)
             .ok_or_else(|| error("notification queue gone"))?;
         // ACK already exists. Busy/paused/full targets retain accepted inbox until deadline.
-        if !queue.enabled()
-            || (sub.delivery_mode == crate::local::NotificationDeliveryMode::Queue
-                && session
-                    .workflow_runs()
-                    .iter()
-                    .filter(|r| r.workflow_id() == sub.workflow_id && !r.status().is_terminal())
-                    .count()
-                    >= workflow.max_concurrent() as usize)
+        if workflow.gate().is_none()
+            && (!queue.enabled()
+                || (sub.delivery_mode == crate::local::NotificationDeliveryMode::Queue
+                    && session
+                        .workflow_runs()
+                        .iter()
+                        .filter(|r| r.workflow_id() == sub.workflow_id && !r.status().is_terminal())
+                        .count()
+                        >= workflow.max_concurrent() as usize))
         {
             return Err(error("notification target busy or paused"));
         }
-        if session
-            .workflow_queued_prompts()
-            .iter()
-            .filter(|q| q.status() == WorkflowQueuedPromptStatus::Queued)
-            .count()
-            >= MAX_PENDING as usize
+        if workflow.gate().is_none()
+            && session
+                .workflow_queued_prompts()
+                .iter()
+                .filter(|q| q.status() == WorkflowQueuedPromptStatus::Queued)
+                .count()
+                >= MAX_PENDING as usize
         {
             return Err(error("notification queue full"));
         }
         let output = encode_notification_envelope(&env)?;
         let prompt = format!("{NOTIFICATION_PROMPT_HEADER}{output}");
         let invocation = WorkflowPublicationInvocationEnvelope {
+            http_method: None,
             publication_id: sub.publication_id.clone(),
             hook_id: Some(sub.subscription_id.clone()),
             invocation_id: receipt_id(&sub, &env)?,
@@ -91,19 +95,41 @@ impl PreparedNotification {
             None,
             Some(invocation),
         )?;
+        let mut gate = if workflow.gate().is_some() {
+            Some(crate::durable_state::workflow_gate::Admission::from_prompt(
+                &session,
+                &workflow,
+                queued.clone(),
+                sub.subscription_id.clone(),
+                chariox_app_runtime::workflow_gate::TriggerKind::WorkflowNotification,
+                env.occurrence_id.clone(),
+                env.deadline_ms,
+                env.fields.as_object().cloned(),
+                None,
+                Some(receipt_id(&sub, &env)?),
+            )?)
+        } else {
+            None
+        };
+        if let Some(admission) = &mut gate {
+            admission.notification = Some(sub.clone());
+        }
         let before = encode_workflow_session(&session)?;
         let mut after = session;
-        after.enqueue_workflow_prompt(queued.clone());
-        after.record_workflow_event_delivery_receipt(WorkflowEventDeliveryReceipt {
-            delivery_id: receipt_id(&sub, &env)?,
-            binding_id: sub.subscription_id.clone(),
-            occurrence_id: env.occurrence_id.clone(),
-            queued_prompt_id: queued.id().into(),
-            accepted_at_ms: crate::session::unix_epoch_ms(),
-            expires_at_ms: env.deadline_ms,
-        });
+        if gate.is_none() {
+            after.enqueue_workflow_prompt(queued.clone());
+            after.record_workflow_event_delivery_receipt(WorkflowEventDeliveryReceipt {
+                delivery_id: receipt_id(&sub, &env)?,
+                binding_id: sub.subscription_id.clone(),
+                occurrence_id: env.occurrence_id.clone(),
+                queued_prompt_id: queued.id().into(),
+                accepted_at_ms: crate::session::unix_epoch_ms(),
+                expires_at_ms: env.deadline_ms,
+            });
+        }
         let encoded = encode_workflow_session(&after)?;
         Ok(Self {
+            gate,
             subscription: sub,
             envelope: env,
             target,
@@ -127,6 +153,12 @@ pub(crate) fn commit_in(tx: &Transaction<'_>, p: &PreparedNotification) -> Resul
     let value:Option<String>=tx.query_row("SELECT payload_json FROM app_outbox WHERE source_kind='workflow_completion' AND automation_id=?1 AND installation_id=?2 AND occurrence_id=?3 AND state='accepted' AND expires_at_ms>?4",params![p.subscription.subscription_id,p.envelope.source_id,p.envelope.occurrence_id,now as i64],|r|r.get(0)).optional().map_err(sql)?;
     if value.as_deref() != Some(encode(&p.envelope)?.as_str()) {
         return Err(error("notification inbox changed or expired"));
+    }
+    if let Some(admission) = &p.gate {
+        let entry =
+            crate::durable_state::workflow_gate::admission::accept_in(tx, admission.clone())?;
+        tx.execute("UPDATE app_outbox SET state='entry_owned',gate_entry_id=?4,payload_json=NULL,invocation_json=?5 WHERE source_kind='workflow_completion' AND automation_id=?1 AND installation_id=?2 AND occurrence_id=?3",params![p.subscription.subscription_id,p.envelope.source_id,p.envelope.occurrence_id,entry.entry_id,encode(&serde_json::json!({"ancestry":p.envelope.ancestry}))?]).map_err(sql)?;
+        return Ok(());
     }
     super::write_queue_state_in(
         tx,

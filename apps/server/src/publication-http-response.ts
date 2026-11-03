@@ -17,6 +17,7 @@ export function forwardWorkflowResult(
   result: WorkflowInvocationResult,
 ) {
   result = visibleWorkflowInvocationResult(publication, result)
+  if (result.gate_entry) return forwardGateEntry(reply,result.gate_entry)
   const workflowRun = result.workflow_run
   const finalMessage = workflowRun?.final_output ? normalizeFinalOutput(workflowRun.final_output).text : ""
   const transportResponse = parseTransportResponse(finalMessage)
@@ -59,4 +60,10 @@ function parseTransportResponse(message: string | undefined | null): { status: n
   } catch {
     return null
   }
+}
+
+export function forwardGateEntry(reply:Pick<GatewayReply,"code">,entry:import("@chariox/kernel-client").WorkflowGateEntry) {
+    const status = entry.disposition === "failed" ? 422 : entry.disposition === "expired" ? 410 : entry.disposition === "cancelled" ? 409 : entry.disposition === "dropped" ? 200 : 202
+    reply.code(status)
+    return { accepted: status < 400, gate_entry: {entry_id:entry.entry_id,disposition:entry.disposition,next_due_at_ms:entry.next_due_at_ms,deadline_ms:entry.deadline_ms} }
 }

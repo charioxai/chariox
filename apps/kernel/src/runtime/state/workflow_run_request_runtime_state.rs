@@ -58,6 +58,24 @@ impl KernelRuntimeState {
                     Ok(outcome) => outcome,
                     Err(error) => return (Err(error), None),
                 };
+                if let crate::app::workflow_runtime::WorkflowLaunchOutcome::Entry {
+                    entry, ..
+                } = &outcome
+                {
+                    if let Err(error) = self.finish_room_dispatch(
+                        obligation.as_deref(),
+                        Some(&entry.entry_id),
+                        || {},
+                    ) {
+                        return (Err(error), None);
+                    }
+                    return (
+                        Ok(LocalDaemonResponse::WorkflowEntryAccepted {
+                            entry: entry.clone(),
+                        }),
+                        self.owned.session_snapshot(&request.session_id).ok(),
+                    );
+                }
                 let dev_stub_workflow_run_id = match &outcome {
                     crate::app::workflow_runtime::WorkflowLaunchOutcome::Started {
                         workflow_run,
@@ -68,6 +86,9 @@ impl KernelRuntimeState {
                     _ => None,
                 };
                 let resource_id = match &outcome {
+                    crate::app::workflow_runtime::WorkflowLaunchOutcome::Entry {
+                        entry, ..
+                    } => &entry.entry_id,
                     crate::app::workflow_runtime::WorkflowLaunchOutcome::Started {
                         workflow_run,
                         ..
@@ -100,6 +121,9 @@ impl KernelRuntimeState {
                     Err(error) => return (Err(error), None),
                 };
                 match outcome {
+                    crate::app::workflow_runtime::WorkflowLaunchOutcome::Entry {
+                        entry, ..
+                    } => Ok(LocalDaemonResponse::WorkflowEntryAccepted { entry }),
                     crate::app::workflow_runtime::WorkflowLaunchOutcome::Started {
                         mut workflow_run,
                         workflow,

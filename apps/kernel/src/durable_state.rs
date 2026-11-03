@@ -69,6 +69,7 @@ pub(crate) mod notification_target;
 mod trigger_firings;
 pub(crate) mod trigger_resends;
 pub(crate) mod workflow_dispatch_intents;
+pub(crate) mod workflow_gate;
 pub(crate) mod workflow_notifications;
 pub(crate) mod workflow_queue_start;
 pub(crate) mod workflow_runtime;
@@ -230,6 +231,7 @@ enum DurableWriterRequest {
     AppAutomation(Box<app_automations::AppAutomationRequest>),
     AgentLifecycle(Box<agent_lifecycle::Request>),
     WorkflowNotification(Box<workflow_notifications::NotificationRequest>),
+    WorkflowGate(Box<workflow_gate::Request>),
     AppActivation(Box<app_activation::AppActivationRequest>),
     AppWorkerLifecycle(Box<app_worker_lifecycle::AppWorkerLifecycleRequest>),
     AppEventMaintenance(Box<app_event_maintenance::AppEventMaintenanceRequest>),
@@ -429,6 +431,7 @@ impl DurableKernelStateStore {
         app_state::initialize(&mut connection)?;
         app_automations::initialize(&mut connection)?;
         workflow_notifications::initialize(&mut connection)?;
+        workflow_gate::initialize(&connection)?;
         agent_lifecycle::initialize(&mut connection)?;
         created_resources::initialize(&connection).map_err(|_| DaemonError::LocalTransport {
             operation: "resource_register.initialize",
@@ -1782,6 +1785,13 @@ fn run_durable_writer_with(
             #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
             DurableWriterRequest::AppHttp(request) => {
                 app_http::execute(&mut connection, *request);
+                continue;
+            }
+            DurableWriterRequest::WorkflowGate(request) => {
+                if workflow_gate::execute(&mut connection, *request) {
+                    health.stop_uncertain("workflow_gate");
+                    break;
+                }
                 continue;
             }
             DurableWriterRequest::AppEventQueue(request) => {

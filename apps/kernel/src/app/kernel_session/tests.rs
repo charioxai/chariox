@@ -23,6 +23,7 @@ fn generated_workflow_code_definition() -> WorkflowCodeDefinition {
         schema_version: WORKFLOW_CODE_SCHEMA_VERSION,
         parameters_schema: None,
         workflow: WorkflowCodeWorkflow {
+            gate: None,
             alias: Some("generated_agents".to_string()),
             prompt: None,
             flush_agent_context_before_run: Some(true),
@@ -81,6 +82,7 @@ fn generated_workflow_code_definition() -> WorkflowCodeDefinition {
             canvas: None,
         }],
         endpoints: vec![WorkflowCodeEndpointDefinition {
+            entry_nodes: vec![],
             handle: "entry".to_string(),
             entry_node: "planner".to_string(),
             alias: Some("entry".to_string()),

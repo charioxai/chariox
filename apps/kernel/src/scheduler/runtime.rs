@@ -519,7 +519,10 @@ fn fail_workflow_node_after_schedule_error(
                 ),
             );
         }
-        Ok(Some(crate::app::workflow_runtime::WorkflowLaunchOutcome::Enqueued { .. })) => {}
+        Ok(Some(
+            crate::app::workflow_runtime::WorkflowLaunchOutcome::Entry { .. }
+            | crate::app::workflow_runtime::WorkflowLaunchOutcome::Enqueued { .. },
+        )) => {}
         Ok(None) => {}
         Err(error) => {
             app.record_notice(

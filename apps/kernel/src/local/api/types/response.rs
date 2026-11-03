@@ -670,6 +670,11 @@ pub enum LocalDaemonResponse {
         endpoint: WorkflowEndpointDefinition,
         session: RuntimeSession,
     },
+    WorkflowGateEntries { entries:Vec<crate::durable_state::workflow_gate::Entry>, next_cursor:Option<String> },
+    WorkflowGateModuleStored { sha256:String },
+    WorkflowGateTested { report:chariox_app_runtime::workflow_gate::Report },
+    WorkflowGateState { snapshot:crate::durable_state::workflow_gate::StateSnapshot },
+    WorkflowEntryAccepted { entry:crate::durable_state::workflow_gate::Entry },
     WorkflowRunsListed {
         workflow_runs: Vec<WorkflowRun>,
         next_cursor: Option<String>,

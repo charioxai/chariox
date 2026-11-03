@@ -259,6 +259,7 @@ fn envelope(binding: &str, suffix: &str, now: u64) -> EventDeliveryEnvelope {
             .unwrap()
             .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
         prompt: "canonical fixture prompt".into(),
+        data: None,
         artifacts: vec![],
         metadata: json!({"event":{"kind":"wanted"},"emissionFirst":emission("first"),"emissionSecond":emission("second")}),
         reply_context: Some(json!({"thread":"safe-fixture"})),

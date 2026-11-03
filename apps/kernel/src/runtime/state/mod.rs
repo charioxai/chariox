@@ -653,6 +653,8 @@ mod workflow_source_request_runtime_state;
 use workflow_prompt_dispatches::*;
 pub(crate) mod notification_delivery;
 mod room_workflow_control_runtime_state;
+mod workflow_gate_inputs;
+mod workflow_gate_runtime;
 mod workflow_notification_grants;
 mod workflow_notification_peers;
 mod workflow_notification_router;

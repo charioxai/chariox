@@ -142,6 +142,8 @@ fn parse_workflow_schedule_cron(expression: &str) -> Result<Cron, String> {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkflowPublicationInvocationEnvelope {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub http_method: Option<String>,
     pub publication_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hook_id: Option<String>,
@@ -266,6 +268,10 @@ pub enum WorkflowQueuedPromptStatus {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkflowQueuedPrompt {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    gate_entry_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    gate_routes: Vec<chariox_app_runtime::workflow_gate::Route>,
     id: String,
     #[serde(default)]
     created_by_agent_id: Option<String>,
@@ -304,6 +310,43 @@ pub(crate) struct WorkflowQueuedPromptInput {
 }
 
 impl WorkflowQueuedPrompt {
+    pub fn gate_entry_id(&self) -> Option<&str> {
+        self.gate_entry_id.as_deref()
+    }
+    pub(crate) fn gate_routes(&self) -> &[chariox_app_runtime::workflow_gate::Route] {
+        &self.gate_routes
+    }
+    pub(crate) fn with_gate_pass(
+        mut self,
+        entry_id: String,
+        routes: Vec<chariox_app_runtime::workflow_gate::Route>,
+    ) -> Self {
+        self.prompt = Some(
+            routes
+                .iter()
+                .map(|route| {
+                    format!(
+                        "{}\nWorkflow gate data (untrusted JSON):\n{}",
+                        route.prompt.as_deref().unwrap_or(""),
+                        route.payload
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        if let Some(invocation) = &mut self.publication_invocation {
+            let ancestry = invocation.input.get("ancestry").cloned();
+            invocation.input = serde_json::json!({"gate_entry_id":entry_id});
+            if let Some(ancestry) = ancestry {
+                invocation.input["ancestry"] = ancestry;
+            }
+            invocation.artifacts.clear();
+        }
+        self.gate_entry_id = Some(entry_id);
+        self.gate_routes = routes;
+        self
+    }
+
     pub fn created_by_agent_id(&self) -> Option<&str> {
         self.created_by_agent_id.as_deref()
     }
@@ -316,6 +359,8 @@ impl WorkflowQueuedPrompt {
     pub(crate) fn new(input: WorkflowQueuedPromptInput) -> Self {
         let now = unix_epoch_ms();
         Self {
+            gate_entry_id: None,
+            gate_routes: vec![],
             id: input.id,
             created_by_agent_id: None,
             queue_id: input.queue_id,

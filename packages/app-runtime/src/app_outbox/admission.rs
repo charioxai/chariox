@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 struct Event {
     version: u32,
     schema_digest: String,
+    schema: Value,
     validator: jsonschema::JSONSchema,
 }
 
@@ -38,6 +39,7 @@ impl EventCatalog {
                 declaration.name.clone(),
                 Event {
                     version: declaration.schema_version,
+                    schema: declaration.payload_schema.clone(),
                     schema_digest: digest(&schema),
                     validator,
                 },
@@ -58,6 +60,9 @@ impl EventCatalog {
         self.events
             .get(name)
             .map(|event| event.schema_digest.as_str())
+    }
+    pub fn payload_schema(&self, name: &str) -> Option<&Value> {
+        self.events.get(name).map(|e| &e.schema)
     }
     pub fn event_version(&self, name: &str) -> Option<u32> {
         self.events.get(name).map(|event| event.version)

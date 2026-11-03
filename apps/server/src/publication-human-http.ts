@@ -1,3 +1,4 @@
+import { forwardGateEntry } from "./publication-http-response.js"
 import { LocalIpcClient } from "@chariox/kernel-client/ipc"
 import { getWorkflowRunRequest } from "@chariox/kernel-client/ipc-requests"
 
@@ -165,6 +166,7 @@ export function forwardHumanHttpResult(
   preserveRequestUrl = false,
   invocationInput?: unknown,
 ) {
+  if (result.gate_entry) { reply.type("application/json; charset=utf-8"); return forwardGateEntry(reply,result.gate_entry) }
   registerAgentAppWorkflowRunEffects(publication, result.workflow_run, invocationRequestId)
   result = visibleWorkflowInvocationResult(publication, result)
   reply.code(200).type("text/html; charset=utf-8")

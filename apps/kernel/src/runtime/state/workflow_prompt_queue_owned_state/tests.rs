@@ -502,6 +502,9 @@ fn assert_workflow_queue_promotion_append_failure_is_retryable(requested: bool) 
             .expect("requested promotion retry should succeed");
         let outcome = outcome.expect("retry should own one promoted run");
         let workflow_run = match outcome {
+            crate::app::workflow_runtime::WorkflowLaunchOutcome::Entry { .. } => {
+                panic!("ungated fixture unexpectedly produced a gate entry")
+            }
             crate::app::workflow_runtime::WorkflowLaunchOutcome::Started {
                 workflow_run, ..
             } => workflow_run,
@@ -868,6 +871,9 @@ fn owned_launch_reports_started_when_prompt_admitted_by_concurrent_dispatch() {
     let claimed_outcome =
         claimed_outcome.expect("the idle primary instance should admit exactly one run");
     let started_run = match claimed_outcome {
+        crate::app::workflow_runtime::WorkflowLaunchOutcome::Entry { .. } => {
+            panic!("ungated fixture unexpectedly produced a gate entry")
+        }
         crate::app::workflow_runtime::WorkflowLaunchOutcome::Started { workflow_run, .. } => {
             workflow_run
         }
@@ -936,6 +942,9 @@ fn owned_launch_response_tracks_requested_prompt_when_older_prompt_starts() {
         )
         .expect("new prompt should advance the older queued work");
     let requested_prompt = match outcome {
+        crate::app::workflow_runtime::WorkflowLaunchOutcome::Entry { .. } => {
+            panic!("ungated fixture unexpectedly produced a gate entry")
+        }
         crate::app::workflow_runtime::WorkflowLaunchOutcome::Enqueued { queued_prompt, .. } => {
             queued_prompt
         }
@@ -1110,6 +1119,9 @@ fn owned_workflow_launch_retires_idle_provider_and_suppresses_resume_state() {
     assert!(new_provider_run.workflow_tools_enabled());
 
     let workflow_run = match outcome {
+        crate::app::workflow_runtime::WorkflowLaunchOutcome::Entry { .. } => {
+            panic!("ungated fixture unexpectedly produced a gate entry")
+        }
         crate::app::workflow_runtime::WorkflowLaunchOutcome::Started { workflow_run, .. } => {
             workflow_run
         }
@@ -1250,6 +1262,9 @@ fn failed_owned_queue_launch_releases_its_workspace_claim() {
         )
         .expect("blocked workflow invocation should be admitted");
     let blocked_run = match blocked_outcome {
+        crate::app::workflow_runtime::WorkflowLaunchOutcome::Entry { .. } => {
+            panic!("ungated fixture unexpectedly produced a gate entry")
+        }
         crate::app::workflow_runtime::WorkflowLaunchOutcome::Started { workflow_run, .. } => {
             workflow_run
         }
@@ -2112,5 +2127,81 @@ fn workflow_queue_admission_wakes_a_provider_that_became_ready() {
         dispatches.project_queue_promotions,
         vec![(session, agent.to_string())],
         "ready queue must carry a wakeup even though the launch-completion wakeup was missed"
+    );
+}
+
+#[tokio::test]
+async fn gated_manual_entry_has_no_queue_or_run_before_worker_decision() {
+    use crate::durable_state::workflow_gate::{Operation, Outcome};
+    use chariox_app_runtime::workflow_gate as gate;
+    let (runtime, session_id, workflow_id, endpoint_id, _root) = runtime_with_idle_workflow();
+    let component = b"journal-only test component";
+    let digest = gate::sha256(component);
+    assert!(matches!(
+        runtime
+            .owned
+            .durable_state_store
+            .gate(Operation::Put {
+                owner: crate::session::DEFAULT_LOCAL_USER_ID.into(),
+                digest: digest.clone(),
+                component: component.to_vec(),
+            })
+            .unwrap(),
+        Outcome::Unit
+    ));
+    {
+        let mut service = runtime.owned.session_store.write();
+        let mut session = service.get_session(&session_id).unwrap();
+        session
+            .workflow_mut(&workflow_id)
+            .unwrap()
+            .set_gate(Some(gate::Definition {
+                abi: gate::ABI.into(),
+                module_sha256: digest,
+                config: Default::default(),
+                config_sha256: gate::sha256(b"{}"),
+            }));
+        service.restore_session(session);
+    }
+    runtime
+        .owned
+        .persist_workflow_runtime_session(&session_id, "gate_test_baseline")
+        .unwrap();
+    let (response, _) = runtime
+        .execute_workflow_invoke_endpoint_request(
+            crate::local::InvokeWorkflowEndpointRequest {
+                session_id: session_id.clone(),
+                workflow_ref: workflow_id,
+                endpoint_ref: endpoint_id,
+                prompt: Some("unfiltered source text".into()),
+                queue_ref: None,
+                publication_invocation: None,
+            },
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            None,
+        )
+        .await;
+    let LocalDaemonResponse::WorkflowEntryAccepted { entry } = response.unwrap() else {
+        panic!("gate entry required");
+    };
+    assert_eq!(
+        entry.disposition,
+        crate::durable_state::workflow_gate::Disposition::Ready
+    );
+    let session = runtime
+        .owned
+        .session_store
+        .read()
+        .get_session(&session_id)
+        .unwrap();
+    assert!(session.workflow_queued_prompts().is_empty());
+    assert!(session.workflow_runs().is_empty());
+    assert_eq!(
+        runtime
+            .owned
+            .durable_state_store
+            .gate_entry(crate::session::DEFAULT_LOCAL_USER_ID, &entry.entry_id)
+            .unwrap(),
+        entry
     );
 }

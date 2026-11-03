@@ -493,7 +493,7 @@ pub(crate) async fn validate_app_route_event(
     )
 }
 
-async fn event_generator_detail(
+pub(crate) async fn event_generator_detail(
     config_projection: &DaemonConfigProjectionStore,
     generator_id: &str,
     version: Option<String>,
@@ -1805,6 +1805,8 @@ fn builtin_detail(generator_id: &str) -> Option<EventGeneratorCatalogDetail> {
             name: "Test event".to_string(),
             description: "Emits a user-supplied prompt and optional artifact references."
                 .to_string(),
+            payload_schema: None,
+            examples: vec![],
             filter_schema: serde_json::json!({
                 "type": "object",
                 "additionalProperties": false,

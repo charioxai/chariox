@@ -712,6 +712,7 @@ fn local_daemon_protocol_publication_invocation_shape_is_versioned() {
             queue_ref: Some("default".to_string()),
             prompt: Some("make tea".to_string()),
             publication_invocation: Some(crate::session::WorkflowPublicationInvocationEnvelope {
+                http_method: None,
                 publication_id: "publication-1".to_string(),
                 hook_id: Some("hook-1".to_string()),
                 invocation_id: "req-1".to_string(),

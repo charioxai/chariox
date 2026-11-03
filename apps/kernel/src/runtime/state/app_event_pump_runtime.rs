@@ -70,6 +70,16 @@ impl KernelRuntimeState {
             .await;
             if let Ok((pass, _permit, output)) = result {
                 runtime.spawn_workflow_prompt_dispatches(output.dispatches);
+                if let Ok(due) = runtime.owned.durable_state_store.gate_next_due() {
+                    let now = crate::session::unix_epoch_ms();
+                    runtime
+                        .app_control()
+                        .event_pump()
+                        .set_gate_due(due.map(|due| {
+                            std::time::Instant::now()
+                                + std::time::Duration::from_millis(due.saturating_sub(now))
+                        }));
+                }
                 pass.finish(
                     output.delivery,
                     output.maintenance,
@@ -99,6 +109,7 @@ impl KernelRuntimeOwnedState {
                 .any(|q| q.notification_injection_pending())
         });
         let (mut sessions, notification_more) = self.route_workflow_notifications();
+        sessions.extend(self.pump_workflow_gates());
         output.more |= notification_more;
         // Housekeeping remains available after publisher revoke/uninstall. It
         // cannot accept new events or grant an automation; only actual already

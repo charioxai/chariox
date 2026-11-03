@@ -16,6 +16,7 @@ fn workflow_code_apply_supports_multi_edge_routed_handoffs() {
         schema_version: WORKFLOW_CODE_SCHEMA_VERSION,
         parameters_schema: None,
         workflow: WorkflowCodeWorkflow {
+            gate: None,
             alias: Some("coded_router".to_string()),
             prompt: None,
             flush_agent_context_before_run: None,
@@ -133,6 +134,7 @@ fn workflow_code_apply_supports_multi_edge_routed_handoffs() {
             },
         ],
         endpoints: vec![WorkflowCodeEndpointDefinition {
+            entry_nodes: vec![],
             handle: "entry".to_string(),
             entry_node: "router".to_string(),
             alias: Some("entry".to_string()),
