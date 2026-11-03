@@ -100,6 +100,7 @@ pub(crate) struct Admission {
     pub definition: gate::Definition,
     pub binding_id: String,
     pub dedupe_id: String,
+    pub caller_sha256: String,
     pub deadline_ms: u64,
     pub trigger: gate::Trigger,
     pub allowed_nodes: Vec<String>,

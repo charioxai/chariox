@@ -1010,22 +1010,35 @@ impl KernelRuntimeOwnedState {
                         .as_ref()
                         .map(|i| i.invocation_id.clone())
                         .unwrap_or_else(|| format!("manual:{:032x}", rand::random::<u128>()));
-                    let admission = crate::durable_state::workflow_gate::Admission::from_prompt(
-                        &session,
-                        &workflow,
-                        queued,
-                        binding,
-                        if publication_invocation.is_some() {
-                            chariox_app_runtime::workflow_gate::TriggerKind::Http
-                        } else {
-                            chariox_app_runtime::workflow_gate::TriggerKind::Manual
-                        },
-                        occurrence,
-                        crate::session::unix_epoch_ms() + 7 * 24 * 60 * 60 * 1000,
-                        data,
-                        schema,
-                        None,
-                    )?;
+                    let mut admission =
+                        crate::durable_state::workflow_gate::Admission::from_prompt(
+                            &session,
+                            &workflow,
+                            queued,
+                            binding,
+                            if publication_invocation.is_some() {
+                                chariox_app_runtime::workflow_gate::TriggerKind::Http
+                            } else {
+                                chariox_app_runtime::workflow_gate::TriggerKind::Manual
+                            },
+                            occurrence,
+                            crate::session::unix_epoch_ms() + 7 * 24 * 60 * 60 * 1000,
+                            data,
+                            schema,
+                            None,
+                        )?;
+                    admission.caller_sha256 = chariox_app_runtime::workflow_gate::sha256(
+                        serde_json::to_string(&serde_json::json!([
+                            invoking_user.unwrap_or(endpoint.owner_user_id()),
+                            creator
+                        ]))
+                        .map_err(|_| {
+                            crate::durable_state::workflow_gate::error(
+                                "gate caller encoding failed",
+                            )
+                        })?
+                        .as_bytes(),
+                    );
                     self.accept_gate_prompt(admission)
                 })?;
             return Ok((

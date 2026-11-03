@@ -54,6 +54,7 @@ impl Fixture {
             definition,
             binding_id: "binding".into(),
             dedupe_id: "occurrence".into(),
+            caller_sha256: gate::sha256(b"authenticated local caller"),
             deadline_ms: now + 120_000,
             trigger: gate::Trigger {
                 kind: gate::TriggerKind::Manual,
@@ -422,4 +423,77 @@ fn passed_notification_preserves_authority_deadline_and_ancestry() {
     assert_eq!(input["deadline_ms"], json!(deadline));
     assert_eq!(input["ancestry"], json!(["source"]));
     assert!(input.get("payload").is_none());
+}
+
+#[test]
+fn batch_groups_do_not_merge_authenticated_callers() {
+    let mut f = Fixture::new();
+    let due = f.now + 1000;
+    for index in 0..2 {
+        f.admission.caller_sha256 = gate::sha256(&[index]);
+        f.admission.dedupe_id = format!("caller-{index}");
+        f.admission.trigger.occurrence_id = f.admission.dedupe_id.clone();
+        f.accept();
+        let c = f.claim(f.now).unwrap();
+        assert_eq!(
+            f.complete(
+                c,
+                gate::Decision::Batch {
+                    key: "shared-key".into(),
+                    flush_at_ms: due,
+                    payload: json!({"index":index})
+                }
+            )
+            .disposition,
+            Disposition::Batched
+        );
+    }
+    let groups: i64 =
+        f.db.query_row(
+            "SELECT count(*) FROM workflow_gate_batches WHERE closed=0",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(groups, 2);
+}
+
+#[test]
+fn batch_forces_queue_and_carries_member_ancestry_union_and_earliest_expiry() {
+    let mut f = Fixture::new();
+    let due = f.now + 1000;
+    let earliest = f.now + 20_000;
+    for (index, deadline) in [(0, earliest + 1000), (1, earliest)] {
+        let mut template = serde_json::to_value(&f.admission.template).unwrap();
+        template["publication_invocation"] = json!({"publication_id":"publication","hook_id":"subscription","invocation_id":format!("receipt-{index}"),"transport":"workflow_notification","endpoint_id":"endpoint","queue_ref":"default","input":{"deadline_ms":deadline,"ancestry":[format!("ancestor-{index}")]},"artifacts":[],"mode":null,"caller":{"owner_id":"local"}});
+        f.admission.template = serde_json::from_value(template).unwrap();
+        f.admission.deadline_ms = deadline;
+        f.admission.dedupe_id = format!("notification-{index}");
+        f.admission.trigger.occurrence_id = f.admission.dedupe_id.clone();
+        f.accept();
+        let c = f.claim(f.now).unwrap();
+        assert_eq!(
+            f.complete(
+                c,
+                gate::Decision::Batch {
+                    key: "digest".into(),
+                    flush_at_ms: due,
+                    payload: json!({"index":index})
+                }
+            )
+            .disposition,
+            Disposition::Batched
+        );
+    }
+    let c = f.claim(due).unwrap();
+    let template = &c.stored.admission.template;
+    assert_eq!(
+        template.publication_invocation().unwrap().input["deadline_ms"],
+        json!(earliest)
+    );
+    assert_eq!(c.stored.entry.deadline_ms, earliest);
+    assert_eq!(
+        template.publication_invocation().unwrap().input["ancestry"],
+        json!(["ancestor-0", "ancestor-1"])
+    );
 }
