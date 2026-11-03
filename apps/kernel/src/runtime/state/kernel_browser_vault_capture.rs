@@ -234,6 +234,16 @@ impl KernelRuntimeState {
             captured_value(&secret)?;
             secret
         };
+        // The element may hold a sentence around the key ("Or enter the secret: ABCD …").
+        let secret = if args.totp {
+            crate::secret::locate_totp_key(&secret).ok_or_else(|| {
+                host_error(
+                    "the element holds no authenticator setup key; point node_ref at the manual key text or the QR image (read=qr). Nothing was stored".into(),
+                )
+            })?
+        } else {
+            secret
+        };
         let now = crate::session::unix_epoch_ms();
         let label = args.label.clone().unwrap_or_else(|| {
             format!(

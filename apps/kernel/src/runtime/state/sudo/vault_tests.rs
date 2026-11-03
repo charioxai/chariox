@@ -319,7 +319,7 @@ while IFS= read -r request; do
  case "$request" in
   *'"method":"health"'*) printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s,"diagnostic_code":null}}\n' "$id" "$$" ;;
   *'"method":"host.secret"'*'"op":"capture"'*'"read":"qr"'*) printf '%s' "$request" > "$1/capture"; printf '{"id":%s,"ok":true,"result":{"value":"%s"}}\n' "$id" "$(cat "$1/qr.b64")" ;;
-  *'"method":"host.secret"'*'"op":"capture"'*'"read":"node","reveal_node_ref":null'*) printf '%s' "$request" > "$1/capture"; printf '{"id":%s,"ok":true,"result":{"value":"jbsw y3dp ehpk 3pxp"}}\n' "$id" ;;
+  *'"method":"host.secret"'*'"op":"capture"'*'"read":"node","reveal_node_ref":null'*) printf '%s' "$request" > "$1/capture"; printf '{"id":%s,"ok":true,"result":{"value":"Or enter the secret: jbsw y3dp ehpk 3pxp"}}\n' "$id" ;;
   *'"method":"host.secret"'*'"op":"capture"'*) printf '%s' "$request" > "$1/capture"; printf '{"id":%s,"ok":true,"result":{"value":"vaudit-captured-fixture-value"}}\n' "$id" ;;
   *'"method":"host.secret"'*) printf '%s' "$request" | grep -o '"plain_target":true' > "$1/plain" || true; printf '%s' "$request" | sed -n 's/.*"text":"\([^"]*\)".*/\1/p' > "$1/echo"; printf '%s' "$request" | sed -n 's/.*"vault_factor_input":\(true\|false\).*/\1/p' > "$1/factor_input"; printf '%s' "$request" | sed -n 's/.*"_app_view_tab":"\([^"]*\)".*/\1/p' > "$1/app_view_tab"; printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
   *'"method":"host.'*'"op":"open"'*) : > "$1/opened"; printf '{"id":%s,"ok":true,"result":{"generation":1,"tab_id":"host-tab-new","tabs":[%s,{"tab_id":"host-tab-new","document_id":"doc-login"}]}}\n' "$id" "$tabs" ;;
@@ -1373,7 +1373,7 @@ async fn capture_browser_stores_a_page_totp_key_or_qr_as_a_site_bound_seed() {
     wrong["reveal_node_ref"] = json!("backend:7");
     let error = call(f, CAPTURE, wrong).await.unwrap_err().to_string();
     assert!(
-        error.contains("TOTP") && !error.contains(CAPTURED),
+        error.contains("authenticator setup key") && !error.contains(CAPTURED),
         "{error}"
     );
     assert_eq!(

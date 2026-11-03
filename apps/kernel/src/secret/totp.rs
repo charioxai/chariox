@@ -87,6 +87,71 @@ fn decode_seed(seed: &str) -> Result<Zeroizing<Vec<u8>>, DaemonError> {
     Ok(Zeroizing::new(decoded))
 }
 
+/// A page shows its setup key inside a sentence ("Or enter the secret: ABCD EFGH …"), so a
+/// captured element is not always the bare key. Finds the key in such text: an `otpauth://`
+/// URI, one long token, or four or more equal-size groups (`ABCD-EFGH-…`). The whole text never
+/// counts as a key, because lenient base32 would accept a plain sentence.
+/// Sentences of unequal words never form a key. Returns what to store, not yet normalized.
+pub(crate) fn locate(text: &str) -> Option<Zeroizing<String>> {
+    let defaults = TotpConfig::default();
+    let valid = |candidate: &str| normalize(candidate, &defaults).is_ok();
+    let found = |candidate: &str| Some(Zeroizing::new(candidate.to_string()));
+    if let Some(start) = text.find("otpauth://") {
+        let end = text[start..]
+            .find(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '<' | '>'))
+            .map_or(text.len(), |length| start + length);
+        if valid(&text[start..end]) {
+            return found(&text[start..end]);
+        }
+    }
+    let tokens: Vec<&str> = text
+        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '='))
+        .filter(|token| !token.is_empty())
+        .collect();
+    let base32_only = |token: &str| {
+        token
+            .bytes()
+            .all(|b| b.is_ascii_alphabetic() || (b'2'..=b'7').contains(&b))
+    };
+    // A real key mixes in digits or is all capitals; a lowercase or capitalized word is prose.
+    let looks_like_key = |token: &str| {
+        token.bytes().any(|b| b.is_ascii_digit()) || !token.bytes().any(|b| b.is_ascii_lowercase())
+    };
+    let single = tokens
+        .iter()
+        .filter(|token| {
+            token.len() >= 16 && base32_only(token) && looks_like_key(token) && valid(token)
+        })
+        .max_by_key(|token| token.len());
+    if let Some(token) = single {
+        return found(token);
+    }
+    let mut best: Option<String> = None;
+    for start in 0..tokens.len() {
+        let size = tokens[start].len();
+        if !(2..=8).contains(&size) || !base32_only(tokens[start]) {
+            continue;
+        }
+        let mut joined = String::new();
+        let mut groups = 0;
+        for token in &tokens[start..] {
+            if token.len() != size || !base32_only(token) {
+                break;
+            }
+            joined.push_str(token);
+            groups += 1;
+            if groups >= 4
+                && joined.len() >= 16
+                && valid(&joined)
+                && best.as_ref().is_none_or(|best| joined.len() > best.len())
+            {
+                best = Some(joined.clone());
+            }
+        }
+    }
+    best.map(Zeroizing::new)
+}
+
 pub(super) fn code(
     seed: &str,
     config: &TotpConfig,
@@ -119,6 +184,34 @@ pub(super) fn code(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn locates_a_setup_key_in_page_text_and_never_in_prose() {
+        let seed = "JBSWY3DPEHPK3PXP";
+        for text in [
+            seed.to_string(),
+            "jbsw y3dp ehpk 3pxp".to_string(),
+            format!(
+                "Or enter the secret: {seed}\nAnd enter the passcode shown in the application:"
+            ),
+            format!("Setup key: {}", "JBSW-Y3DP-EHPK-3PXP"),
+            "Manual entry key jbsw y3dp ehpk 3pxp (spaces optional)".to_string(),
+            format!("Open otpauth://totp/Fixture:alice?secret={seed}&issuer=Fixture to add it"),
+        ] {
+            let located = locate(&text).unwrap_or_else(|| panic!("no key in {text:?}"));
+            let (canonical, _) = normalize(&located, &TotpConfig::default()).unwrap();
+            assert_eq!(canonical.as_str(), seed, "{text:?}");
+        }
+        for text in [
+            "",
+            "Or enter the secret",
+            "This page shows nothing that looks like a key at all",
+            "Scan this image with your authentication application:",
+            "This also gives game plan ideas around town",
+        ] {
+            assert!(locate(text).is_none(), "{text:?}");
+        }
+    }
 
     #[test]
     fn rfc6238_vectors() {

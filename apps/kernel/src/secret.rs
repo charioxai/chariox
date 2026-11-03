@@ -1259,6 +1259,11 @@ fn hex_bytes(bytes: &[u8]) -> String {
     hex
 }
 
+/// See `totp::locate`: the setup key inside the text a page element shows.
+pub(crate) fn locate_totp_key(text: &str) -> Option<Zeroizing<String>> {
+    totp::locate(text)
+}
+
 pub(crate) fn normalize_vault_credential_input(
     mut credential: UserCredentialConfig,
     value: &str,
