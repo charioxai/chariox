@@ -50,7 +50,7 @@ The identity is the agent's own live provider run (`reach:<run>`); it ends with 
 
 A request for another kernel goes through the owner's gateway (the same one `chariox request --kernel` used); `on_behalf_of.harness` names `<room>/<agent> (Chariox agent)`, so the target's audit rows and its paired-clients list show which agent acted. Authority is enforced on the agent's own kernel.
 
-Renting a machine (`ControlPlane` acquire/start, disposable workers, managed environments) needs no question within the user's Cloud allowance. With the setting `agents.ask_before_renting_machines = true` ("Ask before agents rent machines", off by default; owner-only) each rental raises one decision in the agent's room, shown on every client; declining answers `rental_declined`.
+Acquiring a machine (`ControlPlane` acquire, start and start-from-saved-state) needs no question by default. With the setting `agents.ask_before_acquiring_machines = true` ("Ask each time an agent acquires a machine through your connected service"; off by default; owner-only) each such request raises one decision in the agent's room, shown on every client; declining answers `acquisition_declined`.
 
 Drill: `node scripts/drills/agent-reach.mjs` (two real kernels, local relay, a real Claude agent).
 

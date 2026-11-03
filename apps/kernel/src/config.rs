@@ -604,9 +604,9 @@ pub struct UserUiConfig {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UserAgentsConfig {
-    /// Off by default: an agent of the kernel owner rents machines without asking.
+    /// Off by default: an agent of the kernel owner acquires machines without asking.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ask_before_renting_machines: Option<bool>,
+    pub ask_before_acquiring_machines: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

@@ -1,7 +1,6 @@
 // MP-08 / MP-09 / MP-10 / MP-11 agent reach: a real Claude Room agent on kernel A, without /sudo, reaches
 // kernel B through its `chariox-reach` tools; B's audit and paired-clients list name the agent; what needs /sudo
-// in the agent's own room is refused on B without /sudo and works inside a /sudo window; "Ask before agents rent
-// machines" turns a rental into one decision in the agent's room.
+// in the agent's own room is refused on B without /sudo and works inside a /sudo window; the "ask before agents acquire machines" setting turns an acquisition into one decision in the agent's room.
 // Real kernels, local scoped relay, real Claude. Credentials are read inside this script, never printed or stored
 // in evidence. Red on a base kernel without `chariox-reach`: the agent has no tool, so the B-side checks fail.
 import assert from "node:assert/strict"
@@ -28,7 +27,7 @@ const stateRoot = required("--state-root"), evidence = required("--evidence-dir"
 const label = flags.get("--label") ?? "run"
 const model = flags.get("--model") ?? "claude-haiku-5-5"
 const tokenFile = flags.get("--claude-token-file") ?? "/root/.claude-lanes/oauth-token"
-const scenarios = new Set((flags.get("--scenarios") ?? "reach,sudo,rental").split(","))
+const scenarios = new Set((flags.get("--scenarios") ?? "reach,sudo,acquisition").split(","))
 assert(stateRoot.startsWith("/root/.chariox/dev/"), "state must be lane-owned")
 assert(!evidence.startsWith(fileURLToPath(new URL("../../", import.meta.url))), "evidence must be outside the repository")
 mkdirSync(stateRoot, { recursive: true, mode: 0o700 })
@@ -281,32 +280,32 @@ async function main() {
     check("the same request works inside a /sudo window", (await bState()).alias === "renamed-with-sudo", { alias: (await bState()).alias })
   }
 
-  if (scenarios.has("rental")) {
-    note("scenario", { which: "rental" })
+  if (scenarios.has("acquisition")) {
+    note("scenario", { which: "acquisition" })
     const acquire = call(null, { ControlPlane: { action: "acquire", capability_revision: "r1", request_id: "reach-drill" } })
-    const rentalPrompt = tag => ["This is a drill. Use only the chariox-reach `request` tool; no shell, no files. Do not retry.", `Call \`request\` once with exactly: ${acquire}`, `Then reply with the words ${tag} and DONE joined by an underscore, followed by the \`code\` field of the answer if there is one.`].join("\n")
-    const askedBefore = async () => (await state(a, roomA.session.id)).active_interactions?.filter(x => String(x.message ?? "").startsWith("Rent a machine for")) ?? []
-    await sendPrompt(rentalPrompt("RENTALOFF"), "RENTALOFF_DONE")
-    check("the toggle is off by default: no rental question and the request goes on", (await askedBefore()).length === 0 && claudeTranscript(a.dir + "/chariox", startedAt).includes("no connected machine service"))
-    await a.rpc({ SetUserConfigValue: { path: "agents.ask_before_renting_machines", value: "true" } })
+    const acquirePrompt = tag => ["This is a drill. Use only the chariox-reach `request` tool; no shell, no files. Do not retry.", `Call \`request\` once with exactly: ${acquire}`, `Then reply with the words ${tag} and DONE joined by an underscore, followed by the \`code\` field of the answer if there is one.`].join("\n")
+    const askedBefore = async () => (await state(a, roomA.session.id)).active_interactions?.filter(x => String(x.message ?? "").includes("acquire a machine")) ?? []
+    await sendPrompt(acquirePrompt("ACQUIREOFF"), "ACQUIREOFF_DONE")
+    check("the toggle is off by default: no acquisition question and the request goes on", (await askedBefore()).length === 0 && claudeTranscript(a.dir + "/chariox", startedAt).includes("no connected machine service"))
+    await a.rpc({ SetUserConfigValue: { path: "agents.ask_before_acquiring_machines", value: "true" } })
     for (const choice of ["decline", "accept"]) {
-      const tag = choice === "decline" ? "RENTALNO" : "RENTALYES", since = Date.now() - 1000
-      const needle = choice === "decline" ? "rental_declined" : "no connected machine service"
+      const tag = choice === "decline" ? "ACQUIRENO" : "ACQUIREYES", since = Date.now() - 1000
+      const needle = choice === "decline" ? "acquisition_declined" : "no connected machine service"
       const seenBefore = claudeTranscript(a.dir + "/chariox", 0).split(needle).length
-      await a.rpc(submitPromptRequest(roomA.session.id, attached, agentA, rentalPrompt(tag), []))
+      await a.rpc(submitPromptRequest(roomA.session.id, attached, agentA, acquirePrompt(tag), []))
       let asked
       await until(async () => {
         await a.rpc({ PumpTerminalOutput: { session_id: roomA.session.id, attachment_id: attached } }).catch(() => {})
         asked = (await askedBefore())[0]
         return asked
-      }, "rental question", 180000)
-      note("rental-question", { message: asked.message, choices: asked.choices.map(c => c.id) })
+      }, "acquisition question", 180000)
+      note("acquisition-question", { message: asked.message, choices: asked.choices.map(c => c.id) })
       await a.rpc({ RespondToInteraction: { session_id: roomA.session.id, interaction_id: asked.id, choice_id: choice } })
       await finished(`${tag}_DONE`, since)
       const honoured = await until(() => claudeTranscript(a.dir + "/chariox", 0).split(needle).length > seenBefore, needle, 20000).then(() => true, () => false)
-      check(`${choice} on the rental question is honoured`, honoured)
+      check(`${choice} on the acquisition question is honoured`, honoured)
     }
-    await a.rpc({ SetUserConfigValue: { path: "agents.ask_before_renting_machines", value: "false" } })
+    await a.rpc({ SetUserConfigValue: { path: "agents.ask_before_acquiring_machines", value: "false" } })
   }
 }
 try {

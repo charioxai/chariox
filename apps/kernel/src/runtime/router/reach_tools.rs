@@ -5,7 +5,7 @@ use super::CommandRouter;
 use crate::error::DaemonError;
 use crate::local::LocalDaemonRequest;
 use crate::runtime::kernel_gateway::Origin;
-use crate::runtime::state::reach::{reach_need, rents_machine, ReachCaller, ReachNeed};
+use crate::runtime::state::reach::{acquires_machine, reach_need, ReachCaller, ReachNeed};
 use crate::transport::runtime_tools::{
     ReachRequestArgs, RuntimeToolResult, REACH_KERNELS_TOOL, REACH_REQUEST_TOOL,
 };
@@ -100,10 +100,10 @@ impl CommandRouter {
                     )),
                 },
             };
-        if rents_machine(&request) && !state.confirm_machine_rental(caller).await? {
+        if acquires_machine(&request) && !state.confirm_machine_acquisition(caller).await? {
             return Ok(refused(
-                "rental_declined",
-                "the owner did not accept renting a machine",
+                "acquisition_declined",
+                "the owner did not accept acquiring a machine",
             ));
         }
         let command_id = format!("{}:{}", caller.id, rand::random::<u64>());

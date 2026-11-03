@@ -129,7 +129,7 @@ fn reach_need_follows_the_agents_own_room_authority() {
             "capability_revision": "r", "request_id": "q"}})
         )),
         ReachNeed::Room,
-        "renting is room-level"
+        "acquiring a machine is room-level"
     );
     assert_eq!(
         reach_need(&parse(
@@ -335,7 +335,7 @@ async fn the_gateway_names_the_agent_and_admits_only_room_requests_for_it() {
 }
 
 #[tokio::test]
-async fn renting_a_machine_asks_only_when_the_owner_turned_the_setting_on() {
+async fn acquiring_a_machine_asks_only_when_the_owner_turned_the_setting_on() {
     let reach = fixture();
     let acquire = serde_json::json!({"ControlPlane": {
         "action": "acquire", "capability_revision": "r1", "request_id": "one"}});
@@ -349,7 +349,7 @@ async fn renting_a_machine_asks_only_when_the_owner_turned_the_setting_on() {
     reach
         .router
         .runtime_state()
-        .set_user_config_value("agents.ask_before_renting_machines".into(), "true".into())
+        .set_user_config_value("agents.ask_before_acquiring_machines".into(), "true".into())
         .await
         .expect("the owner turns the setting on");
     let asked = {
@@ -372,7 +372,7 @@ async fn renting_a_machine_asks_only_when_the_owner_turned_the_setting_on() {
         }
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     };
-    assert!(interaction.message().starts_with("Rent a machine for"));
+    assert!(interaction.message().starts_with("Let "));
     let ids = interaction
         .choices()
         .iter()
@@ -387,7 +387,7 @@ async fn renting_a_machine_asks_only_when_the_owner_turned_the_setting_on() {
         .expect("the owner's decision closes the card");
     let result = asked.await.unwrap().unwrap();
     assert!(!result.ok);
-    assert_eq!(code(&result.payload), "rental_declined");
+    assert_eq!(code(&result.payload), "acquisition_declined");
 }
 
 fn active_questions(reach: &Reach) -> Vec<crate::session::RuntimeInteraction> {

@@ -50,7 +50,7 @@ pub(crate) fn reach_need(request: &LocalDaemonRequest) -> ReachNeed {
     }
     // The room tools: discover and read sessions, agents and history, attach, message
     // and steer agents, a room's own terminals and workspace files, and machines under
-    // the rental rule. Kernel-wide file access and every other kernel mutation need /sudo.
+    // the acquisition setting. Kernel-wide file access and every other kernel mutation need /sudo.
     if matches!(
         request,
         LocalDaemonRequest::ListGatewayKernels(_)
@@ -85,16 +85,15 @@ pub(crate) fn reach_need(request: &LocalDaemonRequest) -> ReachNeed {
     ReachNeed::Sudo
 }
 
-/// Renting is the only machine request that spends money.
-pub(crate) fn rents_machine(request: &LocalDaemonRequest) -> bool {
+/// The machine requests an owner may want to confirm: acquiring or starting a machine.
+pub(crate) fn acquires_machine(request: &LocalDaemonRequest) -> bool {
     matches!(
         request,
         LocalDaemonRequest::ControlPlane(
             ControlPlaneRequest::Acquire { .. }
                 | ControlPlaneRequest::Start { .. }
                 | ControlPlaneRequest::StartSavedState { .. }
-        ) | LocalDaemonRequest::CreateDisposableWorker(_)
-            | LocalDaemonRequest::CreateManagedEnvironment(_)
+        )
     )
 }
 
@@ -171,9 +170,9 @@ impl KernelRuntimeState {
         Some(format!("{room}/{name} (Chariox agent)"))
     }
 
-    /// Whether the owner accepts this rental. Always yes unless "Ask before agents
-    /// rent machines" is on; then one decision in the agent's room, to every client.
-    pub(crate) async fn confirm_machine_rental(
+    /// Whether the owner accepts this acquisition. Always yes unless the setting
+    /// `agents.ask_before_acquiring_machines` is on; then one decision in the agent's room, to every client.
+    pub(crate) async fn confirm_machine_acquisition(
         &self,
         caller: &ReachCaller,
     ) -> Result<bool, DaemonError> {
@@ -181,7 +180,7 @@ impl KernelRuntimeState {
         if !config
             .user_config
             .agents
-            .ask_before_renting_machines
+            .ask_before_acquiring_machines
             .unwrap_or(false)
         {
             return Ok(true);
@@ -201,7 +200,7 @@ impl KernelRuntimeState {
                 Some(&run),
                 crate::transport::runtime_tools::RequestPopupArgs {
                     wait: None,
-                    message: format!("Rent a machine for {}?", caller.harness),
+                    message: format!("Let {} acquire a machine?", caller.harness),
                     choices: vec![choice("accept", "Allow"), choice("decline", "Decline")],
                     custom_choice: None,
                     title: None,
