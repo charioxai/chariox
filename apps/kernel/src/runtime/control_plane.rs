@@ -1,0 +1,187 @@
+//! Optional connected service operations; no catalog, policy or compute vendor lives here.
+use crate::config::DaemonConfig;
+use crate::error::DaemonError;
+use crate::local::{ControlPlaneRequest, ControlPlaneResponse, LocalDaemonResponse};
+use crate::runtime::command::KernelCommand;
+use crate::runtime::state::KernelRuntimeState;
+
+pub(crate) async fn execute(
+    config: &DaemonConfig,
+    state: &KernelRuntimeState,
+    command: &KernelCommand,
+    gateway: &crate::runtime::kernel_gateway::KernelGateway,
+    request: &ControlPlaneRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    let capabilities = matches!(request, ControlPlaneRequest::Capabilities {});
+    // The same process-bound grant used for Rooms, exec and the gateway. A Room
+    // invite or provider bearer alone cannot use the owner's kernel enrollment.
+    if let Some(grant) = command.external_grant_id() {
+        state.authorize_external_request(
+            &grant,
+            &crate::local::LocalDaemonRequest::ControlPlane(request.clone()),
+        )?;
+    } else if !capabilities
+        || !crate::runtime::cloud_relay_authorization::kernel_cloud_owner(config, command)
+    {
+        return Err(unavailable(
+            "control_plane_grant_required",
+            "Use the owner's Chariox access grant for machine requests",
+        ));
+    }
+    let profile = crate::runtime::cloud_relay_control::active_cloud_profile(config);
+    let credential = profile
+        .and_then(|p| p.kernel_credential.as_deref())
+        .filter(|c| !c.is_empty());
+    let (Some(profile), Some(credential)) = (profile, credential) else {
+        return if capabilities {
+            Ok(LocalDaemonResponse::ControlPlane {
+                result: ControlPlaneResponse::Capabilities {
+                    machine_allocation: None,
+                },
+            })
+        } else {
+            Err(unavailable(
+                "control_plane_unavailable",
+                "This kernel has no connected machine service",
+            ))
+        };
+    };
+    let mut result = crate::runtime::cloud_api_client::post_cloud_json::<ControlPlaneResponse>(
+        profile.api_url.clone(), "/control-plane",
+        serde_json::json!({"accountId": profile.account_id, "kernelCredential": credential, "request": request}),
+    ).await.map_err(|error| {
+        match crate::runtime::cloud_api_client::cloud_error_code(&error) {
+            Some("authorization_denied" | "session_invalid" | "client_revoked" | "identity_revoked") =>
+                unavailable("control_plane_authorization_denied", "Check this kernel's owner enrollment and refresh machine capabilities"),
+            _ => error,
+        }
+    })?;
+    let response_matches = matches!(
+        (&result, request),
+        (
+            ControlPlaneResponse::Capabilities { .. },
+            ControlPlaneRequest::Capabilities {}
+        ) | (
+            ControlPlaneResponse::Machines { .. },
+            ControlPlaneRequest::List {}
+        )
+    ) || (matches!(result, ControlPlaneResponse::Machine { .. })
+        && !matches!(
+            request,
+            ControlPlaneRequest::Capabilities {} | ControlPlaneRequest::List {}
+        ));
+    if !response_matches {
+        return Err(unavailable(
+            "control_plane_binding_invalid",
+            "The connected service returned another response type",
+        ));
+    }
+    if let ControlPlaneResponse::Machine {
+        allocation_ref,
+        kernel_target,
+        access_state,
+        access_reason,
+        state: machine_state,
+        ..
+    } = &mut result
+    {
+        let expected = match request {
+            ControlPlaneRequest::Get { allocation_ref }
+            | ControlPlaneRequest::Release { allocation_ref, .. }
+            | ControlPlaneRequest::Start { allocation_ref, .. }
+            | ControlPlaneRequest::Stop { allocation_ref, .. }
+            | ControlPlaneRequest::StartSavedState { allocation_ref, .. }
+            | ControlPlaneRequest::DeleteSavedState { allocation_ref, .. } => Some(allocation_ref),
+            _ => None,
+        };
+        if expected.is_some_and(|expected| expected != allocation_ref)
+            || kernel_target.as_ref().is_some_and(|t| {
+                t.relay_realm_id != profile.realm_id
+                    || t.key_thumbprint.len() != 64
+                    || !t.key_thumbprint.bytes().all(|b| b.is_ascii_hexdigit())
+            })
+        {
+            return Err(unavailable(
+                "control_plane_binding_invalid",
+                "The connected service returned another machine or realm",
+            ));
+        }
+        *access_state = "pending".into();
+        *access_reason = None;
+        if let Some(target) = kernel_target.as_ref().filter(|_| machine_state == "ready") {
+            let grant = command.external_grant_id().ok_or_else(|| {
+                unavailable(
+                    "control_plane_grant_required",
+                    "Machine attachment requires the owner's Chariox access grant",
+                )
+            })?;
+            let origin = state.gateway_origin(&grant).ok_or_else(|| {
+                unavailable("kernel_access_ended", "The Chariox access grant ended")
+            })?;
+            match gateway
+                .attach_machine(
+                    target,
+                    &origin,
+                    &format!("{}:machine-access", command.command_id),
+                )
+                .await
+            {
+                Ok(()) => *access_state = "available".into(),
+                Err(error) => *access_reason = Some(error.code().to_string()),
+            }
+        }
+    }
+    Ok(LocalDaemonResponse::ControlPlane { result })
+}
+
+fn unavailable(code: &str, message: &str) -> DaemonError {
+    DaemonError::RelayTransport {
+        operation: "connected control plane",
+        code: code.into(),
+        retryable: false,
+        message: message.into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test]
+    async fn mp08_mp11_self_hosted_discovery_is_empty_and_membership_cannot_spend() {
+        let config = DaemonConfig::for_tests();
+        let app = crate::test_support::bootstrap_authenticated_app(config.clone()).unwrap();
+        let router = crate::runtime::router::CommandRouter::with_interactive_capacity_from_app(
+            std::sync::Arc::new(tokio::sync::Mutex::new(app)),
+            4,
+        );
+        let state = router.runtime_state();
+        let request =
+            crate::local::LocalDaemonRequest::ControlPlane(ControlPlaneRequest::Capabilities {});
+        let command = KernelCommand::from_local_request("discover", None, None, &request);
+        let result = execute(
+            &config,
+            &state,
+            &command,
+            router.kernel_gateway(),
+            &ControlPlaneRequest::Capabilities {},
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            result,
+            LocalDaemonResponse::ControlPlane {
+                result: ControlPlaneResponse::Capabilities {
+                    machine_allocation: None
+                }
+            }
+        ));
+        let acquire = ControlPlaneRequest::Acquire {
+            capability_revision: "forged".into(),
+            request_id: "one".into(),
+        };
+        let error = execute(&config, &state, &command, router.kernel_gateway(), &acquire)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("control_plane_grant_required"));
+    }
+}

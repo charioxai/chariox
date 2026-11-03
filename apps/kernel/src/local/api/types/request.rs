@@ -259,6 +259,7 @@ pub enum LocalDaemonRequest {
     UnlockCredentialVault(UnlockCredentialVaultRequest),
     ManageCredentialVault(ManageCredentialVaultRequest),
     PreflightProviderAccountPortability(PreflightProviderAccountPortabilityRequest),
+    ControlPlane(ControlPlaneRequest),
     ListManagedEnvironmentCatalog(ListManagedEnvironmentCatalogRequest),
     CreateDisposableWorker(CreateDisposableWorkerRequest),
     GetDisposableWorker(DisposableWorkerRequest),

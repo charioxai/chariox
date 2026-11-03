@@ -20,6 +20,7 @@ mod browser_mirror;
 mod client_catalog_revisions;
 mod cloud_relay;
 mod computer_hold;
+mod control_plane;
 mod core;
 mod credential_enrollment;
 mod credential_env;

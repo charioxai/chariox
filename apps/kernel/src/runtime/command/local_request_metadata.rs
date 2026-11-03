@@ -259,6 +259,9 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
         LocalDaemonRequest::PreflightProviderAccountPortability(_) => {
             LocalRequestMetadata::new("provider_account.portability.preflight", Interactive)
         }
+        LocalDaemonRequest::ControlPlane(_) => {
+            LocalRequestMetadata::new("control_plane", Interactive)
+        }
         LocalDaemonRequest::ListManagedEnvironmentCatalog(_) => {
             LocalRequestMetadata::new("managed_environment.catalog", Normal)
         }
@@ -662,6 +665,7 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
 
 fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
     match request {
+        LocalDaemonRequest::ControlPlane(_) => "control_plane",
         LocalDaemonRequest::SetRoomPinned(_) => "room.pin",
         LocalDaemonRequest::AddSshMachine(_) => "machine.ssh.add",
         LocalDaemonRequest::RemoveSshMachine(_) => "machine.ssh.remove",

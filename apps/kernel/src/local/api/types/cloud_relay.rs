@@ -288,8 +288,6 @@ pub struct KernelRuntimeProcessIdentity {
 /// Shared by direct kernel status and relay discovery. These advertise support,
 /// not authorization; every operation still checks its caller and home binding.
 pub const RUNTIME_CONTROL_CAPABILITIES: &[&str] = &[
-    "disposable_worker_control_v1",
-    "managed_environment_keep_running_v1",
     "terminal_relay_authorization_renewal_v1",
     "exact_prompt_cancellation_v499",
     "owner_managed_context_transfer_v1",

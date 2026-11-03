@@ -352,3 +352,10 @@ pub use api::{
     EventTarget, EventsBatch, GetEventSubscriptionRequest, ListEventsRequest, OutsideEvent,
     OutsideEventValue, SubscribeEventsRequest, UnsubscribeEventsRequest, WaitEventsRequest,
 };
+
+pub use api::{
+    ControlPlaneMachineTarget, ControlPlaneRequest, ControlPlaneResponse,
+    MachineAllocationCapability,
+};
+
+pub use api::{ControlPlaneMachineRow, ControlPlaneSavedStateRow};

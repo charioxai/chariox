@@ -31,16 +31,6 @@ impl CommandRouter {
         caller_user_id: &'a str,
     ) -> Option<PreLaneRequestFuture<'a>> {
         match request {
-            request @ (LocalDaemonRequest::CreateDisposableWorker(_)
-            | LocalDaemonRequest::GetDisposableWorker(_)
-            | LocalDaemonRequest::ReleaseDisposableWorker(_)
-            | LocalDaemonRequest::KeepDisposableWorkerRunning(_)
-            | LocalDaemonRequest::PrepareDisposableWorkerContextTransfer(_)
-            | LocalDaemonRequest::KeepManagedEnvironmentRunning(_)) => Some(Box::pin(async move {
-                crate::runtime::disposable_worker_control::execute_disposable_worker_control_request(
-                    self.config_projection.snapshot(), self.provider_account_profiles.clone(),
-                    caller_user_id, request.clone()).await.map(Some)
-            })),
             LocalDaemonRequest::ObserveManagedEnvironmentPreReimage(request) => {
                 Some(Box::pin(async move {
                     execute_managed_bootstrap_observation_request(

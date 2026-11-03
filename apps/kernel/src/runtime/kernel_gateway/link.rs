@@ -67,6 +67,10 @@ pub(super) struct Link {
 }
 
 impl Link {
+    pub(super) fn has_target_key(&self, key: &str) -> bool {
+        self.target_public_key == key
+    }
+
     pub(super) async fn open(params: LinkParams) -> Result<Self, LinkFailure> {
         let (mut socket, _) = tokio::time::timeout(
             CONNECT_TIMEOUT,

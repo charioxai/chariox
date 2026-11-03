@@ -20,6 +20,7 @@ mod capability;
 mod cloud_relay;
 mod config_capabilities;
 mod created_resource;
+mod control_plane;
 mod daemon;
 mod dictation;
 mod disposable_worker;
@@ -72,6 +73,7 @@ pub use capability::*;
 pub use cloud_relay::*;
 pub use config_capabilities::*;
 pub use created_resource::*;
+pub use control_plane::*;
 pub use daemon::*;
 pub use dictation::*;
 pub use disposable_worker::*;
@@ -460,4 +462,5 @@ pub use workspace::*;
 /// MP-08 / MP-09 / MP-10 / MP-11: 954 adds nullable cumulative process disk I/O (peer403).
 /// MP-08/MP-09/MP-10/MP-11: 960 integrates Machines and canonical owner/agent Vault uses (peer409).
 /// MP-08/MP-09/MP-10/MP-11: 963 binds every captured Vault entry to one declared use (peer412).
+/// Connected service machine requests use the ordinary Chariox access grant.
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 963;

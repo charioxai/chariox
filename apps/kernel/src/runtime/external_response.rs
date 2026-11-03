@@ -191,6 +191,7 @@ response_policies! {
         UserDomainInteractionAnswered,
     ],
     Public => [
+        ControlPlane,
         EventSubscription,
         EventsListed,
         EventsAcknowledged,

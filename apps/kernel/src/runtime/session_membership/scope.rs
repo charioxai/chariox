@@ -631,6 +631,7 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::AnswerUserDomainInteraction(_)
         | LocalDaemonRequest::AcceptAppHostAction(_)
         | LocalDaemonRequest::AdjustProjectEnvironment(_)
+        | LocalDaemonRequest::ControlPlane(_)
         | LocalDaemonRequest::CreateDisposableWorker(_)
         | LocalDaemonRequest::GetDisposableWorker(_)
         | LocalDaemonRequest::GetManagedEnvironmentReimageReceipt(_)

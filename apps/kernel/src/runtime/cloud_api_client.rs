@@ -16,12 +16,11 @@ mod device_poll;
 mod http;
 pub(crate) use device_poll::post_cloud_device_poll;
 pub(crate) use http::{
-    cloud_error_code, cloud_error_is_retryable, cloud_url_component,
-    delete_cloud_json_authenticated, get_cloud_json, get_cloud_json_authenticated,
-    get_cloud_kernel_directory, is_stale_cloud_link_error, normalize_cloud_api_url,
-    post_cloud_acknowledged, post_cloud_json, post_cloud_json_authenticated,
-    post_cloud_json_dynamic, post_cloud_json_with_timeout, post_cloud_to_file,
-    CLOUD_PRESENCE_REQUEST_TIMEOUT, CLOUD_RELAY_TOKEN_REQUEST_TIMEOUT,
+    cloud_error_code, cloud_error_is_retryable, cloud_url_component, get_cloud_json,
+    get_cloud_json_authenticated, get_cloud_kernel_directory, is_stale_cloud_link_error,
+    normalize_cloud_api_url, post_cloud_acknowledged, post_cloud_json,
+    post_cloud_json_authenticated, post_cloud_json_dynamic, post_cloud_json_with_timeout,
+    post_cloud_to_file, CLOUD_PRESENCE_REQUEST_TIMEOUT, CLOUD_RELAY_TOKEN_REQUEST_TIMEOUT,
 };
 mod pairing;
 pub(crate) use pairing::request_account_pairing_token;
