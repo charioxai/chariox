@@ -81,6 +81,7 @@ fn owner(wake_id: &str, agent_id: &str) -> WatchOwner {
 fn open(service: &RoomTerminalService, directory: &Path) -> RoomTerminalSummary {
     service
         .open(OpenRoomTerminal {
+            project_environment: Default::default(),
             session_id: "room-1".to_string(),
             working_directory: directory.to_path_buf(),
             cols: 100,
@@ -790,6 +791,7 @@ async fn a_typed_key_is_echoed_without_waiting_for_a_slow_tick() {
     let service = service(root.path());
     let id = service
         .open(OpenRoomTerminal {
+            project_environment: Default::default(),
             session_id: "room-1".to_string(),
             working_directory: root.path().to_path_buf(),
             cols: 100,
@@ -1208,6 +1210,7 @@ async fn once_the_user_used_a_tab_only_the_user_can_close_it() {
     let root = TempDir::new();
     let service = service(root.path());
     let spec = |opened_by| OpenRoomTerminal {
+        project_environment: Default::default(),
         session_id: "room-1".to_string(),
         working_directory: root.path().to_path_buf(),
         cols: 80,
@@ -1247,6 +1250,7 @@ async fn a_terminal_opened_with_a_command_belongs_to_its_opener() {
     let service = service(root.path());
     let id = service
         .open(OpenRoomTerminal {
+            project_environment: Default::default(),
             session_id: "room-1".to_string(),
             working_directory: root.path().to_path_buf(),
             cols: 80,
@@ -1444,6 +1448,7 @@ async fn a_job_that_left_the_session_outlives_its_command() {
     );
     let id = service
         .open(OpenRoomTerminal {
+            project_environment: Default::default(),
             session_id: "room-1".to_string(),
             working_directory: root.path().to_path_buf(),
             cols: 100,
@@ -1494,6 +1499,7 @@ async fn a_command_ends_while_its_background_child_holds_the_terminal_output() {
     );
     let id = service
         .open(OpenRoomTerminal {
+            project_environment: Default::default(),
             session_id: "room-1".to_string(),
             working_directory: root.path().to_path_buf(),
             cols: 100,
@@ -1537,6 +1543,7 @@ async fn a_job_detaching_as_its_command_returns_keeps_running() {
     );
     let id = service
         .open(OpenRoomTerminal {
+            project_environment: Default::default(),
             session_id: "room-1".to_string(),
             working_directory: root.path().to_path_buf(),
             cols: 100,
@@ -1583,6 +1590,7 @@ async fn a_detached_job_stays_listed_counted_and_stoppable_under_its_terminal() 
     );
     let id = service
         .open(OpenRoomTerminal {
+            project_environment: Default::default(),
             session_id: "room-1".to_string(),
             working_directory: root.path().to_path_buf(),
             cols: 100,
@@ -1659,6 +1667,7 @@ async fn a_detached_job_ends_with_its_room() {
     );
     service
         .open(OpenRoomTerminal {
+            project_environment: Default::default(),
             session_id: "room-2".to_string(),
             working_directory: root.path().to_path_buf(),
             cols: 100,
@@ -1699,6 +1708,7 @@ fn a_command_argument_over_the_limit_is_refused_with_that_limit() {
     let service = service(root.path());
     let error = service
         .open(OpenRoomTerminal {
+            project_environment: Default::default(),
             session_id: "room-1".to_string(),
             working_directory: root.path().to_path_buf(),
             cols: 100,
@@ -2323,6 +2333,7 @@ async fn a_terminal_that_stops_reading_does_not_lock_the_others() {
     let service = service(root.path());
     let blocked = service
         .open(OpenRoomTerminal {
+            project_environment: Default::default(),
             session_id: "room-1".to_string(),
             working_directory: root.path().to_path_buf(),
             cols: 80,
@@ -2396,6 +2407,7 @@ async fn ctrl_c_discards_the_paste_it_overtakes() {
     let service = service(root.path());
     let id = service
         .open(OpenRoomTerminal {
+            project_environment: Default::default(),
             session_id: "room-1".to_string(),
             working_directory: root.path().to_path_buf(),
             cols: 80,
@@ -2477,6 +2489,7 @@ async fn a_needle_split_across_the_wait_registration_still_matches() {
     let service = service(root.path());
     let id = service
         .open(OpenRoomTerminal {
+            project_environment: Default::default(),
             session_id: "room-1".to_string(),
             working_directory: root.path().to_path_buf(),
             cols: 80,
@@ -2519,6 +2532,7 @@ async fn ctrl_c_stops_the_program_behind_a_blocked_paste() {
     let service = service(root.path());
     let id = service
         .open(OpenRoomTerminal {
+            project_environment: Default::default(),
             session_id: "room-1".to_string(),
             working_directory: root.path().to_path_buf(),
             cols: 80,
@@ -2580,6 +2594,7 @@ async fn agent_archive_stops_only_owned_terminals_and_keeps_their_history() {
     let root = TempDir::new();
     let service = service(root.path());
     let spec = |opened_by| OpenRoomTerminal {
+        project_environment: Default::default(),
         session_id: "room-1".into(),
         working_directory: root.path().to_path_buf(),
         cols: 80,
@@ -2669,6 +2684,7 @@ async fn a_large_output_flood_preserves_its_tail_and_leaves_other_terminals_resp
     let root = TempDir::new();
     let service = service(root.path());
     let open = |command| OpenRoomTerminal {
+        project_environment: Default::default(),
         session_id: "room-1".into(),
         working_directory: root.path().to_path_buf(),
         cols: 80,
@@ -2722,6 +2738,7 @@ async fn an_open_waits_for_its_commit_without_holding_the_terminal_registry() {
     let service = service(root.path());
     let existing = service
         .open(OpenRoomTerminal {
+            project_environment: Default::default(),
             session_id: "room-1".into(),
             working_directory: root.path().into(),
             cols: 80,
@@ -2750,6 +2767,7 @@ async fn an_open_waits_for_its_commit_without_holding_the_terminal_registry() {
     let (done, completion) = std::sync::mpsc::channel();
     let thread = std::thread::spawn(move || {
         let result = opener.open(OpenRoomTerminal {
+            project_environment: Default::default(),
             session_id: "room-1".into(),
             working_directory: directory,
             cols: 80,
@@ -2811,6 +2829,7 @@ async fn unrelated_echo_while_screen_paused(rendering: bool) {
     let cat = || {
         service
             .open(OpenRoomTerminal {
+                project_environment: Default::default(),
                 session_id: "room-1".into(),
                 working_directory: root.path().into(),
                 cols: 80,

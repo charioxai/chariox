@@ -37,7 +37,7 @@ pub(crate) async fn execute_workspace_command_request(
             execute_list_workspace_worktrees_request(request)
         }
         LocalDaemonRequest::CreateWorkspaceWorktree(request) => {
-            execute_create_workspace_worktree_request(request)
+            execute_create_workspace_worktree_request(runtime_state, request)
         }
         LocalDaemonRequest::DeleteWorkspaceWorktree(request) => {
             execute_delete_workspace_worktree_request(request, session_projection, runtime_state)
@@ -117,6 +117,7 @@ pub(crate) fn execute_list_workspace_worktrees_request(
 }
 
 pub(crate) fn execute_create_workspace_worktree_request(
+    runtime_state: &KernelRuntimeState,
     request: CreateWorkspaceWorktreeRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let launch_target = infer_waiting_room_launch_target(&[]);
@@ -131,6 +132,10 @@ pub(crate) fn execute_create_workspace_worktree_request(
         launch_target
             .as_ref()
             .map(|target| target.workspace_id.as_str()),
+    )?;
+    runtime_state.copy_environment_files_into_worktree(
+        std::path::Path::new(&request.workspace_id),
+        std::path::Path::new(&worktree.path),
     )?;
     Ok(LocalDaemonResponse::WorkspaceWorktreeCreated {
         workspace_id: request.workspace_id,

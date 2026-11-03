@@ -89,16 +89,6 @@ pub(super) fn map_relay_error(error: &DaemonError) -> RelayError {
                 false,
             )
         }
-        DaemonError::LocalTransport { operation, message }
-            if *operation == "project environment setup" =>
-        {
-            let code = if message == "setup operation was not found" {
-                crate::transport::relay_peer::PROJECT_ENVIRONMENT_SETUP_NOT_FOUND_CODE
-            } else {
-                crate::transport::relay_peer::PROJECT_ENVIRONMENT_SETUP_REJECTED_CODE
-            };
-            relay_error(code, &error.to_string(), false)
-        }
         DaemonError::LocalTransport { .. } => {
             relay_error("transport_error", &error.to_string(), true)
         }
@@ -226,12 +216,6 @@ pub(super) fn relay_request_kind(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::ResetSliceState(_) => "slice.state.reset",
         LocalDaemonRequest::CreateSliceBackup(_) => "slice.backup.create",
         LocalDaemonRequest::RestoreSliceBackup(_) => "slice.backup.restore",
-        LocalDaemonRequest::StartProjectEnvironmentSetup(_) => "project.environment_setup.start",
-        LocalDaemonRequest::GetProjectEnvironmentSetupStatus(_) => {
-            "project.environment_setup.status"
-        }
-        LocalDaemonRequest::CancelProjectEnvironmentSetup(_) => "project.environment_setup.cancel",
-        LocalDaemonRequest::RetryProjectEnvironmentSetup(_) => "project.environment_setup.retry",
         LocalDaemonRequest::LaunchProviderRun(_) => "provider.run.launch",
         LocalDaemonRequest::UpdateProviderRunSelection(_) => "provider.run.selection.update",
         LocalDaemonRequest::CreateWorkspaceDirectory(_) => "workspace.directory.create",
@@ -599,29 +583,6 @@ mod tests {
             message: "user_domain_not_granted: untrusted text".into(),
         });
         assert_eq!(untrusted.code, "transport_error");
-    }
-
-    #[test]
-    fn missing_project_environment_setup_is_an_authenticated_business_error() {
-        let error = DaemonError::LocalTransport {
-            operation: "project environment setup",
-            message: "setup operation was not found".to_string(),
-        };
-
-        let relay_error = map_relay_error(&error);
-        assert_eq!(relay_error.code, "project_environment_setup_not_found");
-        assert!(!relay_error.retryable);
-
-        let rejected = DaemonError::LocalTransport {
-            operation: "project environment setup",
-            message: "requested platform does not match this worker".to_string(),
-        };
-        let rejected_relay_error = map_relay_error(&rejected);
-        assert_eq!(
-            rejected_relay_error.code,
-            "project_environment_setup_rejected"
-        );
-        assert!(!rejected_relay_error.retryable);
     }
 
     #[test]

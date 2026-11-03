@@ -205,8 +205,7 @@ fn git_state(root: &Path) -> Vec<Vec<u8>> {
 }
 
 #[test]
-fn mk02_directory_uses_project_private_file_choices() {
-    use crate::project_environment::*;
+fn mk02_directory_brings_the_environment_files_outside_git() {
     let root = test_root("move-directory-selection");
     let _cleanup = PlainWorkspaceCleanup(root.clone());
     let directory = root.join("notes");
@@ -222,33 +221,14 @@ fn mk02_directory_uses_project_private_file_choices() {
     fs::create_dir_all(directory.join("unselected/empty")).unwrap();
     fs::write(directory.join("private/needed.bin"), b"selected\0bytes\n").unwrap();
     fs::write(directory.join("private/stays.txt"), "stay home\n").unwrap();
-    let mut manifest = ProjectEnvironmentManifest {
-        schema_version: 1,
-        project_id: "move-project".into(),
-        evidence_digest: "fixture".into(),
-        entries: vec![],
-        private_files: vec![],
-        toolchain_hints: vec![],
-        package_hints: vec![],
-        service_hints: vec![],
-    };
-    let workspace = directory.to_string_lossy().into_owned();
-    for path in ["selected.txt", "private/needed.bin"] {
-        manifest.private_files.push(ProjectPrivateFileDecision {
-            workspace_id: workspace.clone(),
-            path: path.into(),
-            bring: true,
-            secret_looking: false,
-            reason: "explicitly selected".into(),
-        });
-    }
-    register_project_file_rules(&manifest, &BTreeMap::from([(workspace, directory.clone())]));
+    let listed = ["selected.txt".to_string(), "private/needed.bin".to_string()];
+    crate::project_environment::register_environment_files(&[directory.clone()], &listed);
     let result = export_development_context(DevelopmentContextExportRequest {
         project_id: "move-project".into(),
         repositories: vec![selection(&directory, true)],
         archive_path: root.join("selected.tar.gz"),
     });
-    forget_project_file_rules(&manifest);
+    crate::project_environment::register_environment_files(&[directory.clone()], &[]);
     let exported = result.unwrap();
     let paths: Vec<_> = exported.manifest.repositories[0]
         .overlay

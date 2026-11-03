@@ -53,7 +53,15 @@ impl KernelRuntimeState {
         };
         let slice_ref = slice_ref.clone();
         if slice_ref.is_none() && kernel_ref.is_none() {
+            let base_worktree = request.worktree_id.clone();
+            let placed = request.worktree_placement.is_some();
             request = prepare_local_session_worktree_placement(request)?;
+            if placed {
+                self.copy_environment_files_into_worktree(
+                    std::path::Path::new(&base_worktree),
+                    std::path::Path::new(&request.worktree_id),
+                )?;
+            }
         }
         request = canonicalize_session_workspace(request);
         let existing_project_ids = self
@@ -637,6 +645,10 @@ impl KernelRuntimeState {
             std::path::Path::new(base_worktree),
             request.worktree_id.as_deref(),
             "agent.spawn",
+        )?;
+        self.copy_environment_files_into_worktree(
+            std::path::Path::new(base_worktree),
+            std::path::Path::new(&resolved),
         )?;
         request.worktree_id = Some(resolved);
         Ok(request)

@@ -10,7 +10,6 @@ pub struct AgentMoveRequirements {
     pub agent_configuration_sha256: String,
     pub extensions: crate::extension::RemoteExtensionManifest,
     pub skills: Vec<crate::transport::relay_peer::RequiredRemoteSkill>,
-    pub environment_definition: Option<crate::session::ProjectEnvironmentDefinition>,
 }
 
 impl AgentMoveRequirements {
@@ -50,7 +49,6 @@ pub struct AgentMoveReadiness {
     pub target_account_profile: String,
     pub backing_session_id: String,
     pub backing_agent_id: String,
-    pub environment_setup_operation_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

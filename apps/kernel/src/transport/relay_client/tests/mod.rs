@@ -8,7 +8,6 @@ mod leased_prompt_run_change;
 mod ordinary_lease_caller;
 mod peer_events;
 mod peer_transport;
-mod project_environment_setup_status_latency;
 mod registration;
 mod remote_agents;
 mod remote_queue;

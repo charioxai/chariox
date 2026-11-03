@@ -648,19 +648,13 @@ async fn assert_leased_claude_home_credential(environment_changed: bool) {
     ));
 }
 
-// MP-08 / MP-10 / MP-11: Target worker re-resolves before its Ready shortcut.
+// The target worker re-resolves its own Project environment before its Ready shortcut.
 #[test]
-fn mp08_mp10_mp11_leased_reuse_observes_worker_value_changes() {
-    assert_leased_project_launch_and_refresh(false);
+fn leased_reuse_observes_worker_variable_changes() {
+    assert_leased_project_launch_and_refresh();
 }
 
-// MP-08 / MP-10 / MP-11: import uses mounted paths, not the lease session alias.
-#[test]
-fn mp08_mp10_mp11_imported_workspace_launch_bindings_and_refresh() {
-    assert_leased_project_launch_and_refresh(true);
-}
-
-fn assert_leased_project_launch_and_refresh(imported_workspace: bool) {
+fn assert_leased_project_launch_and_refresh() {
     use crate::app::remote_lease::provider_run::LeasedProviderRunMatch;
     use crate::project_environment::*;
     let workspace = crate::test_support::TestWorktree::new("leased-project-refresh");
@@ -691,62 +685,29 @@ fn assert_leased_project_launch_and_refresh(imported_workspace: bool) {
         )
         .unwrap();
     let initial = app.sessions.get_session(&lease.backing_session_id).unwrap();
-    let manifest_workspace = if imported_workspace {
-        workspace.path().to_string_lossy().into_owned()
-    } else {
-        initial.workspace_id().to_string()
-    };
-    let mut workspace_ids = vec![initial.workspace_id().into()];
-    if manifest_workspace != initial.workspace_id() {
-        workspace_ids.push(manifest_workspace.clone());
-    }
     let project = app
         .sessions
         .read()
-        .prepare_leased_project(initial.id(), "envlayer5-leased-project", workspace_ids)
+        .prepare_leased_project(
+            initial.id(),
+            "leased-environment-project",
+            vec![initial.workspace_id().into()],
+        )
         .unwrap();
     let session = app
         .sessions
         .write()
         .bind_leased_project(initial.id(), project)
         .unwrap();
-    let evidence = ProjectEnvironmentEvidence::default();
-    let state = StoredProjectEnvironment {
-        source: None,
-        evidence: evidence.clone(),
-        reported_missing: Default::default(),
-        reviewed_manifest: None,
-        last_review: None,
-        manifest: ProjectEnvironmentManifest {
-            schema_version: 1,
-            project_id: session.project_id().into(),
-            evidence_digest: evidence.digest(),
-            entries: vec![ProjectEnvironmentEntry {
-                name: "APP_LABEL".into(),
-                workspace_id: manifest_workspace,
-                kind: ProjectEnvironmentEntryKind::Variable,
-                classification: ProjectEnvironmentClassification::NonSecret,
-                excluded: false,
-                uses: vec![ProjectEnvironmentUse {
-                    path: "app.ts".into(),
-                    line: 1,
-                }],
-                locator: ProjectEnvironmentLocator::EnvFile {
-                    path: ".env".into(),
-                    key: "APP_LABEL".into(),
-                },
-                status: ProjectEnvironmentEntryStatus::Found,
-            }],
-            private_files: vec![],
-            toolchain_hints: vec![],
-            package_hints: vec![],
-            service_hints: vec![],
-        },
+    let store = ProjectEnvironmentStore::new(&app.config.private_runtime_state_root());
+    let record = |variables: &str| ProjectEnvironmentRecord {
+        schema: PROJECT_ENVIRONMENT_SCHEMA,
+        variables: variables.into(),
+        ..Default::default()
     };
-    ProjectEnvironmentStore::new(&app.config.private_runtime_state_root())
-        .save(&state)
+    store
+        .save(session.project_id(), 0, record("APP_LABEL=first"))
         .unwrap();
-    std::fs::write(workspace.path().join(".env"), "APP_LABEL=first\n").unwrap();
     let manifest = crate::extension::RemoteExtensionManifest::default();
     let select = |app: &mut DaemonApp| {
         RemoteLeaseRuntime::new(app)
@@ -768,7 +729,9 @@ fn assert_leased_project_launch_and_refresh(imported_workspace: bool) {
     );
     let first = app.launch_provider_detached(request).unwrap();
     assert!(matches!(select(&mut app), LeasedProviderRunMatch::Ready(id) if id == first.id()));
-    std::fs::write(workspace.path().join(".env"), "APP_LABEL=second\n").unwrap();
+    store
+        .save(session.project_id(), 1, record("APP_LABEL=second"))
+        .unwrap();
     let LeasedProviderRunMatch::LaunchRequired(request) = select(&mut app) else {
         panic!("changed values must relaunch")
     };

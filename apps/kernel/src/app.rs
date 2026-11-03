@@ -141,17 +141,15 @@ pub(crate) use provider_launch_policy::{
     granted_mcp_servers_for_agent_launch, resolve_mcp_credentials_for_launch,
     sanitize_resume_state_for_launch, workspace_live_sync_protected_roots,
 };
-pub(crate) use provider_liveness::{
-    clear_active_provider_run_session_pointer, ProviderRunExitSessionSummary,
-};
+pub(crate) use provider_liveness::ProviderRunExitSessionSummary;
 pub(crate) use provider_processes::{
     stop_processes_left_by_dead_kernels, ProviderLaunchProcessRuntime, ProviderProcessReapSummary,
     ProviderProcessTracker,
 };
 pub(crate) use provider_run_read::ProviderRunReadService;
 pub(crate) use remote_lease::{
-    DrainedLeasedProjection, LeaseCallerBinding, LeasedProjectEnvironmentSetupTarget,
-    PreparedLeasedProviderRun, RemoteCompletionHarvest, RemoteLeaseRuntime,
+    DrainedLeasedProjection, LeaseCallerBinding, PreparedLeasedProviderRun,
+    RemoteCompletionHarvest, RemoteLeaseRuntime,
 };
 #[cfg(test)]
 pub(crate) use remote_lease::{

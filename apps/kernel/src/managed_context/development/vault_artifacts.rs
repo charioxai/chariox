@@ -262,7 +262,7 @@ pub(super) fn restore(
     manifest: &DevelopmentContextManifest,
     artifacts: &Path,
     workspace: &Path,
-    authority: Option<&crate::project_environment::ProjectEnvironmentImportAuthority>,
+    authority: Option<&crate::managed_context::development::ContextImportAuthority>,
 ) -> Result<PathBuf, DaemonError> {
     if manifest.vault_artifacts.is_empty() {
         return Ok(artifacts.to_path_buf());
@@ -553,7 +553,6 @@ mod tests {
                 }],
                 archive_path: root.join("copy.tar.gz"),
             },
-            None,
             Some(&vault),
         )
         .unwrap();
@@ -588,7 +587,7 @@ mod tests {
                 .as_slice()
                 == secret
         );
-        let authority = crate::project_environment::ProjectEnvironmentImportAuthority {
+        let authority = crate::managed_context::development::ContextImportAuthority {
             config: target.clone(),
             context_id: "context".into(),
             source_kernel_id: source.daemon_id.clone(),

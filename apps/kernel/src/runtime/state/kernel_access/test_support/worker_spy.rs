@@ -19,8 +19,6 @@ pub(in crate::runtime::state) struct WorkerSpy {
     pub(in crate::runtime::state) requests: Arc<AtomicUsize>,
     pub(in crate::runtime::state) discovery_started: Arc<Notify>,
     pub(in crate::runtime::state) release_discovery: Arc<Notify>,
-    pub(in crate::runtime::state) setup_status:
-        Arc<std::sync::Mutex<Option<crate::local::ProjectEnvironmentSetupStatus>>>,
     pub(in crate::runtime::state) native_recovery: Arc<std::sync::atomic::AtomicBool>,
     pub(in crate::runtime::state) native_launch_started: Arc<Notify>,
     pub(in crate::runtime::state) release_native_launch: Arc<Notify>,
@@ -38,10 +36,6 @@ impl WorkerSpy {
         let url = format!("ws://{}", listener.local_addr().unwrap());
         let id = format!("session-authority-worker-{:016x}", rand::random::<u64>());
         let worker_id = id.clone();
-        let setup_status = Arc::new(std::sync::Mutex::new(
-            None::<crate::local::ProjectEnvironmentSetupStatus>,
-        ));
-        let worker_setup_status = setup_status.clone();
         let requests = Arc::new(AtomicUsize::new(0));
         let counter = requests.clone();
         let discovery_started = Arc::new(Notify::new());
@@ -152,12 +146,6 @@ impl WorkerSpy {
                                     use base64::Engine;
                                     RelayPeerResponse::LeasedNativeProviderInputSent { byte_count: base64::engine::general_purpose::STANDARD.decode(data_base64).unwrap().len() }
                                 }
-                                RelayPeerRequest::CancelLeasedProjectEnvironmentSetup { .. } => {
-                                    let mut status = worker_setup_status.lock().unwrap().clone().unwrap();
-                                    status.phase = crate::local::ProjectEnvironmentSetupPhase::Cancelled;
-                                    status.retryable = true;
-                                    RelayPeerResponse::LeasedProjectEnvironmentSetupCancelled { setup: crate::transport::relay_peer::RelayProjectEnvironmentSetupStatus { status, definition: None } }
-                                }
                                 RelayPeerRequest::RoomBrowserController { session_id, slice_id, command: crate::transport::room_browser_controller::RoomBrowserControllerCommand::Release } => RelayPeerResponse::RoomBrowserController { session_id, slice_id, result: crate::transport::room_browser_controller::RoomBrowserControllerResult::Process { snapshot: None } },
                                 RelayPeerRequest::LaunchLeasedNativeProviderRun { adapter_key, provider, account_profile, model, .. } => {
                                     let launch = crate::provider::LaunchProviderRequest::new("worker-session", adapter_key, provider, account_profile, model).with_agent_id("worker-agent").with_client_interface(crate::provider::ProviderClientInterface::NativeTui);
@@ -188,7 +176,6 @@ impl WorkerSpy {
             requests,
             discovery_started,
             release_discovery,
-            setup_status,
             native_recovery,
             native_launch_started,
             release_native_launch,

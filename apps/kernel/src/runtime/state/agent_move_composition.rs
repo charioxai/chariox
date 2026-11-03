@@ -11,15 +11,12 @@ impl KernelRuntimeState {
         agent: &crate::agent::AgentInstance,
     ) -> Result<AgentMoveRequirements, DaemonError> {
         self.with_app_side_effect(|app| {
-            let session = app.sessions().get_session(agent.session_id())?;
-            let project = app.sessions().get_project(session.project_id())?;
             let extensions = app.extension_manifest_for_agent_move(agent)?;
             extensions.validate_unique_tool_names("prepare agent Move")?;
             Ok(AgentMoveRequirements {
                 agent_configuration_sha256: agent_configuration_sha256(agent)?,
                 extensions,
                 skills: app.required_remote_skills_for_native_provider_launch(agent)?,
-                environment_definition: project.environment_definition().cloned(),
             })
         })
         .await
@@ -102,9 +99,6 @@ impl KernelRuntimeState {
             self.probe_agent_move_target(Some(binding.move_compatibility()), Some(&agent))
                 .await?;
         }
-        let setup = self
-            .prepare_agent_move_project_setup(&target, requirements)
-            .await?;
         let receipt = target
             .receipt
             .as_ref()
@@ -122,7 +116,6 @@ impl KernelRuntimeState {
             target_account_profile: agent.provider_account_profile().to_string(),
             backing_session_id: session_id,
             backing_agent_id: agent_id,
-            environment_setup_operation_id: setup,
         };
         if target
             .composition
@@ -205,66 +198,4 @@ impl KernelRuntimeState {
     }
 }
 
-impl KernelRuntimeState {
-    pub(in crate::runtime::state) async fn launch_agent_move_setup_provider(
-        &self,
-        target: &crate::agent_move::MoveTarget,
-        agent: &crate::agent::AgentInstance,
-    ) -> Result<crate::provider::RuntimeProviderRun, DaemonError> {
-        let target = self.ensure_agent_move_target_identity(&target.capture.identity)?;
-        let session = self.owned.session_store.get_session(agent.session_id())?;
-        if target.active
-            || target.retired
-            || self
-                .owned
-                .prompt_state_owner
-                .active_prompt_for_agent(&session, agent.id())
-                .is_some()
-        {
-            return Err(move_error(
-                "Project setup requires this Move's idle, fenced target",
-            ));
-        }
-        if let Some(run) = self
-            .owned
-            .provider_store
-            .get_run_for_agent(agent.session_id(), agent.id())
-        {
-            if matches!(
-                run.state(),
-                crate::provider::ProviderRunState::Running
-                    | crate::provider::ProviderRunState::Starting
-            ) {
-                return self.wait_agent_move_setup_provider(run.id()).await;
-            }
-        }
-        let request = self
-            .agent_move_native_launch_request(&target, agent)
-            .await?;
-        let run = self
-            .with_app_side_effect(|app| app.launch_provider_detached(request))
-            .await?;
-        self.wait_agent_move_setup_provider(run.id()).await
-    }
-
-    async fn wait_agent_move_setup_provider(
-        &self,
-        id: &str,
-    ) -> Result<crate::provider::RuntimeProviderRun, DaemonError> {
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
-        loop {
-            let run = self.owned.provider_store.get_run(id)?;
-            match run.state() {
-                crate::provider::ProviderRunState::Running => return Ok(run),
-                crate::provider::ProviderRunState::Starting
-                    if tokio::time::Instant::now() < deadline =>
-                {
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-                }
-                _ => return Err(move_error(
-                    "Move target provider is unavailable for Project setup; restore it and retry",
-                )),
-            }
-        }
-    }
-}
+impl KernelRuntimeState {}
