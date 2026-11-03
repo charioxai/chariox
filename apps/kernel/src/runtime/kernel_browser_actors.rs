@@ -10,6 +10,9 @@ use std::time::{Duration, Instant};
 /// desktop video subscriptions is live; the host display lease is 60 s.
 pub(crate) const DESKTOP_VIEWER_LEASE: Duration = Duration::from_secs(60);
 pub(crate) const DISPLAY_RESUME_GRACE: Duration = Duration::from_secs(5);
+/// MP-10: a person's Tab takeover outlives the viewer that took it (reload, network loss, relay link
+/// drop) and ends by Return control or after this long with no viewer of the person back.
+pub(crate) const ORPHANED_TAKEOVER_TIMEOUT: Duration = Duration::from_secs(600);
 
 mod tabs;
 use tabs::BrowserTabActivity;
@@ -32,6 +35,8 @@ pub(crate) struct KernelBrowserActors {
     host_tabs: BTreeMap<String, String>,
     /// Desktop video subscription -> (human actor, lease expiry).
     desktop_viewers: BTreeMap<String, (String, Instant)>,
+    /// Human actors whose viewer went away while holding a Tab takeover -> when that takeover lapses.
+    orphaned_takeovers: BTreeMap<String, Instant>,
 }
 
 /// Internal display seam: the adapter must derive the user/actor from its caller.
@@ -61,6 +66,7 @@ impl Default for KernelBrowserActors {
             pointer_tabs: BTreeMap::new(),
             host_tabs: BTreeMap::new(),
             desktop_viewers: BTreeMap::new(),
+            orphaned_takeovers: BTreeMap::new(),
         }
     }
 }
@@ -286,6 +292,7 @@ impl KernelBrowserActors {
     ) -> Result<(String, Arc<BrowserCancellation>), String> {
         self.retire_lapsed_desktop_viewers(Instant::now());
         self.register(actor.clone())?;
+        self.adopt_orphaned_takeovers(&actor.actor_id);
         let mut request = if let Some(host_tab) = params["tab_id"].as_str() {
             let tab = self.tab(host_tab)?;
             let binding = self
@@ -517,6 +524,7 @@ impl KernelBrowserActors {
         let tab = self.tab(host_tab)?;
         self.retire_lapsed_desktop_viewers(Instant::now());
         self.register(actor.clone())?;
+        self.adopt_orphaned_takeovers(&actor.actor_id);
         let effect = self
             .ledger
             .request_takeover(
@@ -544,6 +552,7 @@ impl KernelBrowserActors {
             return Err("MD-3: stale browser generation".into());
         }
         let target = InputTarget::BrowserTab(self.tab(host_tab)?);
+        self.reclaim_lapsed_takeovers(Instant::now());
         // The person is one party to the kernel: a viewer that reconnected or reloaded is a new actor, and
         // returns the control an earlier connection of the same person took. An agent never releases it.
         let agent_requests = self
@@ -560,7 +569,11 @@ impl KernelBrowserActors {
             .map_or(actor_id.to_string(), |owner| owner.actor_id);
         self.ledger
             .release(&holder, &target)
-            .map_err(|_| "MD-3: only the input owner may release takeover".into())
+            .map_err(|_| "MD-3: only the input owner may release takeover")?;
+        if self.orphaned_takeovers.contains_key(&holder) {
+            self.forget_orphan(&holder);
+        }
+        Ok(())
     }
     fn is_human(&self, actor_id: &str) -> bool {
         self.actors
@@ -658,7 +671,12 @@ impl KernelBrowserActors {
     pub(crate) fn disconnect(&mut self, actor_id: &str) {
         self.desktop_viewers
             .retain(|_, (actor, _)| actor != actor_id);
-        self.ledger.release_actor_input(actor_id);
+        let keeps_takeover = self.is_human(actor_id) && self.ledger.owns_tab(actor_id);
+        if keeps_takeover {
+            self.ledger.release_actor_input_keeping_tabs(actor_id);
+        } else {
+            self.ledger.release_actor_input(actor_id);
+        }
         for action in self
             .ledger
             .actions()
@@ -669,10 +687,54 @@ impl KernelBrowserActors {
                 cancellation.request_cancel();
             }
         }
-        self.actors.remove(actor_id);
-        self.seen.remove(actor_id);
+        if keeps_takeover {
+            self.orphaned_takeovers
+                .insert(actor_id.into(), Instant::now() + ORPHANED_TAKEOVER_TIMEOUT);
+        } else {
+            self.actors.remove(actor_id);
+            self.seen.remove(actor_id);
+        }
         self.pointers.remove(actor_id);
         self.pointer_tabs.remove(actor_id);
+    }
+
+    /// The person is one party to the kernel: a viewer of theirs that connects after the one that took a
+    /// Tab went away continues that takeover instead of finding the Tab fenced against itself.
+    fn adopt_orphaned_takeovers(&mut self, actor_id: &str) {
+        if !self.is_human(actor_id) {
+            return;
+        }
+        self.reclaim_lapsed_takeovers(Instant::now());
+        let orphans = self
+            .orphaned_takeovers
+            .keys()
+            .filter(|orphan| orphan.as_str() != actor_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        for orphan in orphans {
+            self.ledger.transfer_tab_ownership(&orphan, actor_id);
+            self.forget_orphan(&orphan);
+        }
+    }
+    /// Ends the takeovers whose person has not come back within `ORPHANED_TAKEOVER_TIMEOUT`.
+    pub(crate) fn reclaim_lapsed_takeovers(&mut self, now: Instant) {
+        let lapsed = self
+            .orphaned_takeovers
+            .iter()
+            .filter(|(_, deadline)| **deadline <= now)
+            .map(|(actor, _)| actor.clone())
+            .collect::<Vec<_>>();
+        for actor in lapsed {
+            self.ledger.release_actor_input(&actor);
+            self.forget_orphan(&actor);
+        }
+    }
+    fn forget_orphan(&mut self, actor_id: &str) {
+        self.orphaned_takeovers.remove(actor_id);
+        if !self.ledger.owns_tab(actor_id) {
+            self.actors.remove(actor_id);
+            self.seen.remove(actor_id);
+        }
     }
 
     pub(crate) fn opened_tab(&mut self, actor: EnvironmentActor, tab: &str) {
@@ -681,7 +743,8 @@ impl KernelBrowserActors {
     pub(crate) fn agent_tab_groups(&self) -> Value {
         self.tab_activity.agent_groups()
     }
-    pub(crate) fn project_tabs(&self, state: &mut Value) {
+    pub(crate) fn project_tabs(&mut self, state: &mut Value) {
+        self.reclaim_lapsed_takeovers(Instant::now());
         self.tab_activity.project(state);
         let held = self.person_held_tabs();
         if let Some(tabs) = state.get_mut("tabs").and_then(Value::as_array_mut) {
@@ -753,7 +816,7 @@ mod tests {
     #[test]
     fn mp10_takeover_is_listed_on_the_tab_for_a_viewer_that_reloads() {
         let mut model = ready();
-        let listed = |model: &KernelBrowserActors| {
+        let listed = |model: &mut KernelBrowserActors| {
             let mut state =
                 json!({"generation":1,"tabs":[{"tab_id":"host-tab-a"},{"tab_id":"host-tab-b"}]});
             model.project_tabs(&mut state);
@@ -762,32 +825,91 @@ mod tests {
                 state["tabs"][1]["taken_over"].clone(),
             )
         };
-        assert_eq!(listed(&model), (json!(false), json!(false)));
+        assert_eq!(listed(&mut model), (json!(false), json!(false)));
         model
             .takeover(human("terminal:a"), "host-tab-a", 1)
             .unwrap();
         assert_eq!(
-            listed(&model),
+            listed(&mut model),
             (json!(true), json!(false)),
             "the person holds Tab a"
         );
         model.release("terminal:a", "host-tab-a", 1).unwrap();
-        assert_eq!(listed(&model), (json!(false), json!(false)));
+        assert_eq!(listed(&mut model), (json!(false), json!(false)));
         model
             .takeover(human("terminal:a"), "host-tab-a", 1)
             .unwrap();
         model.release("terminal:reloaded", "host-tab-a", 1).unwrap();
         assert_eq!(
-            listed(&model),
+            listed(&mut model),
             (json!(false), json!(false)),
             "the person's reloaded viewer returns the control its earlier connection took"
         );
         let (_, _) = model.begin(agent(), &input("host-tab-b")).unwrap();
         assert_eq!(
-            listed(&model),
+            listed(&mut model),
             (json!(false), json!(false)),
             "an agent acting is not a person's takeover"
         );
+    }
+    #[test]
+    fn mp10_takeover_survives_the_viewer_disconnect_and_follows_the_person_to_a_new_connection() {
+        let mut model = ready();
+        let held = |model: &mut KernelBrowserActors| {
+            let mut state = json!({"generation":1,"tabs":[{"tab_id":"host-tab-a"}]});
+            model.project_tabs(&mut state);
+            state["tabs"][0]["taken_over"].clone()
+        };
+        model
+            .takeover(human("terminal:old"), "host-tab-a", 1)
+            .unwrap();
+        model.disconnect("terminal:old");
+        assert_eq!(
+            held(&mut model),
+            json!(true),
+            "the person still holds the Tab after the viewer went away"
+        );
+        assert!(
+            model.begin(agent(), &input("host-tab-a")).is_err(),
+            "the agent stays fenced while the person's viewer is away"
+        );
+        let (action, _) = model
+            .begin(human("terminal:new"), &input("host-tab-a"))
+            .expect("the person's reconnected viewer acts on the Tab it still holds");
+        model.finish(&action, EnvironmentActionTerminal::Completed);
+        assert_eq!(held(&mut model), json!(true));
+        model.release("terminal:new", "host-tab-a", 1).unwrap();
+        assert_eq!(held(&mut model), json!(false));
+        let (action, _) = model.begin(agent(), &input("host-tab-a")).unwrap();
+        model.finish(&action, EnvironmentActionTerminal::Completed);
+    }
+    #[test]
+    fn mp10_orphaned_takeover_ends_by_return_control_or_after_the_timeout() {
+        let mut model = ready();
+        model
+            .takeover(human("terminal:old"), "host-tab-a", 1)
+            .unwrap();
+        model.disconnect("terminal:old");
+        model.reclaim_lapsed_takeovers(Instant::now() + ORPHANED_TAKEOVER_TIMEOUT / 2);
+        assert!(model.begin(agent(), &input("host-tab-a")).is_err());
+        model.reclaim_lapsed_takeovers(Instant::now() + ORPHANED_TAKEOVER_TIMEOUT);
+        assert!(model.snapshot()["input_ownership"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        assert!(!model.snapshot()["actors"]
+            .to_string()
+            .contains("terminal:old"));
+        let (action, _) = model.begin(agent(), &input("host-tab-a")).unwrap();
+        model.finish(&action, EnvironmentActionTerminal::Completed);
+
+        model
+            .takeover(human("terminal:old"), "host-tab-a", 1)
+            .unwrap();
+        model.disconnect("terminal:old");
+        model.release("terminal:other", "host-tab-a", 1).unwrap();
+        let (action, _) = model.begin(agent(), &input("host-tab-a")).unwrap();
+        model.finish(&action, EnvironmentActionTerminal::Completed);
     }
     #[test]
     fn mp08_chrome_input_tracks_home_commit_without_retargeting_or_replay() {
@@ -871,6 +993,7 @@ mod tests {
             model.finish(&action, EnvironmentActionTerminal::Cancelled);
             model.takeover(human(&id), "host-tab-a", 1).unwrap();
             model.disconnect(&id);
+            model.reclaim_lapsed_takeovers(Instant::now() + ORPHANED_TAKEOVER_TIMEOUT);
             assert!(model.snapshot()["input_ownership"]
                 .as_array()
                 .unwrap()

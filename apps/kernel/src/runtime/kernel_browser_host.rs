@@ -1142,6 +1142,7 @@ impl KernelBrowserHost {
         let model = self.actor_model(user)?;
         let mut model = model.lock().map_err(|_| "MD-3: actor lock poisoned")?;
         model.retire_lapsed_desktop_viewers(std::time::Instant::now());
+        model.reclaim_lapsed_takeovers(std::time::Instant::now());
         Ok(model.snapshot())
     }
 
