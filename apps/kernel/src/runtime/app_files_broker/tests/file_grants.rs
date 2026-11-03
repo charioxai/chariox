@@ -122,6 +122,38 @@ fn a_granted_file_imports_once_into_private_data_and_only_with_the_capability() 
 }
 
 #[test]
+fn asking_again_after_the_call_ended_resumes_the_pick_the_owner_sees() {
+    let fixture = Fixture::new(Mode::Ready);
+    fixture.runtime.block_on(async {
+        let ask = serde_json::json!({"accept": [".csv"], "multiple": false});
+        let mut first = TestPeer::start_with(broker(&fixture, true));
+        first.send("pick", "host.pick_file", ask.clone()).await;
+        let pending = first.response().await.1.unwrap();
+        // The App's call ended at its deadline; the owner has not answered.
+        first.close().await;
+        let mut again = TestPeer::start_with(broker(&fixture, true));
+        again.send("pick", "host.pick_file", ask).await;
+        assert_eq!(
+            again.response().await.1.unwrap()["operationId"],
+            pending["operationId"]
+        );
+        again
+            .send(
+                "other",
+                "host.pick_file",
+                serde_json::json!({"accept": [".md"]}),
+            )
+            .await;
+        assert_ne!(
+            again.response().await.1.unwrap()["operationId"],
+            pending["operationId"]
+        );
+        again.close().await;
+    });
+    assert_eq!(fixture.store.pending_app_file_picks(8).unwrap().len(), 1);
+}
+
+#[test]
 fn a_grant_chosen_for_an_earlier_release_imports_after_the_update() {
     let fixture = Fixture::new(Mode::Ready);
     let store = fixture.store.clone();

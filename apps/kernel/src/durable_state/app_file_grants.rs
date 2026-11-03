@@ -358,7 +358,30 @@ fn apply(
     let transaction = connection.transaction().map_err(storage)?;
     let result = match command {
         FileGrantCommand::Create(pick) => {
-            let open: i64 = transaction
+            // A call that waits for the owner ends at its deadline while the
+            // owner's prompt stays; the App asks again for the same files. That
+            // is the same request, not a second prompt behind the first.
+            let accept = serde_json::to_string(&pick.accept).map_err(|_| "INVALID_ARGUMENT")?;
+            let waiting: Option<String> = transaction
+                .query_row(
+                    "SELECT operation_id FROM app_file_picks WHERE owner_id=?1 AND installation_id=?2
+                     AND state='pending' AND accept_json=?3 AND multiple=?4 AND expires_ms>?5
+                     ORDER BY updated_ms, operation_id LIMIT 1",
+                    params![
+                        pick.owner,
+                        pick.installation,
+                        accept,
+                        pick.multiple,
+                        crate::session::unix_epoch_ms() as i64
+                    ],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(storage)?;
+            if let Some(operation_id) = waiting {
+                load(&transaction, &operation_id).map_err(storage)?
+            } else {
+                let open: i64 = transaction
                 .query_row(
                     "SELECT count(*) FROM app_file_picks WHERE owner_id=?1 AND installation_id=?2
                      AND state='pending'",
@@ -366,25 +389,26 @@ fn apply(
                     |row| row.get(0),
                 )
                 .map_err(storage)?;
-            if open >= MAX_OPEN {
-                return Err("LIMIT_EXCEEDED");
+                if open >= MAX_OPEN {
+                    return Err("LIMIT_EXCEEDED");
+                }
+                transaction
+                    .execute(
+                        "INSERT INTO app_file_picks VALUES (?1,?2,?3,?4,?5,?6,'pending',?7,?8)",
+                        params![
+                            pick.operation_id,
+                            pick.owner,
+                            pick.installation,
+                            pick.generation as i64,
+                            accept,
+                            pick.multiple,
+                            pick.expires_ms as i64,
+                            crate::session::unix_epoch_ms() as i64
+                        ],
+                    )
+                    .map_err(storage)?;
+                Some(pick)
             }
-            transaction
-                .execute(
-                    "INSERT INTO app_file_picks VALUES (?1,?2,?3,?4,?5,?6,'pending',?7,?8)",
-                    params![
-                        pick.operation_id,
-                        pick.owner,
-                        pick.installation,
-                        pick.generation as i64,
-                        serde_json::to_string(&pick.accept).map_err(|_| "INVALID_ARGUMENT")?,
-                        pick.multiple,
-                        pick.expires_ms as i64,
-                        crate::session::unix_epoch_ms() as i64
-                    ],
-                )
-                .map_err(storage)?;
-            Some(pick)
         }
         FileGrantCommand::Grant {
             owner,

@@ -279,6 +279,26 @@ fn open_picks_are_bounded_per_installation() {
 }
 
 #[test]
+fn asking_again_while_the_owner_has_not_answered_is_the_same_request() {
+    let fixture = Fixture::new();
+    let live = u64::MAX / 2;
+    let first = fixture.pick("first", false, live);
+    // The App's call ended at its deadline; asking again for the same files
+    // resumes the prompt the owner already sees instead of queueing another.
+    let again = fixture.pick("again", false, live);
+    assert_eq!(again.operation_id, first.operation_id);
+    assert_eq!(fixture.1.pending_app_file_picks(8).unwrap().len(), 1);
+    // Different files, or another shape of choice, are a different request.
+    assert_ne!(
+        fixture.pick("several", true, live).operation_id,
+        first.operation_id
+    );
+    fixture.grant("alice", "first", &["a.md"], 10).unwrap();
+    // An answered request is not resumed: the next ask prompts again.
+    assert_eq!(fixture.pick("next", false, live).operation_id, "next");
+}
+
+#[test]
 fn one_answer_stays_within_a_local_request_frame() {
     let fixture = Fixture::new();
     fixture.pick("big", true, 1_000);

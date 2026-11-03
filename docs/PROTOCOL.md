@@ -2998,7 +2998,10 @@ Workflow trigger and deployment direction:
   components only,
   matching the App's accepted suffixes), which answers `AppFileGranted {operation_id, files}` and
   closes the prompt. Only the owner can answer; App code, views and agents
-  cannot. Grants are private copies that the App imports once with
+  cannot. A pick stays open for 10 minutes, longer than one App call lasts: an
+  App that asks again for the same files (same suffixes, same `multiple`)
+  while the first is unanswered gets the same pending reference, so the owner
+  sees one prompt. Grants are private copies that the App imports once with
   `files.import`. They expire after 30 minutes, or when the App updates.
 - protocol 355: `SaveAppFileExport {session_id, operation_id}` takes a copy of
   a file an App offered with `files.export`. The offer is shown to the owner
