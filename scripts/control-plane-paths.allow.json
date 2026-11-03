@@ -356,22 +356,6 @@
     "seam": "context transfer ticket authority"
   },
   {
-    "path": "/v1/managed-kernels/git-credential-enrollment/authorize",
-    "callers": [
-      "apps/kernel/src/managed_context/git_credential_enrollment.rs"
-    ],
-    "why": "Cloud-only, deleted by OSS-boundary item 7: no Cloud route exists",
-    "seam": "none; the path goes away"
-  },
-  {
-    "path": "/v1/managed-kernels/git-credential-enrollment/complete",
-    "callers": [
-      "apps/kernel/src/managed_context/git_credential_enrollment.rs"
-    ],
-    "why": "Cloud-only, deleted by OSS-boundary item 7: no Cloud route exists",
-    "seam": "none; the path goes away"
-  },
-  {
     "path": "/v1/managed-kernels/reimage/runtime-identity",
     "callers": [
       "apps/kernel/src/managed_bootstrap/cloud.rs"
