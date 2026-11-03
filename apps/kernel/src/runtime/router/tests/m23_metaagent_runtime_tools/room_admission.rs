@@ -1312,3 +1312,142 @@ async fn concurrent_registry_add() {
         "each job must remove only its own staging directory"
     );
 }
+
+// MP-08 / MP-10 / MP-11 (VS-S4-1, VS-S4-2): a room agent subscribes itself and only itself.
+#[test]
+fn room_admission_agent_subscribes_only_itself_to_a_notification() {
+    run_large_stack_async_test("room-notification-subscribe", room_notification_subscription);
+}
+
+async fn room_notification_subscription() {
+    let env = TestMetaRuntimeEnv::new("room-notification-subscribe");
+    let workspace = env.root.join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let mut config = DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let (session, a) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            workspace.to_string_lossy(),
+            workspace.to_string_lossy(),
+        ))
+        .unwrap();
+    let peer = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("peer"))
+        .unwrap();
+    let auth = launch_test_provider(
+        &mut app,
+        session.id(),
+        a.id(),
+        "dev-stub",
+        "dev-stub",
+        "room-model",
+    )
+    .runtime_mcp_auth_token()
+    .unwrap()
+    .to_string();
+    let workflow = {
+        let mut sessions = app.sessions_mut();
+        let workflow = sessions
+            .create_workflow(session.id(), Some("pipeline".into()))
+            .unwrap();
+        let node = sessions
+            .add_workflow_node(session.id(), workflow.id(), "agent")
+            .unwrap();
+        let mut state = sessions.get_session(session.id()).unwrap();
+        state
+            .workflow_mut(workflow.id())
+            .unwrap()
+            .node_mut(node.id())
+            .unwrap()
+            .set_can_complete_workflow_run(true);
+        sessions.restore_session(state);
+        workflow.id().to_string()
+    };
+    let app = Arc::new(Mutex::new(app));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
+    let runtime = router.runtime_state();
+    let runtime = router.runtime_state();
+    let owner = {
+        let app = app.lock().await;
+        let state = app.sessions().get_session(session.id()).unwrap();
+        app.durable_state_store()
+            .persist_workflow_runtime_transition(&state, "room notification fixture")
+            .unwrap();
+        state.owner_user_id().to_owned()
+    };
+    runtime
+        .execute_workflow_notification_request(
+            crate::local::LocalDaemonRequest::RegisterWorkflowNotificationSource(
+                crate::local::RegisterWorkflowNotificationSourceRequest {
+                    session_id: session.id().into(),
+                    workflow_ref: workflow,
+                    exit_node_id: "exit-1".into(),
+                    enabled: true,
+                },
+            ),
+            &owner,
+        )
+        .unwrap();
+
+    let triggers = |agent: String| {
+        let app = Arc::clone(&app);
+        let room = session.id().to_string();
+        async move {
+            app.lock()
+                .await
+                .sessions()
+                .get_session(&room)
+                .unwrap()
+                .agent_triggers()
+                .iter()
+                .filter(|t| t.agent_id() == agent)
+                .cloned()
+                .collect::<Vec<_>>()
+        }
+    };
+    let created = room_command(&router, &auth, "trigger notification pipeline Summarize what failed").await;
+    assert!(created.ok, "{:?}", created.payload);
+    assert_eq!(created.payload["response"]["type"], "AgentTriggerCreated");
+    let own = triggers(a.id().to_string()).await;
+    assert_eq!(own.len(), 1);
+    assert_eq!(own[0].prompt(), "Summarize what failed");
+    assert!(matches!(
+        own[0].source(),
+        crate::session::AgentTriggerSource::Notification { display_name, .. } if display_name == "pipeline"
+    ));
+    assert!(triggers(peer.id().to_string()).await.is_empty(), "a peer is never subscribed");
+
+    for refused in [
+        "trigger notification pipeline --agent peer",
+        "trigger notification nothing-like-this",
+        "trigger steer",
+    ] {
+        assert!(!room_command(&router, &auth, refused).await.ok, "{refused}");
+    }
+    assert!(triggers(peer.id().to_string()).await.is_empty());
+
+    // An agent removes only its own triggers.
+    let peer_trigger = app
+        .lock()
+        .await
+        .sessions_mut()
+        .create_agent_schedule_trigger(
+            session.id(),
+            peer.id(),
+            &owner,
+            60,
+            crate::session::AgentTriggerRepeat::Every,
+            crate::session::AgentTriggerBusyPolicy::Queue,
+            None,
+        )
+        .unwrap();
+    assert!(
+        !room_command(&router, &auth, &format!("trigger remove {}", peer_trigger.id()))
+            .await
+            .ok
+    );
+    let removed = room_command(&router, &auth, &format!("trigger remove {}", own[0].id())).await;
+    assert!(removed.ok, "{:?}", removed.payload);
+    assert!(triggers(a.id().to_string()).await.is_empty());
+}

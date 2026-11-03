@@ -245,6 +245,18 @@ fn summarize_meta_command_response(
             "type": "WorkflowRunResumed",
             "workflow_run": summarize_meta_workflow_run(workflow_run),
         }),
+        LocalDaemonResponse::AgentTriggerCreated { trigger, .. } => serde_json::json!({
+            "type": "AgentTriggerCreated",
+            "trigger_id": trigger.id(),
+            "source": match trigger.source() {
+                crate::session::AgentTriggerSource::Notification { display_name, .. } => display_name.as_str(),
+                _ => "",
+            },
+        }),
+        LocalDaemonResponse::AgentTriggerDeleted { trigger, .. } => serde_json::json!({
+            "type": "AgentTriggerDeleted",
+            "trigger_id": trigger.id(),
+        }),
         _ => serde_json::json!({
             "type": "CommandAccepted",
             "detail": "response omitted from metaagent tool output; inspect session_overview or a dedicated list command for current state",

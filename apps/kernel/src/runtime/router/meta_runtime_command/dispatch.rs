@@ -705,6 +705,66 @@ impl CommandRouter {
         Ok(result)
     }
 
+    /// `trigger notification <source> [prompt]` and `trigger remove <id>`: an agent acts on its own
+    /// triggers only, so the request never carries an agent argument.
+    fn meta_trigger_request(
+        &self,
+        session: &crate::session::RuntimeSession,
+        actor: &crate::agent::AgentInstance,
+        args: &[String],
+    ) -> Result<LocalDaemonRequest, DaemonError> {
+        if args
+            .iter()
+            .any(|arg| arg == "--agent" || arg.starts_with("--agent="))
+        {
+            return Err(meta_command_error(
+                "an agent subscribes only itself; the command takes no agent argument",
+            ));
+        }
+        match args.first().map(String::as_str) {
+            Some("notification") => {
+                let (source, prompt) = self.runtime_state.choose_notification_source(
+                    session.owner_user_id(),
+                    actor.owner_user_id(),
+                    session.id(),
+                    &args[1..],
+                )?;
+                Ok(LocalDaemonRequest::CreateAgentTrigger(
+                    crate::local::CreateAgentTriggerRequest {
+                        session_id: session.id().to_string(),
+                        agent_id: actor.id().to_string(),
+                        source: crate::local::AgentTriggerSourceRequest::Notification { source },
+                        busy_policy: None,
+                        prompt,
+                    },
+                ))
+            }
+            Some("remove") => {
+                let [_, trigger_id] = args else {
+                    return Err(meta_command_error("usage: trigger remove <trigger-id>"));
+                };
+                if !session
+                    .agent_triggers()
+                    .iter()
+                    .any(|t| t.id() == trigger_id && t.agent_id() == actor.id())
+                {
+                    return Err(meta_command_error(
+                        "an agent removes only its own triggers",
+                    ));
+                }
+                Ok(LocalDaemonRequest::DeleteAgentTrigger(
+                    crate::local::DeleteAgentTriggerRequest {
+                        session_id: session.id().to_string(),
+                        trigger_id: trigger_id.clone(),
+                    },
+                ))
+            }
+            _ => Err(meta_command_error(
+                "usage: trigger notification <source> [prompt] | trigger remove <trigger-id>",
+            )),
+        }
+    }
+
     async fn meta_command_request(
         &self,
         session: &crate::session::RuntimeSession,
@@ -736,6 +796,7 @@ impl CommandRouter {
                 )
             }
             "slice" => meta_slice_request(&tokens[1..]),
+            "trigger" => self.meta_trigger_request(session, metaagent, &tokens[1..]),
             "mcp" => {
                 let agents = self.runtime_state.session_agents(session.id());
                 meta_extension_request(

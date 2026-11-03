@@ -305,6 +305,13 @@ fn routed_family_policy(first: &str, tokens: &[String]) -> Option<MetaCommandExe
                 }
             }
         },
+        "trigger" => match tokens.get(1).map(String::as_str) {
+            Some("notification" | "remove") => Some(MetaCommandExecutionPolicy::Routed),
+            _ => Some(MetaCommandExecutionPolicy::NotRouted {
+                message: "only `trigger notification` and `trigger remove` are routed for room agents"
+                    .to_string(),
+            }),
+        },
         "mcp" => match tokens.get(1).map(String::as_str) {
             Some(
                 "list" | "ls" | "show" | "get" | "install-json" | "update-json"

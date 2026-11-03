@@ -132,6 +132,88 @@ impl KernelRuntimeState {
         Ok(LocalDaemonResponse::AgentTriggerCreated { trigger, session })
     }
 
+    /// `<source> [prompt]` as the shell and the room command write it: a workflow source is named
+    /// by its display name, `<kernel>/<name>` or its id (the name may hold spaces, so the longest
+    /// run of leading words that names exactly one source wins), an App event is
+    /// `app:<installation>/<event>`.
+    pub(crate) fn choose_notification_source(
+        &self,
+        owner: &str,
+        caller: &str,
+        session_id: &str,
+        words: &[String],
+    ) -> Result<(AgentTriggerNotificationSource, Option<String>), DaemonError> {
+        let prompt_after = |used: usize| {
+            let prompt = words[used..].join(" ");
+            (!prompt.is_empty()).then_some(prompt)
+        };
+        let Some(first) = words.first() else {
+            return Err(store::error("name a notification source"));
+        };
+        if let Some(event) = first.strip_prefix("app:") {
+            let (installation, event) = event
+                .split_once('/')
+                .filter(|(installation, event)| !installation.is_empty() && !event.is_empty())
+                .ok_or_else(|| store::error("an App event is app:<installation>/<event>"))?;
+            return Ok((
+                AgentTriggerNotificationSource::App {
+                    installation_id: installation.into(),
+                    event_name: event.into(),
+                },
+                prompt_after(1),
+            ));
+        }
+        let home = self.owned.config_projection.snapshot().daemon_id;
+        let guest = caller != owner;
+        let (local, _, _) = self.owned.durable_state_store.notification_inventory(owner)?;
+        let mut sources = {
+            let sessions = self.owned.session_store.read();
+            summaries(
+                &sessions,
+                &local
+                    .into_iter()
+                    .filter(|s| s.enabled && source_available(&sessions, s))
+                    .filter(|s| !guest || (s.session_id == session_id && s.kernel_id == home))
+                    .collect::<Vec<_>>(),
+            )
+        };
+        if !guest {
+            sources.extend(self.owned.durable_state_store.notification_cached_sources(owner)?);
+        }
+        for used in (1..=words.len()).rev() {
+            let name = words[..used].join(" ");
+            let mut named = sources.iter().filter(|s| {
+                s.source_id == name
+                    || s.display_name == name
+                    || format!("{}/{}", s.kernel_id, s.display_name) == name
+            });
+            let Some(source) = named.next() else {
+                continue;
+            };
+            if named.next().is_some() {
+                return Err(store::error(format!(
+                    "\"{name}\" names more than one source; use <kernel>/<name> or the source id"
+                )));
+            }
+            if !source.available {
+                return Err(store::error(format!(
+                    "{} is not available: its kernel is offline",
+                    source.display_name
+                )));
+            }
+            return Ok((
+                AgentTriggerNotificationSource::Workflow {
+                    source_id: source.source_id.clone(),
+                },
+                prompt_after(used),
+            ));
+        }
+        Err(store::error(format!(
+            "no such notification source \"{}\"",
+            words.join(" ")
+        )))
+    }
+
     /// The room owner's own sources of any kernel, or, for a collaborator, this room's sources.
     fn resolve_workflow_notification_source(
         &self,
