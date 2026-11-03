@@ -36,7 +36,9 @@ impl KernelRuntimeState {
             &request.agent_id,
             caller,
             port,
-            request.busy_policy.unwrap_or(AgentTriggerBusyPolicy::Queue),
+            request
+                .busy_policy
+                .unwrap_or(crate::session::AgentTriggerBusyPolicy::Queue),
             request.prompt,
         )?;
         self.owned
