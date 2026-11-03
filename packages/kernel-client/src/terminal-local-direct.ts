@@ -1,7 +1,7 @@
 // MP-08/MP-10/MP-11: environment adapters around the shared Web/TUI carrier.
 import WebSocket from "ws"
 import { EventEmitter } from "node:events"
-import { KernelDirect } from "./kernel-direct.js"
+import { KernelDirect, dataChannelMinimumProtocolVersion } from "./kernel-direct.js"
 import { createDataChannelOffer, type DataChannelSocket } from "./kernel-data-channel.js"
 import { TerminalDirectAuthorization } from "./terminal-direct-authorization.js"
 import type { RelayTarget } from "./kernel-transport-frames.js"
@@ -76,7 +76,7 @@ export class TerminalLocalDirect {
     this.expectedKey = expectedKey
     const socket = await this.direct.open({
       relayUrls: [this.input.relayUrl], relayToken: this.input.token(), target: this.input.target,
-      localDaemonProtocolVersion: 951, lane: "control", attempt: 0, targetForLogs: this.input.target,
+      localDaemonProtocolVersion: dataChannelMinimumProtocolVersion, lane: "control", attempt: 0, targetForLogs: this.input.target,
       logTransport: (_level, event) => { if (event === "direct_datachannel_fallback_to_relay") this.input.onDiagnostic?.({ cause: "direct_fallback" }) }, onSettled: () => {}, onConnected: () => {}, onMessage: () => {}, onClosed: () => {},
     })
     if (!socket) return null

@@ -16,10 +16,11 @@ const kernelReloadWindowMs = 10_000
  */
 
 /**
- * Protocol 926: the kernel answers a WebRTC offer on its LAN, public and VPN
+ * Protocol 961: the kernel uses CXL2 routing on WebRTC replies and events.
+ * The kernel answers a WebRTC offer on its LAN, public and VPN
  * addresses and keeps the channel alive every second, so silence means a dead path.
  */
-export const dataChannelMinimumProtocolVersion = 926
+export const dataChannelMinimumProtocolVersion = 961
 
 /** A 30-second lease token this young still leaves the next renewal ample room. */
 const leaseTokenReuseMs = 5_000

@@ -6306,17 +6306,25 @@ switch move them after proof; the first user action does not wait for ICE.
 Direct only remains an explicit request for discovery. Carrier framing,
 subscription heartbeats, silence deadlines and lease policy are unchanged.
 
-Protocol 951 RTC fragments use kinds 4 (last) and 5 (more) for CXL1
-encrypted replies and events. CXL1 is four magic bytes, a big-endian u32
-header length, the UTF-8 JSON header and raw AES-GCM ciphertext including
-its tag. A reply header is `{r:request_id,n:nonce}`; an event header is
-`{s:subscription_id,e:event_id,n:nonce}`. Nonces retain their existing
-base64 encoding. The sender key is the kernel key proved in that physical
-connection's grant handshake. Clients restore the ordinary encrypted relay
-envelope before its existing authentication and correlation checks. Headers
-are bounded to 4096 bytes, IDs to 1024 UTF-8 bytes, and extra fields are
-rejected. Text handshake and refusal frames retain kinds 0/1. The raw-frame
-snapshot and SHA256 are pinned in `direct-compact-951.json`.
+Protocol 961 / peer 410 RTC fragments use kinds 4 (last) and 5 (more) for
+CXL2 encrypted replies and events. CXL2 replaces the CXL1 JSON routing
+header with these bytes, in order: four magic bytes `CXL2`, one kind byte
+(0 reply, 1 event), a big-endian u16 UTF-8 route ID length, the raw 12-byte
+AES-GCM nonce, an event-only big-endian u64 sequence, the route ID, then
+raw ciphertext including its tag. The route ID is the request ID for replies
+or the subscription ID for events; it is nonempty and at most 1024 UTF-8 bytes.
+The ciphertext is at least 16 bytes, and the complete message retains the
+64 MiB transport bound. Clients reject invalid kinds, invalid UTF-8, truncated
+fields and event sequences above the JavaScript safe-integer limit.
+
+The sender key remains the kernel key proved in that physical connection's
+grant handshake. Clients restore the ordinary encrypted relay envelope before
+its existing authentication and correlation checks; routing bytes grant no
+authority. No public key is accepted from a compact frame. Text handshake and
+refusal frames retain kinds 0/1. Direct clients require protocol 961; CXL1 is
+retired. Reply and event raw-frame snapshots and SHA256 hashes are pinned in
+`direct-compact-961.json`. Hosted CXR1/CXR2 relay framing, encrypted payloads,
+10-second renewals, 30-second TTLs and silence deadlines are unchanged.
 
 MP-08/MP-09/MP-10/MP-11: protocol 951 permits `state_wait` up to 10000 ms.
 A content change wakes it immediately; its timeout carries the compact

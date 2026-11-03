@@ -21,7 +21,7 @@
       }
     }
   ],
-  "local_protocol": 951,
+  "local_protocol": 961,
   "peer": [
     {
       "epoch": "epoch",
@@ -60,7 +60,7 @@
       "kind": "check_leased_computer_grant"
     }
   ],
-  "peer_protocol": 400,
+  "peer_protocol": 410,
   "responses": [
     {
       "kind": "leased_computer_grant_updated"

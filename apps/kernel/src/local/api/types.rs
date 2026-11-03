@@ -448,4 +448,4 @@ pub use workspace::*;
 /// through `RespondToInteraction`; peer 385).
 /// Browser downloads 937 adds bounded Room artifacts and cancellation.
 /// Protocol 951: small control liveness and the shared Web/TUI direct carrier.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 951;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 961;

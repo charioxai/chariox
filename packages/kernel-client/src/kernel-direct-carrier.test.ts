@@ -18,10 +18,8 @@ test("MP-08/MP-11 compact frames retain routing and the authenticated kernel key
   const lane = carrier.openLane(), received: unknown[] = []
   lane.addEventListener("message", event => received.push(JSON.parse((event as MessageEvent).data)))
   lane.send(JSON.stringify({ kind: "client_request", request_id: "r" }))
-  const header = new TextEncoder().encode(JSON.stringify({ r: "r", n: "AAAAAAAAAAAAAAAA" }))
-  const frame = new Uint8Array(8 + header.length + 16)
-  frame.set([67, 88, 76, 49]); new DataView(frame.buffer).setUint32(4, header.length)
-  frame.set(header, 8)
+  const frame = new Uint8Array(36)
+  frame.set([67, 88, 76, 50, 0, 0, 1]); frame[19] = 114
   socket.receiveBytes(frame.buffer)
   assert.deepEqual(received, [{ kind: "client_response", request_id: "r", error: null,
     encrypted_response: { sender_public_key: "pinned-key", nonce: "AAAAAAAAAAAAAAAA", ciphertext: "AAAAAAAAAAAAAAAAAAAAAA==" } }])

@@ -1,6 +1,6 @@
 {
-  "local_protocol": 951,
-  "peer_protocol": 400,
+  "local_protocol": 961,
+  "peer_protocol": 410,
   "request": {
     "KernelPing": null
   },

@@ -1684,17 +1684,22 @@ impl RtcClient {
                             self.partial.extend_from_slice(payload);
                             if kind == 4 {
                                 let bytes = std::mem::take(&mut self.partial);
-                                assert_eq!(&bytes[..4], b"CXL1");
+                                assert_eq!(&bytes[..4], b"CXL2");
+                                let response = bytes[4] == 0;
+                                assert!(bytes[4] <= 1);
                                 let size =
-                                    u32::from_be_bytes(bytes[4..8].try_into().unwrap()) as usize;
-                                let h: serde_json::Value =
-                                    serde_json::from_slice(&bytes[8..8 + size]).unwrap();
-                                let encrypted = serde_json::json!({"sender_public_key": self.kernel_key, "nonce": h["n"],
-                                  "ciphertext": base64::engine::general_purpose::STANDARD.encode(&bytes[8+size..])});
-                                let value = if h.get("r").is_some() {
-                                    serde_json::json!({"kind":"client_response","request_id":h["r"],"error":null,"encrypted_response":encrypted})
+                                    u16::from_be_bytes(bytes[5..7].try_into().unwrap()) as usize;
+                                let start = if response { 19 } else { 27 };
+                                let id = std::str::from_utf8(&bytes[start..start + size]).unwrap();
+                                let encrypted = serde_json::json!({"sender_public_key": self.kernel_key,
+                                  "nonce": base64::engine::general_purpose::STANDARD.encode(&bytes[7..19]),
+                                  "ciphertext": base64::engine::general_purpose::STANDARD.encode(&bytes[start+size..])});
+                                let value = if response {
+                                    serde_json::json!({"kind":"client_response","request_id":id,"error":null,"encrypted_response":encrypted})
                                 } else {
-                                    serde_json::json!({"kind":"client_event","subscription_id":h["s"],"event_id":h["e"],"encrypted_event":encrypted})
+                                    let sequence =
+                                        u64::from_be_bytes(bytes[19..27].try_into().unwrap());
+                                    serde_json::json!({"kind":"client_event","subscription_id":id,"event_id":sequence,"encrypted_event":encrypted})
                                 };
                                 self.compact_frames += 1;
                                 self.frames.push_back(value);

@@ -1,0 +1,22 @@
+{
+  "local_protocol": 961,
+  "peer_protocol": 410,
+  "ciphertext_bytes": 16,
+  "frames": [
+    {
+      "kind": "client_response",
+      "id": "r",
+      "nonce": "AAAAAAAAAAAAAAAA",
+      "wire_hex": "43584c320000010000000000000000000000007200000000000000000000000000000000",
+      "sha256": "2da92c564ac34a9b5741376fbb37381d9db0c78b8aa5063be254bfd176ba3fd1"
+    },
+    {
+      "kind": "client_event",
+      "id": "流-é",
+      "nonce": "AAECAwQFBgcICQoL",
+      "wire_hex": "43584c32010006000102030405060708090a0b001fffffffffffffe6b5812dc3a900000000000000000000000000000000",
+      "sha256": "2d1bb9ef52e2c28f340b1101ad150ead0e5f4e3af682e1c56923652d3f0902e2",
+      "event_id": 9007199254740991
+    }
+  ]
+}
