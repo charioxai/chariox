@@ -404,8 +404,7 @@ fn kernel_access_background_process() {
             let go = root.join(format!("bg-{label}-go"));
             let result = root.join(format!("bg-{label}-result"));
             let started = std::time::Instant::now();
-            while kernel_access_socket(&root).exists()
-                && started.elapsed() < Duration::from_secs(90)
+            while kernel_access_socket(root).exists() && started.elapsed() < Duration::from_secs(90)
             {
                 if root.join(format!("bg-{label}-exit")).exists() {
                     return;
@@ -422,7 +421,7 @@ fn kernel_access_background_process() {
                 };
                 let (mut socket, _) = client_async(
                     "ws://localhost/kernel",
-                    tokio::net::UnixStream::connect(kernel_access_socket(&root))
+                    tokio::net::UnixStream::connect(kernel_access_socket(root))
                         .await
                         .unwrap(),
                 )
@@ -449,7 +448,7 @@ fn kernel_access_idle_descendant() {
     };
     tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
         let root = Path::new(&root);
-        let (mut socket, _) = client_async("ws://localhost/kernel", tokio::net::UnixStream::connect(kernel_access_socket(&root)).await.unwrap()).await.unwrap();
+        let (mut socket, _) = client_async("ws://localhost/kernel", tokio::net::UnixStream::connect(kernel_access_socket(root)).await.unwrap()).await.unwrap();
         socket.send(Message::Text(frame(serde_json::json!({"AttachToSession":{"session_id":SESSION,"client_id":"idle-descendant","capability_level":"FullTerminal"}})).to_string().into())).await.unwrap();
         let attach = response(&mut socket, "request").await;
         let attachment = attach["response"]["SessionAttached"]["attachment"]["id"].as_str().unwrap();
