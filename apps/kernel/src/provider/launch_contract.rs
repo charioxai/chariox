@@ -937,6 +937,11 @@ pub struct RuntimeMcpBinding {
     pub auth_token: String,
 }
 
+/// The second tool level next to `chariox`, served by the same kernel with the same bearer.
+pub fn reach_mcp_url(runtime_mcp_url: &str) -> String {
+    format!("{}/reach", runtime_mcp_url.trim_end_matches('/'))
+}
+
 impl RuntimeMcpBinding {
     pub fn new(server_url: impl Into<String>, auth_token: impl Into<String>) -> Self {
         Self {

@@ -67,6 +67,15 @@ pub(crate) async fn user_config_mutation_effects(
         }]);
     }
 
+    if path == "agents.ask_before_renting_machines" {
+        return Ok(vec![UserConfigMutationEffect {
+            kind: "runtime_config".to_string(),
+            path: path.to_string(),
+            message: "machine rental acceptance updated for this running kernel".to_string(),
+            provider_reload: None,
+        }]);
+    }
+
     if path == "relay.accept_remote_leases" {
         return Ok(vec![UserConfigMutationEffect {
             kind: "runtime_config".to_string(),

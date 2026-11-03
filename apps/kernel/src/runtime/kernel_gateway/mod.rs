@@ -8,6 +8,7 @@ mod directory;
 mod error;
 mod events;
 mod events_created;
+mod forward;
 mod hosted;
 mod identity;
 mod inventory;
@@ -38,6 +39,7 @@ use crate::runtime::state::KernelRuntimeState;
 
 use directory::{is_gateway_ready, Directory};
 pub(crate) use error::{is_public_code, GatewayError};
+pub(crate) use forward::forward_audited;
 use identity::GatewayIdentity;
 use inventory::RelayInventory;
 use link::{Link, LinkFailure, LinkParams};
@@ -665,7 +667,8 @@ mod tests {
                 key,
                 Some(origins::Named {
                     kernel: "kernel-a",
-                    name: None
+                    name: None,
+                    harness: "claude",
                 })
             )
             .unwrap());

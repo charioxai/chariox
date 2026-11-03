@@ -535,6 +535,8 @@ pub struct CharioxUserConfig {
     pub credential_vault: UserCredentialVaultConfig,
     #[serde(default)]
     pub web_bot_auth: UserWebBotAuthConfig,
+    #[serde(default)]
+    pub agents: UserAgentsConfig,
 }
 
 impl Default for CharioxUserConfig {
@@ -554,6 +556,7 @@ impl Default for CharioxUserConfig {
             workflow: UserWorkflowConfig::default(),
             credential_vault: UserCredentialVaultConfig::default(),
             web_bot_auth: UserWebBotAuthConfig::default(),
+            agents: UserAgentsConfig::default(),
         }
     }
 }
@@ -597,6 +600,13 @@ pub struct UserUiConfig {
     pub max_agents_per_screen: Option<u32>,
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub worktree_aliases: std::collections::BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UserAgentsConfig {
+    /// Off by default: an agent of the kernel owner rents machines without asking.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ask_before_renting_machines: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

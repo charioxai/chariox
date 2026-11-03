@@ -15,11 +15,12 @@ pub(crate) async fn execute(
     let capabilities = matches!(request, ControlPlaneRequest::Capabilities {});
     // The same process-bound grant used for Rooms, exec and the gateway. A Room
     // invite or provider bearer alone cannot use the owner's kernel enrollment.
-    if let Some(grant) = command.external_grant_id() {
-        state.authorize_external_request(
-            &grant,
-            &crate::local::LocalDaemonRequest::ControlPlane(request.clone()),
-        )?;
+    let request_shape = crate::local::LocalDaemonRequest::ControlPlane(request.clone());
+    let grant = command.external_grant_id();
+    if let Some(grant) = &grant {
+        state.authorize_external_request(grant, &request_shape)?;
+    } else if let Some(reach) = command.reach_caller_id() {
+        state.authorize_gateway_request(&reach, &request_shape)?;
     } else if !capabilities
         || !crate::runtime::cloud_relay_authorization::kernel_cloud_owner(config, command)
     {
@@ -109,7 +110,7 @@ pub(crate) async fn execute(
         *access_state = "pending".into();
         *access_reason = None;
         if let Some(target) = kernel_target.as_ref().filter(|_| machine_state == "ready") {
-            let grant = command.external_grant_id().ok_or_else(|| {
+            let grant = grant.or_else(|| command.reach_caller_id()).ok_or_else(|| {
                 unavailable(
                     "control_plane_grant_required",
                     "Machine attachment requires the owner's Chariox access grant",

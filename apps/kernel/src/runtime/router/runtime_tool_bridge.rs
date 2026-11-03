@@ -169,7 +169,7 @@ impl CommandRouter {
 
     /// One privileged call under a window that both the caller's kernel and,
     /// for a leased agent, its worker fence admitted.
-    async fn dispatch_sudo_kernel_request(
+    pub(super) async fn dispatch_sudo_kernel_request(
         &self,
         turn: crate::local::KernelSudoTurn,
         arguments: serde_json::Value,

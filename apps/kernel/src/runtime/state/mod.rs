@@ -100,6 +100,7 @@ mod computer_secret_input_runtime_state;
 mod config_runtime_state;
 mod critical_approval_passkey;
 mod kernel_access;
+pub(crate) use kernel_access::reach;
 pub(crate) use kernel_access::AccessSubmission;
 mod outside_events;
 pub(crate) use outside_events::is_outside_event_request;

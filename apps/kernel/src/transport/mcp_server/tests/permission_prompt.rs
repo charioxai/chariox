@@ -8,7 +8,7 @@ const BROKEN_TOKEN: &str = "claude-print-broken-permission-token";
 /// Where the fixture Claude runs work, as the session rules are stated for that directory.
 const RUN_DIRECTORY: &str = "/work/app";
 
-fn insert_claude_run(
+pub(super) fn insert_claude_run(
     app: &mut DaemonApp,
     session_id: &str,
     agent_id: &str,
