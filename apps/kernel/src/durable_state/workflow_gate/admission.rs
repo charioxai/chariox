@@ -18,6 +18,7 @@ impl Admission {
     }
 }
 pub(crate) fn accept_in(tx: &Transaction<'_>, a: Admission) -> Result<Entry> {
+    retention::sweep(tx, crate::session::unix_epoch_ms())?;
     a.definition.validate().map_err(|e| error(e.to_string()))?;
     let content = serde_json::json!([
         a.owner,
@@ -46,9 +47,9 @@ pub(crate) fn accept_in(tx: &Transaction<'_>, a: Admission) -> Result<Entry> {
     if let Some((id,existing))=tx.query_row("SELECT entry_id,content_digest FROM workflow_gate_entries WHERE owner_id=?1 AND session_id=?2 AND workflow_id=?3 AND binding_id=?4 AND dedupe_id=?5",params![a.owner,a.session_id,a.workflow_id,a.binding_id,a.dedupe_id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?))).optional().map_err(sql)? {
         // Queue IDs/timestamps are authority-allocated on retries. The immutable
         // source identity binds content instead of that freshly prepared template.
-        let old=load(tx,&id)?.ok_or_else(||error("gate dedupe entry missing"))?;
+        let old=entry(tx,&id)?.ok_or_else(||error("gate dedupe entry missing"))?;
         if existing!=digest {return Err(error("gate occurrence content conflict"));}
-        return Ok(old.entry);
+        return Ok(old);
     }
     if !current(tx, &a)? {
         return Err(error("gate workflow revision/owner changed"));
@@ -90,12 +91,19 @@ pub(crate) fn accept_in(tx: &Transaction<'_>, a: Admission) -> Result<Entry> {
         state: gate::State::default(),
     };
     evaluation.validate().map_err(|e| error(e.to_string()))?;
-    let (pending,bytes,total):(i64,i64,i64)=tx.query_row("SELECT sum(CASE WHEN disposition NOT IN ('queued','dropped','failed','expired','cancelled') THEN 1 ELSE 0 END),coalesce(sum(length(body_json)),0),count(*) FROM workflow_gate_entries",[],|r|Ok((r.get::<_,Option<i64>>(0)?.unwrap_or(0),r.get(1)?,r.get(2)?))).map_err(sql)?;
+    let (pending, total): (i64, i64) = tx
+        .query_row(
+            "SELECT coalesce(sum(terminal_at_ms IS NULL),0),count(*) FROM workflow_gate_entries",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map_err(sql)?;
     let local:i64=tx.query_row("SELECT count(*) FROM workflow_gate_entries WHERE owner_id=?1 AND session_id=?2 AND workflow_id=?3 AND disposition NOT IN ('queued','dropped','failed','expired','cancelled')",params![a.owner,a.session_id,a.workflow_id],|r|r.get(0)).map_err(sql)?;
     if pending >= 4096
         || local >= 1024
-        || total >= 8192
-        || bytes + encode(&a)?.len() as i64 > 64 * 1024 * 1024
+        || total - pending >= 65_536
+        || retention::decision_reservations(tx)? + 32 > 262_144
+        || !retention::body_capacity(tx, &a, encode(&a)?.len() as i64 + 4096)?
     {
         return Err(error(
             "gate admission backpressure; retained entry/history capacity reached",
@@ -117,6 +125,7 @@ pub(crate) fn accept_in(tx: &Transaction<'_>, a: Admission) -> Result<Entry> {
         queued_prompt_id: None,
         failure: None,
         decisions: vec![],
+        replay_compacted_at_ms: None,
     };
     let source_authority = source_authority(tx, &a)?;
     if (a.source_receipt.is_some() || a.trigger.kind == gate::TriggerKind::Schedule)
@@ -203,10 +212,22 @@ pub(super) fn source_authority(db: &Transaction<'_>, a: &Admission) -> Result<Op
         let body:Option<String>=db.query_row("SELECT payload_json FROM durable_workflow_hot_entities WHERE owner_id=?1 AND session_id=?2 AND entity_kind='schedule' AND entity_id=?3",params![a.kernel_id,a.session_id,schedule_id],|r|r.get(0)).optional().map_err(sql)?;
         return body
             .map(|body| {
-                decode::<crate::session::WorkflowScheduleDefinition>(&body)
-                    .and_then(|schedule| super::schedule::revision(&schedule))
+                let schedule = decode::<crate::session::WorkflowScheduleDefinition>(&body)?;
+                // Consuming the last wakeup stops future ticks, not this accepted
+                // entry. An owner's explicit disable has a distinct status.
+                let accepted_last_tick = schedule
+                    .max_wakeups()
+                    .is_some_and(|max| schedule.wakeups_executed() >= max)
+                    && schedule
+                        .last_status()
+                        .is_some_and(|s| s.starts_with("gate_entry:"));
+                if !schedule.enabled() && !accepted_last_tick {
+                    return Ok(None);
+                }
+                super::schedule::revision(&schedule).map(Some)
             })
-            .transpose();
+            .transpose()
+            .map(Option::flatten);
     }
     let Some(receipt) = &a.source_receipt else {
         return Ok(None);

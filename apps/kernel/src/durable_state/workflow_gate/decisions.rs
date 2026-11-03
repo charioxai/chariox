@@ -13,6 +13,7 @@ fn state(db: &Connection, a: &Admission) -> Result<(u64, gate::State)> {
     ))
 }
 pub(super) fn claim(tx: &Transaction<'_>, now: u64) -> Result<Option<Claim>> {
+    retention::sweep(tx, now)?;
     for id in ids(tx,"SELECT entry_id FROM workflow_gate_entries WHERE disposition NOT IN ('queued','dropped','failed','expired','cancelled') AND deadline_ms<=?1 ORDER BY deadline_ms,sequence LIMIT 8",[now as i64])? {
         if let Some(mut stored)=load(tx,&id)? {if !stored.entry.disposition.is_terminal() {terminal(tx,&mut stored,Disposition::Expired,Some("gate_expired".into()))?;}}
     }
@@ -47,8 +48,10 @@ pub(super) fn claim(tx: &Transaction<'_>, now: u64) -> Result<Option<Claim>> {
             )?;
             continue;
         }
-        let retained:i64=tx.query_row("SELECT coalesce((SELECT sum(length(body_json)) FROM workflow_gate_entries),0)+coalesce((SELECT sum(length(body_json)) FROM workflow_gate_decisions),0)",[],|r|r.get(0)).map_err(sql)?;
-        if retained > 256 * 1024 * 1024 - 1024 * 1024 {
+        let retained = retention::retained_bytes(tx)?;
+        if retained > 256 * 1024 * 1024 - 1024 * 1024
+            || !retention::body_capacity(tx, &s.admission, 2 * 1024 * 1024)?
+        {
             terminal(
                 tx,
                 &mut s,
@@ -181,8 +184,9 @@ pub(super) fn complete(
     let next_revision = revision + u64::from(report.outcome.is_ok());
     let record = DecisionRecord {
         evaluation_number: s.entry.evaluation_count,
-        evaluation,
-        report: report.clone(),
+        evaluation: Some(evaluation),
+        report: Some(report.clone()),
+        compacted: None,
         state_revision_before: revision,
         state_revision_after: next_revision,
     };
@@ -253,7 +257,7 @@ fn batch(
     payload: &serde_json::Value,
 ) -> std::result::Result<(), gate::Failure> {
     let result = (|| -> Result<()> {
-        let group = gate::sha256(
+        let scope = gate::sha256(
             encode(&serde_json::json!([
                 s.admission.owner,
                 s.admission.session_id,
@@ -267,16 +271,20 @@ fn batch(
             .map_err(|_| error("gate batch identity"))?
             .as_bytes(),
         );
-        let existing: Option<(String, i64, bool)> = tx
+        let existing: Option<(String, String, i64)> = tx
             .query_row(
-                "SELECT entry_id,flush_at_ms,closed FROM workflow_gate_batches WHERE group_id=?1",
-                [&group],
+                "SELECT group_id,entry_id,flush_at_ms FROM workflow_gate_batches WHERE scope_sha256=?1 AND closed=0",
+                [&scope],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .optional()
             .map_err(sql)?;
-        let aggregate = if let Some((id, time, closed)) = existing {
-            if time != flush as i64 || closed {
+        let group = existing
+            .as_ref()
+            .map(|row| row.0.clone())
+            .unwrap_or_else(|| format!("batch_{:032x}", rand::random::<u128>()));
+        let aggregate = if let Some((_, id, time)) = existing {
+            if time != flush as i64 {
                 return Err(error("gate batch cutoff conflict"));
             }
             id
@@ -300,8 +308,8 @@ fn batch(
             aggregate.entry.next_due_at_ms = Some(flush);
             save(tx, &aggregate)?;
             tx.execute(
-                "INSERT INTO workflow_gate_batches VALUES(?1,?2,?3,0)",
-                params![group, entry.entry_id, flush as i64],
+                "INSERT INTO workflow_gate_batches VALUES(?1,?2,?3,?4,0)",
+                params![group, scope, entry.entry_id, flush as i64],
             )
             .map_err(sql)?;
             entry.entry_id
@@ -311,8 +319,11 @@ fn batch(
             entry_id: s.entry.entry_id.clone(),
             payload: payload.clone(),
         };
-        if count >= 256 || bytes + encode(&item)?.len() as i64 > 64 * 1024 {
+        if count >= 256 || bytes + encode(&item)?.len() as i64 + count + 2 > 64 * 1024 {
             return Err(error("gate batch member limit"));
+        }
+        if !retention::body_capacity(tx, &s.admission, 2 * encode(&item)?.len() as i64)? {
+            return Err(error("gate batch retained body limit"));
         }
         tx.execute(
             "INSERT INTO workflow_gate_members VALUES(?1,?2,?3)",
@@ -321,6 +332,30 @@ fn batch(
         .map_err(sql)?;
         let mut a = load(tx, &aggregate)?.ok_or_else(|| error("gate aggregate missing"))?;
         a.entry.deadline_ms = a.entry.deadline_ms.min(s.entry.deadline_ms);
+        if let Some(invocation) = a.admission.template.notification_invocation_mut() {
+            if let Some(incoming) = s
+                .admission
+                .template
+                .publication_invocation()
+                .and_then(|i| i.input.get("ancestry"))
+                .and_then(serde_json::Value::as_array)
+            {
+                let ancestry = invocation.input["ancestry"]
+                    .as_array_mut()
+                    .ok_or_else(|| error("notification ancestry missing"))?;
+                for ancestor in incoming {
+                    if !ancestry.contains(ancestor) {
+                        ancestry.push(ancestor.clone());
+                    }
+                }
+                if ancestry.len() > 256 {
+                    return Err(error("gate batch ancestry limit"));
+                }
+            }
+            if invocation.input.get("deadline_ms").is_some() {
+                invocation.input["deadline_ms"] = serde_json::json!(a.entry.deadline_ms);
+            }
+        }
         a.batch
             .as_mut()
             .ok_or_else(|| error("gate aggregate data missing"))?

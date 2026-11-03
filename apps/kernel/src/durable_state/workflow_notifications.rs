@@ -384,6 +384,9 @@ fn apply(
             mut subscription,
             target,
         } => {
+            target
+                .require_delivery_mode(subscription.delivery_mode)
+                .map_err(|e| error(e.to_string()))?;
             if !(1..=30).contains(&subscription.ttl_days) {
                 return Err(error("TTL must be 1–30 days"));
             }

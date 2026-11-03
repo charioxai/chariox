@@ -20,6 +20,8 @@ pub(crate) enum NotificationTargetError {
     InvalidTarget,
     #[error("app_automation_not_owner")]
     NotOwner,
+    #[error("workflow gate inject delivery requires one declared entry node; use queue delivery for conditional routing")]
+    GateInjectionTargets,
 }
 impl From<rusqlite::Error> for NotificationTargetError {
     fn from(error: rusqlite::Error) -> Self {
@@ -35,6 +37,7 @@ pub(crate) struct WorkflowNotificationTarget {
     durable_owner: String,
     target: AutomationTarget,
     entities: Vec<(&'static str, String, String)>,
+    gate_injection_supported: bool,
 }
 impl WorkflowNotificationTarget {
     pub(crate) fn resolve(
@@ -91,7 +94,19 @@ impl WorkflowNotificationTarget {
                 queue_id,
             },
             entities,
+            gate_injection_supported: workflow.gate().is_none()
+                || endpoint.entry_node_ids().len() == 1,
         })
+    }
+    pub(crate) fn require_delivery_mode(
+        &self,
+        mode: crate::local::NotificationDeliveryMode,
+    ) -> Result<(), NotificationTargetError> {
+        if mode == crate::local::NotificationDeliveryMode::Inject && !self.gate_injection_supported
+        {
+            return Err(NotificationTargetError::GateInjectionTargets);
+        }
+        Ok(())
     }
     pub(crate) fn target(&self) -> &AutomationTarget {
         &self.target

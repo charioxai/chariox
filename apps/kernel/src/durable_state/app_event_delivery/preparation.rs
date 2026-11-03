@@ -54,6 +54,7 @@ impl PreparedAppEvent {
             &configuration.target.publication_id,
             Some(&configuration.target.queue_id),
         )?;
+        target.require_delivery_mode(configuration.delivery_mode)?;
         if target.target() != &configuration.target {
             return Err(AppEventDeliveryError::Conflict);
         }

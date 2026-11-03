@@ -37,6 +37,9 @@ impl PreparedNotification {
             Some(&sub.queue_id),
         )
         .map_err(|e| error(e.to_string()))?;
+        target
+            .require_delivery_mode(sub.delivery_mode)
+            .map_err(|e| error(e.to_string()))?;
         if target.target().endpoint_id != sub.endpoint_id {
             return Err(error("notification target changed"));
         }

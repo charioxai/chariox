@@ -336,9 +336,13 @@ impl WorkflowQueuedPrompt {
         );
         if let Some(invocation) = &mut self.publication_invocation {
             let ancestry = invocation.input.get("ancestry").cloned();
+            let deadline = invocation.input.get("deadline_ms").cloned();
             invocation.input = serde_json::json!({"gate_entry_id":entry_id});
             if let Some(ancestry) = ancestry {
                 invocation.input["ancestry"] = ancestry;
+            }
+            if let Some(deadline) = deadline {
+                invocation.input["deadline_ms"] = deadline;
             }
             invocation.artifacts.clear();
         }

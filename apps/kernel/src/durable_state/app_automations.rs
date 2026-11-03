@@ -127,6 +127,7 @@ fn apply(
             delivery_mode,
         } => {
             target.require_current(&tx, owner)?;
+            target.require_delivery_mode(delivery_mode)?;
             budget.check()?;
             AppOutbox::configure_in(
                 &tx,

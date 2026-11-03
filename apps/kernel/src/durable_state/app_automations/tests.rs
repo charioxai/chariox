@@ -537,3 +537,75 @@ fn a_served_publication_still_matches_its_durable_target() {
         .unwrap();
     assert_eq!(revision(configured), 1);
 }
+
+#[test]
+fn gated_conditional_entry_accepts_queue_and_rejects_inject_binding() {
+    use crate::agent::{AgentInstance, GridPosition};
+    use chariox_app_runtime::workflow_gate as gate;
+    let fixture = Fixture::new();
+    let store = fixture.open();
+    let (mut sessions, session_id, publication) = workflow();
+    let p = sessions
+        .resolve_workflow_publication_ref(&session_id, &publication)
+        .unwrap();
+    let mut session = sessions.get_session(&session_id).unwrap();
+    let mut agents = session.agents().to_vec();
+    agents.push(AgentInstance::new(
+        "second-agent",
+        "second-ref",
+        &session_id,
+        None,
+        "dev-stub",
+        None,
+        None,
+        None,
+        GridPosition::new(0, 0, 1, 1),
+    ));
+    session.set_agents(agents);
+    sessions.restore_session(session);
+    let second = sessions
+        .add_workflow_node(&session_id, p.workflow_id(), "second-agent")
+        .unwrap();
+    let mut session = sessions.get_session(&session_id).unwrap();
+    let workflow = session.workflow_mut(p.workflow_id()).unwrap();
+    workflow.set_gate(Some(gate::Definition {
+        abi: gate::ABI.into(),
+        module_sha256: gate::sha256(b"component"),
+        config: Default::default(),
+        config_sha256: gate::sha256(b"{}"),
+    }));
+    let endpoint = workflow.endpoint_mut(p.endpoint_id()).unwrap();
+    endpoint.set_entry_nodes(vec![endpoint.entry_node_id().into(), second.id().into()]);
+    sessions.restore_session(session);
+    store
+        .persist_workflow_runtime_transition(
+            &sessions.get_session(&session_id).unwrap(),
+            "gated_conditional_binding_fixture",
+        )
+        .unwrap();
+    let resolve = || {
+        WorkflowAutomationTarget::resolve(&sessions, "local", &session_id, &publication, None)
+            .unwrap()
+    };
+    assert_eq!(
+        revision(
+            store
+                .mutate_app_automation(
+                    "local",
+                    fixture.catalog.clone(),
+                    mutation(resolve(), 0),
+                    budget()
+                )
+                .unwrap()
+        ),
+        1
+    );
+    let mut request = mutation(resolve(), 1);
+    if let AppAutomationMutation::Configure { delivery_mode, .. } = &mut request {
+        *delivery_mode = crate::local::NotificationDeliveryMode::Inject;
+    }
+    assert!(matches!(
+        store.mutate_app_automation("local", fixture.catalog.clone(), request, budget()),
+        Err(AppAutomationError::GateInjectionTargets)
+    ));
+}

@@ -320,6 +320,7 @@ impl KernelRuntimeOwnedState {
                 let target = (runs.len() == 1).then(|| runs[0]).and_then(|run| {
                     if run.endpoint_id() != queued.endpoint_id() || run.status() != crate::session::WorkflowRunStatus::Running { return None }
                     let entry = run.node_runs().first()?;
+                    if !queued.gate_routes().is_empty() && (queued.gate_routes().len()!=1 || queued.gate_routes()[0].node_id != entry.node_id()) { return None }
                     let active = self.prompt_state_owner.active_prompt_for_agent(&before, entry.agent_id())?;
                     if active.workflow_run_id() != Some(run.id()) || active.status() != crate::session::PromptStatus::Running || active.is_external()
                         || self.prompt_state_owner.prompt_is_sudo_bound(&before, entry.agent_id(), active.id()) { return None }

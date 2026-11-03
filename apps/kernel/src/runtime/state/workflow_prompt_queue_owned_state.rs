@@ -609,10 +609,39 @@ impl KernelRuntimeOwnedState {
         for plan in collection.plans {
             let session_id = plan.session_id.clone();
             let watchdog_id = plan.watchdog_id.clone();
+            let gated_tick = plan.enqueue_prompt
+                && self
+                    .session_store
+                    .read()
+                    .resolve_workflow_ref(&session_id, &plan.workflow_id)
+                    .is_ok_and(|workflow| workflow.gate().is_some());
+            let scheduled_for_ms = plan.scheduled_for_ms;
             changed_session_ids.insert(session_id.clone());
             match self.workflow_start_watchdog_tick_plan(plan) {
                 Ok(next_dispatches) => dispatches.extend(next_dispatches),
                 Err(error) => {
+                    if gated_tick {
+                        let mut sessions = self.session_store.write();
+                        if let Ok(mut session) = sessions.get_session(&session_id) {
+                            if let Some(schedule) = session.workflow_watchdog_mut(&watchdog_id) {
+                                if workflow_watchdog_failure_is_terminal(&error) {
+                                    schedule.set_enabled(false);
+                                } else {
+                                    schedule.set_next_run_at_ms(scheduled_for_ms);
+                                }
+                                schedule.set_pending_run(false);
+                                schedule.set_last_status(Some("invoke_failed".into()));
+                                schedule.set_last_error(Some(error.to_string()));
+                            }
+                            sessions.restore_session(session);
+                        }
+                        crate::logging::warn_with_fields(
+                            "daemon.workflow_gate",
+                            "schedule entry admission failed; original tick retained",
+                            serde_json::json!({"session_id":session_id,"schedule_id":watchdog_id,"error":error.to_string()}),
+                        );
+                        continue;
+                    }
                     self.mark_workflow_watchdog_launch_failed(&session_id, &watchdog_id, &error);
                     self.record_notice(
                         &session_id,

@@ -2205,3 +2205,147 @@ async fn gated_manual_entry_has_no_queue_or_run_before_worker_decision() {
         entry
     );
 }
+
+#[test]
+fn gated_schedule_admission_failure_retries_original_tick_and_preserves_budget() {
+    use crate::durable_state::workflow_gate::{Disposition, Operation, Outcome};
+    use chariox_app_runtime::workflow_gate as gate;
+    let (runtime, session_id, workflow_id, endpoint_id, _root) = runtime_with_idle_workflow();
+    let digest = gate::sha256(b"journal schedule component");
+    runtime
+        .owned
+        .durable_state_store
+        .gate(Operation::Put {
+            owner: crate::session::DEFAULT_LOCAL_USER_ID.into(),
+            digest: digest.clone(),
+            component: b"journal schedule component".to_vec(),
+        })
+        .unwrap();
+    {
+        let mut sessions = runtime.owned.session_store.write();
+        let mut session = sessions.get_session(&session_id).unwrap();
+        session
+            .workflow_mut(&workflow_id)
+            .unwrap()
+            .set_gate(Some(gate::Definition {
+                abi: gate::ABI.into(),
+                module_sha256: digest,
+                config: Default::default(),
+                config_sha256: gate::sha256(b"{}"),
+            }));
+        sessions.restore_session(session);
+    }
+    let schedule = runtime
+        .owned
+        .session_store
+        .write()
+        .create_workflow_watchdog(
+            &session_id,
+            &workflow_id,
+            &endpoint_id,
+            Some("default"),
+            1,
+            "one original tick".into(),
+            crate::session::WorkflowWatchdogPolicy::Queue,
+            Some(Some(1)),
+        )
+        .unwrap();
+    runtime
+        .owned
+        .persist_workflow_runtime_session(&session_id, "gate_schedule_test_baseline")
+        .unwrap();
+    let db = rusqlite::Connection::open(runtime.owned.durable_state_store.path()).unwrap();
+    db.execute_batch("CREATE TRIGGER fail_gate_schedule BEFORE INSERT ON durable_state_events WHEN NEW.kind='workflow.runtime.updated' AND instr(NEW.payload_json,'workflow_gate_schedule_accepted')>0 BEGIN SELECT RAISE(FAIL,'injected gate schedule append failure'); END;").unwrap();
+    assert!(runtime
+        .owned
+        .workflow_collect_due_watchdog_dispatches(schedule.next_run_at_ms())
+        .is_empty());
+    let failed = runtime
+        .owned
+        .session_store
+        .read()
+        .get_session(&session_id)
+        .unwrap();
+    let failed = failed
+        .workflow_watchdogs()
+        .iter()
+        .find(|s| s.id() == schedule.id())
+        .unwrap();
+    assert_eq!(failed.next_run_at_ms(), schedule.next_run_at_ms());
+    assert_eq!(failed.wakeups_executed(), 0);
+    let owner = crate::session::DEFAULT_LOCAL_USER_ID;
+    assert!(runtime
+        .owned
+        .durable_state_store
+        .gate_entries(owner, &session_id, &workflow_id, None, 100)
+        .unwrap()
+        .0
+        .is_empty());
+    db.execute_batch("DROP TRIGGER fail_gate_schedule;")
+        .unwrap();
+    assert!(runtime
+        .owned
+        .workflow_collect_due_watchdog_dispatches(schedule.next_run_at_ms())
+        .is_empty());
+    let entries = runtime
+        .owned
+        .durable_state_store
+        .gate_entries(owner, &session_id, &workflow_id, None, 100)
+        .unwrap()
+        .0;
+    assert_eq!(entries.len(), 1);
+    let accepted = runtime
+        .owned
+        .session_store
+        .read()
+        .get_session(&session_id)
+        .unwrap();
+    let accepted = accepted
+        .workflow_watchdogs()
+        .iter()
+        .find(|s| s.id() == schedule.id())
+        .unwrap();
+    assert_eq!(accepted.wakeups_executed(), 1);
+    assert!(!accepted.enabled());
+    let Outcome::Claim(Some(claim)) = runtime
+        .owned
+        .durable_state_store
+        .gate(Operation::Claim {
+            now: crate::session::unix_epoch_ms(),
+        })
+        .unwrap()
+    else {
+        panic!("last admitted tick must survive budget exhaustion")
+    };
+    assert_eq!(
+        claim
+            .evaluation
+            .input
+            .trigger
+            .as_ref()
+            .unwrap()
+            .data
+            .as_ref()
+            .unwrap()["scheduled_for_ms"],
+        serde_json::json!(schedule.next_run_at_ms())
+    );
+    runtime
+        .owned
+        .session_store
+        .write()
+        .set_workflow_watchdog_enabled(&session_id, schedule.id(), false)
+        .unwrap();
+    runtime
+        .owned
+        .persist_workflow_runtime_session(&session_id, "owner_disabled_gate_schedule")
+        .unwrap();
+    assert_eq!(
+        runtime
+            .owned
+            .durable_state_store
+            .gate_entry(owner, &entries[0].entry_id)
+            .unwrap()
+            .disposition,
+        Disposition::Cancelled
+    );
+}
