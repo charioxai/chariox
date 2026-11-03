@@ -148,7 +148,16 @@ export function diagramActions(api, persist) {
       const targets = selected([from, to]);
       if (targets.some(e => !['rectangle', 'ellipse', 'diamond'].includes(e.type))) fail('Connect rectangle, ellipse or diamond shapes.');
       const id = crypto.randomUUID();
-      const connected = convertToExcalidrawElements([...targets.map(e => structuredClone(e)), { id, type: 'arrow', x: 0, y: 0,
+      // The converter binds by id but leaves the arrow where it is placed, so start it on the facing edges.
+      const source = targets.find(e => e.id === from), target = targets.find(e => e.id === to);
+      const dx = target.x + target.width / 2 - (source.x + source.width / 2), dy = target.y + target.height / 2 - (source.y + source.height / 2);
+      const horizontal = Math.abs(dx) >= Math.abs(dy);
+      const startX = horizontal ? (dx >= 0 ? source.x + source.width : source.x) : source.x + source.width / 2;
+      const startY = horizontal ? source.y + source.height / 2 : (dy >= 0 ? source.y + source.height : source.y);
+      const endX = horizontal ? (dx >= 0 ? target.x : target.x + target.width) : target.x + target.width / 2;
+      const endY = horizontal ? target.y + target.height / 2 : (dy >= 0 ? target.y : target.y + target.height);
+      const connected = convertToExcalidrawElements([...targets.map(e => structuredClone(e)), { id, type: 'arrow', x: startX, y: startY,
+        points: [[0, 0], [endX - startX, endY - startY]],
         start: { id: from }, end: { id: to }, ...(label ? { label: { text: label, fontFamily: 1 } } : {}) }], { regenerateIds: false });
       const replacements = new Map(connected.map(e => [e.id, e]));
       return update([...all().map(e => replacements.get(e.id) ?? e), ...connected.filter(e => !targets.some(t => t.id === e.id))]);
