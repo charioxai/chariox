@@ -259,9 +259,15 @@ async function main() {
     const named = rows.filter(row => String(row.harness ?? "").includes("(Chariox agent)") && String(row.harness).startsWith("home-room/"))
     check("B's audit names the room and agent", named.some(row => row.request === "SubmitPrompt"), { harnesses: [...new Set(rows.map(r => r.harness))], requests: rows.map(r => r.request) })
     // B's agent either still shows the prompt in its room or already answered it in its own provider transcript.
-    const arrived = text => until(async () => JSON.stringify(await bState()).includes(text) || claudeTranscript(b.dir + "/chariox", 0).includes(text), text, 60000).then(() => true, () => false)
+    const arrived = text => until(async () => { await a.rpc({ PumpTerminalOutput: { session_id: roomA.session.id, attachment_id: attached } }).catch(() => {}); return JSON.stringify(await bState()).includes(text) || claudeTranscript(b.dir + "/chariox", 0).includes(text) }, text, 60000).then(() => true, () => false)
     check("the prompt reached the agent of the other room on B", await arrived("hello from the reach drill"))
-    check("the agent messaged an agent in another room on its own kernel", await until(async () => JSON.stringify(await state(a, siblingA.session.id)).includes("hello sibling from the reach drill"), "sibling prompt", 60000).then(() => true, () => false))
+    // The sibling's prompt is in its room's state while it runs and in its history once the turn is recorded.
+    const siblingHas = async text => {
+      await a.rpc({ PumpTerminalOutput: { session_id: roomA.session.id, attachment_id: attached } }).catch(() => {})
+      const outline = await a.rpc({ GetSessionHistoryOutline: { session_id: siblingA.session.id, agent_ids: [siblingA.agent.id], latest_prompt_count: 4, include_prefetched_content: true } }).catch(() => ({}))
+      return JSON.stringify(await state(a, siblingA.session.id)).includes(text) || JSON.stringify(outline).includes(text)
+    }
+    check("the agent messaged an agent in another room on its own kernel", await until(() => siblingHas("hello sibling from the reach drill"), "sibling prompt", 90000).then(() => true, () => false))
     const paired = (await b.rpc({ ListPairedClients: {} })).PairedClientsListed.clients
     check("B's paired-clients list shows the gateway row with the agent", paired.some(c => String(c.alias ?? "").includes("(Chariox agent)")), { aliases: paired.map(c => c.alias) })
   }
