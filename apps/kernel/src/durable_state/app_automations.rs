@@ -15,6 +15,10 @@ pub(crate) use super::notification_target::NotificationTargetError as AppAutomat
 pub(crate) use super::notification_target::WorkflowNotificationTarget as WorkflowAutomationTarget;
 
 #[derive(Debug)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "The bounded automation target retains its gate and source contract on the durable writer"
+)]
 pub(crate) enum AppAutomationMutation {
     Configure {
         automation_id: String,
