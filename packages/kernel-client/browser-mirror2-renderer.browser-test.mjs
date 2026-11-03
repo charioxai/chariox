@@ -67,6 +67,29 @@ test('MP-10: review #941-1 kernel positions of other scrollers that arrive while
   } finally { await page.close(); }
 });
 
+// A page scrolled by the person is not moved by the kernel's older answer: the kernel reports its position
+// as of the packet, which can predate the scroll_to it has not acknowledged yet (a slow kernel or relay).
+test('MP-08/MP-10: a kernel scroll position that predates the viewer\'s unanswered scroll_to does not move the viewer back (also after the settle window), and a position it did not cause still applies', async () => {
+  const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
+  try {
+    await page.goto(url);
+    await page.evaluate(async () => { window.sent = []; window.release = []; window.r = new Mirror2.BrowserMirror2Renderer(document.getElementById('c'), action => new Promise(resolve => { window.sent.push(action); window.release.push(resolve); })); await window.r.ready(); });
+    await apply(page, snapshot([{ id: 'n1', parent: null, kind: 'document' }, { id: 'n2', parent: 'n1', kind: 'element', tag: 'html' }, { id: 'n3', parent: 'n2', kind: 'element', tag: 'body', attrs: { style: 'margin:0;height:5000px' } }]));
+    const y = () => page.evaluate(() => window.r.frame.contentWindow.scrollY);
+    await page.evaluate(() => window.r.frame.contentWindow.scrollTo(0, 600)); await frames();
+    await new Promise(resolve => setTimeout(resolve, 700)); // past the viewer's own settle window; the kernel has not answered the scroll_to
+    assert.equal(await page.evaluate(() => window.sent.filter(a => a.kind === 'scroll_to').length), 1, 'MP-08: the scroll position was sent');
+    await apply(page, delta(2, [], { scroll: [0, 200] })); // the kernel reports where it was before it applied 600
+    assert.equal(await y(), 600, 'MP-08: an unanswered scroll_to keeps the viewer where the person put it');
+    await page.evaluate(() => window.release.splice(0).forEach(resolve => resolve())); await new Promise(resolve => setTimeout(resolve, 100));
+    await apply(page, delta(3, [], { scroll: [0, 400] })); // just after the answer: still the kernel's older report
+    assert.equal(await y(), 600, 'MP-08: the settle window also covers reports that were in flight when the answer arrived');
+    await new Promise(resolve => setTimeout(resolve, 600));
+    await apply(page, delta(4, [], { scroll: [0, 900] })); // the page scrolled itself, long after
+    assert.equal(await y(), 900, 'MP-08: a position the viewer did not cause is applied once the viewer is quiet');
+  } finally { await page.close(); }
+});
+
 test('MP-10: review #320-1 an existing select keeps its recorded selection when its options change (regrouped into an optgroup, replaced beneath it)', async () => {
   const page = await viewer();
   try {

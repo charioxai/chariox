@@ -91,6 +91,8 @@ export class BrowserMirror2Renderer {
   private localScrollAt = -Infinity
   private localRootScrollAt = -Infinity
   private rootScrollReplies = new Set<{epoch:{document_id:string}}>()
+  private scrollReplies = new Set<object>() // scroll_to inputs sent and not yet answered: the kernel's reports may predate them
+  private scrollAnsweredAt = -Infinity
   private applied = new WeakMap<Node, [number, number]>() // kernel-applied positions (their scroll events are not viewer input)
   private deferred = new Map<Node, [number, number]>() // latest kernel position per scroller that arrived while the viewer scrolled
   private wheel = new Mirror2Wheel(fn => requestAnimationFrame(fn), handle => cancelAnimationFrame(handle))
@@ -157,7 +159,7 @@ export class BrowserMirror2Renderer {
         if (this.inputReplies.size >= 2) await Promise.race(this.inputReplies)
         const next = this.queue.shift(); if (!next || this.disposed) break
         const before = this.kernelFocus
-        if (next.action.kind === 'scroll_to' && next.action.node_id === null) this.rootScrollReplies.add(next)
+        if (next.action.kind === 'scroll_to') { this.scrollReplies.add(next); if (next.action.node_id === null) this.rootScrollReplies.add(next) }
         let written = () => {}
         const sent = new Promise<void>(resolve => { written = resolve })
         // MP-08/MP-10/MP-11: preserve actual write order, including asynchronous
@@ -168,7 +170,7 @@ export class BrowserMirror2Renderer {
         }).then(() => { if (!this.disposed && next.resetSerial === this.resetSerial) { this.holdFocus(next.action, before); if (next.action.kind === 'selection' && this.selectionHold?.key === JSON.stringify(next.action) && this.selectionHold.epoch === next.epoch.sequence && next.epoch.document_id === this.documentId) this.selectionHold.until = this.sequence + CREDIT_WINDOW } })
           .catch(() => { if (next.resetSerial === this.resetSerial && next.action.kind === 'selection' && this.selectionHold?.key === JSON.stringify(next.action) && this.selectionHold.epoch === next.epoch.sequence && next.epoch.document_id === this.documentId) { this.selectionFailure = true; this.selectionHold = null; this.selectionSent = '' } if (!this.disposed) this.frame.dataset.mirrorRefusals = String(Number(this.frame.dataset.mirrorRefusals ?? 0) + 1) })
           .finally(() => {
-            this.inputReplies.delete(replied); this.rootScrollReplies.delete(next); this.pendingInputs = Math.max(0, this.pendingInputs - 1)
+            this.inputReplies.delete(replied); this.rootScrollReplies.delete(next); if (this.scrollReplies.delete(next)) this.scrollAnsweredAt = performance.now(); this.pendingInputs = Math.max(0, this.pendingInputs - 1)
             written(); this.settleFocus()
           })
         this.inputReplies.add(replied)
@@ -235,7 +237,9 @@ export class BrowserMirror2Renderer {
     this.selectionDoc = doc
     if (JSON.stringify(action) !== this.selectionSent) this.enqueue(action)
   }
-  private scrolling(): boolean { return performance.now() - this.localScrollAt < 500 || this.queue.some(q => q.action.kind === 'scroll_to') }
+  // The viewer owns scroll while it scrolls and until the kernel has answered (and one settle window after): a kernel position
+  // reported before it applied the viewer's scroll_to is older than the person's scroll and must not move the page back.
+  private scrolling(): boolean { return performance.now() - this.localScrollAt < 500 || performance.now() - this.scrollAnsweredAt < 500 || this.scrollReplies.size > 0 || this.queue.some(q => q.action.kind === 'scroll_to') }
   private rootScrolling(): boolean { return performance.now() - this.localRootScrollAt < 500 || [...this.rootScrollReplies].some(q => q.epoch.document_id === this.documentId) || this.queue.some(q => q.action.kind === 'scroll_to' && q.action.node_id === null && q.epoch.document_id === this.documentId) }
   private idOf(node: Node | null | undefined): string | undefined {
     for (let n: Node | null | undefined = node, depth = 0; n && depth < 512; depth++) { const id = this.ids.get(n); if (id) return id; n = n.parentNode ?? (n as ShadowRoot).host }
