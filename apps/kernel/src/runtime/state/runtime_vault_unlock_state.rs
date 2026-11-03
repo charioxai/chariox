@@ -51,10 +51,10 @@ impl Drop for VaultUnlockGuard {
     }
 }
 
-struct CloseInteractionOnDrop {
-    state: KernelRuntimeState,
-    session_id: String,
-    interaction_id: String,
+pub(super) struct CloseInteractionOnDrop {
+    pub(super) state: KernelRuntimeState,
+    pub(super) session_id: String,
+    pub(super) interaction_id: String,
 }
 
 impl Drop for CloseInteractionOnDrop {
@@ -752,6 +752,9 @@ impl KernelRuntimeState {
     }
 }
 
+/// A person has to find and fill this card; the waiting tool call is cut by the provider
+/// at 300 s, so the kernel ends the card itself just before that with a clear error.
+const VAULT_UNLOCK_CARD_SECONDS: u64 = 280;
 const VAULT_PASSPHRASE_CHANGE: &str = "credential_vault_change_passphrase";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -838,7 +841,7 @@ fn vault_passphrase_interaction(
             Some(1),
             Some(512),
         )),
-        Some(60),
+        Some(VAULT_UNLOCK_CARD_SECONDS),
         None,
     )
 }

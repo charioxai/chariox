@@ -316,6 +316,34 @@ async fn vflag_plain_agent_reads_vault_status_and_opens_the_popup() {
     assert_eq!(status["status"]["unlocked"], true);
 }
 
+// MP-08 / MP-09 / MP-10 / MP-11: a provider that gives up on a waiting popup call (its tool timeout)
+// must not leave a card nobody can answer.
+#[tokio::test]
+async fn vflag_popup_card_is_withdrawn_when_its_waiting_call_is_gone() {
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    let mut waiting = Box::pin(call(
+        &f,
+        "chariox.request_popup",
+        json!({"message": "Open the page", "choices": [{"id": "done", "label": "Done", "reply": "Done"}]}),
+    ));
+    tokio::select! {
+        result = &mut waiting => panic!("popup resolved by itself: {result:?}"),
+        () = tokio::time::sleep(std::time::Duration::from_millis(300)) => {}
+    }
+    let open = || {
+        f.state
+            .owned
+            .session_snapshot(&f.request.session_id)
+            .unwrap()
+            .active_interactions()
+            .len()
+    };
+    assert_eq!(open(), 1);
+    drop(waiting);
+    assert_eq!(open(), 0);
+}
+
 #[tokio::test]
 async fn vflag_unknown_runtime_tool_is_not_a_workflow_error() {
     crate::test_support::isolated_env_test!();

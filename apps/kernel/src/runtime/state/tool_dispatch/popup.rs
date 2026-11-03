@@ -206,6 +206,13 @@ impl KernelRuntimeState {
         let resolution_rx = self
             .create_runtime_interaction(&session_id, interaction)
             .await?;
+        // The card is only answerable while this tool call waits: when the
+        // provider gives up on the call, withdraw it instead of leaving a dead card.
+        let _close = super::super::runtime_vault_unlock_state::CloseInteractionOnDrop {
+            state: self.clone(),
+            session_id: session_id.clone(),
+            interaction_id: interaction_id.clone(),
+        };
         if let Some(timeout_sec) = timeout_sec {
             let state = self.clone();
             let timeout_session_id = session_id.clone();
