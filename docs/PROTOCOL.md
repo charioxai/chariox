@@ -6242,6 +6242,27 @@ minimum for these requests: a kernel older than 966 refuses an unknown variant, 
 stage kernels are re-provisioned. The managed-upgrade list is [629, 636, 966]. Focused checks:
 `cargo test -p chariox-kernel --lib protocol_shapes` and `pnpm protocol:conformance`.
 
+### Notification subscriptions — local 973 / relay peer 422
+
+Each exit of a workflow is its own notification source. `RegisterWorkflowNotificationSource` takes an
+`exit_node_id` (a node id or `exit-N`) and no `output_fields`; source summaries carry
+`exit_node_id`, `exit_ordinal`, `name` and `display_name` (`<name>`, or `<name>-<ordinal>` when more
+than one exit of the workflow notifies). `AttachWorkflowNotification` is `{session_id, source_id,
+publication_ref}`: `events`, `filters`, `ttl_days`, `queue_ref` and `delivery_mode` are refused as unknown
+fields, as is `delivery_mode` on `ConfigureAppAutomation`. `ListWorkflowNotifications` answers a room member and
+a member's agent with this room's sources only. `AppInstallationSummary.events` lists the active
+release's outgoing events (`name`, `label`). The envelope is `{source_id, display_name, occurrence_id,
+output, ancestry, deadline_ms}`; there is no status, subject or fields. An agent subscribes itself with
+`CreateAgentTrigger` and source `{kind:"notification", source:{workflow:{source_id}}}`: `busy_policy` is
+now optional on the request, a notification trigger refuses a value, and the trigger summary is
+`{kind:"notification", source, subscription_id, display_name}`. Prompts of this kind carry
+origin `notification`. Peer 422 renames `SubscribeWorkflowNotifications.source_workflow_ref` to `source_id`,
+carries the exit fields in `ListWorkflowNotificationSources` and admits an agent `target_ref`. The
+`UpdateQueuedWorkflowPrompt.retry_delivery` field and the inject delivery path are gone. Clients carry no
+separate minimum: a kernel older than 973 refuses the unknown shapes, and development stage kernels are
+re-provisioned. See `docs/EVENT_TRIGGER_PROTOCOL.md`. Focused checks:
+`cargo test -p chariox-kernel --lib notification` and `node --test scripts/protocol-versions.test.mjs`.
+
 ### Opaque reimage provider id: local 924 / relay peer 375
 
 The managed-environment reimage preflight carries `desiredRelease.providerId`. It was a
