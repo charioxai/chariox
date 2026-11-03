@@ -83,6 +83,9 @@ test('canvas, declarations, persistence, native shortcuts and three exports roun
       ] });
       await invoke('connect_elements', { from: 'client', to: 'kernel', label: 'Actions' });
       const drawn = await invoke('scene_summary');
+      const client = drawn.elements.find(e => e.id === 'client'), arrow = drawn.elements.find(e => e.type === 'arrow');
+      assert(arrow.x >= client.x + client.width - 1 && arrow.x <= client.x + client.width + 1, 'a new connector starts on the facing edge of its source, not at the origin');
+      assert(arrow.y > client.y && arrow.y < client.y + client.height, 'a new connector leaves the source at its mid-height');
       assert.equal(drawn.elements.filter(e => e.type === 'text').length, 3);
       assert(drawn.elements.some(e => e.type === 'arrow' && e.from === 'client' && e.to === 'kernel'));
       await invoke('update_elements', { ids: ['client'], dx: 30, dy: 10, width: 190 });
