@@ -346,7 +346,7 @@ fn wait_request(
             interval_seconds: 60,
             repeat,
         },
-        busy_policy: crate::session::AgentTriggerBusyPolicy::Queue,
+        busy_policy: Some(crate::session::AgentTriggerBusyPolicy::Queue),
         prompt: prompt.map(str::to_string),
     })
 }
@@ -363,7 +363,7 @@ fn every_minute(
             interval_seconds: 60,
             repeat: crate::session::AgentTriggerRepeat::Every,
         },
-        busy_policy,
+        busy_policy: Some(busy_policy),
         prompt: Some("The same prompt text".to_string()),
     }
 }
@@ -466,7 +466,7 @@ async fn destroying_an_agent_removes_its_triggers() {
                     interval_seconds: 600,
                     repeat: crate::session::AgentTriggerRepeat::Every,
                 },
-                busy_policy: crate::session::AgentTriggerBusyPolicy::Queue,
+                busy_policy: Some(crate::session::AgentTriggerBusyPolicy::Queue),
                 prompt: None,
             });
         let command = KernelCommand::from_local_request("create-wait-every", None, None, &request);

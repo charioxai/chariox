@@ -106,10 +106,51 @@ impl SessionService {
             .add_agent_trigger(trigger))
     }
 
-    pub(crate) fn claim_http_agent_trigger(
+    /// The notification trigger of an agent: the picker's name for the source is kept for display.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "A notification trigger is created from distinct request fields and the caller identity."
+    )]
+    pub(crate) fn create_agent_notification_trigger(
+        &mut self,
+        session_id: &str,
+        agent_id: &str,
+        owner: &str,
+        source: crate::session::AgentTriggerNotificationSource,
+        subscription_id: String,
+        display_name: String,
+        prompt: Option<String>,
+    ) -> Result<AgentTrigger, DaemonError> {
+        self.get_session(session_id)?;
+        let prompt = prompt
+            .map(|p| p.trim().to_string())
+            .filter(|p| !p.is_empty())
+            .unwrap_or_else(|| {
+                format!(
+                    "A notification from {display_name} arrived. Decide what to do with its input."
+                )
+            });
+        let trigger = AgentTrigger::notification(
+            self.next_agent_trigger_id(),
+            agent_id,
+            owner,
+            source,
+            subscription_id,
+            display_name,
+            prompt,
+            unix_epoch_ms(),
+        );
+        Ok(self
+            .agent_trigger_session_mut(session_id)?
+            .add_agent_trigger(trigger))
+    }
+
+    /// Claims the trigger for one firing of an outside input; `None` while it is off or mid-firing.
+    pub(crate) fn claim_input_agent_trigger(
         &mut self,
         session_id: &str,
         trigger_id: &str,
+        kind: crate::session::TriggerInputKind,
         payload: serde_json::Value,
     ) -> Result<Option<AgentTriggerDispatch>, DaemonError> {
         let session = self.agent_trigger_session_mut(session_id)?;
@@ -118,11 +159,12 @@ impl SessionService {
             .iter_mut()
             .find(|t| t.id() == trigger_id)
             .ok_or_else(|| agent_trigger_not_found(session_id, trigger_id))?;
-        if !trigger.claim_http_dispatch() {
+        if !trigger.claim_input_dispatch(kind) {
             return Ok(None);
         }
         Ok(Some(AgentTriggerDispatch {
             payload: Some(payload),
+            input_kind: kind,
             claim_generation: trigger.dispatch_generation(),
             session_id: session_id.into(),
             trigger_id: trigger.id().into(),
@@ -156,6 +198,17 @@ impl SessionService {
             .iter_mut()
             .find(|trigger| trigger.id() == trigger_id)
             .ok_or_else(|| agent_trigger_not_found(session_id, trigger_id))?;
+        if busy_policy.is_some()
+            && matches!(
+                trigger.source(),
+                crate::session::AgentTriggerSource::Notification { .. }
+            )
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "agent trigger update",
+                message: "a notification trigger always queues; it has no busy policy".to_string(),
+            });
+        }
         trigger.update(busy_policy, prompt, enabled, unix_epoch_ms());
         Ok(trigger.clone())
     }
@@ -190,6 +243,7 @@ impl SessionService {
                 if trigger.claim_dispatch(now_ms) {
                     dispatches.push(AgentTriggerDispatch {
                         payload: None,
+                        input_kind: crate::session::TriggerInputKind::Http,
                         claim_generation: trigger.dispatch_generation(),
                         session_id: session_id.clone(),
                         trigger_id: trigger.id().to_string(),

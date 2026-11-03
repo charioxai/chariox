@@ -353,7 +353,7 @@ fn local_daemon_protocol_agent_trigger_shape_is_versioned() {
             interval_seconds: 300,
             repeat: crate::session::AgentTriggerRepeat::Every,
         },
-        busy_policy: crate::session::AgentTriggerBusyPolicy::Steer,
+        busy_policy: Some(crate::session::AgentTriggerBusyPolicy::Steer),
         prompt: Some("Check the build.".into()),
     });
     let update = LocalDaemonRequest::UpdateAgentTrigger(crate::local::UpdateAgentTriggerRequest {
@@ -1329,7 +1329,7 @@ fn local_daemon_protocol_http_agent_trigger_shape_is_versioned() {
         session_id: "s1".into(),
         agent_id: "a1".into(),
         source: crate::local::AgentTriggerSourceRequest::Http,
-        busy_policy: crate::session::AgentTriggerBusyPolicy::Queue,
+        busy_policy: Some(crate::session::AgentTriggerBusyPolicy::Queue),
         prompt: Some("Handle input".into()),
     });
     let shape = serde_json::to_value(request).unwrap();

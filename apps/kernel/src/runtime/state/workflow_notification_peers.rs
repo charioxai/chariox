@@ -421,18 +421,24 @@ impl KernelRuntimeState {
                             })
                             .filter(|s| self.owned.notification_grant_live(s))
                             .ok_or_else(|| store::error("notification not attached"))?;
-                        let target = WorkflowNotificationTarget::resolve(
-                            &sessions,
-                            owner,
-                            &sub.session_id,
-                            &sub.publication_id,
-                            Some(&sub.queue_id),
-                        )
-                        .map_err(|e| store::error(e.to_string()))?;
-                        if sessions.get_session(&sub.session_id)?.owner_user_id() != owner
-                            || target.target().endpoint_id != sub.endpoint_id
-                        {
-                            return Err(store::error("notification target changed"));
+                        if sub.target_kind == WorkflowNotificationTargetKind::Agent {
+                            if !self.owned.agent_notification_target_live(&sub) {
+                                return Err(store::error("notification target changed"));
+                            }
+                        } else {
+                            let target = WorkflowNotificationTarget::resolve(
+                                &sessions,
+                                owner,
+                                &sub.session_id,
+                                &sub.publication_id,
+                                Some(&sub.queue_id),
+                            )
+                            .map_err(|e| store::error(e.to_string()))?;
+                            if sessions.get_session(&sub.session_id)?.owner_user_id() != owner
+                                || target.target().endpoint_id != sub.endpoint_id
+                            {
+                                return Err(store::error("notification target changed"));
+                            }
                         }
                         match self.owned.durable_state_store.notify(
                             NotificationOperation::Accept {

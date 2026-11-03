@@ -145,8 +145,18 @@ pub(crate) enum NotificationOperation {
         subscription: WorkflowNotificationSubscription,
         occurrence_id: String,
     },
+    /// Attaches a subscription whose target needs no workflow resolution: an agent, or an
+    /// entry point of another kernel.
     RemoteAttach {
         subscription: WorkflowNotificationSubscription,
+    },
+    /// The agent's prompt for an accepted occurrence is queued: the receipt is settled.
+    AgentQueued {
+        subscription_id: String,
+        source_id: String,
+        occurrence_id: String,
+        prompt_id: String,
+        session_id: String,
     },
     /// A local or remote attach made under an ephemeral external access grant.
     Granted {
@@ -424,6 +434,16 @@ fn apply(
             }
             save_subscription(tx, &mut subscription)?;
             Ok(NotificationOutcome::Subscription(subscription))
+        }
+        NotificationOperation::AgentQueued {
+            subscription_id,
+            source_id,
+            occurrence_id,
+            prompt_id,
+            session_id,
+        } => {
+            tx.execute("UPDATE app_outbox SET state='queued',queued_prompt_id=?4,queued_session_id=?5 WHERE source_kind='workflow_completion' AND automation_id=?1 AND installation_id=?2 AND occurrence_id=?3 AND state='accepted'",params![subscription_id,source_id,occurrence_id,prompt_id,session_id]).map_err(sql)?;
+            Ok(NotificationOutcome::Queued)
         }
         NotificationOperation::Granted { grant, attach } => {
             let outcome = apply(tx, *attach)?;

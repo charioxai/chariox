@@ -335,6 +335,40 @@ impl KernelRuntimeState {
     }
 }
 impl KernelRuntimeOwnedState {
+    /// A local source's occurrence for a local agent is accepted as a remote one is on delivery.
+    fn accept_local_agent_notification(
+        &self,
+        sub: &WorkflowNotificationSubscription,
+        env: &WorkflowNotificationEnvelope,
+    ) {
+        let _ = self
+            .durable_state_store
+            .with_workflow_runtime_transition_lock(|| {
+                let sessions = self.session_store.read();
+                let (sources, _, _) = self
+                    .durable_state_store
+                    .notification_inventory(&sub.owner_user_id)?;
+                if !self.agent_notification_target_live(sub)
+                    || !sources
+                        .iter()
+                        .any(|s| s.source_id == env.source_id && source_available(&sessions, s))
+                {
+                    return Ok(());
+                }
+                self.durable_state_store
+                    .notify(NotificationOperation::Accept {
+                        subscription: sub.clone(),
+                        envelope: env.clone(),
+                    })?;
+                self.durable_state_store
+                    .notify(NotificationOperation::Acknowledge {
+                        subscription_id: sub.subscription_id.clone(),
+                        occurrence_id: env.occurrence_id.clone(),
+                    })?;
+                Ok(())
+            });
+    }
+
     /// The existing bounded notification/App pass retains blocking ownership.
     /// No network, App worker, AEDS or registry dependency is involved.
     pub(super) fn route_workflow_notifications(&self) -> (BTreeSet<String>, bool) {
@@ -377,6 +411,10 @@ impl KernelRuntimeOwnedState {
                 continue;
             };
             for (sub, env) in candidates {
+                // An agent's accepted occurrences belong to the async agent step.
+                if accepted && sub.target_kind == WorkflowNotificationTargetKind::Agent {
+                    continue;
+                }
                 // Rotate failed/busy targets before attempting, so they never block
                 // another subscription and retry never mutates its original deadline.
                 let _ = self
@@ -391,8 +429,11 @@ impl KernelRuntimeOwnedState {
                 if !matches!(
                     route(&home, &sub.target_kernel_id),
                     NotificationRoute::Local
-                ) || sub.target_kind != WorkflowNotificationTargetKind::WorkflowEndpoint
-                {
+                ) {
+                    continue;
+                }
+                if sub.target_kind == WorkflowNotificationTargetKind::Agent {
+                    self.accept_local_agent_notification(&sub, &env);
                     continue;
                 }
                 let operation = self

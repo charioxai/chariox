@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::session::{AgentTriggerBusyPolicy, AgentTriggerRepeat};
+use crate::session::{AgentTriggerBusyPolicy, AgentTriggerNotificationSource, AgentTriggerRepeat};
 
 /// Protocol 930: what fires a new agent trigger.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -11,6 +11,10 @@ pub enum AgentTriggerSourceRequest {
         interval_seconds: u64,
         repeat: AgentTriggerRepeat,
     },
+    /// Subscribes the agent to a workflow exit or an App event; every occurrence is queued.
+    Notification {
+        source: AgentTriggerNotificationSource,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -18,7 +22,10 @@ pub struct CreateAgentTriggerRequest {
     pub session_id: String,
     pub agent_id: String,
     pub source: AgentTriggerSourceRequest,
-    pub busy_policy: AgentTriggerBusyPolicy,
+    /// What a firing does while the agent runs a turn; omitted means queue. A notification
+    /// trigger always queues and refuses a value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub busy_policy: Option<AgentTriggerBusyPolicy>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt: Option<String>,
 }

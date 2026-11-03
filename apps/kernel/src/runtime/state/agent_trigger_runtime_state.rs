@@ -146,6 +146,11 @@ impl KernelRuntimeState {
                 interval_seconds,
                 repeat,
             } => (*interval_seconds, *repeat),
+            crate::local::AgentTriggerSourceRequest::Notification { .. } => {
+                return self
+                    .create_notification_agent_trigger(request, caller_user_id)
+                    .await
+            }
         };
         let (trigger, session) = self.create_agent_schedule_trigger(
             &request.session_id,
@@ -153,7 +158,7 @@ impl KernelRuntimeState {
             caller_user_id,
             interval_seconds,
             repeat,
-            request.busy_policy,
+            request.busy_policy.unwrap_or(AgentTriggerBusyPolicy::Queue),
             request.prompt,
         )?;
         Ok(crate::local::LocalDaemonResponse::AgentTriggerCreated { trigger, session })
@@ -193,6 +198,7 @@ impl KernelRuntimeState {
             &request.trigger_id,
             caller_user_id,
         )?;
+        self.detach_deleted_notification_trigger(&trigger).await;
         Ok(crate::local::LocalDaemonResponse::AgentTriggerDeleted { trigger, session })
     }
 
@@ -271,6 +277,7 @@ impl KernelRuntimeState {
         }
         let dispatch = AgentTriggerDispatch {
             payload: None,
+            input_kind: crate::session::TriggerInputKind::Http,
             claim_generation: 0,
             session_id: request.session_id.clone(),
             trigger_id: delivery.trigger_id().to_string(),
@@ -540,7 +547,12 @@ impl KernelRuntimeState {
             return Ok(AgentTriggerFiring::Coalesced);
         }
         let origin = if dispatch.payload.is_some() {
-            crate::session::PromptOrigin::Http
+            match dispatch.input_kind {
+                crate::session::TriggerInputKind::Http => crate::session::PromptOrigin::Http,
+                crate::session::TriggerInputKind::Notification => {
+                    crate::session::PromptOrigin::Notification
+                }
+            }
         } else {
             crate::session::PromptOrigin::Schedule
         };
@@ -561,13 +573,12 @@ impl KernelRuntimeState {
             .owned
             .ensure_agent_trigger_attachment(&dispatch.session_id)?;
         let prompt_id = self.owned.session_store.reserve_prompt_id();
-        // A resent HTTP firing already carries its quoted input in the text.
-        let template_id =
-            if dispatch.payload.is_some() || origin == crate::session::PromptOrigin::Http {
-                "runtime/agent-trigger"
-            } else {
-                "runtime/scheduled-prompt"
-            };
+        // A resent firing already carries its quoted input in the text.
+        let template_id = match origin {
+            crate::session::PromptOrigin::Notification => "runtime/notification",
+            crate::session::PromptOrigin::Http => "runtime/agent-trigger",
+            _ => "runtime/scheduled-prompt",
+        };
         let prompt_text = match &dispatch.payload {
             None => dispatch.prompt.clone(),
             Some(payload) => {
@@ -577,8 +588,10 @@ impl KernelRuntimeState {
                     .replace('<', "\\u003c")
                     .replace('>', "\\u003e");
                 format!(
-                    "{}\n\n<chariox-trigger-input kind=\"http\">\n{}\n</chariox-trigger-input>",
-                    dispatch.prompt, payload
+                    "{}\n\n<chariox-trigger-input kind=\"{}\">\n{}\n</chariox-trigger-input>",
+                    dispatch.prompt,
+                    dispatch.input_kind.name(),
+                    payload
                 )
             }
         };
@@ -892,7 +905,7 @@ pub(super) mod tests {
                         interval_seconds: 60,
                         repeat,
                     },
-                    busy_policy: AgentTriggerBusyPolicy::Steer,
+                    busy_policy: Some(AgentTriggerBusyPolicy::Steer),
                     prompt: Some("Keep this firing".into()),
                 },
                 owner.owner_user_id(),
