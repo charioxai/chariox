@@ -29,13 +29,10 @@ impl KernelRuntimeState {
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let project = self.owned_project(&request.project_id, caller_user_id)?;
         let checkout = self.project_checkout(&project, None)?;
-        let session = self.owned.session_store.get_session(&request.session_id)?;
-        if session.project_id() != project.id() {
-            return Err(environment_error("the agent belongs to another Project"));
-        }
         if self.environment_store().load(project.id())?.is_some() {
             return Err(environment_error("this Project already has an Environment"));
         }
+        let (session_id, agent_id) = self.idle_project_agent(&project)?;
         let view = EnvironmentOperationView {
             operation_id: request.operation_id,
             project_id: project.id().into(),
@@ -61,12 +58,35 @@ impl KernelRuntimeState {
         let checkouts: Vec<PathBuf> = project.workspace_ids().iter().map(PathBuf::from).collect();
         tokio::spawn(async move {
             let drafted = tokio::select! {
-                drafted = runtime.draft_environment_fields(&request.session_id, &request.agent_id, checkout) => drafted,
+                drafted = runtime.draft_environment_fields(&session_id, &agent_id, checkout) => drafted,
                 _ = handle.stopped() => return,
             };
             runtime.save_draft(&handle, &project_id, &checkouts, drafted);
         });
         Ok(LocalDaemonResponse::EnvironmentOperation { operation: view })
+    }
+
+    /// An agent of the Project that runs on this kernel and has no prompt running: the utility borrows its provider.
+    pub(super) fn idle_project_agent(
+        &self,
+        project: &crate::session::RuntimeProject,
+    ) -> Result<(String, String), DaemonError> {
+        for session in self.owned.session_store.sessions_in_project(project.id())? {
+            for agent in self.owned.agent_store.get_session_agents(session.id()) {
+                if agent.remote_execution().is_none()
+                    && self
+                        .owned
+                        .prompt_state_owner
+                        .active_prompt_for_agent(&session, agent.id())
+                        .is_none()
+                {
+                    return Ok((session.id().to_string(), agent.id().to_string()));
+                }
+            }
+        }
+        Err(environment_error(
+            "this Project has no idle agent here; open a room in it first",
+        ))
     }
 
     fn save_draft(

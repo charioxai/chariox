@@ -61,24 +61,14 @@ export function importProjectEnvironmentEntriesRequest(input: {
   } as const
 }
 
-/** The agent reads the Project and fills the empty Environment. */
-export function draftProjectEnvironmentRequest(input: {
-  readonly projectId: string
-  readonly operationId: string
-  readonly sessionId: string
-  readonly agentId: string
-}) {
-  return { DraftProjectEnvironment: { ...input } } as const
+/** An idle agent of the Project on this kernel reads the Project and fills the empty Environment. */
+export function draftProjectEnvironmentRequest(projectId: string, operationId: string) {
+  return { DraftProjectEnvironment: { projectId, operationId } } as const
 }
 
-/** An idle agent of the Project compares its files with the saved Environment and proposes changes. */
-export function checkProjectEnvironmentRequest(input: {
-  readonly projectId: string
-  readonly operationId: string
-  readonly sessionId: string
-  readonly agentId: string
-}) {
-  return { CheckProjectEnvironment: { ...input } } as const
+/** An idle agent of the Project on this kernel compares its files with the saved Environment and proposes changes. */
+export function checkProjectEnvironmentRequest(projectId: string, operationId: string) {
+  return { CheckProjectEnvironment: { projectId, operationId } } as const
 }
 
 /** Accept applies the proposal as a Save; dismissing keeps it from being proposed again. */

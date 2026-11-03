@@ -30,14 +30,11 @@ impl KernelRuntimeState {
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let project = self.owned_project(&request.project_id, caller_user_id)?;
         let checkout = self.project_checkout(&project, None)?;
-        let session = self.owned.session_store.get_session(&request.session_id)?;
-        if session.project_id() != project.id() {
-            return Err(environment_error("the agent belongs to another Project"));
-        }
         let record = self
             .environment_store()
             .load(project.id())?
             .ok_or_else(|| environment_error("this Project has no Environment to check yet"))?;
+        let (session_id, agent_id) = self.idle_project_agent(&project)?;
         let view = EnvironmentOperationView {
             operation_id: request.operation_id,
             project_id: project.id().into(),
@@ -67,8 +64,8 @@ impl KernelRuntimeState {
                     .map_err(|_| environment_error("reading the Project failed"))?;
                 let answer = runtime
                     .environment_utility_answer(
-                        &request.session_id,
-                        &request.agent_id,
+                        &session_id,
+                        &agent_id,
                         check_prompt(&facts, &record),
                     )
                     .await?;

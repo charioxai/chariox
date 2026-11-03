@@ -6395,10 +6395,17 @@ its own Vault under the Project scope, so presence differs per machine and is co
   64 MiB (128 MiB per operation), travels in 4 MiB slices (`PullProjectEnvironmentFile` carries the offset;
   a message is encoded twice on the way and must stay under the relay's bound) into a private temporary file
   that appears under its name only when complete, and lands with mode 0600.
-- `DraftProjectEnvironment { projectId, operationId, sessionId, agentId }` runs an idle agent of the Project
+- `DraftProjectEnvironment { projectId, operationId }` runs an idle agent of the Project on this kernel
   on its own provider with no tools: the kernel sends the Project's manifest files and the names of the
   files Git ignores (never their contents), and the answer becomes revision 1 of a Project that has no
   Environment. The operation reads with `kind: "draft"`.
+- `CheckProjectEnvironment { projectId, operationId }` (kind `check`) has an idle agent of the Project on this
+  kernel compare the Project's manifest files with the saved record on its provider with no tools, and
+  stores up to 20 proposals (`ProjectEnvironmentView.proposals`: field setup, variables, secret or file; add or
+  remove one line, name or path; evidence path and one line). A proposal the record cannot take is dropped.
+  `ResolveEnvironmentProposal { projectId, proposalId, accept }` accepts one as an ordinary Save of the next
+  revision (answering `ProjectEnvironmentSaved` or `ProjectEnvironmentConflict`) or dismisses it for good; a
+  dismissed proposal is not stored by a later check. Nothing changes until a proposal is accepted.
 - `RunRemoteProjectEnvironmentSetup { projectId, operationId, targetKernelId, checkoutPath? }` runs Setup on
   another kernel of the same authenticated owner (a leased worker included), in the checkout that kernel
   holds for the Project; `RemoteEnvironmentOperation { operationId, targetKernelId, stop? }` reads or stops

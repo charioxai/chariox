@@ -129,11 +129,8 @@ fn environment_requests_have_the_camel_case_wire_of_protocol_972() {
             LocalDaemonRequest::DraftProjectEnvironment(DraftProjectEnvironmentRequest {
                 project_id: "p".into(),
                 operation_id: "op".into(),
-                session_id: "s".into(),
-                agent_id: "a".into(),
             }),
-            json!({"DraftProjectEnvironment": {"projectId": "p", "operationId": "op",
-                "sessionId": "s", "agentId": "a"}}),
+            json!({"DraftProjectEnvironment": {"projectId": "p", "operationId": "op"}}),
         ),
         (
             LocalDaemonRequest::RunRemoteProjectEnvironmentSetup(
@@ -168,11 +165,8 @@ fn environment_requests_have_the_camel_case_wire_of_protocol_972() {
             LocalDaemonRequest::CheckProjectEnvironment(CheckProjectEnvironmentRequest {
                 project_id: "p".into(),
                 operation_id: "op".into(),
-                session_id: "s".into(),
-                agent_id: "a".into(),
             }),
-            json!({"CheckProjectEnvironment": {"projectId": "p", "operationId": "op",
-                "sessionId": "s", "agentId": "a"}}),
+            json!({"CheckProjectEnvironment": {"projectId": "p", "operationId": "op"}}),
         ),
         (
             LocalDaemonRequest::ResolveEnvironmentProposal(ResolveEnvironmentProposalRequest {

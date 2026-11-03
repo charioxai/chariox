@@ -90,15 +90,12 @@ pub struct ImportProjectEnvironmentEntriesRequest {
     pub checkout_path: Option<String>,
 }
 
-/// The agent reads the Project's files and writes the Environment fields as revision 1.
+/// An idle agent of the Project on this kernel reads the Project's files and writes the Environment fields as revision 1.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DraftProjectEnvironmentRequest {
     pub project_id: String,
     pub operation_id: String,
-    /// An idle agent of the Project; the draft runs on its provider.
-    pub session_id: String,
-    pub agent_id: String,
 }
 
 /// Runs Setup on another kernel of the same user, in the checkout that kernel holds for the Project.
@@ -123,15 +120,12 @@ pub struct RemoteEnvironmentOperationRequest {
     pub stop: bool,
 }
 
-/// The agent reads the Project and the saved Environment and proposes changes; nothing is applied.
+/// An idle agent of the Project on this kernel reads the Project and the saved Environment and proposes changes; nothing is applied.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CheckProjectEnvironmentRequest {
     pub project_id: String,
     pub operation_id: String,
-    /// An idle agent of the Project; the check runs on its provider.
-    pub session_id: String,
-    pub agent_id: String,
 }
 
 /// Accept applies one proposal as a Save; dismissing it keeps the agent from proposing it again.

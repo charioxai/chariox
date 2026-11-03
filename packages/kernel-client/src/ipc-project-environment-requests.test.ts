@@ -63,12 +63,12 @@ test("Environment v2 requests use the wire names and drop absent checkoutPath", 
   assert.deepEqual(setProjectEnvironmentSecretRequest("p", "API_KEY", "v"), { SetProjectEnvironmentSecret: { projectId: "p", name: "API_KEY", value: "v" } })
 })
 
-test("Import names its source and leaves out entries for Update; Draft names the agent", () => {
+test("Import names its source and leaves out entries for Update; Draft and Check name only the Project", () => {
   assert.deepEqual(importProjectEnvironmentEntriesRequest({ projectId: "p", operationId: "op", sourceKernelId: "k" }), { ImportProjectEnvironmentEntries: { projectId: "p", operationId: "op", sourceKernelId: "k" } })
   assert.deepEqual(importProjectEnvironmentEntriesRequest({ projectId: "p", operationId: "op", sourceKernelId: "k", entries: [{ kind: "secret", name: "T" }], checkoutPath: "/w" }), {
     ImportProjectEnvironmentEntries: { projectId: "p", operationId: "op", sourceKernelId: "k", entries: [{ kind: "secret", name: "T" }], checkoutPath: "/w" },
   })
-  assert.deepEqual(draftProjectEnvironmentRequest({ projectId: "p", operationId: "op", sessionId: "s", agentId: "a" }), { DraftProjectEnvironment: { projectId: "p", operationId: "op", sessionId: "s", agentId: "a" } })
+  assert.deepEqual(draftProjectEnvironmentRequest("p", "op"), { DraftProjectEnvironment: { projectId: "p", operationId: "op" } })
 })
 
 test("Setup on another kernel names the target; its operation is read or stopped there", () => {
@@ -78,8 +78,8 @@ test("Setup on another kernel names the target; its operation is read or stopped
   assert.deepEqual(remoteEnvironmentOperationRequest("op", "k", true), { RemoteEnvironmentOperation: { operationId: "op", targetKernelId: "k", stop: true } })
 })
 
-test("Check names the agent and a proposal is accepted or dismissed by its id; proposals read with their evidence", () => {
-  assert.deepEqual(checkProjectEnvironmentRequest({ projectId: "p", operationId: "op", sessionId: "s", agentId: "a" }), { CheckProjectEnvironment: { projectId: "p", operationId: "op", sessionId: "s", agentId: "a" } })
+test("Check names only the Project and a proposal is accepted or dismissed by its id; proposals read with their evidence", () => {
+  assert.deepEqual(checkProjectEnvironmentRequest("p", "op"), { CheckProjectEnvironment: { projectId: "p", operationId: "op" } })
   assert.deepEqual(resolveEnvironmentProposalRequest("p", "p1", true), { ResolveEnvironmentProposal: { projectId: "p", proposalId: "p1", accept: true } })
   assert.deepEqual(projectEnvironmentFromResponse({ ProjectEnvironment: { environment: view } }).proposals, view.proposals)
   assert.throws(() => projectEnvironmentFromResponse({ ProjectEnvironment: { environment: { ...view, proposals: [{ ...view.proposals[0], field: "mcp" }] } } }), /field/)
