@@ -11,6 +11,14 @@ impl KernelRuntimeOwnedState {
         session: &crate::session::RuntimeSession,
         run: &str,
     ) -> Result<Option<crate::session::WorkflowRun>, DaemonError> {
+        if run.starts_with("gate_") {
+            return self.durable_state_store.gate_workflow_run(
+                session.owner_user_id(),
+                session.host_daemon_id(),
+                session.id(),
+                run,
+            );
+        }
         let active = self
             .session_store
             .read()
@@ -34,6 +42,49 @@ impl KernelRuntimeOwnedState {
         session: &crate::session::RuntimeSession,
         source: &str,
     ) -> Result<Option<bool>, DaemonError> {
+        if source.starts_with("gate_") {
+            let Some((entry, _)) = self.durable_state_store.gate_task_entry(
+                session.owner_user_id(),
+                session.id(),
+                source,
+            )?
+            else {
+                return Ok(Some(false));
+            };
+            use crate::durable_state::workflow_gate::Disposition as D;
+            match entry.disposition {
+                D::Dropped => return Ok(Some(true)),
+                D::Failed | D::Expired | D::Cancelled => return Ok(Some(false)),
+                D::Queued => {
+                    return Ok(match self.agent_workflow_source(session, source)? {
+                        Some(run) => match run.status() {
+                            crate::session::WorkflowRunStatus::Completed => Some(true),
+                            crate::session::WorkflowRunStatus::Failed
+                            | crate::session::WorkflowRunStatus::Stopped => Some(false),
+                            _ => None,
+                        },
+                        None => entry
+                            .queued_prompt_id
+                            .and_then(|id| {
+                                session
+                                    .workflow_queued_prompts()
+                                    .iter()
+                                    .find(|q| q.id() == id)
+                            })
+                            .map_or(Some(false), |q| {
+                                if q.status()
+                                    == crate::session::WorkflowQueuedPromptStatus::Cancelled
+                                {
+                                    Some(false)
+                                } else {
+                                    None
+                                }
+                            }),
+                    });
+                }
+                _ => return Ok(None),
+            }
+        }
         let queued = session
             .workflow_queued_prompts()
             .iter()
@@ -136,6 +187,12 @@ impl KernelRuntimeOwnedState {
         room: &str,
         run: &str,
     ) -> Result<bool, DaemonError> {
+        let gate_run = if run.starts_with("gate_") {
+            self.agent_workflow_source(&self.session_store.get_session(room)?, run)?
+        } else {
+            None
+        };
+        let run = gate_run.as_ref().map_or(run, |run| run.id());
         for task in self.durable_state_store.agent_tasks(Some(room), None)? {
             if self
                 .durable_state_store
@@ -181,12 +238,7 @@ impl KernelRuntimeState {
             let Some(id) = receipt.resource_id.as_deref() else {
                 continue;
             };
-            let Some(run) = self.owned.durable_state_store.resolve_workflow_run(
-                session.host_daemon_id(),
-                &task.room_id,
-                id,
-            )?
-            else {
+            let Some(run) = self.owned.agent_workflow_source(&session, id)? else {
                 continue;
             };
             if !matches!(
@@ -196,7 +248,8 @@ impl KernelRuntimeState {
             ) {
                 continue;
             }
-            self.cancel_workflow_agent_tasks(&task.room_id, id).await?;
+            self.cancel_workflow_agent_tasks(&task.room_id, run.id())
+                .await?;
             self.owned
                 .durable_state_store
                 .agent_lifecycle(Operation::ReconcileFailedWorkflow {

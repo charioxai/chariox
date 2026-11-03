@@ -2205,6 +2205,50 @@ async fn gated_manual_entry_has_no_queue_or_run_before_worker_decision() {
             .unwrap(),
         entry
     );
+    assert_eq!(
+        runtime
+            .owned
+            .agent_workflow_obligation_outcome(&session, &entry.entry_id)
+            .unwrap(),
+        None
+    );
+    let Outcome::Claim(Some(claim)) = runtime
+        .owned
+        .durable_state_store
+        .gate(Operation::Claim {
+            now: crate::session::unix_epoch_ms(),
+        })
+        .unwrap()
+    else {
+        panic!("entry should be claimable")
+    };
+    runtime
+        .owned
+        .durable_state_store
+        .gate(Operation::Complete {
+            id: entry.entry_id.clone(),
+            token: claim.token,
+            report: gate::Report {
+                outcome: Ok(gate::Output {
+                    decision: gate::Decision::Drop,
+                    state: gate::State::default(),
+                    reason: "irrelevant public fact".into(),
+                    logs: vec![],
+                }),
+                fuel_consumed: 1,
+                execution_ms: 1,
+                profile: gate::PROFILE.into(),
+            },
+            now: crate::session::unix_epoch_ms(),
+        })
+        .unwrap();
+    assert_eq!(
+        runtime
+            .owned
+            .agent_workflow_obligation_outcome(&session, &entry.entry_id)
+            .unwrap(),
+        Some(true)
+    );
 }
 
 #[test]

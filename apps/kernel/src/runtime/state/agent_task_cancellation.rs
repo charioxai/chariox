@@ -377,8 +377,61 @@ impl KernelRuntimeState {
                         }
                     }
                     _ if obligation.tracks_workflow_run() => {
-                        if let Some(run) =
-                            session.workflow_runs().iter().find(|r| r.id() == resource)
+                        let mut resolved_resource = resource.clone();
+                        if resource.starts_with("gate_") {
+                            if let Some((entry, creator)) = self
+                                .owned
+                                .durable_state_store
+                                .gate_task_entry(session.owner_user_id(), session.id(), resource)?
+                            {
+                                if !entry.disposition.is_terminal() {
+                                    if creator.as_deref() != Some(task.agent_id.as_str()) {
+                                        first_error.get_or_insert(
+                                            crate::durable_state::agent_lifecycle::error(
+                                                "gate cancellation creator binding changed",
+                                            ),
+                                        );
+                                        continue;
+                                    }
+                                    self.owned.durable_state_store.gate(
+                                        crate::durable_state::workflow_gate::Operation::Cancel {
+                                            owner: session.owner_user_id().into(),
+                                            id: resource.clone(),
+                                            reason: "creating task cancelled".into(),
+                                        },
+                                    )?;
+                                    continue;
+                                }
+                                if let Some(run) =
+                                    self.owned.agent_workflow_source(&session, resource)?
+                                {
+                                    resolved_resource = run.id().into();
+                                } else if let Some(id) = entry.queued_prompt_id {
+                                    if session.workflow_queued_prompts().iter().any(|q| {
+                                        q.id() == id
+                                            && q.created_by_agent_id()
+                                                == Some(task.agent_id.as_str())
+                                    }) {
+                                        if let Err(error) =
+                                            self.owned.workflow_remove_queued_prompt(
+                                                crate::local::RemoveQueuedWorkflowPromptRequest {
+                                                    session_id: task.room_id.clone(),
+                                                    queue_item_ref: id,
+                                                },
+                                            )
+                                        {
+                                            first_error.get_or_insert(error);
+                                        }
+                                    }
+                                    continue;
+                                } else {
+                                    continue;
+                                }
+                            }
+                        }
+                        if let Some(run) = self
+                            .owned
+                            .agent_workflow_source(&session, &resolved_resource)?
                         {
                             if run.created_by_agent_id() != Some(&task.agent_id) {
                                 first_error.get_or_insert(
@@ -392,7 +445,7 @@ impl KernelRuntimeState {
                                 .execute_workflow_cancel_run_request(
                                     crate::local::CancelWorkflowRunRequest {
                                         session_id: task.room_id.clone(),
-                                        workflow_run_ref: resource.clone(),
+                                        workflow_run_ref: resolved_resource,
                                     },
                                 )
                                 .await;

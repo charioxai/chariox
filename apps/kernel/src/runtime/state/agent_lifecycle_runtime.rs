@@ -1275,6 +1275,12 @@ impl KernelRuntimeState {
                             })
                             .map(super::agent_workflow_tasks::workflow_failure_answer)
                     });
+                    let gate_answer = if source.starts_with("gate_") {
+                        self.owned.durable_state_store.gate_task_entry(session.owner_user_id(),session.id(),source)?.map(|(entry,_)|serde_json::json!({"kind":"workflow_entry","entry_id":entry.entry_id,"disposition":entry.disposition,"reason":entry.failure,"workflow_run_id":workflow_source.as_ref().map(|run|run.id()),"workflow_run_status":workflow_source.as_ref().map(|run|run.status())}))
+                    } else {
+                        None
+                    };
+                    let public_answer = public_answer.or(gate_answer);
                     let occurrence = terminal_task
                         .as_ref()
                         .map(|t| format!("task-terminal-{}", t.task_id))
@@ -1285,7 +1291,11 @@ impl KernelRuntimeState {
                                     run.completed_at_ms().unwrap_or(0)
                                 )
                             } else {
-                                format!("source-lost-{source}")
+                                if source.starts_with("gate_") {
+                                    format!("entry-terminal-{source}")
+                                } else {
+                                    format!("source-lost-{source}")
+                                }
                             }
                         });
                     self.owned
