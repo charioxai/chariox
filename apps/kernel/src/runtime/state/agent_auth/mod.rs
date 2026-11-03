@@ -55,7 +55,7 @@ pub(super) fn spec() -> RuntimeToolSpec {
             "flow":{"enum":["anonymous","service_auth"]},
             "claim":{"type":"boolean","default":false,"description":"Also claim an anonymous registration; requires email"},
             "scopes":{"type":"array","maxItems":64,"items":{"type":"string","minLength":1,"maxLength":200}},
-            "return_fields":{"type":"array","maxItems":8,"items":{"type":"string","minLength":2,"maxLength":128},"description":"JSON pointers of short non-secret fields of the service's registration reply to return, for example /project/id when the service scopes its API to the project the registration created. Fields naming a token, key, secret or credential are refused."}
+            "return_fields":{"type":"array","maxItems":8,"items":{"type":"string","minLength":2,"maxLength":128},"description":"JSON pointers of short non-secret fields of the service's registration reply to return, for example /project/id when the service scopes its API to the project the registration created. Fields naming a token, key, secret or credential are refused. They come back only from the call that registers; a retry with the same request_id returns the handle without them."}
         },"additionalProperties":false}),
     }
 }

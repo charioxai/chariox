@@ -103,6 +103,19 @@ captures the one-time client secret with `capture_browser` bound to that `.env` 
 `write_file`, then drives the login and clicks Authorize. The driver checks the relying party's exchange and the
 user it read, Gitea's own consent grant and application rows, the file binding and the absence scans.
 
+## AU-05 / AU-06: account-less Cloudflare Workers (`deploy-live.mjs`)
+
+Cloudflare publishes account-less ("temporary") deployments: `npx wrangler deploy --temporary` and
+`npx wrangler secret put NAME --temporary` need no account and no human; Cloudflare deletes the temporary account
+after 60 minutes unless claimed (nobody claims it). Same environment as the flagship driver. The owner stores a
+random secret for the Cloudflare command's stdin; the agent deploys a Worker that returns the SHA-256 of
+`env.APP_SECRET` and sets the secret with `use_env` stdin, and the harness fetches the live URL and compares the
+hash with its own value. The agent then mints a Neon token (`capture_command`), fetches the database URL, captures
+it twice (a `.env` file binding and a Cloudflare stdin binding), writes `.env` with `write_file`, and deploys a Worker
+that queries Neon through `@neondatabase/serverless` with the stdin-bound secret; the harness fetches that URL and
+repeats the query itself. Run every wrangler command with one `XDG_CONFIG_HOME`, or the Worker and its secret land in
+different temporary accounts.
+
 ## AU-16: scope of the existing substitute mechanism
 
 At source `68c0f04848`, AU-16 remains a product feature gap. It is not blocked
