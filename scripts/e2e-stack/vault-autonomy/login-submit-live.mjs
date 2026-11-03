@@ -58,7 +58,8 @@ const shot = async name => {
 async function scanArtifacts(directory) {
  let files=0
  for (const item of await readdir(directory,{withFileTypes:true})) {
-  if (/kernel-local-auth|vault|config|auth\.json|credentials|\.token$|\.key$|\.pem$/i.test(item.name) || item.isSymbolicLink()) continue
+  // The kernel's bundled prompt defaults are static text, not runtime output: a six-digit code can match them by chance.
+  if (/kernel-local-auth|vault|config|auth\.json|credentials|\.token$|\.key$|\.pem$|^\.bundled-defaults\.json$/i.test(item.name) || item.isSymbolicLink()) continue
   const filename=path.join(directory,item.name)
   if(item.isDirectory()) files+=await scanArtifacts(filename)
   else if(/\.(json|jsonl|ndjson|log|txt|md|sqlite|sqlite3|db)$/.test(item.name)) {

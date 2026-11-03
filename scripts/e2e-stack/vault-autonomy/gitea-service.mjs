@@ -78,6 +78,9 @@ logger.access.LEVEL = info
     // Gitea stores the last accepted passcode and refuses to take it twice: a changed value
     // after each sign-in is the server-side proof that a new period's code was accepted.
     lastPasscode: () => execFileSync('python3', ['-I', '-c', 'import sqlite3,sys;c=sqlite3.connect("file:"+sys.argv[1]+"?mode=ro",uri=True);r=c.execute("select last_used_passcode from two_factor").fetchall();print(r[0][0] if r else "")', path.join(home, 'work', 'gitea.db')], { encoding: 'utf8' }).trim(),
+    // OAuth2 applications and the owner's consent grants, read from Gitea's own database.
+    oauthApplications: () => JSON.parse(execFileSync('python3', ['-I', '-c', 'import json,sqlite3,sys;c=sqlite3.connect("file:"+sys.argv[1]+"?mode=ro",uri=True);print(json.dumps([{"client_id":r[0],"redirect_uris":json.loads(r[1])} for r in c.execute("select client_id,redirect_uris from oauth2_application")]))', path.join(home, 'work', 'gitea.db')], { encoding: 'utf8' })),
+    oauthGrants: () => Number(execFileSync('python3', ['-I', '-c', 'import sqlite3,sys;c=sqlite3.connect("file:"+sys.argv[1]+"?mode=ro",uri=True);print(c.execute("select count(*) from oauth2_grant").fetchone()[0])', path.join(home, 'work', 'gitea.db')], { encoding: 'utf8' }).trim()),
     twoFactorEnabled: async () => (await fetch(origin + '/api/v1/user', { headers: { authorization: 'Basic ' + Buffer.from(`${user}:${password}`).toString('base64') } })).status === 401,
     async stop() {
       if (child.exitCode === null && Number.isInteger(child.pid) && child.pid > 1) { child.kill('SIGTERM'); await new Promise(resolve => child.once('exit', resolve)) }

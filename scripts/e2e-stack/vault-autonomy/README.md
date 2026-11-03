@@ -94,6 +94,15 @@ the query itself with the `.env` value and scans transcripts and artifacts for t
 the agent records the project in the resource register and revokes it (HTTP 204, then 401). Neon deletes unclaimed
 projects after 72 hours; the drill deletes its own.
 
+## AU-07: OAuth round trip (`oauth-capture-live.mjs`)
+
+Same setup as the AU-10 Gitea drill (`TCAP_*`). The owner stores the Gitea password; the agent signs in, creates an
+OAuth2 application whose redirect URI is the harness-run relying party (`oauth-relying-party.mjs`, which reads
+`CLIENT_ID`/`CLIENT_SECRET` from the workspace `.env` on every request and exchanges the code server side),
+captures the one-time client secret with `capture_browser` bound to that `.env` file, writes `.env` with
+`write_file`, then drives the login and clicks Authorize. The driver checks the relying party's exchange and the
+user it read, Gitea's own consent grant and application rows, the file binding and the absence scans.
+
 ## AU-16: scope of the existing substitute mechanism
 
 At source `68c0f04848`, AU-16 remains a product feature gap. It is not blocked
