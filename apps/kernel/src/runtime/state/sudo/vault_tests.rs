@@ -287,6 +287,50 @@ async fn owner_unlocks(f: &Fixture, session: &str, during: impl FnOnce()) {
         .unwrap();
 }
 
+// MP-08 / MP-09 / MP-10 / MP-11: a plain prompt agent (no workflow turn) manages the Vault through the
+// credential dispatcher; the same call used to fall into the workflow resolver ("no active workflow turn").
+#[tokio::test]
+async fn vflag_plain_agent_reads_vault_status_and_opens_the_popup() {
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    for tool in ["chariox.manage_credential_vault", "manage_credential_vault"] {
+        let status = call(&f, tool, json!({"action": "status"})).await.unwrap();
+        assert_eq!(status["action"], "status");
+        assert_eq!(status["status"]["unlocked"], false);
+    }
+    let popup = call(
+        &f,
+        "chariox.manage_credential_vault",
+        json!({"action": "popup"}),
+    );
+    let unlock = owner_unlocks(&f, &f.request.session_id, || {});
+    let (result, ()) = tokio::join!(popup, unlock);
+    assert_eq!(result.unwrap()["action"], "unlocked");
+    let status = call(
+        &f,
+        "chariox.manage_credential_vault",
+        json!({"action": "status"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(status["status"]["unlocked"], true);
+}
+
+#[tokio::test]
+async fn vflag_unknown_runtime_tool_is_not_a_workflow_error() {
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    let error = call(&f, "chariox.no_such_tool", json!({}))
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("unknown runtime tool `chariox.no_such_tool`"),
+        "{error}"
+    );
+    assert!(!error.contains("workflow turn"), "{error}");
+}
+
 #[tokio::test]
 async fn vopen_generation_survives_sudo_expiry_during_vault_unlock() {
     crate::test_support::isolated_env_test!();

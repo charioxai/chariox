@@ -790,12 +790,11 @@ impl KernelRuntimeState {
                 ))
                 .await;
             }
-            Box::pin(self.dispatch_authenticated_workflow_runtime_tool_call(
-                &provider_runs,
-                canonical_tool_name,
-                arguments,
-            ))
-            .await
+            // Workflow tools returned above; anything left is not a runtime tool.
+            Err(DaemonError::LocalTransport {
+                operation: "dispatch_authenticated_runtime_tool_call",
+                message: format!("unknown runtime tool `{tool_name}`"),
+            })
         }
     }
 
@@ -863,6 +862,7 @@ fn is_home_credential_runtime_tool(tool_name: &str) -> bool {
             | crate::transport::runtime_tools::SEND_SECRET_TO_TERMINAL_TOOL
             | crate::transport::runtime_tools::PASTE_SECRET_TO_COMPUTER_TOOL
             | crate::transport::runtime_tools::REQUEST_POPUP_TOOL
+            | crate::transport::runtime_tools::MANAGE_CREDENTIAL_VAULT_TOOL
     )
 }
 
