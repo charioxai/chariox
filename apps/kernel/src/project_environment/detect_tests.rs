@@ -464,7 +464,11 @@ fn r4_detect_prompt_retains_plain_folder_inventory() {
 #[test]
 fn envrows_detect_prompt_asks_for_the_indexed_decisions_the_parser_accepts() {
     let root = TestWorktree::new("envrows-detect-decisions");
-    write(&root, "src/main.ts", "process.env.APP_SETTING;\nprocess.env.OTHER_SETTING;");
+    write(
+        &root,
+        "src/main.ts",
+        "process.env.APP_SETTING;\nprocess.env.OTHER_SETTING;",
+    );
     let folders = vec![folder(&root)];
     let detection = detect_environment(&folders, "environment").unwrap();
     let (input, _) = detection.discovery_input("project", &folders, &["folder".into()].into());
@@ -472,7 +476,12 @@ fn envrows_detect_prompt_asks_for_the_indexed_decisions_the_parser_accepts() {
     let prompt = project_environment_detect_prompt(&input).unwrap();
     let metadata: serde_json::Value =
         serde_json::from_str(prompt.split_once("Metadata:\n").unwrap().1).unwrap();
-    for (index, reference) in metadata["references"].as_array().unwrap().iter().enumerate() {
+    for (index, reference) in metadata["references"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .enumerate()
+    {
         assert_eq!(reference["reference_index"], index);
     }
     assert!(prompt.contains("ONLY reference_index"));
@@ -485,7 +494,10 @@ fn envrows_detect_prompt_asks_for_the_indexed_decisions_the_parser_accepts() {
     })
     .to_string();
     let manifest = parse_project_environment_discovery_decisions(&answer, &input).unwrap();
-    assert_eq!(manifest.entries[0].classification, ProjectEnvironmentClassification::NonSecret);
+    assert_eq!(
+        manifest.entries[0].classification,
+        ProjectEnvironmentClassification::NonSecret
+    );
 }
 
 #[test]

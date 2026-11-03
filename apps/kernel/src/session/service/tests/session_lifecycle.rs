@@ -2227,8 +2227,15 @@ fn standalone_project_remains_visible_and_survives_empty_project_recovery() {
     let mut encoded = serde_json::to_value(project).unwrap();
     encoded["standalone"] = serde_json::json!(true);
     service.restore_projects(vec![serde_json::from_value(encoded).unwrap()]);
-    assert_eq!(service.list_visible_projects("owner", false, |session| session.has_member("owner")).len(), 1);
-    assert!(service.list_visible_projects("other", true, |session| session.has_member("other")).is_empty());
+    assert_eq!(
+        service
+            .list_visible_projects("owner", false, |session| session.has_member("owner"))
+            .len(),
+        1
+    );
+    assert!(service
+        .list_visible_projects("other", true, |session| session.has_member("other"))
+        .is_empty());
     assert!(service
         .remove_projects_without_visible_sessions()
         .unwrap()
@@ -2267,7 +2274,12 @@ fn review0440_standalone_survives_last_session_delete_and_unpublished_rollback()
             None
         };
         assert!(removed.is_none());
-        assert_eq!(service.list_visible_projects("owner", false, |session| session.has_member("owner")).len(), 1);
+        assert_eq!(
+            service
+                .list_visible_projects("owner", false, |session| session.has_member("owner"))
+                .len(),
+            1
+        );
         assert!(service
             .sessions_in_project(project.id())
             .unwrap()
