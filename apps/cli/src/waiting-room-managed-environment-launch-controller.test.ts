@@ -13,10 +13,6 @@ import type {
   ManagedEnvironmentSummary,
 } from "@chariox/kernel-client/ipc-managed-environment-requests"
 import type {
-  ProjectEnvironmentSetupStartInput,
-} from "@chariox/kernel-client/project-environment-setup-orchestration"
-import type {
-  ProjectEnvironmentSetupStatus,
   RuntimeSession,
 } from "@chariox/kernel-client/kernel-types"
 import {
@@ -41,8 +37,7 @@ test("managed TUI launch creates Empty context and returns the target workspace"
   assert.equal(prepared.workspacePath, "/managed/empty/context-1")
   assert.equal(prepared.worktreePath, "/managed/empty/context-1")
   assert.deepEqual(prepared.projectSelection, { kind: "default" })
-  await prepared.prepareProject(session())
-  assert.deepEqual(harness.setupInputs, [])
+  prepared.verifyProjectBinding(session())
   await prepared.commit()
   assert.equal(harness.connectionCommits, 1)
   assert.equal(harness.connectionRollbacks, 0)
@@ -72,65 +67,21 @@ test("managed TUI launch starts and monitors direct source transfer", async () =
     kind: "existing",
     project_id: "project-1",
   })
-  await prepared.prepareProject(session({ project_id: "project-1" }))
-  assert.deepEqual(harness.setupInputs, [{
-    operationId: "managed-launch-project-setup:session-1",
-    projectId: "project-1",
-    sessionId: "session-1",
-    agentId: "agent-1",
-    targetWorkerId: "machine-managed",
-    targetPlatform: "linux-x86_64",
-  }])
+  prepared.verifyProjectBinding(session({ project_id: "project-1" }))
 })
 
-test("managed TUI launch keeps Project preparation pending until kernel setup is ready", async () => {
-  let releaseSetup = () => {}
-  const setupGate = new Promise<void>((resolve) => {
-    releaseSetup = resolve
-  })
+test("managed TUI launch refuses a session bound to another Project or workspace", async () => {
   const plan = sourcePlan()
   const harness = createHarness({
     createResults: [result(environment("ready", { contextPlan: plan }))],
     launchTarget: sourceLaunchTarget(),
-    setupGate,
   })
   const prepared = await harness.controller.prepare(newSelection(plan), harness.attempt)
   assert.equal(prepared.kind, "deployment")
-  let settled = false
-  const pending = prepared.prepareProject(session({ project_id: "project-1" })).then(() => {
-    settled = true
-  })
-
-  await Promise.resolve()
-  assert.equal(settled, false)
-  assert.equal(harness.connectionCommits, 0)
-
-  releaseSetup()
-  await pending
-  assert.equal(settled, true)
-})
-
-test("managed TUI launch rejects a superseded Project setup before committing the pivot", async () => {
-  let releaseSetup = () => {}
-  const setupGate = new Promise<void>((resolve) => {
-    releaseSetup = resolve
-  })
-  const plan = sourcePlan()
-  const harness = createHarness({
-    createResults: [result(environment("ready", { contextPlan: plan }))],
-    launchTarget: sourceLaunchTarget(),
-    setupGate,
-  })
-  const prepared = await harness.controller.prepare(newSelection(plan), harness.attempt)
-  assert.equal(prepared.kind, "deployment")
-  const pending = prepared.prepareProject(session({ project_id: "project-1" }))
-
-  await Promise.resolve()
+  assert.throws(() => prepared.verifyProjectBinding(session({ project_id: "project-2" })), /different Project binding/)
+  assert.throws(() => prepared.verifyProjectBinding(session({ workspace_id: "/elsewhere" })), /different workspace binding/)
   harness.cancel()
-  releaseSetup()
-
-  await assert.rejects(pending, /cancelled/)
-  assert.equal(harness.setupInputs.length, 1)
+  assert.throws(() => prepared.verifyProjectBinding(session({ project_id: "project-1" })), /cancelled/)
   assert.equal(harness.connectionCommits, 0)
   await prepared.rollback()
   assert.equal(harness.connectionRollbacks, 1)
@@ -150,7 +101,6 @@ test("MP-02/MP-08/MP-11 enrolled CLI launch does not reload transfer defaults", 
     const prepared = await harness.controller.prepare({ kind: "existing", environmentId: "environment-1" }, harness.attempt)
     assert.deepEqual(harness.launchTargetRequests, [])
     assert.equal(prepared.kind, "enrolled")
-    assert.deepEqual(harness.setupInputs, [])
     await prepared.commit()
     assert.equal(harness.connectionCommits, 1)
   }
@@ -205,7 +155,6 @@ test("MP-02/MP-08/MP-11 enrolled STOP/START connects and launches the explicitly
     if (prepared.kind !== "enrolled") throw new Error("expected enrolled launch")
     const ordinary = prepareWaitingRoomEnrolledLaunch({
       launch, prepared, assertActive: harness.attempt.assertActive,
-      prepareProjectEnvironment: async () => {},
     })
     assert.equal(ordinary.launch.ownerKernelRef, launch.ownerKernelRef)
     assert.equal(ordinary.launch.workerKernelRef, launch.workerKernelRef)
@@ -363,7 +312,6 @@ type HarnessOptions = {
   launchTarget?: ManagedContextLaunchTarget
   launchTargetResults?: Array<ManagedContextLaunchTarget | Error>
   connectResults?: Array<boolean | Error>
-  setupGate?: Promise<void>
   cancelOnDelay?: number
 }
 
@@ -389,7 +337,6 @@ function createHarness(options: HarnessOptions) {
   const transferStatuses = [...(options.transferStatuses ?? [])]
   const launchTargetResults = [...(options.launchTargetResults ?? [])]
   const connectResults = [...(options.connectResults ?? [])]
-  const setupInputs: ProjectEnvironmentSetupStartInput[] = []
   let connectAttempts = 0
   let connectionCommits = 0
   let connectionRollbacks = 0
@@ -460,13 +407,6 @@ function createHarness(options: HarnessOptions) {
       if (next instanceof Error) throw next
       return next ?? options.launchTarget ?? emptyLaunchTarget()
     },
-    ensureProjectSetup: async (input, setupAttempt) => {
-      setupInputs.push(input)
-      setupAttempt.assertActive()
-      await options.setupGate
-      setupAttempt.assertActive()
-      return setupStatus(input)
-    },
     createIdempotencyKey: () => `key-${++keySequence}`,
     environmentName: () => "Managed agent",
     delay: async (ms) => {
@@ -485,7 +425,6 @@ function createHarness(options: HarnessOptions) {
     transferStarts,
     transferStatusRequests,
     launchTargetRequests,
-    setupInputs,
     get connectAttempts() {
       return connectAttempts
     },
@@ -522,32 +461,6 @@ function session(overrides: Partial<RuntimeSession> = {}): RuntimeSession {
       updated_by_attachment_id: null,
     },
     ...overrides,
-  }
-}
-
-function setupStatus(input: ProjectEnvironmentSetupStartInput): ProjectEnvironmentSetupStatus {
-  return {
-    operation_id: input.operationId,
-    project_id: input.projectId,
-    session_id: input.sessionId,
-    agent_id: input.agentId,
-    worker_id: input.targetWorkerId,
-    platform: input.targetPlatform,
-    phase: "ready",
-    attempt: 1,
-    progress_percent: 100,
-    definition_digest: "sha256:definition",
-    validation: {
-      worker_id: input.targetWorkerId,
-      platform: input.targetPlatform,
-      commands: [],
-    },
-    message: "ready",
-    failure_code: null,
-    failure_message: null,
-    retryable: false,
-    created_at_ms: 1,
-    updated_at_ms: 2,
   }
 }
 

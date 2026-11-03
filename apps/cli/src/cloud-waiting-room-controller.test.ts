@@ -76,7 +76,7 @@ test("delayed automatic kernel A cannot replace a later fast user pivot B", asyn
       getInventory: async target => {
         if (target === a) { inventoryStarted = true; await delayed }
         return { kernelId: target === a ? "auto-a" : "user-b", machineId: "machine" } as import("./waiting-room-inventory-api.js").WaitingRoomInventory
-      }, invalidateInventory: () => {}, clearProjectSetup: () => {}, connected: id => { connected = true; admitted.push(id) },
+      }, invalidateInventory: () => {}, connected: id => { connected = true; admitted.push(id) },
     })
     const resultA = connection.connect("auto-a", "machine")
     while (!inventoryStarted) await new Promise(resolve => setImmediate(resolve))

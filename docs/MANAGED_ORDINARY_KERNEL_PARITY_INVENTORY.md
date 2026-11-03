@@ -198,7 +198,7 @@ locked plan ledger exactly:
 | `MP-05` | Empty workspace, copied repository, preserved basename, collision rejection, and worktree placement. |
 | `MP-06` | Default/custom server-authoritative repository root, inheritance, and client-override rejection. |
 | `MP-07` | Signed immutable managed release, atomic activation, rollback, and reviewed source identity. |
-| `MP-08` | Provider, session, terminal, file, Git, attachment, permission, Project setup, reconnect, restart, history, queued/active turn, resource, error, protocol, and cleanup parity. |
+| `MP-08` | Provider, session, terminal, file, Git, attachment, permission, reconnect, restart, history, queued/active turn, resource, error, protocol, and cleanup parity. |
 | `MP-09` | Every mandatory managed automatic-shutdown policy and reconciliation trigger. |
 | `MP-10` | Reviewed source/protocol identity, fresh worker, and authorized capture boundary. |
 

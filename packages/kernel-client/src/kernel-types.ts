@@ -1,6 +1,6 @@
 import type { TurnOutcome } from "./kernel-types-runtime.js"
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 966
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 972
 
 export type * from "./kernel-types-apps.js"
 
@@ -18,7 +18,6 @@ export type * from "./kernel-types-environment.js"
 export type * from "./kernel-types-project-environment.js"
 
 export type * from "./kernel-types-workflow-notifications.js"
-export type * from "./kernel-types-project-environment-aggregate.js"
 export type * from "./kernel-types-workflow-notifications.js"
 export type * from "./kernel-types-kernel-browser.js"
 export type * from "./kernel-types-room-terminal.js"

@@ -9,11 +9,6 @@ import { CAPTURE_PROVENANCE_SCHEMA } from "./lib/managed-ordinary-provider-turn-
 
 export { CAPTURE_PROVENANCE_SCHEMA }
 
-import {
-  validateProjectSetupProof,
-  validateProjectSetupProofCaptureBinding,
-} from "./lib/managed-ordinary-project-setup-observer.mjs"
-
 const execFileAsync = promisify(execFile)
 
 export const MATRIX_SCHEMA = "chariox.managed-ordinary-parity-matrix/v4"
@@ -99,7 +94,6 @@ export const ROW_DEFINITIONS = Object.freeze([
       "session_agent_launch",
       "terminal_file_git",
       "attachments_permissions_capabilities",
-      "project_setup",
       "reconnect_orphan_recovery",
       "restart_recovery",
       "reconnect_history_result_identity",
@@ -794,34 +788,6 @@ function validateCheckResult(result, manifest, topology, rowId, checkId, failure
     }
     return
   }
-  if (rowId === "MP-08" && checkId === "project_setup") {
-    if (!checkResultIsObject(result) || !sameKeys(result, ["observed", "project_setup_ok", "project_setup_proof"])) {
-      addFailure(failures, "check_result_shape_invalid", topology, rowId, checkId)
-      return
-    }
-    if (result.observed !== true || result.project_setup_ok !== true) {
-      addFailure(failures, "check_result_semantics_invalid", topology, rowId, checkId, "project_setup_ok")
-    }
-    const proofValidation = validateProjectSetupProof(result.project_setup_proof)
-    if (!proofValidation.ok) {
-      addFailure(failures, "project_setup_proof_invalid", topology, rowId, checkId, proofValidation.code)
-    }
-    const captureBinding = validateProjectSetupProofCaptureBinding(
-      result.project_setup_proof,
-      manifest?.collection?.capture_provenance,
-    )
-    if (!captureBinding.ok) {
-      addFailure(
-        failures,
-        "project_setup_capture_identity_mismatch",
-        topology,
-        rowId,
-        checkId,
-        captureBinding.field ?? captureBinding.code,
-      )
-    }
-    return
-  }
   if (rowId === "MP-10" && checkId === "capture_boundary") {
     if (!checkResultIsObject(result) || !sameKeys(result, CAPTURE_BOUNDARY_RESULT_KEYS)) {
       addFailure(failures, "check_result_shape_invalid", topology, rowId, checkId)
@@ -1041,40 +1007,7 @@ function compareIdentity(ordinary, path1, failures) {
   }
 }
 
-function projectSetupParitySemantics(result) {
-  const proof = result.project_setup_proof
-  const validationReceipts = Array.isArray(proof.validation_receipts)
-    ? proof.validation_receipts.map((receipt) => (isPlainObject(receipt)
-      ? { command_digest: receipt.command_digest, exit_code: receipt.exit_code }
-      : receipt))
-    : null
-  return {
-    observed: result.observed,
-    project_setup_ok: result.project_setup_ok,
-    ready_validation_verified: proof.ready_validation_verified,
-    status_fresh: proof.status_fresh,
-    before_after_identity_stable: proof.before_after_identity_stable,
-    definition_identity_verified: proof.definition_identity_verified,
-    platform: proof.platform,
-    definition_digest: proof.definition_digest,
-    definition_origin: proof.definition_origin,
-    definition_source: proof.definition_source,
-    validation_command_count: proof.validation_command_count,
-    validation_receipts: validationReceipts,
-  }
-}
-
 function equivalentCheckResults(rowId, checkId, left, right) {
-  if (rowId === "MP-08" && checkId === "project_setup") {
-    if (!isPlainObject(left?.project_setup_proof) || !isPlainObject(right?.project_setup_proof)) {
-      return canonicalJson(left) === canonicalJson(right)
-    }
-    // Identity hashes, operation IDs/attempts, capture times, transport
-    // endpoints, before/after snapshots, and raw output byte counts describe
-    // each independent observation. The validators bind those per-capture
-    // values; parity compares only the shared definition and validation contract.
-    return canonicalJson(projectSetupParitySemantics(left)) === canonicalJson(projectSetupParitySemantics(right))
-  }
   if (rowId === "MP-10" && checkId === "capture_boundary") {
     if (!isPlainObject(left) || !isPlainObject(right)) return canonicalJson(left) === canonicalJson(right)
     const { provenance_sha256: _leftFingerprint, ...leftEvidence } = left

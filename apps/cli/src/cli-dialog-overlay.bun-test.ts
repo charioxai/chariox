@@ -5,18 +5,23 @@ import { BoxRenderable } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
 
 import { renderCliDialogOverlay } from "./cli-dialog-overlay.js"
-import { createProjectEnvironmentReadController, projectEnvironmentPageSize, projectEnvironmentTextWidth } from "./project-environment-read-controller.js"
+import { dialogPageSize, dialogTextWidth } from "./cli-dialog-panel-size.js"
+import { createProjectEnvironmentController } from "./project-environment-controller.js"
+import type { EnvironmentDialogView } from "./project-environment-projection.js"
 import { sessionBrowserFixture } from "./session-browser-card.test-fixture.js"
 
+const environmentRow = (text: string, focused = false) => ({ text, tone: "text" as const, focused, bold: false })
+
 for (const [width, height, count] of [[80, 24, 16], [140, 48, 35], [140, 100, 76]] as const) {
-  test(`MP-08/MP-10: Environment keeps every page row visible at ${width}x${height}`, async () => {
-    assert.equal(projectEnvironmentPageSize(height), count)
+  test(`Environment keeps every page row visible at ${width}x${height}`, async () => {
+    assert.equal(dialogPageSize(height), count)
     const harness = await createTestRenderer({ width, height, useThread: false })
     const overlayBox = new BoxRenderable(harness.renderer, { position: "absolute", left: 0, top: 0, width, height })
     harness.renderer.root.add(overlayBox)
-    const lines = Array.from({ length: count }, (_, index) => `ROW_${String(index + 1).padStart(3, "0")} · Not checked`)
+    const lines = Array.from({ length: count }, (_, index) => `ROW_${String(index + 1).padStart(3, "0")} · Present`)
+    const environmentView: EnvironmentDialogView = { hint: "Esc close", rows: lines.map((line, index) => environmentRow(line, index === 0)), message: null }
     try {
-      renderCliDialogOverlay({ overlayBox, renderer: harness.renderer, dimensions: { width, height }, mode: "environment", onDismiss() {}, sessions: [], normalizeSessionBrowserIndex: () => 0, terminalPairing: null, terminalPairingQrLines: [], hotkeySections: [], environmentLines: lines })
+      renderCliDialogOverlay({ overlayBox, renderer: harness.renderer, dimensions: { width, height }, mode: "environment", onDismiss() {}, sessions: [], normalizeSessionBrowserIndex: () => 0, terminalPairing: null, terminalPairingQrLines: [], hotkeySections: [], environmentView })
       await harness.renderOnce()
       const frame = harness.captureCharFrame()
       for (const line of lines) assert(frame.includes(line), `page clipped ${line}`)
@@ -24,18 +29,42 @@ for (const [width, height, count] of [[80, 24, 16], [140, 48, 35], [140, 100, 76
   })
 }
 
+test("Environment shows the failure message under the rows", async () => {
+  const [width, height] = [80, 24]
+  const harness = await createTestRenderer({ width, height, useThread: false })
+  const overlayBox = new BoxRenderable(harness.renderer, { position: "absolute", left: 0, top: 0, width, height })
+  harness.renderer.root.add(overlayBox)
+  const environmentView: EnvironmentDialogView = { hint: "Esc close", rows: [environmentRow("Kernel · Setup not run")], message: "Vault is locked" }
+  try {
+    renderCliDialogOverlay({ overlayBox, renderer: harness.renderer, dimensions: { width, height }, mode: "environment", onDismiss() {}, sessions: [], normalizeSessionBrowserIndex: () => 0, terminalPairing: null, terminalPairingQrLines: [], hotkeySections: [], environmentView })
+    await harness.renderOnce()
+    const frame = harness.captureCharFrame()
+    assert(frame.includes("Environment"), frame)
+    assert(frame.includes("Kernel · Setup not run"), frame)
+    assert(frame.includes("Vault is locked"), frame)
+  } finally { harness.renderer.destroy() }
+})
+
 for (const [width, height] of [[80, 24], [60, 24], [40, 24]] as const) {
-  test(`MP-08/MP-10/MP-11: Environment explanation is fully visible at ${width}x${height}`, async () => {
+  test(`Environment dialog from the controller fits at ${width}x${height}`, async () => {
     const harness = await createTestRenderer({ width, height, useThread: false })
     const overlayBox = new BoxRenderable(harness.renderer, { position: "absolute", left: 0, top: 0, width, height })
     harness.renderer.root.add(overlayBox)
-    const controller = createProjectEnvironmentReadController({ send: async () => { throw new Error("not available") }, render() {}, pageSize: () => projectEnvironmentPageSize(height), textWidth: () => projectEnvironmentTextWidth(width) })
+    const controller = createProjectEnvironmentController({
+      send: async () => ({ ProjectEnvironment: { environment: {
+        projectId: "project-1", exists: true, revision: 1, setup: { script: "make setup" }, variables: "A=1",
+        secrets: [{ name: "API_KEY", presence: "missing" }], files: [{ path: ".env", presence: "present", sizeBytes: 12 }],
+        changedAtMs: 1, machineLabel: "Kernel", checkoutPath: "/p", setupState: { state: "notRun" },
+      } } }),
+      render() {}, schedule: () => undefined, newOperationId: () => "op", now: () => 0,
+      pageSize: () => dialogPageSize(height), textWidth: () => dialogTextWidth(width),
+    })
     try {
-      await controller.open("project")
-      renderCliDialogOverlay({ overlayBox, renderer: harness.renderer, dimensions: { width, height }, mode: "environment", onDismiss() {}, sessions: [], normalizeSessionBrowserIndex: () => 0, terminalPairing: null, terminalPairingQrLines: [], hotkeySections: [], environmentLines: controller.visibleLines() })
+      await controller.open("project-1")
+      renderCliDialogOverlay({ overlayBox, renderer: harness.renderer, dimensions: { width, height }, mode: "environment", onDismiss() {}, sessions: [], normalizeSessionBrowserIndex: () => 0, terminalPairing: null, terminalPairingQrLines: [], hotkeySections: [], environmentView: controller.view() })
       await harness.renderOnce()
-      const frame = harness.captureCharFrame().split("\n").map(row => row.trim()).join(" ").replace(/\s+/g, " ")
-      for (const phrase of ["cannot check or change", "them here.", "After the next release"]) assert(frame.includes(phrase), `clipped ${phrase}: ${frame}`)
+      const frame = harness.captureCharFrame()
+      for (const phrase of ["Environment", "Setup not run", "make setup", "API_KEY", "Missing here", "Files outside Git"]) assert(frame.includes(phrase), `clipped ${phrase}\n${frame}`)
     } finally { harness.renderer.destroy() }
   })
 }

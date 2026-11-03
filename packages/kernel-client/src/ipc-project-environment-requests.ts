@@ -1,0 +1,217 @@
+import type {
+  EnvironmentOperationView,
+  ProjectEnvironmentView,
+  SetupState,
+} from "./kernel-types-project-environment.js"
+
+// Protocol 972 introduced the v2 Environment requests; older kernels answer an unknown-variant error.
+export const projectEnvironmentMinimumProtocolVersion = 972
+
+export type SaveProjectEnvironmentInput = {
+  readonly projectId: string
+  readonly expectedRevision: number
+  readonly script: string
+  readonly variables: string
+  readonly secretNames: readonly string[]
+  readonly filePaths: readonly string[]
+}
+
+export function getProjectEnvironmentRequest(projectId: string, checkoutPath?: string) {
+  return { GetProjectEnvironment: { projectId, ...(checkoutPath ? { checkoutPath } : {}) } } as const
+}
+
+export function saveProjectEnvironmentRequest(input: SaveProjectEnvironmentInput) {
+  return {
+    SaveProjectEnvironment: {
+      projectId: input.projectId,
+      expectedRevision: input.expectedRevision,
+      setup: { script: input.script },
+      variables: input.variables,
+      secrets: input.secretNames.map((name) => ({ name })),
+      files: input.filePaths.map((path) => ({ path })),
+    },
+  } as const
+}
+
+export function setProjectEnvironmentSecretRequest(projectId: string, name: string, value: string) {
+  return { SetProjectEnvironmentSecret: { projectId, name, value } } as const
+}
+
+export function runProjectEnvironmentSetupRequest(projectId: string, operationId: string, checkoutPath?: string) {
+  return { RunProjectEnvironmentSetup: { projectId, operationId, ...(checkoutPath ? { checkoutPath } : {}) } } as const
+}
+
+export function getEnvironmentOperationRequest(operationId: string) {
+  return { GetEnvironmentOperation: { operationId } } as const
+}
+
+export function cancelEnvironmentOperationRequest(operationId: string) {
+  return { CancelEnvironmentOperation: { operationId } } as const
+}
+
+export type ProjectEnvironmentSaveOutcome =
+  | { readonly kind: "saved"; readonly environment: ProjectEnvironmentView }
+  | { readonly kind: "conflict"; readonly environment: ProjectEnvironmentView }
+
+type Json = Record<string, unknown>
+
+function isRecord(value: unknown): value is Json {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+}
+
+function field(source: Json, key: string, what: string): unknown {
+  if (!Object.hasOwn(source, key)) throw new Error(`${what} is missing "${key}"`)
+  return source[key]
+}
+
+function text(source: Json, key: string, what: string): string {
+  const value = field(source, key, what)
+  if (typeof value !== "string") throw new Error(`${what} "${key}" must be text`)
+  return value
+}
+
+function count(source: Json, key: string, what: string): number {
+  const value = field(source, key, what)
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`${what} "${key}" must be a non-negative integer`)
+  }
+  return value
+}
+
+function nullableText(source: Json, key: string, what: string): string | null {
+  const value = field(source, key, what)
+  if (value !== null && typeof value !== "string") throw new Error(`${what} "${key}" must be text or null`)
+  return value
+}
+
+function nullableCount(source: Json, key: string, what: string): number | null {
+  const value = field(source, key, what)
+  if (value === null) return null
+  return count(source, key, what)
+}
+
+function oneOf<T extends string>(source: Json, key: string, allowed: readonly T[], what: string): T {
+  const value = text(source, key, what)
+  if (!(allowed as readonly string[]).includes(value)) throw new Error(`${what} "${key}" is not one of ${allowed.join(", ")}`)
+  return value as T
+}
+
+function list(source: Json, key: string, what: string): Json[] {
+  const value = field(source, key, what)
+  if (!Array.isArray(value) || !value.every(isRecord)) throw new Error(`${what} "${key}" must be a list of objects`)
+  return value
+}
+
+function object(source: Json, key: string, what: string): Json {
+  const value = field(source, key, what)
+  if (!isRecord(value)) throw new Error(`${what} "${key}" must be an object`)
+  return value
+}
+
+function parseSetupState(value: Json): SetupState {
+  const what = "Environment setup state"
+  switch (oneOf(value, "state", ["notRun", "ok", "failed", "cancelled", "running"], what)) {
+    case "notRun": return { state: "notRun" }
+    case "ok": return { state: "ok", endedAtMs: count(value, "endedAtMs", what) }
+    case "cancelled": return { state: "cancelled", endedAtMs: count(value, "endedAtMs", what) }
+    case "failed": return {
+      state: "failed",
+      endedAtMs: count(value, "endedAtMs", what),
+      exitCode: nullableInteger(value, "exitCode", what),
+      reason: nullableText(value, "reason", what),
+    }
+    case "running": return {
+      state: "running",
+      operationId: text(value, "operationId", what),
+      startedAtMs: count(value, "startedAtMs", what),
+    }
+  }
+}
+
+function nullableInteger(source: Json, key: string, what: string): number | null {
+  const value = field(source, key, what)
+  if (value === null) return null
+  if (typeof value !== "number" || !Number.isSafeInteger(value)) throw new Error(`${what} "${key}" must be an integer or null`)
+  return value
+}
+
+export function parseProjectEnvironmentView(value: unknown): ProjectEnvironmentView {
+  const what = "Project Environment"
+  if (!isRecord(value)) throw new Error(`${what} must be an object`)
+  const exists = field(value, "exists", what)
+  if (typeof exists !== "boolean") throw new Error(`${what} "exists" must be true or false`)
+  return {
+    projectId: text(value, "projectId", what),
+    exists,
+    revision: count(value, "revision", what),
+    setup: { script: text(object(value, "setup", what), "script", what) },
+    variables: text(value, "variables", what),
+    secrets: list(value, "secrets", what).map((row) => ({
+      name: text(row, "name", "Environment secret"),
+      presence: oneOf(row, "presence", ["present", "missing", "locked"], "Environment secret"),
+    })),
+    files: list(value, "files", what).map((row) => ({
+      path: text(row, "path", "Environment file"),
+      presence: oneOf(row, "presence", ["present", "missing"], "Environment file"),
+      sizeBytes: nullableCount(row, "sizeBytes", "Environment file"),
+    })),
+    changedAtMs: count(value, "changedAtMs", what),
+    machineLabel: text(value, "machineLabel", what),
+    checkoutPath: text(value, "checkoutPath", what),
+    setupState: parseSetupState(object(value, "setupState", what)),
+  }
+}
+
+export function parseEnvironmentOperationView(value: unknown): EnvironmentOperationView {
+  const what = "Environment operation"
+  if (!isRecord(value)) throw new Error(`${what} must be an object`)
+  return {
+    operationId: text(value, "operationId", what),
+    projectId: text(value, "projectId", what),
+    checkoutPath: text(value, "checkoutPath", what),
+    kind: oneOf(value, "kind", ["setup"], what),
+    state: oneOf(value, "state", ["running", "succeeded", "failed", "cancelled"], what),
+    startedAtMs: count(value, "startedAtMs", what),
+    endedAtMs: nullableCount(value, "endedAtMs", what),
+    exitCode: nullableInteger(value, "exitCode", what),
+    reason: nullableText(value, "reason", what),
+    outputTail: text(value, "outputTail", what),
+  }
+}
+
+function variant(response: unknown, name: string, inner: string): unknown | undefined {
+  if (!isRecord(response) || !Object.hasOwn(response, name)) return undefined
+  const body = response[name]
+  if (!isRecord(body)) throw new Error(`${name} response must be an object`)
+  return field(body, inner, `${name} response`)
+}
+
+/** Answer of GetProjectEnvironment. */
+export function projectEnvironmentFromResponse(response: unknown): ProjectEnvironmentView {
+  const environment = variant(response, "ProjectEnvironment", "environment")
+  if (environment === undefined) throw new Error("The kernel did not answer with a Project Environment")
+  return parseProjectEnvironmentView(environment)
+}
+
+/** Answer of SaveProjectEnvironment: saved, or the current record after a stale expectedRevision. */
+export function projectEnvironmentSaveOutcomeFromResponse(response: unknown): ProjectEnvironmentSaveOutcome {
+  const saved = variant(response, "ProjectEnvironmentSaved", "environment")
+  if (saved !== undefined) return { kind: "saved", environment: parseProjectEnvironmentView(saved) }
+  const conflict = variant(response, "ProjectEnvironmentConflict", "environment")
+  if (conflict !== undefined) return { kind: "conflict", environment: parseProjectEnvironmentView(conflict) }
+  throw new Error("The kernel did not answer the Environment save")
+}
+
+/** Answer of SetProjectEnvironmentSecret: the record with the refreshed presence. */
+export function projectEnvironmentSavedFromResponse(response: unknown): ProjectEnvironmentView {
+  const saved = variant(response, "ProjectEnvironmentSaved", "environment")
+  if (saved === undefined) throw new Error("The kernel did not confirm the secret")
+  return parseProjectEnvironmentView(saved)
+}
+
+/** Answer of Run, Get and Cancel. */
+export function environmentOperationFromResponse(response: unknown): EnvironmentOperationView {
+  const operation = variant(response, "EnvironmentOperation", "operation")
+  if (operation === undefined) throw new Error("The kernel did not answer with an Environment operation")
+  return parseEnvironmentOperationView(operation)
+}

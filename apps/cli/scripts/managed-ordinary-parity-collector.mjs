@@ -20,10 +20,6 @@ import {
   createSignedManifest,
   validateManifest,
 } from "./managed-ordinary-parity-matrix.mjs"
-import {
-  validateProjectSetupProof,
-  validateProjectSetupProofCaptureBinding,
-} from "./lib/managed-ordinary-project-setup-observer.mjs"
 
 export const DEFAULT_TIMEOUT_MS = 45_000
 export const OFFICIAL_PROVIDERS = Object.freeze(["claude", "codex", "opencode"])
@@ -252,24 +248,6 @@ function normalizeGenericResult(result, rowId, checkId) {
     normalized.child_enumeration_denied = result.child_enumeration_denied === true
   }
   return normalized
-}
-
-function normalizeProjectSetupResult(result) {
-  requireObserved(result, "MP-08", "project_setup")
-  expectedBoolean(result, "project_setup_ok", "MP-08", "project_setup", true)
-  const validation = validateProjectSetupProof(result.project_setup_proof)
-  if (!validation.ok) {
-    throw new CollectorError(
-      "project_setup_proof_invalid",
-      `MP-08/project_setup did not provide production observer proof (${validation.code})`,
-      { rowId: "MP-08", checkId: "project_setup" },
-    )
-  }
-  return {
-    observed: true,
-    project_setup_ok: true,
-    project_setup_proof: result.project_setup_proof,
-  }
 }
 
 function normalizeProviderAncestry(result) {
@@ -918,8 +896,6 @@ export function createParityCollector({
           checks[checkId] = await runProbe(ctx, definition.id, checkId, normalizeProviderAncestry)
         } else if (definition.id === "MP-01" && checkId === "managed_isolation_environment") {
           checks[checkId] = await runProbe(ctx, definition.id, checkId, normalizeManagedIsolation)
-        } else if (definition.id === "MP-08" && checkId === "project_setup") {
-          checks[checkId] = await runProbe(ctx, definition.id, checkId, normalizeProjectSetupResult)
         } else {
           checks[checkId] = await runProbe(ctx, definition.id, checkId, (result) => normalizeGenericResult(result, definition.id, checkId))
         }
@@ -947,15 +923,6 @@ export function createParityCollector({
     }
     if (!sameProviderTurnProof(captureBoundary.result.capture_provenance, providerTurnProof)) {
       throw new CollectorError("capture_provenance_mismatch", "probe and collector did not observe the same kernel-owned provider turn")
-    }
-    const projectSetupProof = rows["MP-08"]?.checks?.project_setup?.result?.project_setup_proof
-    const projectSetupCaptureBinding = validateProjectSetupProofCaptureBinding(projectSetupProof, providerTurnProof)
-    if (!projectSetupCaptureBinding.ok) {
-      throw new CollectorError(
-        "project_setup_capture_identity_mismatch",
-        `MP-08/project_setup proof does not match this provider-turn capture (${projectSetupCaptureBinding.field ?? projectSetupCaptureBinding.code})`,
-        { rowId: "MP-08", checkId: "project_setup" },
-      )
     }
     captureBoundary.result = {
       observed: true,

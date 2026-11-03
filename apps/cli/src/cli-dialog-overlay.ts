@@ -7,7 +7,8 @@ import {
 
 import type { HotkeySection } from "./hotkey-help.js"
 import { HOTKEY_TOGGLE_LABEL } from "./hotkeys.js"
-import { projectEnvironmentPanelWidth } from "./project-environment-read-controller.js"
+import { dialogPanelWidth } from "./cli-dialog-panel-size.js"
+import type { EnvironmentDialogRow, EnvironmentDialogView } from "./project-environment-projection.js"
 import {
   formatPairingExpiry,
   formatTerminalTypeLabel,
@@ -39,7 +40,7 @@ type CliDialogOverlayOptions = {
   hotkeySections: HotkeySection[]
   processConfirmation?: boolean
   processLines?: string[]
-  environmentLines?: string[]
+  environmentView?: EnvironmentDialogView
   managedMachineRows?: WaitingRoomRow[]
 }
 
@@ -70,15 +71,12 @@ export function renderCliDialogOverlay(options: CliDialogOverlayOptions): void {
   scrim.onMouseUp = options.onDismiss
 
   if (options.mode === "processes") {
-    const panel = dialogPanel(renderer, projectEnvironmentPanelWidth(dimensions.width), dimensions.width)
+    const panel = dialogPanel(renderer, dialogPanelWidth(dimensions.width), dimensions.width)
     if (!options.processConfirmation) panel.add(dialogHeader(renderer, "Processes", "↑/↓ scroll • Esc close"))
     panel.add(new TextRenderable(renderer, { content: (options.processLines ?? []).join("\n"), fg: theme.text, wrapMode: "none" }))
     scrim.add(panel)
   } else if (options.mode === "environment") {
-    const panel = dialogPanel(renderer, projectEnvironmentPanelWidth(dimensions.width), dimensions.width)
-    panel.add(dialogHeader(renderer, "Environment · Read-only", "↑/↓ scroll • Esc close"))
-    panel.add(new TextRenderable(renderer, { content: (options.environmentLines ?? []).join("\n"), fg: theme.text, wrapMode: "none" }))
-    scrim.add(panel)
+    scrim.add(renderEnvironmentPanel(options))
   } else if (options.mode === "managed-machine") {
     scrim.add(renderManagedMachinePanel(options))
   } else if (options.mode === "session-browser") {
@@ -90,6 +88,38 @@ export function renderCliDialogOverlay(options: CliDialogOverlayOptions): void {
   }
   overlayBox.add(scrim)
   overlayBox.requestRender()
+}
+
+function environmentRowColor(row: EnvironmentDialogRow) {
+  if (row.focused) return theme.primary
+  switch (row.tone) {
+    case "muted": return theme.textMuted
+    case "warning": return theme.warning
+    case "error": return theme.error
+    case "text": return theme.text
+  }
+}
+
+function renderEnvironmentPanel(options: CliDialogOverlayOptions): BoxRenderable {
+  const { renderer, dimensions } = options
+  const view = options.environmentView ?? { hint: "Esc close", rows: [], message: null }
+  const panel = dialogPanel(renderer, dialogPanelWidth(dimensions.width), dimensions.width)
+  panel.add(dialogHeader(renderer, "Environment", view.hint))
+  // Rows sit directly under each other; the panel gap would double-space them.
+  const list = new BoxRenderable(renderer, { flexDirection: "column" })
+  for (const row of view.rows) {
+    list.add(new TextRenderable(renderer, {
+      content: row.text,
+      fg: environmentRowColor(row),
+      attributes: row.focused || row.bold ? TextAttributes.BOLD : TextAttributes.NONE,
+      wrapMode: "none",
+    }))
+  }
+  panel.add(list)
+  if (view.message) {
+    panel.add(new TextRenderable(renderer, { content: view.message, fg: theme.error, wrapMode: "none" }))
+  }
+  return panel
 }
 
 function renderManagedMachinePanel(options: CliDialogOverlayOptions): BoxRenderable {
@@ -312,11 +342,13 @@ function dialogHeader(
     flexDirection: "row",
     justifyContent: "space-between",
   })
-  header.add(new TextRenderable(renderer, {
+  const titleBox = new BoxRenderable(renderer, { flexShrink: 0 })
+  titleBox.add(new TextRenderable(renderer, {
     content: title,
     attributes: TextAttributes.BOLD,
     fg: theme.text,
   }))
+  header.add(titleBox)
   header.add(new TextRenderable(renderer, {
     content: hint,
     fg: theme.textMuted,

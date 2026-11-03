@@ -1,8 +1,5 @@
 import { OWNER_MANAGED_CONTEXT_MINIMUM_PROTOCOL_VERSION } from "@chariox/kernel-client/ipc-managed-context-requests"
-import { isProjectEnvironmentRequest, projectEnvironmentMinimumProtocolVersion } from "@chariox/kernel-client"
 import * as requests from "@chariox/kernel-client/ipc-requests"
-import { projectEnvironmentReviewMinimumProtocolVersion } from "@chariox/kernel-client/project-environment-review"
-import { projectEnvironmentAdjustmentMinimumProtocolVersion } from "@chariox/kernel-client/project-environment-panel"
 import { KernelProtocolMinimumError } from "./protocol-minimum-diagnostic.js"
 
 type FeatureMinimum = { feature: string; minimum: number }
@@ -25,7 +22,7 @@ const features: Record<string, FeatureMinimum> = {
   CoverKernelAccessProcess: { feature: "Covering a background process", minimum: 641 },
   ControlRoomWorkflowRuns: { feature: "Room workflow run controls", minimum: 491 },
   SteerActivePrompt: { feature: "Active prompt steering", minimum: requests.activePromptSteeringMinimumProtocolVersion },
-  GetProjectEnvironment: { feature: "Project Environment", minimum: requests.projectEnvironmentMinimumProtocolVersion },
+  ...Object.fromEntries(["GetProjectEnvironment", "SaveProjectEnvironment", "SetProjectEnvironmentSecret", "RunProjectEnvironmentSetup", "GetEnvironmentOperation", "CancelEnvironmentOperation"].map(name => [name, { feature: "Project Environment", minimum: requests.projectEnvironmentMinimumProtocolVersion }])),
   ...Object.fromEntries(["OpenUserAppView", "ListUserAppViews", "CloseUserAppView", "GetUserAppViewFrontend", "CallUserAppView", "SubscribeUserAppViews", "AnswerUserDomainInteraction"].map(name => [name, { feature: "User-domain App views", minimum: requests.userAppViewsMinimumProtocolVersion }])),
   CaptureVisibleRegion: { feature: "Visible region capture", minimum: requests.visibleRegionCaptureMinimumProtocolVersion },
   KernelBrowser: { feature: "Kernel browser", minimum: requests.kernelBrowserMinimumProtocolVersion },
@@ -49,7 +46,6 @@ const features: Record<string, FeatureMinimum> = {
   StopRoomEnvironment: { feature: "Room environment lifecycle", minimum: requests.roomEnvironmentLifecycleMinimumProtocolVersion },
   RetryRoomEnvironment: { feature: "Room environment lifecycle", minimum: requests.roomEnvironmentLifecycleMinimumProtocolVersion },
   GetManagedEnvironmentReimagePreflight: { feature: "Managed environment reimage preflight", minimum: requests.managedEnvironmentReimagePreflightMinimumProtocolVersion },
-  AdjustProjectEnvironment: { feature: "Project environment adjustment", minimum: projectEnvironmentAdjustmentMinimumProtocolVersion },
   ListEventConnectionEvents: { feature: "Integration received events", minimum: requests.integrationReceivedEventsMinimumProtocolVersion },
   ReplayEventConnectionEvent: { feature: "Integration received events", minimum: requests.integrationReceivedEventsMinimumProtocolVersion },
   GetKernelResourceTelemetry: { feature: "Kernel resource telemetry", minimum: requests.kernelResourceTelemetryMinimumProtocolVersion },
@@ -59,7 +55,6 @@ const features: Record<string, FeatureMinimum> = {
 export function kernelFeatureMinimum(request: unknown): FeatureMinimum | undefined {
   const envelope = record(request)
   if (!envelope || Object.keys(envelope).length !== 1) return
-  if (isProjectEnvironmentRequest(request)) return { feature: "Project Environment", minimum: projectEnvironmentMinimumProtocolVersion }
   const name = Object.keys(envelope)[0]!
   const payload = record(envelope[name])
   let feature = Object.hasOwn(features, name) ? features[name] : undefined
@@ -93,7 +88,7 @@ export function kernelFeatureMinimum(request: unknown): FeatureMinimum | undefin
   } else if (name === "StartManagedContextTransfer" && payload?.ownerManaged != null) {
     feature = { feature: "Owner context copy", minimum: OWNER_MANAGED_CONTEXT_MINIMUM_PROTOCOL_VERSION }
   } else if ((name === "StartSlice" || name === "StartManagedContextTransfer") && payload?.interactive === true) {
-    feature = { feature: "Project export review", minimum: projectEnvironmentReviewMinimumProtocolVersion }
+    feature = { feature: "Project export review", minimum: 371 }
   } else if (name === "RespondToInteraction" && payload?.session_id === "kernel-access") {
     feature = { feature: "Local-kernel access", minimum: payload?.choice_id === "refuse" ? 451 : 470 }
   } else if (name === "RequestNativeProviderTurnInteraction" && payload?.origin != null) {

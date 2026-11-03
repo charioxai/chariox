@@ -1,7 +1,9 @@
 import { createSessionProcessController } from "./session-process-controller.js"
-import { createProjectEnvironmentReadController, projectEnvironmentPageSize, projectEnvironmentTextWidth } from "./project-environment-read-controller.js"
+import { dialogPageSize, dialogTextWidth } from "./cli-dialog-panel-size.js"
+import { createProjectEnvironmentController } from "./project-environment-controller.js"
+import { randomUUID } from "node:crypto"
 import { MouseButton } from "@opentui/core"
-import { createEffect, on } from "solid-js"
+import { createEffect, on, onCleanup } from "solid-js"
 
 import { createCliDialogOverlayController } from "./cli-dialog-overlay-controller.js"
 import {
@@ -101,14 +103,22 @@ export function createCliOverlayInteractionComposition(deps: CliOverlayInteracti
       ? deps.sessionState().agents?.find((agent: {id: string}) => agent.id === row.owner.id)?.alias ?? row.owner.id
       : row.owner.id,
     render: () => dialogOverlayController.render(), schedule: deps.scheduleTimer,
-    pageSize: () => projectEnvironmentPageSize(deps.dimensions().height),
+    pageSize: () => dialogPageSize(deps.dimensions().height),
   })
-  const environmentController = createProjectEnvironmentReadController({
+  const environmentController = createProjectEnvironmentController({
     send: request => deps.client.send(request),
-    pageSize: () => projectEnvironmentPageSize(deps.dimensions().height),
-    textWidth: () => projectEnvironmentTextWidth(deps.dimensions().width),
+    pageSize: () => dialogPageSize(deps.dimensions().height),
+    textWidth: () => dialogTextWidth(deps.dimensions().width),
     render: () => dialogOverlayController.render(),
+    schedule: deps.scheduleTimer,
+    newOperationId: randomUUID,
+    now: Date.now,
   })
+  const handleEnvironmentPaste = (event: { text: string; preventDefault(): void }) => {
+    if (environmentController.handlePaste(event.text)) event.preventDefault()
+  }
+  deps.renderer.keyInput.on("paste", handleEnvironmentPaste)
+  onCleanup(() => deps.renderer.keyInput.off("paste", handleEnvironmentPaste))
   const dialogOverlayController = createCliDialogOverlayController<any, any>({
     getOpenState: () => ({
       processesOpen: processController.isOpen(),
@@ -119,7 +129,7 @@ export function createCliOverlayInteractionComposition(deps: CliOverlayInteracti
       managedMachineOpen: deps.managedMachineDialogOpen(),
     }),
     closeProcesses: processController.close,
-    closeEnvironment: environmentController.close,
+    closeEnvironment: environmentController.dismiss,
     getCurrentFocus: deps.currentFocusedRenderable,
     getPromptFocus: () => deps.promptInputRefController.current() as any,
     describeFocus: deps.describeRenderableDebug,
@@ -152,7 +162,7 @@ export function createCliOverlayInteractionComposition(deps: CliOverlayInteracti
         onDismiss,
         processConfirmation: processController.confirming(),
         processLines: processController.visibleLines(),
-        environmentLines: environmentController.visibleLines(),
+        environmentView: environmentController.view(),
         sessions: sessionBrowserSessions(),
         normalizeSessionBrowserIndex,
         sessionBrowserProject: sessionBrowserProjectionController.selectedProject(),
