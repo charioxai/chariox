@@ -11,8 +11,7 @@ use sha2::{Digest, Sha256};
 
 use super::cloud::{
     BootstrapCloudClient, ConfirmRequest, ConfirmResponse, ExchangeRequest, ExchangeResponse,
-    ManagedCloudRelayProfile, ReconcileManagedBootstrapGrantRequestV1,
-    ReconcileManagedBootstrapGrantResponseV1, RuntimeIdentityReportResponse,
+    ManagedCloudRelayProfile, RuntimeIdentityReportResponse,
 };
 use super::freshness::{
     ManagedKernelFreshnessEvidence, ManagedKernelResidueChecks, ManagedKernelRuntimeIdentityReport,
@@ -94,6 +93,7 @@ fn path1_rebuild_freshness_must_match_the_protected_volume_identity() {
         cloud_api_url: "https://cloud.example.test".to_string(),
         environment_id: "environment-1".to_string(),
         token: format!("mkboot_{}", "x".repeat(40)),
+        redeemed_grant_binding_digest: None,
         expires_at: "2026-09-27T00:00:00Z".to_string(),
         runtime_release_digest: format!("sha256:{}", "a".repeat(64)),
         managed_repository_root: None,
@@ -227,9 +227,6 @@ struct FakeCloud {
     exchange_response: ExchangeResponse,
     exchange_calls: Mutex<Vec<ExchangeRequest>>,
     confirm_calls: Mutex<Vec<ConfirmRequest>>,
-    reconcile_calls: Mutex<usize>,
-    reconcile_response_override: Mutex<Option<ReconcileManagedBootstrapGrantResponseV1>>,
-    fail_reconciliation: Mutex<bool>,
     fail_next_confirm: Mutex<bool>,
     confirm_after_child_marker: Mutex<Option<PathBuf>>,
 }
@@ -240,9 +237,6 @@ impl FakeCloud {
             exchange_response: response,
             exchange_calls: Mutex::new(Vec::new()),
             confirm_calls: Mutex::new(Vec::new()),
-            reconcile_calls: Mutex::new(0),
-            reconcile_response_override: Mutex::new(None),
-            fail_reconciliation: Mutex::new(false),
             fail_next_confirm: Mutex::new(false),
             confirm_after_child_marker: Mutex::new(None),
         }
@@ -308,54 +302,6 @@ impl BootstrapCloudClient for FakeCloud {
             observed_state: "awaiting_context".to_string(),
             managed_repository_root: self.exchange_response.managed_repository_root.clone(),
         })
-    }
-
-    fn reconcile_managed_bootstrap_grant(
-        &self,
-        _api_url: &str,
-        request: &ReconcileManagedBootstrapGrantRequestV1,
-    ) -> Result<ReconcileManagedBootstrapGrantResponseV1, DaemonError> {
-        *self
-            .reconcile_calls
-            .lock()
-            .expect("grant reconciliation calls") += 1;
-        if *self
-            .fail_reconciliation
-            .lock()
-            .expect("fail reconciliation")
-        {
-            return Err(DaemonError::LocalTransport {
-                operation: "test managed bootstrap reconciliation",
-                message: "the retained grant is stale or does not match the original token"
-                    .to_string(),
-            });
-        }
-        let response_override = self
-            .reconcile_response_override
-            .lock()
-            .expect("reconciliation response override")
-            .clone();
-        Ok(
-            response_override.unwrap_or_else(|| ReconcileManagedBootstrapGrantResponseV1 {
-                protocol_version: request.protocol_version,
-                reconciled: true,
-                grant_id: "grant-1".to_string(),
-                operation_id: "operation-1".to_string(),
-                operation_kind: if request.generation == 1 {
-                    "CREATE".to_string()
-                } else {
-                    "REIMAGE".to_string()
-                },
-                environment_id: request.environment_id.clone(),
-                machine_id: request.machine_id.clone(),
-                kernel_id: request.kernel_id.clone(),
-                generation: request.generation,
-                runtime_release_digest: request.runtime_release_digest.clone(),
-                managed_repository_root: request.managed_repository_root.clone(),
-                data_volume_serial: request.expected_data_volume_serial.clone(),
-                data_volume_size_gb: request.expected_data_volume_size_gb,
-            }),
-        )
     }
 
     fn report_runtime_identity(
@@ -557,6 +503,7 @@ fn schema_three_exchange_receipt_and_confirmation_preserve_the_exact_repository_
         cloud_api_url: "https://cloud.example.test".to_string(),
         environment_id: "managed-env-1".to_string(),
         token: fixture.token.clone(),
+        redeemed_grant_binding_digest: None,
         expires_at: (fixture.now + chrono::Duration::minutes(1)).to_rfc3339(),
         runtime_release_digest: fixture.release_digest.clone(),
         managed_repository_root: Some(repository_root.to_string()),
@@ -914,163 +861,6 @@ fn path1_confirmed_generation_two_retry_preserves_validated_freshness_evidence()
 
 #[cfg(unix)]
 #[test]
-fn legacy_confirmed_path1_receipt_restores_without_consuming_its_protected_envelope() {
-    let _env = crate::env_lock::lock();
-    let fixture = Fixture::new("stale-confirmed-generation-one-receipt");
-    let _restore = EnvironmentRestoreGuard::capture(["HOME", "CHARIOX_HOME"]);
-    std::env::set_var("HOME", &fixture.config.process_home);
-    std::env::set_var("CHARIOX_HOME", &fixture.config.chariox_home);
-    let profile = path1_test_profile();
-    crate::config::persist_managed_cloud_relay_profile(profile)
-        .expect("persist Cloud profile for restore path");
-    let mut config = fixture.config.clone();
-    config.envelope_path = PathBuf::from(super::state::PROTECTED_MANAGED_BOOTSTRAP_PATH);
-    let envelope = path1_test_envelope(&fixture.release_digest, "/srv/path1 managed workspaces");
-    let receipt = path1_test_receipt(
-        &fixture.release_digest,
-        1,
-        BootstrapReceiptStatus::Confirmed,
-        None,
-    );
-    receipt
-        .persist(&config.receipt_path)
-        .expect("persist released legacy receipt");
-    let identity = path1_test_identity();
-    let release = verify_release(
-        &config.manifest_path,
-        &config.signature_path,
-        &config.public_key_path,
-        &fixture.release_digest,
-        &config.kernel_binary,
-    )
-    .expect("fixture release signature verifies");
-    let cloud = FakeCloud::new(path1_test_cloud_response(
-        &fixture.release_digest,
-        "/srv/path1 managed workspaces",
-    ));
-
-    assert!(
-        super::resume_registration(
-            &config,
-            Some(&envelope),
-            receipt.clone(),
-            &identity,
-            &release,
-        )
-        .is_err(),
-        "an unbound legacy receipt must fail closed without authoritative reconciliation"
-    );
-
-    super::reconcile_legacy_confirmed_grant_binding(&config, &cloud, &envelope, &receipt)
-        .expect("read-only Cloud reconciliation binds the exact legacy grant");
-
-    let resumed =
-        super::resume_registration(&config, Some(&envelope), receipt, &identity, &release)
-            .expect("reconciled confirmed receipt remains a valid restore authority");
-    assert!(resumed.is_none());
-    assert!(
-        ManagedBootstrapGrantBinding::read_for_receipt(&config.receipt_path)
-            .expect("inspect reconciled legacy binding")
-            .is_some(),
-        "the exact legacy grant binding must survive the restart"
-    );
-    assert_eq!(
-        *cloud.reconcile_calls.lock().expect("reconciliation calls"),
-        1
-    );
-    assert!(cloud
-        .exchange_calls
-        .lock()
-        .expect("exchange calls")
-        .is_empty());
-    assert!(cloud
-        .confirm_calls
-        .lock()
-        .expect("confirm calls")
-        .is_empty());
-    fixture.cleanup();
-}
-
-#[cfg(unix)]
-#[test]
-fn legacy_confirmed_schema_one_and_two_receipts_restore_with_protected_envelope() {
-    let _env = crate::env_lock::lock();
-    let fixture = Fixture::new("legacy-confirmed-schema-one-two-restore");
-    let _restore = EnvironmentRestoreGuard::capture(["HOME", "CHARIOX_HOME"]);
-    std::env::set_var("HOME", &fixture.config.process_home);
-    std::env::set_var("CHARIOX_HOME", &fixture.config.chariox_home);
-    crate::config::persist_managed_cloud_relay_profile(path1_test_profile())
-        .expect("persist Cloud profile for restore path");
-    let mut config = fixture.config.clone();
-    config.envelope_path = PathBuf::from(super::state::PROTECTED_MANAGED_BOOTSTRAP_PATH);
-    let identity = path1_test_identity();
-    let release = verify_release(
-        &config.manifest_path,
-        &config.signature_path,
-        &config.public_key_path,
-        &fixture.release_digest,
-        &config.kernel_binary,
-    )
-    .expect("fixture release signature verifies");
-    let envelope = path1_test_envelope(&fixture.release_digest, "/home/chariox");
-    let cloud = FakeCloud::new(path1_test_cloud_response(
-        &fixture.release_digest,
-        "/home/chariox",
-    ));
-
-    for (schema_version, repository_root) in [(1, None), (2, Some("/home/chariox"))] {
-        let mut receipt = path1_test_receipt(
-            &fixture.release_digest,
-            1,
-            BootstrapReceiptStatus::Confirmed,
-            None,
-        );
-        receipt.schema_version = schema_version;
-        receipt.managed_repository_root = repository_root.map(str::to_string);
-        receipt
-            .persist(&config.receipt_path)
-            .expect("persist released legacy receipt");
-
-        super::reconcile_legacy_confirmed_grant_binding(&config, &cloud, &envelope, &receipt)
-            .expect("read-only Cloud reconciliation binds the exact legacy grant");
-
-        let resumed =
-            super::resume_registration(&config, Some(&envelope), receipt, &identity, &release)
-                .expect("legacy confirmed receipt remains a restore authority");
-        assert!(resumed.is_none());
-        assert!(
-            ManagedBootstrapGrantBinding::read_for_receipt(&config.receipt_path)
-                .expect("inspect legacy binding")
-                .is_some(),
-            "legacy schema {schema_version} must bind only the grant proven by Cloud"
-        );
-        fs::remove_file(
-            super::state::managed_bootstrap_grant_binding_path(&config.receipt_path)
-                .expect("binding path"),
-        )
-        .expect("clear binding before next legacy schema fixture");
-    }
-
-    assert_eq!(
-        *cloud.reconcile_calls.lock().expect("reconciliation calls"),
-        2
-    );
-    assert!(cloud
-        .exchange_calls
-        .lock()
-        .expect("exchange calls")
-        .is_empty());
-    assert!(cloud
-        .confirm_calls
-        .lock()
-        .expect("confirm calls")
-        .is_empty());
-
-    fixture.cleanup();
-}
-
-#[cfg(unix)]
-#[test]
 fn exchanged_receipt_completes_pending_binding_after_restart_without_reexchange() {
     let _env = crate::env_lock::lock();
     let fixture = Fixture::new("path1-pending-binding-resume");
@@ -1128,294 +918,6 @@ fn exchanged_receipt_completes_pending_binding_after_restart_without_reexchange(
 
 #[cfg(unix)]
 #[test]
-fn cloud_reconciliation_response_must_match_every_retained_receipt_and_volume_claim() {
-    let _env = crate::env_lock::lock();
-    let fixture = Fixture::new("path1-reconciliation-response-binding");
-    let receipt = path1_test_receipt(
-        &fixture.release_digest,
-        2,
-        BootstrapReceiptStatus::Confirmed,
-        None,
-    );
-    let expected_root = "/srv/path1 managed workspaces";
-    let mut valid = ReconcileManagedBootstrapGrantResponseV1 {
-        protocol_version: 1,
-        reconciled: true,
-        grant_id: "grant-1".to_string(),
-        operation_id: "operation-1".to_string(),
-        operation_kind: "REIMAGE".to_string(),
-        environment_id: receipt.environment_id.clone(),
-        machine_id: receipt.machine_id.clone(),
-        kernel_id: receipt.kernel_id.clone(),
-        generation: receipt.generation,
-        runtime_release_digest: receipt.runtime_release_digest.clone(),
-        managed_repository_root: expected_root.to_string(),
-        data_volume_serial: "12345".to_string(),
-        data_volume_size_gb: 20,
-    };
-    super::validate_reconciled_grant_response(&valid, &receipt, expected_root, "12345", 20)
-        .expect("exact current grant proof is accepted");
-
-    let mut changed_environment = valid.clone();
-    changed_environment.environment_id = "other-environment".to_string();
-    let mut changed_machine = valid.clone();
-    changed_machine.machine_id = "other-machine".to_string();
-    let mut changed_kernel = valid.clone();
-    changed_kernel.kernel_id = "other-kernel".to_string();
-    let mut changed_generation = valid.clone();
-    changed_generation.generation = 1;
-    let mut changed_release = valid.clone();
-    changed_release.runtime_release_digest = format!("sha256:{}", "d".repeat(64));
-    let mut changed_root = valid.clone();
-    changed_root.managed_repository_root = "/srv/other".to_string();
-    let mut changed_volume_serial = valid.clone();
-    changed_volume_serial.data_volume_serial = "54321".to_string();
-    let mut changed_volume_size = valid.clone();
-    changed_volume_size.data_volume_size_gb = 30;
-    let mut changed_operation = valid.clone();
-    changed_operation.operation_kind = "CREATE".to_string();
-    let mut changed_protocol = valid.clone();
-    changed_protocol.protocol_version = 2;
-    let mut not_reconciled = valid.clone();
-    not_reconciled.reconciled = false;
-
-    for (label, response) in [
-        ("environment", changed_environment),
-        ("machine", changed_machine),
-        ("kernel", changed_kernel),
-        ("generation", changed_generation),
-        ("release", changed_release),
-        ("repository root", changed_root),
-        ("Volume serial", changed_volume_serial),
-        ("Volume size", changed_volume_size),
-        ("operation kind", changed_operation),
-        ("protocol version", changed_protocol),
-        ("reconciliation status", not_reconciled),
-    ] {
-        assert!(
-            super::validate_reconciled_grant_response(
-                &response,
-                &receipt,
-                expected_root,
-                "12345",
-                20,
-            )
-            .is_err(),
-            "Cloud reconciliation must reject a different {label}"
-        );
-    }
-
-    valid.grant_id.clear();
-    assert!(
-        super::validate_reconciled_grant_response(&valid, &receipt, expected_root, "12345", 20)
-            .is_err(),
-        "Cloud reconciliation must return a grant identity"
-    );
-
-    fixture.cleanup();
-}
-
-#[cfg(unix)]
-#[test]
-fn prepare_rejects_legacy_confirmed_grant_reconciliation_mismatches_without_mutation() {
-    let _env = crate::env_lock::lock();
-    let fixture = Fixture::new("prepare-legacy-grant-reconciliation-rejections");
-    let _restore = EnvironmentRestoreGuard::capture(["HOME", "CHARIOX_HOME"]);
-    std::env::set_var("HOME", &fixture.config.process_home);
-    std::env::set_var("CHARIOX_HOME", &fixture.config.chariox_home);
-
-    let identity = crate::config::load_or_create_managed_runtime_identity(
-        &fixture.config.kernel_host,
-        fixture.config.kernel_port,
-    )
-    .expect("create managed identity before the preparation snapshot");
-    let mut profile = path1_test_profile();
-    profile.machine_id = Some(identity.machine_id.clone());
-    crate::config::persist_managed_cloud_relay_profile(profile)
-        .expect("persist Cloud profile for confirmed restore");
-
-    let repository_root = "/srv/path1 managed workspaces";
-    let envelope = path1_test_envelope(&fixture.release_digest, repository_root);
-    let mut receipt = path1_test_receipt(
-        &fixture.release_digest,
-        2,
-        BootstrapReceiptStatus::Confirmed,
-        None,
-    );
-    receipt.machine_id = identity.machine_id;
-    receipt.kernel_id = identity.kernel_id;
-    receipt.relay_public_key = identity.relay_public_key;
-    receipt
-        .persist(&fixture.config.receipt_path)
-        .expect("persist legacy confirmed receipt");
-
-    let mut config = fixture.config.clone();
-    config.envelope_path = PathBuf::from(super::state::PROTECTED_MANAGED_BOOTSTRAP_PATH);
-    let receipt_path_before = fs::read(&config.receipt_path).expect("snapshot confirmed receipt");
-    let profile_path = DaemonConfig::default_daemon_config_path();
-    let profile_before = fs::read(&profile_path).expect("snapshot Cloud profile");
-    let binding_path = super::state::managed_bootstrap_grant_binding_path(&config.receipt_path)
-        .expect("grant binding path");
-    assert!(
-        !binding_path.exists(),
-        "legacy receipt starts without a binding sidecar"
-    );
-
-    let valid_cloud = FakeCloud::new(path1_test_cloud_response(
-        &fixture.release_digest,
-        repository_root,
-    ));
-    let prepared = super::prepare_managed_kernel_with_documents_for_test(
-        &config,
-        &valid_cloud,
-        fixture.now,
-        receipt.clone(),
-        envelope.clone(),
-    )
-    .expect("the shared prepare orchestration accepts the exact legacy grant proof");
-    assert!(prepared.confirmation.is_none());
-    assert_eq!(
-        *valid_cloud.reconcile_calls.lock().expect("reconcile calls"),
-        1
-    );
-    assert!(valid_cloud
-        .exchange_calls
-        .lock()
-        .expect("exchange calls")
-        .is_empty());
-    assert!(valid_cloud
-        .confirm_calls
-        .lock()
-        .expect("confirm calls")
-        .is_empty());
-    assert_eq!(
-        fs::read(&config.receipt_path).expect("receipt after valid prepare"),
-        receipt_path_before
-    );
-    assert_eq!(
-        fs::read(&profile_path).expect("profile after valid prepare"),
-        profile_before
-    );
-    assert!(
-        binding_path.exists(),
-        "the valid proof persists its binding sidecar"
-    );
-    fs::remove_file(&binding_path).expect("restore legacy unbound state before rejection cases");
-
-    let assert_rejected_without_mutation =
-        |cloud: &FakeCloud, candidate_envelope: &ManagedBootstrapEnvelope, label: &str| {
-            assert!(
-                super::prepare_managed_kernel_with_documents_for_test(
-                    &config,
-                    cloud,
-                    fixture.now,
-                    receipt.clone(),
-                    candidate_envelope.clone(),
-                )
-                .is_err(),
-                "prepare must reject {label}"
-            );
-            assert_eq!(
-                fs::read(&config.receipt_path).expect("receipt after rejected prepare"),
-                receipt_path_before,
-                "rejected {label} must not rewrite the receipt"
-            );
-            assert!(
-                !binding_path.exists(),
-                "rejected {label} must not persist a grant-binding sidecar"
-            );
-            assert_eq!(
-                fs::read(&profile_path).expect("profile after rejected prepare"),
-                profile_before,
-                "rejected {label} must not rewrite the Cloud profile"
-            );
-            assert_eq!(*cloud.reconcile_calls.lock().expect("reconcile calls"), 1);
-            assert!(cloud
-                .exchange_calls
-                .lock()
-                .expect("exchange calls")
-                .is_empty());
-            assert!(cloud
-                .confirm_calls
-                .lock()
-                .expect("confirm calls")
-                .is_empty());
-        };
-
-    let mut substituted_token_envelope = envelope.clone();
-    substituted_token_envelope.token = format!("mkboot_{}", "z".repeat(43));
-    let stale_grant_cloud = FakeCloud::new(path1_test_cloud_response(
-        &fixture.release_digest,
-        repository_root,
-    ));
-    *stale_grant_cloud
-        .fail_reconciliation
-        .lock()
-        .expect("configure stale grant") = true;
-    assert_rejected_without_mutation(
-        &stale_grant_cloud,
-        &substituted_token_envelope,
-        "a substituted token with otherwise identical claims",
-    );
-
-    let valid_response = ReconcileManagedBootstrapGrantResponseV1 {
-        protocol_version: 1,
-        reconciled: true,
-        grant_id: "grant-1".to_string(),
-        operation_id: "operation-1".to_string(),
-        operation_kind: "REIMAGE".to_string(),
-        environment_id: receipt.environment_id.clone(),
-        machine_id: receipt.machine_id.clone(),
-        kernel_id: receipt.kernel_id.clone(),
-        generation: receipt.generation,
-        runtime_release_digest: receipt.runtime_release_digest.clone(),
-        managed_repository_root: repository_root.to_string(),
-        data_volume_serial: "12345".to_string(),
-        data_volume_size_gb: 20,
-    };
-    let mut wrong_environment = valid_response.clone();
-    wrong_environment.environment_id = "other-environment".to_string();
-    let mut wrong_machine = valid_response.clone();
-    wrong_machine.machine_id = "other-machine".to_string();
-    let mut wrong_kernel = valid_response.clone();
-    wrong_kernel.kernel_id = "other-kernel".to_string();
-    let mut wrong_generation = valid_response.clone();
-    wrong_generation.generation = 1;
-    let mut wrong_release = valid_response.clone();
-    wrong_release.runtime_release_digest = format!("sha256:{}", "d".repeat(64));
-    let mut wrong_root = valid_response.clone();
-    wrong_root.managed_repository_root = "/srv/other".to_string();
-    let mut wrong_volume_serial = valid_response.clone();
-    wrong_volume_serial.data_volume_serial = "54321".to_string();
-    let mut wrong_volume_size = valid_response;
-    wrong_volume_size.data_volume_size_gb = 30;
-
-    for (label, response) in [
-        ("environment identity", wrong_environment),
-        ("machine identity", wrong_machine),
-        ("kernel identity", wrong_kernel),
-        ("generation", wrong_generation),
-        ("release digest", wrong_release),
-        ("repository root", wrong_root),
-        ("Volume serial", wrong_volume_serial),
-        ("Volume size", wrong_volume_size),
-    ] {
-        let cloud = FakeCloud::new(path1_test_cloud_response(
-            &fixture.release_digest,
-            repository_root,
-        ));
-        *cloud
-            .reconcile_response_override
-            .lock()
-            .expect("reconciliation response override") = Some(response);
-        assert_rejected_without_mutation(&cloud, &envelope, label);
-    }
-
-    fixture.cleanup();
-}
-
-#[cfg(unix)]
-#[test]
 fn path1_confirmed_generation_two_recovers_after_ack_with_cleared_freshness() {
     let _env = crate::env_lock::lock();
     let fixture = Fixture::new("path1-confirmed-generation-two-post-ack-recovery");
@@ -1455,8 +957,6 @@ fn path1_confirmed_generation_two_recovers_after_ack_with_cleared_freshness() {
         &fixture.release_digest,
         "/srv/path1 managed workspaces",
     ));
-    super::reconcile_legacy_confirmed_grant_binding(&config, &cloud, &envelope, &receipt)
-        .expect("existing binding avoids a redundant Cloud reconciliation");
     super::validate_envelope_receipt_compatibility(&envelope, &receipt)
         .expect("confirmed receipt may have cleared rebuild action after Cloud ACK");
     let resumed =
@@ -1472,10 +972,6 @@ fn path1_confirmed_generation_two_recovers_after_ack_with_cleared_freshness() {
             .expect("serialize grant binding")
             .contains(&envelope.token),
         "the sidecar must never persist the bearer token"
-    );
-    assert_eq!(
-        *cloud.reconcile_calls.lock().expect("reconciliation calls"),
-        0
     );
     assert!(cloud
         .exchange_calls
@@ -1503,12 +999,9 @@ fn path1_grant_binding_survives_an_in_place_release_update() {
         BootstrapReceiptStatus::Confirmed,
         None,
     );
-    // A machine bound before in-place updates carries a schema 1 binding of its
-    // provisioned release; the upgrader installs the target receipt before the
-    // new supervisor first reads that binding.
-    ManagedBootstrapGrantBinding::legacy_for_receipt(&envelope, &receipt)
-        .persist_for_receipt(&config.receipt_path)
-        .expect("persist legacy binding");
+    // The upgrader installs the target receipt before the new supervisor first
+    // reads the binding made at the provisioned release.
+    persist_path1_grant_binding(&config, &envelope, &receipt);
     let mut updated = receipt.clone();
     updated.runtime_release_digest = format!("sha256:{}", "e".repeat(64));
     let mut other_generation = updated.clone();
@@ -1516,18 +1009,18 @@ fn path1_grant_binding_survives_an_in_place_release_update() {
     assert!(
         super::validate_receipt_envelope_grant_binding(&config, &envelope, &other_generation)
             .is_err(),
-        "a legacy binding still binds the receipt's identity"
+        "the binding still binds the receipt's identity"
     );
     super::validate_envelope_receipt_compatibility(&envelope, &updated)
         .expect("a confirmed machine may run a release other than the provisioned one");
     super::validate_receipt_envelope_grant_binding(&config, &envelope, &updated)
-        .expect("the legacy binding is accepted under the updated receipt");
+        .expect("the binding is accepted under the updated receipt");
     assert_eq!(
         ManagedBootstrapGrantBinding::read_for_receipt(&config.receipt_path)
             .expect("read binding")
             .expect("binding exists"),
         ManagedBootstrapGrantBinding::for_receipt(&envelope, &updated),
-        "the legacy binding is rebound by identity"
+        "the binding is rebound to the updated receipt"
     );
     super::validate_receipt_envelope_grant_binding(&config, &envelope, &receipt)
         .expect("a later release change keeps the grant binding");
@@ -1663,6 +1156,220 @@ fn confirmed_path1_receipt_does_not_delete_a_same_claims_different_token_envelop
         "the rejected substituted token must not replace or remove the original envelope"
     );
 
+    fixture.cleanup();
+}
+
+/// The envelope root blanks the bearer token once Cloud confirmed the kernel (MP-08/MP-11).
+fn redeemed_envelope_json(original: &ManagedBootstrapEnvelope) -> serde_json::Value {
+    serde_json::json!({
+        "schemaVersion": original.schema_version,
+        "cloudApiUrl": &original.cloud_api_url,
+        "environmentId": &original.environment_id,
+        "token": "",
+        "redeemedGrantBindingDigest": original.grant_binding_digest(),
+        "expiresAt": &original.expires_at,
+        "runtimeReleaseDigest": &original.runtime_release_digest,
+        "managedRepositoryRoot": &original.managed_repository_root,
+        "expectedDataVolumeSerial": &original.expected_data_volume_serial,
+        "expectedDataVolumeSizeGb": original.expected_data_volume_size_gb,
+    })
+}
+
+#[cfg(unix)]
+#[test]
+fn confirmed_machine_restores_with_a_redeemed_bootstrap_grant() {
+    let _env = crate::env_lock::lock();
+    let fixture = Fixture::new("path1-redeemed-grant-restores");
+    let _restore = EnvironmentRestoreGuard::capture(["HOME", "CHARIOX_HOME"]);
+    std::env::set_var("HOME", &fixture.config.process_home);
+    std::env::set_var("CHARIOX_HOME", &fixture.config.chariox_home);
+    crate::config::persist_managed_cloud_relay_profile(path1_test_profile())
+        .expect("persist Cloud profile for restore path");
+    let mut config = fixture.config.clone();
+    config.envelope_path = PathBuf::from(super::state::PROTECTED_MANAGED_BOOTSTRAP_PATH);
+    let original = path1_test_envelope(&fixture.release_digest, "/srv/path1 managed workspaces");
+    let redeemed: ManagedBootstrapEnvelope =
+        serde_json::from_value(redeemed_envelope_json(&original))
+            .expect("decode redeemed envelope");
+    redeemed
+        .validate(true)
+        .expect("a redeemed protected envelope is valid");
+    assert!(redeemed.token.is_empty());
+    assert_eq!(
+        redeemed.grant_binding_digest(),
+        original.grant_binding_digest(),
+        "blanking the token must not change the grant binding"
+    );
+    let receipt = path1_test_receipt(
+        &fixture.release_digest,
+        2,
+        BootstrapReceiptStatus::Confirmed,
+        None,
+    );
+    persist_path1_grant_binding(&config, &original, &receipt);
+    let identity = path1_test_identity();
+    let release = verify_release(
+        &config.manifest_path,
+        &config.signature_path,
+        &config.public_key_path,
+        &fixture.release_digest,
+        &config.kernel_binary,
+    )
+    .expect("fixture release signature verifies");
+
+    super::validate_envelope_receipt_compatibility(&redeemed, &receipt)
+        .expect("a confirmed receipt accepts the redeemed envelope");
+    let resumed = super::resume_registration(
+        &config,
+        Some(&redeemed),
+        receipt.clone(),
+        &identity,
+        &release,
+    )
+    .expect("a confirmed machine restarts with the redeemed envelope");
+    assert!(resumed.is_none());
+
+    let mut exchanged = receipt;
+    exchanged.status = BootstrapReceiptStatus::Exchanged;
+    exchanged.confirmed_at = None;
+    assert!(
+        super::validate_envelope_receipt_compatibility(&redeemed, &exchanged).is_err(),
+        "a redeemed grant cannot finish an exchange that Cloud has not confirmed"
+    );
+    let cloud = FakeCloud::new(path1_test_cloud_response(
+        &fixture.release_digest,
+        "/srv/path1 managed workspaces",
+    ));
+    assert!(super::prepare_managed_kernel_with_documents_for_test(
+        &config,
+        &cloud,
+        fixture.now,
+        exchanged,
+        redeemed.clone(),
+    )
+    .is_err());
+    assert!(
+        super::begin_registration(&config, &cloud, fixture.now, &redeemed, &identity, &release)
+            .is_err(),
+        "a redeemed grant cannot start a registration"
+    );
+    assert!(cloud
+        .exchange_calls
+        .lock()
+        .expect("exchange calls")
+        .is_empty());
+    fixture.cleanup();
+}
+
+#[cfg(unix)]
+#[test]
+fn root_blanks_the_token_only_of_the_grant_bound_to_the_confirmed_receipt() {
+    use super::grant_redemption::{redeem_if_confirmed, Redemption};
+    use std::os::unix::fs::PermissionsExt;
+    let _env = crate::env_lock::lock();
+    let fixture = Fixture::new("path1-root-blanks-redeemed-grant");
+    let config = fixture.config.clone();
+    let envelope_path = fixture.root.join("managed-bootstrap.json");
+    let original = path1_test_envelope(&fixture.release_digest, "/srv/path1 managed workspaces");
+    let write_envelope = |value: serde_json::Value| {
+        fs::write(
+            &envelope_path,
+            serde_json::to_vec(&value).expect("encode envelope"),
+        )
+        .expect("write envelope");
+        fs::set_permissions(&envelope_path, fs::Permissions::from_mode(0o640))
+            .expect("envelope mode");
+    };
+    let grant_json = serde_json::json!({
+        "schemaVersion": original.schema_version,
+        "cloudApiUrl": &original.cloud_api_url,
+        "environmentId": &original.environment_id,
+        "token": &original.token,
+        "expiresAt": &original.expires_at,
+        "runtimeReleaseDigest": &original.runtime_release_digest,
+        "managedRepositoryRoot": &original.managed_repository_root,
+        "expectedDataVolumeSerial": &original.expected_data_volume_serial,
+        "expectedDataVolumeSizeGb": original.expected_data_volume_size_gb,
+    });
+    write_envelope(grant_json.clone());
+    let exchanged = path1_test_receipt(
+        &fixture.release_digest,
+        1,
+        BootstrapReceiptStatus::Exchanged,
+        None,
+    );
+    let confirmed = path1_test_receipt(
+        &fixture.release_digest,
+        1,
+        BootstrapReceiptStatus::Confirmed,
+        None,
+    );
+    let unchanged = || {
+        fs::read(&envelope_path).expect("read envelope")
+            == serde_json::to_vec(&grant_json).expect("encode")
+    };
+
+    assert_eq!(
+        redeem_if_confirmed(&envelope_path, &config.receipt_path).expect("no receipt yet"),
+        Redemption::Pending
+    );
+    exchanged
+        .persist(&config.receipt_path)
+        .expect("persist exchanged receipt");
+    persist_path1_grant_binding(&config, &original, &exchanged);
+    assert_eq!(
+        redeem_if_confirmed(&envelope_path, &config.receipt_path).expect("exchanged receipt"),
+        Redemption::Pending,
+        "an exchange Cloud has not confirmed still needs the token"
+    );
+    assert!(unchanged());
+
+    confirmed
+        .persist(&config.receipt_path)
+        .expect("persist confirmed receipt");
+    let mut other_grant = confirmed.clone();
+    other_grant.generation = 2;
+    persist_path1_grant_binding(&config, &original, &other_grant);
+    assert_eq!(
+        redeem_if_confirmed(&envelope_path, &config.receipt_path).expect("mismatched binding"),
+        Redemption::Pending,
+        "a grant that is not bound to the confirmed receipt is kept"
+    );
+    assert!(unchanged());
+
+    persist_path1_grant_binding(&config, &original, &confirmed);
+    assert_eq!(
+        redeem_if_confirmed(&envelope_path, &config.receipt_path).expect("bound grant"),
+        Redemption::Redeemed
+    );
+    let bytes = fs::read(&envelope_path).expect("read blanked envelope");
+    assert!(
+        !String::from_utf8_lossy(&bytes).contains(&original.token),
+        "the bearer token must be gone from the file"
+    );
+    assert_eq!(
+        fs::metadata(&envelope_path)
+            .expect("mode")
+            .permissions()
+            .mode()
+            & 0o7777,
+        0o640,
+        "the supervisor keeps read access"
+    );
+    let blanked: ManagedBootstrapEnvelope =
+        serde_json::from_slice(&bytes).expect("decode blanked envelope");
+    blanked.validate(true).expect("blanked envelope is valid");
+    assert!(blanked.token.is_empty());
+    assert_eq!(
+        blanked.expected_data_volume_serial,
+        original.expected_data_volume_serial
+    );
+    super::validate_receipt_envelope_grant_binding(&config, &blanked, &confirmed)
+        .expect("the binding survives the blanking");
+    assert_eq!(
+        redeem_if_confirmed(&envelope_path, &config.receipt_path).expect("second run"),
+        Redemption::Redeemed
+    );
     fixture.cleanup();
 }
 
@@ -2787,6 +2494,7 @@ fn path1_test_envelope(
         cloud_api_url: "https://cloud.example.test".to_string(),
         environment_id: "managed-env-1".to_string(),
         token: format!("mkboot_{}", "x".repeat(43)),
+        redeemed_grant_binding_digest: None,
         expires_at: "2026-09-27T00:00:00Z".to_string(),
         runtime_release_digest: runtime_release_digest.to_string(),
         managed_repository_root: Some(managed_repository_root.to_string()),
@@ -3166,6 +2874,7 @@ fn local_disk_exchange_confirm_and_restore_bind_the_protected_grant() {
         cloud_api_url: "https://cloud.example.test".to_string(),
         environment_id: "managed-env-1".to_string(),
         token: fixture.token.clone(),
+        redeemed_grant_binding_digest: None,
         expires_at: (fixture.now + chrono::Duration::minutes(1)).to_rfc3339(),
         runtime_release_digest: fixture.release_digest.clone(),
         managed_repository_root: Some(repository_root.to_string()),

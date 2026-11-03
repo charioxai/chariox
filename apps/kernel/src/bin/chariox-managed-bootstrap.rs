@@ -5,11 +5,12 @@ fn main() -> Result<(), chariox_kernel::DaemonError> {
     let _process_logs = chariox_kernel::logging::ProcessLogGuard;
     let args: Vec<_> = std::env::args_os().skip(1).collect();
     let command = args.first().and_then(|arg| arg.to_str());
-    let disposable_worker = match (command, args.len()) {
-        (None, 0) => false,
-        (Some("--disposable-worker"), 1) => true,
+    let step = match (command, args.len()) {
+        (None, 0) => Step::Supervise,
+        (Some("--disposable-worker"), 1) => Step::DisposableWorker,
+        (Some("--redeem-grant"), 1) => Step::RedeemGrant,
         (Some("--help" | "-h"), 1) => {
-            println!("usage: chariox-managed-bootstrap [--disposable-worker | --help | --version]\n\nRun the managed home supervisor with no arguments, or bootstrap a disposable\nworker with --disposable-worker. Configuration is supplied through the environment.\n  -h, --help  Print usage and exit\n  --version   Print the package version and exit");
+            println!("usage: chariox-managed-bootstrap [--disposable-worker | --redeem-grant | --help | --version]\n\nRun the managed home supervisor with no arguments, or bootstrap a disposable\nworker with --disposable-worker. --redeem-grant is the root step that blanks the\nbootstrap token once Cloud confirmed the kernel. Configuration is supplied through\nthe environment.\n  -h, --help  Print usage and exit\n  --version   Print the package version and exit");
             return Ok(());
         }
         (Some("--version"), 1) => {
@@ -21,6 +22,10 @@ fn main() -> Result<(), chariox_kernel::DaemonError> {
             std::process::exit(2);
         }
     };
+    if matches!(step, Step::RedeemGrant) {
+        // Root must not create files in the supervisor's log directory.
+        return chariox_kernel::managed_bootstrap::grant_redemption::run_from_env();
+    }
     if let Ok(log_path) = chariox_kernel::logging::init_process_logger("managed-bootstrap") {
         chariox_kernel::logging::info_with_fields(
             "managed_bootstrap.start",
@@ -28,9 +33,15 @@ fn main() -> Result<(), chariox_kernel::DaemonError> {
             serde_json::json!({ "log_path": log_path.display().to_string() }),
         );
     }
-    if disposable_worker {
-        chariox_kernel::managed_bootstrap::worker::run_from_env()
-    } else {
-        chariox_kernel::managed_bootstrap::run_from_env()
+    match step {
+        Step::DisposableWorker => chariox_kernel::managed_bootstrap::worker::run_from_env(),
+        Step::RedeemGrant => unreachable!("handled before logging starts"),
+        Step::Supervise => chariox_kernel::managed_bootstrap::run_from_env(),
     }
+}
+
+enum Step {
+    Supervise,
+    DisposableWorker,
+    RedeemGrant,
 }
