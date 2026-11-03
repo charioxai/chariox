@@ -27,8 +27,8 @@ body{margin:0;font-family:Roboto,arial,sans-serif;height:100%}html{height:100%}
 <div class="rc-imageselect-payload"><table class="rc-imageselect-table-33"><tbody>${[0, 1, 2].map(i => `<tr>${[0, 1, 2].map(j => `<td role="button" tabindex="0" class="rc-imageselect-tile" onclick="pick(this)"><div class="rc-image-tile-target"><div class="rc-image-tile-wrapper" style="width:126px;height:126px"><img class="rc-image-tile-33" src="${tile}" style="top:-${i * 100}%;left:-${j * 100}%"></div></div></td>`).join('')}</tr>`).join('')}</tbody></table></div>
 <div class="rc-footer"><button>Verify</button></div></div>
 <script>const next=${JSON.stringify(tile2)};function pick(td){td.classList.toggle('rc-imageselect-tileselected');document.title=document.querySelectorAll('.rc-imageselect-tileselected').length;const img=td.querySelector('img');setTimeout(()=>{img.src=next},300)}</script></body></html>`;
-const tilePage = (frameUrl, doctype = '<!doctype html>') => `${doctype}<html><head><meta charset="utf-8"><title>Challenge host</title></head><body style="margin:0;font:16px sans-serif"><div style="height:2400px;position:relative;background:linear-gradient(#fff,#dde)"><h1 style="padding:24px">Human check</h1><form style="padding:24px"><input aria-label="name" value="drill"><button type="button">Register</button></form>
-<iframe title="challenge" src="${frameUrl}" style="position:absolute;left:300px;top:700px;width:400px;height:580px;border:1px solid #ccc;background:#fff;box-shadow:0 2px 8px #0004"></iframe></div></body></html>`;
+const tilePage = (frameUrl, top = 700, doctype = '<!doctype html>') => `${doctype}<html><head><meta charset="utf-8"><title>Challenge host</title></head><body style="margin:0;font:16px sans-serif"><div style="height:2400px;position:relative;background:linear-gradient(#fff,#dde)"><h1 style="padding:24px">Human check</h1><form style="padding:24px"><input aria-label="name" value="drill"><button type="button">Register</button></form>
+<iframe title="challenge" src="${frameUrl}" style="position:absolute;left:300px;top:${top}px;width:400px;height:580px;border:1px solid #ccc;background:#fff;box-shadow:0 2px 8px #0004"></iframe></div></body></html>`;
 
 // Samples the viewer's own scroll positions (page and the challenge frame) every animation frame while the
 // person scrolls/clicks; any move against the person's direction is a jump the person did not make.
@@ -73,7 +73,9 @@ export const sites = async () => {
   const frameStandards = await listen((req, res) => { res.setHeader('content-type', 'text/html'); res.end(gridFrame('<!doctype html>')); });
   const frameOrigin = `http://localhost:${frameStandards}`;
   const top = await listen((req, res) => { res.setHeader('content-type', 'text/html'); res.end(tilePage(`${frameOrigin}/`)); });
+  const topNear = await listen((req, res) => { res.setHeader('content-type', 'text/html'); res.end(tilePage(`${frameOrigin}/`, 90)); }); // the challenge in view without scrolling (real-path drill)
   return [
+  { id: 'grid-near-fixture', url: `http://127.0.0.1:${topNear}/` },
   { id: 'scroll-fixture', url: `http://127.0.0.1:${longTop}/`, interact: scrollSession },
   { id: 'ticker-fixture', url: `http://127.0.0.1:${tickTop}/`, interact: burstSession },
   { id: 'selfscroll-fixture', url: `http://127.0.0.1:${selfTop}/`, interact: scrollSession },
