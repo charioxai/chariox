@@ -103,6 +103,14 @@ impl CommandRouter {
         arguments: serde_json::Value,
     ) -> AuthenticatedRuntimeToolFuture<'a> {
         Box::pin(async move {
+            // The room tools act in this room; one that is given a kernel would run here
+            // while the agent believes it ran there, so another kernel is only reached
+            // through `chariox-reach`.
+            if arguments.get("kernel").is_some() {
+                return Err(crate::runtime::room_tool_admission::denied(
+                    "this tool acts in your own room; use the chariox-reach tools to reach another kernel",
+                ));
+            }
             if crate::transport::runtime_tools::canonical_room_tool_name(tool_name).is_some()
                 && !self.runtime_state.room_agent_tools_enabled()
             {

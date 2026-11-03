@@ -11,6 +11,16 @@ struct Reach {
     other_session_id: String,
 }
 
+const REACH_TOOL_NAMES: [&str; 7] = [
+    "kernels",
+    "sessions",
+    "request",
+    "events_subscribe",
+    "events_wait",
+    "events_ack",
+    "guide",
+];
+
 const OWNER_TOKEN: &str = "reach-owner-token";
 const GUEST_TOKEN: &str = "reach-guest-token";
 
@@ -171,7 +181,7 @@ async fn the_owners_agent_gets_the_reach_tools_and_a_guests_agent_gets_none() {
         .iter()
         .map(|tool| tool.name.as_str())
         .collect::<Vec<_>>();
-    assert_eq!(names, ["kernels", "request"]);
+    assert_eq!(names, REACH_TOOL_NAMES);
     assert!(
         reach
             .router
@@ -243,7 +253,7 @@ async fn the_reach_server_serves_the_owners_agent_and_nobody_else_over_http() {
         .iter()
         .map(|tool| tool["name"].as_str().unwrap_or_default())
         .collect::<Vec<_>>();
-    assert_eq!(names, ["kernels", "request"], "{owner}");
+    assert_eq!(names, REACH_TOOL_NAMES, "{owner}");
     let guest = http_rpc(port, &reach.guest_token, list).await;
     assert_eq!(guest["result"]["tools"], serde_json::json!([]), "{guest}");
 
@@ -399,4 +409,167 @@ fn active_questions(reach: &Reach) -> Vec<crate::session::RuntimeInteraction> {
         .session
         .active_interactions()
         .to_vec()
+}
+
+async fn tool(reach: &Reach, name: &str, arguments: Value) -> (bool, Value) {
+    let result = reach
+        .router
+        .dispatch_reach_tool_call(&reach.owner_token, name, arguments)
+        .await
+        .expect("reach call should return a tool result");
+    (result.ok, result.payload)
+}
+
+#[tokio::test]
+async fn the_sessions_tool_lists_rooms_and_one_rooms_agents() {
+    let reach = fixture();
+    let (ok, rooms) = tool(&reach, "sessions", serde_json::json!({})).await;
+    assert!(ok, "{rooms}");
+    assert!(
+        rooms.to_string().contains(&reach.other_session_id),
+        "{rooms}"
+    );
+    let (ok, agents) = tool(
+        &reach,
+        "sessions",
+        serde_json::json!({"session_id": reach.session_id}),
+    )
+    .await;
+    assert!(ok, "{agents}");
+    assert!(agents["AgentsListed"]["agents"].is_array(), "{agents}");
+}
+
+#[tokio::test]
+async fn the_guide_tool_answers_with_every_tool_named() {
+    let reach = fixture();
+    let (ok, payload) = tool(&reach, "guide", serde_json::json!({})).await;
+    assert!(ok);
+    let guide = payload["guide"].as_str().expect("a guide text");
+    for name in REACH_TOOL_NAMES {
+        assert!(
+            guide.contains(&format!("{name}(")),
+            "{name} is missing from the guide"
+        );
+    }
+}
+
+/// The tools come from the CLI command table: every property of a schema is one the
+/// kernel reads, and every example request the guide shows is one an agent may send.
+#[tokio::test]
+async fn the_generated_tools_match_what_the_kernel_reads() {
+    use crate::runtime::state::reach::{reach_need, ReachNeed};
+    let reach = fixture();
+    let sample = |schema: &Value| match schema["type"].as_str() {
+        Some("integer") => serde_json::json!(1),
+        Some("object") => serde_json::json!({"ListSessions": null}),
+        _ => serde_json::json!("x"),
+    };
+    for spec in crate::transport::runtime_tools::reach_tool_specs() {
+        assert_eq!(
+            spec.input_schema["additionalProperties"], false,
+            "{}",
+            spec.name
+        );
+        let properties = spec.input_schema["properties"]
+            .as_object()
+            .expect("properties");
+        let arguments = Value::Object(
+            properties
+                .iter()
+                .map(|(name, schema)| (name.clone(), sample(schema)))
+                .collect(),
+        );
+        let result = reach
+            .router
+            .dispatch_reach_tool_call(&reach.owner_token, &spec.name, arguments)
+            .await;
+        // A refusal or a kernel answer is fine; an argument the kernel does not read is not.
+        if let Err(error) = result {
+            panic!("{} does not read its own schema: {error}", spec.name);
+        }
+    }
+    for example in crate::transport::runtime_tools::reach_examples() {
+        let request: crate::local::LocalDaemonRequest =
+            serde_json::from_value(example.clone()).expect("an example is a kernel request");
+        assert!(
+            matches!(reach_need(&request), ReachNeed::Room | ReachNeed::Sudo),
+            "an agent may not send the example {example}"
+        );
+    }
+}
+
+#[test]
+fn the_events_tools_ask_the_inbox_of_the_agents_own_kernel() {
+    use crate::transport::runtime_tools::*;
+    assert_eq!(
+        reach_events_wait_request(ReachEventsWaitArgs {
+            since: Some(4),
+            limit: None,
+            timeout_seconds: None
+        }),
+        serde_json::json!({"WaitEvents": {"since": 4, "limit": 1000, "timeout_ms": 60000}})
+    );
+    assert_eq!(
+        reach_events_wait_request(ReachEventsWaitArgs {
+            since: None,
+            limit: Some(5),
+            timeout_seconds: Some(900)
+        }),
+        serde_json::json!({"WaitEvents": {"limit": 5, "timeout_ms": 280000}}),
+        "a wait never lasts longer than a provider lets a tool call last"
+    );
+    assert_eq!(
+        reach_events_subscribe_request(ReachEventsSubscribeArgs {
+            kernel: "k".into(),
+            session_id: "s".into(),
+            agent_id: Some("a".into()),
+        }),
+        serde_json::json!({"SubscribeEvents": {"targets": [{"kernel": "k", "session_id": "s", "agent_id": "a"}]}})
+    );
+    assert_eq!(
+        reach_events_ack_request(ReachEventsAckArgs { cursor: 9 }),
+        serde_json::json!({"AckEvents": {"cursor": 9}})
+    );
+    for request in [
+        reach_events_wait_request(ReachEventsWaitArgs {
+            since: None,
+            limit: None,
+            timeout_seconds: None,
+        }),
+        reach_events_ack_request(ReachEventsAckArgs { cursor: 1 }),
+    ] {
+        serde_json::from_value::<crate::local::LocalDaemonRequest>(request)
+            .expect("an events tool sends a kernel request");
+    }
+}
+
+#[tokio::test]
+async fn a_room_tool_given_another_kernel_is_refused() {
+    let reach = fixture();
+    for tool_name in ["chariox_list_session_agents", "chariox_kernel_request"] {
+        let error = reach
+            .router
+            .dispatch_authenticated_runtime_tool_call(
+                &reach.owner_token,
+                tool_name,
+                serde_json::json!({"kernel": "kernel-b", "request": {"ListSessions": null}}),
+            )
+            .await
+            .expect_err("a room tool does not take a kernel");
+        assert!(
+            error.to_string().contains("chariox-reach"),
+            "{tool_name}: {error}"
+        );
+    }
+    // Without a kernel the same call is the room's own.
+    let listed = reach
+        .router
+        .dispatch_authenticated_runtime_tool_call(
+            &reach.owner_token,
+            "chariox_list_session_agents",
+            serde_json::json!({}),
+        )
+        .await
+        .expect("the room tool still works");
+    assert!(listed.ok);
 }

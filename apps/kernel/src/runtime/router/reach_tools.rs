@@ -7,7 +7,11 @@ use crate::local::LocalDaemonRequest;
 use crate::runtime::kernel_gateway::Origin;
 use crate::runtime::state::reach::{acquires_machine, reach_need, ReachCaller, ReachNeed};
 use crate::transport::runtime_tools::{
-    ReachRequestArgs, RuntimeToolResult, REACH_KERNELS_TOOL, REACH_REQUEST_TOOL,
+    reach_events_ack_request, reach_events_subscribe_request, reach_events_wait_request,
+    reach_guide, reach_sessions_request, ReachEventsAckArgs, ReachEventsSubscribeArgs,
+    ReachEventsWaitArgs, ReachRequestArgs, ReachSessionsArgs, RuntimeToolResult,
+    REACH_EVENTS_ACK_TOOL, REACH_EVENTS_SUBSCRIBE_TOOL, REACH_EVENTS_WAIT_TOOL, REACH_GUIDE_TOOL,
+    REACH_KERNELS_TOOL, REACH_REQUEST_TOOL, REACH_SESSIONS_TOOL,
 };
 
 /// A refused call is a tool result with a stable code, not a transport failure.
@@ -16,6 +20,21 @@ fn refused(code: &str, message: impl Into<String>) -> RuntimeToolResult {
         ok: false,
         payload: serde_json::json!({"code": code, "message": message.into()}),
     }
+}
+
+fn tool_arguments<T: serde::de::DeserializeOwned>(
+    tool_name: &str,
+    arguments: serde_json::Value,
+) -> Result<T, DaemonError> {
+    serde_json::from_value(arguments).map_err(|error| {
+        crate::runtime::kernel_access::error(format!("invalid {tool_name} tool arguments: {error}"))
+    })
+}
+
+fn kernel_request(request: serde_json::Value) -> Result<LocalDaemonRequest, DaemonError> {
+    serde_json::from_value(request).map_err(|_| {
+        crate::runtime::kernel_access::error("invalid kernel request: use externally tagged JSON in request, for example {\"ListSessions\":null}")
+    })
 }
 
 impl CommandRouter {
@@ -41,18 +60,39 @@ impl CommandRouter {
         };
         match tool_name {
             REACH_KERNELS_TOOL => Ok(self.reach_kernels().await),
+            REACH_GUIDE_TOOL => Ok(RuntimeToolResult {
+                ok: true,
+                payload: serde_json::json!({"guide": reach_guide()}),
+            }),
+            REACH_SESSIONS_TOOL => {
+                let args: ReachSessionsArgs = tool_arguments(tool_name, arguments)?;
+                let request = reach_sessions_request(&args);
+                self.reach_request(&caller, args.kernel, kernel_request(request)?)
+                    .await
+            }
             REACH_REQUEST_TOOL => {
-                let args: ReachRequestArgs =
-                    serde_json::from_value(arguments).map_err(|error| {
-                        crate::runtime::kernel_access::error(format!(
-                            "invalid request tool arguments: {error}"
-                        ))
-                    })?;
-                let request: LocalDaemonRequest =
-                    serde_json::from_value(args.request).map_err(|_| {
-                        crate::runtime::kernel_access::error("invalid kernel request: use externally tagged JSON in request, for example {\"ListSessions\":null}")
-                    })?;
-                self.reach_request(&caller, args.kernel, request).await
+                let args: ReachRequestArgs = tool_arguments(tool_name, arguments)?;
+                self.reach_request(&caller, args.kernel, kernel_request(args.request)?)
+                    .await
+            }
+            // The inbox of events lives on the agent's own kernel, whichever kernel is followed.
+            REACH_EVENTS_SUBSCRIBE_TOOL => {
+                let args: ReachEventsSubscribeArgs = tool_arguments(tool_name, arguments)?;
+                let request = reach_events_subscribe_request(args);
+                self.reach_request(&caller, None, kernel_request(request)?)
+                    .await
+            }
+            REACH_EVENTS_WAIT_TOOL => {
+                let args: ReachEventsWaitArgs = tool_arguments(tool_name, arguments)?;
+                let request = reach_events_wait_request(args);
+                self.reach_request(&caller, None, kernel_request(request)?)
+                    .await
+            }
+            REACH_EVENTS_ACK_TOOL => {
+                let args: ReachEventsAckArgs = tool_arguments(tool_name, arguments)?;
+                let request = reach_events_ack_request(args);
+                self.reach_request(&caller, None, kernel_request(request)?)
+                    .await
             }
             _ => Ok(refused("reach_unknown_tool", "no such chariox-reach tool")),
         }

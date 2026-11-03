@@ -1,0 +1,238 @@
+{
+  "tools": [
+    {
+      "name": "kernels",
+      "description": "List the kernels of your user that you can reach from this room: name, id, machine and state.",
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "sessions",
+      "description": "List the rooms (sessions) of a kernel, or with `session_id` the agents of one room. The ids you need for `request` and `events_subscribe`.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "kernel": {
+            "type": "string",
+            "description": "Kernel name or id from `kernels`; omit for this kernel."
+          },
+          "session_id": {
+            "type": "string",
+            "description": "A room of that kernel: list its agents instead of the rooms."
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "request",
+      "description": "Send one kernel request for your user to another room or kernel. Without /sudo you may do there what a Room agent without /sudo may do in its own room: list and read sessions, agents and history, attach and message agents, use a room's terminals and files, and use machines. What needs /sudo in your own room needs a live /sudo window of your own turn here; owner-only requests are refused. Example: {\"kernel\":\"my-mac\",\"request\":{\"ListSessions\":null}}.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "kernel": {
+            "type": "string",
+            "description": "Kernel name or id from `kernels`; omit for this kernel."
+          },
+          "request": {
+            "type": "object",
+            "description": "One externally tagged kernel request, for example {\"ListSessions\":null}. `guide` lists examples."
+          }
+        },
+        "required": [
+          "request"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "events_subscribe",
+      "description": "Follow a room, or one agent of it, in your event inbox; `events_wait` brings what happens there.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "kernel": {
+            "type": "string",
+            "description": "Kernel name or id from `kernels`."
+          },
+          "session_id": {
+            "type": "string",
+            "description": "The room to follow."
+          },
+          "agent_id": {
+            "type": "string",
+            "description": "Follow only this agent of the room."
+          }
+        },
+        "required": [
+          "kernel",
+          "session_id"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "events_wait",
+      "description": "Wait for pending records of the rooms and agents you follow; returns at once when some are pending and `timed_out` when none came. Keep next_cursor.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "since": {
+            "type": "integer",
+            "description": "Records after this cursor; omit for all pending records."
+          },
+          "limit": {
+            "type": "integer",
+            "description": "At most this many records (default 1000).",
+            "maximum": 1000
+          },
+          "timeout_seconds": {
+            "type": "integer",
+            "description": "How long to wait for a record (default 60, at most 280: a provider ends a tool call that lasts longer).",
+            "maximum": 280
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "events_ack",
+      "description": "Acknowledge the records you handled, through a cursor `events_wait` returned.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "cursor": {
+            "type": "integer",
+            "description": "Acknowledge all records through this cursor."
+          }
+        },
+        "required": [
+          "cursor"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "guide",
+      "description": "How reach works: the tools, example requests, authority and refusal codes.",
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    }
+  ],
+  "examples": [
+    {
+      "request": {
+        "ListSessions": null
+      },
+      "note": "SessionsListed.sessions"
+    },
+    {
+      "request": {
+        "ListProjects": {
+          "include_archived": false
+        }
+      },
+      "note": "ProjectsListed.projects"
+    },
+    {
+      "request": {
+        "SearchWorkspaceDirectories": {
+          "query": "NAME",
+          "limit": 20
+        }
+      },
+      "note": "WorkspaceDirectoriesSearched.directories: absolute directory paths on that machine"
+    },
+    {
+      "request": {
+        "CreateSession": {
+          "workspace_id": "/PATH",
+          "worktree_id": "/PATH",
+          "alias": null,
+          "slice_ref": null
+        }
+      },
+      "note": "workspace_id and worktree_id are one such directory path; SessionCreated.session.id"
+    },
+    {
+      "request": {
+        "AttachToSession": {
+          "session_id": "SESSION_ID",
+          "client_id": "CLIENT_NAME",
+          "capability_level": "FullTerminal"
+        }
+      },
+      "note": "SessionAttached.attachment.id; client_id is any name you pick"
+    },
+    {
+      "request": {
+        "GetSessionState": {
+          "session_id": "SESSION_ID"
+        }
+      },
+      "note": "SessionState: agents, prompts, output"
+    },
+    {
+      "request": {
+        "SpawnAgent": {
+          "session_id": "SESSION_ID",
+          "provider": "codex",
+          "alias": null,
+          "model": null,
+          "effort": null,
+          "execution_mode": null,
+          "permission_level": null,
+          "worktree_id": null,
+          "kernel_ref": null,
+          "slice_ref": null,
+          "worktree_placement": null,
+          "account_profile": "PROFILE_ID"
+        }
+      },
+      "note": "provider is claude, codex or opencode; use the chosen profile_id from ListProviderAccountProfiles, and set model and effort; AgentSpawned.agent.id"
+    },
+    {
+      "request": {
+        "SubmitPrompt": {
+          "session_id": "SESSION_ID",
+          "attachment_id": "ATTACHMENT_ID",
+          "target_agent_id": null,
+          "prompt": "PROMPT",
+          "attachments": []
+        }
+      },
+      "note": "target_agent_id is an agent id, or null for the default agent"
+    },
+    {
+      "request": {
+        "CancelActivePrompt": {
+          "session_id": "SESSION_ID",
+          "attachment_id": "ATTACHMENT_ID"
+        }
+      },
+      "note": "stops the running prompt"
+    },
+    {
+      "request": {
+        "RunShellCommand": {
+          "session_id": "SESSION_ID",
+          "attachment_id": "ATTACHMENT_ID",
+          "command": "ls",
+          "args": [
+            "-la"
+          ],
+          "working_directory": "/PATH",
+          "timeout_ms": 60000
+        }
+      },
+      "note": "runs on that machine; ShellCommandCompleted.result has exit_code, stdout, stderr"
+    }
+  ],
+  "guide": "Chariox reach guide for Room agents. The chariox tools act in your own room; the chariox-reach tools act on other rooms and kernels of your user.\nTools:\n  kernels(): List the kernels of your user that you can reach from this room: name, id, machine and state.\n  sessions(kernel?, session_id?): List the rooms (sessions) of a kernel, or with `session_id` the agents of one room. The ids you need for `request` and `events_subscribe`.\n  request(kernel?, request): Send one kernel request for your user to another room or kernel. Without /sudo you may do there what a Room agent without /sudo may do in its own room: list and read sessions, agents and history, attach and message agents, use a room's terminals and files, and use machines. What needs /sudo in your own room needs a live /sudo window of your own turn here; owner-only requests are refused. Example: {\"kernel\":\"my-mac\",\"request\":{\"ListSessions\":null}}.\n  events_subscribe(kernel, session_id, agent_id?): Follow a room, or one agent of it, in your event inbox; `events_wait` brings what happens there.\n  events_wait(since?, limit?, timeout_seconds?): Wait for pending records of the rooms and agents you follow; returns at once when some are pending and `timed_out` when none came. Keep next_cursor.\n  events_ack(cursor): Acknowledge the records you handled, through a cursor `events_wait` returned.\n  guide(): How reach works: the tools, example requests, authority and refusal codes.\nFind a kernel with kernels (its name is the machine name, or <machine>/<label>), its rooms with sessions, then send requests with request. Without a kernel argument a request runs on this kernel.\nRequests for request (replace the UPPERCASE values; ids come from earlier answers):\n  {\"ListSessions\":null}  | SessionsListed.sessions\n  {\"ListProjects\":{\"include_archived\":false}}  | ProjectsListed.projects\n  {\"SearchWorkspaceDirectories\":{\"query\":\"NAME\",\"limit\":20}}  | WorkspaceDirectoriesSearched.directories: absolute directory paths on that machine\n  {\"CreateSession\":{\"workspace_id\":\"/PATH\",\"worktree_id\":\"/PATH\",\"alias\":null,\"slice_ref\":null}}  | workspace_id and worktree_id are one such directory path; SessionCreated.session.id\n  {\"AttachToSession\":{\"session_id\":\"SESSION_ID\",\"client_id\":\"CLIENT_NAME\",\"capability_level\":\"FullTerminal\"}}  | SessionAttached.attachment.id; client_id is any name you pick\n  {\"GetSessionState\":{\"session_id\":\"SESSION_ID\"}}  | SessionState: agents, prompts, output\n  {\"SpawnAgent\":{\"session_id\":\"SESSION_ID\",\"provider\":\"codex\",\"alias\":null,\"model\":null,\"effort\":null,\"execution_mode\":null,\"permission_level\":null,\"worktree_id\":null,\"kernel_ref\":null,\"slice_ref\":null,\"worktree_placement\":null,\"account_profile\":\"PROFILE_ID\"}}  | provider is claude, codex or opencode; use the chosen profile_id from ListProviderAccountProfiles, and set model and effort; AgentSpawned.agent.id\n  {\"SubmitPrompt\":{\"session_id\":\"SESSION_ID\",\"attachment_id\":\"ATTACHMENT_ID\",\"target_agent_id\":null,\"prompt\":\"PROMPT\",\"attachments\":[]}}  | target_agent_id is an agent id, or null for the default agent\n  {\"CancelActivePrompt\":{\"session_id\":\"SESSION_ID\",\"attachment_id\":\"ATTACHMENT_ID\"}}  | stops the running prompt\n  {\"RunShellCommand\":{\"session_id\":\"SESSION_ID\",\"attachment_id\":\"ATTACHMENT_ID\",\"command\":\"ls\",\"args\":[\"-la\"],\"working_directory\":\"/PATH\",\"timeout_ms\":60000}}  | runs on that machine; ShellCommandCompleted.result has exit_code, stdout, stderr\nA request the kernel cannot parse comes back with a message naming the expected variants and fields: read it and fix the request.\nFollow rooms or single agents with events_subscribe, then events_wait and events_ack with the cursor you keep.\nA record with value.question is a decision for the person: show it to them and do not choose for them.\nRefusals are results with a code: reach_requires_sudo (needs your user's /sudo window, as it would in your own room), excluded_for_agents and human_only (never yours), not_allowed, reach_not_available (your run cannot reach), acquisition_declined (the user declined a machine), and the kernel_* codes of an unreachable or slow kernel: retry once with the same request on kernel_request_timeout or kernel_connection_lost, read the state first on kernel_outcome_unknown.\nHuman-only, never attempted by you: passkey approvals, grants, sudo approvals, secrets and credentials, relay and pairing configuration."
+}
