@@ -39,7 +39,7 @@ and aborts still require worker attribution/containment; the SDK does not recove
 them by unwinding into the host.
 
 `template/app.cpp` has the C template's `echo`, transactional `counter` and
-cancellable `wait` tools, schema version 1 and key `count`. Register those same
+cancellable `wait` tools, schema version 0 (an App without a migration chain) and key `count`. Register those same
 names in your package declarations. The template returns conflicts without
 replaying writes. As with C, this is a backend template: views, declarations,
 signing and the real `.cxapp` install flow need the other Stage 1 lanes.
