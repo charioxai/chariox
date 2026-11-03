@@ -671,7 +671,7 @@ fn envp05a_github_vault_binding_applies_and_reaches_provider_launch() {
 // ordinary Vault inputs; only public (non-secret) destinations refuse them.
 #[test]
 fn envr10_application_credentials_apply_and_reach_provider_launch() {
-    let root = crate::test_support::TestWorktree::new("envr10-aws-vault");
+    let root = crate::test_support::TestWorktree::new("envr10-credential-vault");
     let config = unlocked_fixture_vault_config(root.path());
     let vault = crate::secret::project_environment_vault(&config).unwrap();
     let names = [
@@ -686,7 +686,7 @@ fn envr10_application_credentials_apply_and_reach_provider_launch() {
     }
     let store = ProjectEnvironmentStore::new(&config.private_runtime_state_root());
     let project = crate::session::RuntimeProject::new(
-        "aws",
+        "credential-project",
         "owner",
         root.path().to_string_lossy(),
         "Application",
