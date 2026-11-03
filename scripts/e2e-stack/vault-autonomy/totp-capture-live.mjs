@@ -44,7 +44,15 @@ function otpCodes(seed) {
 }
 const marker = `TCAP${mode.toUpperCase()}_${Date.now()}_DPR${dpr}`
 const privateValues = [], checks = [], errors = []
-const serviceSecrets=[]
+const serviceSecrets=[], codeValues=[]
+// Which kind of Vault-derived value a runtime artifact holds (never the value itself). A code is six digits,
+// so it only counts as a whole number, not inside a longer one such as a timestamp.
+const leaks = bytes => {
+ const found=[]
+ if(serviceSecrets.filter(Boolean).some(value=>bytes.includes(Buffer.from(value))))found.push('password-or-seed')
+ if(codeValues.length&&new RegExp('(?<![0-9])(?:'+codeValues.join('|')+')(?![0-9])').test(bytes.toString('latin1')))found.push('one-time-code')
+ return found
+}
 let fixture, browser, context, page, agentId, sessionId, observedRunId, gitea, captured, lastReplies=[]
 const check = (name, ok) => { checks.push({ name, ok:Boolean(ok) }); assert.ok(ok, name) }
 const safe = value => { let text = String(value); for (const secret of [...privateValues,...serviceSecrets]) if (secret) text = text.split(secret).join('[redacted]'); return text }
@@ -67,7 +75,7 @@ async function scanArtifacts(directory) {
   if(item.isDirectory()) files+=await scanArtifacts(filename)
   else if(/\.(json|jsonl|ndjson|log|txt|md|sqlite|sqlite3|db)$/.test(item.name)) {
    const bytes=await readFile(filename); files++
-   const matches=serviceSecrets.filter(Boolean).flatMap((value,index)=>bytes.includes(Buffer.from(value))?['Vault value']:[])
+   const matches=leaks(bytes)
    if(matches.length)await writeFile(path.join(evidence,'artifact-match.json'),JSON.stringify({file:path.relative(fixture.scratch,filename),matches},null,2)+'\n')
    check('no Vault value in runtime artifact',matches.length===0)
   }
@@ -101,11 +109,12 @@ async function agentTurn(prompt, success, failure) {
  })
  const field=page.locator('[data-prompt-input]');await field.fill(prompt);await field.press('Enter')
  await waitFor(async()=>{const state=(await fixture.send({GetSessionState:{session_id:sessionId}})).SessionState;observedRunId=state.agent_activity[agentId]?.active_turn?.provider_run_id ?? state.session.active_provider_run_id;return Boolean(observedRunId)},'native provider run identity',60000)
- await page.waitForFunction(({success,failure})=>[...document.querySelectorAll('.pane-transcript-reply')].some(e=>e.innerText.trim().startsWith(success)||e.innerText.trim().startsWith(failure)),{success,failure},{timeout:600000})
+ await page.waitForFunction(({success,failure})=>[...document.querySelectorAll('.pane-transcript-reply')].some(e=>{const text=e.innerText.replace(/^[^A-Za-z0-9]+/,'');return text.startsWith(success)||text.startsWith(failure)}),{success,failure},{timeout:600000})
  const replies=await page.locator('.pane-transcript-reply').allInnerTexts()
  // The user's own prompt text is a transcript entry too: only an answer that starts with the marker counts.
  lastReplies=replies.map(text=>safe(text).slice(0,400))
- check(success,replies.some(text=>text.trim().startsWith(success))&&!replies.some(text=>text.trim().startsWith(failure)))
+ const answer=text=>text.replace(/^[^A-Za-z0-9]+/,'')
+ check(success,replies.some(text=>answer(text).startsWith(success))&&!replies.some(text=>answer(text).startsWith(failure)))
  const seen=await page.evaluate(()=>{window.__vgapsProbe.observer.disconnect();return window.__vgapsProbe.seen})
  check('no approval or sudo interaction during ordinary Vault use',seen===0)
  await shot(success)
@@ -209,6 +218,9 @@ try {
   return replies.some(text=>text.includes(ready))
  },'real Codex browser admission',300000)
  await page.waitForFunction(()=>!document.querySelector('section[data-kernel-interaction-id]'))
+ // Loading the browser reloads the provider; the kernel then continues the setup prompt once more. Let that
+ // second run end so it cannot queue behind (or replace the tools of) the real turns.
+ await page.waitForFunction(ready=>[...document.querySelectorAll('.pane-transcript-reply')].filter(e=>e.innerText.replace(/^[^A-Za-z0-9]+/,'').startsWith(ready)).length>=2,ready,{timeout:30000}).catch(()=>checks.push({name:'no second setup run observed'}))
  const totpName=marker+' Gitea authenticator',accepted=[]
  const common=`The kernel browser is already loaded. Use chariox.kernel_browser_* tools on my displayed browser; take a fresh snapshot before every action (tab_id, generation, document_id and node_ref come from it). Sign in to Gitea at ${gitea.origin} as the user drillagent: type the user name drillagent, and fill the password field with Vault credential ${passwordId} using chariox.kernel_browser_paste_secret with submit=false, then click the Sign In button. On the Gitea two-factor page fill the passcode field with the TOTP Vault credential using chariox.kernel_browser_paste_secret with submit=true (the field belongs to a native form, so no button click is needed; the browser pane is small and buttons can be below the visible area). Never type or print a password, key or code yourself.`
  try {
@@ -222,7 +234,7 @@ try {
   check('Gitea itself now requires two-factor',await gitea.twoFactorEnabled())
   accepted.push(gitea.lastPasscode())
   const seed=(await fixture.send({OwnerVault:{action:'reveal',id:captured.id}})).OwnerVault.result.value
-  serviceSecrets.push(seed,...otpCodes(seed))
+  serviceSecrets.push(seed);codeValues.push(...otpCodes(seed))
   await agentTurn(`MP-08 / MP-09 / MP-10 / MP-11 TCAP login one ${marker}: ${common} The TOTP Vault credential is ${captured.id}. Sign out first (${gitea.origin}/user/logout), then sign in with the password and, on the two-factor page, the code from ${captured.id}. When Gitea shows the signed-in dashboard, sign out again. Finish with ${marker}_LOGIN1_OK, otherwise ${marker}_LOGIN1_FAILED with the first failing tool error.`,marker+'_LOGIN1_OK',marker+'_LOGIN1_FAILED')
   accepted.push(gitea.lastPasscode())
   await agentTurn(`MP-08 / MP-09 / MP-10 / MP-11 TCAP login two ${marker}: ${common} The TOTP Vault credential is ${captured.id}. Gitea refuses a code twice, so first wait for a different real TOTP period: schedule ONE one-shot chariox.events.timer with delay_ms 45000 and yield on its registration_id with a finite future deadline; end the turn after the yield. On the real wake sign in again with the password and the code from ${captured.id}, check the signed-in dashboard, and sign out. Finish with ${marker}_LOGIN2_OK, otherwise ${marker}_LOGIN2_FAILED with the first failing tool error.`,marker+'_LOGIN2_OK',marker+'_LOGIN2_FAILED')
@@ -249,7 +261,18 @@ try {
   try{const {bytesRead}=await fd.read(head,0,head.length,0);first={payload:{cwd:head.subarray(0,bytesRead).toString('utf8').match(/"cwd"\s*:\s*"([^"]+)"/)?.[1]}}}finally{await fd.close()}
   if(first?.payload?.cwd!==fixture.workspace)continue
   const bytes=await readFile(filename)
-  check('no Vault value in own official provider transcript',serviceSecrets.filter(Boolean).every(secret=>!bytes.includes(Buffer.from(secret))))
+  // The service's own page shows the setup key, so a snapshot taken before the capture holds it: that is page
+  // content, not a Vault value. After the capture the entry is protected, and the agent's own words never hold it.
+  const lines=bytes.toString('utf8').split('\n').filter(Boolean)
+  const afterCapture=lines.slice(Math.max(0,lines.findIndex(line=>captured&&line.includes(captured.id))+1))
+  const authored=lines.filter(line=>{try{const payload=JSON.parse(line).payload;return payload?.type==='function_call'||(payload?.type==='message'&&payload.role==='assistant')}catch{return false}})
+  const report={password_anywhere:bytes.includes(Buffer.from(serviceSecrets[0])),
+   seed_after_capture:serviceSecrets.slice(1).some(value=>Buffer.from(afterCapture.join('\n')).includes(Buffer.from(value))),
+   seed_in_agent_words:serviceSecrets.slice(1).some(value=>Buffer.from(authored.join('\n')).includes(Buffer.from(value))),
+   code_anywhere:leaks(Buffer.from(lines.join('\n'))).includes('one-time-code'),
+   seed_in_page_snapshot_before_capture:serviceSecrets.slice(1).some(value=>bytes.includes(Buffer.from(value)))}
+  checks.push({name:'provider transcript classes',report})
+  check('no Vault value in own official provider transcript',!report.password_anywhere&&!report.seed_after_capture&&!report.seed_in_agent_words&&!report.code_anywhere)
   nativeFiles.push(filename)
  }
  check('official native provider history checked',nativeFiles.length>0)

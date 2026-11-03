@@ -12,7 +12,6 @@ use super::*;
 use crate::config::{UserCredentialConfig, UserCredentialMetadataConfig};
 use crate::runtime::kernel_browser_host::{KernelBrowserAdmission, KernelBrowserHost};
 use crate::transport::runtime_tools::{RuntimeToolResult, RuntimeToolSpec};
-use base64::Engine as _;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -173,7 +172,7 @@ impl KernelRuntimeState {
                 // Checked before anything is revealed, so a refusal costs no secret.
                 super::vault_command::validate_capture_binding(&turn.run, binding)?;
                 let host = super::vault_command::service_host(
-                    &source
+                    source
                         .trim_start_matches("https://")
                         .trim_start_matches("http://"),
                 )?;
