@@ -135,7 +135,9 @@ Command and file capture require `use_binding`, using the existing typed
 canonical workspace file path. Only its matching use and injection are granted.
 Retries preserve the binding; unbound workspace entries are refused rather
 than inferred. Browser capture permits at most one `use_on` origin and stores
-a Site binding; auth.md registration stores the issued resource Site binding.
+a Site binding, or a TOTP binding when the call sets `totp` (the value is a
+manual setup key or `otpauth://` URI, also read from a QR image with
+`read: "qr"`, and the kernel computes the codes); auth.md registration stores the issued resource Site binding.
 Ordinary operations need no sudo or task approval; payment cards always ask.
 See [capture and use](KERNEL_SUDO.md#vault-capture-and-use-by-command-and-file-vaudit-s2-s4).
 

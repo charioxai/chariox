@@ -13,6 +13,8 @@ import { measureBrowserProtection } from './browser-protection-regions.mjs';
 import { captureProtectedPage, decodePng } from './kernel-browser-pixels.mjs';
 
 const secret = 'sk_test_51VaudCapbrowserRevealValue';
+// A fictional enrolment QR code (see kernel_browser_qr.rs), drawn with no quiet zone.
+const qrPng = 'iVBORw0KGgoAAAANSUhEUgAAAHsAAAB7AQAAAAB8vMLSAAAB00lEQVR42o1Vvc3kIBR8PgIyuwEk2iCjJbsB79KA3RIZbSDRgJ0RIL8bf192l8wK7UorjR7z8wYRsXpm/8SxxiEif+Sfz39/iNfitRvVuhX3UQbipoJBVaxJOlbLQpbs9T08RG91q9VvICHgUpc+PkWvODguIOJA/PdwiqmqT93jJym+K3cxDGpa2tfWXRhIu/uQWOdQZzHfSE25BKa4PfpTFYMIiEl9LNkt6rYOnamLXbbdpT3RzVGWzkBkDU4CRBi7FQmUyClXge8iU1aO/viAgrgtjy3XKQtFvyD2RrPMQQ/KfZm6P+yYBXLJRGWsHdKQk6njyEZB4CB80SdgENSjuGCzZnFiPWJ5UBkzp8pU3lg+sJXLWMr+snrBx2i4jLVTEeOxlDdmyAwz5cEI0bO3s1cOInvwV3QQDTEWCuIg14Q6ithK7DKV5I/iSu5T/PnTgVQsC5Ip+5tP6EyJfGMEYqz+Llhkyv27yGzNndsVyBr3V3itTMWntzApCJJ85pZU1kjSf9vyiS31urx0KtfJQ34CORX0P1mwY3mfMHN38Krc+wIrzWOxnlhqFvINbsHDBCvZKWMO5lZUJeqC5NKOgGoawG6FfMWwMnVBBkKlFPsLQsNA8QWNm7YAAAAASUVORK5CYII=';
 const hash = (value) => createHash('sha256').update(value).digest('hex');
 const box = 'position:absolute;left:80px;width:420px;height:40px;background:magenta;color:magenta;font:20px monospace;border:0;margin:0';
 const html = `<!doctype html><body style="margin:0;background:white">
@@ -22,6 +24,7 @@ const html = `<!doctype html><body style="margin:0;background:white">
 <button id=toggle style="position:absolute;left:560px;top:120px" onclick="const f=document.querySelector('#hidden');f.type=f.type==='password'?'text':'password'">Show</button>
 <button id=copy style="position:absolute;left:560px;top:200px" onclick="navigator.clipboard.writeText('${secret}').then(()=>{this.textContent='Copied'})">Copy</button>
 <input id=env style="${box};top:280px">
+<img id=qr alt="" style="position:absolute;left:80px;top:360px;width:150px;height:150px;image-rendering:pixelated" src="data:image/png;base64,${qrPng}">
 </body>`;
 
 async function setup(dpr, run) {
@@ -91,6 +94,18 @@ for (const dpr of [1, 2]) {
     assert.equal(await evaluate("document.querySelector('#hidden').type"), 'text');
     assert.deepEqual(await pixel(100, 140), [0, 0, 0], 'the shown password field stays masked for the model');
     await assert.rejects(capture({ node_ref: await ref('#key'), reveal_node_ref: await ref('#copy'), read: 'clipboard' }), /omit reveal_node_ref/);
+  }));
+
+  test(`VAUDIT S3 DPR${dpr}: a QR code image is captured as a picture the kernel decodes`, () => setup(dpr, async ({ ref, capture, policy, browser }) => {
+    const data = await capture({ node_ref: await ref('#qr'), read: 'qr' });
+    const image = decodePng(data, dpr);
+    assert.ok(image.width >= 400 * dpr && image.width === image.height, `scaled up so modules stay legible: ${image.width}`);
+    let dark = 0;
+    for (let i = 0; i < image.pixels.length; i += 4) if (image.pixels[i] < 64) dark++;
+    assert.ok(dark > image.width * image.height * 0.2 && dark < image.width * image.height * 0.7, 'the picture holds the code');
+    assert.ok(!browser.protectedValues.has(data), 'a picture of the element is not a protected secret');
+    await assert.rejects(capture({ node_ref: await ref('#qr'), read: 'qr', reveal_node_ref: await ref('#reveal') }), /omit reveal_node_ref/);
+    assert.equal(policy.values.length, 0);
   }));
 
   test(`VAUDIT S3 DPR${dpr}: fill_field fills a plain field without changing the page`, () => setup(dpr, async ({ browser, ref, protect, pixel, regions, evaluate, targetId, documentId, url }) => {

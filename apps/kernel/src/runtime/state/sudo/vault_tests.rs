@@ -318,6 +318,8 @@ while IFS= read -r request; do
  [ -f "$1/opened" ] && tabs="$tabs"',{"tab_id":"host-tab-new","document_id":"doc-login"}'
  case "$request" in
   *'"method":"health"'*) printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s,"diagnostic_code":null}}\n' "$id" "$$" ;;
+  *'"method":"host.secret"'*'"op":"capture"'*'"read":"qr"'*) printf '%s' "$request" > "$1/capture"; printf '{"id":%s,"ok":true,"result":{"value":"%s"}}\n' "$id" "$(cat "$1/qr.b64")" ;;
+  *'"method":"host.secret"'*'"op":"capture"'*'"read":"node","reveal_node_ref":null'*) printf '%s' "$request" > "$1/capture"; printf '{"id":%s,"ok":true,"result":{"value":"jbsw y3dp ehpk 3pxp"}}\n' "$id" ;;
   *'"method":"host.secret"'*'"op":"capture"'*) printf '%s' "$request" > "$1/capture"; printf '{"id":%s,"ok":true,"result":{"value":"vaudit-captured-fixture-value"}}\n' "$id" ;;
   *'"method":"host.secret"'*) printf '%s' "$request" | grep -o '"plain_target":true' > "$1/plain" || true; printf '%s' "$request" | sed -n 's/.*"text":"\([^"]*\)".*/\1/p' > "$1/echo"; printf '%s' "$request" | sed -n 's/.*"vault_factor_input":\(true\|false\).*/\1/p' > "$1/factor_input"; printf '%s' "$request" | sed -n 's/.*"_app_view_tab":"\([^"]*\)".*/\1/p' > "$1/app_view_tab"; printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
   *'"method":"host.'*'"op":"open"'*) : > "$1/opened"; printf '{"id":%s,"ok":true,"result":{"generation":1,"tab_id":"host-tab-new","tabs":[%s,{"tab_id":"host-tab-new","document_id":"doc-login"}]}}\n' "$id" "$tabs" ;;
@@ -1289,6 +1291,127 @@ async fn vaudit_s3_capture_browser_stores_and_protects_a_page_value() {
         (Some(handle.as_str()), Some(false))
     );
     assert!(!login.root.path().join("capture").exists());
+}
+
+// A page's manual setup key or QR code becomes a TOTP seed bound to the one site.
+#[tokio::test]
+async fn capture_browser_stores_a_page_totp_key_or_qr_as_a_site_bound_seed() {
+    crate::test_support::isolated_env_test!();
+    let login = login_room().await;
+    let f = &login.f;
+    unlock(f);
+    std::fs::write(
+        login.root.path().join("qr.b64"),
+        crate::runtime::state::kernel_browser_qr::FIXTURE_QR_PNG,
+    )
+    .unwrap();
+    let registry = crate::credential::CharioxCredentialRegistry::user().unwrap();
+    let totp_args = |request_id: &str, node_ref: &str, read: &str| {
+        let mut args = capture_args(request_id);
+        args["node_ref"] = json!(node_ref);
+        args["read"] = json!(read);
+        args["totp"] = json!(true);
+        args.as_object_mut().unwrap().remove("reveal_node_ref");
+        args
+    };
+    let key = call(f, CAPTURE, totp_args("key", "backend:7", "node"))
+        .await
+        .unwrap();
+    assert_eq!(key["totp"], true);
+    assert!(
+        !key.to_string().to_lowercase().contains("jbsw"),
+        "the model never gets the seed"
+    );
+    let handle = key["credential_id"].as_str().unwrap().to_string();
+    assert_code(f, &handle, 6, 30);
+    let credential = registry.get(&handle).unwrap().unwrap();
+    assert_eq!(
+        credential.injection,
+        crate::config::UserCredentialInjectionConfig::Totp(crate::config::TotpConfig::default())
+    );
+    assert_eq!(
+        credential.metadata.unwrap().use_binding.unwrap().target,
+        crate::config::VaultUseTarget::Totp {
+            origin: SITE.into()
+        }
+    );
+    let again = call(f, CAPTURE, totp_args("key", "backend:7", "node"))
+        .await
+        .unwrap();
+    assert_eq!(
+        (again["credential_id"].as_str(), again["created"].as_bool()),
+        (Some(handle.as_str()), Some(false))
+    );
+    let mut plain = totp_args("key", "backend:7", "node");
+    plain["totp"] = json!(false);
+    assert!(
+        call(f, CAPTURE, plain).await.is_err(),
+        "a retry cannot turn a seed into a password"
+    );
+
+    let qr = call(f, CAPTURE, totp_args("qr", "backend:7", "qr"))
+        .await
+        .unwrap();
+    let request = std::fs::read_to_string(login.root.path().join("capture")).unwrap();
+    assert!(request.contains(r#""read":"qr""#), "{request}");
+    let handle = qr["credential_id"].as_str().unwrap().to_string();
+    assert_code(f, &handle, 8, 45);
+    match registry.get(&handle).unwrap().unwrap().injection {
+        crate::config::UserCredentialInjectionConfig::Totp(config) => {
+            assert_eq!(
+                (config.digits, config.period_s),
+                (8, 45),
+                "URI parameters are kept"
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+
+    // A value that is not an authenticator key stores nothing and is not echoed.
+    let stored_before = crate::credential::load_user_credentials().unwrap().len();
+    let mut wrong = totp_args("wrong", "backend:7", "node");
+    wrong["reveal_node_ref"] = json!("backend:7");
+    let error = call(f, CAPTURE, wrong).await.unwrap_err().to_string();
+    assert!(
+        error.contains("TOTP") && !error.contains(CAPTURED),
+        "{error}"
+    );
+    assert_eq!(
+        crate::credential::load_user_credentials().unwrap().len(),
+        stored_before
+    );
+}
+
+/// The injected code is the RFC 6238 code of the fictional page seed (SHA-1, as the fixture URI says).
+fn assert_code(f: &Fixture, handle: &str, digits: u32, period: u64) {
+    use hmac::{Hmac, Mac};
+    let seed = data_encoding::BASE32_NOPAD
+        .decode(b"JBSWY3DPEHPK3PXP")
+        .unwrap();
+    let code_at = |seconds: u64| {
+        let mut mac = Hmac::<sha1::Sha1>::new_from_slice(&seed).unwrap();
+        mac.update(&(seconds / period).to_be_bytes());
+        let digest = mac.finalize().into_bytes();
+        let offset = usize::from(digest[19] & 15);
+        let number =
+            u32::from_be_bytes(digest[offset..offset + 4].try_into().unwrap()) & 0x7fff_ffff;
+        format!(
+            "{:0width$}",
+            number % 10u32.pow(digits),
+            width = digits as usize
+        )
+    };
+    let now = || {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+    };
+    let (before, code, after) = (now(), stored(f, handle), now());
+    assert!(
+        [code_at(before), code_at(after)].contains(&code.to_string()),
+        "the Vault computes a code from the captured seed"
+    );
 }
 
 // VAUDIT S3: fill_field puts a captured value into a plain field on an allowed origin only.

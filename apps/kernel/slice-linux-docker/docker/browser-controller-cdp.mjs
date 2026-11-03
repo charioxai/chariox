@@ -1165,7 +1165,8 @@ export class BrowserCdpClient {
       click: (nodeRef) => this.performAction({ target_id: targetId, document_id: documentId, node_ref: nodeRef,
         action: { kind: "click", expected_document_url: rawRequest.expected_document_url }, timeout_ms: 10_000 }, { signal }),
     }).catch((error) => { throw normalizeControllerError(error); });
-    this.protectedValues.add(value);
+    // A QR capture returns the picture of the element, not a secret to scrub.
+    if ((rawRequest?.read ?? "node") !== "qr") this.protectedValues.add(value);
     return value;
   }
 

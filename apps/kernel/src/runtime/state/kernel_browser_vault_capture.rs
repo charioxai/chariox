@@ -12,6 +12,7 @@ use super::*;
 use crate::config::{UserCredentialConfig, UserCredentialMetadataConfig};
 use crate::runtime::kernel_browser_host::{KernelBrowserAdmission, KernelBrowserHost};
 use crate::transport::runtime_tools::{RuntimeToolResult, RuntimeToolSpec};
+use base64::Engine as _;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -38,6 +39,9 @@ struct CaptureArgs {
     label: Option<String>,
     #[serde(default)]
     use_on: Vec<String>,
+    /// The value is an authenticator seed (base32 key or otpauth URI), not a password or key.
+    #[serde(default)]
+    totp: bool,
 }
 
 #[derive(Deserialize, Default, Clone, Copy, PartialEq, Eq, Debug)]
@@ -48,6 +52,8 @@ enum CaptureRead {
     Node,
     /// node_ref is a copy button; the value is what it copies.
     Clipboard,
+    /// node_ref is a QR code image; the value is the text it encodes.
+    Qr,
 }
 
 impl CaptureRead {
@@ -55,6 +61,7 @@ impl CaptureRead {
         match self {
             Self::Node => "node",
             Self::Clipboard => "clipboard",
+            Self::Qr => "qr",
         }
     }
 }
@@ -62,12 +69,13 @@ impl CaptureRead {
 pub(super) fn capture_spec() -> RuntimeToolSpec {
     RuntimeToolSpec {
         name: CAPTURE.into(),
-        description: "store a secret a user-domain page shows (an API key, a webhook signing secret) in the owner's Vault without reading it. Point node_ref at the element that shows the value (text or input); if the page hides it behind a Reveal/Show button, pass that button as reveal_node_ref and do not click it yourself. For a copy-to-clipboard button, pass the button as node_ref with read=clipboard. The kernel reveals, reads and masks the value for you; you receive only credential_id and label. use_on declares at most one exact site origin where the credential may be filled later (default: this page's origin). Retrying with the same request_id returns the same credential.".into(),
+        description: "store a secret a user-domain page shows (an API key, a webhook signing secret) in the owner's Vault without reading it. Point node_ref at the element that shows the value (text or input); if the page hides it behind a Reveal/Show button, pass that button as reveal_node_ref and do not click it yourself. For a copy-to-clipboard button, pass the button as node_ref with read=clipboard. To enrol an authenticator, set totp=true and point node_ref at the manual setup key text (or at the QR code image with read=qr): the value is stored as a TOTP seed and the kernel computes codes when you fill the observed code field with the credential. The kernel reveals, reads and masks the value for you; you receive only credential_id and label. use_on declares at most one exact site origin where the credential may be filled later (default: this page's origin). Retrying with the same request_id returns the same credential.".into(),
         input_schema: json!({"type":"object","required":["request_id","tab_id","generation","document_id","node_ref"],"properties":{
             "request_id":{"type":"string","minLength":1,"maxLength":128},
             "tab_id":{"type":"string"},"generation":{"type":"integer","minimum":1},"document_id":{"type":"string"},
             "node_ref":{"type":"string"},"reveal_node_ref":{"type":"string"},
-            "read":{"type":"string","enum":["node","clipboard"],"default":"node"},
+            "read":{"type":"string","enum":["node","clipboard","qr"],"default":"node"},
+            "totp":{"type":"boolean","default":false},
             "label":{"type":"string","maxLength":200},
             "use_on":{"type":"array","maxItems":1,"items":{"type":"string","description":"Site origin such as https://vercel.com"}}},"additionalProperties":false}),
     }
@@ -140,10 +148,19 @@ impl KernelRuntimeState {
             Some(origin) => crate::config::vault_use::vault_origin(origin)?,
             None => source.clone(),
         }];
+        let use_target = if args.totp {
+            crate::config::VaultUseTarget::Totp {
+                origin: use_on[0].clone(),
+            }
+        } else {
+            crate::config::VaultUseTarget::Site {
+                origin: use_on[0].clone(),
+            }
+        };
         let handle = captured_handle(&turn, &args.request_id);
         let registry = crate::credential::CharioxCredentialRegistry::user()?;
         if let Some(existing) = registry.get(&handle)? {
-            return committed(&existing, &turn, &use_on);
+            return committed(&existing, &turn, &use_on, &use_target);
         }
         let protection = &self.owned.kernel_browser_secret_observations;
         let scope = KernelBrowserHost::profile_key(user);
@@ -193,6 +210,12 @@ impl KernelRuntimeState {
                 .kernel_browser_bound_operation(user, Some(&admission), "host.secret", params, true)
                 .await?;
             let secret = match read["value"].take() {
+                Value::String(value) if args.read == CaptureRead::Qr => {
+                    let image = base64::engine::general_purpose::STANDARD
+                        .decode(value)
+                        .map_err(|_| host_error("VAUDIT: the page returned no QR image".into()))?;
+                    super::kernel_browser_qr::decode_png_qr(&image)?
+                }
                 Value::String(value) => zeroize::Zeroizing::new(value),
                 _ => return Err(host_error("VAUDIT: the page returned no value".into())),
             };
@@ -229,12 +252,16 @@ impl KernelRuntimeState {
             },
             allowed_hosts: use_on.clone(),
             allowed_uses: vec![crate::config::UserCredentialUse::Browser],
-            injection: crate::config::UserCredentialInjectionConfig::Browser,
+            injection: if args.totp {
+                crate::config::UserCredentialInjectionConfig::Totp(
+                    crate::config::TotpConfig::default(),
+                )
+            } else {
+                crate::config::UserCredentialInjectionConfig::Browser
+            },
             metadata: Some(UserCredentialMetadataConfig {
                 use_binding: Some(crate::config::VaultUseBinding {
-                    target: crate::config::VaultUseTarget::Site {
-                        origin: use_on[0].clone(),
-                    },
+                    target: use_target.clone(),
                     value_kind: crate::config::VaultValueKind::Secret,
                 }),
                 created_by_kind: Some(CAPTURED_KIND.into()),
@@ -262,11 +289,11 @@ impl KernelRuntimeState {
             Ok(_) => Ok(RuntimeToolResult {
                 ok: true,
                 payload: json!({"credential_id": handle, "label": label, "use_on": use_on,
-                    "length": secret.chars().count(), "created": true}),
+                    "totp": args.totp, "length": secret.chars().count(), "created": true}),
             }),
             // A concurrent retry committed first: return that handle, never a new value.
             Err(stored) => match registry.get(&handle)? {
-                Some(existing) => committed(&existing, &turn, &use_on),
+                Some(existing) => committed(&existing, &turn, &use_on, &use_target),
                 None => Err(stored),
             },
         }
@@ -297,6 +324,7 @@ fn committed(
     existing: &UserCredentialConfig,
     turn: &VaultAgentContext,
     use_on: &[String],
+    target: &crate::config::VaultUseTarget,
 ) -> Result<RuntimeToolResult, DaemonError> {
     let metadata = existing.metadata.as_ref();
     if metadata.and_then(|m| m.created_by_kind.as_deref()) != Some(CAPTURED_KIND)
@@ -306,10 +334,7 @@ fn committed(
         || metadata
             .and_then(|m| m.use_binding.as_ref())
             .is_none_or(|binding| {
-                binding.target
-                    != crate::config::VaultUseTarget::Site {
-                        origin: use_on[0].clone(),
-                    }
+                binding.target != *target
                     || binding.value_kind != crate::config::VaultValueKind::Secret
             })
     {
@@ -320,7 +345,7 @@ fn committed(
     Ok(RuntimeToolResult {
         ok: true,
         payload: json!({"credential_id": existing.id, "label": existing.description,
-            "use_on": use_on, "created": false}),
+            "use_on": use_on, "totp": matches!(target, crate::config::VaultUseTarget::Totp { .. }), "created": false}),
     })
 }
 
