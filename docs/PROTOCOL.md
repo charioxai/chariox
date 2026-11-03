@@ -4329,9 +4329,10 @@ public address of the Setup script with the ticket. The response is
 `OwnMachineEnrollment { enrollment: { command, expires_at } }`, where `command`
 is one line for the new machine's own shell: it downloads the Setup script and
 pipes the ticket to `--enroll` on stdin, so no process argument carries it. The
-command is the only place the ticket appears; the kernel stores and logs
-nothing. A Cloud without a configured installer address makes the kernel revoke
-the ticket it just issued and refuse with that reason.
+command is the only place the ticket appears; the kernel logs nothing and
+keeps this response out of its command-result files. A Cloud without a
+configured installer address makes the kernel revoke the ticket it just issued
+and refuse with that reason.
 
 Setup installs the kernel, redeems the ticket once through the ordinary
 `/auth/kernel/enroll` exchange and the machine enrolls under the owner's

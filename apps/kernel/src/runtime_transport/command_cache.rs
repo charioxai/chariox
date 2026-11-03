@@ -1056,6 +1056,8 @@ fn should_persist_completed_result(fingerprint: &CommandFingerprint) -> bool {
             | "credential_enrollment.interaction.request"
             | "interaction.respond"
             | "native_provider.interaction.request"
+            // The one-time enrollment code is written nowhere, not even to this owner-only file.
+            | "machine.enroll"
     )
 }
 
