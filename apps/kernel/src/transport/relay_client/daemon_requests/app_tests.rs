@@ -1713,3 +1713,89 @@ async fn a_decision_answered_through_the_gateway_is_the_external_agents() {
         "external_agent"
     );
 }
+
+// MP-08 / MP-09 / MP-10 / MP-11: only a forwarded decision is the external agent's. Every other
+// request through the paired gateway keeps the gateway's terminal class, so its attachment keeps
+// the full terminal capability and can run a shell command.
+#[tokio::test]
+async fn a_paired_gateway_attachment_keeps_the_terminal_capability_and_runs_a_shell() {
+    let root = TestRoot::new();
+    let workspace = crate::test_support::TestWorktree::new("gateway-terminal-class");
+    let mut app = crate::test_support::bootstrap_authenticated_app(root.config()).unwrap();
+    let (session, _agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(workspace.session_request())
+        .unwrap();
+    let owner = session.owner_user_id().to_string();
+    let router =
+        CommandRouter::with_interactive_capacity(Arc::new(tokio::sync::Mutex::new(app)), 8);
+    let on_behalf_of = crate::local::OnBehalfOf {
+        origin_kernel: "origin-kernel".into(),
+        origin_name: None,
+        grant_id: "grant-that-lives-at-the-origin".into(),
+        harness: "claude".into(),
+    };
+    let through_gateway = |command_id: &str, request: LocalDaemonRequest| {
+        let router = &router;
+        let owner = owner.clone();
+        let on_behalf_of = on_behalf_of.clone();
+        let command_id = command_id.to_string();
+        async move {
+            let outcome = dispatch_on_behalf_of(
+                router,
+                &AtomicU64::new(1),
+                KernelCaller::for_relay_request(Some(caller(&owner))),
+                request,
+                Some(command_id),
+                &CommandResultCache::default(),
+                &on_behalf_of,
+                "paired-gateway-key",
+            )
+            .await;
+            match outcome {
+                RelayDispatchOutcome::Response(value) => {
+                    serde_json::from_value::<LocalDaemonResponse>(value).unwrap()
+                }
+                RelayDispatchOutcome::RelayError(error) => {
+                    panic!(
+                        "the gateway request is admitted: {} {}",
+                        error.code, error.message
+                    )
+                }
+            }
+        }
+    };
+
+    let LocalDaemonResponse::SessionAttached { attachment } = through_gateway(
+        "gateway-attach",
+        LocalDaemonRequest::AttachToSession(crate::local::AttachToSessionRequest {
+            session_id: session.id().to_string(),
+            client_id: "gateway-client".into(),
+            capability_level: crate::attachment::ClientCapabilityLevel::FullTerminal,
+        }),
+    )
+    .await
+    else {
+        panic!("expected the gateway attachment")
+    };
+    assert_eq!(
+        attachment.capability_level(),
+        crate::attachment::ClientCapabilityLevel::FullTerminal
+    );
+
+    let LocalDaemonResponse::ShellCommandCompleted { result } = through_gateway(
+        "gateway-shell",
+        LocalDaemonRequest::RunShellCommand(crate::local::RunShellCapabilityRequest {
+            session_id: session.id().to_string(),
+            attachment_id: attachment.id().to_string(),
+            command: "/bin/sh".into(),
+            args: vec!["-c".into(), "printf gateway".into()],
+            working_directory: None,
+            timeout_ms: None,
+        }),
+    )
+    .await
+    else {
+        panic!("expected the shell result")
+    };
+    assert_eq!((result.exit_code, result.stdout.as_str()), (0, "gateway"));
+}
