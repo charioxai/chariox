@@ -158,29 +158,18 @@ impl KernelRuntimeState {
     ) -> Result<zeroize::Zeroizing<String>, DaemonError> {
         self.preflight_workspace_vault_use(&context.agent_id, id, target)?;
         let credential = self.home_runtime_secret_service()?.credential(id)?.clone();
-        let approval = if credential
-            .metadata
-            .as_ref()
-            .is_some_and(|m| m.use_binding.is_some())
-        {
-            Some(
-                self.authorize_vault_use(
-                    &context.owner_user_id,
-                    &context.agent_id,
-                    &credential,
-                    target,
-                )
-                .await?,
+        let approval = self
+            .authorize_vault_use(
+                &context.owner_user_id,
+                &context.agent_id,
+                &credential,
+                target,
             )
-        } else {
-            None
-        };
+            .await?;
         self.recheck_vault_agent(context)?;
-        let service = self.home_runtime_secret_service()?;
-        let service = match approval {
-            Some(approval) => service.with_vault_use_approval(approval),
-            None => service,
-        };
+        let service = self
+            .home_runtime_secret_service()?
+            .with_vault_use_approval(approval);
         service.record_vault_activity(
             id,
             &format!(

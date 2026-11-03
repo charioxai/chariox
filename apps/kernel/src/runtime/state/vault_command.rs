@@ -26,6 +26,19 @@ fn command_timeout(seconds: Option<u64>) -> Result<Duration, DaemonError> {
     }
 }
 
+fn validate_capture_binding(
+    run: &crate::provider::RuntimeProviderRun,
+    binding: &crate::config::VaultUseBinding,
+) -> Result<(), DaemonError> {
+    use crate::config::VaultUseTarget;
+    binding.target.validate()?;
+    match &binding.target {
+        VaultUseTarget::CommandEnvironment { .. } | VaultUseTarget::CommandStdin { .. } => Ok(()),
+        VaultUseTarget::File { path } if files::new_workspace_file(run, path)?.to_str() == Some(path.as_str()) => Ok(()),
+        _ => Err(error("capture use_binding must name one command environment, stdin or canonical workspace file destination")),
+    }
+}
+
 impl KernelRuntimeState {
     fn recheck_vault_command_context(
         &self,

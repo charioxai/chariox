@@ -128,14 +128,16 @@ grant lock before resource/subscription registration or inventory projection;
 revocation followed by refocus cannot adopt an old call's result into a fresh
 grant. A final live cancellation/provider-run check fences returned results.
 
-### MP-08 / MP-09 / MP-10 / MP-11: Vault capture and use by command and file (local 943)
+### MP-08 / MP-09 / MP-10 / MP-11: one-use Vault capture (local 963 / peer 412)
 
-Local 943 and relay peer 392 add the kernel-local credential uses and
-injection kinds `env` and `file` (`{"allowed_uses":["env","file"],
-"injection":{"kind":"env"}}`). The sudo MCP tools
-`chariox.vault.capture_command`, `chariox.vault.use_env`,
-`chariox.vault.capture_file` and `chariox.vault.write_file` add no request or
-event shape. See [Sudo windows](KERNEL_SUDO.md).
+Command and file capture require `use_binding`, using the existing typed
+`VaultUseBinding`: one environment name plus origin, stdin origin, or absolute
+canonical workspace file path. Only its matching use and injection are granted.
+Retries preserve the binding; unbound workspace entries are refused rather
+than inferred. Browser capture permits at most one `use_on` origin and stores
+a Site binding; auth.md registration stores the issued resource Site binding.
+Ordinary operations need no sudo or task approval; payment cards always ask.
+See [capture and use](KERNEL_SUDO.md#vault-capture-and-use-by-command-and-file-vaudit-s2-s4).
 
 ### MP-08 / MP-10 / MP-11: A06 Vault generation and login (local 469)
 
@@ -5069,6 +5071,18 @@ grants or draw the popup need 568.
 Relay peer 176 carries the same shapes. The Rust hash test
 `local_kernel_access_protocol_451_has_no_session_scope_or_bearer` pins them.
 
+Optional machine capabilities (local 959 / peer 408; MP-08 / MP-09 / MP-10 /
+MP-11). `ControlPlane` uses the same process-bound owner grant as the ordinary
+kernel gateway. The kernel authenticates to Cloud with its enrollment
+credential, never a human session bearer. Cloud validates that current
+enrollment and its owner's account role and allowance on every operation.
+Closing a client, disconnecting or signing out does not remove machine
+authority. Revoking/unenrolling the kernel, ending the agent grant, or
+exhausting the account's existing allowance prevents further operations.
+Room membership alone is insufficient. Capability revisions bind to the kernel
+enrollment generation and current catalog, independently of client sessions.
+See [the real drill](drills/MP08_CONTROL_PLANE_MACHINES.md).
+
 Kernel gateway (same provisional 568/176). A grant holder names another kernel and the local kernel
 forwards the request over the relay, as a terminal-class client of the target kernel; the target stays the
 authority for its own sessions, agents, terminals and files.
@@ -6215,17 +6229,17 @@ Clients need kernel protocol >=923 (`credentialVaultUnlockMinimumProtocolVersion
 web). The managed-upgrade list is [629, 636, 923]. Focused checks:
 `cargo test -p chariox-kernel --lib vault_unlock` and `node --test scripts/protocol-versions.test.mjs`.
 
-### Apps v2 — local 962 / relay peer 411
+### Apps v2 — local 966 / relay peer 415
 
 One allocation carries the whole Apps v2 Stage 1 line. Local requests: `BeginAppInstall` and
 `BeginAppUpdate` take a `source` (`local_file`, `register`, `dev_push`; omitted means `local_file`),
 `BeginAppDevPush` and `GetAppDevPush` start and poll a kernel-side build from the workspace
 (`AppDevPushBuilding`, `AppDevPushFailed`), and `InspectAppView` reads an open Room App Tab
 (`AppViewInspected`). Room App views take the versioned App-agent request and unprojected Room opens
-over the existing Room browser controller command. Relay peer 411 admits the App-agent request and the
-unprojected projection, and pairs the embedded local union with local 962. Clients carry no separate
-minimum for these requests: a kernel older than 962 refuses an unknown variant, and development
-stage kernels are re-provisioned. The managed-upgrade list is [629, 636, 962]. Focused checks:
+over the existing Room browser controller command. Relay peer 415 admits the App-agent request and the
+unprojected projection, and pairs the embedded local union with local 966. Clients carry no separate
+minimum for these requests: a kernel older than 966 refuses an unknown variant, and development
+stage kernels are re-provisioned. The managed-upgrade list is [629, 636, 966]. Focused checks:
 `cargo test -p chariox-kernel --lib protocol_shapes` and `pnpm protocol:conformance`.
 
 ### Opaque reimage provider id: local 924 / relay peer 375
@@ -6342,7 +6356,7 @@ advertises support; every request retains its kernel-owned authorization checks.
 The managed upgrade policy keeps current and previous releases 636 and 629 plus target 950.
 
 MP-08 / MP-09 / MP-10 / MP-11: the Apps v2/Landing 3 union uses the
-coordinator-assigned local 962 / relay peer 411. App execution is contract-2 WASM
+coordinator-assigned local 966 / relay peer 415. App execution is contract-2 WASM
 only. The native worker ships beside the kernel, enters containment before its
 identity handshake, and exposes only the versioned App WIT world through the
 kernel capability broker. The replaced engine's launch, runtime enrollment and

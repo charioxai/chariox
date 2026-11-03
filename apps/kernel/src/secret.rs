@@ -517,46 +517,6 @@ impl RuntimeSecretService {
         self.resolve_input_secret(credential)
     }
 
-    /// A value the kernel injects into a command's environment or stdin.
-    pub fn command_secret_input(&self, credential_id: &str) -> Result<String, DaemonError> {
-        self.workspace_secret_input(credential_id, UserCredentialUse::Env)
-    }
-
-    /// A value the kernel writes into a file in the agent's workspace.
-    pub fn file_secret_input(&self, credential_id: &str) -> Result<String, DaemonError> {
-        self.workspace_secret_input(credential_id, UserCredentialUse::File)
-    }
-
-    /// Env and file are the kernel-local kinds: either injection serves either use.
-    fn workspace_secret_input(
-        &self,
-        credential_id: &str,
-        requested: UserCredentialUse,
-    ) -> Result<String, DaemonError> {
-        let credential = self.credential(credential_id)?;
-        if credential
-            .metadata
-            .as_ref()
-            .is_some_and(|m| m.use_binding.is_some())
-        {
-            return Err(secret_error(
-                "credential_policy",
-                "a bound Vault entry needs its exact command or file destination".into(),
-            ));
-        }
-        self.ensure_use_allowed(credential, requested)?;
-        if !matches!(
-            credential.injection,
-            UserCredentialInjectionConfig::Env | UserCredentialInjectionConfig::File
-        ) {
-            return Err(secret_error(
-                "credential_policy",
-                format!("credential `{credential_id}` is not configured for workspace commands or files"),
-            ));
-        }
-        self.resolve_secret(credential)
-    }
-
     pub(crate) fn validate_workspace_secret_target(
         &self,
         credential_id: &str,
@@ -577,13 +537,9 @@ impl RuntimeSecretService {
             }
         };
         let credential = self.credential(credential_id)?;
-        if let Some(binding) = credential
-            .metadata
-            .as_ref()
-            .and_then(|m| m.use_binding.as_ref())
-        {
-            binding.require(target)?;
-        }
+        let binding = credential.metadata.as_ref().and_then(|m| m.use_binding.as_ref())
+            .ok_or_else(|| secret_error("credential_policy", "this Vault entry has no declared use; capture it again for one exact destination".into()))?;
+        binding.require(target)?;
         self.ensure_use_allowed(credential, requested)?;
         if !matches!(
             credential.injection,

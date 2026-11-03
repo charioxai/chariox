@@ -62,14 +62,14 @@ impl CaptureRead {
 pub(super) fn capture_spec() -> RuntimeToolSpec {
     RuntimeToolSpec {
         name: CAPTURE.into(),
-        description: "store a secret a user-domain page shows (an API key, a webhook signing secret) in the owner's Vault without reading it. Point node_ref at the element that shows the value (text or input); if the page hides it behind a Reveal/Show button, pass that button as reveal_node_ref and do not click it yourself. For a copy-to-clipboard button, pass the button as node_ref with read=clipboard. The kernel reveals, reads and masks the value for you; you receive only credential_id and label. use_on lists the site origins where the credential may be filled later (default: this page's origin). Retrying with the same request_id returns the same credential.".into(),
+        description: "store a secret a user-domain page shows (an API key, a webhook signing secret) in the owner's Vault without reading it. Point node_ref at the element that shows the value (text or input); if the page hides it behind a Reveal/Show button, pass that button as reveal_node_ref and do not click it yourself. For a copy-to-clipboard button, pass the button as node_ref with read=clipboard. The kernel reveals, reads and masks the value for you; you receive only credential_id and label. use_on declares at most one exact site origin where the credential may be filled later (default: this page's origin). Retrying with the same request_id returns the same credential.".into(),
         input_schema: json!({"type":"object","required":["request_id","tab_id","generation","document_id","node_ref"],"properties":{
             "request_id":{"type":"string","minLength":1,"maxLength":128},
             "tab_id":{"type":"string"},"generation":{"type":"integer","minimum":1},"document_id":{"type":"string"},
             "node_ref":{"type":"string"},"reveal_node_ref":{"type":"string"},
             "read":{"type":"string","enum":["node","clipboard"],"default":"node"},
             "label":{"type":"string","maxLength":200},
-            "use_on":{"type":"array","maxItems":16,"items":{"type":"string","description":"Site origin such as https://vercel.com"}}},"additionalProperties":false}),
+            "use_on":{"type":"array","maxItems":1,"items":{"type":"string","description":"Site origin such as https://vercel.com"}}},"additionalProperties":false}),
     }
 }
 
@@ -110,9 +110,9 @@ impl KernelRuntimeState {
         if args.request_id.trim().is_empty() || args.request_id.len() > 128 {
             return Err(host_error("request_id must be 1-128 characters".into()));
         }
-        if args.label.as_ref().is_some_and(|label| label.len() > 200) || args.use_on.len() > 16 {
+        if args.label.as_ref().is_some_and(|label| label.len() > 200) || args.use_on.len() > 1 {
             return Err(host_error(
-                "label is at most 200 characters and use_on at most 16 origins".into(),
+                "label is at most 200 characters and use_on at most one origin".into(),
             ));
         }
         let user = self.provider_account_authority_owner_user_id(agent.owner_user_id());
@@ -136,18 +136,10 @@ impl KernelRuntimeState {
             .kernel_browser_secret_target_url(user, &admission, &target, false)
             .await?;
         let source = crate::config::vault_use::vault_origin(&url)?;
-        let use_on = if args.use_on.is_empty() {
-            vec![source.clone()]
-        } else {
-            let mut origins = Vec::new();
-            for origin in &args.use_on {
-                let origin = crate::config::vault_use::vault_origin(origin)?;
-                if !origins.contains(&origin) {
-                    origins.push(origin);
-                }
-            }
-            origins
-        };
+        let use_on = vec![match args.use_on.first() {
+            Some(origin) => crate::config::vault_use::vault_origin(origin)?,
+            None => source.clone(),
+        }];
         let handle = captured_handle(&turn, &args.request_id);
         let registry = crate::credential::CharioxCredentialRegistry::user()?;
         if let Some(existing) = registry.get(&handle)? {
@@ -239,7 +231,12 @@ impl KernelRuntimeState {
             allowed_uses: vec![crate::config::UserCredentialUse::Browser],
             injection: crate::config::UserCredentialInjectionConfig::Browser,
             metadata: Some(UserCredentialMetadataConfig {
-                use_binding: None,
+                use_binding: Some(crate::config::VaultUseBinding {
+                    target: crate::config::VaultUseTarget::Site {
+                        origin: use_on[0].clone(),
+                    },
+                    value_kind: crate::config::VaultValueKind::Secret,
+                }),
                 created_by_kind: Some(CAPTURED_KIND.into()),
                 created_by_id: Some(turn.agent_id.clone()),
                 session_id: Some(turn.session_id.clone()),
@@ -306,6 +303,15 @@ fn committed(
         || metadata.and_then(|m| m.created_by_id.as_deref()) != Some(turn.agent_id.as_str())
         || metadata.and_then(|m| m.session_id.as_deref()) != Some(turn.session_id.as_str())
         || existing.allowed_hosts != use_on
+        || metadata
+            .and_then(|m| m.use_binding.as_ref())
+            .is_none_or(|binding| {
+                binding.target
+                    != crate::config::VaultUseTarget::Site {
+                        origin: use_on[0].clone(),
+                    }
+                    || binding.value_kind != crate::config::VaultValueKind::Secret
+            })
     {
         return Err(host_error(
             "request_id already names a different credential; use a new request_id".into(),

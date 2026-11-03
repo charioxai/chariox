@@ -55,7 +55,7 @@ impl KernelGateway {
             self.runtime_state.sweep_kernel_access();
             if self
                 .runtime_state
-                .access_grant_summary(&origin.grant_id)
+                .gateway_origin(&origin.grant_id)
                 .is_none()
             {
                 break;

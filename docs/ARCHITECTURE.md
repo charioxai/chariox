@@ -337,6 +337,15 @@ It is distinct from relay:
 
 ### 3.6 Agent Endpoints
 
+MP-08 / MP-09 / MP-10 / MP-11: optional managed-machine operations use the
+owner's enrolled kernel credential and the kernel's existing grant to its
+agents. An owner's client may disconnect or sign out while remote work
+continues; no live client session or human Cloud bearer is required. Cloud
+revalidates the enrollment, owner/account membership and existing allowance
+on each operation and retains quota, billing and placement authority. Kernel
+unenrollment or revocation ends this authority; agent-grant revocation ends
+that agent's access. Room membership alone supplies neither authority.
+
 An agent endpoint is the kernel-facing runtime interface implemented by a provider integration or Chariox-native agent runtime.
 
 Required endpoint modes:

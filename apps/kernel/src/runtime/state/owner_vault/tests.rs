@@ -326,10 +326,6 @@ fn owner_factor_command_and_file_entries_use_the_real_injection_channels() {
             .workspace_secret_input_for_target(&ids[1].0, &target)
             .is_err());
     }
-    assert!(
-        resolver.command_secret_input(&ids[1].0).is_err(),
-        "a bound entry cannot bypass its destination"
-    );
     assert!(resolver
         .workspace_secret_input_for_target(
             &ids[2].0,

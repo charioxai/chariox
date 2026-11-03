@@ -180,7 +180,10 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// VAUDIT S3 397 carries local 948 (kernel-browser Vault capture and fill).
 /// Peer 399 carries the shared RelayStatus local protocol field (local 950).
 /// Peer 409 carries the final integrated local 960 Vault and Machines contract.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 411;
+/// Peer 412 carries local963 one-use Vault capture bindings.
+/// Peer 414 carries local965 integrated Vault and machine contracts.
+/// Peer415 carries local966 WASM Apps plus Landing965 contracts.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 415;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;

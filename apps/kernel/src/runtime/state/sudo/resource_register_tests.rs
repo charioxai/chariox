@@ -62,7 +62,7 @@ async fn resource_register_command_capture_is_automatic_and_idempotent() {
     )
     .unwrap();
     let args = json!({"request_id":"register-command", "host":"api.example.com",
-        "argv":["/usr/bin/printf", "register-capture-synthetic"]});
+        "argv":["/usr/bin/printf", "register-capture-synthetic"],"use_binding":{"target":{"kind":"command_environment","name":"KEY","origin":"https://api.example.com"}}});
     let captured = call(&f, "chariox.vault.capture_command", args.clone())
         .await
         .unwrap();

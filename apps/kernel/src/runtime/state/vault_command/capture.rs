@@ -19,6 +19,7 @@ struct CaptureArgs {
     #[serde(default)]
     cwd: Option<String>,
     host: String,
+    use_binding: crate::config::VaultUseBinding,
     #[serde(default)]
     label: Option<String>,
     #[serde(default)]
@@ -51,8 +52,9 @@ fn first_group() -> usize {
 pub(crate) fn capture_command_spec() -> RuntimeToolSpec {
     RuntimeToolSpec {
         name: VAULT_CAPTURE_COMMAND.into(),
-        description: "run one command (argv, no shell) in your workspace and store a secret it prints on stdout in the owner's Vault. You never see the value or the command's output: the result is an opaque credential_id with your label. extract picks the value: {\"kind\":\"stdout\"} (whole stdout, trimmed; the default), {\"kind\":\"json\",\"pointer\":\"/data/api_key\"} (JSON Pointer into stdout), or {\"kind\":\"regex\",\"pattern\":\"token: (\\\\S+)\",\"group\":1}. host names the service the secret belongs to. Use it with chariox.vault.use_env. Retrying with the same request_id returns the same credential without running the command again.".into(),
-        input_schema: serde_json::json!({"type":"object","required":["request_id","argv","host"],"properties":{
+        description: "run one command (argv, no shell) in your workspace and store a secret it prints on stdout in the owner's Vault. You never see the value or the command's output: the result is an opaque credential_id with your label. extract picks the value: {\"kind\":\"stdout\"} (whole stdout, trimmed; the default), {\"kind\":\"json\",\"pointer\":\"/data/api_key\"} (JSON Pointer into stdout), or {\"kind\":\"regex\",\"pattern\":\"token: (\\\\S+)\",\"group\":1}. host names the source service. use_binding declares the one destination: a command environment name and origin, command stdin origin, or absolute workspace file path. Use it only at that destination with chariox.vault.use_env or chariox.vault.write_file. Retrying with the same request_id returns the same credential without running the command again.".into(),
+        input_schema: serde_json::json!({"type":"object","required":["request_id","argv","host","use_binding"],"properties":{
+            "use_binding": capture_binding_schema(),
             "request_id":{"type":"string","minLength":1,"maxLength":128},
             "argv":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":64},
             "cwd":{"type":"string","description":"Directory inside your workspace, relative to it"},
@@ -66,6 +68,20 @@ pub(crate) fn capture_command_spec() -> RuntimeToolSpec {
             "timeout_seconds":{"type":"integer","minimum":1,"maximum":MAX_TIMEOUT_SECONDS,"default":DEFAULT_TIMEOUT_SECONDS}},
             "additionalProperties":false}),
     }
+}
+
+pub(super) fn capture_binding_schema() -> serde_json::Value {
+    serde_json::json!({"type":"object","required":["target"],"additionalProperties":false,"properties":{
+        "value_kind":{"type":"string","enum":["secret","payment_card"],"default":"secret"},
+        "target":{"oneOf":[
+            {"type":"object","required":["kind","name","origin"],"additionalProperties":false,"properties":{
+                "kind":{"const":"command_environment"},"name":{"type":"string"},"origin":{"type":"string"}}},
+            {"type":"object","required":["kind","origin"],"additionalProperties":false,"properties":{
+                "kind":{"const":"command_stdin"},"origin":{"type":"string"}}},
+            {"type":"object","required":["kind","path"],"additionalProperties":false,"properties":{
+                "kind":{"const":"file"},"path":{"type":"string","description":"One absolute canonical file path inside this workspace"}}}
+        ]}
+    }})
 }
 
 impl KernelRuntimeState {
@@ -84,6 +100,7 @@ impl KernelRuntimeState {
         if args.label.as_ref().is_some_and(|label| label.len() > 200) {
             return Err(error("label must be at most 200 characters"));
         }
+        args.use_binding.target.validate()?;
         let host = service_host(&args.host)?;
         let argv = super::super::agent_process_watch::command_argv(&args.argv)?;
         let pattern = extract_pattern(&args.extract)?;
@@ -92,8 +109,9 @@ impl KernelRuntimeState {
         let handle = captured_handle(turn, &args.request_id);
         let registry = crate::credential::CharioxCredentialRegistry::user()?;
         if let Some(existing) = registry.get(&handle)? {
-            return committed(&existing, turn, &host);
+            return committed(&existing, turn, &host, &args.use_binding);
         }
+        validate_capture_binding(&context.run, &args.use_binding)?;
         let cwd =
             super::super::agent_process_watch::workspace_cwd(&context.run, args.cwd.as_deref())?;
         // Unlock before running: a key a service shows once must not be lost.
@@ -147,7 +165,7 @@ impl KernelRuntimeState {
                 handle,
                 host,
                 label: args.label,
-                injection: crate::config::UserCredentialInjectionConfig::Env,
+                use_binding: args.use_binding,
             },
             &secret,
         )
@@ -171,13 +189,20 @@ impl KernelRuntimeState {
                 key: captured.handle.clone(),
             },
             allowed_hosts: vec![captured.host.clone()],
-            allowed_uses: vec![
-                crate::config::UserCredentialUse::Env,
-                crate::config::UserCredentialUse::File,
-            ],
-            injection: captured.injection,
+            allowed_uses: vec![match captured.use_binding.target {
+                crate::config::VaultUseTarget::File { .. } => {
+                    crate::config::UserCredentialUse::File
+                }
+                _ => crate::config::UserCredentialUse::Env,
+            }],
+            injection: match captured.use_binding.target {
+                crate::config::VaultUseTarget::File { .. } => {
+                    crate::config::UserCredentialInjectionConfig::File
+                }
+                _ => crate::config::UserCredentialInjectionConfig::Env,
+            },
             metadata: Some(UserCredentialMetadataConfig {
-                use_binding: None,
+                use_binding: Some(captured.use_binding),
                 created_by_kind: Some(CAPTURED_KIND.into()),
                 created_by_id: Some(turn.agent_id.clone()),
                 session_id: Some(turn.session_id.clone()),
@@ -211,7 +236,7 @@ pub(super) struct Captured {
     pub(super) handle: String,
     pub(super) host: String,
     pub(super) label: Option<String>,
-    pub(super) injection: crate::config::UserCredentialInjectionConfig,
+    pub(super) use_binding: crate::config::VaultUseBinding,
 }
 
 pub(super) fn extract_pattern(how: &Extract) -> Result<Option<regex::Regex>, DaemonError> {
@@ -233,12 +258,14 @@ pub(super) fn committed(
     existing: &UserCredentialConfig,
     turn: &VaultAgentContext,
     host: &str,
+    binding: &crate::config::VaultUseBinding,
 ) -> Result<RuntimeToolResult, DaemonError> {
     let metadata = existing.metadata.as_ref();
     if metadata.and_then(|m| m.created_by_kind.as_deref()) != Some(CAPTURED_KIND)
         || metadata.and_then(|m| m.created_by_id.as_deref()) != Some(turn.agent_id.as_str())
         || metadata.and_then(|m| m.session_id.as_deref()) != Some(turn.session_id.as_str())
         || existing.allowed_hosts != [host]
+        || metadata.and_then(|m| m.use_binding.as_ref()) != Some(binding)
     {
         return Err(error(
             "request_id already names a different credential; use a new request_id",

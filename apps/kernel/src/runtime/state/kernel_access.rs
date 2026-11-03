@@ -29,6 +29,12 @@ pub(crate) struct PendingAccess {
 mod holder_exit;
 
 impl KernelRuntimeState {
+    fn access_owned_by(&self, owner: &str, recorded_owner: &str) -> bool {
+        // Enrollment changes the terminal identity without changing grant ownership.
+        self.owned
+            .acts_for_owner_in(recorded_owner, owner, recorded_owner)
+    }
+
     fn audit_access(
         &self,
         grant: &KernelAccessGrant,
@@ -165,7 +171,9 @@ impl KernelRuntimeState {
                 .into_iter()
                 .partition::<Vec<_>, _>(|owed| {
                     id.is_none_or(|id| id == owed.grant.grant_id)
-                        && owner.is_none_or(|owner| owner == owed.grant.owner_user_id)
+                        && owner.is_none_or(|owner| {
+                            self.access_owned_by(owner, &owed.grant.owner_user_id)
+                        })
                 });
             state.owed_ends = rest;
             matching
@@ -303,7 +311,9 @@ impl KernelRuntimeState {
             .iter()
             .filter(|(key, grant)| {
                 id.is_none_or(|id| id == key.as_str())
-                    && owner.is_none_or(|owner| owner == grant.summary.owner_user_id)
+                    && owner.is_none_or(|owner| {
+                        self.access_owned_by(owner, &grant.summary.owner_user_id)
+                    })
                     && !(keep_for_restart && grant.survives_restart())
             })
             .map(|(id, _)| id.clone())
@@ -321,7 +331,7 @@ impl KernelRuntimeState {
             .iter()
             .filter(|(_, grant)| {
                 id.is_none_or(|id| id == grant.grant_id)
-                    && owner.is_none_or(|owner| owner == grant.owner_user_id)
+                    && owner.is_none_or(|owner| self.access_owned_by(owner, &grant.owner_user_id))
             })
             .map(|(key, _)| key.clone())
             .collect::<Vec<_>>();
@@ -365,7 +375,10 @@ impl KernelRuntimeState {
                 let prompt = pending.passkey_prompt.as_ref()?;
                 (prompt.kind == PasskeyPromptKind::AccessExtension
                     && owner.is_none_or(|owner| {
-                        pending.kernel_operation_owner.as_deref() == Some(owner)
+                        pending
+                            .kernel_operation_owner
+                            .as_deref()
+                            .is_some_and(|recorded| self.access_owned_by(owner, recorded))
                     })
                     && id.is_none_or(|id| key == &format!("{id}-extension")))
                 .then(|| (pending.session_id.clone(), key.clone()))
@@ -537,7 +550,7 @@ impl KernelRuntimeState {
             .expect("access state poisoned")
             .grants
             .values()
-            .filter(|grant| grant.summary.owner_user_id == owner)
+            .filter(|grant| self.access_owned_by(owner, &grant.summary.owner_user_id))
             .map(Grant::listed)
             .collect()
     }
