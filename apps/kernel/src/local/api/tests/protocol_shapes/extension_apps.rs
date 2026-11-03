@@ -109,7 +109,10 @@ fn app_binding_is_a_plain_extension_grant() {
     );
     let grant = crate::extension::ExtensionGrant::app("installed");
     let value = serde_json::to_value(&grant).unwrap();
-    assert_eq!(value, serde_json::json!({"kind": "app", "name": "installed"}));
+    assert_eq!(
+        value,
+        serde_json::json!({"kind": "app", "name": "installed"})
+    );
     assert_eq!(
         serde_json::from_value::<crate::extension::ExtensionGrant>(value).unwrap(),
         grant
