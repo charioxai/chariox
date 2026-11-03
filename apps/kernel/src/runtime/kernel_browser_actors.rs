@@ -291,6 +291,7 @@ impl KernelBrowserActors {
         params: &Value,
     ) -> Result<(String, Arc<BrowserCancellation>), String> {
         self.retire_lapsed_desktop_viewers(Instant::now());
+        self.reclaim_lapsed_takeovers(Instant::now());
         self.register(actor.clone())?;
         self.adopt_orphaned_takeovers(&actor.actor_id);
         let mut request = if let Some(host_tab) = params["tab_id"].as_str() {
@@ -523,6 +524,7 @@ impl KernelBrowserActors {
         }
         let tab = self.tab(host_tab)?;
         self.retire_lapsed_desktop_viewers(Instant::now());
+        self.reclaim_lapsed_takeovers(Instant::now());
         self.register(actor.clone())?;
         self.adopt_orphaned_takeovers(&actor.actor_id);
         let effect = self
@@ -704,7 +706,6 @@ impl KernelBrowserActors {
         if !self.is_human(actor_id) {
             return;
         }
-        self.reclaim_lapsed_takeovers(Instant::now());
         let orphans = self
             .orphaned_takeovers
             .keys()
@@ -909,6 +910,23 @@ mod tests {
         model.disconnect("terminal:old");
         model.release("terminal:other", "host-tab-a", 1).unwrap();
         let (action, _) = model.begin(agent(), &input("host-tab-a")).unwrap();
+        model.finish(&action, EnvironmentActionTerminal::Completed);
+    }
+    #[test]
+    fn mp10_an_agent_acts_again_once_the_orphaned_takeover_has_lapsed() {
+        let mut model = ready();
+        model
+            .takeover(human("terminal:old"), "host-tab-a", 1)
+            .unwrap();
+        model.disconnect("terminal:old");
+        assert!(model.begin(agent(), &input("host-tab-a")).is_err());
+        model.orphaned_takeovers.insert(
+            "terminal:old".into(),
+            Instant::now() - Duration::from_secs(1),
+        );
+        let (action, _) = model
+            .begin(agent(), &input("host-tab-a"))
+            .expect("the lapsed takeover no longer fences the agent");
         model.finish(&action, EnvironmentActionTerminal::Completed);
     }
     #[test]
