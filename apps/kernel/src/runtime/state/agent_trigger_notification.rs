@@ -903,4 +903,100 @@ mod tests {
             .resolve_workflow_notification_source(owner, owner, "another-room", &source)
             .is_ok());
     }
+
+    // MP-08 / MP-10 (VS-S2-1): a source on another kernel delivers through the peer channel; the
+    // subscriber kernel admits it for the agent and queues it, and refuses once the trigger is gone.
+    #[tokio::test]
+    async fn a_remote_occurrence_is_admitted_for_the_agent_and_refused_without_its_trigger() {
+        let rig = rig().await;
+        let owner = "local";
+        let source_id = "wf_source_remote";
+        let trigger = rig
+            .runtime
+            .owned
+            .session_store
+            .write()
+            .create_agent_notification_trigger(
+                &rig.session_id,
+                &rig.agent_id,
+                owner,
+                AgentTriggerNotificationSource::Workflow {
+                    source_id: source_id.into(),
+                },
+                "sub-remote".into(),
+                "Studio pipeline".into(),
+                None,
+            )
+            .unwrap();
+        rig.runtime
+            .owned
+            .persist_agent_trigger_session(&rig.session_id, "agent_trigger_created")
+            .unwrap();
+        let home = rig.runtime.owned.config_projection.snapshot().daemon_id;
+        let subscription = WorkflowNotificationSubscription {
+            subscription_id: "sub-remote".into(),
+            source_id: source_id.into(),
+            owner_user_id: owner.into(),
+            created_by_user_id: owner.into(),
+            target_kernel_id: home,
+            target_kind: WorkflowNotificationTargetKind::Agent,
+            session_id: rig.session_id.clone(),
+            workflow_id: String::new(),
+            publication_id: trigger.id().into(),
+            endpoint_id: rig.agent_id.clone(),
+            queue_id: AGENT_QUEUE_ID.into(),
+            source_available: true,
+            source_kernel_id: "remote-kernel".into(),
+            agent_id: Some(rig.agent_id.clone()),
+            trigger_id: Some(trigger.id().into()),
+        };
+        rig.runtime
+            .owned
+            .durable_state_store
+            .notify(NotificationOperation::RemoteAttach {
+                subscription: subscription.clone(),
+            })
+            .unwrap();
+        let envelope =
+            |occurrence: &str, message: &str| crate::local::WorkflowNotificationEnvelope {
+                source_id: source_id.into(),
+                display_name: "Studio pipeline".into(),
+                occurrence_id: occurrence.into(),
+                output: WorkflowOutputPayload::new(message, vec![]),
+                ancestry: vec!["[\"remote-kernel\",\"room\",\"wf\"]".into()],
+                deadline_ms: crate::session::unix_epoch_ms() + 86_400_000,
+            };
+        let deliver = |occurrence: &str, message: &str| {
+            rig.runtime.receive_workflow_notification_peer(
+                "remote-kernel",
+                owner,
+                RelayPeerRequest::DeliverWorkflowNotification {
+                    protocol_version: VERSION,
+                    subscription_id: "sub-remote".into(),
+                    envelope: envelope(occurrence, message),
+                },
+            )
+        };
+        assert!(matches!(
+            deliver("run-1", "shipped").unwrap(),
+            RelayPeerResponse::WorkflowNotificationAccepted {
+                ack: crate::local::WorkflowNotificationAck::Accepted
+            }
+        ));
+        rig.runtime.route_agent_notifications().await;
+        let queued = rig.queued_prompts();
+        assert_eq!(queued.len(), 1, "{queued:?}");
+        assert!(queued[0].contains("shipped") && queued[0].contains("Studio pipeline"));
+
+        rig.runtime
+            .owned
+            .session_store
+            .write()
+            .delete_agent_trigger(&rig.session_id, trigger.id())
+            .unwrap();
+        assert!(
+            deliver("run-2", "after the trigger is gone").is_err(),
+            "the subscriber kernel refuses an occurrence for a trigger that is gone"
+        );
+    }
 }
