@@ -14,7 +14,7 @@ const freePort = () => new Promise((resolve, reject) => { const server = net.cre
 /** Starts Gitea as the unprivileged `ubuntu` user under `home`. The caller supplies the password
  *  through `password`; it never appears in a command line (the account is created from a file). */
 export async function startGitea({ binary, home, user, password }) {
-  if (!path.isAbsolute(binary) || !path.isAbsolute(home) || !home.startsWith('/home/ubuntu/vgaps-')) throw Error('Use an absolute Gitea binary and a /home/ubuntu/vgaps-* scratch home')
+  if (!path.isAbsolute(binary) || !path.isAbsolute(home) || !/^\/home\/ubuntu\/(vgaps|vpaste)-/.test(home)) throw Error('Use an absolute Gitea binary and a /home/ubuntu/vpaste-* (or vgaps-*) scratch home')
   rmSync(home, { recursive: true, force: true })
   mkdirSync(path.join(home, 'work'), { recursive: true })
   execFileSync('chown', ['-R', 'ubuntu:ubuntu', home])
