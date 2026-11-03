@@ -254,11 +254,12 @@ done
 
 #[tokio::test]
 async fn native_user_app_view_requires_the_app_grant_and_current_queue_generation() {
-    let rig = rig();
-    rig.open_user_view(None);
+    let ungranted_rig = rig();
+    ungranted_rig.open_user_view(None);
     assert_eq!(
-        rig.runtime
-            .view_context(&rig.agent, "host-tab-native-test")
+        ungranted_rig
+            .runtime
+            .view_context(&ungranted_rig.agent, "host-tab-native-test")
             .await
             .err()
             .unwrap()

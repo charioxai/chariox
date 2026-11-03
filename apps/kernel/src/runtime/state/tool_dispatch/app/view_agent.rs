@@ -494,8 +494,6 @@ impl KernelRuntimeState {
         agent: &crate::agent::AgentInstance,
         requested: &str,
     ) -> Result<Option<ViewContext>, ViewError> {
-        use crate::runtime::state::app_view_host::{AppViewHost, KernelBrowserAppViewHost};
-
         let canonical_owner = self.provider_account_authority_owner_user_id(agent.owner_user_id());
         let views = self.app_control().user_views().clone();
         for owner in self.user_domain_owner_aliases(&canonical_owner) {
