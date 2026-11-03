@@ -58,6 +58,8 @@ export const ALLOWED_FILES = new Map([
   ['apps/browser-display/drill-fixtures.mjs', 'fixture page whose sample text says "invoice"'],
   ['apps/cli/scripts/lib/drill-child-process.mjs', 'matches the AI provider\'s own "manage your billing" error text to classify a blocked drill'],
   ['apps/cli/scripts/lib/drill-failure-taxonomy.mjs', 'drill advice about an AI provider account\'s quota or billing'],
+  ['apps/kernel/src/slice_provider_auth.rs', 'reads `billingType`, the AI provider (Claude) OAuth account field that names its plan, from the provider profile'],
+  ['apps/cli/scripts/live-slice-lifecycle-drill.mjs', 'writes a fake Claude OAuth account with the `billingType` field the provider tool stores'],
   ['apps/kernel/src/local/provider_requests/catalog.rs', 'AI provider account catalog: the `billing_kind` of an AI service credential (subscription or prepaid), not compute rental'],
   ['apps/cli/scripts/lib/room-provider-business-result.mjs', 'reads a "price" field from a sample vendor-research page'],
   ['apps/cli/scripts/lib/wp07p-extra-provider-drills.mjs', 'fixture page with a "price" column for a research drill'],
@@ -134,15 +136,37 @@ function productText(path, text) {
   return out + text.slice(cursor)
 }
 
-function patternFindings(path, text, patterns) {
-  const findings = []
-  for (const [kind, pattern] of patterns) {
-    if (pattern.test(path)) findings.push({ file: path, line: 0, kind: `${kind} in path`, text: path })
+// `RentalQuote` -> `Rental Quote`, `parseHTTPServer` -> `parse HTTP Server`. The patterns are
+// case-insensitive and cannot see a case change, so CamelCase text is also matched with a space at
+// each lower->Upper and Acronym->Word boundary. Whole words only: a lower-case run is never split,
+// so `current` or `parent` never yield `rent`. Embedded base64 data (a long mixed-case run) holds
+// no identifiers and random case changes in it would spell banned words, so it is left alone.
+const DATA_RUN = /[A-Za-z0-9+/=]{64,}/g
+const isDataRun = run => /\d/.test(run) && /[a-z]/.test(run) && /[A-Z]/.test(run)
+const splitWords = text => text
+  .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+  .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
+
+export function splitIdentifierWords(text) {
+  let out = ''
+  let cursor = 0
+  for (const run of text.matchAll(DATA_RUN)) {
+    if (!isDataRun(run[0])) continue
+    out += splitWords(text.slice(cursor, run.index)) + run[0]
+    cursor = run.index + run[0].length
   }
+  return out + splitWords(text.slice(cursor))
+}
+
+function matchedKinds(patterns, text) {
+  const split = splitIdentifierWords(text)
+  return patterns.filter(([, pattern]) => pattern.test(text) || pattern.test(split)).map(([kind]) => kind)
+}
+
+function patternFindings(path, text, patterns) {
+  const findings = matchedKinds(patterns, path).map(kind => ({ file: path, line: 0, kind: `${kind} in path`, text: path }))
   productText(path, text).split('\n').forEach((line, index) => {
-    for (const [kind, pattern] of patterns) {
-      if (pattern.test(line)) findings.push({ file: path, line: index + 1, kind, text: line.trim().slice(0, 140) })
-    }
+    for (const kind of matchedKinds(patterns, line)) findings.push({ file: path, line: index + 1, kind, text: line.trim().slice(0, 140) })
   })
   return findings
 }

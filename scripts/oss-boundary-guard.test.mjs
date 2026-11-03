@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
+import * as guard from './oss-boundary-guard.mjs'
 import { boundaryProblems, controlPlanePaths, enumVariants, isCheckedPath, providerNameFindings, vocabularyFindings } from './oss-boundary-guard.mjs'
 
 const kinds = (path, text) => providerNameFindings(path, text).map(f => f.kind)
@@ -54,6 +55,23 @@ test('flags Cloud business vocabulary, and not neutral words that contain it', (
   assert.deepEqual(words('fetch("https://staging.chariox.com/relay/token")'), ['vendor host'])
   assert.deepEqual(words('current parent transparent requireLegacyRestoreImage chariox.commands.search credits region'), [])
   assert.deepEqual(vocabularyFindings('apps/cli/src/waiting-room-reimage.ts', '').map(f => f.kind), ['reimage word in path'])
+})
+
+test('CamelCase identifiers built from banned words are caught, whole words only', () => {
+  const all = text => [...providerNameFindings('a.ts', text), ...vocabularyFindings('a.ts', text)].map(f => f.kind)
+  assert.deepEqual(guard.splitIdentifierWords('RentalQuote hetznerServer parseHTTPServer cpx21Server'), 'Rental Quote hetzner Server parse HTTP Server cpx21 Server')
+  assert.deepEqual(all('class RentalQuote {}'), ['rental word'])
+  assert.deepEqual(all('type HetznerServer = 1'), ['provider name'])
+  assert.deepEqual(all('const hetznerServer = 1'), ['provider name'])
+  assert.deepEqual(all('rentManagedMachine()'), ['rental word'])
+  assert.deepEqual(all('interface AutoStopPolicy {}'), ['auto-stop word'])
+  assert.deepEqual(all('getOvhHost(); new AwsClient()'), ['provider name'])
+  assert.deepEqual(all('const quotePriceEur = 1; HourlyRate'), ['pricing word', 'hourly word'])
+  assert.deepEqual(vocabularyFindings('apps/cli/src/rentalQuote.ts', '').map(f => f.kind), ['rental word in path'])
+  // Words that merely contain a banned word, and names the repository already uses, stay clean.
+  assert.deepEqual(all('currentParent transparentPricey authorizedRenter drawLaws boatLoad'), [])
+  assert.deepEqual(all(`const bytes = Buffer.from("${'AGFzbQEAAAAB7AROY'.repeat(4)}+Aws${'CQCAAKAIE9'.repeat(4)}")`), [])
+  assert.deepEqual(all('const baseUrl = urlFor(Parent); applyRegion(Credits); AllowedHostPattern'), [])
 })
 
 test('control-plane path literals are normalized and exclude file names and test code', () => {
@@ -151,11 +169,15 @@ test('a planted-violation commit turns the guard CLI red and removing it turns i
     assert.equal(clean.status, 0, clean.stderr)
     write('apps/kernel/src/local/api/types/request.rs', 'pub enum LocalDaemonRequest {\n    ListSlices(A),\n    RentManagedMachine(B),\n}\n')
     write('apps/kernel/src/runtime/rental_quote.rs', 'const SERVER_TYPE: &str = "cpx21";\nconst QUOTE_PATH: &str = "/v1/rentals/quote";\n// A Hetzner host with an auto-stop deadline.\n')
+    write('apps/cli/src/camel-plants.ts', 'export interface RentalQuote {}\nexport type HetznerServer = number\nexport interface AutoStopPolicy {}\nexport const rentManagedMachine = () => 1\n')
     git('add', '-A'); git('commit', '-q', '-m', 'planted violation')
     const red = guard()
     assert.equal(red.status, 1)
     for (const named of ['server type', 'provider name', 'auto-stop word', 'unlisted control-plane path', 'unlisted Cloud-shaped request: LocalDaemonRequest::RentManagedMachine']) {
       assert.ok(red.stderr.includes(named), `missing "${named}" in:\n${red.stderr}`)
+    }
+    for (const identifier of ['RentalQuote', 'HetznerServer', 'AutoStopPolicy', 'rentManagedMachine']) {
+      assert.ok(red.stderr.split('\n').some(line => line.startsWith('apps/cli/src/camel-plants.ts:') && line.includes(identifier)), `CamelCase ${identifier} not reported in:\n${red.stderr}`)
     }
     git('reset', '-q', '--hard', 'HEAD~1')
     const green = guard()
