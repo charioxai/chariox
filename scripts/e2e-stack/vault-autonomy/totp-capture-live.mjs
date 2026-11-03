@@ -20,7 +20,7 @@ const {chromium}=await import(pathToFileURL(path.join(cloudRepo,'node_modules/pl
 const {startKernelFixture,waitFor}=await import(pathToFileURL(path.join(cloudRepo,'apps/web/scripts/lib/external-access-kernel-fixture.mjs')).href)
 
 const origin = process.env.TCAP_ORIGIN, evidence = process.env.TCAP_EVIDENCE, binaryDir = process.env.TCAP_BIN
-assert.ok(/^https:\/\/pr[0-9]+-vgaps[a-z0-9]*\.val\.51-255-87-178\.sslip\.io$/.test(origin ?? ''), 'Use an owned hosted vflag stack')
+assert.ok(/^https:\/\/pr[0-9]+-v(gaps|flag)[a-z0-9]*\.val\.51-255-87-178\.sslip\.io$/.test(origin ?? ''), 'Use an owned hosted vflag stack')
 assert.ok(evidence && binaryDir && path.isAbsolute(evidence) && path.isAbsolute(binaryDir))
 assert.ok(!path.resolve(evidence).startsWith(path.resolve('.')+path.sep), 'Keep evidence outside the repo')
 const dpr = Number(process.env.TCAP_DPR ?? 1)
@@ -168,7 +168,7 @@ try {
   assert.notEqual(result.status,'denied');return result.status==='approved'
  },'normal device enrollment',120000)
  await fixture.send({ConnectCloudRelay:null})
- await waitFor(async()=>{const status=(await fixture.send({RelayStatus:null})).RelayStatus.status;return status.connected&&status.relay_url.startsWith('wss://pr0-vgaps')},'hosted WSS')
+ await waitFor(async()=>{const status=(await fixture.send({RelayStatus:null})).RelayStatus.status;return status.connected&&status.relay_url.startsWith(`wss://${new URL(origin).hostname.split(".")[0]}`)},'hosted WSS')
  const served=page.waitForResponse(response=>/\/assets\/terminal-os\.[a-f0-9]+\.js$/.test(response.url()),{timeout:120000})
  await page.goto(origin+'/terminal?ui=os',{waitUntil:'domcontentloaded'})
  if(process.env.TCAP_SKIN) {
@@ -271,6 +271,13 @@ try {
    seed_in_agent_words:serviceSecrets.slice(1).some(value=>Buffer.from(authored.join('\n')).includes(Buffer.from(value))),
    code_anywhere:leaks(Buffer.from(lines.join('\n'))).includes('one-time-code'),
    seed_in_page_snapshot_before_capture:serviceSecrets.slice(1).some(value=>bytes.includes(Buffer.from(value)))}
+  // Which transcript entries hold a computed code, with the digits masked: this tells a page snapshot from a tool result.
+  const codePattern=codeValues.length?new RegExp('(?<![0-9])(?:'+codeValues.join('|')+')(?![0-9])','g'):null
+  report.code_entries=codePattern?lines.flatMap(line=>{
+   codePattern.lastIndex=0;const match=codePattern.exec(line);if(!match)return []
+   let payload;try{payload=JSON.parse(line).payload}catch{payload={}}
+   return [{type:payload?.type,name:payload?.name,call_id:payload?.call_id,context:line.slice(Math.max(0,match.index-160),match.index).replace(/[0-9]{6}/g,'<six-digits>')+'<CODE>'+line.slice(match.index+6,match.index+120).replace(/[0-9]{6}/g,'<six-digits>')}]
+  }).slice(0,6):[]
   checks.push({name:'provider transcript classes',report})
   check('no Vault value in own official provider transcript',!report.password_anywhere&&!report.seed_after_capture&&!report.seed_in_agent_words&&!report.code_anywhere)
   nativeFiles.push(filename)

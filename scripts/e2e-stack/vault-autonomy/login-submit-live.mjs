@@ -21,7 +21,7 @@ const {chromium}=await import(pathToFileURL(path.join(cloudRepo,'node_modules/pl
 const {startKernelFixture,waitFor}=await import(pathToFileURL(path.join(cloudRepo,'apps/web/scripts/lib/external-access-kernel-fixture.mjs')).href)
 
 const origin = process.env.LSUB_ORIGIN, evidence = process.env.LSUB_EVIDENCE, binaryDir = process.env.LSUB_BIN
-assert.ok(/^https:\/\/pr[0-9]+-vpaste[a-z0-9]*\.val\.51-255-87-178\.sslip\.io$/.test(origin ?? ''), 'Use an owned hosted vflag stack')
+assert.ok(/^https:\/\/pr[0-9]+-v(paste|flag|gaps)[a-z0-9]*\.val\.51-255-87-178\.sslip\.io$/.test(origin ?? ''), 'Use an owned hosted vflag stack')
 assert.ok(evidence && binaryDir && path.isAbsolute(evidence) && path.isAbsolute(binaryDir))
 assert.ok(!path.resolve(evidence).startsWith(path.resolve('.')+path.sep), 'Keep evidence outside the repo')
 const dpr = Number(process.env.LSUB_DPR ?? 1)
@@ -189,7 +189,7 @@ try {
   assert.notEqual(result.status,'denied');return result.status==='approved'
  },'normal device enrollment',120000)
  await fixture.send({ConnectCloudRelay:null})
- await waitFor(async()=>{const status=(await fixture.send({RelayStatus:null})).RelayStatus.status;return status.connected&&status.relay_url.startsWith('wss://pr0-vpaste')},'hosted WSS')
+ await waitFor(async()=>{const status=(await fixture.send({RelayStatus:null})).RelayStatus.status;return status.connected&&status.relay_url.startsWith(`wss://${new URL(origin).hostname.split('.')[0]}`)},'hosted WSS')
  const served=page.waitForResponse(response=>/\/assets\/terminal-os\.[a-f0-9]+\.js$/.test(response.url()),{timeout:120000})
  await page.goto(origin+'/terminal?ui=os',{waitUntil:'domcontentloaded'})
  const bundle=await served

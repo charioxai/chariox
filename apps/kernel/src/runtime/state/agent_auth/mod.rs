@@ -31,6 +31,8 @@ struct RegisterArgs {
     claim: bool,
     #[serde(default)]
     scopes: Vec<String>,
+    #[serde(default)]
+    return_fields: Vec<String>,
 }
 
 #[derive(Clone, Copy, PartialEq, serde::Deserialize)]
@@ -52,7 +54,8 @@ pub(super) fn spec() -> RuntimeToolSpec {
             "email":{"type":"string","maxLength":320,"description":"User login_hint; selects Service Auth unless flow is explicit"},
             "flow":{"enum":["anonymous","service_auth"]},
             "claim":{"type":"boolean","default":false,"description":"Also claim an anonymous registration; requires email"},
-            "scopes":{"type":"array","maxItems":64,"items":{"type":"string","minLength":1,"maxLength":200}}
+            "scopes":{"type":"array","maxItems":64,"items":{"type":"string","minLength":1,"maxLength":200}},
+            "return_fields":{"type":"array","maxItems":8,"items":{"type":"string","minLength":2,"maxLength":128},"description":"JSON pointers of short non-secret fields of the service's registration reply to return, for example /project/id when the service scopes its API to the project the registration created. Fields naming a token, key, secret or credential are refused."}
         },"additionalProperties":false}),
     }
 }
@@ -68,6 +71,11 @@ impl RegisterArgs {
             || self.email.as_ref().is_some_and(|email| {
                 email.trim().is_empty() || email.len() > 320 || email.chars().any(char::is_control)
             })
+            || self.return_fields.len() > 8
+            || self
+                .return_fields
+                .iter()
+                .any(|pointer| !pointer.starts_with('/') || pointer.len() > 128)
             || self.scopes.len() > 64
             || self.scopes.iter().any(|scope| {
                 scope.is_empty()
@@ -78,6 +86,7 @@ impl RegisterArgs {
         {
             return Err(error("invalid auth.md registration arguments"));
         }
+        registration::refuse_secret_fields(&self.return_fields)?;
         let resource = http::endpoint(&self.resource_url)?;
         let flow = self.flow.unwrap_or(if self.email.is_some() {
             Flow::ServiceAuth
