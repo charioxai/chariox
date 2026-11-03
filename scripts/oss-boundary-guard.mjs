@@ -23,16 +23,17 @@ const PROVIDER_PATTERNS = [
 ]
 
 // Cloud business vocabulary: rental, pricing, billing and shutdown policy are decided by the
-// connected service, never compiled into OSS. `credits` and `region` stay allowed (relay flow
+// connected service, never compiled into OSS. A word counts inside snake_case and SCREAMING_CASE
+// identifiers (`hourly_price`) because `_` is not a word break here. `credits` and `region` stay allowed (relay flow
 // control, screen regions).
 const VOCABULARY_PATTERNS = [
-  ['rental word', /\brent(?:s|al|als|ed|ing)?\b/i],
-  ['pricing word', /\bpric(?:e|es|ing)\b/i],
-  ['billing word', /\b(?:billing|billable|invoices?)\b/i],
+  ['rental word', /(?<![A-Za-z0-9])rent(?:s|al|als|ed|ing)?(?![A-Za-z0-9])/i],
+  ['pricing word', /(?<![A-Za-z0-9])pric(?:e|es|ing)(?![A-Za-z0-9])/i],
+  ['billing word', /(?<![A-Za-z0-9])(?:billing|billable|invoices?)(?![A-Za-z0-9])/i],
   ['auto-stop word', /auto[-_ ]?stop/i],
   ['reimage word', /reimage|Reimage|REIMAGE/],
   ['compute class word', /compute[-_ ]?class/i],
-  ['hourly word', /\bhourly\b/i],
+  ['hourly word', /(?<![A-Za-z0-9])hourly(?![A-Za-z0-9])/i],
   ['vendor host', /(?:^|[^\w.-])(?:[a-z][a-z0-9-]*\.)*chariox\.com\b/i],
 ]
 
@@ -57,6 +58,7 @@ export const ALLOWED_FILES = new Map([
   ['apps/browser-display/drill-fixtures.mjs', 'fixture page whose sample text says "invoice"'],
   ['apps/cli/scripts/lib/drill-child-process.mjs', 'matches the AI provider\'s own "manage your billing" error text to classify a blocked drill'],
   ['apps/cli/scripts/lib/drill-failure-taxonomy.mjs', 'drill advice about an AI provider account\'s quota or billing'],
+  ['apps/kernel/src/local/provider_requests/catalog.rs', 'AI provider account catalog: the `billing_kind` of an AI service credential (subscription or prepaid), not compute rental'],
   ['apps/cli/scripts/lib/room-provider-business-result.mjs', 'reads a "price" field from a sample vendor-research page'],
   ['apps/cli/scripts/lib/wp07p-extra-provider-drills.mjs', 'fixture page with a "price" column for a research drill'],
   ['apps/cli/scripts/live-external-provider-live-parity-drill.mjs', 'matches AI provider usage-limit and billing messages'],

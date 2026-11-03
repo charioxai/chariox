@@ -1,6 +1,7 @@
 // OF-18+: OSS product code stays free of compute-provider and Cloud-only business logic.
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
@@ -48,6 +49,7 @@ test('flags Cloud business vocabulary, and not neutral words that contain it', (
   assert.deepEqual(words('managedAutoStopPreset: "idle_15m"'), ['auto-stop word'])
   assert.deepEqual(words('rent a machine; show the price per hour'), ['rental word', 'pricing word'])
   assert.deepEqual(words('Billing and invoices; hourly; compute class'), ['billing word', 'compute class word', 'hourly word'])
+  assert.deepEqual(words('const HOURLY_PRICE_EUR: f64 = 0.0116; let rent_machine = 1;'), ['rental word', 'pricing word', 'hourly word'])
   assert.deepEqual(words('reimageManagedEnvironment("e1")'), ['reimage word'])
   assert.deepEqual(words('fetch("https://staging.chariox.com/relay/token")'), ['vendor host'])
   assert.deepEqual(words('current parent transparent requireLegacyRestoreImage chariox.commands.search credits region'), [])
@@ -128,4 +130,35 @@ test('the repository has no unlisted provider names, Cloud vocabulary, control-p
   const root = resolve(fileURLToPath(import.meta.url), '../..')
   const findings = boundaryProblems(root).map(f => `${f.file}:${f.line}: ${f.kind}: ${f.text}`)
   assert.ok(findings.length === 0, `provider and Cloud-only logic belongs to Cloud:\n${findings.slice(0, 40).join('\n')}`)
+})
+
+// The `pnpm lint` slot runs this script first: a throwaway commit that adds a Cloud-only request
+// variant, provider vocabulary and an unlisted control-plane path turns it red, and dropping that
+// commit turns it green again. Each plant is named in the output so a reviewer sees which rule it broke.
+test('a planted-violation commit turns the guard CLI red and removing it turns it green', () => {
+  const root = mkdtempSync(join(tmpdir(), 'oss-boundary-drill-'))
+  const git = (...args) => { const r = spawnSync('git', ['-c', 'user.name=drill', '-c', 'user.email=drill@example.test', ...args], { cwd: root, encoding: 'utf8' }); assert.equal(r.status, 0, r.stderr); return r.stdout }
+  const write = (path, text) => { mkdirSync(dirname(join(root, path)), { recursive: true }); writeFileSync(join(root, path), text) }
+  const guard = () => spawnSync(process.execPath, ['scripts/oss-boundary-guard.mjs'], { cwd: root, encoding: 'utf8' })
+  try {
+    git('init', '-q', '-b', 'main')
+    mkdirSync(join(root, 'scripts'))
+    copyFileSync(fileURLToPath(new URL('./oss-boundary-guard.mjs', import.meta.url)), join(root, 'scripts/oss-boundary-guard.mjs'))
+    for (const name of ['oss-boundary-leaks', 'control-plane-paths', 'control-plane-requests']) write(`scripts/${name}.allow.json`, '[]')
+    write('apps/kernel/src/local/api/types/request.rs', 'pub enum LocalDaemonRequest {\n    ListSlices(A),\n}\n')
+    git('add', '-A'); git('commit', '-q', '-m', 'clean')
+    const clean = guard()
+    assert.equal(clean.status, 0, clean.stderr)
+    write('apps/kernel/src/local/api/types/request.rs', 'pub enum LocalDaemonRequest {\n    ListSlices(A),\n    RentManagedMachine(B),\n}\n')
+    write('apps/kernel/src/runtime/rental_quote.rs', 'const SERVER_TYPE: &str = "cpx21";\nconst QUOTE_PATH: &str = "/v1/rentals/quote";\n// A Hetzner host with an auto-stop deadline.\n')
+    git('add', '-A'); git('commit', '-q', '-m', 'planted violation')
+    const red = guard()
+    assert.equal(red.status, 1)
+    for (const named of ['server type', 'provider name', 'auto-stop word', 'unlisted control-plane path', 'unlisted Cloud-shaped request: LocalDaemonRequest::RentManagedMachine']) {
+      assert.ok(red.stderr.includes(named), `missing "${named}" in:\n${red.stderr}`)
+    }
+    git('reset', '-q', '--hard', 'HEAD~1')
+    const green = guard()
+    assert.equal(green.status, 0, green.stderr)
+  } finally { rmSync(root, { recursive: true, force: true }) }
 })
