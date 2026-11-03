@@ -81,7 +81,7 @@ test('MP-08/MP-10: a kernel scroll position that predates the viewer\'s unanswer
     assert.equal(await page.evaluate(() => window.sent.filter(a => a.kind === 'scroll_to').length), 1, 'MP-08: the scroll position was sent');
     await apply(page, delta(2, [], { scroll: [0, 200] })); // the kernel reports where it was before it applied 600
     assert.equal(await y(), 600, 'MP-08: an unanswered scroll_to keeps the viewer where the person put it');
-    await page.evaluate(() => window.release.splice(0).forEach(resolve => resolve())); await new Promise(resolve => setTimeout(resolve, 100));
+    await page.evaluate(() => window.release.splice(0).forEach(resolve => resolve())); await new Promise(resolve => setTimeout(resolve, 30));
     await apply(page, delta(3, [], { scroll: [0, 400] })); // just after the answer: still the kernel's older report
     assert.equal(await y(), 600, 'MP-08: the settle window also covers reports that were in flight when the answer arrived');
     await new Promise(resolve => setTimeout(resolve, 600));
