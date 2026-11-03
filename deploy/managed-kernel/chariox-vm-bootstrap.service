@@ -20,7 +20,7 @@ Environment=CHARIOX_MANAGED_RELEASE_PUBLIC_KEY=/usr/lib/chariox/release-public-k
 Environment=CHARIOX_MANAGED_KERNEL_BINARY=/usr/local/bin/chariox-kernel
 Environment=PATH=/usr/local/bin:/usr/bin:/bin
 ExecStart=/usr/local/bin/chariox-managed-bootstrap
-# Root blanks the bootstrap token in /etc/chariox/bootstrap once Cloud confirmed the kernel. It is a
+# Root blanks the bootstrap token in /etc/chariox/bootstrap once the control plane confirmed the enrollment. It is a
 # transient unit because the supervisor cannot write that directory and Type=simple cannot wait here.
 ExecStartPost=-+/usr/bin/systemd-run --quiet --no-block --collect --unit=chariox-bootstrap-grant-redeem --property=Group=chariox /usr/local/bin/chariox-managed-bootstrap --redeem-grant
 Restart=on-failure

@@ -1,5 +1,5 @@
-//! Root-only step of the managed bootstrap unit. Once Cloud confirmed the kernel the
-//! bootstrap token authorises nothing, so root blanks it in the protected envelope the
+//! Root-only step of the managed bootstrap unit. Once the control plane confirmed the kernel's
+//! enrollment the bootstrap token authorises nothing, so root blanks it in the protected envelope the
 //! `chariox` supervisor can read but not replace.
 
 use std::fs::{self, OpenOptions};
@@ -48,7 +48,7 @@ fn redeem_when_confirmed(
             Redemption::Redeemed => return Ok(()),
             Redemption::Pending if Instant::now() >= deadline => {
                 return Err(redemption_error(
-                    "Cloud has not confirmed the managed kernel; the bootstrap token stays until the next start",
+                    "the control plane has not confirmed the enrollment; the bootstrap token stays until the next start",
                 ))
             }
             Redemption::Pending => thread::sleep(poll_interval),

@@ -1159,7 +1159,7 @@ fn confirmed_path1_receipt_does_not_delete_a_same_claims_different_token_envelop
     fixture.cleanup();
 }
 
-/// The envelope root blanks the bearer token once Cloud confirmed the kernel (MP-08/MP-11).
+/// Root blanks the bearer token once the control plane confirmed the enrollment (MP-08/MP-11).
 fn redeemed_envelope_json(original: &ManagedBootstrapEnvelope) -> serde_json::Value {
     serde_json::json!({
         "schemaVersion": original.schema_version,

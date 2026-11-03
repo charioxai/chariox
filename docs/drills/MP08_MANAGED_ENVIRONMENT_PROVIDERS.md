@@ -23,8 +23,8 @@ except the one leased turn. Compute vendors, images, quotas and prices stay in C
 6. Scan the target for credentials by path/boolean only. Send SHA-256 digests of the values that must not be there
    (infrastructure key, signing key, Vault passphrases, unselected account logins), never the values. Selected
    logins may appear only inside their provider profile or the GitHub CLI config. A redeemed bootstrap grant must
-   not keep its token: root blanks it in `/etc/chariox/bootstrap/managed-bootstrap.json` once Cloud confirmed the
-   kernel (no `mkboot_` value, `token` empty, `redeemedGrantBindingDigest` present).
+   not keep its token: root blanks it in `/etc/chariox/bootstrap/managed-bootstrap.json` once the control plane confirmed the
+   enrollment (no `mkboot_` value, `token` empty, `redeemedGrantBindingDigest` present).
 7. Release every machine through the Cloud lifecycle, read provider usage before delete, and census twice at
    least 60 seconds apart.
 

@@ -32,8 +32,8 @@ use crate::transport::relay_peer::{
 const IMPORT_STATUS_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const MAX_IMPORT_STATUS_POLLS: usize = 7_200;
 const MAX_OUTBOUND_CHUNK_BYTES: usize = 512 * 1024;
-/// A rented machine confirms with Cloud a moment before its relay socket registers, so the first
-/// contact waits for it instead of failing the whole launch.
+/// A managed machine confirms its enrollment a moment before its relay socket registers, so the
+/// first contact waits for the target kernel's presence instead of failing the whole launch.
 const TARGET_PRESENCE_POLL: Duration = if cfg!(test) {
     Duration::from_millis(1)
 } else {
@@ -632,7 +632,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mp08_arm_waits_for_a_rented_target_to_connect() {
+    async fn mp08_arm_waits_for_the_target_kernel_to_connect() {
         let (result, sent) = arm_with_responses(vec![
             Err(target_not_connected()),
             Err(target_not_connected()),

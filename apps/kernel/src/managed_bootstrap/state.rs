@@ -55,7 +55,7 @@ pub(super) struct ManagedBootstrapEnvelope {
     pub(super) schema_version: u32,
     pub(super) cloud_api_url: String,
     pub(super) environment_id: String,
-    /// Empty once the grant is redeemed: root blanks it after Cloud confirmed the kernel.
+    /// Empty once the grant is redeemed: root blanks it once the control plane confirmed the enrollment.
     pub(super) token: String,
     /// The grant binding digest the blanked token had, so the binding survives the blanking.
     #[serde(default, skip_serializing_if = "Option::is_none")]
