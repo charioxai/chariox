@@ -4,8 +4,8 @@
 //! `view_unavailable`; that is how these tests tell "refused" from "went on".
 use super::*;
 use crate::{
-    agent::CreateAgentRequest, extension::ExtensionGrant, provider::LaunchProviderRequest,
-    runtime::router::CommandRouter, session::CreateSessionRequest, DaemonApp, DaemonConfig,
+    DaemonApp, DaemonConfig, agent::CreateAgentRequest, extension::ExtensionGrant,
+    provider::LaunchProviderRequest, runtime::router::CommandRouter, session::CreateSessionRequest,
 };
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -126,6 +126,43 @@ impl Rig {
             .map(|spec| spec.name)
             .collect()
     }
+
+    fn open_user_view(&self, queue_generation: Option<u64>) -> String {
+        let generation = self
+            .runtime
+            .owned
+            .durable_state_store
+            .active_app_event_catalog("alice", APP)
+            .unwrap()
+            .generation();
+        let binding = AppViewBinding {
+            owner: "alice".into(),
+            installation: APP.into(),
+            generation,
+            panel: Default::default(),
+            logical_tab: None,
+        };
+        let views = self.runtime.app_control().user_views().clone();
+        let view = views.open("alice", binding.clone(), "test").unwrap();
+        views
+            .bind_browser(
+                "alice",
+                &view.view_id,
+                "registry-bound-browser-target".into(),
+                crate::local::UserAppViewBrowser {
+                    tab_id: "host-tab-native-test".into(),
+                    generation: 1,
+                },
+            )
+            .unwrap();
+        let mut queue_binding = binding;
+        queue_binding.generation = queue_generation.unwrap_or(generation);
+        self.runtime
+            .app_control()
+            .views()
+            .register(&view.view_id, &view.view_id, queue_binding);
+        view.view_id
+    }
 }
 
 fn action(name: &str, effect: UiActionEffect) -> UiActionDeclaration {
@@ -144,6 +181,141 @@ fn declared() -> Vec<UiActionDeclaration> {
         action("add_todo", UiActionEffect::Write),
         action("wipe", UiActionEffect::Approval),
     ]
+}
+
+#[tokio::test]
+async fn native_user_app_view_uses_its_owner_bound_target_and_kernel_browser_host() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut rig = rig();
+    rig.grant().await;
+    let view_id = rig.open_user_view(None);
+    rig.runtime
+        .app_control()
+        .lifecycle()
+        .start_active_blocking("alice", APP, tokio::runtime::Handle::current())
+        .unwrap();
+
+    let controller = rig.root.join("native-app-view-controller.sh");
+    let observed = rig.root.join("native-app-view-request.json");
+    std::fs::write(
+        &controller,
+        format!(
+            r#"#!/bin/sh
+while IFS= read -r request; do
+  id=${{request#*:}}; id=${{id%%,*}}
+  case "$request" in
+    *'"method":"health"'*) printf '{{"id":%s,"ok":true,"result":{{"state":"ready","process_id":%s,"diagnostic_code":null}}}}\n' "$id" "$$" ;;
+    *'"method":"browser.app.agent"'*) printf '%s\n' "$request" > '{}'; printf '{{"id":%s,"ok":true,"result":{{"ok":true,"value":{{"native":true}}}}}}\n' "$id" ;;
+    *) printf '{{"id":%s,"ok":true,"result":{{}}}}\n' "$id" ;;
+  esac
+done
+"#,
+            observed.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&controller, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let host = rig.runtime.kernel_browser_host_for_test();
+    host.install_fixture_backend("alice", &controller, &rig.root);
+    host.protected_request(
+        "alice",
+        None,
+        "host.browser",
+        json!({"op":"start"}),
+        json!({"values":[],"targets":[],"unknown":false}),
+    )
+    .unwrap();
+
+    let context = rig
+        .runtime
+        .view_context(&rig.agent, "host-tab-native-test")
+        .await
+        .unwrap();
+    assert_eq!(context.queue_session, view_id);
+    assert!(
+        matches!(&context.host, ViewHost::User { browser_target, .. }
+        if browser_target == "registry-bound-browser-target")
+    );
+    assert_eq!(
+        rig.runtime
+            .view_call(&context, ViewAgentCallKind::State, None, None)
+            .await
+            .unwrap(),
+        json!({"native":true})
+    );
+    let request = std::fs::read_to_string(observed).unwrap();
+    assert!(
+        request.contains("registry-bound-browser-target"),
+        "{request}"
+    );
+    assert!(request.contains(rig.agent.id()), "{request}");
+}
+
+#[tokio::test]
+async fn native_user_app_view_requires_the_app_grant_and_current_queue_generation() {
+    let rig = rig();
+    rig.open_user_view(None);
+    assert_eq!(
+        rig.runtime
+            .view_context(&rig.agent, "host-tab-native-test")
+            .await
+            .err()
+            .unwrap()
+            .code,
+        "unknown_view",
+        "an owner tab is not an App grant"
+    );
+
+    let mut rig = rig();
+    rig.grant().await;
+    let generation = rig
+        .runtime
+        .owned
+        .durable_state_store
+        .active_app_event_catalog("alice", APP)
+        .unwrap()
+        .generation();
+    rig.open_user_view(Some(generation + 1));
+    assert_eq!(
+        rig.runtime
+            .view_context(&rig.agent, "host-tab-native-test")
+            .await
+            .err()
+            .unwrap()
+            .code,
+        "APP_VIEW_STALE",
+        "a user view whose registered App generation changed is refused"
+    );
+}
+
+#[tokio::test]
+async fn native_user_app_view_refuses_actions_absent_from_the_signed_declarations() {
+    let mut rig = rig();
+    rig.grant().await;
+    rig.open_user_view(None);
+    rig.runtime
+        .app_control()
+        .lifecycle()
+        .start_active_blocking("alice", APP, tokio::runtime::Handle::current())
+        .unwrap();
+    let context = rig
+        .runtime
+        .view_context(&rig.agent, "host-tab-native-test")
+        .await
+        .unwrap();
+    let error = rig
+        .runtime
+        .invoke_declared(
+            rig.run.id(),
+            &rig.agent,
+            &context,
+            "not_declared",
+            json!({}),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, "unknown_action");
 }
 
 async fn pending_approval(rig: &Rig) -> Option<crate::session::RuntimeInteraction> {
@@ -380,7 +552,9 @@ async fn a_revoked_grant_stops_the_call_before_the_page() {
 
 #[tokio::test]
 async fn known_secret_values_never_reach_the_model_in_a_state_a_result_or_an_error() {
-    let rig = rig();
+    let mut rig = rig();
+    rig.grant().await;
+    let context = rig.context(declared());
     rig.runtime
         .owned
         .room_secret_observations
@@ -389,7 +563,7 @@ async fn known_secret_values_never_reach_the_model_in_a_state_a_result_or_an_err
     let state = rig
         .runtime
         .scrub_answer(
-            &rig.session,
+            &context,
             Ok(json!({"todos": ["pay with hunter2-vault-value"], "n": 1})),
         )
         .unwrap();
@@ -401,7 +575,7 @@ async fn known_secret_values_never_reach_the_model_in_a_state_a_result_or_an_err
     let error = rig
         .runtime
         .scrub_answer(
-            &rig.session,
+            &context,
             Err(failure("APP_REFUSED", "card hunter2-vault-value declined")),
         )
         .unwrap_err();
@@ -463,14 +637,16 @@ async fn an_existing_session_action_approval_skips_the_next_prompt_and_revocatio
         .forget_session(&rig.session);
     assert!(!rig.runtime.app_control().views().keep_pumping(&rig.session));
     let context = rig.context(declared());
-    assert!(tokio::time::timeout(
-        std::time::Duration::from_millis(200),
-        rig.runtime
-            .approve_view_action(rig.run.id(), &rig.agent, &context, &action, &input)
-    )
-    .await
-    .unwrap()
-    .is_ok());
+    assert!(
+        tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            rig.runtime
+                .approve_view_action(rig.run.id(), &rig.agent, &context, &action, &input)
+        )
+        .await
+        .unwrap()
+        .is_ok()
+    );
 
     rig.runtime
         .revoke_agent_extension(rig.agent.id(), ExtensionKind::App, APP, "alice")
@@ -610,7 +786,7 @@ enum LiveBindingCheck {
 
 async fn check_live_binding(check: LiveBindingCheck) {
     use crate::runtime::browser_controller_process::BrowserControllerProcessStore;
-    use chariox_app_package::{verify, VerificationPolicy};
+    use chariox_app_package::{VerificationPolicy, verify};
     use chariox_app_runtime::release_store::{ReleaseStore, StageBudget};
     let mut rig = rig_for_catalog(true);
     rig.grant().await;
@@ -875,12 +1051,13 @@ async fn check_live_binding(check: LiveBindingCheck) {
             1
         );
         // The binding grants declared App work in this Room, never another Room's Tab.
-        assert!(rig
-            .runtime
-            .app_control()
-            .views()
-            .bound_views("unrelated-room")
-            .is_empty());
+        assert!(
+            rig.runtime
+                .app_control()
+                .views()
+                .bound_views("unrelated-room")
+                .is_empty()
+        );
         rig.runtime
             .app_control()
             .views()

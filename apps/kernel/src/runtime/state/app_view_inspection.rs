@@ -34,7 +34,7 @@ impl KernelRuntimeState {
             Some(_) => {
                 return Err(error(
                     "Invalid App target; open the App view and retry /app actions",
-                ))
+                ));
             }
             None => self
                 .room_environment_snapshot(&request.session_id)
@@ -148,7 +148,7 @@ impl KernelRuntimeState {
         })
     }
 
-    async fn check_inspected_release(
+    pub(super) async fn check_inspected_release(
         &self,
         room: Option<&str>,
         binding: &AppViewBinding,

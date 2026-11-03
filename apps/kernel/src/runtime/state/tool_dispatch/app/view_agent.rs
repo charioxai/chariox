@@ -1,6 +1,6 @@
 //! Apps v2 A2: the runtime MCP tools through which an agent reads and drives
-//! the open App views of its Room. The kernel decides what may run from the
-//! signed declarations (`chariox_app_package::v2`); the page only answers.
+//! its Room views and the owner's open App Tabs. The kernel decides what may
+//! run from the signed declarations (`chariox_app_package::v2`); the page only answers.
 //! Each call is bound to the acting agent's App grant, runs as that agent in
 //! the page, waits its turn in the view's one queue, and reaches the model
 //! only after known secret values are scrubbed.
@@ -12,6 +12,7 @@ use crate::runtime::{
     browser_controller_app_view::{
         BrowserAppViewError as ViewError, BrowserAppViewRequest, ViewAgentAnswer, ViewAgentCallKind,
     },
+    kernel_browser_host::KernelBrowserHost,
 };
 use crate::session::{
     RuntimeInteraction, RuntimeInteractionChoice, RuntimeInteractionChoiceStyle,
@@ -19,7 +20,7 @@ use crate::session::{
 };
 use chariox_app_package::v2::{self as declared_actions, UiActionDeclaration, UiActionEffect};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 pub(in crate::runtime::state) const CATALOG: &str = "chariox.app_view_catalog";
 const INVOKE: &str = "chariox.app_view_invoke";
@@ -93,11 +94,28 @@ fn action_error(error: declared_actions::ViewActionError) -> ViewError {
 /// Everything one call needs from a view, fixed when the call begins.
 struct ViewContext {
     agent_id: String,
+    /// The agent's Room, retained for approvals and Room-view secret scope.
     session: String,
+    /// Queue identity. User-domain views are registered under their opaque view ID.
+    queue_session: String,
+    /// Room target or opaque user-view ID used by the in-kernel view queue.
     target: String,
+    /// Room controller or an owner-registry-bound user App Tab.
+    host: ViewHost,
     binding: AppViewBinding,
     authority: AppViewAuthority,
     declared: Vec<UiActionDeclaration>,
+}
+
+enum ViewHost {
+    Room,
+    User {
+        owner: String,
+        view_id: String,
+        browser_target: String,
+        browser_generation: u64,
+        retained: (AppViewBinding, crate::local::UserAppView),
+    },
 }
 
 pub(super) fn specs() -> Vec<RuntimeToolSpec> {
@@ -107,7 +125,7 @@ pub(super) fn specs() -> Vec<RuntimeToolSpec> {
     vec![
         RuntimeToolSpec {
             name: CATALOG.into(),
-            description: "Open or reuse granted Apps and list their views in this Room: each view's declared actions (name, description, effect, input schema) and its current state. Run actions with chariox.app_view_invoke.".into(),
+            description: "Open or reuse granted Apps in this Room or the owner's open App Tabs: each view's declared actions (name, description, effect, input schema) and current state. Run actions with chariox.app_view_invoke.".into(),
             input_schema: json!({"type": "object", "properties": {}, "additionalProperties": false}),
         },
         RuntimeToolSpec {
@@ -161,11 +179,7 @@ impl KernelRuntimeState {
                 .iter()
                 .any(|grant| grant.kind == ExtensionKind::App)
         });
-        if granted {
-            specs()
-        } else {
-            Vec::new()
-        }
+        if granted { specs() } else { Vec::new() }
     }
 
     pub(in crate::runtime::state) async fn try_app_view_tool(
@@ -390,6 +404,10 @@ impl KernelRuntimeState {
                 Some(self.app_binding_epoch(agent.id(), target)),
             );
             authority.check()?;
+            if let Some(context) = self.bound_user_view(agent, target).await? {
+                authority.check()?;
+                return Ok(context);
+            }
             let mut retired = None;
             let existing = match self.bound_view(agent, target) {
                 Ok(context) => {
@@ -470,6 +488,133 @@ impl KernelRuntimeState {
         Ok(context)
     }
 
+    /// A user-domain App is reachable only through its owner's retained view
+    /// record. The caller already proved this exact installation is granted.
+    async fn bound_user_view(
+        &self,
+        agent: &crate::agent::AgentInstance,
+        requested: &str,
+    ) -> Result<Option<ViewContext>, ViewError> {
+        use crate::runtime::app_view_host::{AppViewHost, KernelBrowserAppViewHost};
+
+        let canonical_owner = self.provider_account_authority_owner_user_id(agent.owner_user_id());
+        let views = self.app_control().user_views().clone();
+        for owner in self.user_domain_owner_aliases(&canonical_owner) {
+            for listed in views.list(&owner) {
+                let Some(browser) = listed.browser.as_ref() else {
+                    continue;
+                };
+                if listed.installation_id != requested
+                    && listed.view_id != requested
+                    && browser.tab_id != requested
+                {
+                    continue;
+                }
+                if !agent.has_extension_grant(ExtensionKind::App, &listed.installation_id) {
+                    continue;
+                }
+                let Some(retained) = views.get(&owner, &listed.view_id) else {
+                    continue;
+                };
+                let (binding, view) = &retained;
+                let Some(browser) = view.browser.as_ref() else {
+                    continue;
+                };
+                if binding.owner != owner
+                    || binding.installation != view.installation_id
+                    || view.generation.parse::<u64>().ok() != Some(binding.generation)
+                {
+                    return Err(failure(
+                        "APP_VIEW_STALE",
+                        "The App view binding changed; reopen it before using App actions",
+                    ));
+                }
+                let Some(browser_target) = views.browser_target(&owner, &view.view_id) else {
+                    return Err(failure(
+                        "APP_VIEW_STALE",
+                        "The App view is reloading; retry after opening it",
+                    ));
+                };
+                let queue_session = view.view_id.clone();
+                let queue_target = view.view_id.clone();
+                let Some((queue_binding, reloading)) = self
+                    .app_control()
+                    .views()
+                    .binding_state(&queue_session, &queue_target)
+                else {
+                    return Err(failure("unknown_view", "The App view closed; reopen it"));
+                };
+                if reloading || queue_binding != *binding {
+                    return Err(failure(
+                        "APP_VIEW_STALE",
+                        "The App view is reloading; retry after opening it",
+                    ));
+                }
+                let authority = AppViewAuthority::new(
+                    self.owned.agent_store.clone(),
+                    Some(agent),
+                    &binding.installation,
+                    None,
+                    Some(self.app_binding_epoch(agent.id(), &binding.installation)),
+                );
+                authority.check()?;
+                let (_, signed_actions) = self
+                    .check_inspected_release(None, binding)
+                    .await
+                    .map_err(|_| {
+                        failure(
+                            "APP_VIEW_STALE",
+                            "The signed App release changed; reopen the view",
+                        )
+                    })?;
+                let lease = tokio::select! {
+                    result = self.app_lease_on_demand(&binding.owner, &binding.installation) => {
+                        result.map_err(|_| failure("APP_UNAVAILABLE", "The App is not running"))?
+                    }
+                    () = authority.cancelled() => return Err(app_view_authority::not_granted()),
+                };
+                let declared = lease.catalog().app_catalog().ui_actions().to_vec();
+                if lease.catalog().generation() != binding.generation || declared != signed_actions
+                {
+                    return Err(failure(
+                        "APP_VIEW_STALE",
+                        "The App release changed; reopen its view",
+                    ));
+                }
+                if views.get(&owner, &view.view_id).as_ref() != Some(&retained)
+                    || views.browser_target(&owner, &view.view_id).as_deref()
+                        != Some(browser_target.as_str())
+                {
+                    return Err(failure(
+                        "APP_VIEW_STALE",
+                        "The App view changed while it was being checked; retry",
+                    ));
+                }
+                authority.check()?;
+                let view_id = view.view_id.clone();
+                let browser_generation = browser.generation;
+                let context_binding = binding.clone();
+                return Ok(Some(ViewContext {
+                    agent_id: agent.id().to_owned(),
+                    session: agent.session_id().to_owned(),
+                    queue_session,
+                    target: queue_target,
+                    host: ViewHost::User {
+                        owner,
+                        view_id,
+                        browser_target,
+                        browser_generation,
+                        retained,
+                    },
+                    binding: context_binding,
+                    authority,
+                    declared,
+                }));
+            }
+        }
+        Ok(None)
+    }
+
     /// An open view of the agent's own Room, for an App the agent holds. The
     /// declarations come next, from the running App.
     fn bound_view(
@@ -523,7 +668,9 @@ impl KernelRuntimeState {
         Ok(ViewContext {
             agent_id: agent.id().to_owned(),
             session: session.to_owned(),
+            queue_session: session.to_owned(),
             target,
+            host: ViewHost::Room,
             binding,
             authority,
             declared: Vec::new(),
@@ -538,7 +685,7 @@ impl KernelRuntimeState {
         let queue = self
             .app_control()
             .views()
-            .agent_queue(&context.session, &context.target)
+            .agent_queue(&context.queue_session, &context.target)
             .ok_or_else(|| failure("unknown_view", "the view was closed"))?;
         let turn = tokio::select! {
             turn = queue.lock_owned() => turn,
@@ -551,17 +698,60 @@ impl KernelRuntimeState {
     /// The view is still the one the call began on, at the same generation.
     fn view_still_bound(&self, context: &ViewContext) -> Result<(), ViewError> {
         context.authority.check()?;
-        match self
-            .app_control()
-            .views()
-            .binding_state(&context.session, &context.target)
-        {
-            Some((binding, false)) if binding.generation == context.binding.generation => Ok(()),
-            Some(_) => Err(failure(
-                "APP_VIEW_STALE",
-                "The App was updated; reopen its view",
-            )),
-            None => Err(failure("unknown_view", "the view was closed")),
+        match &context.host {
+            ViewHost::Room => match self
+                .app_control()
+                .views()
+                .binding_state(&context.queue_session, &context.target)
+            {
+                Some((binding, false)) if binding == context.binding => Ok(()),
+                Some(_) => Err(failure(
+                    "APP_VIEW_STALE",
+                    "The App was updated; reopen its view",
+                )),
+                None => Err(failure("unknown_view", "the view was closed")),
+            },
+            ViewHost::User {
+                owner,
+                view_id,
+                browser_target,
+                browser_generation,
+                retained,
+            } => {
+                let user_views = self.app_control().user_views();
+                if user_views.get(owner, view_id).as_ref() != Some(retained)
+                    || user_views.browser_target(owner, view_id).as_deref()
+                        != Some(browser_target.as_str())
+                {
+                    return Err(failure("unknown_view", "The App view closed; reopen it"));
+                }
+                let (binding, view) = retained;
+                let Some(browser) = view.browser.as_ref() else {
+                    return Err(failure("unknown_view", "The App view closed; reopen it"));
+                };
+                if binding != &context.binding
+                    || view_id != &view.view_id
+                    || browser.generation != *browser_generation
+                    || view.generation.parse::<u64>().ok() != Some(binding.generation)
+                {
+                    return Err(failure(
+                        "APP_VIEW_STALE",
+                        "The App was updated; reopen its view",
+                    ));
+                }
+                match self
+                    .app_control()
+                    .views()
+                    .binding_state(&context.queue_session, &context.target)
+                {
+                    Some((queue_binding, false)) if queue_binding == context.binding => Ok(()),
+                    Some(_) => Err(failure(
+                        "APP_VIEW_STALE",
+                        "The App was updated; reopen its view",
+                    )),
+                    None => Err(failure("unknown_view", "The App view closed; reopen it")),
+                }
+            }
         }
     }
 
@@ -597,24 +787,62 @@ impl KernelRuntimeState {
         changes: Option<(u64, u64)>,
     ) -> Result<Value, ViewError> {
         let answer = self.controller_call(context, kind, invoke, changes).await;
-        self.scrub_answer(&context.session, answer)
+        self.ensure_context_current(context).await?;
+        self.scrub_answer(context, answer)
     }
 
     fn scrub_answer(
         &self,
-        session: &str,
+        context: &ViewContext,
         answer: Result<Value, ViewError>,
     ) -> Result<Value, ViewError> {
-        let protection = &self.owned.room_secret_observations;
+        let (protection, scope) = match &context.host {
+            ViewHost::Room => (
+                &self.owned.room_secret_observations,
+                context.session.clone(),
+            ),
+            ViewHost::User { owner, .. } => (
+                &self.owned.kernel_browser_secret_observations,
+                KernelBrowserHost::profile_key(
+                    &self.provider_account_authority_owner_user_id(owner),
+                ),
+            ),
+        };
         match answer {
-            Ok(value) => protection
-                .scrub(session, value)
-                .map_err(|_| failure("withheld", "The Room's secret protection is unavailable, so the view's answer was withheld")),
+            Ok(value) => protection.scrub(&scope, value).map_err(|_| {
+                failure(
+                    "withheld",
+                    "Secret protection is unavailable, so the App view's answer was withheld",
+                )
+            }),
             Err(error) => Err(ViewError {
-                message: protection.scrub_text_or_withhold(session, &error.message),
+                message: protection.scrub_text_or_withhold(&scope, &error.message),
                 ..error
             }),
         }
+    }
+
+    async fn ensure_context_current(&self, context: &ViewContext) -> Result<(), ViewError> {
+        self.view_still_bound(context)?;
+        if matches!(&context.host, ViewHost::User { .. }) {
+            let (_, signed_actions) = self
+                .check_inspected_release(None, &context.binding)
+                .await
+                .map_err(|_| {
+                    failure(
+                        "APP_VIEW_STALE",
+                        "The signed App release changed; reopen the view",
+                    )
+                })?;
+            if signed_actions != context.declared {
+                return Err(failure(
+                    "APP_VIEW_STALE",
+                    "The signed App actions changed; reopen the view",
+                ));
+            }
+            self.view_still_bound(context)?;
+        }
+        Ok(())
     }
 
     async fn controller_call(
@@ -624,12 +852,15 @@ impl KernelRuntimeState {
         invoke: Option<(&str, Value)>,
         changes: Option<(u64, u64)>,
     ) -> Result<Value, ViewError> {
-        self.view_still_bound(context)?;
+        self.ensure_context_current(context).await?;
         let (name, input) = invoke.map_or((None, None), |(name, input)| {
             (Some(name.to_owned()), Some(input))
         });
         let request = BrowserAppViewRequest::Agent {
-            target_id: context.target.clone(),
+            target_id: match &context.host {
+                ViewHost::Room => context.target.clone(),
+                ViewHost::User { browser_target, .. } => browser_target.clone(),
+            },
             agent: context.agent_id.clone(),
             call: kind,
             name,
@@ -639,8 +870,22 @@ impl KernelRuntimeState {
             deadline_ms: ACTION_DEADLINE_MS,
         };
         let reply = tokio::select! {
-            reply = self.app_view_command::<Value>(&context.session, request) => reply
-                .map_err(|error| failure("view_unavailable", error.to_string()))?,
+            reply = async {
+                match &context.host {
+                    ViewHost::Room => self.app_view_command::<Value>(&context.session, request).await,
+                    ViewHost::User { owner, browser_generation, .. } => {
+                        use crate::runtime::app_view_host::{AppViewHost, KernelBrowserAppViewHost};
+                        KernelBrowserAppViewHost {
+                            state: self,
+                            owner,
+                            generation: Some(*browser_generation),
+                        }
+                        .command(request)
+                        .await
+                        .map(|value| value.unwrap_or(Value::Null))
+                    }
+                }
+            } => reply.map_err(|error| failure("view_unavailable", error.to_string()))?,
             () = context.authority.cancelled() => return Err(app_view_authority::not_granted()),
         };
         match ViewAgentAnswer::from_controller(reply) {
@@ -675,7 +920,7 @@ impl KernelRuntimeState {
         current_turn()?;
         self.view_still_bound(context)?;
         if self.app_control().views().action_approved(
-            &context.session,
+            &context.queue_session,
             &context.agent_id,
             &context.binding,
             &action.name,
@@ -732,7 +977,7 @@ impl KernelRuntimeState {
         self.view_still_bound(context)?;
         if answer.choice_id.as_deref() == Some("allow_session") {
             self.app_control().views().approve_action(
-                &context.session,
+                &context.queue_session,
                 &context.agent_id,
                 &context.binding,
                 &action.name,
