@@ -801,6 +801,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_folder_that_links_out_of_the_checkout_is_not_written_into() {
+        let rig = Rig::new();
+        let outside = rig.root.join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, rig.checkout.join("config")).unwrap();
+        let from = source(
+            Some(record(1, &[], &["config/s.json"])),
+            &[],
+            &["config/s.json"],
+        );
+        let view = rig.import("link", &from, None).await;
+        assert_eq!(
+            view.entries[0].reason.as_deref(),
+            Some("The file would land outside the project")
+        );
+        assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
+    }
+
+    #[tokio::test]
     async fn a_file_that_stops_arriving_fails_and_leaves_nothing_behind() {
         let rig = Rig::new();
         let mut from = source(Some(record(1, &[], &["cut.bin"])), &[], &["cut.bin"]);
