@@ -11,7 +11,7 @@ async fn claude_cancellation_waits_for_abort_ack_before_promoting_queued_prompt(
 }
 
 #[tokio::test]
-async fn cancelling_a_workflow_prompt_promotes_the_next_run_before_provider_dispatch() {
+async fn cancellation_defers_queued_workflow_and_refreshes_its_projection() {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
@@ -152,31 +152,38 @@ async fn cancelling_a_workflow_prompt_promotes_the_next_run_before_provider_disp
             cancellation.cancellation.prompt.id(),
             Some(provider_run.id()),
         )
-        .expect("provider abort acknowledgement should promote queued workflow prompt");
-    assert!(cancellation.cancellation.started_next.is_some());
+        .expect("provider abort acknowledgement should leave the workflow for shared promotion");
+    assert!(cancellation.cancellation.started_next.is_none());
+    assert!(cancellation.dispatch.is_none());
+    assert!(cancellation.queue_head_deferred);
     assert!(
         agent_runtime_projection
             .get(agent.id())
-            .and_then(|projection| projection.active_prompt)
-            .is_some_and(|prompt| prompt.workflow_run_id() == Some(queued_run.id())),
-        "runtime-owned cancellation settlement must refresh the promoted workflow prompt projection"
+            .expect("the cancelled agent projection should remain available")
+            .active_prompt
+            .is_none(),
+        "cancellation settlement must clear the old active prompt projection"
     );
 
     let snapshot = runtime
         .owned
         .session_snapshot(session.id())
         .expect("session snapshot should exist");
+    assert!(runtime
+        .owned
+        .prompt_state_owner
+        .peek_next_queued_prompt(&snapshot, agent.id())
+        .is_some_and(|head| head.workflow_run_id() == Some(queued_run.id())));
     let run = snapshot
         .workflow_runs()
         .iter()
         .find(|run| run.id() == queued_run.id())
         .expect("queued workflow run should remain in the session");
-    assert_eq!(run.status(), crate::session::WorkflowRunStatus::Running);
     assert_eq!(
         run.node_runs()[0].status(),
-        crate::session::WorkflowNodeRunStatus::Running
+        crate::session::WorkflowNodeRunStatus::Ready
     );
-    assert!(run.node_runs()[0].started_at_ms().is_some());
+    assert!(run.node_runs()[0].started_at_ms().is_none());
 }
 
 async fn assert_structured_cancellation_waits_for_abort_ack(adapter_key: &str) {

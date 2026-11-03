@@ -26,7 +26,7 @@ pub struct CodexStream {
 
 #[derive(Debug)]
 enum Framing {
-    // The HTTP upgrade: read freely, since the handshake keeps what follows it.
+    // The HTTP upgrade ends before the first WebSocket frame.
     Handshake,
     Header { bytes: [u8; 14], have: usize },
     Payload { remaining: u64, frame: (u8, bool) },
@@ -67,16 +67,10 @@ impl CodexStream {
         &self.tcp
     }
 
-    /// Ends the HTTP upgrade. The handshake may have read the start of the
-    /// first frames along with its response; frame reading continues after them.
+    /// The upgrade consumed only HTTP headers; frames still wait in TCP.
     fn upgrade_done(&mut self) {
-        let response = std::mem::take(&mut self.unread);
-        let end = response
-            .windows(4)
-            .position(|window| window == b"\r\n\r\n")
-            .map_or(response.len(), |at| at + 4);
+        self.unread.clear();
         self.framing = Framing::header();
-        self.follow(&response[end..]);
     }
 
     /// The connection, for another kernel program, with the bytes of the
@@ -177,7 +171,24 @@ fn payload_length(header: &[u8; 14]) -> u64 {
 
 impl Read for CodexStream {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        let allowed = buf.len().min(self.allowance());
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        let allowed = if matches!(self.framing, Framing::Handshake) {
+            // The upgrade can share a packet with a complete first message.
+            // Leave its frames in TCP until WebSocket::read owns their delivery;
+            // otherwise a handover before that read loses handshake read-ahead.
+            let peeked = self.tcp.peek(buf)?;
+            let mut header = self.unread[self.unread.len().saturating_sub(3)..].to_vec();
+            let prefix = header.len();
+            header.extend_from_slice(&buf[..peeked]);
+            header
+                .windows(4)
+                .position(|bytes| bytes == b"\r\n\r\n")
+                .map_or(peeked, |end| end + 4 - prefix)
+        } else {
+            buf.len().min(self.allowance())
+        };
         let read = self.tcp.read(&mut buf[..allowed])?;
         self.follow(&buf[..read]);
         Ok(read)
@@ -264,14 +275,51 @@ pub(super) fn read_socket_nonblocking(socket: &mut CodexSocket) -> Result<Messag
 
 #[cfg(test)]
 mod tests {
-    use std::io::Write;
-    use std::net::TcpListener;
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
     use std::thread;
     use std::time::{Duration, Instant};
 
     use tokio_tungstenite::tungstenite::{accept, Error as WebSocketError, Message};
 
-    use super::{connect_codex_socket, continue_codex_socket, read_socket_nonblocking};
+    use super::{
+        connect_codex_socket, continue_codex_socket, read_socket_nonblocking, CodexStream,
+    };
+
+    #[test]
+    fn upgrade_read_leaves_a_complete_first_frame_for_handover() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let header = b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n";
+        let mut packet = header.to_vec();
+        packet.extend(frame(0x81, b"after the swap"));
+        let packet_len = packet.len();
+        let (finish, finished) = std::sync::mpsc::channel::<()>();
+        let server = thread::spawn(move || {
+            let (mut tcp, _) = listener.accept().unwrap();
+            tcp.write_all(&packet).unwrap();
+            let _ = finished.recv();
+        });
+        let tcp = TcpStream::connect(address).unwrap();
+        tcp.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+        let mut stream = CodexStream::new(tcp);
+        let mut buf = [0; 512];
+        let deadline = Instant::now() + Duration::from_secs(3);
+        // Both headers and the complete frame must be queued before the read.
+        while stream.tcp().peek(&mut buf).unwrap() < packet_len {
+            assert!(Instant::now() < deadline, "the upgrade packet arrives");
+            thread::yield_now();
+        }
+        assert_eq!(stream.read(&mut buf).unwrap(), header.len());
+        stream.upgrade_done();
+        let (tcp, unread) = stream.hand_over().unwrap();
+        drop(stream);
+        let mut adopted = continue_codex_socket(tcp, unread);
+        assert_eq!(adopted.read().unwrap(), Message::text("after the swap"));
+        drop(adopted);
+        drop(finish);
+        server.join().unwrap();
+    }
 
     #[test]
     fn nonblocking_read_returns_without_waiting_for_a_websocket_message() {

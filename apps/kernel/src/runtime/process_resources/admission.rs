@@ -188,8 +188,8 @@ impl HeldCommand {
 static ADOPTED: std::sync::Mutex<BTreeMap<u32, HeldCommand>> =
     std::sync::Mutex::new(BTreeMap::new());
 
-/// Remembers the commands the previous program's admission had stopped. Their
-/// watches are started after this, for the processes the handover names.
+/// Remembers the previous program's waiting commands and Start now overrides.
+/// Their watches start after this, for the processes the handover names.
 pub(crate) fn adopt_admission(held: Vec<HeldCommand>) {
     ADOPTED
         .lock()
