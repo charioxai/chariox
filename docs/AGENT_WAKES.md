@@ -14,6 +14,13 @@ for a question whose answer can arrive later. Keep working after its immediate
 on every attached terminal; authorized agents and granted external followers
 answer through the existing interaction response path.
 
+A blocking `request_popup` (the default) ends its card after at most 280 seconds
+with status `timed_out`: the provider cuts a waiting tool call at 300 seconds
+without telling the kernel, and a card nobody can answer must not stay open.
+A step a person has to do (a CAPTCHA, a login, an approval) uses `wait:false`
+and `chariox.events.yield`. The Vault unlock card an agent's tool call raises
+stays open 280 seconds for the same reason; a provider launch keeps 60 seconds.
+
 ```json
 {"wait":false,"title":"Choose the next check","message":"Which check should run next?","choices":[{"id":"focused","label":"Focused checks","reply":"Run the focused checks."}],"timeout_sec":300}
 ```
