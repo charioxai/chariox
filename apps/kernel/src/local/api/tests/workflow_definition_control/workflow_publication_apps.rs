@@ -331,7 +331,7 @@ fn an_app_automation_feeding_an_event_trigger_is_pinned_and_packaged() {
     assert_eq!(app["grants"], serde_json::json!([]));
     assert_eq!(app["automations"][0]["automation_id"], "reminders");
     assert_eq!(app["automations"][0]["event_name"], "changed");
-    assert_eq!(app["automations"][0]["delivery_mode"], "inject");
+    assert!(app["automations"][0].get("delivery_mode").is_none());
     assert_eq!(
         app["automations"][0]["endpoint_id"],
         graph.endpoint_id.as_str()
