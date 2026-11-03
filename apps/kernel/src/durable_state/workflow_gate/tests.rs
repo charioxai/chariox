@@ -26,7 +26,7 @@ impl Fixture {
         workflow.add_endpoint(WorkflowEndpointDefinition::new("endpoint", None, "triage"));
         db.execute("INSERT INTO durable_workflow_hot_entities VALUES('kernel','session','workflow','workflow',?1)",[encode(&workflow).unwrap()]).unwrap();
         db.execute(
-            "INSERT INTO workflow_gate_modules VALUES(?1,?2,?3)",
+            "INSERT INTO workflow_gate_modules VALUES(?1,?2,?3,0)",
             params![
                 crate::session::DEFAULT_LOCAL_USER_ID,
                 definition.module_sha256,
@@ -306,4 +306,120 @@ fn explicit_state_reset_cancels_pending_entries_and_records_actor_reason() {
         .unwrap();
     assert!(audit.contains("configuration intentionally changed"));
     assert!(audit.contains("owner"));
+}
+
+#[test]
+fn terminal_replay_compacts_without_losing_decisions_or_dedupe_and_pending_survives() {
+    let mut f = Fixture::new();
+    let original = f.accept();
+    let c = f.claim(f.now).unwrap();
+    f.complete(c, gate::Decision::Drop);
+    f.admission.dedupe_id = "still-pending".into();
+    f.admission.trigger.occurrence_id = "still-pending".into();
+    let pending = f.accept();
+    let tx = f.db.transaction().unwrap();
+    retention::sweep(&tx, f.now + 8 * 86_400_000).unwrap();
+    tx.commit().unwrap();
+    let summary = entry(&f.db, &original.entry_id).unwrap().unwrap();
+    assert!(summary.replay_compacted_at_ms.is_some());
+    assert_eq!(summary.disposition, Disposition::Dropped);
+    let json: String =
+        f.db.query_row(
+            "SELECT body_json FROM workflow_gate_decisions WHERE entry_id=?1",
+            [&original.entry_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let record: DecisionRecord = decode(&json).unwrap();
+    assert!(record.evaluation.is_none());
+    assert!(record.report.is_none());
+    assert_eq!(record.compacted.unwrap().decision, "drop");
+    assert_eq!(
+        load(&f.db, &pending.entry_id)
+            .unwrap()
+            .unwrap()
+            .entry
+            .disposition,
+        Disposition::Ready
+    );
+    f.admission.dedupe_id = "occurrence".into();
+    f.admission.trigger.occurrence_id = "occurrence".into();
+    assert_eq!(f.accept().entry_id, original.entry_id);
+    let tx = f.db.transaction().unwrap();
+    retention::sweep(&tx, f.now + 31 * 86_400_000).unwrap();
+    tx.commit().unwrap();
+    assert!(entry(&f.db, &original.entry_id).unwrap().is_none());
+    assert!(entry(&f.db, &pending.entry_id).unwrap().is_some());
+}
+
+#[test]
+fn admission_charges_batch_payload_copies_to_workflow_body_budget() {
+    let mut f = Fixture::new();
+    let original = f.accept();
+    f.db.execute(
+        "INSERT INTO workflow_gate_members VALUES('retained-group',?1,?2)",
+        params![original.entry_id, "x".repeat(16 * 1024 * 1024)],
+    )
+    .unwrap();
+    f.admission.dedupe_id = "next".into();
+    f.admission.trigger.occurrence_id = "next".into();
+    let tx = f.db.transaction().unwrap();
+    assert!(admission::accept_in(&tx, f.admission.clone()).is_err());
+}
+
+#[test]
+fn a_closed_batch_key_can_start_its_next_fixed_window() {
+    let mut f = Fixture::new();
+    f.accept();
+    let c = f.claim(f.now).unwrap();
+    let due = f.now + 1000;
+    assert_eq!(
+        f.complete(
+            c,
+            gate::Decision::Batch {
+                key: "daily".into(),
+                flush_at_ms: due,
+                payload: json!({"first":true})
+            }
+        )
+        .disposition,
+        Disposition::Batched
+    );
+    let c = f.claim(due).unwrap();
+    f.complete(c, gate::Decision::Drop);
+    f.admission.dedupe_id = "next-window".into();
+    f.admission.trigger.occurrence_id = "next-window".into();
+    f.accept();
+    let c = f.claim(due + 1).unwrap();
+    assert_eq!(
+        f.complete(
+            c,
+            gate::Decision::Batch {
+                key: "daily".into(),
+                flush_at_ms: due + 1000,
+                payload: json!({"second":true})
+            }
+        )
+        .disposition,
+        Disposition::Batched
+    );
+    let c = f.claim(due + 1000).unwrap();
+    assert_eq!(c.evaluation.input.batch.as_ref().unwrap().items.len(), 1);
+}
+
+#[test]
+fn passed_notification_preserves_authority_deadline_and_ancestry() {
+    let f = Fixture::new();
+    let deadline = f.now + 60_000;
+    let q=WorkflowQueuedPrompt::new(WorkflowQueuedPromptInput{
+        id:"notification".into(),queue_id:"default".into(),workflow_id:"workflow".into(),endpoint_id:"endpoint".into(),prompt:Some("original secret-free source text".into()),source:WorkflowQueuedPromptSource::Event,schedule_id:None,
+        publication_invocation:Some(crate::session::WorkflowPublicationInvocationEnvelope{
+            http_method:None,publication_id:"publication".into(),hook_id:Some("subscription".into()),invocation_id:"receipt".into(),transport:"workflow_notification".into(),endpoint_id:"endpoint".into(),queue_ref:Some("default".into()),input:json!({"deadline_ms":deadline,"ancestry":["source"],"payload":{"original":true}}),artifacts:vec![],mode:None,caller:json!({"owner_id":"local"}),
+        }),
+    }).with_gate_pass("gate-entry".into(),vec![gate::Route{node_id:"triage".into(),payload:json!({"passed":true}),prompt:None}]);
+    assert!(!q.notification_expired_at(f.now));
+    let input = &q.publication_invocation().unwrap().input;
+    assert_eq!(input["deadline_ms"], json!(deadline));
+    assert_eq!(input["ancestry"], json!(["source"]));
+    assert!(input.get("payload").is_none());
 }

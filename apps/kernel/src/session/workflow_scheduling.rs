@@ -332,9 +332,13 @@ impl WorkflowQueuedPrompt {
         );
         if let Some(invocation) = &mut self.publication_invocation {
             let ancestry = invocation.input.get("ancestry").cloned();
+            let deadline = invocation.input.get("deadline_ms").cloned();
             invocation.input = serde_json::json!({"gate_entry_id":entry_id});
             if let Some(ancestry) = ancestry {
                 invocation.input["ancestry"] = ancestry;
+            }
+            if let Some(deadline) = deadline {
+                invocation.input["deadline_ms"] = deadline;
             }
             invocation.artifacts.clear();
         }
@@ -401,6 +405,11 @@ impl WorkflowQueuedPrompt {
         })
     }
 
+    pub(crate) fn notification_invocation_mut(
+        &mut self,
+    ) -> Option<&mut WorkflowPublicationInvocationEnvelope> {
+        self.publication_invocation.as_mut()
+    }
     pub fn publication_invocation(&self) -> Option<&WorkflowPublicationInvocationEnvelope> {
         self.publication_invocation.as_ref()
     }

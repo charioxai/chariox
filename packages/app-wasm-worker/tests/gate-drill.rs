@@ -170,13 +170,7 @@ fn advisory_component_selects_triage_and_one_summary_flush() {
         }
         let report = evaluate_blocking(
             WasmRuntime::open(&worker).unwrap(),
-            &Launch {
-                validate_only: false,
-                generation: format!("advisory-{step}"),
-                entry_id: evaluation.input.entry_id.clone(),
-                module_sha256: sha256(&component),
-                evaluation: evaluation.clone(),
-            },
+            &Launch::new(false, &component, evaluation.clone()),
             &component,
             &root,
         )

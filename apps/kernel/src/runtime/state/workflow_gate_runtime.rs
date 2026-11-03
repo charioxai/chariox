@@ -43,13 +43,7 @@ fn evaluate(
         let result = (|| {
             let runtime = chariox_app_runtime::worker_process::wasm::WasmRuntime::beside_kernel()
                 .map_err(|_| gate::Failure::GateRuntimeUnavailable)?;
-            let launch = gate::Launch {
-                validate_only,
-                generation: format!("{:032x}", rand::random::<u128>()),
-                entry_id: evaluation.input.entry_id.clone(),
-                module_sha256: gate::sha256(component),
-                evaluation,
-            };
+            let launch = gate::Launch::new(validate_only, component, evaluation);
             chariox_app_runtime::worker_process::gate::evaluate_blocking(
                 runtime, &launch, component, &scratch,
             )

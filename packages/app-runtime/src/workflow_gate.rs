@@ -197,6 +197,18 @@ pub struct Launch {
     pub module_sha256: String,
     pub evaluation: Evaluation,
 }
+impl Launch {
+    pub fn new(validate_only: bool, component: &[u8], evaluation: Evaluation) -> Self {
+        Self {
+            validate_only,
+            // The shared native worker record uses a positive signed integer.
+            generation: (rand::random::<u64>() % i64::MAX as u64 + 1).to_string(),
+            entry_id: evaluation.input.entry_id.clone(),
+            module_sha256: sha256(component),
+            evaluation,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

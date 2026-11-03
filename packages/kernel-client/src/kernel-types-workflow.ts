@@ -1180,6 +1180,7 @@ export type WorkflowGateEntry = {
   evaluation_count: number
   queued_prompt_id: string | null
   failure: string | null
+  replay_compacted_at_ms?: number
   decisions: WorkflowGateDecisionRecord[]
 }
 export type WorkflowGateState = { workflow: Record<string, unknown>; binding: Record<string, unknown> }
@@ -1198,7 +1199,7 @@ export type WorkflowGateOutput = {
   state: WorkflowGateState; reason: string; logs: string[]
 }
 export type WorkflowGateReport = { outcome: { Ok: WorkflowGateOutput } | { Err: string }; fuel_consumed: number; execution_ms: number; profile: string }
-export type WorkflowGateDecisionRecord = { evaluation_number: number; evaluation: WorkflowGateEvaluation; report: WorkflowGateReport; state_revision_before: number; state_revision_after: number }
+export type WorkflowGateDecisionRecord = { evaluation_number: number; evaluation?: WorkflowGateEvaluation; report?: WorkflowGateReport; compacted?: { evaluation_sha256: string; report_sha256: string; decision: string; target_nodes: string[]; next_due_at_ms: number | null; batch_key: string | null; reason: string; profile: string; fuel_consumed: number; execution_ms: number }; state_revision_before: number; state_revision_after: number }
 export type WorkflowGateAction =
   | {kind:"entries";after?:string|null;limit:number}
   | {kind:"state";binding_id?:string|null}

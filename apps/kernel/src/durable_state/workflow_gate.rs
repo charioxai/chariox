@@ -2,6 +2,7 @@
 //! only this journal can advance state or authorize an ordinary queue handoff.
 pub(crate) mod admission;
 mod decisions;
+mod retention;
 pub(crate) mod schedule;
 mod state;
 pub use state::Snapshot as StateSnapshot;
@@ -74,12 +75,18 @@ pub struct Entry {
     pub queued_prompt_id: Option<String>,
     pub failure: Option<String>,
     pub decisions: Vec<DecisionRecord>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replay_compacted_at_ms: Option<u64>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DecisionRecord {
     pub evaluation_number: u32,
-    pub evaluation: gate::Evaluation,
-    pub report: gate::Report,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub evaluation: Option<gate::Evaluation>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub report: Option<gate::Report>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compacted: Option<retention::DecisionSummary>,
     pub state_revision_before: u64,
     pub state_revision_after: u64,
 }
@@ -174,14 +181,15 @@ pub(crate) enum Outcome {
 }
 
 pub(super) fn initialize(db: &Connection) -> Result<()> {
-    db.execute_batch("CREATE TABLE IF NOT EXISTS workflow_gate_modules(owner_id TEXT NOT NULL,digest TEXT NOT NULL,component BLOB NOT NULL,PRIMARY KEY(owner_id,digest));
+    db.execute_batch("CREATE TABLE IF NOT EXISTS workflow_gate_modules(owner_id TEXT NOT NULL,digest TEXT NOT NULL,component BLOB NOT NULL,created_at_ms INTEGER NOT NULL,PRIMARY KEY(owner_id,digest));
     CREATE TABLE IF NOT EXISTS workflow_gate_lanes(owner_id TEXT NOT NULL,session_id TEXT NOT NULL,workflow_id TEXT NOT NULL,last_sequence INTEGER NOT NULL,PRIMARY KEY(owner_id,session_id,workflow_id));
     CREATE TABLE IF NOT EXISTS workflow_gate_state(owner_id TEXT NOT NULL,session_id TEXT NOT NULL,workflow_id TEXT NOT NULL,binding_id TEXT NOT NULL,revision INTEGER NOT NULL,state_json TEXT NOT NULL,PRIMARY KEY(owner_id,session_id,workflow_id,binding_id));
-    CREATE TABLE IF NOT EXISTS workflow_gate_entries(sequence INTEGER PRIMARY KEY AUTOINCREMENT,entry_id TEXT NOT NULL UNIQUE,owner_id TEXT NOT NULL,session_id TEXT NOT NULL,workflow_id TEXT NOT NULL,binding_id TEXT NOT NULL,dedupe_id TEXT NOT NULL,content_digest TEXT NOT NULL,disposition TEXT NOT NULL,due_at_ms INTEGER NOT NULL,deadline_ms INTEGER NOT NULL,body_json TEXT NOT NULL,UNIQUE(owner_id,session_id,workflow_id,binding_id,dedupe_id));
+    CREATE TABLE IF NOT EXISTS workflow_gate_entries(sequence INTEGER PRIMARY KEY AUTOINCREMENT,entry_id TEXT NOT NULL UNIQUE,owner_id TEXT NOT NULL,session_id TEXT NOT NULL,workflow_id TEXT NOT NULL,binding_id TEXT NOT NULL,dedupe_id TEXT NOT NULL,content_digest TEXT NOT NULL,disposition TEXT NOT NULL,due_at_ms INTEGER NOT NULL,deadline_ms INTEGER NOT NULL,body_json TEXT NOT NULL,terminal_at_ms INTEGER,summary_json TEXT,UNIQUE(owner_id,session_id,workflow_id,binding_id,dedupe_id));
     CREATE INDEX IF NOT EXISTS workflow_gate_due ON workflow_gate_entries(disposition,due_at_ms,sequence);
     CREATE INDEX IF NOT EXISTS workflow_gate_deadlines ON workflow_gate_entries(deadline_ms,sequence) WHERE disposition NOT IN ('queued','dropped','failed','expired','cancelled');
     CREATE TABLE IF NOT EXISTS workflow_gate_decisions(entry_id TEXT NOT NULL,evaluation_number INTEGER NOT NULL,body_json TEXT NOT NULL,PRIMARY KEY(entry_id,evaluation_number));
-    CREATE TABLE IF NOT EXISTS workflow_gate_batches(group_id TEXT PRIMARY KEY,entry_id TEXT NOT NULL,flush_at_ms INTEGER NOT NULL,closed INTEGER NOT NULL DEFAULT 0);
+    CREATE TABLE IF NOT EXISTS workflow_gate_batches(group_id TEXT PRIMARY KEY,scope_sha256 TEXT NOT NULL,entry_id TEXT NOT NULL,flush_at_ms INTEGER NOT NULL,closed INTEGER NOT NULL DEFAULT 0);
+    CREATE UNIQUE INDEX IF NOT EXISTS workflow_gate_open_batch_scope ON workflow_gate_batches(scope_sha256) WHERE closed=0;
     CREATE TABLE IF NOT EXISTS workflow_gate_members(group_id TEXT NOT NULL,entry_id TEXT NOT NULL UNIQUE,payload_json TEXT NOT NULL,PRIMARY KEY(group_id,entry_id));").map_err(sql)?;
     // A claimed unfinished evaluation is never automatically retried. Its captured
     // input/state survives so the failure is replayable after a process crash.
@@ -197,13 +205,14 @@ pub(super) fn initialize(db: &Connection) -> Result<()> {
         if let Some(evaluation) = stored.claimed_evaluation.take() {
             let record = DecisionRecord {
                 evaluation_number: stored.entry.evaluation_count,
-                evaluation,
-                report: gate::Report {
+                evaluation: Some(evaluation),
+                report: Some(gate::Report {
                     outcome: Err(gate::Failure::GateInterrupted),
                     fuel_consumed: 0,
                     execution_ms: 0,
                     profile: gate::PROFILE.into(),
-                },
+                }),
+                compacted: None,
                 state_revision_before: stored.claimed_revision,
                 state_revision_after: stored.claimed_revision,
             };
@@ -240,10 +249,13 @@ fn load(db: &Connection, id: &str) -> Result<Option<Stored>> {
     .map(|v| decode(&v))
     .transpose()
 }
+fn entry(db: &Connection, id: &str) -> Result<Option<Entry>> {
+    db.query_row("SELECT coalesce(summary_json,json_extract(nullif(body_json,''),'$.entry')) FROM workflow_gate_entries WHERE entry_id=?1", [id], |r|r.get::<_,String>(0)).optional().map_err(sql)?.map(|json|decode(&json)).transpose()
+}
 fn save(db: &Connection, s: &Stored) -> Result<()> {
     let disposition =
         serde_json::to_value(&s.entry.disposition).map_err(|_| error("gate disposition"))?;
-    db.execute("UPDATE workflow_gate_entries SET disposition=?2,due_at_ms=?3,deadline_ms=?4,body_json=?5 WHERE entry_id=?1",params![s.entry.entry_id,disposition.as_str(),s.entry.next_due_at_ms.unwrap_or(s.entry.accepted_at_ms) as i64,s.entry.deadline_ms as i64,encode(s)?]).map_err(sql)?;
+    db.execute("UPDATE workflow_gate_entries SET disposition=?2,due_at_ms=?3,deadline_ms=?4,body_json=?5,terminal_at_ms=CASE WHEN ?2 IN ('queued','dropped','failed','expired','cancelled') THEN coalesce(terminal_at_ms,?6) ELSE terminal_at_ms END WHERE entry_id=?1",params![s.entry.entry_id,disposition.as_str(),s.entry.next_due_at_ms.unwrap_or(s.entry.accepted_at_ms) as i64,s.entry.deadline_ms as i64,encode(s)?,crate::session::unix_epoch_ms() as i64]).map_err(sql)?;
     Ok(())
 }
 fn terminal(
@@ -332,7 +344,7 @@ impl DurableKernelStateStore {
             return Err(error("invalid gate entry cursor"));
         }
         let db = self.lock_connection("workflow.gate.entries")?;
-        let mut q=db.prepare("SELECT json_extract(body_json,'$.entry'),sequence FROM workflow_gate_entries WHERE owner_id=?1 AND session_id=?2 AND workflow_id=?3 AND sequence>?4 ORDER BY sequence LIMIT ?5").map_err(sql)?;
+        let mut q=db.prepare("SELECT coalesce(summary_json,json_extract(nullif(body_json,''),'$.entry')),sequence FROM workflow_gate_entries WHERE owner_id=?1 AND session_id=?2 AND workflow_id=?3 AND sequence>?4 ORDER BY sequence LIMIT ?5").map_err(sql)?;
         let rows = q
             .query_map(
                 params![owner, session, workflow, after, i64::from(limit) + 1],
@@ -355,19 +367,20 @@ impl DurableKernelStateStore {
     }
     pub(crate) fn gate_entry(&self, owner: &str, id: &str) -> Result<Entry> {
         let db = self.lock_connection("workflow.gate.entry")?;
-        let mut stored = load(&db, id)?
-            .filter(|s| s.admission.owner == owner)
+        let owned:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM workflow_gate_entries WHERE entry_id=?1 AND owner_id=?2)",params![id,owner],|r|r.get(0)).map_err(sql)?;
+        let mut entry = entry(&db, id)?
+            .filter(|_| owned)
             .ok_or_else(|| error("gate entry not found"))?;
         let mut q=db.prepare("SELECT body_json FROM workflow_gate_decisions WHERE entry_id=?1 ORDER BY evaluation_number LIMIT 32").map_err(sql)?;
         let rows = q.query_map([id], |r| r.get::<_, String>(0)).map_err(sql)?;
         for row in rows {
-            stored.entry.decisions.push(decode(&row.map_err(sql)?)?);
+            entry.decisions.push(decode(&row.map_err(sql)?)?);
         }
-        Ok(stored.entry)
+        Ok(entry)
     }
     pub(crate) fn gate_waiting(&self) -> Result<Vec<Stored>> {
         let db = self.lock_connection("workflow.gate.waiting")?;
-        ids(&db,"SELECT e.entry_id FROM workflow_gate_entries e WHERE e.disposition='waiting_for_queue' AND EXISTS(SELECT 1 FROM durable_workflow_hot_entities q WHERE q.owner_id=json_extract(e.body_json,'$.admission.kernel_id') AND q.session_id=e.session_id AND q.entity_kind='queue' AND q.entity_id=json_extract(e.body_json,'$.admission.template.queue_id') AND json_extract(q.payload_json,'$.enabled')=1) AND (SELECT count(*) FROM durable_workflow_hot_entities p WHERE p.owner_id=json_extract(e.body_json,'$.admission.kernel_id') AND p.session_id=e.session_id AND p.entity_kind='queued_prompt' AND json_extract(p.payload_json,'$.status')='queued')<1024 ORDER BY e.sequence LIMIT 8",[])?
+        ids(&db,"SELECT e.entry_id FROM workflow_gate_entries e WHERE e.disposition='waiting_for_queue' AND EXISTS(SELECT 1 FROM durable_workflow_hot_entities q WHERE q.owner_id=json_extract(nullif(e.body_json,''),'$.admission.kernel_id') AND q.session_id=e.session_id AND q.entity_kind='queue' AND q.entity_id=json_extract(nullif(e.body_json,''),'$.admission.template.queue_id') AND json_extract(q.payload_json,'$.enabled')=1) AND (SELECT count(*) FROM durable_workflow_hot_entities p WHERE p.owner_id=json_extract(nullif(e.body_json,''),'$.admission.kernel_id') AND p.session_id=e.session_id AND p.entity_kind='queued_prompt' AND json_extract(p.payload_json,'$.status')='queued')<1024 ORDER BY e.sequence LIMIT 8",[])?
             .into_iter().map(|id|load(&db,&id)?.ok_or_else(||error("gate entry missing"))).collect()
     }
     pub(crate) fn gate_next_due(&self) -> Result<Option<u64>> {
@@ -387,6 +400,7 @@ pub(super) fn execute(db: &mut Connection, request: Request) -> bool {
                 digest,
                 component,
             } => {
+                retention::sweep(&tx, crate::session::unix_epoch_ms())?;
                 if component.len() > 2 * 1024 * 1024 || gate::sha256(&component) != digest {
                     return Err(error("gate module digest/limit invalid"));
                 }
@@ -395,8 +409,13 @@ pub(super) fn execute(db: &mut Connection, request: Request) -> bool {
                     return Err(error("gate module storage limit reached"));
                 }
                 tx.execute(
-                    "INSERT OR IGNORE INTO workflow_gate_modules VALUES(?1,?2,?3)",
-                    params![owner, digest, component],
+                    "INSERT OR IGNORE INTO workflow_gate_modules VALUES(?1,?2,?3,?4)",
+                    params![
+                        owner,
+                        digest,
+                        component,
+                        crate::session::unix_epoch_ms() as i64
+                    ],
                 )
                 .map_err(sql)?;
                 Outcome::Unit
@@ -456,6 +475,9 @@ pub(super) fn execute(db: &mut Connection, request: Request) -> bool {
                 Outcome::Unit
             }
             Operation::Cancel { owner, id, reason } => {
+                if entry(&tx, &id)?.is_some_and(|e| e.disposition.is_terminal()) {
+                    return Err(error("gate entry already handed or terminal"));
+                }
                 let mut s = load(&tx, &id)?
                     .filter(|s| s.admission.owner == owner)
                     .ok_or_else(|| error("gate entry not found"))?;
@@ -512,7 +534,7 @@ pub(super) fn cancel_stale_in(
     session: &str,
 ) -> rusqlite::Result<()> {
     let result = (|| -> Result<()> {
-        let entries=ids(tx,"SELECT entry_id FROM workflow_gate_entries WHERE session_id=?1 AND json_extract(body_json,'$.admission.kernel_id')=?2 AND disposition NOT IN ('queued','dropped','failed','expired','cancelled')",params![session,kernel])?;
+        let entries=ids(tx,"SELECT entry_id FROM workflow_gate_entries WHERE session_id=?1 AND json_extract(nullif(body_json,''),'$.admission.kernel_id')=?2 AND disposition NOT IN ('queued','dropped','failed','expired','cancelled')",params![session,kernel])?;
         for id in entries {
             let mut s = load(tx, &id)?.ok_or_else(|| error("gate entry missing"))?;
             if !admission::current_stored(tx, &s)? {
