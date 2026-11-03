@@ -41,8 +41,9 @@ pub(crate) fn reach_need(request: &LocalDaemonRequest) -> ReachNeed {
     if sudo_request_forbidden(request) {
         return ReachNeed::Excluded;
     }
-    // The room tools: discover and read sessions, agents and history, attach and
-    // message agents, and use machines under the rental rule.
+    // The room tools: discover and read sessions, agents and history, attach, message
+    // and steer agents, a room's own terminals and workspace files, and machines under
+    // the rental rule. Kernel-wide file access and every other kernel mutation need /sudo.
     if matches!(
         request,
         LocalDaemonRequest::ListGatewayKernels(_)
@@ -50,6 +51,10 @@ pub(crate) fn reach_need(request: &LocalDaemonRequest) -> ReachNeed {
             | LocalDaemonRequest::ResolveSession(_)
             | LocalDaemonRequest::GetSessionState(_)
             | LocalDaemonRequest::ListAgents(_)
+            | LocalDaemonRequest::ListArchivedAgents(_)
+            | LocalDaemonRequest::QueryRecall(_)
+            | LocalDaemonRequest::SearchRecall(_)
+            | LocalDaemonRequest::SemanticSearchRecall(_)
             | LocalDaemonRequest::GetSessionHistoryOutline(_)
             | LocalDaemonRequest::GetSessionHistoryBlobContent(_)
             | LocalDaemonRequest::GetSessionHistoryBlobContents(_)
@@ -57,6 +62,14 @@ pub(crate) fn reach_need(request: &LocalDaemonRequest) -> ReachNeed {
             | LocalDaemonRequest::DetachFromSession(_)
             | LocalDaemonRequest::HeartbeatAttachments(_)
             | LocalDaemonRequest::SubmitPrompt(_)
+            | LocalDaemonRequest::SubmitPrompts(_)
+            | LocalDaemonRequest::SteerQueuedPrompt(_)
+            | LocalDaemonRequest::SteerActivePrompt(_)
+            | LocalDaemonRequest::RoomTerminal(_)
+            | LocalDaemonRequest::RunShellCommand(_)
+            | LocalDaemonRequest::ReadDirectoryTree(_)
+            | LocalDaemonRequest::ReadFile(_)
+            | LocalDaemonRequest::EditFile(_)
             | LocalDaemonRequest::ListRemoteMachines(_)
             | LocalDaemonRequest::ControlPlane(_)
     ) {
@@ -73,7 +86,8 @@ pub(crate) fn rents_machine(request: &LocalDaemonRequest) -> bool {
             ControlPlaneRequest::Acquire { .. }
                 | ControlPlaneRequest::Start { .. }
                 | ControlPlaneRequest::StartSavedState { .. }
-        )
+        ) | LocalDaemonRequest::CreateDisposableWorker(_)
+            | LocalDaemonRequest::CreateManagedEnvironment(_)
     )
 }
 

@@ -117,6 +117,20 @@ fn reach_need_follows_the_agents_own_room_authority() {
         "renaming a room needs /sudo in the agent's own room"
     );
     assert_eq!(
+        reach_need(&parse(serde_json::json!(
+            {"ReadKernelFile": {"path": "/etc/hostname", "offset": 0, "length": 1}}
+        ))),
+        ReachNeed::Sudo,
+        "kernel-wide file access needs /sudo in the agent's own room"
+    );
+    assert_eq!(
+        reach_need(&parse(serde_json::json!(
+            {"RoomTerminal": {"session_id": "s", "operation": {"operation": "exec_list"}}}
+        ))),
+        ReachNeed::Room,
+        "a room's own terminals are room-level"
+    );
+    assert_eq!(
         reach_need(&parse(
             serde_json::json!({"DeleteSession": {"session_ref": "s"}})
         )),
@@ -166,6 +180,65 @@ async fn the_owners_agent_gets_the_reach_tools_and_a_guests_agent_gets_none() {
     .await;
     assert!(!ok);
     assert_eq!(code(&payload), "reach_not_available");
+}
+
+/// One JSON-RPC call to `/mcp/reach` over a real connection to the runtime MCP server.
+async fn http_rpc(port: u16, token: &str, body: Value) -> Value {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let body = body.to_string();
+    let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .expect("the runtime MCP server accepts connections");
+    stream
+        .write_all(
+            format!(
+                "POST /mcp/reach HTTP/1.1\r\nHost: kernel\r\nAuthorization: Bearer {token}\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            )
+            .as_bytes(),
+        )
+        .await
+        .expect("request is sent");
+    let mut raw = String::new();
+    stream
+        .read_to_string(&mut raw)
+        .await
+        .expect("response is read");
+    let (head, payload) = raw.split_once("\r\n\r\n").expect("an HTTP response");
+    assert!(head.starts_with("HTTP/1.1 200"), "{head}");
+    serde_json::from_str(payload.trim()).expect("a JSON-RPC body")
+}
+
+#[tokio::test]
+async fn the_reach_server_serves_the_owners_agent_and_nobody_else_over_http() {
+    let reach = fixture();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = tokio::spawn(super::super::run_mcp_http_server_on_listener(
+        reach.router.clone(),
+        listener,
+    ));
+    let list = serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"});
+    let owner = http_rpc(port, &reach.owner_token, list.clone()).await;
+    let names = owner["result"]["tools"]
+        .as_array()
+        .expect("a tool list")
+        .iter()
+        .map(|tool| tool["name"].as_str().unwrap_or_default())
+        .collect::<Vec<_>>();
+    assert_eq!(names, ["kernels", "request"], "{owner}");
+    let guest = http_rpc(port, &reach.guest_token, list).await;
+    assert_eq!(guest["result"]["tools"], serde_json::json!([]), "{guest}");
+
+    let call = serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+        "params": {"name": "request", "arguments": {"request": {"ListSessions": null}}}});
+    let listed = http_rpc(port, &reach.owner_token, call.clone()).await;
+    assert_eq!(listed["result"]["isError"], false, "{listed}");
+    assert!(listed.to_string().contains(&reach.other_session_id));
+    let refused = http_rpc(port, &reach.guest_token, call).await;
+    assert_eq!(refused["result"]["isError"], true, "{refused}");
+    assert!(refused.to_string().contains("reach_not_available"));
+    server.abort();
 }
 
 #[tokio::test]

@@ -34,6 +34,26 @@ An external agent (Claude Code, Codex, OpenCode) talks only to its local kernel 
 - A person pairs this kernel with a self-hosted kernel with `/kernel add <link>` in a Chariox terminal (`/kernel linked`, `/kernel unlink NAME`); agents cannot.
 - Output is one JSON document on stdout. Errors are `{"error":{"code","message","kernel"}}` on stderr.
 
+### Agent reach (Room agents)
+
+A Room agent of the kernel owner reaches other rooms and the user's other kernels through its runtime MCP, which carries a second server, `chariox-reach` (`/mcp/reach`), next to `chariox`. It has two tools: `kernels` (the kernels the user can reach) and `request` (one `LocalDaemonRequest`, optionally with a `kernel`). There is no CLI or socket door for Room agents, and no off switch for the owner's agents. An agent of a guest never gets the tools.
+
+The identity is the agent's own live provider run (`reach:<run>`); it ends with the run. The kernel authorises it as the owner, with the same rule as at home:
+
+| The request | Without /sudo | In a live /sudo window of the agent's own turn |
+| --- | --- | --- |
+| Discover and read: sessions, agents, history, recall | allowed | allowed |
+| Attach, message and steer agents; a room's terminals and workspace files; machines (`ControlPlane`) | allowed | allowed |
+| Anything else a /sudo window adds at home (settings, extensions, renames, kernel-wide files, ...) | refused: `reach_requires_sudo` | allowed |
+| The /sudo exclusion list (`RequestKernelSudo`, `RespondToInteraction`, deletes, events, ...) | refused: `excluded_for_agents` | refused |
+| The human-only set (passkeys, Vault, pairing, relay, Cloud identity, protected settings) | refused: `human_only` | refused |
+
+A request for another kernel goes through the owner's gateway (the same one `chariox request --kernel` used); `on_behalf_of.harness` names `<room>/<agent> (Chariox agent)`, so the target's audit rows and its paired-clients list show which agent acted. Authority is enforced on the agent's own kernel.
+
+Renting a machine (`ControlPlane` acquire/start, disposable workers, managed environments) needs no question within the user's Cloud allowance. With the setting `agents.ask_before_renting_machines = true` ("Ask before agents rent machines", off by default; owner-only) each rental raises one decision in the agent's room, shown on every client; declining answers `rental_declined`.
+
+Drill: `node scripts/drills/agent-reach.mjs` (two real kernels, local relay, a real Claude agent).
+
 ### Development standing grants
 
 By default a grant lasts only while the holder's process does: when the agent's process restarts, it asks the owner again. On a development kernel the owner can pre-approve a holder so that restart needs no popup. Edit the user config file by hand (there is no command, popup or API for it, so no agent can enable it for itself):
