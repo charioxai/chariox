@@ -6361,3 +6361,15 @@ only. The native worker ships beside the kernel, enters containment before its
 identity handshake, and exposes only the versioned App WIT world through the
 kernel capability broker. The replaced engine's launch, runtime enrollment and
 privileged storage-helper paths are removed. Reinstall unsupported stored Apps.
+
+### DOM mirror v2 frame compat mode (local protocol 981)
+
+A mirror v2 `document` record carries `compat: "quirks"` when its source document lays out in quirks mode
+(`document.compatMode === "BackCompat"`); standards documents carry nothing. The viewer builds every nested frame
+document in standards mode unless the record says quirks, because a frame's initial viewer document is in quirks mode and
+percentage heights and table cells (an image grid's rows) lay out differently there. The relay peer protocol does not
+change, and clients carry no new minimum: an older kernel names no quirks frames, so the viewer shows them in standards
+mode. A quirks-mode top-level page is still shown in the viewer's standards-mode sandbox. Focused checks: the
+`protocol 981` controller test in `kernel-browser-mirror2.browser-test.mjs`, the compat renderer test in
+`browser-mirror2-renderer.browser-test.mjs` and the real-Chromium drill `browser-mirror2-lab.mjs` with
+`browser-mirror2-captcha-scenarios.mjs`.

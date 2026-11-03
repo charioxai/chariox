@@ -91,6 +91,10 @@ test('MP-11: deltas reference known nodes; ops cannot write attributes into mask
   // Protocol 503: a frame document's fragment, on document records and `fragment` ops only, bounded like the header.
   validateMirror2Record({ id: 'n9', parent: 'n8', kind: 'document', fragment: 'section' })
   for (const record of [{ id: 'n9', parent: 'n8', kind: 'document', fragment: '' }, { id: 'n9', parent: 'n8', kind: 'document', fragment: 'x'.repeat(2049) }, { id: 'n9', parent: 'n8', kind: 'element', tag: 'p', fragment: 'section' }]) assert.throws(() => validateMirror2Record(record as Mirror2Record), /unsafe mirror/, JSON.stringify(record).slice(0, 80))
+  // Protocol 981: a document record names its HTML mode when it is not no-quirks, and only document records do.
+  validateMirror2Record({ id: 'n9', parent: 'n8', kind: 'document', document_mode: 'quirks' })
+  validateMirror2Record({ id: 'n9', parent: 'n8', kind: 'document', document_mode: 'limited-quirks' })
+  for (const record of [{ id: 'n9', parent: 'n8', kind: 'document', document_mode: 'no-quirks' }, { id: 'n9', parent: 'n8', kind: 'document', document_mode: true }, { id: 'n9', parent: 'n8', kind: 'element', tag: 'p', document_mode: 'quirks' }]) assert.throws(() => validateMirror2Record(record as unknown as Mirror2Record), /unsafe mirror/)
   validateMirror2Packet(delta([{ op: 'fragment', id: 'n1', fragment: 'section' }, { op: 'fragment', id: 'n1', fragment: null }]), previous)
   for (const fragment of ['', 'x'.repeat(2049), 7]) assert.throws(() => validateMirror2Packet(delta([{ op: 'fragment', id: 'n1', fragment } as unknown as NonNullable<Mirror2Packet['ops']>[number]]), previous), /unsafe mirror op/)
   assert.throws(() => validateMirror2Packet(delta([{ op: 'fragment', id: 'n2', fragment: 'section' }]), previous), /unsafe mirror op/, 'MP-11: an element has no fragment')

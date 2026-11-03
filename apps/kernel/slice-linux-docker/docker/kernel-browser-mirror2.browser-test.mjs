@@ -29,7 +29,8 @@ async function mirrored(html, run, routes = {}) {
     response.setHeader("Content-Type", "text/html"); response.end(`<!doctype html>${html.replaceAll("PORT", port)}`);
   });
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
-  const host = new KernelBrowserHost(root);
+  const apps = await mkdtemp(path.join(process.env.CHARIOX_MDACCESS_DRILL_ROOT, "apps-")); // a managed-policy browser requires a WASM App storage root outside its temporary directory
+  const host = new KernelBrowserHost(root, { appStorageRoot: apps });
   try {
     const opened = await host.request({ op: "open", url: `http://127.0.0.1:${server.address().port}/` });
     const evaluate = async expression => {
@@ -60,6 +61,7 @@ async function mirrored(html, run, routes = {}) {
     await host.stop();
     await new Promise(resolve => server.close(resolve));
     await rm(root, { recursive: true, force: true });
+    await rm(apps, { recursive: true, force: true });
   }
 }
 
@@ -194,6 +196,23 @@ test("MP-10: a child frame's unreadable cross-origin stylesheet reaches the view
   }, {
     "/frame": { type: "text/html", body: '<!doctype html><link rel="stylesheet" href="http://127.0.0.1:PORT/frame.css"><p class="mark">framed</p>' },
     "/frame.css": { type: "text/css", body: ".mark { color: rgb(1, 2, 3); }" },
+  }));
+
+// Protocol 981: the viewer lays a frame document out in the document mode of its source (an image grid in a
+// quirks-mode frame would otherwise stretch its rows). No-quirks is the default; only the other two are named.
+test("MP-08/MP-10: protocol 981 a quirks or limited-quirks frame document (same- or cross-origin) names its mode, a standards one does not", () => mirrored(
+  '<iframe src="http://localhost:PORT/quirks" style="width:300px;height:100px"></iframe><iframe src="http://localhost:PORT/standards" style="width:300px;height:100px"></iframe><iframe src="/quirks-same" style="width:300px;height:100px"></iframe><iframe src="http://localhost:PORT/limited" style="width:300px;height:100px"></iframe>', async ({ next }) => {
+    await new Promise(resolve => setTimeout(resolve, 800));
+    let wire = "";
+    for (let i = 0; i < 6; i++) { const packet = await next(i ? 500 : 0); wire += JSON.stringify([packet.nodes, packet.ops]); if (packet.snapshot_complete && (wire.match(/"document_mode":/g) ?? []).length >= 3) break; }
+    assert.equal((wire.match(/"document_mode":"quirks"/g) ?? []).length, 2, "MP-08: exactly the two quirks frame documents are named");
+    assert.equal((wire.match(/"document_mode":"limited-quirks"/g) ?? []).length, 1, "MP-08: the limited-quirks frame document is named");
+    assert.doesNotMatch(wire, /"document_mode":"no-quirks"/, "MP-08: the default is never sent");
+  }, {
+    "/quirks": { type: "text/html", body: "<p>quirks cross-origin</p>" },
+    "/standards": { type: "text/html", body: "<!doctype html><p>standards</p>" },
+    "/quirks-same": { type: "text/html", body: "<p>quirks same-origin</p>" },
+    "/limited": { type: "text/html", body: '<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><p>limited</p>' },
   }));
 
 test("MP-10: adopted stylesheet edits with an unchanged rule count reach the viewer (document and shadow root)", () => mirrored(

@@ -608,6 +608,7 @@ export class BrowserMirror2Renderer {
       const { frame, id } = frames[i]!
       const nested = frame.contentDocument; if (!nested) throw Error('MP-11: nested mirror unavailable')
       const documentRecord = records.find(r => r.parent === id && r.kind === 'document'); if (!documentRecord) continue
+      this.layoutMode(nested, documentRecord.document_mode)
       const subtree = this.subtree(records, documentRecord.id)
       this.records.set(documentRecord.id, documentRecord); this.dom.set(documentRecord.id, nested); this.ids.set(nested, documentRecord.id); this.frameDocuments.add(documentRecord.id)
       const built = this.build(subtree.slice(1), nested, frames, scrolls)
@@ -617,6 +618,15 @@ export class BrowserMirror2Renderer {
       else { this.shadows.delete(nested); nested.adoptedStyleSheets = [] } // a replaced document's sheets do not style the new one
       this.bind(nested)
     }
+  }
+  // A frame's initial document is in quirks mode, whatever its source is: the source's doctype decides how
+  // percentage heights and table cells lay out (an image grid's rows stretch to the frame in quirks mode).
+  // Writing the doctype switches the mode and, like any open(), drops listeners (bind() follows).
+  private layoutMode(doc: Document, mode: Mirror2Record['document_mode']): void {
+    const now = doc.compatMode === 'BackCompat' ? 'quirks' : doc.doctype?.publicId ? 'limited-quirks' : 'no-quirks'
+    if (now === (mode ?? 'no-quirks')) return
+    const doctype = mode === 'quirks' ? '' : mode === 'limited-quirks' ? '<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">' : '<!doctype html>'
+    doc.open(); doc.write(`${doctype}<html></html>`); doc.close()
   }
   private subtree(records: Mirror2Record[], rootId: string): Mirror2Record[] {
     const ids = new Set([rootId]), out: Mirror2Record[] = []

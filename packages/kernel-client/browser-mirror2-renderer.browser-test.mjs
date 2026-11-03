@@ -97,6 +97,23 @@ test('MP-10: review #320-2 a frame document replaced by one without adopted styl
   } finally { await page.close(); }
 });
 
+test('MP-08/MP-10: a frame document is laid out in the document mode of its source (no-quirks unless the record says otherwise), also when the frame navigates', async () => {
+  const page = await viewer();
+  try {
+    const frameDoc = (base, extra = {}) => [{ id: `n${base}`, parent: 'n4', kind: 'document', ...extra }, { id: `n${base + 1}`, parent: `n${base}`, kind: 'element', tag: 'html' }, { id: `n${base + 2}`, parent: `n${base + 1}`, kind: 'element', tag: 'body', attrs: { style: 'margin:0' } }, { id: `n${base + 3}`, parent: `n${base + 2}`, kind: 'element', tag: 'div', attrs: { style: 'height:100%;width:100%' } }];
+    await apply(page, snapshot([{ id: 'n1', parent: null, kind: 'document' }, { id: 'n2', parent: 'n1', kind: 'element', tag: 'html' }, { id: 'n3', parent: 'n2', kind: 'element', tag: 'body' },
+      { id: 'n4', parent: 'n3', kind: 'frame', tag: 'iframe', attrs: { style: 'width:300px;height:500px;border:0' } }, ...frameDoc(5)]));
+    const nested = () => page.evaluate(() => { const d = window.r.frame.contentDocument.querySelector('iframe').contentDocument; return [d.compatMode + (d.doctype?.publicId ? '+public' : ''), Math.round(d.querySelector('div').getBoundingClientRect().height)]; });
+    assert.deepEqual(await nested(), ['CSS1Compat', 0], 'MP-08: a standards frame document: an auto-height body makes height:100% auto');
+    await apply(page, delta(2, [{ op: 'children', id: 'n4', children: ['n9'], nodes: frameDoc(9, { document_mode: 'quirks' }) }]));
+    assert.deepEqual(await nested(), ['BackCompat', 500], 'MP-08: a quirks frame document resolves height:100% against the frame');
+    await apply(page, delta(3, [{ op: 'children', id: 'n4', children: ['n13'], nodes: frameDoc(13, { document_mode: 'limited-quirks' }) }]));
+    assert.deepEqual(await nested(), ['CSS1Compat+public', 0], 'MP-08: a limited-quirks frame document keeps standards layout with its almost-standards doctype');
+    await apply(page, delta(4, [{ op: 'children', id: 'n4', children: ['n17'], nodes: frameDoc(17) }]));
+    assert.deepEqual(await nested(), ['CSS1Compat', 0], 'MP-08: the next page of the frame is standards again');
+  } finally { await page.close(); }
+});
+
 test('MP-10: review #941-2 a multiple select shows every selected option (snapshot, a secondary option changing, replaced options)', async () => {
   const page = await viewer();
   try {

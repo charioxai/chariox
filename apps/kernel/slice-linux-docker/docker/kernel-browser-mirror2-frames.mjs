@@ -20,7 +20,7 @@ const rebaseCss = (text, slot) => text.replace(/mr:r([0-9]{1,6})/g, (_, n) => `m
 // field cannot travel from a child frame un-rebased.
 const same = value => value;
 const id = slot => value => rebaseId(value, slot);
-const RECORD = slot => ({ id: id(slot), parent: value => value === null ? null : rebaseId(value, slot), kind: same, tag: same, ns: same, text: same, form: same, scroll: same, fragment: same, size: same, display: same, reason: same, state: same, foreign: same,
+const RECORD = slot => ({ id: id(slot), parent: value => value === null ? null : rebaseId(value, slot), kind: same, tag: same, ns: same, text: same, form: same, scroll: same, fragment: same, document_mode: same, size: same, display: same, reason: same, state: same, foreign: same,
   attrs: attrs => attrs.style ? { ...attrs, style: rebaseCss(attrs.style, slot) } : attrs, res: key => rebaseKey(key, slot), css: text => rebaseCss(text, slot), adopted: list => list.map(text => rebaseCss(text, slot)) });
 const OPS = {
   children: slot => ({ children: list => list.map(id(slot)), nodes: list => list.map(record => rebaseRecord(record, slot)) }),

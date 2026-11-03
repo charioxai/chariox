@@ -300,6 +300,8 @@ test('MP-11: every field of a child-frame delta is rebased into the frame slot; 
   assert.throws(() => frames.rebaseOp({ op: 'attr', id: 'n3', name: 'x', value: 'y', owner_id: 'n4' }, slot), /unrebased mirror op field/);
   assert.throws(() => frames.rebaseOp({ op: 'focus_ring', id: 'n3' }, slot), /unrebased mirror op/);
   assert.throws(() => frames.rebaseRecord({ ...record, label_for: 'n3' }, slot), /unrebased mirror record field/);
+  // Protocol 981: a child frame document's HTML mode travels as the child named it.
+  assert.deepEqual(frames.rebaseRecord({ id: 'n1', parent: 'n0', kind: 'document', document_mode: 'quirks' }, slot), { id: n(1), parent: n(0), kind: 'document', document_mode: 'quirks' });
 });
 
 test('MP-08: a page without opaque regions (and no attached frame) places no tiles without evaluating in the page', async () => {

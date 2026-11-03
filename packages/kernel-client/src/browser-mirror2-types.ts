@@ -8,6 +8,7 @@ export type Mirror2Record = {
   tag?: string; ns?: 'svg' | 'math'; attrs?: Record<string, string>; text?: string; css?: string; res?: string
   form?: Mirror2Form; scroll?: [number, number]; size?: [number, number]; display?: string; reason?: string; adopted?: Array<string | { ref: string }>
   css_ref?: string; state?: Mirror2State
+  document_mode?: 'quirks' | 'limited-quirks' // protocol 981: a document's HTML mode (absent: no-quirks); frame documents are built in it
   fragment?: string // protocol 503: a frame document's fragment (its `:target`); the top document's is the header
 }
 export type Mirror2Op =
