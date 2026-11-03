@@ -222,7 +222,7 @@ fn declared() -> Vec<UiActionDeclaration> {
     ]
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn native_user_app_view_uses_its_owner_bound_target_and_kernel_browser_host() {
     use std::os::unix::fs::PermissionsExt;
 
@@ -328,7 +328,7 @@ async fn native_user_app_view_requires_the_app_grant_and_current_queue_generatio
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn native_user_app_view_refuses_actions_absent_from_the_signed_declarations() {
     let mut rig = rig_for_catalog(true);
     rig.grant().await;
