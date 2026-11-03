@@ -22,7 +22,7 @@ const features: Record<string, FeatureMinimum> = {
   CoverKernelAccessProcess: { feature: "Covering a background process", minimum: 641 },
   ControlRoomWorkflowRuns: { feature: "Room workflow run controls", minimum: 491 },
   SteerActivePrompt: { feature: "Active prompt steering", minimum: requests.activePromptSteeringMinimumProtocolVersion },
-  ...Object.fromEntries(["GetProjectEnvironment", "SaveProjectEnvironment", "SetProjectEnvironmentSecret", "RunProjectEnvironmentSetup", "ImportProjectEnvironmentEntries", "DraftProjectEnvironment", "GetEnvironmentOperation", "CancelEnvironmentOperation"].map(name => [name, { feature: "Project Environment", minimum: requests.projectEnvironmentMinimumProtocolVersion }])),
+  ...Object.fromEntries(["GetProjectEnvironment", "SaveProjectEnvironment", "SetProjectEnvironmentSecret", "RunProjectEnvironmentSetup", "ImportProjectEnvironmentEntries", "DraftProjectEnvironment", "RunRemoteProjectEnvironmentSetup", "RemoteEnvironmentOperation", "CheckProjectEnvironment", "ResolveEnvironmentProposal", "GetEnvironmentOperation", "CancelEnvironmentOperation"].map(name => [name, { feature: "Project Environment", minimum: requests.projectEnvironmentMinimumProtocolVersion }])),
   ...Object.fromEntries(["OpenUserAppView", "ListUserAppViews", "CloseUserAppView", "GetUserAppViewFrontend", "CallUserAppView", "SubscribeUserAppViews", "AnswerUserDomainInteraction"].map(name => [name, { feature: "User-domain App views", minimum: requests.userAppViewsMinimumProtocolVersion }])),
   CaptureVisibleRegion: { feature: "Visible region capture", minimum: requests.visibleRegionCaptureMinimumProtocolVersion },
   KernelBrowser: { feature: "Kernel browser", minimum: requests.kernelBrowserMinimumProtocolVersion },

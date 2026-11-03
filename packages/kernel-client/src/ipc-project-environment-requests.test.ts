@@ -3,12 +3,16 @@ import test from "node:test"
 
 import {
   cancelEnvironmentOperationRequest,
+  checkProjectEnvironmentRequest,
   draftProjectEnvironmentRequest,
   environmentOperationFromResponse,
   getEnvironmentOperationRequest,
   getProjectEnvironmentRequest,
   importProjectEnvironmentEntriesRequest,
   parseEnvironmentOperationView,
+  remoteEnvironmentOperationRequest,
+  resolveEnvironmentProposalRequest,
+  runRemoteProjectEnvironmentSetupRequest,
   projectEnvironmentFromResponse,
   projectEnvironmentMinimumProtocolVersion,
   projectEnvironmentSaveOutcomeFromResponse,
@@ -30,6 +34,7 @@ const view = {
   machineLabel: "Miguel's Mac",
   checkoutPath: "/work/project",
   setupState: { state: "failed", operationId: "op-1", endedAtMs: 1_700_000_100_000, exitCode: 2, reason: null },
+  proposals: [{ id: "p1", field: "secret", change: "add", text: "STRIPE_SECRET_KEY", evidence: { path: "lib/billing.ts", excerpt: "process.env.STRIPE_SECRET_KEY" } }],
 }
 
 const operation = {
@@ -64,6 +69,20 @@ test("Import names its source and leaves out entries for Update; Draft names the
     ImportProjectEnvironmentEntries: { projectId: "p", operationId: "op", sourceKernelId: "k", entries: [{ kind: "secret", name: "T" }], checkoutPath: "/w" },
   })
   assert.deepEqual(draftProjectEnvironmentRequest({ projectId: "p", operationId: "op", sessionId: "s", agentId: "a" }), { DraftProjectEnvironment: { projectId: "p", operationId: "op", sessionId: "s", agentId: "a" } })
+})
+
+test("Setup on another kernel names the target; its operation is read or stopped there", () => {
+  assert.deepEqual(runRemoteProjectEnvironmentSetupRequest("p", "op", "k"), { RunRemoteProjectEnvironmentSetup: { projectId: "p", operationId: "op", targetKernelId: "k" } })
+  assert.deepEqual(runRemoteProjectEnvironmentSetupRequest("p", "op", "k", "/w"), { RunRemoteProjectEnvironmentSetup: { projectId: "p", operationId: "op", targetKernelId: "k", checkoutPath: "/w" } })
+  assert.deepEqual(remoteEnvironmentOperationRequest("op", "k"), { RemoteEnvironmentOperation: { operationId: "op", targetKernelId: "k" } })
+  assert.deepEqual(remoteEnvironmentOperationRequest("op", "k", true), { RemoteEnvironmentOperation: { operationId: "op", targetKernelId: "k", stop: true } })
+})
+
+test("Check names the agent and a proposal is accepted or dismissed by its id; proposals read with their evidence", () => {
+  assert.deepEqual(checkProjectEnvironmentRequest({ projectId: "p", operationId: "op", sessionId: "s", agentId: "a" }), { CheckProjectEnvironment: { projectId: "p", operationId: "op", sessionId: "s", agentId: "a" } })
+  assert.deepEqual(resolveEnvironmentProposalRequest("p", "p1", true), { ResolveEnvironmentProposal: { projectId: "p", proposalId: "p1", accept: true } })
+  assert.deepEqual(projectEnvironmentFromResponse({ ProjectEnvironment: { environment: view } }).proposals, view.proposals)
+  assert.throws(() => projectEnvironmentFromResponse({ ProjectEnvironment: { environment: { ...view, proposals: [{ ...view.proposals[0], field: "mcp" }] } } }), /field/)
 })
 
 test("an Import operation reads with its entries and source", () => {

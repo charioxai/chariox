@@ -22,6 +22,17 @@ export type SetupState =
   | { readonly state: "cancelled"; readonly operationId: string; readonly endedAtMs: number }
   | { readonly state: "running"; readonly operationId: string; readonly startedAtMs: number }
 
+export type EnvironmentProposalField = "setup" | "variables" | "secret" | "file"
+
+/** One change an agent proposed: a line of Setup or Variables, a Secret name or a File path, with the line that shows why. */
+export type EnvironmentProposal = {
+  readonly id: string
+  readonly field: EnvironmentProposalField
+  readonly change: "add" | "remove"
+  readonly text: string
+  readonly evidence: { readonly path: string; readonly excerpt: string }
+}
+
 export type ProjectEnvironmentView = {
   readonly projectId: string
   readonly exists: boolean
@@ -34,10 +45,12 @@ export type ProjectEnvironmentView = {
   readonly machineLabel: string
   readonly checkoutPath: string
   readonly setupState: SetupState
+  /** Changes an agent proposed that nobody has accepted or dismissed yet. */
+  readonly proposals: readonly EnvironmentProposal[]
 }
 
 export type EnvironmentOperationState = "running" | "succeeded" | "failed" | "cancelled"
-export type EnvironmentOperationKind = "setup" | "import" | "draft"
+export type EnvironmentOperationKind = "setup" | "import" | "draft" | "check"
 export type EnvironmentEntryKind = "secret" | "file"
 export type EnvironmentEntryState = "pending" | "importing" | "imported" | "failed"
 

@@ -97,6 +97,22 @@ impl KernelRuntimeState {
         agent_id: &str,
         checkout: PathBuf,
     ) -> Result<ProjectEnvironmentRecord, DaemonError> {
+        let prompt = tokio::task::spawn_blocking(move || draft_prompt(&checkout))
+            .await
+            .map_err(|_| environment_error("reading the Project failed"))?;
+        let output = self
+            .environment_utility_answer(session_id, agent_id, prompt)
+            .await?;
+        parse_draft(&output).map_err(environment_error)
+    }
+
+    /// The agent's answer to `visible_user_prompt`, run on its provider with no tools in a neutral directory.
+    pub(super) async fn environment_utility_answer(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        visible_user_prompt: String,
+    ) -> Result<String, DaemonError> {
         let started = tokio::time::Instant::now();
         let mut run = loop {
             let (_, run) = self
@@ -122,9 +138,11 @@ impl KernelRuntimeState {
                 .private_runtime_state_root(),
         )?;
         run.set_metadata_only_discovery(scratch.0.clone());
-        let visible_user_prompt = tokio::task::spawn_blocking(move || draft_prompt(&checkout))
-            .await
-            .map_err(|_| environment_error("reading the Project failed"))?;
+        eprintln!(
+            "DRAFT-DEBUG prompt {} bytes: {:?}",
+            visible_user_prompt.len(),
+            visible_user_prompt.chars().take(200).collect::<String>()
+        );
         let output = run_provider_utility_prompt(
             self,
             run,
@@ -137,6 +155,11 @@ impl KernelRuntimeState {
             DRAFT_TIMEOUT,
         )
         .await?;
-        parse_draft(&output).map_err(environment_error)
+        eprintln!(
+            "DRAFT-DEBUG answer {} bytes: {:?}",
+            output.len(),
+            output.chars().take(300).collect::<String>()
+        );
+        Ok(output)
     }
 }

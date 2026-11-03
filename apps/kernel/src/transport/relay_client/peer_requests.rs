@@ -356,6 +356,9 @@ pub(super) async fn handle_daemon_peer_request(
             | RelayPeerRequest::ReadProjectEnvironment { .. }
             | RelayPeerRequest::PullProjectEnvironmentSecret { .. }
             | RelayPeerRequest::PullProjectEnvironmentFile { .. }
+            | RelayPeerRequest::RunProjectEnvironmentSetup { .. }
+            | RelayPeerRequest::GetProjectEnvironmentOperation { .. }
+            | RelayPeerRequest::CancelProjectEnvironmentOperation { .. }
     );
     if same_owner_request {
         // The existing relay projects home-kernel claims to a bound Machine
@@ -419,6 +422,9 @@ pub(super) async fn handle_daemon_peer_request(
             RelayPeerRequest::ReadProjectEnvironment { .. }
                 | RelayPeerRequest::PullProjectEnvironmentSecret { .. }
                 | RelayPeerRequest::PullProjectEnvironmentFile { .. }
+                | RelayPeerRequest::RunProjectEnvironmentSetup { .. }
+                | RelayPeerRequest::GetProjectEnvironmentOperation { .. }
+                | RelayPeerRequest::CancelProjectEnvironmentOperation { .. }
         ) {
             router.relay_project_environment(&owner, request)
         } else {
@@ -545,7 +551,10 @@ pub(super) async fn handle_daemon_peer_request(
         | RelayPeerRequest::DeliverWorkflowNotification { .. }
         | RelayPeerRequest::ReadProjectEnvironment { .. }
         | RelayPeerRequest::PullProjectEnvironmentSecret { .. }
-        | RelayPeerRequest::PullProjectEnvironmentFile { .. } => {
+        | RelayPeerRequest::PullProjectEnvironmentFile { .. }
+        | RelayPeerRequest::RunProjectEnvironmentSetup { .. }
+        | RelayPeerRequest::GetProjectEnvironmentOperation { .. }
+        | RelayPeerRequest::CancelProjectEnvironmentOperation { .. } => {
             unreachable!("same-owner requests handled above")
         }
         RelayPeerRequest::RoomBrowserController {

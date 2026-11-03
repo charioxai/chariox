@@ -40,6 +40,16 @@ fn view() -> ProjectEnvironmentView {
             exit_code: Some(1),
             reason: None,
         },
+        proposals: vec![EnvironmentProposal {
+            id: "0123456789abcdef".into(),
+            field: EnvironmentProposalField::Secret,
+            change: EnvironmentProposalChange::Add,
+            text: "STRIPE_SECRET_KEY".into(),
+            evidence: EnvironmentProposalEvidence {
+                path: "lib/billing.ts".into(),
+                excerpt: "process.env.STRIPE_SECRET_KEY".into(),
+            },
+        }],
     }
 }
 
@@ -126,6 +136,53 @@ fn environment_requests_have_the_camel_case_wire_of_protocol_972() {
                 "sessionId": "s", "agentId": "a"}}),
         ),
         (
+            LocalDaemonRequest::RunRemoteProjectEnvironmentSetup(
+                RunRemoteProjectEnvironmentSetupRequest {
+                    project_id: "p".into(),
+                    operation_id: "op".into(),
+                    target_kernel_id: "kernel-b".into(),
+                    checkout_path: Some("/work/p".into()),
+                },
+            ),
+            json!({"RunRemoteProjectEnvironmentSetup": {"projectId": "p", "operationId": "op",
+                "targetKernelId": "kernel-b", "checkoutPath": "/work/p"}}),
+        ),
+        (
+            LocalDaemonRequest::RemoteEnvironmentOperation(RemoteEnvironmentOperationRequest {
+                operation_id: "op".into(),
+                target_kernel_id: "kernel-b".into(),
+                stop: true,
+            }),
+            json!({"RemoteEnvironmentOperation": {"operationId": "op",
+                "targetKernelId": "kernel-b", "stop": true}}),
+        ),
+        (
+            LocalDaemonRequest::RemoteEnvironmentOperation(RemoteEnvironmentOperationRequest {
+                operation_id: "op".into(),
+                target_kernel_id: "kernel-b".into(),
+                stop: false,
+            }),
+            json!({"RemoteEnvironmentOperation": {"operationId": "op", "targetKernelId": "kernel-b"}}),
+        ),
+        (
+            LocalDaemonRequest::CheckProjectEnvironment(CheckProjectEnvironmentRequest {
+                project_id: "p".into(),
+                operation_id: "op".into(),
+                session_id: "s".into(),
+                agent_id: "a".into(),
+            }),
+            json!({"CheckProjectEnvironment": {"projectId": "p", "operationId": "op",
+                "sessionId": "s", "agentId": "a"}}),
+        ),
+        (
+            LocalDaemonRequest::ResolveEnvironmentProposal(ResolveEnvironmentProposalRequest {
+                project_id: "p".into(),
+                proposal_id: "0123456789abcdef".into(),
+                accept: false,
+            }),
+            json!({"ResolveEnvironmentProposal": {"projectId": "p", "proposalId": "0123456789abcdef", "accept": false}}),
+        ),
+        (
             LocalDaemonRequest::GetEnvironmentOperation(EnvironmentOperationRequest {
                 operation_id: "op".into(),
             }),
@@ -163,7 +220,9 @@ fn environment_views_carry_names_and_presence_never_a_value() {
             "files": [{"path": "config/secrets.json", "presence": "present", "sizeBytes": 2800},
                       {"path": ".env", "presence": "missing", "sizeBytes": null}],
             "changedAtMs": 7, "machineLabel": "b3 builder", "checkoutPath": "/work/p",
-            "setupState": {"state": "failed", "operationId": "op", "endedAtMs": 9, "exitCode": 1, "reason": null}
+            "setupState": {"state": "failed", "operationId": "op", "endedAtMs": 9, "exitCode": 1, "reason": null},
+            "proposals": [{"id": "0123456789abcdef", "field": "secret", "change": "add", "text": "STRIPE_SECRET_KEY",
+                "evidence": {"path": "lib/billing.ts", "excerpt": "process.env.STRIPE_SECRET_KEY"}}]
         }}})
     );
     for (state, wire) in [
@@ -278,6 +337,26 @@ fn project_environment_peer_wire_and_redaction() {
     };
     for (request, wire) in [
         (
+            RelayPeerRequest::RunProjectEnvironmentSetup {
+                project_id: "p".into(),
+                operation_id: "op".into(),
+                checkout_path: None,
+            },
+            json!({"kind": "run_project_environment_setup", "project_id": "p", "operation_id": "op", "checkout_path": null}),
+        ),
+        (
+            RelayPeerRequest::GetProjectEnvironmentOperation {
+                operation_id: "op".into(),
+            },
+            json!({"kind": "get_project_environment_operation", "operation_id": "op"}),
+        ),
+        (
+            RelayPeerRequest::CancelProjectEnvironmentOperation {
+                operation_id: "op".into(),
+            },
+            json!({"kind": "cancel_project_environment_operation", "operation_id": "op"}),
+        ),
+        (
             RelayPeerRequest::ReadProjectEnvironment {
                 project_id: "p".into(),
             },
@@ -294,8 +373,9 @@ fn project_environment_peer_wire_and_redaction() {
             RelayPeerRequest::PullProjectEnvironmentFile {
                 project_id: "p".into(),
                 path: ".env".into(),
+                offset: 4_194_304,
             },
-            json!({"kind": "pull_project_environment_file", "project_id": "p", "path": ".env"}),
+            json!({"kind": "pull_project_environment_file", "project_id": "p", "path": ".env", "offset": 4_194_304}),
         ),
     ] {
         assert_eq!(serde_json::to_value(&request).unwrap(), wire);
@@ -308,6 +388,7 @@ fn project_environment_peer_wire_and_redaction() {
         value: Some(RemoteCredentialSecretInput::new("synthetic-secret".into())),
     };
     let file = RelayPeerResponse::ProjectEnvironmentFilePulled {
+        size_bytes: 14,
         content: Some(RemoteEnvironmentFileBytes::encode(b"synthetic-file")),
     };
     assert_eq!(
@@ -316,7 +397,7 @@ fn project_environment_peer_wire_and_redaction() {
     );
     assert_eq!(
         serde_json::to_value(&file).unwrap(),
-        json!({"kind": "project_environment_file_pulled", "content": "c3ludGhldGljLWZpbGU="})
+        json!({"kind": "project_environment_file_pulled", "size_bytes": 14, "content": "c3ludGhldGljLWZpbGU="})
     );
     assert_eq!(
         serde_json::to_value(RelayPeerResponse::ProjectEnvironmentRefused {

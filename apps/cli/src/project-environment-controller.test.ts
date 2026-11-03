@@ -21,6 +21,7 @@ function environment(patch: Partial<ProjectEnvironmentView> = {}): ProjectEnviro
     machineLabel: "Miguel's Mac",
     checkoutPath: "/work/project",
     setupState: { state: "notRun" },
+    proposals: [],
     ...patch,
   }
 }

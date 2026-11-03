@@ -771,6 +771,18 @@ pub enum RelayPeerRequest {
     AgentMove {
         request: crate::agent_move::peer::AgentMovePeerRequest,
     },
+    /// A kernel of the same user starts, reads or stops a Setup run on this kernel.
+    RunProjectEnvironmentSetup {
+        project_id: String,
+        operation_id: String,
+        checkout_path: Option<String>,
+    },
+    GetProjectEnvironmentOperation {
+        operation_id: String,
+    },
+    CancelProjectEnvironmentOperation {
+        operation_id: String,
+    },
     /// A kernel of the same user asks what this kernel holds of a Project's Environment.
     ReadProjectEnvironment {
         project_id: String,
@@ -779,9 +791,11 @@ pub enum RelayPeerRequest {
         project_id: String,
         name: String,
     },
+    /// One slice of a Project file, starting at `offset`; a message stays well under the relay's bound.
     PullProjectEnvironmentFile {
         project_id: String,
         path: String,
+        offset: u64,
     },
     ListWorkflowNotificationSources {
         protocol_version: u32,
@@ -1224,6 +1238,9 @@ pub enum RelayPeerResponse {
         /// Listed Files that exist in the source's checkout.
         files: Vec<String>,
     },
+    ProjectEnvironmentOperation {
+        operation: crate::local::EnvironmentOperationView,
+    },
     /// The source will not hand the Environment over (unknown Project, Vault locked, ...).
     ProjectEnvironmentRefused {
         reason: String,
@@ -1232,6 +1249,9 @@ pub enum RelayPeerResponse {
         value: Option<RemoteCredentialSecretInput>,
     },
     ProjectEnvironmentFilePulled {
+        /// The whole file's size, so the receiver knows when it has everything.
+        size_bytes: u64,
+        /// The slice at the requested offset; absent when the file is not there.
         content: Option<RemoteEnvironmentFileBytes>,
     },
     AgentMove {

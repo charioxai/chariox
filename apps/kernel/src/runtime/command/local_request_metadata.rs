@@ -745,6 +745,12 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::RunProjectEnvironmentSetup(_) => "project.environment.setup.run",
         LocalDaemonRequest::ImportProjectEnvironmentEntries(_) => "project.environment.import",
         LocalDaemonRequest::DraftProjectEnvironment(_) => "project.environment.draft",
+        LocalDaemonRequest::CheckProjectEnvironment(_) => "project.environment.check",
+        LocalDaemonRequest::ResolveEnvironmentProposal(_) => "project.environment.proposal.resolve",
+        LocalDaemonRequest::RunRemoteProjectEnvironmentSetup(_) => {
+            "project.environment.setup.run_remote"
+        }
+        LocalDaemonRequest::RemoteEnvironmentOperation(_) => "project.environment.operation.remote",
         LocalDaemonRequest::GetEnvironmentOperation(_) => "project.environment.operation.get",
         LocalDaemonRequest::CancelEnvironmentOperation(_) => "project.environment.operation.cancel",
         LocalDaemonRequest::ListProjects(_) => "project.list",

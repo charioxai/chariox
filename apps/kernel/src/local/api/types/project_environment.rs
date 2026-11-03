@@ -101,6 +101,83 @@ pub struct DraftProjectEnvironmentRequest {
     pub agent_id: String,
 }
 
+/// Runs Setup on another kernel of the same user, in the checkout that kernel holds for the Project.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RunRemoteProjectEnvironmentSetupRequest {
+    pub project_id: String,
+    pub operation_id: String,
+    pub target_kernel_id: String,
+    /// A checkout of the Project on the target kernel; absent means its first folder.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkout_path: Option<String>,
+}
+
+/// Reads or stops (`stop`) an operation that runs on another kernel.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RemoteEnvironmentOperationRequest {
+    pub operation_id: String,
+    pub target_kernel_id: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub stop: bool,
+}
+
+/// The agent reads the Project and the saved Environment and proposes changes; nothing is applied.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CheckProjectEnvironmentRequest {
+    pub project_id: String,
+    pub operation_id: String,
+    /// An idle agent of the Project; the check runs on its provider.
+    pub session_id: String,
+    pub agent_id: String,
+}
+
+/// Accept applies one proposal as a Save; dismissing it keeps the agent from proposing it again.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ResolveEnvironmentProposalRequest {
+    pub project_id: String,
+    pub proposal_id: String,
+    pub accept: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum EnvironmentProposalField {
+    Setup,
+    Variables,
+    Secret,
+    File,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum EnvironmentProposalChange {
+    Add,
+    Remove,
+}
+
+/// Where in the Project the agent found the reason, as one line.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct EnvironmentProposalEvidence {
+    pub path: String,
+    pub excerpt: String,
+}
+
+/// One change to a line of Setup or Variables, a Secret name or a File path.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct EnvironmentProposal {
+    pub id: String,
+    pub field: EnvironmentProposalField,
+    pub change: EnvironmentProposalChange,
+    pub text: String,
+    pub evidence: EnvironmentProposalEvidence,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EnvironmentOperationRequest {
@@ -190,6 +267,8 @@ pub struct ProjectEnvironmentView {
     pub machine_label: String,
     pub checkout_path: String,
     pub setup_state: ProjectEnvironmentSetupState,
+    /// Changes an agent proposed and nobody has accepted or dismissed yet.
+    pub proposals: Vec<EnvironmentProposal>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -198,6 +277,7 @@ pub enum EnvironmentOperationKind {
     Setup,
     Import,
     Draft,
+    Check,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -200,6 +200,30 @@ impl CommandRouter {
                     .draft_project_environment(request.clone(), caller_user_id)
                     .map(Some)
             })),
+            LocalDaemonRequest::RunRemoteProjectEnvironmentSetup(request) => {
+                Some(Box::pin(async move {
+                    self.runtime_state
+                        .run_remote_project_environment_setup(request.clone(), caller_user_id)
+                        .await
+                        .map(Some)
+                }))
+            }
+            LocalDaemonRequest::RemoteEnvironmentOperation(request) => Some(Box::pin(async move {
+                self.runtime_state
+                    .remote_environment_operation(request.clone(), caller_user_id)
+                    .await
+                    .map(Some)
+            })),
+            LocalDaemonRequest::CheckProjectEnvironment(request) => Some(Box::pin(async move {
+                self.runtime_state
+                    .check_project_environment(request.clone(), caller_user_id)
+                    .map(Some)
+            })),
+            LocalDaemonRequest::ResolveEnvironmentProposal(request) => Some(Box::pin(async move {
+                self.runtime_state
+                    .resolve_environment_proposal(request.clone(), caller_user_id)
+                    .map(Some)
+            })),
             LocalDaemonRequest::GetEnvironmentOperation(request) => Some(Box::pin(async move {
                 self.runtime_state
                     .get_environment_operation(request.clone(), caller_user_id)

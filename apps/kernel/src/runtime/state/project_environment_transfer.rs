@@ -7,7 +7,8 @@ use crate::local::{
 };
 use crate::project_environment::{
     environment_error, register_environment_files, run_import, source_holdings, Begun,
-    EnvironmentSource, ImportTarget, SourceError, SourceSnapshot, MAX_IMPORT_FILE_BYTES,
+    EnvironmentSource, FileSlice, ImportTarget, SourceError, SourceSnapshot, IMPORT_CHUNK_BYTES,
+    MAX_IMPORT_FILE_BYTES,
 };
 use crate::transport::relay_peer::{
     RelayPeerRequest, RelayPeerResponse, RemoteCredentialSecretInput, RemoteEnvironmentFileBytes,
@@ -91,18 +92,24 @@ impl EnvironmentSource for PeerSource {
         &self,
         project_id: &str,
         path: &str,
-    ) -> Result<Option<Zeroizing<Vec<u8>>>, SourceError> {
+        offset: u64,
+    ) -> Result<Option<FileSlice>, SourceError> {
         match self
             .ask(RelayPeerRequest::PullProjectEnvironmentFile {
                 project_id: project_id.into(),
                 path: path.into(),
+                offset,
             })
             .await?
         {
-            RelayPeerResponse::ProjectEnvironmentFilePulled { content } => content
+            RelayPeerResponse::ProjectEnvironmentFilePulled {
+                size_bytes,
+                content,
+            } => content
                 .map(|content| {
                     content
                         .decode()
+                        .map(|bytes| FileSlice { size_bytes, bytes })
                         .ok_or_else(|| SourceError::Refused("The file arrived damaged".into()))
                 })
                 .transpose(),
@@ -229,9 +236,11 @@ impl KernelRuntimeState {
             RelayPeerRequest::PullProjectEnvironmentSecret { project_id, name } => {
                 (project_id, Some(name), None)
             }
-            RelayPeerRequest::PullProjectEnvironmentFile { project_id, path } => {
-                (project_id, None, Some(path))
-            }
+            RelayPeerRequest::PullProjectEnvironmentFile {
+                project_id,
+                path,
+                offset,
+            } => (project_id, None, Some((path, *offset))),
             _ => return refuse("not a Project Environment request"),
         };
         let Ok(project) = self.owned_project(project_id, owner) else {
@@ -272,24 +281,31 @@ impl KernelRuntimeState {
                 Err(_) => refuse(&format!("The Vault of {label} could not be read")),
             };
         }
-        if let Some(path) = file {
+        if let Some((path, offset)) = file {
             if !record.files.contains(path) {
                 return refuse(&format!("{path} is not in the Environment of {label}"));
             }
             let full = checkout.join(path);
+            let absent = || {
+                Ok(RelayPeerResponse::ProjectEnvironmentFilePulled {
+                    size_bytes: 0,
+                    content: None,
+                })
+            };
             let Ok(metadata) = std::fs::symlink_metadata(&full) else {
-                return Ok(RelayPeerResponse::ProjectEnvironmentFilePulled { content: None });
+                return absent();
             };
             if !metadata.is_file() {
-                return Ok(RelayPeerResponse::ProjectEnvironmentFilePulled { content: None });
+                return absent();
             }
             if metadata.len() > MAX_IMPORT_FILE_BYTES {
                 return refuse("The file is too large to import");
             }
-            let Ok(bytes) = std::fs::read(&full).map(Zeroizing::new) else {
+            let Ok(bytes) = read_slice(&full, offset).map(Zeroizing::new) else {
                 return refuse(&format!("{path} could not be read on {label}"));
             };
             return Ok(RelayPeerResponse::ProjectEnvironmentFilePulled {
+                size_bytes: metadata.len(),
                 content: Some(RemoteEnvironmentFileBytes::encode(&bytes)),
             });
         }
@@ -302,4 +318,14 @@ impl KernelRuntimeState {
             files,
         })
     }
+}
+
+/// Up to one slice of the file starting at `offset`.
+fn read_slice(path: &std::path::Path, offset: u64) -> std::io::Result<Vec<u8>> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = std::fs::File::open(path)?;
+    file.seek(SeekFrom::Start(offset))?;
+    let mut bytes = Vec::new();
+    file.take(IMPORT_CHUNK_BYTES).read_to_end(&mut bytes)?;
+    Ok(bytes)
 }

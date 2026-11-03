@@ -71,6 +71,31 @@ export function draftProjectEnvironmentRequest(input: {
   return { DraftProjectEnvironment: { ...input } } as const
 }
 
+/** An idle agent of the Project compares its files with the saved Environment and proposes changes. */
+export function checkProjectEnvironmentRequest(input: {
+  readonly projectId: string
+  readonly operationId: string
+  readonly sessionId: string
+  readonly agentId: string
+}) {
+  return { CheckProjectEnvironment: { ...input } } as const
+}
+
+/** Accept applies the proposal as a Save; dismissing keeps it from being proposed again. */
+export function resolveEnvironmentProposalRequest(projectId: string, proposalId: string, accept: boolean) {
+  return { ResolveEnvironmentProposal: { projectId, proposalId, accept } } as const
+}
+
+/** Runs Setup on another kernel of the same user, in the checkout that kernel holds for the Project. */
+export function runRemoteProjectEnvironmentSetupRequest(projectId: string, operationId: string, targetKernelId: string, checkoutPath?: string) {
+  return { RunRemoteProjectEnvironmentSetup: { projectId, operationId, targetKernelId, ...(checkoutPath ? { checkoutPath } : {}) } } as const
+}
+
+/** Reads, or with `stop` ends, an operation that runs on another kernel. */
+export function remoteEnvironmentOperationRequest(operationId: string, targetKernelId: string, stop = false) {
+  return { RemoteEnvironmentOperation: { operationId, targetKernelId, ...(stop ? { stop } : {}) } } as const
+}
+
 export function getEnvironmentOperationRequest(operationId: string) {
   return { GetEnvironmentOperation: { operationId } } as const
 }
@@ -190,6 +215,16 @@ export function parseProjectEnvironmentView(value: unknown): ProjectEnvironmentV
     machineLabel: text(value, "machineLabel", what),
     checkoutPath: text(value, "checkoutPath", what),
     setupState: parseSetupState(object(value, "setupState", what)),
+    proposals: list(value, "proposals", what).map(row => {
+      const evidence = object(row, "evidence", "Environment proposal")
+      return {
+        id: text(row, "id", "Environment proposal"),
+        field: oneOf(row, "field", ["setup", "variables", "secret", "file"], "Environment proposal"),
+        change: oneOf(row, "change", ["add", "remove"], "Environment proposal"),
+        text: text(row, "text", "Environment proposal"),
+        evidence: { path: text(evidence, "path", "Environment proposal evidence"), excerpt: text(evidence, "excerpt", "Environment proposal evidence") },
+      }
+    }),
   }
 }
 
@@ -200,7 +235,7 @@ export function parseEnvironmentOperationView(value: unknown): EnvironmentOperat
     operationId: text(value, "operationId", what),
     projectId: text(value, "projectId", what),
     checkoutPath: text(value, "checkoutPath", what),
-    kind: oneOf(value, "kind", ["setup", "import", "draft"], what),
+    kind: oneOf(value, "kind", ["setup", "import", "draft", "check"], what),
     state: oneOf(value, "state", ["running", "succeeded", "failed", "cancelled"], what),
     startedAtMs: count(value, "startedAtMs", what),
     endedAtMs: nullableCount(value, "endedAtMs", what),

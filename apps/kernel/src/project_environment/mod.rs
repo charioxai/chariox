@@ -5,12 +5,13 @@ mod files;
 mod launch;
 mod operations;
 mod presence;
+mod proposals;
 mod record;
 mod setup;
 mod store;
 mod transfer;
 
-pub(crate) use draft::{draft_prompt, parse_draft};
+pub(crate) use draft::{draft_facts, draft_prompt, parse_draft};
 pub(crate) use files::{
     copy_environment_files, environment_file_rules, register_environment_files,
 };
@@ -18,6 +19,7 @@ pub(crate) use launch::{attach_project_provider_environment, project_launch_envi
 pub(crate) use operations::{Begun, EnvironmentOperations, OperationHandle};
 pub(crate) use presence::{file_presence, secret_presence};
 pub use presence::{FilePresence, SecretPresence};
+pub(crate) use proposals::{apply as apply_proposal, check_prompt, parse_proposals, ProposalStore};
 pub use record::{
     environment_variable_name, parse_variables, project_environment_protected_name,
     relative_project_path, ProjectEnvironmentRecord, PROJECT_ENVIRONMENT_SCHEMA,
@@ -25,8 +27,8 @@ pub use record::{
 pub(crate) use setup::{SetupRuns, SetupSpec};
 pub(crate) use store::{remove_schema_1_state, ProjectEnvironmentStore, SaveOutcome};
 pub(crate) use transfer::{
-    run_import, source_holdings, EnvironmentSource, ImportTarget, SourceError, SourceSnapshot,
-    MAX_IMPORT_FILE_BYTES,
+    run_import, source_holdings, EnvironmentSource, FileSlice, ImportTarget, SourceError,
+    SourceSnapshot, IMPORT_CHUNK_BYTES, MAX_IMPORT_FILE_BYTES,
 };
 
 /// The Vault service that holds a Project's Secret values on this kernel; the key is the name.

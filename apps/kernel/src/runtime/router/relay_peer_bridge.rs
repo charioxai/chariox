@@ -40,8 +40,17 @@ impl CommandRouter {
         owner: &str,
         request: crate::transport::relay_peer::RelayPeerRequest,
     ) -> Result<crate::transport::relay_peer::RelayPeerResponse, DaemonError> {
-        self.runtime_state
-            .receive_project_environment_peer(owner, request)
+        use crate::transport::relay_peer::RelayPeerRequest;
+        match request {
+            RelayPeerRequest::RunProjectEnvironmentSetup { .. }
+            | RelayPeerRequest::GetProjectEnvironmentOperation { .. }
+            | RelayPeerRequest::CancelProjectEnvironmentOperation { .. } => self
+                .runtime_state
+                .receive_project_environment_setup_peer(owner, request),
+            request => self
+                .runtime_state
+                .receive_project_environment_peer(owner, request),
+        }
     }
 
     pub(crate) fn same_owner_peer_user_id(

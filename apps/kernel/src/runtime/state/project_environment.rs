@@ -83,7 +83,7 @@ impl KernelRuntimeState {
     }
 
     /// `record` is the saved Environment, or `None` for a Project that has none yet.
-    fn project_environment_view(
+    pub(super) fn project_environment_view(
         &self,
         project: &crate::session::RuntimeProject,
         checkout: PathBuf,
@@ -133,6 +133,7 @@ impl KernelRuntimeState {
             machine_label: Self::machine_label(&config),
             checkout_path: checkout.to_string_lossy().into_owned(),
             setup_state,
+            proposals: self.proposal_store().list(project.id())?,
         })
     }
 

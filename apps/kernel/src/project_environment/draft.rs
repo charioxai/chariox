@@ -103,8 +103,8 @@ fn manifest_text(path: &Path) -> Option<String> {
     Some(String::from_utf8_lossy(&bytes).into_owned())
 }
 
-/// The prompt the agent answers: what the Project contains and the answer's shape.
-pub(crate) fn draft_prompt(checkout: &Path) -> String {
+/// What the Project contains as text: its entries, the names of ignored files and its manifest files.
+pub(crate) fn draft_facts(checkout: &Path) -> String {
     let mut facts = String::new();
     let mut used = 0;
     for name in MANIFESTS {
@@ -119,17 +119,25 @@ pub(crate) fn draft_prompt(checkout: &Path) -> String {
     }
     let ignored = ignored_files(checkout);
     format!(
-        "Project folder entries:\n{}\n\nFiles that Git ignores (names only, contents are private):\n{}\n\nManifest files:\n{}\n\
-Reply with one JSON object and nothing else:\n\
-{{\"setup\": \"bash script\", \"variables\": \"KEY=value lines\", \"secrets\": [\"NAME\"], \"files\": [\"path\"]}}\n\
-- setup: the shortest idempotent bash script that installs what the Project needs after a fresh clone (toolchain, dependencies, builds the others depend on). Empty when nothing is needed.\n\
-- variables: non-secret settings with their usual development values, one KEY=value per line. Empty when none.\n\
-- secrets: names of environment variables that hold credentials or tokens the Project reads (from .env.example or the manifests). Names only.\n\
-- files: paths from the ignored list that a developer must copy to a new checkout for the Project to work (local config, env files). Only paths from that list.\n\
-Use empty values for anything the files do not show. Never invent names.",
+        "Project folder entries:\n{}\n\nFiles that Git ignores (names only, contents are private):\n{}\n\nManifest files:\n{}",
         top_level_names(checkout).join("\n"),
         ignored.join("\n"),
         facts,
+    )
+}
+
+/// The prompt the agent answers: the task and the answer's shape first, then what the Project contains.
+pub(crate) fn draft_prompt(checkout: &Path) -> String {
+    format!(
+        "Write the development Environment of the Project below, from its metadata. Answer with one JSON object and nothing else, in this shape:\n\
+{{\"setup\": \"bash script\", \"variables\": \"KEY=value lines\", \"secrets\": [\"NAME\"], \"files\": [\"path\"]}}\n\
+- setup: the shortest idempotent bash script that installs what the Project needs after a fresh clone: toolchain, dependencies and the generation or build steps its README, AGENTS.md or manifests ask for (for example `pnpm install`).\n\
+- variables: non-secret settings with their usual development values, one KEY=value per line.\n\
+- secrets: names of environment variables that hold credentials or tokens, taken from .env.example and the manifests. Names only.\n\
+- files: paths from the ignored list that a developer must copy to a new checkout for the Project to work (local config, env files). Only paths from that list.\n\
+Fill every field the metadata supports; use an empty value only for a field it says nothing about.\n\n\
+=== Project metadata ===\n{}",
+        draft_facts(checkout),
     )
 }
 

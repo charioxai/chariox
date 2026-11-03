@@ -16,8 +16,9 @@ use std::future::Future;
 use std::path::Path;
 use zeroize::Zeroizing;
 
-/// A File travels in one peer message, so it stays well under the relay's message bound.
-pub(crate) const MAX_IMPORT_FILE_BYTES: u64 = 32 * 1024 * 1024;
+/// A File travels in slices of this size: one peer message is encoded twice on the way and must stay under the relay's bound.
+pub(crate) const IMPORT_CHUNK_BYTES: u64 = 4 * 1024 * 1024;
+pub(crate) const MAX_IMPORT_FILE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_IMPORT_TOTAL_BYTES: u64 = 128 * 1024 * 1024;
 pub(crate) const SOURCE_OFFLINE: &str = "Source offline";
 
@@ -29,6 +30,12 @@ pub(crate) struct SourceSnapshot {
     pub secrets: Vec<String>,
     /// Files that exist in the source's checkout.
     pub files: Vec<String>,
+}
+
+/// One slice of a source file and the size of the whole file.
+pub(crate) struct FileSlice {
+    pub size_bytes: u64,
+    pub bytes: Zeroizing<Vec<u8>>,
 }
 
 /// Why the source gave nothing: it could not be reached, or it answered that it will not.
@@ -58,11 +65,13 @@ pub(crate) trait EnvironmentSource: Send + Sync {
         project_id: &str,
         name: &str,
     ) -> impl Future<Output = Result<Option<Zeroizing<String>>, SourceError>> + Send;
+    /// The slice of a file at `offset`, or `None` when the source has no such file.
     fn pull_file(
         &self,
         project_id: &str,
         path: &str,
-    ) -> impl Future<Output = Result<Option<Zeroizing<Vec<u8>>>, SourceError>> + Send;
+        offset: u64,
+    ) -> impl Future<Output = Result<Option<FileSlice>, SourceError>> + Send;
 }
 
 /// Where the entries land on this kernel.
@@ -112,35 +121,66 @@ fn set_entry(
     });
 }
 
-fn write_file(checkout: &Path, path: &str, bytes: &[u8]) -> Result<(), String> {
-    use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
-    relative_project_path(path).map_err(str::to_owned)?;
-    let destination = checkout.join(path);
-    if let Some(parent) = destination.parent() {
-        std::fs::create_dir_all(parent).map_err(|_| "A folder could not be created".to_owned())?;
-    }
-    let temporary =
-        destination.with_file_name(format!(".chariox-import-{}", rand::random::<u64>()));
-    let result = (|| {
-        let mut file = std::fs::OpenOptions::new()
+/// A File arrives into a private temporary file next to its destination and appears under its name
+/// only when complete; a file that appeared meanwhile is never replaced.
+struct FileWriter {
+    temporary: std::path::PathBuf,
+    destination: std::path::PathBuf,
+    file: Option<std::fs::File>,
+}
+
+impl FileWriter {
+    fn create(checkout: &Path, path: &str) -> Result<Self, String> {
+        use std::os::unix::fs::OpenOptionsExt;
+        relative_project_path(path).map_err(str::to_owned)?;
+        let destination = checkout.join(path);
+        if let Some(parent) = destination.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|_| "A folder could not be created".to_owned())?;
+        }
+        let temporary =
+            destination.with_file_name(format!(".chariox-import-{}", rand::random::<u64>()));
+        let file = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .mode(0o600)
-            .open(&temporary)?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
+            .open(&temporary)
+            .map_err(|_| "The file could not be written".to_owned())?;
+        Ok(Self {
+            temporary,
+            destination,
+            file: Some(file),
+        })
+    }
+
+    fn append(&mut self, bytes: &[u8]) -> Result<(), String> {
+        use std::io::Write;
+        self.file
+            .as_mut()
+            .expect("an open writer")
+            .write_all(bytes)
+            .map_err(|_| "The file could not be written".to_owned())
+    }
+
+    fn finish(mut self) -> Result<(), String> {
+        let file = self.file.take().expect("an open writer");
+        file.sync_all()
+            .map_err(|_| "The file could not be written".to_owned())?;
         // `hard_link` refuses to replace a file that appeared meanwhile.
-        std::fs::hard_link(&temporary, &destination)
-    })();
-    let _ = std::fs::remove_file(&temporary);
-    result.map_err(|error| {
-        if error.kind() == std::io::ErrorKind::AlreadyExists {
-            "Already present here".to_owned()
-        } else {
-            "The file could not be written".to_owned()
-        }
-    })
+        std::fs::hard_link(&self.temporary, &self.destination).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::AlreadyExists {
+                "Already present here".to_owned()
+            } else {
+                "The file could not be written".to_owned()
+            }
+        })
+    }
+}
+
+impl Drop for FileWriter {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.temporary);
+    }
 }
 
 /// The entries to import: those asked for, or every one of the record this kernel is missing.
@@ -369,19 +409,47 @@ async fn import_entry<S: EnvironmentSource>(
             if file_here(target, &entry.name) {
                 return Err(ImportFailure::Entry("Already present here".into()));
             }
-            let bytes = source
-                .pull_file(target.project_id, &entry.name)
-                .await
-                .map_err(ImportFailure::from)?
-                .ok_or_else(missing_at_source)?;
-            let size = bytes.len() as u64;
-            if size > MAX_IMPORT_FILE_BYTES
-                || landed_bytes.saturating_add(size) > MAX_IMPORT_TOTAL_BYTES
-            {
-                return Err(ImportFailure::Entry("Too large to import".into()));
+            let mut writer: Option<FileWriter> = None;
+            let mut written = 0_u64;
+            loop {
+                let slice = source
+                    .pull_file(target.project_id, &entry.name, written)
+                    .await
+                    .map_err(ImportFailure::from)?
+                    .ok_or_else(missing_at_source)?;
+                if slice.size_bytes > MAX_IMPORT_FILE_BYTES
+                    || landed_bytes.saturating_add(slice.size_bytes) > MAX_IMPORT_TOTAL_BYTES
+                {
+                    return Err(ImportFailure::Entry("Too large to import".into()));
+                }
+                let writer = match &mut writer {
+                    Some(writer) => writer,
+                    empty => empty.insert(
+                        FileWriter::create(target.checkout, &entry.name)
+                            .map_err(ImportFailure::Entry)?,
+                    ),
+                };
+                writer.append(&slice.bytes).map_err(ImportFailure::Entry)?;
+                written += slice.bytes.len() as u64;
+                if written >= slice.size_bytes {
+                    if written != slice.size_bytes {
+                        return Err(ImportFailure::Entry(
+                            "The file changed while it was imported".into(),
+                        ));
+                    }
+                    break;
+                }
+                if slice.bytes.is_empty() {
+                    return Err(ImportFailure::Entry(
+                        "The file changed while it was imported".into(),
+                    ));
+                }
             }
-            write_file(target.checkout, &entry.name, &bytes).map_err(ImportFailure::Entry)?;
-            *landed_bytes += size;
+            writer
+                .expect("a file with at least one slice")
+                .finish()
+                .map_err(ImportFailure::Entry)?;
+            *landed_bytes += written;
             Ok(())
         }
     }
@@ -473,6 +541,7 @@ mod tests {
         pulls: Mutex<Vec<String>>,
         offline_after_read: bool,
         gate: Option<Arc<tokio::sync::Notify>>,
+        slice_bytes: usize,
     }
 
     impl EnvironmentSource for FakeSource {
@@ -501,14 +570,18 @@ mod tests {
             &self,
             _: &str,
             path: &str,
-        ) -> Result<Option<Zeroizing<Vec<u8>>>, SourceError> {
-            self.pulls.lock().unwrap().push(path.into());
+            offset: u64,
+        ) -> Result<Option<FileSlice>, SourceError> {
+            self.pulls.lock().unwrap().push(format!("{path}@{offset}"));
             if let Some(gate) = &self.gate {
                 gate.notified().await;
             }
-            Ok(Some(Zeroizing::new(
-                format!("content of {path}").into_bytes(),
-            )))
+            let content = format!("content of {path}").into_bytes();
+            let end = content.len().min(offset as usize + self.slice_bytes);
+            Ok(Some(FileSlice {
+                size_bytes: content.len() as u64,
+                bytes: Zeroizing::new(content[offset as usize..end].to_vec()),
+            }))
         }
     }
 
@@ -526,6 +599,7 @@ mod tests {
             pulls: Mutex::default(),
             offline_after_read: false,
             gate: None,
+            slice_bytes: usize::MAX / 2,
         }
     }
 
@@ -680,11 +754,59 @@ mod tests {
         // Nothing the source holds is requested twice, and the record carried no value.
         assert_eq!(
             *from.pulls.lock().unwrap(),
-            vec!["A_KEY".to_string(), "config/s.json".to_string()]
+            vec!["A_KEY".to_string(), "config/s.json@0".to_string()]
         );
         assert!(!serde_json::to_string(&view)
             .unwrap()
             .contains("synthetic-A_KEY"));
+    }
+
+    #[tokio::test]
+    async fn a_file_arrives_in_slices_and_appears_only_when_complete() {
+        let rig = Rig::new();
+        let mut from = source(Some(record(1, &[], &["big.bin"])), &[], &["big.bin"]);
+        from.slice_bytes = 5;
+        let view = rig.import("slices", &from, None).await;
+        assert_eq!(view.state, EnvironmentOperationState::Succeeded);
+        assert_eq!(
+            std::fs::read(rig.checkout.join("big.bin")).unwrap(),
+            b"content of big.bin"
+        );
+        assert_eq!(
+            *from.pulls.lock().unwrap(),
+            vec![
+                "big.bin@0".to_string(),
+                "big.bin@5".into(),
+                "big.bin@10".into(),
+                "big.bin@15".into()
+            ]
+        );
+        let leftovers = std::fs::read_dir(&rig.checkout)
+            .unwrap()
+            .flatten()
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".chariox-import-")
+            })
+            .count();
+        assert_eq!(leftovers, 0);
+    }
+
+    #[tokio::test]
+    async fn a_file_that_stops_arriving_fails_and_leaves_nothing_behind() {
+        let rig = Rig::new();
+        let mut from = source(Some(record(1, &[], &["cut.bin"])), &[], &["cut.bin"]);
+        from.slice_bytes = 0;
+        let view = rig.import("cut", &from, None).await;
+        assert_eq!(
+            view.entries[0].reason.as_deref(),
+            Some("The file changed while it was imported")
+        );
+        assert!(!rig.checkout.join("cut.bin").exists());
+        let leftovers = std::fs::read_dir(&rig.checkout).unwrap().flatten().count();
+        assert_eq!(leftovers, 0);
     }
 
     #[tokio::test]
