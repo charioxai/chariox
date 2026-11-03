@@ -132,9 +132,9 @@ impl Rig {
             .runtime
             .owned
             .durable_state_store
-            .active_app_event_catalog("alice", APP)
+            .get_app_installation("alice", APP)
             .unwrap()
-            .generation();
+            .generation;
         let binding = AppViewBinding {
             owner: "alice".into(),
             installation: APP.into(),
@@ -163,6 +163,45 @@ impl Rig {
             .register(&view.view_id, &view.view_id, queue_binding);
         view.view_id
     }
+
+    fn stage_signed_v2_fixture(&self) {
+        use chariox_app_package::{verify, VerificationPolicy};
+        use chariox_app_runtime::release_store::{ReleaseStore, StageBudget};
+
+        let store = &self.runtime.owned.durable_state_store;
+        let (bytes, publisher) = crate::durable_state::app_state::fixture_tool_package();
+        let package = verify(
+            &bytes,
+            &VerificationPolicy::new(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, vec![publisher]),
+        )
+        .unwrap();
+        ReleaseStore::open_or_create(store.path())
+            .unwrap()
+            .stage(
+                &package,
+                &bytes,
+                StageBudget {
+                    max_stage_bytes: 1024 * 1024,
+                    reserved_bytes: 1024 * 1024,
+                    host_reserve_bytes: 1024 * 1024,
+                },
+            )
+            .unwrap();
+    }
+
+    fn start_signed_v2_fixture_worker(&self) {
+        self.runtime
+            .app_control()
+            .lifecycle()
+            .fixture_inbox_workers_with_mode(
+                chariox_app_runtime::worker_process::test_fixture::Mode::ToolEcho,
+            );
+        self.runtime
+            .app_control()
+            .lifecycle()
+            .start_active_blocking("alice", APP, tokio::runtime::Handle::current())
+            .unwrap();
+    }
 }
 
 fn action(name: &str, effect: UiActionEffect) -> UiActionDeclaration {
@@ -187,14 +226,11 @@ fn declared() -> Vec<UiActionDeclaration> {
 async fn native_user_app_view_uses_its_owner_bound_target_and_kernel_browser_host() {
     use std::os::unix::fs::PermissionsExt;
 
-    let mut rig = rig();
+    let mut rig = rig_for_catalog(true);
     rig.grant().await;
+    rig.stage_signed_v2_fixture();
     let view_id = rig.open_user_view(None);
-    rig.runtime
-        .app_control()
-        .lifecycle()
-        .start_active_blocking("alice", APP, tokio::runtime::Handle::current())
-        .unwrap();
+    rig.start_signed_v2_fixture_worker();
 
     let controller = rig.root.join("native-app-view-controller.sh");
     let observed = rig.root.join("native-app-view-request.json");
@@ -254,7 +290,8 @@ done
 
 #[tokio::test]
 async fn native_user_app_view_requires_the_app_grant_and_current_queue_generation() {
-    let ungranted_rig = rig();
+    let ungranted_rig = rig_for_catalog(true);
+    ungranted_rig.stage_signed_v2_fixture();
     ungranted_rig.open_user_view(None);
     assert_eq!(
         ungranted_rig
@@ -268,15 +305,16 @@ async fn native_user_app_view_requires_the_app_grant_and_current_queue_generatio
         "an owner tab is not an App grant"
     );
 
-    let mut rig = rig();
+    let mut rig = rig_for_catalog(true);
     rig.grant().await;
+    rig.stage_signed_v2_fixture();
     let generation = rig
         .runtime
         .owned
         .durable_state_store
-        .active_app_event_catalog("alice", APP)
+        .get_app_installation("alice", APP)
         .unwrap()
-        .generation();
+        .generation;
     rig.open_user_view(Some(generation + 1));
     assert_eq!(
         rig.runtime
@@ -292,14 +330,11 @@ async fn native_user_app_view_requires_the_app_grant_and_current_queue_generatio
 
 #[tokio::test]
 async fn native_user_app_view_refuses_actions_absent_from_the_signed_declarations() {
-    let mut rig = rig();
+    let mut rig = rig_for_catalog(true);
     rig.grant().await;
+    rig.stage_signed_v2_fixture();
     rig.open_user_view(None);
-    rig.runtime
-        .app_control()
-        .lifecycle()
-        .start_active_blocking("alice", APP, tokio::runtime::Handle::current())
-        .unwrap();
+    rig.start_signed_v2_fixture_worker();
     let context = rig
         .runtime
         .view_context(&rig.agent, "host-tab-native-test")
