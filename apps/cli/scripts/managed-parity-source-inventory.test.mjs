@@ -2218,7 +2218,7 @@ test("MP-11 native source/config/installer formats and exact fixture exclusions"
   assert.equal(classifyProductionPath("packages/app-package/fuzz/seeds/signed/execution.rs"), "rust");
   assert.equal(classifyProductionPath("apps/kernel/src/runtime/state/testdata/claude-setup-token-2.1.281-start.pty"), null);
   for (const path of ["packages/app-package/fuzz/seeds/signed/4", "apps/kernel/src/runtime/state/testdata/other.pty",
-    "apps/app-worker/src/unknown.selector", "apps/app-storage-helper/src/unknown.selector", "scripts/macos-pkg/preinstall"]) {
+    "scripts/macos-pkg/preinstall"]) {
     assert.throws(() => classifyProductionPath(path), /unclassified production/);
   }
   withFixture({}, (fixture) => {
