@@ -264,6 +264,9 @@ fn batch(
                 s.admission.workflow_id,
                 s.entry.workflow_revision,
                 s.admission.binding_id,
+                s.admission.caller_sha256,
+                s.source_authority,
+                s.entry.module_sha256,
                 s.admission.template.endpoint_id(),
                 s.admission.template.queue_id(),
                 key
@@ -296,6 +299,10 @@ fn batch(
             let mut a = s.admission.clone();
             a.dedupe_id = format!("batch:{group}");
             a.source_receipt = None;
+            // A digest is a new ordinary invocation, never a steer into a turn.
+            if let Some(invocation) = a.template.notification_invocation_mut() {
+                invocation.caller["delivery_mode"] = serde_json::json!("queue");
+            }
             let entry = admission::accept_in(tx, a)?;
             let mut aggregate =
                 load(tx, &entry.entry_id)?.ok_or_else(|| error("gate aggregate missing"))?;

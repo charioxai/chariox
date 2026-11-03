@@ -650,7 +650,8 @@ fn automation_error(
         E::Outbox(O::NotFound) | E::NotOwner => AppRequestErrorCode::NotFound,
         E::Outbox(O::Limit | O::Full) => AppRequestErrorCode::LimitExceeded,
         E::Outbox(O::Invalid | O::Schema | O::Catalog(_) | O::Inactive | O::TooOld)
-        | E::InvalidTarget => AppRequestErrorCode::InvalidRequest,
+        | E::InvalidTarget
+        | E::GateInjectionTargets => AppRequestErrorCode::InvalidRequest,
         E::Storage(crate::error::DaemonError::SessionNotFound { .. }) => {
             AppRequestErrorCode::NotFound
         }

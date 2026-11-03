@@ -27,6 +27,7 @@ pub(crate) fn accept_in(tx: &Transaction<'_>, a: Admission) -> Result<Entry> {
         a.workflow_revision,
         a.binding_id,
         a.dedupe_id,
+        a.caller_sha256,
         a.definition,
         a.trigger,
         a.allowed_nodes,
@@ -175,6 +176,13 @@ impl Admission {
                 .ok_or_else(|| error("gate not configured"))?,
             binding_id,
             dedupe_id: occurrence_id.clone(),
+            caller_sha256: gate::sha256(
+                encode(&serde_json::json!([
+                    endpoint.owner_user_id(),
+                    template.created_by_agent_id()
+                ]))?
+                .as_bytes(),
+            ),
             deadline_ms,
             trigger: gate::Trigger {
                 kind,
