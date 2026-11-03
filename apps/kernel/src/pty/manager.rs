@@ -167,20 +167,19 @@ fn discard_unread_input(_terminal: Option<&std::fs::File>) -> std::io::Result<()
     Err(std::io::Error::other("PTY input flush is unavailable"))
 }
 
+type MasterEndpoints = (
+    Option<std::fs::File>,
+    PtyOutputSource,
+    Box<dyn Write + Send>,
+);
+
 /// The descriptors a running PTY keeps beside its master: the input terminal
 /// and the reader and writer ends. Running out of descriptors here is refused
 /// like any other spawn step.
 fn open_master_endpoints(
     master: &dyn MasterPty,
     provider_run_id: &str,
-) -> Result<
-    (
-        Option<std::fs::File>,
-        PtyOutputSource,
-        Box<dyn Write + Send>,
-    ),
-    DaemonError,
-> {
+) -> Result<MasterEndpoints, DaemonError> {
     let input_terminal =
         clone_input_terminal(master).map_err(|error| spawn_failed(provider_run_id, &error))?;
     let reader =
