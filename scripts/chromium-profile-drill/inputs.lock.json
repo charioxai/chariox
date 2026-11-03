@@ -37,5 +37,6 @@
   "docker/browser-renderer-recovery.mjs": "3050daa671f638a4e582342dcfd939402e2dbaa7b1fc077f5415f8d52c4fbe78",
   "docker/kernel-browser-geometry.mjs": "584f6641a2e8f650caad71a9a107fecf7b3882b43a2311009d872ef49f47ba2a",
   "docker/kernel-browser-native-worker.mjs": "ac9f9831d06d641e2c8fe37e8bdd7777c1006fda662ccbbc0952efb33d12cfce",
-  "docker/kernel-browser-pixels.mjs": "1970012af310bd3a328ba61e1bc41e6edaabeb754dda1ccc76371dcd45df1af1"
+  "docker/kernel-browser-pixels.mjs": "1970012af310bd3a328ba61e1bc41e6edaabeb754dda1ccc76371dcd45df1af1",
+  "docker/room-desktop-environment.py": "6191304189483b3914721dfc803fcca94a4cbd6a8be106c677086ec8aba25c79"
 }
