@@ -4516,6 +4516,7 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
         withheld_worker_shutdown,
         withheld_retry_release_tx,
         withheld_start_seen,
+        withheld_foreign_start_seen,
         withheld_retry_seen,
         withheld_concurrent_get_seen,
         withheld_retry_release_applied,
@@ -4527,6 +4528,7 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
         config_worker.relay_private_key.clone(),
         config_home.relay_public_key.clone(),
         external_worker_binding,
+        "setup-stale-attempt-recovery".to_string(),
     );
     for _ in 0..200 {
         if registry
@@ -4569,6 +4571,16 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
         .await
         .expect("withheld-retry worker should observe the public Start before its first Get")
         .expect("withheld-retry Start barrier should remain available");
+    // The earlier open operation keeps polling its missing record and replays
+    // its Start to this worker. Wait for that replay so the stale-attempt
+    // checks below always run after another operation's Start.
+    tokio::time::timeout(
+        DEFAULT_REMOTE_SETUP_OBSERVATION_BUDGET,
+        withheld_foreign_start_seen,
+    )
+    .await
+    .expect("an earlier open operation should replay its Start to the replacement worker")
+    .expect("foreign Start barrier should remain available");
 
     let stale_attempt_cancelled = response_status(
         get_setup_status(
@@ -5579,6 +5591,8 @@ fn external_worker_fixture_binding_matches_only_the_current_caller_tuple() {
 
 #[cfg(unix)]
 struct ExternalWorkerRetryControl {
+    operation_id: String,
+    foreign_start_seen_tx: Option<oneshot::Sender<()>>,
     release_retry_rx: oneshot::Receiver<()>,
     release_retry_applied_tx: Option<oneshot::Sender<()>>,
     concurrent_get_seen_tx: Option<oneshot::Sender<()>>,
@@ -5628,9 +5642,11 @@ fn spawn_external_worker_fixture_with_withheld_retry(
     worker_private_key: String,
     home_public_key: String,
     binding: ExternalWorkerFixtureBinding,
+    operation_id: String,
 ) -> (
     oneshot::Sender<()>,
     oneshot::Sender<()>,
+    oneshot::Receiver<()>,
     oneshot::Receiver<()>,
     oneshot::Receiver<()>,
     oneshot::Receiver<()>,
@@ -5644,8 +5660,11 @@ fn spawn_external_worker_fixture_with_withheld_retry(
     let (start_seen_tx, start_seen_rx) = oneshot::channel();
     let (retry_seen_tx, retry_seen_rx) = oneshot::channel();
     let (concurrent_get_seen_tx, concurrent_get_seen_rx) = oneshot::channel();
+    let (foreign_start_seen_tx, foreign_start_seen_rx) = oneshot::channel();
     let retry_count = Arc::new(AtomicUsize::new(0));
     let retry_control = ExternalWorkerRetryControl {
+        operation_id,
+        foreign_start_seen_tx: Some(foreign_start_seen_tx),
         release_retry_rx,
         release_retry_applied_tx: Some(release_retry_applied_tx),
         concurrent_get_seen_tx: Some(concurrent_get_seen_tx),
@@ -5667,6 +5686,7 @@ fn spawn_external_worker_fixture_with_withheld_retry(
         shutdown_tx,
         release_retry_tx,
         start_seen_rx,
+        foreign_start_seen_rx,
         retry_seen_rx,
         concurrent_get_seen_rx,
         release_retry_applied_rx,
@@ -5715,7 +5735,10 @@ async fn run_external_worker_fixture(
     let mut start_seen_tx = Some(start_seen_tx);
     let mut retry_seen_tx = Some(retry_seen_tx);
     let mut retry_control = retry_control;
-    let mut state: Option<ExternalWorkerSetupState> = None;
+    // A worker keeps a record per operation: other open home operations replay
+    // their Start to the same worker while this one is being driven.
+    let mut states: std::collections::HashMap<String, ExternalWorkerSetupState> =
+        std::collections::HashMap::new();
     let mut held_retry_responses: Vec<(String, RelayProjectEnvironmentSetupStatus)> = Vec::new();
     let mut retry_responses_released = false;
     loop {
@@ -5734,7 +5757,10 @@ async fn run_external_worker_fixture(
                 && !retry_responses_released
                 && !held_retry_responses.is_empty() => {
                 retry_responses_released = true;
-                if let Some(setup_state) = state.as_mut() {
+                if let Some(setup_state) = retry_control
+                    .as_ref()
+                    .and_then(|control| states.get_mut(&control.operation_id))
+                {
                     setup_state.attempt = 2;
                 }
                 // The recovery Retry is appended after the accepted public
@@ -5859,8 +5885,22 @@ async fn run_external_worker_fixture(
                 definition,
                 ..
             } => {
-                if let Some(start_seen_tx) = start_seen_tx.take() {
-                    let _ = start_seen_tx.send(());
+                let barrier_operation = retry_control
+                    .as_ref()
+                    .map(|control| control.operation_id.as_str());
+                if barrier_operation.is_none_or(|barrier| barrier == operation_id) {
+                    if let Some(start_seen_tx) = start_seen_tx.take() {
+                        let _ = start_seen_tx.send(());
+                    }
+                } else if start_seen_tx.is_none() {
+                    // A different open operation replays its Start to this
+                    // worker after the barrier operation's Start was seen.
+                    if let Some(foreign_start_seen_tx) = retry_control
+                        .as_mut()
+                        .and_then(|control| control.foreign_start_seen_tx.take())
+                    {
+                        let _ = foreign_start_seen_tx.send(());
+                    }
                 }
                 let setup_state = ExternalWorkerSetupState {
                     operation_id,
@@ -5876,7 +5916,7 @@ async fn run_external_worker_fixture(
                     mode,
                     ExternalWorkerFixtureMode::Stateful | ExternalWorkerFixtureMode::WithheldRetry
                 ) {
-                    state = Some(setup_state.clone());
+                    states.insert(setup_state.operation_id.clone(), setup_state.clone());
                 }
                 let setup = external_worker_setup_status(
                     &setup_state,
@@ -5894,15 +5934,18 @@ async fn run_external_worker_fixture(
                 )
             }
             RelayPeerRequest::GetLeasedProjectEnvironmentSetupStatus { operation_id, .. } => {
-                match state.as_ref().filter(|setup_state| {
+                match states.get(&operation_id).filter(|_| {
                     matches!(
                         mode,
                         ExternalWorkerFixtureMode::Stateful
                             | ExternalWorkerFixtureMode::WithheldRetry
-                    ) && setup_state.operation_id == operation_id
+                    )
                 }) {
                     Some(setup_state) => {
                         if mode == ExternalWorkerFixtureMode::WithheldRetry
+                            && retry_control
+                                .as_ref()
+                                .is_some_and(|control| control.operation_id == operation_id)
                             && setup_state.attempt == 1
                             && !held_retry_responses.is_empty()
                         {
@@ -5946,12 +5989,16 @@ async fn run_external_worker_fixture(
                 if matches!(
                     mode,
                     ExternalWorkerFixtureMode::Stateful | ExternalWorkerFixtureMode::WithheldRetry
-                ) && state
-                    .as_ref()
-                    .is_some_and(|setup_state| setup_state.operation_id == operation_id) =>
+                ) && states.contains_key(&operation_id) =>
             {
-                let setup_state = state.as_mut().expect("stateful setup should be present");
-                if mode == ExternalWorkerFixtureMode::WithheldRetry {
+                let setup_state = states
+                    .get_mut(&operation_id)
+                    .expect("stateful setup should be present");
+                if mode == ExternalWorkerFixtureMode::WithheldRetry
+                    && retry_control
+                        .as_ref()
+                        .is_some_and(|control| control.operation_id == operation_id)
+                {
                     let retry_number = retry_control
                         .as_ref()
                         .expect("withheld-retry mode should have control")
