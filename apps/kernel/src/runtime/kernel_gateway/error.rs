@@ -202,6 +202,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_cloud_rate_limit_is_not_a_fault_of_any_kernel() {
+        let limited = crate::error::DaemonError::LocalTransport {
+            operation: "remote relay inventory refresh",
+            message: "local transport `cloud relay request` failed: cloud relay request failed with 429: cloud_api_code=rate_limited: Rate limit exceeded, retry in 23 seconds".into(),
+        };
+        let busy = cloud_busy(&limited).expect("a 429 is Cloud asking to wait");
+        assert_eq!(busy, GatewayError::CloudBusy { retry_in_secs: 23 });
+        assert_eq!(busy.code(), "kernel_unreachable");
+        assert!(busy.retryable() && busy.message().contains("Retry in 23 seconds"));
+        let refused = crate::error::DaemonError::LocalTransport {
+            operation: "cloud relay request",
+            message: "cloud relay request failed with 403: cloud_api_code=authorization_denied"
+                .into(),
+        };
+        assert_eq!(cloud_busy(&refused), None);
+    }
+
+    #[test]
     fn a_transport_failure_reaches_the_agent_without_its_raw_text() {
         let raw = "relay wss://relay.example/?accountId=acct-1&realmId=realm-2: os error 111";
         let detail = plain_cause("the relay connection failed", &raw);
