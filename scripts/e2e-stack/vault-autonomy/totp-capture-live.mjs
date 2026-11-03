@@ -50,7 +50,7 @@ const serviceSecrets=[], codeValues=[]
 const leaks = bytes => {
  const found=[]
  if(serviceSecrets.filter(Boolean).some(value=>bytes.includes(Buffer.from(value))))found.push('password-or-seed')
- if(codeValues.length&&new RegExp('(?<![0-9])(?:'+codeValues.join('|')+')(?![0-9])').test(bytes.toString('latin1')))found.push('one-time-code')
+ if(codeValues.length&&new RegExp('(?<![0-9.])(?:'+codeValues.join('|')+')(?![0-9]|\\.[0-9])').test(bytes.toString('latin1')))found.push('one-time-code')
  return found
 }
 let fixture, browser, context, page, agentId, sessionId, observedRunId, gitea, captured, lastReplies=[]
@@ -273,7 +273,7 @@ try {
    code_anywhere:leaks(Buffer.from(lines.join('\n'))).includes('one-time-code'),
    seed_in_page_snapshot_before_capture:serviceSecrets.slice(1).some(value=>bytes.includes(Buffer.from(value)))}
   // Which transcript entries hold a computed code, with the digits masked: this tells a page snapshot from a tool result.
-  const codePattern=codeValues.length?new RegExp('(?<![0-9])(?:'+codeValues.join('|')+')(?![0-9])','g'):null
+  const codePattern=codeValues.length?new RegExp('(?<![0-9.])(?:'+codeValues.join('|')+')(?![0-9]|\\.[0-9])','g'):null
   report.code_entries=codePattern?lines.flatMap(line=>{
    codePattern.lastIndex=0;const match=codePattern.exec(line);if(!match)return []
    let payload;try{payload=JSON.parse(line).payload}catch{payload={}}

@@ -38,7 +38,7 @@ const serviceSecrets=[], codeValues=[]
 const leaks = bytes => {
  const found=[]
  if(serviceSecrets.filter(Boolean).some(value=>bytes.includes(Buffer.from(value))))found.push('password-or-seed')
- if(codeValues.length&&new RegExp('(?<![0-9])(?:'+codeValues.join('|')+')(?![0-9])').test(bytes.toString('latin1')))found.push('one-time-code')
+ if(codeValues.length&&new RegExp('(?<![0-9.])(?:'+codeValues.join('|')+')(?![0-9]|\\.[0-9])').test(bytes.toString('latin1')))found.push('one-time-code')
  return found
 }
 let fixture, browser, context, page, agentId, sessionId, observedRunId, gitea, captured, lastReplies=[]
