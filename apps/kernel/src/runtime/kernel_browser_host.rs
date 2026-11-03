@@ -845,7 +845,14 @@ impl KernelBrowserHost {
         // Dropping a display stream releases its compositor on the controller, which can take seconds
         // (the Browser view does it right after a navigation paints): input must not queue behind it.
         let display_release = method == "host.browser" && params["op"] == "unsubscribe";
-        let mut result = if display
+        let mut result = if method == "browser.app.agent" {
+            // The page action may enqueue a `browser.app.calls` request while
+            // running. Start its CDP request under the backend lock, then let
+            // the UserAppViews pump drain and answer that call before waiting.
+            let pending = backend.begin_app_view_request(method, params)?;
+            drop(backend);
+            pending.wait().map_err(crate::error::HostFailure::Other)
+        } else if display
             || mirror_credit
             || display_subscribe
             || note
