@@ -43,7 +43,7 @@ fn quiescence_snapshot_history_is_bounded_by_exact_kind_and_kernel_after_restart
         .expect("append provider history");
     store
         .append_event(
-            "managed_kernel.auto_stop_quiescence.audit",
+            "managed_kernel.quiescence.audit",
             Some("kernel-1".to_string()),
             serde_json::json!({"audit": "retained"}),
         )
@@ -66,7 +66,7 @@ fn quiescence_snapshot_history_is_bounded_by_exact_kind_and_kernel_after_restart
     for kind in [
         "session.updated",
         "provider.run.updated",
-        "managed_kernel.auto_stop_quiescence.audit",
+        "managed_kernel.quiescence.audit",
     ] {
         assert_eq!(
             restored
@@ -93,7 +93,7 @@ fn failed_quiescence_snapshot_prune_rolls_back_append_and_keeps_prior_snapshot()
         .execute_batch(
             "CREATE TRIGGER fail_quiescence_snapshot_prune
              BEFORE DELETE ON durable_state_events
-             WHEN OLD.kind = 'managed_kernel.auto_stop_quiescence.changed'
+             WHEN OLD.kind = 'managed_kernel.quiescence.changed'
                AND OLD.subject_id = 'kernel-rollback'
              BEGIN
                  SELECT RAISE(ABORT, 'injected snapshot prune failure');

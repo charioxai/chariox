@@ -43,7 +43,7 @@ pub(super) struct BootstrapConfig {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct ManagedBootstrapEnvelope {
     pub(super) schema_version: u32,
-    pub(super) cloud_api_url: String,
+    pub(super) control_plane_url: String,
     pub(super) environment_id: String,
     pub(super) token: String,
     pub(super) expires_at: String,
@@ -262,7 +262,7 @@ impl ManagedBootstrapEnvelope {
             self.expected_data_volume_size_gb,
         )?;
         self.expires_at()?;
-        validate_cloud_url(&self.cloud_api_url)
+        validate_cloud_url(&self.control_plane_url)
     }
 
     pub(super) fn managed_repository_root(&self) -> Result<String, DaemonError> {
@@ -278,7 +278,7 @@ impl ManagedBootstrapEnvelope {
         let mut digest = Sha256::new();
         digest.update(b"chariox/managed-bootstrap-grant-binding/v1\0");
         update_binding_component(&mut digest, &self.schema_version.to_be_bytes());
-        update_binding_component(&mut digest, self.cloud_api_url.as_bytes());
+        update_binding_component(&mut digest, self.control_plane_url.as_bytes());
         update_binding_component(&mut digest, self.environment_id.as_bytes());
         update_binding_component(&mut digest, self.token.as_bytes());
         update_binding_component(&mut digest, self.expires_at.as_bytes());

@@ -911,7 +911,7 @@ impl KernelRuntimeState {
                 Ok(gate) => gate,
                 Err(error) => {
                     crate::logging::error_with_fields(
-                        "managed_kernel.auto_stop_quiescence",
+                        "managed_kernel.quiescence",
                         "durable provider admission fence could not be restored; admissions are closed",
                         serde_json::json!({
                             "kernel_id": kernel_id,
@@ -935,7 +935,7 @@ impl KernelRuntimeState {
                 Ok(client) => client,
                 Err(error) => {
                     crate::logging::error_with_fields(
-                        "managed_kernel.auto_stop_quiescence",
+                        "managed_kernel.quiescence",
                         "managed kernel quiescence transport is unavailable",
                         serde_json::json!({
                             "kernel_id": config.daemon_id,

@@ -267,27 +267,27 @@
     "seam": "KernelActivityReport"
   },
   {
-    "path": "/v1/managed-kernels/auto-stop/quiescence/ack",
+    "path": "/v1/managed-kernels/quiescence/ack",
     "callers": [
       "apps/kernel/src/runtime/managed_kernel_quiescence.rs"
     ],
-    "why": "kernel quiescence fence polled by the control plane; drop `auto-stop` in OSS-boundary item 8",
+    "why": "kernel quiescence fence polled by the control plane",
     "seam": "KernelQuiescence"
   },
   {
-    "path": "/v1/managed-kernels/auto-stop/quiescence/poll",
+    "path": "/v1/managed-kernels/quiescence/poll",
     "callers": [
       "apps/kernel/src/runtime/managed_kernel_quiescence.rs"
     ],
-    "why": "kernel quiescence fence polled by the control plane; drop `auto-stop` in OSS-boundary item 8",
+    "why": "kernel quiescence fence polled by the control plane",
     "seam": "KernelQuiescence"
   },
   {
-    "path": "/v1/managed-kernels/auto-stop/quiescence/release-ack",
+    "path": "/v1/managed-kernels/quiescence/release-ack",
     "callers": [
       "apps/kernel/src/runtime/managed_kernel_quiescence.rs"
     ],
-    "why": "kernel quiescence fence polled by the control plane; drop `auto-stop` in OSS-boundary item 8",
+    "why": "kernel quiescence fence polled by the control plane",
     "seam": "KernelQuiescence"
   },
   {

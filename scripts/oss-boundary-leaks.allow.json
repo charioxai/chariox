@@ -108,10 +108,6 @@
     "removedBy": "OSS-boundary item 2 (delete TUI rental chooser and /machine reimage)"
   },
   {
-    "path": "apps/kernel/src/durable_state.rs",
-    "removedBy": "OSS-boundary items 3 to 8 (rental plan and neutral names)"
-  },
-  {
     "path": "apps/kernel/src/local/api/types.rs",
     "removedBy": "OSS-boundary item 3 (rental plan: pre-reimage observation and reimage types)"
   },
@@ -156,24 +152,12 @@
     "removedBy": "OSS-boundary items 3 to 8 (rental plan and neutral names)"
   },
   {
-    "path": "apps/kernel/src/runtime/managed_kernel_quiescence.rs",
-    "removedBy": "OSS-boundary items 3 to 8 (rental plan and neutral names)"
-  },
-  {
     "path": "apps/kernel/src/runtime/router/pre_lane_request.rs",
     "removedBy": "OSS-boundary item 3 (rental plan: pre-reimage observation and reimage types)"
   },
   {
     "path": "apps/kernel/src/runtime/session_membership/scope.rs",
     "removedBy": "OSS-boundary item 3 (rental plan: pre-reimage observation and reimage types)"
-  },
-  {
-    "path": "apps/kernel/src/runtime/state/managed_kernel_quiescence_state.rs",
-    "removedBy": "OSS-boundary items 3 to 8 (rental plan and neutral names)"
-  },
-  {
-    "path": "apps/kernel/src/runtime/state/mod.rs",
-    "removedBy": "OSS-boundary items 3 to 8 (rental plan and neutral names)"
   },
   {
     "path": "apps/kernel/src/transport/relay_peer.rs",

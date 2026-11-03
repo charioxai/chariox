@@ -24,7 +24,7 @@ fn ordinary_bootstrap_rejects_worker_shaped_records_without_mutation() {
         });
         let binding_digest = format!("sha256:{}", "f".repeat(64));
         let envelope = serde_json::to_vec(&serde_json::json!({
-            "schemaVersion": 1, "cloudApiUrl": "https://cloud.example.test",
+            "schemaVersion": 1, "controlPlaneUrl": "https://cloud.example.test",
             "token": format!("dwboot_{}", "a".repeat(43)),
             "expiresAt": (fixture.now + chrono::Duration::minutes(5)).to_rfc3339(),
             "bindingDigest": binding_digest, "binding": binding,
@@ -33,7 +33,7 @@ fn ordinary_bootstrap_rejects_worker_shaped_records_without_mutation() {
         fs::write(&fixture.config.envelope_path, &envelope).unwrap();
         let receipt = serde_json::to_vec(&serde_json::json!({
             "schemaVersion": 1, "kind": "disposable_worker", "status": "exchange_pending",
-            "cloudApiUrl": "https://cloud.example.test", "relayPublicKey": "worker-key",
+            "controlPlaneUrl": "https://cloud.example.test", "relayPublicKey": "worker-key",
             "bindingDigest": binding_digest, "binding": binding,
             "enrollmentReceipt": null, "cloudRelay": null,
         }))

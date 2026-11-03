@@ -149,7 +149,7 @@ pub use workspace::*;
 /// Version 348 projects owner-authorized managed activity and operation history.
 /// Version 349 binds CLI relay and display requests to a persisted terminal key.
 /// Version 350 exposes paired writable-layer and persistent-home slice caps in user config and
-/// coordinates the signed managed auto-stop quiescence HTTP contract.
+/// coordinates the signed managed quiescence HTTP contract.
 /// Version 351 adds home-bound disposable Cloud worker controls and managed keep-running.
 /// Versions 344–365 also exist on a divergent Apps branch and do not imply these controls.
 /// Version 366 adds explicit kernel control capabilities to RelayStatus.

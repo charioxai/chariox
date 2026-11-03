@@ -6254,6 +6254,12 @@ managed-activity HTTP contract (protocol 340) now has the single `/v1/managed-ke
 remains of the worker is the receipt reader that gates managed-context import and project setup on a
 `RemoteLeaseWorker`; nothing in this repository writes that receipt.
 
+Two Kernel-to-Cloud wire names became neutral together with the matching Cloud change (no local or relay shape
+changes, so no protocol bump): the managed bootstrap envelope key `cloudApiUrl` is now `controlPlaneUrl`, and the
+quiescence routes lost `auto-stop`: `/v1/managed-kernels/quiescence/poll`, `/ack` and `/release-ack`, whose signed
+`action` values are `quiescence_poll`, `quiescence_ack` and `quiescence_release_ack`. A kernel and a Cloud API from
+before this change do not talk to each other on those routes.
+
 ### Apps v2 — local 966 / relay peer 415
 
 One allocation carries the whole Apps v2 Stage 1 line. Local requests: `BeginAppInstall` and

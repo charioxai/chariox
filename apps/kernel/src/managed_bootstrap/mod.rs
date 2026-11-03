@@ -393,7 +393,7 @@ fn reconcile_legacy_confirmed_grant_binding(
         })?;
     let repository_root = receipt.managed_repository_root()?;
     let response = cloud.reconcile_managed_bootstrap_grant(
-        &normalized_api_url(&envelope.cloud_api_url),
+        &normalized_api_url(&envelope.control_plane_url),
         &cloud::ReconcileManagedBootstrapGrantRequestV1 {
             protocol_version: 1,
             token: envelope.token.clone(),
@@ -497,7 +497,7 @@ fn begin_registration(
     }
     persist_or_validate_grant_binding(config, envelope, identity)?;
     let exchanged = cloud.exchange(
-        &normalized_api_url(&envelope.cloud_api_url),
+        &normalized_api_url(&envelope.control_plane_url),
         &ExchangeRequest {
             token: envelope.token.clone(),
             environment_id: envelope.environment_id.clone(),
@@ -650,7 +650,7 @@ fn confirm_registration(
         None
     };
     let confirmed = cloud.confirm(
-        &normalized_api_url(&envelope.cloud_api_url),
+        &normalized_api_url(&envelope.control_plane_url),
         &ConfirmRequest {
             token: envelope.token.clone(),
             environment_id: receipt.environment_id.clone(),
@@ -982,7 +982,7 @@ fn validate_exchange_response(
         || response.runtime_release_digest != envelope.runtime_release_digest
         || response.cloud_relay.machine_id != identity.machine_id
         || normalized_api_url(&response.cloud_relay.api_url)
-            != normalized_api_url(&envelope.cloud_api_url)
+            != normalized_api_url(&envelope.control_plane_url)
         || !valid_identifier(&response.cloud_relay.account_id)
         || !valid_identifier(&response.cloud_relay.user_id)
         || !valid_identifier(&response.cloud_relay.account_slug)
