@@ -40,9 +40,16 @@ fn error(error: InstallOperationError) -> Error {
         InstallOperationError::CommitUnknown => Error::Unknown,
         InstallOperationError::Storage => Error::Storage,
         InstallOperationError::Stopped => Error::Failed("app_install_cancelled_or_expired"),
+        InstallOperationError::Deadline => Error::Failed("app_lifecycle_deadline"),
         InstallOperationError::Stale => Error::Failed("app_install_authority_changed"),
         InstallOperationError::Limit => Error::Failed("app_install_limit"),
         InstallOperationError::NotFound => Error::Failed("app_install_not_found"),
+        InstallOperationError::PublisherConflict => {
+            Error::Failed("app_register_publisher_conflict")
+        }
+        InstallOperationError::ImmutableVersion => {
+            Error::Failed("app_register_new_version_required")
+        }
         InstallOperationError::SchemaDowngrade => Error::Failed("app_update_schema_downgrade"),
         _ => Error::Failed("app_install_conflict"),
     }
@@ -50,6 +57,7 @@ fn error(error: InstallOperationError) -> Error {
 fn preparation(error: PreparationError) -> Error {
     match error {
         PreparationError::Busy => Error::Busy,
+        PreparationError::DevVaultUnavailable => Error::Failed("app_dev_unlock_kernel_vault"),
         PreparationError::PublisherNotEnrolled => {
             Error::Failed("app_install_publisher_not_enrolled")
         }
@@ -61,6 +69,9 @@ fn preparation(error: PreparationError) -> Error {
             Error::Storage
         }
         PreparationError::PackageRejected(code) => Error::Failed(package_failure(code)),
+        PreparationError::LegacyNodePackage => {
+            Error::Failed("app_install_node_package_requires_rebuild")
+        }
         PreparationError::InvalidRequest => Error::Failed("app_install_invalid_request"),
         PreparationError::UploadConflict => Error::Failed("app_install_upload_aborted"),
         PreparationError::UploadDigestMismatch => {
@@ -89,6 +100,8 @@ fn package_failure(code: chariox_app_package::ErrorCode) -> &'static str {
         ErrorCode::IncompatibleProtocol => "app_install_package_incompatible_protocol",
         ErrorCode::IncompatibleSdk => "app_install_package_incompatible_sdk",
         ErrorCode::IncompatibleContract => "app_install_package_incompatible_contract",
+        ErrorCode::ImportNotAllowed => "app_install_package_import_not_allowed",
+        ErrorCode::InvalidComponent => "app_install_package_invalid_component",
         ErrorCode::IncompatibleResourcePolicy => "app_install_package_incompatible_resource_policy",
         ErrorCode::UntrustedPublisher => "app_install_package_untrusted_publisher",
         ErrorCode::InvalidSignature => "app_install_package_invalid_signature",
@@ -160,7 +173,9 @@ pub(super) async fn run(
                 } else {
                     shared
                         .preparation
-                        .prepare(key.0.clone(), upload_handle.clone(), preparing)
+                        .prepare_portable(key.0.clone(), upload_handle.clone(), preparing, if input.source == chariox_app_runtime::installation::channel::AcquisitionSource::DevPush {
+                            crate::runtime::app_package_preparation::PreparationSource::Dev {expected_upload_digest: operation.package_digest.clone()}
+                        } else { crate::runtime::app_package_preparation::PreparationSource::Publisher })
                         .await
                 }
                 .map_err(preparation)?;
@@ -269,7 +284,12 @@ pub(super) async fn run(
                     if operation.review.is_none() {
                         return Ok(());
                     }
-                    lifecycle.stop_blocking(&key.0, &operation.token.installation_id)
+                    lifecycle.cancel_install_blocking(
+                        &key.0,
+                        &operation.token.installation_id,
+                        &key.1,
+                        operation.token.base_generation > 0,
+                    )
                 } else {
                     if cancelled.load(Ordering::Acquire) {
                         return Ok(());
@@ -291,6 +311,7 @@ pub(super) async fn run(
                 Err(LifecycleError::Busy) => Err(Error::Busy),
                 Err(LifecycleError::CommitUnknown) => Err(Error::Unknown),
                 Err(LifecycleError::Storage) => Err(Error::Storage),
+                Err(LifecycleError::Wasm(code)) => Err(Error::Failed(code)),
                 Err(_) => Err(Error::Failed("app_install_start_rejected")),
             }
         }
@@ -331,6 +352,8 @@ mod package_failure_tests {
             ErrorCode::IncompatibleProtocol,
             ErrorCode::IncompatibleSdk,
             ErrorCode::IncompatibleContract,
+            ErrorCode::ImportNotAllowed,
+            ErrorCode::InvalidComponent,
             ErrorCode::IncompatibleResourcePolicy,
             ErrorCode::UntrustedPublisher,
             ErrorCode::InvalidSignature,

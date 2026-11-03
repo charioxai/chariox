@@ -45,6 +45,9 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::ExtendKernelSudo(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
+        LocalDaemonRequest::InspectAppView(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
         LocalDaemonRequest::OpenAppView(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
@@ -631,6 +634,7 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::AnswerUserDomainInteraction(_)
         | LocalDaemonRequest::AcceptAppHostAction(_)
         | LocalDaemonRequest::AdjustProjectEnvironment(_)
+        | LocalDaemonRequest::ControlPlane(_)
         | LocalDaemonRequest::CreateDisposableWorker(_)
         | LocalDaemonRequest::GetDisposableWorker(_)
         | LocalDaemonRequest::GetManagedEnvironmentReimageReceipt(_)
@@ -662,6 +666,7 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::GetVaultSecretStatus(_)
         | LocalDaemonRequest::RenewKernelSudoRequester(_)
         | LocalDaemonRequest::RequestKernelAccess(_)
+        | LocalDaemonRequest::GetKernelAccessStatus(_)
         | LocalDaemonRequest::CoverKernelAccessProcess(_)
         | LocalDaemonRequest::ListKernelAccessGrants(_)
         | LocalDaemonRequest::RevokeKernelAccessGrant(_)
@@ -683,6 +688,8 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::GetAppPublisherEnrollment(_)
         | LocalDaemonRequest::CancelAppPublisherEnrollment(_)
         | LocalDaemonRequest::BeginAppInstall(_)
+        | LocalDaemonRequest::BeginAppDevPush(_)
+        | LocalDaemonRequest::GetAppDevPush(_)
         | LocalDaemonRequest::BeginAppUpdate(_)
         | LocalDaemonRequest::GetAppInstallOperation(_)
         | LocalDaemonRequest::CancelAppInstallOperation(_)

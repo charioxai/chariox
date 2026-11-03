@@ -1,0 +1,9 @@
+// Built against the 1.0 package with state.get's key changed to u32 by the
+// source fixture builder. All required exports stay present, so rejection
+// proves a signature mismatch rather than a missing-export failure.
+package fixture:incompatible@1.0.0;
+
+world incompatible {
+  import chariox:app/state@1.0.0;
+  export chariox:app/handlers@1.0.0;
+}

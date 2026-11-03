@@ -30,6 +30,7 @@ use crate::session::{SessionStateOwner, SessionStateStore};
 use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
 use chariox_relay::protocol::ClientTarget;
 
+mod agent_auth;
 mod workspace_live_sync;
 use workspace_live_sync::*;
 mod workspace_live_sync_workspace_context;
@@ -57,6 +58,7 @@ mod app_automation_owned_state;
 mod app_connection_runtime;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod app_control_requests;
+mod app_dev_runtime;
 mod app_event_delivery_owned_state;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod app_event_pump_runtime;
@@ -89,6 +91,8 @@ mod app_validation_pump_runtime;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod app_view_host;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+mod app_view_inspection;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod app_view_poll;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod app_view_runtime;
@@ -96,6 +100,7 @@ mod computer_secret_input_runtime_state;
 mod config_runtime_state;
 mod critical_approval_passkey;
 mod kernel_access;
+pub(crate) use kernel_access::AccessSubmission;
 mod outside_events;
 pub(crate) use outside_events::is_outside_event_request;
 use outside_events::InteractionPhase;
@@ -106,6 +111,9 @@ mod user_app_view_browser;
 mod user_app_view_restore;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod user_app_view_runtime;
+mod vault_command;
+mod vault_generate;
+mod vault_use;
 #[cfg(test)]
 pub(crate) use critical_approval_passkey::critical_approval_audit_payload;
 #[cfg(test)]
@@ -183,6 +191,7 @@ mod room_terminal_runtime_state;
 mod runtime_tool_call_activity;
 mod usage_snapshot;
 mod visible_region_capture;
+mod web_bot_auth_runtime;
 pub(crate) use runtime_tool_call_activity::RuntimeToolCallActivity;
 
 #[derive(Clone)]
@@ -230,10 +239,12 @@ type UncertainLeasedTasks = Arc<
 #[derive(Clone)]
 struct KernelRuntimeOwnedState {
     app_control: crate::runtime::app_control::AppControlService,
+    dev_app_bindings: Arc<app_dev_runtime::DevAppBindings>,
     critical_approval_passkeys: critical_approval_passkey::CriticalApprovalPasskeys,
     passkey_prompts: Arc<passkey_prompts::PasskeyPromptBoard>,
     kernel_access: crate::runtime::kernel_access::AccessStore,
     sudo_turns: sudo::SudoStore,
+    agent_auth_registrations: agent_auth::RegistrationClaims,
     /// Window timer proof of life: entry -> (armed revision, alerted revision).
     sudo_timers: Arc<std::sync::Mutex<BTreeMap<String, (u64, u64)>>>,
     sudo_timer_changes: Arc<RuntimeChangeSignal>,
@@ -244,6 +255,7 @@ struct KernelRuntimeOwnedState {
     /// Home side of A10: windows whose first worker fence was confirmed.
     leased_sudo_fenced: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
     config_projection: crate::runtime::projection::DaemonConfigProjectionStore,
+    web_bot_auth: Arc<web_bot_auth_runtime::WebBotAuthState>,
     session_store: SessionStateStore,
     agent_store: AgentServiceStore,
     attachment_store: AttachmentServiceStore,
@@ -495,6 +507,7 @@ mod prompt;
 mod prompt_activity_owned_state;
 mod prompt_cancellation_owned_state;
 mod prompt_dispatch;
+mod resource_register;
 mod room_pin;
 mod session_activity_owned_state;
 use external_command_authority::ExternalCommandAuthority;
@@ -585,6 +598,7 @@ pub(crate) use vault_secret_request::{SecretRequest, VAULT_SECRET_OPERATION};
 mod vault_unlock_request;
 mod vault_unlock_requests;
 pub(crate) use slice_runtime_state::SliceAgentRelaunchManifest;
+mod kernel_browser_audience;
 mod kernel_browser_command_error;
 mod kernel_browser_mirror;
 mod kernel_browser_receipts;
@@ -592,6 +606,7 @@ mod kernel_browser_runtime;
 mod kernel_browser_secret_runtime;
 mod kernel_browser_state_wait;
 mod kernel_browser_upload;
+mod kernel_browser_vault_capture;
 mod owner_handoff_runtime;
 pub(crate) use owner_handoff_runtime::{is_handoff_interaction_id, HANDOFF_OBLIGATION_KIND};
 mod declined_workspace_trust_runtime;
@@ -1017,6 +1032,7 @@ impl KernelRuntimeState {
             managed_terminal_activity: None,
             owned: KernelRuntimeOwnedState {
                 app_control,
+                dev_app_bindings: Default::default(),
                 critical_approval_passkeys:
                     critical_approval_passkey::CriticalApprovalPasskeys::new(
                         &config_projection.snapshot().user_config.credential_vault,
@@ -1024,6 +1040,7 @@ impl KernelRuntimeState {
                 passkey_prompts: Arc::default(),
                 kernel_access: Default::default(),
                 sudo_turns: sudo_windows.store(),
+                agent_auth_registrations: Default::default(),
                 sudo_timers: Default::default(),
                 sudo_timer_changes: Default::default(),
                 sudo_verified_at: Default::default(),
@@ -1031,6 +1048,7 @@ impl KernelRuntimeState {
                 leased_sudo_grants: Default::default(),
                 leased_sudo_fenced: Default::default(),
                 config_projection,
+                web_bot_auth: Default::default(),
                 session_store,
                 agent_store,
                 attachment_store,

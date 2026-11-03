@@ -1678,3 +1678,38 @@ async fn the_sudo_timer_wakes_for_the_displayed_expiry_after_host_sleep() {
         .revoke_sudo(Some("local"), Some(&window.entry_id), "fixture_cleanup")
         .unwrap();
 }
+
+#[tokio::test]
+async fn control_plane_sudo_uses_the_existing_window_for_gateway_access_and_revoke() {
+    let f = fixture_with_options(None, true);
+    let window = running(&f);
+    let list: LocalDaemonRequest =
+        serde_json::from_value(serde_json::json!({"ListSessions":null})).unwrap();
+    assert!(f.state.gateway_origin(&window.entry_id).is_some());
+    f.state
+        .authorize_gateway_request(&window.entry_id, &list)
+        .unwrap();
+    let secret: LocalDaemonRequest =
+        serde_json::from_value(serde_json::json!({"ListCredentials":null})).unwrap();
+    assert!(f
+        .state
+        .authorize_gateway_request(&window.entry_id, &secret)
+        .is_err());
+    let capabilities =
+        LocalDaemonRequest::ControlPlane(crate::local::ControlPlaneRequest::Capabilities {});
+    f.state
+        .authorize_external_request(&window.entry_id, &capabilities)
+        .unwrap();
+    f.state
+        .revoke_sudo(Some("local"), Some(&window.entry_id), "explicit_revoke")
+        .unwrap();
+    assert!(f.state.gateway_origin(&window.entry_id).is_none());
+    assert!(f
+        .state
+        .authorize_gateway_request(&window.entry_id, &list)
+        .is_err());
+    assert!(f
+        .state
+        .authorize_external_request(&window.entry_id, &capabilities)
+        .is_err());
+}

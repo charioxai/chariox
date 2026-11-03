@@ -113,11 +113,7 @@ impl KernelGateway {
         let mut misses = 0;
         loop {
             tokio::time::sleep(HEARTBEAT_EVERY).await;
-            if self
-                .runtime_state
-                .access_grant_summary(&held.grant_id)
-                .is_none()
-            {
+            if self.runtime_state.gateway_origin(&held.grant_id).is_none() {
                 self.keeper.give_up(&held);
                 return;
             }

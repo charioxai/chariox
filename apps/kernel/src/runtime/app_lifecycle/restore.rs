@@ -77,11 +77,10 @@ impl AppLifecycleService {
                 &request.snapshot_id,
             );
         }
-        #[cfg(target_os = "linux")]
-        {
+        if matches!(verified, chariox_app_package::VerifiedAppPackage::Wasm(_)) {
             use chariox_app_runtime::{
-                release_store::ReleaseStore, runtime_enrollment::EnrolledRuntime,
-                worker_process::PreparedWorker,
+                release_store::ReleaseStore,
+                worker_process::{wasm::WasmRuntime, PreparedWorker},
             };
             snapshot_restore::require_recovery_generation(
                 &self.0.store,
@@ -92,12 +91,11 @@ impl AppLifecycleService {
             let release = ReleaseStore::open_or_create(self.0.store.path())
                 .and_then(|store| store.lease_verified(&verified, active.bytes()))
                 .map_err(|_| Error::StorageUnavailable)?;
-            let prepared = PreparedWorker::prepare_linux(
-                EnrolledRuntime::open_installed().map_err(|_| Error::StorageUnavailable)?,
+            let prepared = PreparedWorker::prepare_wasm(
+                WasmRuntime::beside_kernel().map_err(|_| Error::StorageUnavailable)?,
                 release,
                 active.binding(),
-                None,
-                Some(generation),
+                self.0.store.path(),
             )
             .map_err(|_| Error::StorageUnavailable)?;
             let (_, outcome) = prepared
@@ -111,17 +109,14 @@ impl AppLifecycleService {
                     )
                 })
                 .map_err(|_| Error::StorageUnavailable)?;
-            outcome
+            return outcome;
         }
-        #[cfg(not(target_os = "linux"))]
-        {
-            Err(Error::StorageUnavailable)
-        }
+        Err(Error::StorageUnavailable)
     }
 }
 pub(super) fn code(error: LifecycleError) -> Error {
     match error {
-        LifecycleError::Busy | LifecycleError::LiveLimit => Error::Busy,
+        LifecycleError::Busy | LifecycleError::LiveLimit | LifecycleError::Deadline => Error::Busy,
         LifecycleError::Authority | LifecycleError::Stopped => Error::Conflict,
         _ => Error::StorageUnavailable,
     }

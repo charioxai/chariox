@@ -94,7 +94,7 @@ test('MP-11 a queued old-connection context event cannot claim the new connectio
  const first=connection(),second=connection();let count=0;
  const b=new BrowserCdpClient({focusWorldSource:'void 0',connectionFactory:async()=>++count===1?first:second});
  try {
-  await b.openConnection();await b.openConnection();b.targetsBySession.set('s','t');b.sessionsByTarget.set('t','s');
+  await b.ensureConnection();b.invalidateConnection();await b.ensureConnection();b.targetsBySession.set('s','t');b.sessionsByTarget.set('t','s');
   callbacks[1]({sessionId:'s',method:'Page.frameNavigated',params:{frame:{id:'top',loaderId:'doc'}}});
   const context={id:7,uniqueId:'new-connection-world',name:'chariox-controller-focus',auxData:{frameId:'top',type:'isolated',isDefault:false}};
   callbacks[1]({sessionId:'s',method:'Runtime.executionContextCreated',params:{context}});

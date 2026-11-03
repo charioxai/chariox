@@ -22,14 +22,13 @@ mod policy;
 mod process;
 mod receipts;
 mod scope;
-mod vault;
-pub(in crate::runtime::state) use vault::generate_password;
 mod window;
 pub(crate) use policy::{is_sudo_control, is_sudo_prompt};
-pub(crate) use vault::{require_login_handle_scope, vault_generate_spec, VAULT_GENERATE};
 pub(crate) use window::sudo_window_minutes;
 #[cfg(test)]
 pub(crate) use window::SUDO_WINDOW_LENGTH_FOR_TEST;
+#[cfg(test)]
+mod agent_auth_tests;
 #[cfg(test)]
 mod catalog_tests;
 #[cfg(test)]
@@ -55,9 +54,13 @@ mod relaunch_tests;
 #[cfg(test)]
 mod remote_command_tests;
 #[cfg(test)]
+mod resource_register_tests;
+#[cfg(test)]
 mod task_scope_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod vault_command_tests;
 #[cfg(test)]
 mod vault_tests;
 #[cfg(test)]

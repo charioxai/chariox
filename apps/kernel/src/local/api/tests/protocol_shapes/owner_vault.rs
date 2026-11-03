@@ -1,4 +1,4 @@
-//! MP-08 / MP-10 / MP-11: protocol 957/406 owner-only Vault shapes.
+//! MP-08 / MP-10 / MP-11: protocol 958/407 owner-only Vault shapes.
 use super::*;
 use sha2::{Digest, Sha256};
 
@@ -29,6 +29,6 @@ fn owner_vault_protocol_snapshot_and_hash() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&fixture).unwrap())
         ),
-        "6c9debfedb41c735e6e4e22c4d4d133af0feb68ff0a66aedc84809d7300e014c"
+        "eeb23b4268caaf8684db5193e42c48394d2d30aef4279f949663b0ce6bfcb849"
     );
 }

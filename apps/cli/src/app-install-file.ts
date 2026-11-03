@@ -8,12 +8,13 @@ import {
   getAppInstallationJournalRequest,
 } from "@chariox/kernel-client/ipc-requests"
 import type { AppInstallationSummary, AppInstallOperationSummary, AppPackageUploadSummary } from "@chariox/kernel-client/kernel-types"
+import { KernelProtocolMinimumError } from "./protocol-minimum-diagnostic.js"
 import { AppFileSource, checkCancelled, chunkBytes, InstallCancelled, InstallFileChanged } from "./app-install-file/source.js"
 
 type Send = (request: Record<string, unknown>) => Promise<Record<string, unknown>>
 export type InstallProgress = { phase: "hashing" | "uploading"; bytes: number; total: number }
 type Attempt = {
-  path: string; session: string; update?: { installation: string; generation?: string }; uploadRequest: string; request: string; cancelled: boolean;
+  path: string; session: string; source?: "dev_push" | "register"; update?: { installation: string; generation?: string }; uploadRequest: string; request: string; cancelled: boolean;
   digest?: string; size?: number; handle?: string; beginSent: boolean; status?: AppInstallOperationSummary; closed: boolean;
   /** The kernel took the upload's bytes into the operation and the upload was aborted: never abort it again. */
   released?: boolean;
@@ -47,26 +48,26 @@ export class AppFileInstaller {
   constructor(private send: Send, private progress: (value: InstallProgress) => void = () => {},
     private cwd: string = terminalCwd(), private followPollMs = 1_000) {}
 
-  install(selected: string, session: string): Promise<AppInstallOperationSummary> {
-    return this.start(selected, session)
+  install(selected: string, session: string, source?: "dev_push" | "register"): Promise<AppInstallOperationSummary> {
+    return this.start(selected, session, undefined, source)
   }
 
   /** Same transfer and operation as install; the kernel replaces the release at the generation read first. */
-  update(installation: string, selected: string, session: string): Promise<AppInstallOperationSummary> {
+  update(installation: string, selected: string, session: string, source?: "dev_push" | "register"): Promise<AppInstallOperationSummary> {
     if (!installation || Buffer.byteLength(installation) > 128) return Promise.reject(new Error("Invalid App installation ID"))
-    return this.start(selected, session, installation)
+    return this.start(selected, session, installation, source)
   }
 
-  private start(selected: string, session: string, installation?: string): Promise<AppInstallOperationSummary> {
+  private start(selected: string, session: string, installation?: string, source?: "dev_push" | "register"): Promise<AppInstallOperationSummary> {
     if (this.disposed) return Promise.reject(new Error("This terminal is closing"))
     if (this.running) return Promise.reject(new Error("An App upload is already running. Use /app cancel to stop it."))
     if (!session || Buffer.byteLength(session) > 128) return Promise.reject(new Error(`Attach to a session before ${installation ? "updating" : "installing"} an App`))
     const path = resolve(this.cwd, selected)
     let attempt = this.attempt
     if (!attempt || attempt.closed) {
-      attempt = { path, session, ...(installation ? { update: { installation } } : {}), uploadRequest: `app-upload-${randomUUID()}`, request: `app-${installation ? "update" : "install"}-${randomUUID()}`, cancelled: false, beginSent: false, closed: false }
+      attempt = { path, session, ...(source ? {source} : {}), ...(installation ? { update: { installation } } : {}), uploadRequest: `app-upload-${randomUUID()}`, request: `app-${installation ? "update" : "install"}-${randomUUID()}`, cancelled: false, beginSent: false, closed: false }
       this.attempt = attempt
-    } else if (attempt.path !== path || attempt.session !== session || attempt.update?.installation !== installation) {
+    } else if (attempt.path !== path || attempt.session !== session || attempt.update?.installation !== installation || attempt.source !== source) {
       return Promise.reject(new Error("Another App installation or update is retained. Use /app operation or /app cancel before selecting another file."))
     }
     const operation = this.transfer(attempt).catch(async (error: unknown) => {
@@ -232,7 +233,7 @@ export class AppFileInstaller {
       checkCancelled(cancelled)
       attempt.beginSent = true
       begunHere = true
-      const begin = { sessionId: attempt.session, requestId: attempt.request, uploadHandle: upload.handle, expectedPackageDigest: source.digest }
+      const begin = { ...(attempt.source ? {source: attempt.source} : {}), sessionId: attempt.session, requestId: attempt.request, uploadHandle: upload.handle, expectedPackageDigest: source.digest }
       const status = operation(await this.request(attempt.update && generation ? beginAppUpdateRequest({ ...begin, installationId: attempt.update.installation, expectedGeneration: generation }) : beginAppInstallRequest(begin), cancelled), attempt.request)
       attempt.status = status
       checkCancelled(cancelled)
@@ -240,7 +241,7 @@ export class AppFileInstaller {
       return status
     } catch (error) {
       // A Begin the kernel refused (not one lost in transport) never took the upload.
-      const refused = error instanceof KernelFailure && begunHere && !attempt.status
+      const refused = (error instanceof KernelFailure || error instanceof KernelProtocolMinimumError) && begunHere && !attempt.status
       if (error instanceof InstallCancelled || error instanceof InstallFileChanged || refused) await this.cleanup(attempt).catch(() => {})
       throw error
     } finally { await source?.close() }
@@ -301,7 +302,7 @@ export class AppFileInstaller {
         const code = typeof failure.code === "string" ? failure.code : "invalid_response"
         if (code !== "busy" || retry === 2) throw new KernelFailure(code)
       } catch (error) {
-        if (error instanceof KernelFailure || error instanceof InstallCancelled) throw error
+        if (error instanceof KernelFailure || error instanceof InstallCancelled || error instanceof KernelProtocolMinimumError) throw error
         if (retry === 2) throw new ConnectionFailure()
       }
       await delay(200)
@@ -322,10 +323,22 @@ function operation(reply: Record<string, unknown>, request: string): AppInstallO
 }
 
 const installFailures: Record<string, string> = {
+  app_aot_busy: "The App cache is compiling this component. Retry starting the App shortly.",
+  app_aot_limit: "The compiled App exceeds this runtime's cache limit. Rebuild a smaller App.",
+  app_aot_store: "The App cache could not be read or written. Check disk space and permissions, then retry.",
+  app_aot_integrity: "The App cache failed verification and was removed. Start the App again to compile its retained component; your App data is retained.",
+  app_aot_incompatible: "The App cache does not match this runtime. Start the App again to compile its retained component.",
+  app_aot_compile: "The App could not be compiled with the current runtime. Retry after updating the runtime; your App data is retained.",
+  app_wasm_migration_snapshot: "The App migration could not save or restore its private files. Free disk space and check storage permissions, then retry the update.",
+  app_wasm_migration_unavailable: "This App needs migration support from a newer runtime. Your App data is retained.",
+  app_lifecycle_deadline: "The App did not finish starting within its 30-second budget; a large App can take longer to compile on a slow machine. Start it again: the compiled App is kept.",
+  app_wasm_containment: "This computer cannot isolate the App worker, so the App was not started; your App data is retained. On Linux, App files need Landlock (Linux 5.13 or later); on macOS, reinstall Chariox so its signed App worker is intact.",
+  app_wasm_runtime: "The native App worker installed with the kernel is missing or unsafe: it must belong to root, or be read-only to your user. Reinstall Chariox, then retry.",
   app_lifecycle_notification: "The App did not complete preparation for the update; the installed version is unchanged (app_lifecycle_notification).",
   app_install_publisher_not_enrolled: "This publisher must be enrolled in the kernel before installation.",
   app_install_publisher_revoked: "This publisher has been revoked in the kernel.",
   app_install_package_rejected: "The kernel rejected the package contents.",
+  app_install_node_package_requires_rebuild: "This App uses the Node backend. Rebuild it as a portable Apps v2 .cxapp. Node private files are not migrated to v2; export and restore them separately.",
   // One message per stable package error code (V-PKG-03).
   app_install_package_invalid_arguments: "The package request was invalid.",
   app_install_package_io: "The kernel could not read the package.",
@@ -339,6 +352,8 @@ const installFailures: Record<string, string> = {
   app_install_package_incompatible_protocol: "The App needs a kernel protocol version this kernel does not support.",
   app_install_package_incompatible_sdk: "The App was built with an SDK version this kernel does not support.",
   app_install_package_incompatible_contract: "The App's declared contract is not supported by this kernel.",
+  app_install_package_import_not_allowed: "The App asks for a capability this kernel does not offer. Remove that import and rebuild the App.",
+  app_install_package_invalid_component: "The App's code file is not a valid WebAssembly component. Rebuild the App.",
   app_install_package_incompatible_resource_policy: "The App requests more resources than this kernel allows.",
   app_install_package_untrusted_publisher: "The package's publisher is not trusted by this kernel.",
   app_install_package_invalid_signature: "The package signature is invalid.",
@@ -355,12 +370,27 @@ const installFailures: Record<string, string> = {
   app_install_upload_missing_or_expired: "The upload expired before preparation. Select the file again.",
   app_install_approval_expired: "The approval request expired.",
   app_install_insufficient_storage: "The kernel has insufficient App storage.",
+  app_dev_unlock_kernel_vault: "Unlock the kernel Vault before starting the dev build. Its signing key stays in that Vault.",
+  app_register_publisher_conflict: "This App ID is already bound to another publisher. Use the original publisher or an explicit new App ID; existing data was kept.",
+  app_register_new_version_required: "This version is already registered with different content. Bump app.json version before registering it.",
   app_update_schema_downgrade: "This release's data schema is older than the installed App's; App data is never migrated to an older schema.",
+}
+
+// Why a data migration stopped: the runtime's own codes in plain words, otherwise the App's own code.
+const migrationCauses: Record<string, string> = {
+  DEADLINE_EXCEEDED: "ran out of time",
+  APP_TRAPPED: "crashed",
+  APP_MEMORY_LIMIT: "used too much memory",
 }
 
 /** Friendly text for an operation's kernel failure code; unknown codes are shown only when well-formed. */
 export function formatInstallFailure(failure: string): string {
   if (Object.hasOwn(installFailures, failure)) return installFailures[failure]!
+  const migration = /^app_update_migration_failed(?:_([A-Z0-9][A-Z0-9_]{0,47}))?$/.exec(failure)
+  if (migration) {
+    const cause = migration[1] === undefined ? "" : Object.hasOwn(migrationCauses, migration[1]) ? ` The migration ${migrationCauses[migration[1]]}.` : ` The App reported: ${migration[1]}.`
+    return `The App could not move its data to the new version, so the update was not applied.${cause} The installed version and its data are unchanged.`
+  }
   return (/^app_(?:install|update|lifecycle)_[a-z_]{1,96}$/.test(failure) ? `Kernel failure: ${failure}.` : "The kernel could not complete the App operation.")
 }
 

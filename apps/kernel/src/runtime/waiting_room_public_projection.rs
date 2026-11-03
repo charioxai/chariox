@@ -1500,6 +1500,7 @@ mod tests {
 
     fn disconnected_relay_status() -> RelayStatus {
         RelayStatus {
+            local_daemon_protocol_version: crate::local::LOCAL_DAEMON_PROTOCOL_VERSION,
             runtime_process_identity: None,
             capabilities: Vec::new(),
             configured: false,
@@ -2250,6 +2251,7 @@ mod tests {
         let metaagent_events = MetaagentEventStore::default();
         let projection = WaitingRoomSessionSummaryProjectionStore::default();
         let relay_status = RelayStatus {
+            local_daemon_protocol_version: crate::local::LOCAL_DAEMON_PROTOCOL_VERSION,
             runtime_process_identity: None,
             capabilities: Vec::new(),
             configured: false,
@@ -2378,6 +2380,7 @@ mod tests {
             false,
             None,
             RelayStatus {
+                local_daemon_protocol_version: crate::local::LOCAL_DAEMON_PROTOCOL_VERSION,
                 runtime_process_identity: None,
                 capabilities: Vec::new(),
                 configured: false,

@@ -1,4 +1,7 @@
+import { randomUUID } from "node:crypto";
 import { installAppDrafts } from "./browser-app-drafts.mjs";
+import { createInputCallers } from "./browser-app-input-callers.mjs";
+import { createViewActions } from "./browser-app-view-actions.mjs";
 // App views: one tab per installation on its own https origin. The controller
 // serves the kernel-verified UI assets through CDP Fetch interception, so no
 // port is opened and the page is a secure context. Every other request from
@@ -8,6 +11,7 @@ import { installAppDrafts } from "./browser-app-drafts.mjs";
 // reloads, navigates or closes, the kernel cancels that document's calls and
 // an answer for it is never delivered to the next one.
 import { BrowserControllerError } from "./browser-controller-cdp.mjs";
+import { appViewIdleMs, retireIdleAppTabs } from "./browser-controller-app-idle.mjs";
 import { placeholderOrigin } from "./browser-app-restore.mjs";
 
 // Each installation is a separate registrable domain. A shared parent such as
@@ -18,12 +22,20 @@ const APP_HOST = /^app\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.invalid$/;
 const MAX_ASSETS = 256;
 const MAX_ASSET_BYTES = 8 * 1024 * 1024;
 const MAX_PENDING_CALLS = 64;
+// A busy answer is retried this many times, 500 ms longer each time (about 10 s).
+const APP_BUSY_RETRIES = 5;
+const APP_BUSY_BACKOFF_MS = 500;
 // The bounded host text plus its JSON envelope must fit a view call.
 const MAX_CALL_BYTES = 512 * 1024;
 const MAX_ANSWERABLE_CALLS = 1024;
 const FULLSCREEN_CHECK_INTERVAL_MS = 250;
 const CALL_WAIT_MS = 250;
 const BINDING = "__charioxAppCall";
+const AGENT_NAME = /^[a-z][a-z0-9_]{0,63}$/;
+const AGENT_ID = /^[A-Za-z0-9_.:-]{1,128}$/;
+const AGENT_DEADLINE_MS = 30_000;
+const AGENT_MAX_DEADLINE_MS = 120_000;
+const AGENT_MAX_WAIT_MS = 30_000;
 export const APP_CSP = [
   "default-src 'self'", "script-src 'self'", "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: blob:", "font-src 'self'", "connect-src 'none'", "frame-src 'none'",
@@ -63,19 +75,32 @@ const BRIDGE_SOURCE = `(() => {
   // answer still in flight for the old document must not match a new call.
   const documentNonce = crypto.randomUUID();
   let next = 0;
-  const request = (method, params) => new Promise((resolve, reject) => {
-    const id = documentNonce + ":" + ++next;
-    pending.set(id, { resolve, reject });
+  // APP_BUSY is answered before the call is dispatched, so sending it again
+  // cannot run it twice. Back off with jitter so a burst does not return in step.
+  const send = (method, params, token, attempt, resolve, reject) => {
+    const id = (token === undefined ? "" : "invocation:" + token + ":") + documentNonce + ":" + ++next;
+    pending.set(id, { resolve, reject, retry: attempt < ${APP_BUSY_RETRIES} ? () => setTimeout(
+      () => send(method, params, token, attempt + 1, resolve, reject),
+      ${APP_BUSY_BACKOFF_MS} * (attempt + 1) + Math.random() * ${APP_BUSY_BACKOFF_MS}) : undefined });
     call(JSON.stringify({ id, method, params }));
-  });
+  };
+  const request = (method, params, token) => new Promise((resolve, reject) => send(method, params, token, 0, resolve, reject));
   Object.defineProperty(globalThis, "__charioxAppResolve", { value(id, ok, value) {
     const entry = pending.get(id);
     if (!entry) return;
     pending.delete(id);
+    if (!ok && value?.code === "APP_BUSY" && entry.retry) return entry.retry();
     ok ? entry.resolve(value) : entry.reject(Object.assign(new Error(value?.message ?? "App call failed"), { code: value?.code }));
   } });
+  const inputCallers = (${createInputCallers.toString()})();
+  Object.defineProperty(globalThis, "__charioxViewInput", { value: inputCallers });
+  const viewActions = (${createViewActions.toString()})(request, inputCallers);
+  Object.defineProperty(globalThis, "__charioxViewAgent", { value: viewActions.agent });
   Object.defineProperty(globalThis, "chariox", { value: Object.freeze({
     call(method, params = {}) { return request(method, params); },
+    action: viewActions.action,
+    form: viewActions.form,
+    view: viewActions.view,
     host: Object.freeze({
       openLink(url) { return request("host.open_link", { url }); },
       writeClipboard(text) { return request("host.clipboard_write", { text }); },
@@ -90,6 +115,10 @@ const BRIDGE_SOURCE = `(() => {
   }) });
   (${installAppDrafts.toString()})();
 })();`;
+
+// prepareUpdate waits at most 5 s; this covers the page's answer on top of it.
+const UPDATE_SAFE_POINT_MS = 6000;
+const INLINE_SCRIPT_BLOCKED = "The view has no actions because its page uses an inline script, which views do not run. Put the script in a file, load it with <script src>, and reinstall the App.";
 
 function invalid(message) {
   return new BrowserControllerError("invalid_request", message);
@@ -120,6 +149,48 @@ function assets(raw, entry) {
   return map;
 }
 
+// One `__charioxViewAgent` call as a page expression. Every value is JSON, so
+// nothing the kernel sends is ever code.
+function agentCall(params, token) {
+  if (typeof params.agent !== "string" || !AGENT_ID.test(params.agent)) throw invalid("invalid acting agent");
+  const deadline = params.deadline_ms ?? AGENT_DEADLINE_MS;
+  if (!Number.isSafeInteger(deadline) || deadline < 1 || deadline > AGENT_MAX_DEADLINE_MS) throw invalid("invalid deadline");
+  const call = (method, args, answer = "answer") => `(async () => {
+    if (typeof document !== "undefined" && document.readyState === "loading") {
+      await new Promise(resolve => document.addEventListener("DOMContentLoaded", resolve, { once: true }));
+    }
+    const view = globalThis.__charioxViewAgent;
+    if (!view) return { ok: false, code: "view_unavailable", message: "The view has not loaded the Chariox bridge" };
+    const answer = await view.${method}(${args.map((arg) => JSON.stringify(arg)).join(", ")});
+    return ${answer}; })()`;
+  let expression;
+  if (params.call === "state") {
+    expression = call("state", []);
+  } else if (params.call === "registrations") {
+    // The only call that answers with a bare list. With no action registered,
+    // a refused inline script is the likely cause, and the person can fix it.
+    expression = call("registrations", [], `answer.length === 0 && view.inlineScriptBlocked()
+      ? { ok: false, code: "action_not_registered", message: ${JSON.stringify(INLINE_SCRIPT_BLOCKED)} }
+      : { ok: true, value: answer }`);
+  } else if (params.call === "invoke") {
+    if (typeof params.name !== "string" || !AGENT_NAME.test(params.name)) throw invalid("invalid action name");
+    const input = params.input ?? {};
+    if (typeof input !== "object" || input === null || Array.isArray(input)
+      || Buffer.byteLength(JSON.stringify(input)) > MAX_CALL_BYTES) throw invalid("invalid action input");
+    expression = call("invoke", [params.name, input, token]);
+  } else if (params.call === "changes") {
+    const since = params.since ?? 0;
+    const wait = params.wait_ms ?? 0;
+    if (!Number.isSafeInteger(since) || since < 0 || !Number.isSafeInteger(wait) || wait < 0 || wait > AGENT_MAX_WAIT_MS) {
+      throw invalid("invalid change cursor");
+    }
+    expression = call("changes", [since, wait]);
+  } else {
+    throw invalid("unknown view agent call");
+  }
+  return { agent: params.agent, expression, deadline, runsAppCode: params.call === "invoke" || params.call === "state" };
+}
+
 export class AppTabs {
   // MP-08/MP-10/MP-11: only managed App pages have draft state. Finish a
   // captured edit's disk commit before showing it as recoverable to viewers.
@@ -134,7 +205,10 @@ export class AppTabs {
     return true;
   }
 
-  constructor(browser, { restoreGraceMs = 30_000 } = {}) {
+  constructor(browser, { restoreGraceMs = 30_000, windowMode = "fullscreen", idleMs = appViewIdleMs(), now = () => performance.now() } = {}) {
+    this.windowMode = windowMode;
+    this.idleMs = idleMs;
+    this.now = now;
     this.browser = browser;
     // Every new CDP connection sweeps App Tabs, even when no App command
     // arrives: interception ends with the old connection.
@@ -150,24 +224,109 @@ export class AppTabs {
     this.orphanRestores = new Map();
   }
 
-  // MP-08/MP-10/MP-11: who an App Tab's calls run as comes only from input
-  // the kernel dispatched into that Tab, never from the page: App code can
-  // rewrite anything in its realm, and its timers, browser-generated events
-  // (scroll, focus, load) and own navigations can outlive the input that
-  // caused them by any delay. So once an agent drove the Tab, through any of
-  // its documents, no call from it is the person's: with one such agent every
-  // call runs as that agent (a person's own click there acts with no more than
-  // the agent's grants), with several the call is refused. A Tab no agent
-  // drove is the person's. Closing the App view ends this; a new Tab starts clean.
-  noteAgent(targetId, agent) {
+  noteActivity(targetId) {
     const app = [...this.apps.values()].find(open => open.targetId === targetId);
-    app?.agents.add(agent);
+    if (app) app.lastActivity = this.now();
   }
 
-  // undefined: the person; null: unknown, refused.
-  callActor(app) {
-    if (!app.agents.size) return undefined;
-    return app.agents.size === 1 ? { kind: "agent", id: [...app.agents][0] } : null;
+  // One agent handler runs per view. Deadlines return to the caller while the
+  // page keeps running, so its invocation remains active until CDP settles.
+  async agent(params) {
+    await this.reconcile();
+    const entry = [...this.apps.entries()].find(([, app]) => app.targetId === params?.target_id);
+    if (!entry) throw invalid("unknown App tab");
+    const [sessionId, app] = entry;
+    if (app.retiring) return { ok: false, code: "view_retired", message: "The idle view closed; read the catalog to open a fresh view" };
+    app.lastActivity = this.now();
+    const token = randomUUID();
+    const { agent, expression, deadline, runsAppCode } = agentCall(params, token);
+    // Reading the change log or the registrations runs no App code: it neither
+    // attributes the Tab to the agent nor waits for a running handler.
+    if (runsAppCode && app.agentRunning) {
+      return { ok: false, code: "view_busy", message: "An earlier action in this view is still running; retry when it has finished" };
+    }
+    if (params.call === "invoke") app.invocation = { token, actor: { kind: "agent", id: agent }, document: app.document };
+    const connection = this.connection;
+    app.agentCalls = (app.agentCalls ?? 0) + 1;
+    const running = connection.send("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true }, sessionId, { timeoutMs: null })
+      .finally(() => {
+        app.agentCalls--;
+        app.lastActivity = this.now();
+        if (app.agentRunning === running) {
+          app.agentRunning = null;
+          app.invocation = null;
+        }
+      });
+    if (runsAppCode) app.agentRunning = running;
+    let timer;
+    const late = new Promise((resolve) => {
+      timer = setTimeout(() => resolve("late"), deadline);
+      timer.unref?.();
+    });
+    try {
+      const reply = await Promise.race([running, late]);
+      if (reply === "late") return { ok: false, code: "deadline", message: `The action did not finish within ${deadline} ms` };
+      if (reply.exceptionDetails) return { ok: false, code: "view_error", message: String(reply.exceptionDetails.exception?.description ?? reply.exceptionDetails.text).slice(0, 1024) };
+      const answer = reply.result?.value;
+      if (typeof answer?.ok !== "boolean") return { ok: false, code: "view_error", message: "The view answered in an unknown shape" };
+      return answer;
+    } catch {
+      // The document went away mid-call (reload, navigation, closed Tab).
+      return { ok: false, code: "view_reloaded", message: "The view reloaded while the action ran" };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  // Browser input returns at its CDP acknowledgement. Any registered handler
+  // it started owns the caller until settlement, just like a typed invocation.
+  async input(app, agent, dispatch) {
+    if (typeof agent !== 'string' || !AGENT_ID.test(agent)) throw invalid("invalid input agent");
+    if (app.agentRunning) throw new BrowserControllerError("view_busy", "An earlier action in this view is still running; retry when it has finished");
+    const sessionId = [...this.apps].find(([, open]) => open === app)?.[0];
+    if (!sessionId) throw invalid("unknown App tab");
+    const token = randomUUID();
+    const timestamp = Math.max(Math.ceil(Date.now() / 1000) + 86400, (this.inputTimestamp ?? 0) + 1);
+    this.inputTimestamp = timestamp;
+    const invocation = { token, actor: { kind: "agent", id: agent }, document: app.document };
+    app.invocation = invocation;
+    let finish;
+    const dispatched = new Promise(resolve => { finish = resolve; });
+    const connection = this.connection;
+    const running = dispatched.then(() => connection.send("Runtime.evaluate", {
+      expression: `globalThis.__charioxViewInput?.end(${JSON.stringify(token)})`, awaitPromise: true, returnByValue: true,
+    }, sessionId, { timeoutMs: null })).finally(() => {
+      if (app.invocation === invocation) app.invocation = null;
+      if (app.agentRunning === running) app.agentRunning = null;
+    });
+    running.catch(() => {}); // Navigation retires the old document's input.
+    app.agentRunning = running;
+    try {
+      const reply = await connection.send("Runtime.evaluate", {
+        expression: `globalThis.__charioxViewInput.begin(${JSON.stringify(token)},${timestamp})`, returnByValue: true,
+      }, sessionId);
+      if (reply.exceptionDetails) throw invalid("App input caller unavailable; reopen the App");
+      return await dispatch(timestamp, token);
+    } finally { finish(); }
+  }
+
+  async inspect(params) {
+    const entry = [...this.apps].find(([, app]) => app.targetId === params?.target_id);
+    if (!entry || !entry[1].ready || !entry[1].document) throw new BrowserControllerError('app_view_not_ready', 'Reload the App view before inspecting it');
+    const [sessionId, app] = entry;
+    const document = app.document;
+    const reply = await this.connection.send('Runtime.evaluate', {
+      expression: '(async () => { try { return {ok:true,value:await globalThis.__charioxViewAgent.inspect()} } catch (error) { return {ok:false,code:error?.code} } })()', awaitPromise: true, returnByValue: true,
+    }, sessionId);
+    if (this.apps.get(sessionId) !== app || app.document !== document || !app.ready) throw new BrowserControllerError('app_view_changed', 'The App view changed during inspection; retry');
+    if (reply.exceptionDetails || !reply.result?.value) throw new BrowserControllerError('app_view_inspection_failed', 'The App view could not be inspected; reload it and retry');
+    const result = reply.result.value;
+    if (result.ok !== true) {
+      if (result.code === 'coverage_too_large') throw new BrowserControllerError('app_view_coverage_too_large', 'The App has more than 512 visible controls; ask its developer to reduce the inspected view');
+      if (result.code === 'inspection_too_large') throw new BrowserControllerError('app_view_inspection_too_large', 'The App inspection exceeds 256 KiB; ask its developer to reduce the declarations or state');
+      throw new BrowserControllerError('app_view_inspection_failed', 'The App view could not be inspected; reload it and retry');
+    }
+    return result.value;
   }
 
   async open(params) {
@@ -177,7 +336,13 @@ export class AppTabs {
       || !/^[a-zA-Z0-9_-]{1,128}$/.test(params.instance_id))) throw invalid("invalid App instance");
     const instanceId = params.instance_id ?? null;
     const entry = params.entry ?? "index.html";
-    const app = { installation: params.installation_id, instanceId, origin, entry, assets: assets(params.assets, entry), page: params.page ?? null };
+    const projection = params.projection ?? { kind: "human" };
+    if (!projection || !["human", "agent"].includes(projection.kind)
+      || (projection.kind === "agent" && (typeof projection.agent !== "string" || !AGENT_ID.test(projection.agent)))) {
+      throw invalid("invalid App projection");
+    }
+    const background = projection.kind === "agent";
+    const app = { installation: params.installation_id, instanceId, origin, entry, assets: assets(params.assets, entry), page: params.page ?? null, background, lastActivity: this.now() };
     const connection = await this.browser.ensureConnection();
     this.listen(connection);
     // One shared App Tab per Room and installation: opening it again (another
@@ -186,14 +351,22 @@ export class AppTabs {
     const shown = [...this.apps.entries()].find(([, open]) => open.installation === app.installation && open.origin === origin && open.instanceId === instanceId);
     if (shown) {
       const [sessionId, open] = shown;
+      if (open.retiring) {
+        await open.retiring.catch(() => {});
+        return this.open(params);
+      }
+      open.lastActivity = this.now();
+      open.background = open.background && app.background;
       const changed = open.entry !== entry || open.assets.size !== app.assets.size
         || [...app.assets].some(([name, value]) => open.assets.get(name)?.contentType !== value.contentType || open.assets.get(name)?.body !== value.body);
       Object.assign(open, { entry, assets: app.assets, page: app.page });
       if (changed) open.ready = false;
       const metrics = this.browser.appMetrics?.(open.page);
       if (metrics) await connection.send("Emulation.setDeviceMetricsOverride", metrics, sessionId).catch(() => {});
-      await connection.send("Target.activateTarget", { targetId: open.targetId });
-      await this.fullscreen(connection, open.targetId).catch(() => false);
+      if (!app.background) {
+        await connection.send("Target.activateTarget", { targetId: open.targetId });
+        await this.fullscreen(connection, open.targetId).catch(() => false);
+      }
       // MP-08/MP-10: an unchanged Open only focuses the existing editor.
       // Verified asset changes still navigate and retire the old document.
       if (changed) {
@@ -202,24 +375,25 @@ export class AppTabs {
       }
       return { target_id: open.targetId, origin };
     }
-    // Each App view gets its own fullscreen window, so page and desktop
-    // coordinates agree. Its page lays out left of the trusted conversation
-    // panel, which the terminal draws over the rest of the desktop.
+    // Room App pages share desktop coordinates with the trusted panel.
+    // User-domain Apps stay in the native tabbed window for region capture.
     // A restored placeholder has no App script or authority. Only an Open
     // with kernel-verified assets can adopt it, matching the exact origin.
     const { targetInfos = [] } = await connection.send("Target.getTargets", {});
     const restored = instanceId === null
       ? targetInfos.find(target => target.type === "page" && placeholderOrigin(target.url) === origin)
       : undefined;
-    const { targetId } = restored ?? await connection.send("Target.createTarget", { url: "about:blank", newWindow: true });
+    const { targetId } = restored ?? await connection.send("Target.createTarget", { url: "about:blank", newWindow: this.windowMode === "fullscreen", ...(app.background ? { background: true } : {}) });
     clearTimeout(this.orphanRestores.get(targetId)?.timer);
     this.orphanRestores.delete(targetId);
     const sessionId = await this.browser.ensureTargetSession(connection, targetId);
-    const opening = { ...app, targetId, document: null, pending: new Set(), agents: new Set(), ready: false };
+    const opening = { ...app, targetId, document: null, pending: new Set(), invocation: null, ready: false };
     this.apps.set(sessionId, opening);
     try {
-      if (restored) await connection.send("Target.activateTarget", { targetId });
-      await this.fullscreen(connection, targetId);
+      if (!app.background) {
+        if (restored) await connection.send("Target.activateTarget", { targetId });
+        await this.fullscreen(connection, targetId);
+      }
       const metrics = this.browser.appMetrics?.(app.page);
       if (metrics) await connection.send("Emulation.setDeviceMetricsOverride", metrics, sessionId);
       await connection.send("Fetch.enable", { patterns: [{ urlPattern: "*", requestStage: "Request" }] }, sessionId);
@@ -258,6 +432,12 @@ export class AppTabs {
     const next = params.entry ?? "index.html";
     app.assets = assets(params.assets, next);
     app.entry = next;
+    // The old page may be holding an unsaved draft: give it a bounded moment
+    // to save. A page without a handler answers at once; a hung or gone one
+    // is cut off, since the update must not wait for it.
+    await this.connection.send("Runtime.evaluate", {
+      expression: "globalThis.__charioxViewAgent?.prepareUpdate()", awaitPromise: true, returnByValue: true,
+    }, sessionId, { timeoutMs: UPDATE_SAFE_POINT_MS }).catch(() => {});
     // Calls the old page queued are not the new page's: its promises go with it.
     this.calls = this.calls.filter((call) => call.target_id !== app.targetId);
     await this.connection.send("Page.reload", { ignoreCache: true }, sessionId);
@@ -317,6 +497,8 @@ export class AppTabs {
     if (message.method === "Page.frameNavigated" && !message.params?.frame?.parentId) {
       app.document = message.params?.frame?.loaderId ?? null;
       app.pending.clear();
+      app.agentRunning = null;
+      app.invocation = null;
     } else if (message.method === "Fetch.requestPaused") {
       await this.fulfill(connection, message.sessionId, app, message.params);
     } else if (message.method === "Runtime.bindingCalled" && message.params?.name === BINDING) {
@@ -355,16 +537,19 @@ export class AppTabs {
     let call;
     try { call = JSON.parse(payload); } catch { return; }
     if (typeof call?.id !== "string" || typeof call.method !== "string" || call.method.length > 128) return;
-    // Attribute at binding time, before any await can admit other input.
-    const actor = this.callActor(app);
+    const scoped = call.id.startsWith("invocation:");
+    const invocation = app.invocation;
     // Resolve the document before admission; the bounded queue check and push
     // then run without an await, even when a page sends one concurrent burst.
     const documentId = app.document ?? await this.document(sessionId, app);
+    const valid = invocation && app.invocation === invocation
+      && call.id.split(":")[1] === invocation.token && invocation.document === documentId;
+    const actor = scoped && valid ? invocation.actor : undefined;
     // Refusing admission must settle the page's promise. Silently dropping
     // overflow leaves Promise.all backlogs waiting forever, even after drain.
-    if (actor === null) {
-      await this.resolve(sessionId, call.id, false, { code: "APP_ACTOR_UNKNOWN",
-        message: "More than one agent drove this App Tab: close the App view and open it again" });
+    if (scoped && !valid) {
+      await this.resolve(sessionId, call.id, false, { code: "APP_INVOCATION_EXPIRED",
+        message: "The action invocation is unknown or has finished" });
       return;
     }
     if (this.calls.length >= MAX_PENDING_CALLS) {
@@ -373,6 +558,7 @@ export class AppTabs {
       return;
     }
     // Calls the kernel may answer for this document; a new one clears them.
+    app.lastActivity = this.now();
     app.pending.add(call.id);
     if (app.pending.size > MAX_ANSWERABLE_CALLS) app.pending.delete(app.pending.values().next().value);
     this.calls.push({ installation_id: app.installation, target_id: app.targetId,
@@ -398,6 +584,7 @@ export class AppTabs {
   // True when the App's window already is fullscreen; otherwise restores it
   // (someone pressed Esc) and reports false.
   async fullscreen(connection, targetId) {
+    if (this.windowMode === "tabbed") return false;
     const { windowId } = await connection.send("Browser.getWindowForTarget", { targetId });
     const { bounds } = await connection.send("Browser.getWindowBounds", { windowId });
     if (bounds?.windowState === "fullscreen") return true;
@@ -410,6 +597,7 @@ export class AppTabs {
   // a reply for another App then waits behind every window's CDP round trips.
   // Keep one bounded pass, at the old cadence, while bridge polls can drain.
   maintainFullscreen() {
+    if (this.windowMode === "tabbed") return;
     const now = performance.now();
     if (this.fullscreenMaintenance || now < this.nextFullscreenCheck) return;
     this.nextFullscreenCheck = now + FULLSCREEN_CHECK_INTERVAL_MS;
@@ -418,7 +606,7 @@ export class AppTabs {
     const pass = async () => {
       for (const [sessionId, app] of apps) {
         if (this.connection !== connection) return;
-        if (this.apps.get(sessionId) !== app) continue;
+        if (this.apps.get(sessionId) !== app || app.background || app.retiring) continue;
         await this.fullscreen(connection, app.targetId).catch(() => false);
       }
     };
@@ -498,6 +686,10 @@ export class AppTabs {
     });
   }
 
+  async retireIdle() {
+    return retireIdleAppTabs(this);
+  }
+
   async takeCalls(params = {}) {
     // MP-08/MP-11: only drain targets whose kernel binding was published.
     // An existing owner's idle drain may wake while another Open is in flight.
@@ -505,6 +697,7 @@ export class AppTabs {
     const eligible = call => targets === null || targets.has(call.target_id);
     await this.reconcile();
     await this.waitForCalls(eligible);
+    await this.retireIdle();
     // A call whose Tab closed or moved to another document is not run.
     const current = new Map([...this.apps.values()].map((app) => [app.targetId, app.document]));
     const currentCalls = this.calls.filter((call) => current.has(call.target_id)
@@ -528,6 +721,7 @@ export class AppTabs {
     const [sessionId, app] = entry;
     // The calling document is gone: its answer must not reach the next one.
     if (!app.pending.delete(params.call_id)) return { delivered: false };
+    app.lastActivity = this.now();
     const ok = params.error == null;
     const value = ok ? params.result ?? null : { code: String(params.error.code ?? "APP_ERROR"), message: String(params.error.message ?? "App call failed") };
     await this.resolve(sessionId, params.call_id, ok, value);

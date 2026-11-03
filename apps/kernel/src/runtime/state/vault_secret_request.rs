@@ -46,11 +46,6 @@ impl KernelRuntimeState {
             .access_grant_summary(grant_id)
             .ok_or_else(|| error("grant revoked or expired"))?;
         let snapshot = self.owned.config_projection.snapshot();
-        if snapshot.user_config.credential_vault.agent_management
-            == crate::config::CredentialVaultAgentManagementPolicy::Deny
-        {
-            return Err(refusal("secret_request_denied"));
-        }
         let label = clean_label(&request.label)?;
         let hosts = clean_hosts(&request.hosts)?;
         let page = secret_page(&snapshot)?;
@@ -404,6 +399,7 @@ fn vault_credential(
             value: "Bearer ${secret}".to_owned(),
         },
         metadata: Some(crate::config::UserCredentialMetadataConfig {
+            use_binding: None,
             created_by_kind: Some("agent".to_owned()),
             created_by_id: None,
             session_id: None,

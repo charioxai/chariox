@@ -337,6 +337,15 @@ It is distinct from relay:
 
 ### 3.6 Agent Endpoints
 
+MP-08 / MP-09 / MP-10 / MP-11: optional managed-machine operations use the
+owner's enrolled kernel credential and the kernel's existing grant to its
+agents. An owner's client may disconnect or sign out while remote work
+continues; no live client session or human Cloud bearer is required. Cloud
+revalidates the enrollment, owner/account membership and existing allowance
+on each operation and retains quota, billing and placement authority. Kernel
+unenrollment or revocation ends this authority; agent-grant revocation ends
+that agent's access. Room membership alone supplies neither authority.
+
 An agent endpoint is the kernel-facing runtime interface implemented by a provider integration or Chariox-native agent runtime.
 
 Required endpoint modes:
@@ -1202,3 +1211,13 @@ coordinates to native coordinates and routes input, takeover and release through
 the existing kernel Computer admission and actor ledger. Browser viewports retain
 their existing path. A Cloud client must expose the native source and use this
 shared presenter before the desktop feature is user-visible.
+
+## Apps v2 execution (MP-08 / MP-09 / MP-10 / MP-11)
+
+Installed App backends are contract-2 WASM components. The kernel verifies the
+signed package, approves capabilities and owns generations, storage and Room
+App Tabs. `chariox-app-wasm-worker` ships beside the kernel, enters native OS
+containment, then instantiates the verified component in Wasmtime. The App's
+only host authority is the kernel capability broker; it has no ambient Node,
+filesystem, network or process API. Node is used by asset/build tools and by
+separate browser/workflow tooling. There is no alternate App execution engine.

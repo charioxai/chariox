@@ -642,8 +642,12 @@ pub(crate) mod computer_input_reconcile_test_support {
             let root = TestRoot::new(label);
             let screen_tool = root.path().join("screen-tool.sh");
             let controller_tool = root.path().join("controller-tool.cjs");
-            std::fs::write(&screen_tool, "#!/bin/sh\nset -eu\nexit 0\n")
-                .expect("fake screen tool should be written");
+            // Input helpers must consume the payload before acknowledging it.
+            std::fs::write(
+                &screen_tool,
+                "#!/bin/sh\nset -eu\ncase \"$1\" in *-stdin) cat >/dev/null;; esac\nexit 0\n",
+            )
+            .expect("fake screen tool should be written");
             std::fs::write(
                 &controller_tool,
                 r##"const { createInterface } = require("node:readline");

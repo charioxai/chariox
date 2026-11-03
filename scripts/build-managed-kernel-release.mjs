@@ -24,7 +24,7 @@ const BUILDER_DOCKERFILE = "apps/kernel/slice-linux-docker/docker/Dockerfile"
 // Sorted: compared index by index with the sorted export listing.
 const ARTIFACTS = [
   "chariox-app-package",
-  "chariox-app-storage",
+  "chariox-app-wasm-worker",
   "chariox-kernel",
   "chariox-managed-bootstrap",
   "chariox-relay",
@@ -799,7 +799,7 @@ export async function runManagedKernelReleaseBuild(options, {
         { name: "chariox-managed-bootstrap", sha256: await sha256File(join(pending, "chariox-managed-bootstrap")) },
         { name: "chariox-relay", sha256: await sha256File(join(pending, "chariox-relay")) },
         { name: "chariox-app-package", sha256: await sha256File(join(pending, "chariox-app-package")) },
-        { name: "chariox-app-storage", sha256: await sha256File(join(pending, "chariox-app-storage")) },
+        { name: "chariox-app-wasm-worker", sha256: await sha256File(join(pending, "chariox-app-wasm-worker")) },
       ],
     }))
     await writeFile(join(pending, "build-attestation.json"), attestation, { flag: "wx", mode: 0o644 })

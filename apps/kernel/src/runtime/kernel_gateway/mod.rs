@@ -75,6 +75,11 @@ pub(crate) struct Origin {
     pub(crate) harness: String,
 }
 
+enum ForwardAccess<'a> {
+    Granted(Option<&'a crate::local::ControlPlaneMachineTarget>),
+    Ended,
+}
+
 pub(crate) struct KernelGateway {
     directory: Directory,
     config: DaemonConfigProjectionStore,
@@ -159,8 +164,35 @@ impl KernelGateway {
         request: &LocalDaemonRequest,
         deadline: Duration,
     ) -> Result<Value, GatewayError> {
-        self.send(target, origin, command_id, request, deadline, true)
-            .await
+        self.send(
+            target,
+            origin,
+            command_id,
+            request,
+            deadline,
+            ForwardAccess::Granted(None),
+        )
+        .await
+    }
+
+    /// Attach through the normal grant and encrypted gateway, checking the
+    /// connected service's canonical enrollment against fresh relay discovery.
+    pub(crate) async fn attach_machine(
+        &self,
+        target: &crate::local::ControlPlaneMachineTarget,
+        origin: &Origin,
+        command_id: &str,
+    ) -> Result<(), GatewayError> {
+        self.send(
+            &target.kernel_id,
+            origin,
+            command_id,
+            &LocalDaemonRequest::GetDaemonHealth(crate::local::GetDaemonHealthRequest),
+            REQUEST_DEADLINE,
+            ForwardAccess::Granted(Some(target)),
+        )
+        .await
+        .map(|_| ())
     }
 
     /// Tells `target` that the grant `origin` acted under has ended. The one request
@@ -172,8 +204,15 @@ impl KernelGateway {
         command_id: &str,
         request: &LocalDaemonRequest,
     ) -> Result<Value, GatewayError> {
-        self.send(target, origin, command_id, request, REQUEST_DEADLINE, false)
-            .await
+        self.send(
+            target,
+            origin,
+            command_id,
+            request,
+            REQUEST_DEADLINE,
+            ForwardAccess::Ended,
+        )
+        .await
     }
 
     async fn send(
@@ -183,12 +222,19 @@ impl KernelGateway {
         command_id: &str,
         request: &LocalDaemonRequest,
         deadline: Duration,
-        grant_live: bool,
+        access: ForwardAccess<'_>,
     ) -> Result<Value, GatewayError> {
+        let (grant_live, expected) = match access {
+            ForwardAccess::Granted(expected) => (true, expected),
+            ForwardAccess::Ended => (false, None),
+        };
         if grant_live {
             self.ensure_access_live(origin, target)?;
         }
         let kernel = self.resolve(target).await?;
+        if let Some(expected) = expected {
+            validate_machine_target(expected, &kernel)?;
+        }
         if grant_live {
             self.register_for(&origin.grant_id, target).await?;
         }
@@ -288,7 +334,7 @@ impl KernelGateway {
     fn ensure_access_live(&self, origin: &Origin, target: &str) -> Result<(), GatewayError> {
         if self
             .runtime_state
-            .access_grant_summary(&origin.grant_id)
+            .gateway_origin(&origin.grant_id)
             .is_none()
         {
             return Err(GatewayError::AccessEnded {
@@ -304,7 +350,10 @@ impl KernelGateway {
         kernel: &chariox_relay::protocol::RelayKernelPresence,
     ) -> Result<Arc<Link>, GatewayError> {
         let mut links = self.links.lock().await;
-        if let Some(link) = links.get(&kernel.kernel_id).filter(|link| link.usable()) {
+        if let Some(link) = links
+            .get(&kernel.kernel_id)
+            .filter(|link| link.usable() && link.has_target_key(&kernel.public_key))
+        {
             return Ok(Arc::clone(link));
         }
         let link = self.open_link(target, kernel).await?;
@@ -671,5 +720,69 @@ mod tests {
             map_failure("b3", LinkFailure::Relay(disconnected)).code(),
             "kernel_connection_lost"
         );
+    }
+}
+
+fn validate_machine_target(
+    expected: &crate::local::ControlPlaneMachineTarget,
+    kernel: &chariox_relay::protocol::RelayKernelPresence,
+) -> Result<(), GatewayError> {
+    if expected.kernel_id != kernel.kernel_id
+        || expected.machine_id != kernel.machine_id
+        || expected.key_thumbprint
+            != crate::runtime::terminal_pairings::public_key_thumbprint(&kernel.public_key)
+    {
+        return Err(GatewayError::Remote {
+            name: expected.kernel_id.clone(),
+            code: "control_plane_binding_invalid".into(),
+            message: "Machine enrollment and relay discovery disagree; refresh the machine".into(),
+            retryable: false,
+        });
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod machine_binding_tests {
+    use super::*;
+    #[test]
+    fn control_plane_attachment_rejects_other_machine_kernel_and_key() {
+        let kernel = chariox_relay::protocol::RelayKernelPresence {
+            kernel_id: "kernel".into(),
+            machine_id: "machine".into(),
+            machine_alias: None,
+            relay_alias: None,
+            kernel_alias: None,
+            available_providers: vec![],
+            provider_accounts: vec![],
+            capabilities: vec![],
+            accepting_remote_leases: false,
+            leased_agent_count: 0,
+            local_session_count: 0,
+            public_key: "public-key".into(),
+        };
+        let expected = crate::local::ControlPlaneMachineTarget {
+            kernel_id: kernel.kernel_id.clone(),
+            machine_id: kernel.machine_id.clone(),
+            relay_realm_id: "realm".into(),
+            key_thumbprint: crate::runtime::terminal_pairings::public_key_thumbprint(
+                &kernel.public_key,
+            ),
+        };
+        validate_machine_target(&expected, &kernel).unwrap();
+        for field in ["kernel_id", "machine_id", "key_thumbprint"] {
+            let mut changed = expected.clone();
+            match field {
+                "kernel_id" => changed.kernel_id = "other".into(),
+                "machine_id" => changed.machine_id = "other".into(),
+                _ => changed.key_thumbprint = "b".repeat(64),
+            }
+            assert_eq!(
+                validate_machine_target(&changed, &kernel)
+                    .unwrap_err()
+                    .code(),
+                "control_plane_binding_invalid"
+            );
+        }
     }
 }

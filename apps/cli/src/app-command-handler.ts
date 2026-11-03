@@ -12,6 +12,7 @@ import type { ParsedSlashCommand } from "./commands.js"
 import type { AppInstallOperationSummary } from "@chariox/kernel-client/kernel-types"
 
 export type AppCommandHandlerDeps = {
+  appActions?: { handle(args: string[]): Promise<boolean> }
   userAppViews?: { handle(args: string[]): Promise<boolean>; hostOfferIds?(): Promise<string[]> }
   appHostTerminal?: AppHostTerminal
   currentAppHostOperationIds?: () => string[]
@@ -66,7 +67,27 @@ function splitShellWords(line: string, count: number): [string, string] {
   return [line, ""]
 }
 
+export function reportAppViewInspectionFailure(
+  deps: Pick<AppCommandHandlerDeps, "appendNotice" | "flashFooter">,
+  error: unknown,
+): void {
+  deps.appendNotice(error instanceof Error ? error.message : "App view inspection failed; retry /app actions")
+  deps.flashFooter("App view inspection failed; see transcript", "error")
+}
+
 export async function handleAppSlashCommand(
+  deps: AppCommandHandlerDeps,
+  command: Extract<ParsedSlashCommand, { kind: "app" }>,
+): Promise<void> {
+  try {
+    await executeAppSlashCommand(deps, command)
+  } catch (error) {
+    if (command.args[0] !== "actions") throw error
+    reportAppViewInspectionFailure(deps, error)
+  }
+}
+
+async function executeAppSlashCommand(
   deps: AppCommandHandlerDeps,
   command: Extract<ParsedSlashCommand, { kind: "app" }>,
 ): Promise<void> {
@@ -79,6 +100,7 @@ export async function handleAppSlashCommand(
     return
   }
   const args = appSlashArgs(command.raw)
+  if (deps.appActions && await deps.appActions.handle(args)) return
   if (deps.userAppViews && await deps.userAppViews.handle(args)) return
   if (args[0] === "view" || args[0] === "views") {
     throw new Error("Enable CHARIOX_USER_APP_VIEWS_PROTOTYPE=1 to use the App text prototype")
@@ -119,17 +141,21 @@ export async function handleAppSlashCommand(
     } else throw new Error("usage: /app publisher enroll|status|cancel")
     return
   }
-  if (command.args[0] === "dev") {
+  if (command.args[0] === "dev" || command.args[0] === "register") {
     const loop = deps.appDevLoop
     if (!loop) throw new Error("The App dev loop is unavailable in this terminal")
     const [, ...args] = tokenizeShellLine(command.raw.replace(/^\/app(?:\s|$)/, ""))
-    if (args.length === 1 && args[0] === "stop") {
+    if (command.args[0] === "dev" && args.length === 1 && args[0] === "stop") {
       deps.appendNotice(await loop.stop() ? "App dev loop stopped." : "No App dev loop is running in this terminal.")
       return
     }
-    const usage = 'usage: /app dev "DIRECTORY" [--key PRIVATE] | /app dev stop'
-    if (!args[0] || args[0].startsWith("--") || !(args.length === 1 || (args.length === 3 && args[1] === "--key" && args[2]))) throw new Error(usage)
-    await loop.start(args[0], args[2] ? { key: args[2] } : {})
+    if (command.args[0] === "register") {
+      if (!args[0] || args[0].startsWith("--") || !(args.length === 1 || (args.length === 3 && args[1] === "--key" && args[2]))) throw new Error('usage: /app register "DIRECTORY" [--key PRIVATE]')
+      await loop.register(args[0], args[2] ? { key: args[2] } : {})
+    } else {
+      if (args.length !== 1 || !args[0] || args[0].startsWith("--")) throw new Error('usage: /app dev "DIRECTORY" | /app dev stop')
+      await loop.start(args[0])
+    }
     return
   }
   // `/app file revoke` reads no local file: the shared App command sends it.
@@ -214,6 +240,7 @@ export async function handleAppSlashCommand(
     sessionId: deps.currentAppSessionId?.(), appCommandPrefix: "/app",
   })
   if (!result.ok) {
+    if (command.args[0] === "actions") throw new Error(result.message ?? "App view inspection failed; retry /app actions")
     deps.flashFooter(result.message ?? "App command failed", "error")
     return
   }

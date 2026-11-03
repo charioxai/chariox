@@ -12,7 +12,7 @@ test('MP-08/MP-10/MP-11 headed mirror owns its display with video disabled', asy
   const root=await mkdtemp(path.join(process.env.CHARIOX_MDACCESS_DRILL_ROOT,'mirror-headed-'));
   const environment={...process.env,CHARIOX_KERNEL_BROWSER_MIRROR:'1',CHARIOX_KERNEL_BROWSER_DISPLAY:'0',CHARIOX_KERNEL_BROWSER_HEADLESS:'0'};
   delete environment.DISPLAY;delete environment.XAUTHORITY;
-  const chromium=new HostChromium(root,{environment});
+  const chromium=new HostChromium(root,{environment,appStorageRoot:path.join(root,"app-wasm-state-test")});
   try {
     const connection=await chromium.start();
     assert(ownsDisplay(chromium.display), 'mirror owns a private headed display independently of video');

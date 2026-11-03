@@ -214,3 +214,50 @@ fn failed_settlement_enriches_matching_git_observation_by_prompt_identity() {
     );
     assert!(projection.undo_available);
 }
+
+#[test]
+fn completed_turns_keep_digests_of_dirty_files_not_their_contents() {
+    use super::super::WorkspaceLiveSyncTrackedFileSnapshot;
+    let file = |content: &str| WorkspaceLiveSyncTrackedFileSnapshot {
+        content_base64: Some(content.repeat(1 << 20)),
+        binary: false,
+    };
+    let completed = CompletedGitTurnSnapshotStore::default();
+    let mut before = tracked_snapshot(true, "?? io-1");
+    before
+        .workspace_live_sync_file_snapshots
+        .insert("io-1".into(), file("a"));
+    let mut after = before.clone();
+    completed.record(CompletedGitTurnSnapshot::new(
+        before.clone(),
+        after.clone(),
+        None,
+        200,
+    ));
+    after
+        .workspace_live_sync_file_snapshots
+        .insert("io-2".into(), file("b"));
+    let mut second = before.clone();
+    second.turn_id = "prompt-2".into();
+    second.prompt_id = "prompt-2".into();
+    completed.record(CompletedGitTurnSnapshot::new(second, after, None, 300));
+
+    let first = completed
+        .resolve("session-1", "agent-1", Some("prompt-1"))
+        .expect("first turn is recorded");
+    let second = completed
+        .resolve("session-1", "agent-1", Some("prompt-2"))
+        .expect("second turn is recorded");
+    for turn in [&first, &second] {
+        let retained: usize = [&turn.before, &turn.after]
+            .iter()
+            .flat_map(|snapshot| snapshot.workspace_live_sync_file_snapshots.values())
+            .filter_map(|file| file.content_base64.as_ref())
+            .map(String::len)
+            .sum();
+        assert_eq!(retained, 0, "file contents stay out of the completed turn");
+    }
+    assert!(first.files_unchanged);
+    assert!(!second.files_unchanged);
+    assert_ne!(first.artifact_receipt, second.artifact_receipt);
+}

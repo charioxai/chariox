@@ -774,6 +774,7 @@ fn waiting_room_snapshot(
         external_provider_sessions_has_more: false,
         external_provider_sessions_next_cursor: None,
         relay_status: RelayStatus {
+            local_daemon_protocol_version: crate::local::LOCAL_DAEMON_PROTOCOL_VERSION,
             runtime_process_identity: None,
             capabilities: Vec::new(),
             configured: false,
@@ -1337,4 +1338,25 @@ fn task_deltas_keep_concurrent_session_changes_in_the_snapshot() {
         );
     }
     assert!(can_skip_session_snapshot(&task_only, Some(&previous), true));
+}
+
+#[test]
+fn control_plane_refusals_keep_their_typed_boundary() {
+    for code in [
+        "control_plane_unavailable",
+        "control_plane_grant_required",
+        "control_plane_authorization_denied",
+        "control_plane_binding_invalid",
+    ] {
+        let error = DaemonError::RelayTransport {
+            operation: "connected control plane",
+            code: code.into(),
+            retryable: false,
+            message: "Action required".into(),
+        };
+        let mapped = map_kernel_error(&error);
+        assert_eq!(mapped.code, code);
+        assert_eq!(mapped.message, "Action required");
+        assert!(!mapped.retryable);
+    }
 }

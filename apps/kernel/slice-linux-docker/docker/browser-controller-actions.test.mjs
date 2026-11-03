@@ -389,7 +389,7 @@ test("secret fill rejects a password field that becomes unmasked while focusing"
 });
 
 for (const transitionEvent of ["input", "change"]) {
-test(`secret fill rejects and remasks a password field unmasked by ${transitionEvent} handlers`, async () => {
+test(`secret fill preserves a field revealed by ${transitionEvent} handlers`, async () => {
   const connection = new FakeActionConnection([
     { state: "ready", x: 40, y: 20, width: 200, height: 24, editable: true },
     { state: "ready", x: 40, y: 20, width: 200, height: 24, editable: true },
@@ -431,7 +431,7 @@ test(`secret fill rejects and remasks a password field unmasked by ${transitionE
     return send(method, params, sessionId);
   };
 
-  await assert.rejects(performBrowserAction({
+  await performBrowserAction({
     connection,
     sessionId: "session-a",
     targetId: "target-a",
@@ -446,12 +446,10 @@ test(`secret fill rejects and remasks a password field unmasked by ${transitionE
     },
     timeoutMs: 500,
     sleep: async () => {},
-  }), (error) => {
-    assert.equal(`${error.name}:${error.code}:${error.message}`.includes("event-handler-canary"), false);
-    return error instanceof BrowserActionError && error.code === "browser_secret_target_not_masked";
   });
 
-  assert.equal(field.type, "password", "the field must be remasked before the CDP operation returns");
+  assert.equal(field.type, "text", "the page controls its appearance; observation protection owns masking");
+  assert.equal(field.value, "event-handler-canary");
   assert.equal(connection.calls.some((call) => call.method === "Input.insertText"), false);
 });
 }
@@ -689,12 +687,33 @@ function protectedCodeFixture(type, hook = () => {}) {
     }
   }
   const connection = new Connection();
-  const fill = (maskCode = true, expectedUrl = "https://example.test/verification") => performBrowserAction({
+  const fill = (maskCode = true, expectedUrl = "https://example.test/verification", factorInput = false) => performBrowserAction({
     connection, sessionId: "session-a", targetId: "target-a", documentId: "loader-a", nodeRef: "backend:104",
-    action: { kind: "fill", text: "am7-code-canary", expected_document_url: expectedUrl, mask_code_input: maskCode },
+    action: { kind: "fill", text: "am7-code-canary", expected_document_url: expectedUrl, mask_code_input: maskCode, vault_factor_input: factorInput },
     timeoutMs: 500, sleep: async () => {},
   });
   return { field, connection, fill };
+}
+
+for (const type of ["text", "tel", "number", "password"]) {
+  test(`MP-08/MP-10/MP-11 Vault factor fills ${type} without changing its owner presentation`, async () => {
+    const f = protectedCodeFixture(type);
+    const result = await f.fill(false, undefined, true);
+    assert.equal(result.action_kind, "fill");
+    assert.equal(f.field.value, "am7-code-canary");
+    assert.equal(f.field.type, type);
+    assert.equal(JSON.stringify(result).includes("am7-code-canary"), false);
+  });
+}
+
+for (const condition of ["readonly", "disabled", "url-change", "checkbox"]) {
+  test(`MP-08/MP-10/MP-11 Vault factor refuses ${condition} before input`, async () => {
+    const f = protectedCodeFixture(condition === "checkbox" ? "checkbox" : "text");
+    if (["readonly", "disabled"].includes(condition)) f.field.attributes.set(condition, "");
+    await assert.rejects(f.fill(false, condition === "url-change" ? "https://example.test/other" : undefined, true));
+    assert.equal(f.field.value, "");
+    assert.deepEqual(f.field.events, []);
+  });
 }
 
 for (const type of ["text", "tel", "number", "search", "password", "textarea"]) {
@@ -714,10 +733,10 @@ for (const type of ["text", "tel", "number", "search", "password", "textarea"]) 
   });
 }
 
-test("MP-08/MP-10/MP-11 code masking does not loosen the ordinary Vault password-only fill", async () => {
+test("MP-08/MP-10/MP-11 ordinary Vault fill preserves a plain text field", async () => {
   const f = protectedCodeFixture("text");
-  await assert.rejects(f.fill(false), { code: "browser_secret_target_not_masked" });
-  assert.equal(f.field.value, "");
+  await f.fill(false);
+  assert.equal(f.field.value, "am7-code-canary");
   assert.equal(f.field.type, "text");
 });
 
@@ -745,11 +764,11 @@ for (const event of ["focus", "input", "change"]) {
 }
 
 for (const event of ["focus", "input", "change"]) {
-  test(`MP-08/MP-10/MP-11 ordinary Vault fill still refuses ${event} unmasking`, async () => {
+  test(`MP-08/MP-10/MP-11 ordinary Vault fill tracks a field revealed by ${event} handlers`, async () => {
     const f = protectedCodeFixture("password", (kind, field) => { if (kind === event) field.type = "text"; });
-    await assert.rejects(f.fill(false), { code: "browser_secret_target_not_masked" });
-    if (event === "focus") assert.equal(f.field.value, "");
-    else assert.equal(f.field.type, "password");
+    await f.fill(false);
+    assert.equal(f.field.value, "am7-code-canary");
+    assert.equal(f.field.type, "text");
   });
 }
 

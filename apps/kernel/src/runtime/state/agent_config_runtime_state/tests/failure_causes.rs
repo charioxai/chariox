@@ -88,7 +88,7 @@ async fn a_codex_overload_reaches_the_follower_and_history_as_a_retryable_cause(
     let expected = TurnOutcome {
         kind: TurnOutcomeKind::Overloaded,
         retryable: true,
-        reason: "Selected model is at capacity. Please try a different model.".to_string(),
+        reason: "The provider is at capacity.".to_string(),
     };
     assert_eq!(followed_error_failure(&turn), Some(expected.clone()));
     assert_eq!(settled_history_failure(&turn), Some(expected));
@@ -108,10 +108,7 @@ async fn a_claude_session_limit_reaches_the_follower_as_a_usage_limit_that_will_
     let failure = followed_error_failure(&turn).expect("typed cause");
     assert_eq!(failure.kind, TurnOutcomeKind::UsageLimit);
     assert!(!failure.retryable);
-    assert_eq!(
-        failure.reason,
-        "You've hit your session limit · resets 8:30am"
-    );
+    assert_eq!(failure.reason, "The provider's usage limit was reached.");
     assert_eq!(settled_history_failure(&turn), Some(failure));
 }
 
@@ -151,7 +148,7 @@ async fn a_declined_login_recovery_preserves_the_native_error_in_events_and_hist
 }
 
 #[tokio::test]
-async fn a_long_multiline_structured_error_stays_whole_in_events_history_and_transcript() {
+async fn a_long_multiline_structured_error_stays_out_of_person_facing_text() {
     let turn = subscribed_failing_turn().await;
     let native = format!(
         "First line\n{}\nlast line",
@@ -178,16 +175,20 @@ async fn a_long_multiline_structured_error_stays_whole_in_events_history_and_tra
 
     turn.assert_turn_failed();
     let failure = followed_error_failure(&turn).expect("typed cause");
-    assert_eq!(failure.reason, native);
+    assert!(!failure.reason.contains("native diagnostic"));
+    assert!(!failure.notice().contains("native diagnostic"));
+    assert!(owner_visible_history_texts(&turn)
+        .iter()
+        .all(|text| !text.contains("native diagnostic")));
     assert_eq!(settled_history_failure(&turn), Some(failure.clone()));
     assert!(
         provider_error_outputs(&turn).contains(&failure.notice()),
-        "the transcript entry carries the whole native error"
+        "the transcript carries the typed explanation and recovery"
     );
 }
 
 #[tokio::test]
-async fn a_long_multiline_native_hook_error_stays_whole_in_events_history_and_transcript() {
+async fn a_long_multiline_native_hook_error_stays_out_of_person_facing_text() {
     let turn = subscribed_failing_turn().await;
     let native = format!(
         "You've hit your session limit\n{}resets 4am (Europe/Madrid)",
@@ -218,17 +219,20 @@ async fn a_long_multiline_native_hook_error_stays_whole_in_events_history_and_tr
 
     turn.assert_turn_failed();
     let failure = followed_error_failure(&turn).expect("typed cause");
-    assert_eq!(failure.reason, native);
+    assert!(!failure.reason.contains("native diagnostic"));
+    assert!(!failure.notice().contains("native diagnostic"));
+    assert!(owner_visible_history_texts(&turn)
+        .iter()
+        .all(|text| !text.contains("native diagnostic")));
     assert_eq!(settled_history_failure(&turn), Some(failure.clone()));
     assert!(
         provider_error_outputs(&turn).contains(&failure.notice()),
-        "the transcript entry carries the native error"
+        "the transcript carries the typed explanation and recovery"
     );
 }
 
 #[tokio::test]
-async fn a_long_auth_error_declined_at_login_recovery_stays_whole_in_events_history_and_transcript()
-{
+async fn a_long_auth_error_declined_at_login_recovery_has_a_calm_explanation() {
     let turn = follow(failing_turn_on("codex").await);
     let native = format!(
         "refresh_token_expired\n{}last line",
@@ -286,11 +290,15 @@ async fn a_long_auth_error_declined_at_login_recovery_stays_whole_in_events_hist
     turn.assert_turn_failed();
     let failure = followed_error_failure(&turn).expect("typed cause");
     assert_eq!(failure.kind, TurnOutcomeKind::SignInRequired);
-    assert_eq!(failure.reason, native);
+    assert!(!failure.reason.contains("native diagnostic"));
+    assert!(!failure.notice().contains("native diagnostic"));
+    assert!(owner_visible_history_texts(&turn)
+        .iter()
+        .all(|text| !text.contains("native diagnostic")));
     assert_eq!(settled_history_failure(&turn), Some(failure.clone()));
     assert!(
         provider_error_outputs(&turn).contains(&failure.notice()),
-        "the transcript entry carries the whole native error"
+        "the transcript carries the typed explanation and recovery"
     );
 }
 
@@ -361,7 +369,7 @@ async fn a_room_agent_owner_sees_the_providers_reason_for_a_failed_turn() {
     assert_eq!(failure.kind, TurnOutcomeKind::Overloaded);
     assert!(
         provider_error_outputs(&turn).contains(&failure.notice()),
-        "the transcript line carries the headline and the provider message"
+        "the transcript carries the explanation and recovery"
     );
     assert!(
         owner_visible_history_texts(&turn).contains(&failure.notice()),

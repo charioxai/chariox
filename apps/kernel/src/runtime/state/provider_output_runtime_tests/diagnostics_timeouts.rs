@@ -519,11 +519,11 @@ async fn structured_terminal_failure_settles_and_persists_single_provider_error(
     assert_eq!(provider_errors.len(), 2);
     assert_eq!(
         String::from_utf8_lossy(&provider_errors[0].bytes),
-        "Provider error. Unsupported parameter: 'reasoning.summary' is not supported with the 'gpt-5.3-codex-spark' model. Fix the cause named in the message, then send the request again."
+        "The provider could not complete this request. Check the provider account and model settings, then send the request again."
     );
     assert_eq!(
         String::from_utf8_lossy(&provider_errors[1].bytes),
-        "Request not carried out: Unsupported parameter: 'reasoning.summary' is not supported with the 'gpt-5.3-codex-spark' model. It was dropped; send it again to retry."
+        "Request not carried out: The provider could not complete this request. It was dropped; send it again to retry."
     );
     let durable_errors = runtime
         .owned
@@ -535,7 +535,7 @@ async fn structured_terminal_failure_settles_and_persists_single_provider_error(
             event.kind == crate::history::HistoryEventKind::ProviderError
                 && event.content.as_deref()
                     == Some(
-                        "Provider error. Unsupported parameter: 'reasoning.summary' is not supported with the 'gpt-5.3-codex-spark' model. Fix the cause named in the message, then send the request again.",
+                        "The provider could not complete this request. Check the provider account and model settings, then send the request again.",
                     )
         })
         .collect::<Vec<_>>();
@@ -2174,7 +2174,7 @@ async fn metaagent_receives_required_failed_turn_event_on_provider_failure() {
     assert_eq!(events[0].source_agent_id.as_deref(), Some(agent.id()));
     assert!(events[0]
         .summary
-        .contains("provider reported a terminal failure"));
+        .contains("The provider could not complete this request"));
     let session_state = runtime
         .owned
         .session_snapshot(session.id())
@@ -2185,4 +2185,9 @@ async fn metaagent_receives_required_failed_turn_event_on_provider_failure() {
             .is_some(),
         "failed-turn event should start an inline metaagent prompt when the metaagent is idle"
     );
+}
+
+#[test]
+fn ea2_75_opencode_runtime_keeps_native_non_retryability() {
+    crate::provider::assert_opencode_native_non_retryability();
 }

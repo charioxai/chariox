@@ -46,12 +46,12 @@ test("MP-11 the policy keeps the kernel's own CDP and the native browser UI usab
 });
 
 test("MP-11 Chromium runs in a private namespace with the caller's own uid", () => {
-  const launch = policyLaunch("/k/policy-etc", "/k/private", "/opt/chromium/chrome", ["--remote-debugging-pipe", "about:blank"], 1000, 1000);
+  const launch = policyLaunch("/k/policy-etc", "/k/private", "/opt/chromium/chrome", ["--remote-debugging-pipe", "about:blank"], 1000, 1000, undefined, "/fixture/app-wasm-state-test");
   assert.equal(launch.command, "/usr/bin/unshare");
   assert.deepEqual(launch.args.slice(0, 4), ["--user", "--map-root-user", "--mount", "--"]);
-  assert.deepEqual(launch.args.slice(-10), ["/usr/bin/unshare", "/k/policy-etc", "/k/private", "1000", "1000", "/var/lib/chariox-app-storage", "/opt/chromium/chrome", "--disable-setuid-sandbox", "--remote-debugging-pipe", "about:blank"]);
+  assert.deepEqual(launch.args.slice(-10), ["/usr/bin/unshare", "/k/policy-etc", "/k/private", "1000", "1000", "/fixture/app-wasm-state-test", "/opt/chromium/chrome", "--disable-setuid-sandbox", "--remote-debugging-pipe", "about:blank"]);
   assert.match(launch.args[6], /lowerdir=\$layer:\/etc" \/etc; \/usr\/bin\/mount --bind "\$temporary" \/tmp; export TMPDIR=\/tmp; exec "\$launcher" --user --map-user="\$uid"/);
-  assert.throws(() => policyLaunch("/k", "/k/private", "/c", [], 0, 0), /invalid browser user/);
+  assert.throws(() => policyLaunch("/k", "/k/private", "/c", [], 0, 0, undefined, "/fixture/app-wasm-state-test"), /invalid browser user/);
 });
 
 // Real host, stock Ubuntu 24.04 (2026-10-14, 168.119.96.126): AppArmor lets the user namespace
@@ -71,7 +71,7 @@ test("MP-11 the Setup-installed launcher creates both namespaces when it is root
   assert.equal(namespaceLauncher(file(1000, 0o755)), "/usr/bin/unshare", "a user-owned file is never trusted");
   assert.equal(namespaceLauncher(file(0, 0o777)), "/usr/bin/unshare", "a writable file is never trusted");
   assert.equal(namespaceLauncher(() => { throw Object.assign(new Error("missing"), { code: "ENOENT" }); }), "/usr/bin/unshare");
-  const launch = policyLaunch("/k/policy-etc", "/k/private", "/opt/chromium/chrome", ["about:blank"], 1000, 1000, browserLauncher);
+  const launch = policyLaunch("/k/policy-etc", "/k/private", "/opt/chromium/chrome", ["about:blank"], 1000, 1000, browserLauncher, "/fixture/app-wasm-state-test");
   assert.equal(launch.command, browserLauncher);
   assert.match(launch.args[6], /exec "\$launcher" --user --map-user="\$uid"/);
   assert.deepEqual(launch.args.slice(7, 9), ["chariox-browser", browserLauncher]);
@@ -80,22 +80,21 @@ test("MP-11 the Setup-installed launcher creates both namespaces when it is root
   assert.deepEqual(calls, [browserLauncher]);
 });
 
-// F5 (signed r7 drill 2026-10-17): the browser's mount namespace held locked copies of every
-// App storage mount, so stopping an App that was running at browser spawn could never release
-// its loop device. The browser namespace must not contain any mount under the storage root.
+// Browser namespaces must exclude the configured WASM data tree.
 test("MP-11 the kernel browser namespace never inherits App storage mounts", { skip: !policyNamespaceAvailable() && "private namespaces unavailable" }, async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "chariox-f5-"));
   try {
-    const storage = path.join(root, "storage"), temporary = path.join(root, "private"), layer = path.join(root, "layer");
+    const storage = path.join(root, "app-wasm-state-test"), temporary = path.join(root, "private"), layer = path.join(root, "layer");
     for (const dir of [path.join(storage, "u-1/i-a/data"), temporary, layer]) await mkdir(dir, { recursive: true });
+    await writeFile(path.join(storage, "private-app-data"), "App private data");
     const probe = path.join(temporary, "probe.sh");
-    await writeFile(probe, `#!/bin/sh\ncat /proc/self/mountinfo; echo "CWD=$(readlink /proc/self/cwd)"; echo hi > /tmp/inside && echo wrote\n`);
+    await writeFile(probe, `#!/bin/sh\ntest ! -e "${storage}/private-app-data" || exit 42; cat /proc/self/mountinfo; echo "CWD=$(readlink /proc/self/cwd)"; echo hi > /tmp/inside && echo wrote\n`);
     await chmod(probe, 0o755);
     const launch = policyLaunch(layer, temporary, "/tmp/probe.sh", [], 1000, 1000, namespaceLauncher(), storage);
     // The outer namespace plays the host: it owns a mount under the storage root, as the helper does.
     const outer = 'mkdir -p "$1/u-1/i-a/data"; mount -t tmpfs host-storage "$1/u-1/i-a/data"; shift; exec "$@"';
-    const run = spawnSync(namespaceLauncher(), ["--user", "--map-root-user", "--mount", "--", "/bin/sh", "-c", outer, "sh", storage, launch.command, ...launch.args], { encoding: "utf8", timeout: 30000, cwd: root });
-    assert.equal(run.status, 0, run.stderr);
+    const run = spawnSync(namespaceLauncher(), ["--user", "--map-root-user", "--mount", "--", "/bin/sh", "-c", outer, "sh", storage, launch.command, ...launch.args], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024, timeout: 30000, cwd: root });
+    assert.equal(run.status, 0, `${run.error ?? ""} ${run.signal ?? ""} ${run.stderr}`);
     assert.doesNotMatch(run.stdout, new RegExp(storage), "no App storage mount in the browser namespace");
     assert.match(run.stdout, / \/tmp /, "the private temporary directory is /tmp");
     assert.match(run.stdout, /overlay.* \/etc|\/etc .*overlay/, "the policy overlay is on /etc");

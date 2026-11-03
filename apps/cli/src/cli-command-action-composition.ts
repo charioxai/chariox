@@ -210,6 +210,7 @@ type AnyFn = (...args: any[]) => any
 export type CliCommandActionCompositionDeps = {
   openSessionProcesses?: () => void
   confirmProcessStop?: (agent: string) => Promise<boolean>
+  appActions?: { handle(args: string[]): Promise<boolean> }
   userAppViews?: { handle(args: string[], sessionId?: string): Promise<boolean>; hostOfferIds?(): Promise<string[]> }
   cloudClient?: CloudClient
   kernelConnected?: () => boolean
@@ -547,6 +548,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     },
     sendWorkflowEventPublicationRequest: (request) => client.send(request),
     sendAppRequest: (request) => client.send(request),
+    ...(deps.appActions ? { appActions: deps.appActions } : {}),
     ...(deps.userAppViews ? { userAppViews: deps.userAppViews } : {}),
     ...(deps.appFileInstaller ? { appFileInstaller: deps.appFileInstaller } : {}),
     ...(deps.appDevLoop ? { appDevLoop: deps.appDevLoop } : {}),

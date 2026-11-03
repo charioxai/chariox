@@ -1,9 +1,7 @@
-//! Tests only: App storage without the platform's. Linux App storage belongs
-//! to the root storage helper, which kernel tests and CI do not run (and whose
-//! client refuses root), so uninstalling with `delete_data` fails there. A
-//! test kernel given this fixture deletes from it instead and records each
-//! deletion, so App lifecycles that delete data (a deployment's copy) run on
-//! every platform. Production has no such path: this module is `cfg(test)`.
+//! Tests only: record App storage deletion without the platform storage helper.
+//! Kernel tests and CI do not run the Linux root storage helper, which refuses
+//! root callers. A test kernel uses this fixture instead so data-deleting App
+//! lifecycles run on every platform. Production never uses this `cfg(test)` module.
 use std::sync::{Arc, Mutex};
 
 #[derive(Clone, Debug, Default)]

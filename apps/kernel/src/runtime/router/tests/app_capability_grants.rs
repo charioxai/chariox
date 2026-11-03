@@ -249,7 +249,28 @@ async fn capability_room_app_transfer_refreshes_the_target_catalog() {
     // The App is dormant: its tools are listable, so a new binding is due a refresh.
     let control = room.router.runtime_state.app_control();
     crate::runtime::app_lifecycle::tests::stage(&room.app.lock().await.durable_state_store());
-    control.seed_dormant("alice", "installed");
+    if let Some(lease) = control.active_app_lease("alice", "installed") {
+        let idle = control.clone();
+        tokio::task::spawn_blocking(move || {
+            idle.lifecycle()
+                .idle_stop_blocking("alice", lease.catalog().clone(), || true)
+        })
+        .await
+        .unwrap()
+        .unwrap();
+    } else {
+        // The start gate can still be closed by the approval's own lifecycle
+        // step on a loaded builder; seed again until it admits the catalog.
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while !control.is_app_dormant("alice", "installed") {
+                control.seed_dormant("alice", "installed");
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the idle App keeps a dormant catalog");
+    }
+    assert!(control.active_app_lease("alice", "installed").is_none());
     assert!(control.is_app_dormant("alice", "installed"));
     running_prompt(&room, &child, ClientCapabilityLevel::FullTerminal, "owner").await;
     assert!(

@@ -30,11 +30,25 @@ for (const scenario of ["isolated_password", "nested_password", "local_password"
   });
 }
 
-function fixture(scenario) {
+// A Room App Tab lays out beside the trusted panel, so its page is narrower
+// than the canonical desktop; its image is that page.
+test("MP-08/MP-10/MP-11 same-tab image of an App Tab laid out beside its panel", async () => {
+  const { browser, request } = fixture("unprotected", 6);
+  browser.appViewport = { viewport, panelCssWidth: 2 };
+  browser.appTabs = { apps: new Map([["session", { targetId: "tab", page: undefined }]]) };
+  const metrics = browser.appMetrics(undefined);
+  assert.equal(metrics.width, 6, "the App page is narrower than the desktop");
+  browser.viewportByTarget.set("tab", { key: JSON.stringify(metrics), metrics });
+  const capture = await browser.captureArtifact(request);
+  assert.equal(capture.target_id, "tab");
+  assert.equal(capture.geometry.clientWidth, 6);
+});
+
+function fixture(scenario, width = 8) {
   let captured = false;
   const calls = [];
   // A distinct synthetic CDP image lets the test prove exact source vs mask bytes.
-  const source = Buffer.concat([blackPng(8, 6), Buffer.from("synthetic-CDP-source")]);
+  const source = Buffer.concat([blackPng(width, 6), Buffer.from("synthetic-CDP-source")]);
   const frame = (id, parentId, loaderId = `doc-${id}`, childFrames = []) => ({ frame: { id, parentId, loaderId }, childFrames });
   const connection = {
     browserInstanceId: "test-browser", calls,
@@ -44,7 +58,7 @@ function fixture(scenario) {
         if (sessionId === "root") return { frameTree: frame("root", undefined, "doc-root", [frame("local", "root", captured && scenario === "local_navigation" ? "changed" : "doc-local"), ...(captured && scenario === "new_child" ? [frame("new", "root")] : [])]) };
         return { frameTree: frame(sessionId, captured && scenario === "reparented" && sessionId === "child" ? "foreign-root" : ({ child: "root", nested: "child", foreign: "foreign-root" })[sessionId], captured && scenario === "child_navigation" && sessionId === "child" ? "changed" : `doc-${sessionId}`) };
       }
-      if (method === "Page.getLayoutMetrics") return { cssVisualViewport: { pageX: 0, pageY: 0, clientWidth: 8, clientHeight: 6, scale: 1 } };
+      if (method === "Page.getLayoutMetrics") return { cssVisualViewport: { pageX: 0, pageY: 0, clientWidth: width, clientHeight: 6, scale: 1 } };
       if (method === "Target.getTargets") return { targetInfos: [["child", "root"], ["nested", "child"], ["foreign", "foreign-root"]].map(([targetId, parentFrameId]) => ({ type: "iframe", targetId, parentFrameId })) };
       if (method === "Target.attachToTarget") return { sessionId: params.targetId };
       if (method === "DOMSnapshot.captureSnapshot") {

@@ -274,13 +274,6 @@ impl KernelRuntimeState {
         } else {
             crate::session::WorkflowRunStatus::Stopped
         };
-        if resolved_workflow_run.status() == expected_status {
-            if !pause {
-                self.cancel_workflow_agent_tasks(session_id, &workflow_run_id)
-                    .await?;
-            }
-            return Ok((resolved_workflow_run, owned.session_snapshot(session_id)?));
-        }
         let mut provider_run_ids = owned
             .agent_store
             .get_session_agents(session_id)
@@ -326,6 +319,11 @@ impl KernelRuntimeState {
                     pause,
                     stop_user,
                 )?;
+                // A previous stop may have committed before live cleanup failed.
+                // Skip the durable append but finish cancellation and queue advancement.
+                if current_run.status() == expected_status {
+                    return Ok((current_run, Vec::new()));
+                }
                 // Prompt records of every agent holding this run's queued prompts commit in
                 // the interrupt's SQLite transaction; the live prompt owner is untouched
                 // until that write succeeds, so a rejected write needs no owner restore.
@@ -413,9 +411,6 @@ impl KernelRuntimeState {
                     .is_some_and(|owner| owner.starts_with(&workflow_claim_owner_prefix))
                 && claim.operation == "workflow_node_dispatch"
         });
-        let mut workflow_dispatches = owned.workflow_maybe_start_next_queued_prompt(session_id);
-        workflow_dispatches.extend(owned.workflow_retry_blocked_claims());
-        self.spawn_workflow_prompt_dispatches(workflow_dispatches);
         let session = owned.session_store.get_session(session_id)?;
         let active_agents = owned
             .agent_store
@@ -466,6 +461,12 @@ impl KernelRuntimeState {
             self.cancel_workflow_agent_tasks(session_id, &workflow_run_id)
                 .await?;
         }
+        // Capture cancellation against the interrupted turn's provider before
+        // promotion can prepare a replacement provider for the shared agent.
+        // A cancelling prompt keeps its successor queued until abort settlement.
+        let mut workflow_dispatches = owned.workflow_maybe_start_next_queued_prompt(session_id);
+        workflow_dispatches.extend(owned.workflow_retry_blocked_claims());
+        self.spawn_workflow_prompt_dispatches(workflow_dispatches);
         Ok((workflow_run, owned.session_snapshot(session_id)?))
     }
 

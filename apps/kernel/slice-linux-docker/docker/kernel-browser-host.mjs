@@ -1,3 +1,4 @@
+import { AppTabs } from './browser-controller-apps.mjs';
 import { HostDownloads } from "./kernel-browser-downloads.mjs";
 import { BrowserHeaderState } from "./kernel-browser-header.mjs";
 import {resolveDisplayTarget,nativeStateObservationOptions} from './kernel-browser-display-document.mjs';
@@ -31,7 +32,7 @@ import { ChromeWindows, InputArbiter } from "./kernel-browser-chrome-window.mjs"
 import { StateSignal, stateChangingEvent } from "./kernel-browser-state-signal.mjs";
 import { redactObservation } from "./browser-controller-snapshot.mjs";
 import {resizeBrowserPage} from './kernel-browser-resize.mjs';
-import { inputHostTab } from "./kernel-browser-input.mjs";
+import { TextInsertionRefused, inputHostTab } from "./kernel-browser-input.mjs";
 import { publicUploadFailure } from "./kernel-browser-upload.mjs";
 import { BusyInputQueue, lateInputAck, markDispatched } from "./kernel-browser-input-queue.mjs";
 import { BrowserPopupEvidence, popupActionId } from "./kernel-browser-popup-evidence.mjs";
@@ -61,7 +62,7 @@ export function scheduleHostRequest(request, browser, viewport = hostViewport(),
   // A state poll waits for every page's reconcile: once the viewport is applied
   // it only observes, so input does not queue behind it.
   // Ending a person's parked input never waits behind a browser operation: its authority is already gone.
-  return ['browser.app.calls','browser.app.respond','host.browser.retire_input','host.browser.retire_observer'].includes(request.method) || request.method === 'host.browser' && request.params?.op === 'dialog' ||
+  return ['browser.app.calls','browser.app.respond','browser.app.agent','host.browser.retire_input','host.browser.retire_observer'].includes(request.method) || request.method === 'host.browser' && request.params?.op === 'dialog' ||
     ['host.browser','host.computer'].includes(request.method) && (request.params?.op === 'screenshot' &&
     typeof request.params.display_subscription_id === 'string' || request.params?.op === 'mirror_next' && typeof request.params.subscription_id === 'string' ||
     (request.params?.op === 'state' || request.params?.op === 'display_subscribe' && (request.params.target || nativeDesktop && request.method === 'host.browser')) && browser?.canReconcileConcurrently?.(viewport) === true ||
@@ -83,6 +84,7 @@ const INPUT_DOCUMENT_WAIT_MS = 1500;
 const withinMs = (promise, ms) => { let timer; return Promise.race([promise, new Promise(resolve => { timer = setTimeout(resolve, ms, null); })]).finally(() => clearTimeout(timer)); };
 const TIMED_OPS = new Set(['start', 'state', 'open', 'close', 'navigate', 'mirror_subscribe', 'display_subscribe']);
 const inputKinds = { click: 1, text: 2, key: 3, scroll: 4 };
+const disablesWebBotAuth = value => value === null || (value && typeof value === "object" && value.disabled === true);
 function restorationUrl(url) {
   try { return navigationUrl(url); } catch { return "about:blank"; }
 }
@@ -96,7 +98,7 @@ export function navigationUrl(raw) {
 }
 
 export class KernelBrowserHost {
-  constructor(root, { chromium = new HostChromium(root), browserFactory = connection => new BrowserCdpClient({ connectionFactory: () => connection, permissionRequests: true, focusWorldSource: mirror2ObserverExpression() }) } = {}) {
+  constructor(root, { appStorageRoot, chromium = new HostChromium(root, { appStorageRoot }), browserFactory = connection => new BrowserCdpClient({ connectionFactory: () => connection, permissionRequests: true, focusWorldSource: mirror2ObserverExpression() }) } = {}) {
     this.root = root;
     this.timing = displayTiming(root);
     this.visitedLinks = new VisitedLinks();
@@ -116,6 +118,8 @@ export class KernelBrowserHost {
     this.generation = 0;
     this.observations = 0; this.observed = 0;
     this.tabs = new Map();
+    this.webBotAuthRestoreUrls = new Map();
+    this.webBotAuthProjects = new Map();
     this.popupEvidence = new BrowserPopupEvidence(TAB_LIMIT);
     this.displays = new Map();
     this.displayTeardowns = new Set();
@@ -156,9 +160,14 @@ export class KernelBrowserHost {
   }
   async protect(policy) {
     if (!Array.isArray(policy.values) || policy.values.length > 256 || policy.values.some(value => typeof value !== "string" || !value) || !Array.isArray(policy.targets)) throw new Error("MD-5: invalid protection policy");
+    if (policy.display_masked !== undefined && typeof policy.display_masked !== 'boolean') throw new Error('MD-5: invalid display audience');
     // The kernel's JSON has its own key order: compare the fields, or the first request would retire every bound stream.
-    const fields = ({ values, targets, unknown }) => JSON.stringify([values, targets, unknown]);
+    const fields = ({ values, targets, unknown, display_masked }) => JSON.stringify([values, targets, unknown, display_masked]);
     if (fields(policy) === fields(this.protection)) return {};
+    const before = this.protection, changed = (a, b) => Number(JSON.stringify(a) !== JSON.stringify(b));
+    // Counts only: which part of the policy replaced every bound stream.
+    this.timing?.event?.('protection_replaced', { values_before: before.values.length, values_after: policy.values.length, values_changed: changed(before.values, policy.values),
+      targets_before: before.targets.length, targets_after: policy.targets.length, targets_changed: changed(before.targets, policy.targets), unknown_before: Number(before.unknown === true), unknown_after: Number(policy.unknown === true) });
     this.protection = policy;
     this.stateSignal.notify();
     await this.desktopDisplay.retireSource();
@@ -180,7 +189,13 @@ export class KernelBrowserHost {
     const name = path.join(this.root, "tabs.json");
     const active = [...this.tabs.values()].find(tab => tab.target_id === this.activeTarget);
     const data = { generation: this.generation, active_tab_id: active?.tab_id ?? null, groups: this.savedGroups,
-      tabs: [...this.tabs.values()].filter(tab => !this.browser?.appTabs?.apps || ![...this.browser.appTabs.apps.values()].some(app => app.targetId === tab.target_id)).slice(0, TAB_LIMIT).map(({ tab_id, url }) => ({ tab_id, url: redactObservation(url, this.protection.values) === url ? restorationUrl(url) : "about:blank" })) };
+      tabs: [...this.tabs.values()].filter(tab => !this.browser?.appTabs?.apps || ![...this.browser.appTabs.apps.values()].some(app => app.targetId === tab.target_id)).slice(0, TAB_LIMIT).map(({ tab_id, url }) => {
+        const deferred = this.webBotAuthRestoreUrls.get(tab_id);
+        const projectId = this.webBotAuthProjects.get(tab_id) ?? deferred?.projectId;
+        const restoreUrl = deferred?.url ?? url;
+        const safeUrl = redactObservation(restoreUrl, this.protection.values) === restoreUrl ? restorationUrl(restoreUrl) : "about:blank";
+        return { tab_id, url: safeUrl, ...(projectId ? { web_bot_auth: true, web_bot_auth_project_id: projectId } : {}) };
+      }) };
     // App intent remains kernel-owned; only its origin selects the restored view.
     data.app_origins = [...new Set([
       ...[...(this.browser?.appTabs?.apps?.values() ?? [])].map(app => appRestoreOrigin(app.origin)).filter(Boolean),
@@ -188,6 +203,7 @@ export class KernelBrowserHost {
     ])].slice(0, TAB_LIMIT);
     data.active_tab_id = this.pendingActive?.tab_id ?? active?.tab_id ?? null;
     data.active_app_origin = this.pendingActive?.app_origin ?? appRestoreOrigin(active?.url) ?? null;
+    data.window_layout = this.resizeSettled ? { width: this.resizeSettled.width, height: this.resizeSettled.height } : null;
     const serialized = JSON.stringify(data);
     if (serialized === this.lastSaved) return;
     await writeFile(`${name}.new`, serialized, { mode: 0o600 });
@@ -261,6 +277,7 @@ export class KernelBrowserHost {
     try{await this.nativeComputer.primeKeyboard();}catch(error){await this.chromium.stop(connection,{preserveDesktop});throw error;}
     assertNotCancelled(signal);
     this.browser = this.browserFactory(connection);
+    this.browser.appTabs = new AppTabs(this.browser, { windowMode: "tabbed" });
     this.browser.pageTiming = this.timing;
     this.browser.onPermissionChanged = () => this.stateSignal.notify();
     this.browser.visitedLinks = this.visitedLinks;
@@ -282,7 +299,7 @@ export class KernelBrowserHost {
       // Attribution UI only: a browser without the component extension still works.
       this.tabGroups = new ChromeTabGroups(connection, () => this.stateSignal.notify());
       this.browser.nativeViewport = target => this.tabGroups?.viewport(target) ?? null;
-      try { await this.tabGroups.load(await writeTabGroupsExtension(this.root)); } catch { this.tabGroups?.close?.();this.tabGroups = null; this.timing('tab_groups_unavailable', timestamp()); }
+      try { await this.tabGroups.load(await writeTabGroupsExtension(this.chromium.filesRoot ?? this.root)); } catch { this.tabGroups?.close?.();this.tabGroups = null; this.timing('tab_groups_unavailable', timestamp()); }
       const { targetInfos = [] } = await connection.send("Target.getTargets");
       // Headed Chromium exits when its last page closes. Keep one internal blank
       // target so startup and closing the last user tab never stop the browser.
@@ -297,7 +314,14 @@ export class KernelBrowserHost {
       for (const tab of saved.tabs.slice(0, TAB_LIMIT)) {
         if (typeof tab.tab_id !== "string" || !tab.tab_id.startsWith("host-tab-")) throw new Error("MD-2: invalid saved tab identity");
         assertNotCancelled(signal);
-        await this.createTab(restorationUrl(tab.url), tab.tab_id, { signal, background: true });
+        const url = restorationUrl(tab.url);
+        const defer = tab.web_bot_auth === true && typeof tab.web_bot_auth_project_id === "string" && url !== "about:blank";
+        if (defer) this.webBotAuthProjects.set(tab.tab_id, tab.web_bot_auth_project_id);
+        await this.createTab(defer ? "about:blank" : url, tab.tab_id, {
+          signal,
+          background: true,
+          ...(defer ? { deferredWebBotAuthRestoreUrl: url, webBotAuthProjectId: tab.web_bot_auth_project_id } : {}),
+        });
       }
       // MP-08/MP-10: restore the registry in one inventory pass. A loading
       // background page must not delay every subsequent Tab's creation.
@@ -308,6 +332,7 @@ export class KernelBrowserHost {
       await this.syncTabGroups(this.savedGroups,{restore:true});
       await this.save();
       await this.rebindWindows();
+      await this.restoreWindowLayout(saved.window_layout, signal);
       this.recovery.watch(connection);
       this.stateSignal.notify();
     } catch (error) { await this.stop({ recovering: true, preserveDesktop }); throw error; }
@@ -375,14 +400,32 @@ export class KernelBrowserHost {
   // Protocol 560/168: a viewer narrower than the canonical desktop gets the Tab laid out at its own size.
   // The newest subscription owns the layout until an explicit shared-window resize takes precedence; null restores the canonical page.
   pageSize(tabId) { const l = this.layouts.get(tabId); return l ? { width: l.width, height: l.height } : { width: geometry.width, height: geometry.height }; }
-  noteLayout(tabId, before) { const now = this.pageSize(tabId); if (now.width !== before.width || now.height !== before.height) this.layoutRevisions.set(tabId, this.layoutRevision(tabId) + 1); }
+  noteLayout(tabId, before) { const now = this.pageSize(tabId); if (now.width !== before.width || now.height !== before.height) { this.layoutRevisions.set(tabId, this.layoutRevision(tabId) + 1); this.timing?.event?.('page_layout_changed', { width_delta: now.width - before.width, height_delta: now.height - before.height }); } }
   layoutRevision(tabId) { return this.layoutRevisions.get(tabId) ?? 0; }
   async setLayout(tab, subscriptionId, layout) {
     if(subscriptionId!=='resize'&&this.layouts.get(tab.tab_id)?.subscriptionId==='resize')return;
+    if(this.chromium.desktop) {
+      const native=await this.browser.nativeViewport?.(tab.target_id);
+      if(native?.target_id!==tab.target_id||![native?.width,native?.height].every(n=>Number.isSafeInteger(n)&&n>=2))throw new UserDomainRefusal('stale_reference');
+      // The shared desktop includes Chrome's band and window decorations.
+      // Emulation beyond its real page produces uncapturable canvas margins.
+      const requested=layout??{width:this.viewport().css_width,height:this.viewport().css_height};
+      layout={width:Math.min(requested.width,2*Math.floor(native.width/2)),height:Math.min(requested.height,2*Math.floor(native.height/2))};
+    }
     const before = this.pageSize(tab.tab_id);
     await this.browser.setLayout?.(tab.target_id, layout);
     if (layout) this.layouts.set(tab.tab_id, { ...layout, subscriptionId }); else this.layouts.delete(tab.tab_id);
     this.noteLayout(tab.tab_id, before);
+  }
+
+  // A restarted browser opens at its default size. The viewer that sized it before would resize it again right after it
+  // attached, and that re-snapshots the page it is typing into. Give the window that size again before anyone attaches.
+  async restoreWindowLayout(layout, signal) {
+    const tab = this.tabs.values().next().value;
+    if (!tab || !Number.isSafeInteger(layout?.width) || !Number.isSafeInteger(layout?.height)) return;
+    // Not restoring it changes nothing but speed: the next viewer resizes the window as it always did.
+    try { await resizeBrowserPage(this, tab, { width: layout.width, height: layout.height, generation: this.generation }, signal); }
+    catch { this.timing('window_layout_restore_failed', timestamp()); }
   }
 
   releaseLayout(tabId, subscriptionId) {
@@ -444,7 +487,8 @@ export class KernelBrowserHost {
         for(const id of [...this.compositors.keys()])if(id!==tab.tab_id&&this.compositors.get(id)?.source instanceof LinuxCapture)await this.closeCompositors(id);
         const claim=this.foreground.claim(tab.tab_id);
         this.nativeScope(null);
-        const source=new LinuxCapture({size:this.pageSize(tab.tab_id),pageWindow:this.layouts.get(tab.tab_id)?.subscriptionId==='resize'?async()=>{await this.chromeWindows.resolve();return this.chromeWindows.current().tabbed}:undefined,display:this.chromium.display,pid:this.chromium.browserPid,connection,sessionId,tab,scale:stream.device_scale_factor,hostScale:this.chromium.scale??1,policy,browser:this.browser,frames:frameId=>this.browser.frameSession?.(frameId,connection),screenshot:()=>this.displayScreenshot(tab,null,false),allowed:p=>this.foreground.holds(tab.tab_id,claim)&&this.protection===p&&!p.unknown&&this.generation===generation,timing:this.timing});
+        const layoutRevision=this.layoutRevision(tab.tab_id),windowLayout=this.windowLayout;
+        const source=new LinuxCapture({size:this.pageSize(tab.tab_id),pageWindow:this.layouts.get(tab.tab_id)?.subscriptionId==='resize'?async()=>{await this.chromeWindows.resolve();return this.chromeWindows.current().tabbed}:undefined,display:this.chromium.display,pid:this.chromium.browserPid,connection,sessionId,tab,scale:stream.device_scale_factor,hostScale:this.chromium.scale??1,policy,browser:this.browser,frames:frameId=>this.browser.frameSession?.(frameId,connection),screenshot:()=>this.displayScreenshot(tab,null,false),allowed:p=>this.windowLayout===windowLayout&&this.layoutRevision(tab.tab_id)===layoutRevision&&this.foreground.holds(tab.tab_id,claim)&&this.protection===p&&!p.unknown&&this.generation===generation,timing:this.timing});
         // Review #1016 P1: Tab switches outside the browser's own paths (the Computer surface's
         // Ctrl+Tab) do not reconcile. Every readback is re-admitted against the live active Tab.
         source.validateCurrent=()=>this.nativeFront(tab);
@@ -509,7 +553,11 @@ export class KernelBrowserHost {
     const _tab_creation_actions = this.popupEvidence.inventory([...this.tabs.values()]);
     const dialogs = this.pendingDialogs();
     return redactObservation({ state: "ready", generation: this.generation, _observation: this.observed, _tab_creation_actions,
-      active_tab_id: active, downloads: this.downloads.state(), tabs: [...this.tabs.values()].map(({ target_id, opener_target_id, ...tab }) => ({ ...tab, ...this.header.read(tab) })), dialogs, viewport:this.viewport(), chrome_window: this.chromeWindow(),
+      active_tab_id: active, downloads: this.downloads.state(), tabs: [...this.tabs.values()].map(({ target_id, opener_target_id, ...tab }) => ({
+        ...tab,
+        ...this.header.read(tab),
+        ...(this.webBotAuthRestoreUrls.has(tab.tab_id) ? { title: "Web Bot Auth restore requires an agent to resume this tab" } : {}),
+      })), dialogs, viewport:this.viewport(), chrome_window: this.chromeWindow(),
       // MP-11: whether Chromium's managed policies apply, or only the kernel's CDP lockdown layer.
       browser_lockdown: this.chromium?.policy ?? null }, this.protection.values);
   }
@@ -680,17 +728,50 @@ export class KernelBrowserHost {
     const state = await this.reconcile();
     return { ...state, tab_id: tabId };
   }
-  async createTab(url, tabId, { signal, background = false, downloadSession = "browser-viewer" } = {}) {
+  async createTab(url, tabId, { signal, background = false, downloadSession = "browser-viewer", deferredWebBotAuthRestoreUrl, webBotAuthProjectId } = {}) {
     requireBrowserMemory();
     if (this.tabs.size >= TAB_LIMIT) throw new Error("MD-2: host tab limit reached");
     const connection = await this.browser.ensureConnection();
     const browser = this.browser;
     assertNotCancelled(signal);
-    const { targetId } = await connection.send("Target.createTarget", { url: navigationUrl(url), ...(background ? { background: true } : {}) });
+    const deferredRestore = typeof deferredWebBotAuthRestoreUrl === "string" ? navigationUrl(deferredWebBotAuthRestoreUrl) : null;
+    const targetUrl = deferredRestore ? "about:blank" : navigationUrl(url);
+    const signFirstNavigation = browser.webBotAuth?.byTab.has(tabId) === true;
+    const canAttachFetch = signFirstNavigation && typeof browser.ensureTargetSession === "function";
+    const { targetId } = await connection.send("Target.createTarget", { url: canAttachFetch ? "about:blank" : targetUrl, ...(background ? { background: true } : {}) });
     if (browser !== this.browser) throw new BrowserActionError('browser_unavailable', 'MP-08: browser restarted; interrupted action was not replayed');
     this.tabs.set(tabId, { tab_id: tabId, target_id: targetId, url, title: "", document_id: "" });
+    if (deferredRestore) this.webBotAuthRestoreUrls.set(tabId, { url: deferredRestore, projectId: webBotAuthProjectId });
     this.downloads.bind(this.tabs.get(tabId), downloadSession);
     this.observed = ++this.observations;
+    try {
+      if (canAttachFetch) {
+        const sessionId = await browser.ensureTargetSession(connection, targetId);
+        await browser.attachWebBotAuth(tabId, targetId, sessionId);
+        if (targetUrl !== "about:blank") await connection.send("Page.navigate", { url: targetUrl }, sessionId);
+      }
+    } catch (error) {
+      this.tabs.delete(tabId);
+      if (browser.closePageTarget) await browser.closePageTarget(connection, targetId).catch(() => {});
+      throw error;
+    }
+  }
+  async resumeWebBotAuthRestore(tabId, { allowUnsigned = false } = {}) {
+    const deferred = this.webBotAuthRestoreUrls.get(tabId);
+    if (!deferred) return;
+    if (!allowUnsigned && !this.browser?.webBotAuth?.byTab?.has(tabId)) return;
+    const tab = this.tabs.get(tabId);
+    if (!tab) {
+      this.webBotAuthRestoreUrls.delete(tabId);
+      this.webBotAuthProjects.delete(tabId);
+      return;
+    }
+    const connection = await this.browser.ensureConnection();
+    const sessionId = await this.browser.ensureTargetSession(connection, tab.target_id);
+    await connection.send("Page.navigate", { url: deferred.url }, sessionId);
+    this.webBotAuthRestoreUrls.delete(tabId);
+    tab.url = deferred.url;
+    this.stateSignal.notify();
   }
   async target(command) {
     const started = timestamp();
@@ -720,8 +801,8 @@ export class KernelBrowserHost {
   async displayScreenshot(tab,clip=null,optimizeForSpeed=true){
     return captureProtectedDisplay(this,tab,clip,optimizeForSpeed);
   }
-  screenshot(tab, clip = null, protectedCapture = false, format = "png", optimizeForSpeed = true) {
-    return capturePageScreenshot(this, tab, clip, protectedCapture, format, optimizeForSpeed);
+  screenshot(tab, clip = null, protectedCapture = false, format = "png", optimizeForSpeed = true, mask = true) {
+    return capturePageScreenshot(this, tab, clip, protectedCapture, format, optimizeForSpeed, mask);
   }
   armDisplayExpiry(stream) {
     clearTimeout(stream.timer);
@@ -805,6 +886,17 @@ export class KernelBrowserHost {
     if (command.op.startsWith("mirror_") && !featureOn("CHARIOX_KERNEL_BROWSER_MIRROR")) throw new Error("MP-08: DOM mirror disabled");
     if (command.op.startsWith("display_") && !featureOn("CHARIOX_KERNEL_BROWSER_DISPLAY")) throw new Error("MD-DISPLAY: display disabled");
     if (command.op === "stop") return this.stop();
+    if (command.op === "configureWebBotAuth") {
+      if (typeof command.tab_id !== "string" || !command.tab_id) throw new Error("invalid Web Bot Auth tab id");
+      await this.start({ signal });
+      const tab = this.tabs.get(command.tab_id);
+      const result = await this.browser.configureWebBotAuth(command.tab_id, command.signer, tab?.target_id);
+      if (disablesWebBotAuth(command.signer)) this.webBotAuthProjects.delete(command.tab_id);
+      else if (this.browser.webBotAuth?.byTab.has(command.tab_id)) this.webBotAuthProjects.set(command.tab_id, command.signer.project_id);
+      await this.resumeWebBotAuthRestore(command.tab_id, { allowUnsigned: disablesWebBotAuth(command.signer) });
+      await this.save();
+      return result;
+    }
     // MP-11: observation never launches/relaunches the browser.
     await this.start({ signal, allowStart: !["cancel_download", "dialog", "state", "snapshot", "screenshot", "unsubscribe", "display_subscribe", "display_attach", "display_suspend", "display_resume", "display_park", "display_input_target", "resize", "note_selection", "pointer_cursor", "mirror_subscribe", "mirror_next", "mirror_close", "chrome_window_follow"].includes(command.op) });
     assertNotCancelled(signal);
@@ -824,7 +916,7 @@ export class KernelBrowserHost {
           typeof command.dialog_id !== "string" || !this.browser.dialogDefaults?.current(tab.target_id, command.dialog_id, command.document_id)) {
         throw new BrowserActionError("browser_dialog_invalid", "browser dialog is no longer pending; read the current browser state");
       }
-      this.appAgent(tab, command, true);
+      this.appForInput(tab, command, true);
       await this.browser.handleDialog({ ...command, target_id: tab.target_id }, { signal });
       this.stateSignal.notify();
       return this.observe(this.tabState(), null, scope);
@@ -849,7 +941,7 @@ export class KernelBrowserHost {
     }
     const agentRequest = command.focused_agent || command._agent_input;
     if (agentRequest && ["open", "navigate"].includes(command.op) && extensionManagementUrl(command.url)) throw new Error(EXTENSIONS_REFUSED);
-    if (command.op === "open") { const opened = await this.open(command.url, undefined, { signal, downloadSession: command._download_session }); await this.rebindWindows(); return this.observe(opened, null, scope); }
+    if (command.op === "open") { const opened = await this.open(command.url, command.tab_id, { signal, downloadSession: command._download_session }); await this.rebindWindows(); return this.observe(opened, null, scope); }
     for (const stream of this.displays.values()) if (Date.now() > stream.expires) await this.removeDisplay(stream);
     if(['display_suspend','display_resume'].includes(command.op)){
       if(command.focused_agent||command._agent_input)throw new UserDomainRefusal('not_granted');
@@ -911,7 +1003,7 @@ export class KernelBrowserHost {
       ? await slowMark(this.timing, 'input_wait display_target', this.displayTarget(command,nativeInputDocumentTarget(this,command,scope,nativeDisplay),INPUT_DOCUMENT_WAIT_MS)) : await this.target(command);
     assertNotCancelled(signal);
     if (agentRequest && ["input", "navigate"].includes(command.op) && extensionManagementUrl(tab.url)) throw new Error(EXTENSIONS_REFUSED);
-    const { app, agent } = this.appAgent(tab, command, ["input", "navigate", "close", "resize"].includes(command.op));
+    const app = this.appForInput(tab, command, ["input", "navigate", "close", "resize"].includes(command.op));
     // The page stays on its origin.
     if (app && command.op === "navigate" && new URL(navigationUrl(command.url)).origin !== app.origin) {
       throw new UserDomainRefusal("not_granted");
@@ -948,14 +1040,16 @@ export class KernelBrowserHost {
       this.inputEpochs.delete(tab.tab_id);
       this.scrolling.delete(tab.tab_id);
       await this.browser.manageTab({ ...binding, action: "close" }, { signal });
+      await this.browser.clearWebBotAuth?.(tab.tab_id);
+      this.webBotAuthProjects.delete(tab.tab_id);
+      this.webBotAuthRestoreUrls.delete(tab.tab_id);
       for (const observed of this.observedDocuments.values()) observed.delete(tab.tab_id);
       const state = await this.reconcile();
       await this.rebindWindows();
       return state;
     }
     if (command.op === "navigate") {
-      // MP-08/MP-11: an agent's navigation is its input to the App Tab too.
-      if (app && agent) this.browser.appTabs.noteAgent(tab.target_id, agent);
+      if (app) this.browser.appTabs.noteActivity(tab.target_id);
       // MP-08/MP-10/MP-11: a human navigation selects this owned desktop tab.
       // Retire native claims before physical focus can show a different page.
       if(this.chromium.desktop&&!command._agent_input&&!command.focused_agent){
@@ -963,6 +1057,7 @@ export class KernelBrowserHost {
         await this.browser.manageTab({...binding,action:'activate'},{signal});
       }
       const navigated = await this.browser.navigate({ ...binding, url: navigationUrl(command.url) }, { signal });
+      this.webBotAuthRestoreUrls.delete(tab.tab_id);
       // MP-08/MP-10: answer at commit, like a browser's address bar; the page loads
       // into attached views and later state reads reconcile its title.
       if (navigated?.download_started) return this.observe(this.tabState(), null, scope);
@@ -982,6 +1077,7 @@ export class KernelBrowserHost {
     }
     if (command.op === "snapshot") return this.observe({ generation: this.generation, snapshot: await this.browser.snapshot(binding) }, tab, scope);
     if (command.op === "input") {
+      if (app) this.browser.appTabs.noteActivity(tab.target_id);
       const observed = command.document_id ?? (command.focused_agent ? null : this.observedDocuments.get(scope)?.get(tab.tab_id));
       if (!observed || observed !== tab.document_id) throw new UserDomainRefusal("stale_reference");
       const at = timestamp();
@@ -997,7 +1093,7 @@ export class KernelBrowserHost {
       const rememberSelection = () => {
         // MP-08/MP-10/MP-11: CDP can type into a background window. Its
         // admitted human selection supersedes older native restore intent.
-        if (agent || command._agent_input || command.focused_agent) return;
+        if (agentRequest || command._agent_input || command.focused_agent) return;
         // A newer observation that adopted a popup retired this intent for good.
         if (selection && (this.pendingActive === selection || this.adoptedByInput.has(selection))) return;
         const intent = this.pendingActive, origin = appRestoreOrigin(tab.url);
@@ -1005,7 +1101,7 @@ export class KernelBrowserHost {
         // changed Chrome's selection. Reconcile checks the live native target
         // before activating, so ordinary keys do not refocus an active tab.
         selection = {tab_id:tab.tab_id,app_origin:origin,apps:intent?.apps ?? [],until:intent?.until ?? Date.now(),known:selection?.known ?? new Set([...this.tabs.values()].map(known => known.target_id))};
-        this.pendingActive = selection;
+        if (!agentRequest) this.pendingActive = selection;
       };
       const onDispatch = () => {
         if (dispatched) return;
@@ -1016,8 +1112,6 @@ export class KernelBrowserHost {
         this.inputEpochs.set(tab.tab_id, (this.inputEpochs.get(tab.tab_id) ?? 0) + 1);
         (nativeDisplay?.regionSource??this.compositors.get(tab.tab_id)?.source)?.wake?.();
       };
-      // MP-08/MP-11: before the page can see it, so every call it causes runs as the agent.
-      if (app && agent) this.browser.appTabs.noteAgent(tab.target_id, agent);
       try {
         // MP-08/MP-10/MP-11: agent and ordinary input must await CDP's ack,
         // including the lifetime of hidden-target focus emulation. Only an
@@ -1036,7 +1130,10 @@ export class KernelBrowserHost {
         const laneAt=timestamp();
         const deferred=await this.sampleLane(tab).run("input", async () => {
           if(timestamp()-laneAt>250)this.timing('input_wait sample_lane',laneAt);
-          const result=await this.popupEvidence.capture(this.browser, tab, popupActionId(command), beginDispatch => inputHostTab(this.browser, tab, command.input, { uploadRoots: command._upload_roots, signal, inputGuard, documentCurrent, chromeFocused: () => Boolean(this.arbiter?.chromeFocus), slow: (name, operation) => slowMark(this.timing, `input_wait ${name}`, operation), onDispatch: () => { onDispatch(); return beginDispatch(); }, viewport:{css_width:this.pageSize(tab.tab_id).width,css_height:this.pageSize(tab.tab_id).height}, asyncScroll: ()=>viewerActive()&&(handoverOrdered||owned?.attested&&typeof owned.valid==='function'&&owned.valid()), nativeWheel, nativeClick, nativeKey, resolveMirror: input => this.mirror.resolveInput(tab,input,scope,signal) }));
+          const dispatch = (inputTimestamp, inputToken) => this.popupEvidence.capture(this.browser, tab, popupActionId(command), beginDispatch => inputHostTab(this.browser, tab, command.input, { uploadRoots: command._upload_roots, signal, inputTimestamp, inputToken, inputGuard, documentCurrent, chromeFocused: () => Boolean(this.arbiter?.chromeFocus), slow: (name, operation) => slowMark(this.timing, `input_wait ${name}`, operation), onDispatch: () => { onDispatch(); return beginDispatch(); }, viewport:{css_width:this.pageSize(tab.tab_id).width,css_height:this.pageSize(tab.tab_id).height}, asyncScroll: ()=>viewerActive()&&(handoverOrdered||owned?.attested&&typeof owned.valid==='function'&&owned.valid()), nativeWheel, nativeClick, nativeKey, resolveMirror: input => this.mirror.resolveInput(tab,input,scope,signal) }));
+          const result = app && agentRequest
+            ? await this.browser.appTabs.input(app, scope.startsWith('agent:') ? scope.slice(6) : null, dispatch)
+            : await dispatch();
           if (command.input.kind === 'upload') uploadResult = result;
           rememberSelection();
           return result;
@@ -1050,8 +1147,8 @@ export class KernelBrowserHost {
       }
       catch (error) {
         if (dispatched) markDispatched(error);
-        // A busy renderer that is only late to acknowledge a CDP press/release (both already queued in order) leaves nothing held: it must not take the browser down.
-        if ((dispatched && !lateInputAck(error) || ["browser_action_cancelled", "stale_document_reference"].includes(error?.code)) && this.isBrowserLive(browserAtStart)) {
+        // Late CDP acknowledgements and definitive text refusals leave nothing held; neither needs a browser reset.
+        if ((dispatched && !lateInputAck(error) && !(error instanceof TextInsertionRefused) || ["browser_action_cancelled", "stale_document_reference"].includes(error?.code)) && this.isBrowserLive(browserAtStart)) {
           // Clear any dispatched key/button state before another actor can use
           // the browser. Recovery rotates generation; cancelled input never replays.
           await this.stop();
@@ -1077,7 +1174,7 @@ export class KernelBrowserHost {
       // A frame laid out at the viewer's size (protocol 560/168) is the whole page; any other size is a crop of it.
       const hint=command._capture_viewport,scale=this.scales.get(tab.tab_id)??this.viewport().device_scale_factor,page=this.layouts.get(tab.tab_id)??geometry;
       const crop=hint&&(hint.width!==page.width*scale||hint.height!==page.height*scale);
-      const frame = command._capture_protection===true?(crop?await captureVisiblePage(this,tab,hint,scope):await this.screenshot(tab,null,true)):await this.displayScreenshot(tab);
+      const frame = command._capture_protection===true||command._agent_input===true?(crop?await captureVisiblePage(this,tab,hint,scope):await this.screenshot(tab,null,true)):await this.displayScreenshot(tab);
       // MD-3: explicit binding is an internal display/MCP seam. Legacy 417
       // still emits its existing frame shape until the coordinator adapter lands.
       if (!command.focused_agent && !command.bound_frames) delete frame.document_id;
@@ -1087,12 +1184,22 @@ export class KernelBrowserHost {
   }
   // MP-08/MP-11: an agent drives an App Tab as itself, only after the kernel
   // claimed that App view in the agent's own grant.
-  appAgent(tab, command, drives) {
+  appForInput(tab, command, drives) {
     const app = [...(this.browser.appTabs?.apps?.values() ?? [])].find(open => open.targetId === tab.target_id);
-    const agent = command.focused_agent || command._agent_input
-      ? /^agent:(.+)$/.exec(String(command.observed_by ?? ""))?.[1] ?? "unattributed-agent" : null;
-    if (app && drives && agent && command._app_view_tab !== tab.tab_id) throw new UserDomainRefusal("not_granted");
-    return { app, agent };
+    if (app && drives && (command.focused_agent || command._agent_input) && command._app_view_tab !== tab.tab_id) throw new UserDomainRefusal("not_granted");
+    return app;
+  }
+  // VAUDIT S3: reveal and read in one call; the value goes to the kernel only.
+  async captureSecret(params, { signal }) {
+    await this.start({ signal });
+    if (this.protection.unknown) throw new Error("MD-5: observation registry unavailable");
+    const tab = await this.target(params);
+    if (tab.document_id !== params.document_id) throw new UserDomainRefusal("stale_reference");
+    const app = this.appForInput(tab, params, true);
+    if (app) this.browser.appTabs.noteActivity(tab.target_id);
+    return this.sampleLane(tab).run("input", () => this.browser.captureValue({ target_id: tab.target_id, document_id: tab.document_id,
+      node_ref: params.node_ref, reveal_node_ref: params.reveal_node_ref ?? null, read: params.read ?? "node",
+      expected_document_url: params.expected_document_url }, { signal }));
   }
   async handle(request, { signal } = {}) {
     if (request.method === "host.downloads.cleanup") {
@@ -1111,25 +1218,52 @@ export class KernelBrowserHost {
         for(const owner of owners){await this.nativeComputer.retire(owner);for(const observer of this.nativeAccessibility.observers.keys())if(observer.startsWith(owner+':'))this.nativeAccessibility.retire(observer);}
         return { id: request.id, ok: true, result: { revoked: true } };
       }
+      if (request.method === "host.web_bot_auth_policy") {
+        const params = request.params ?? {};
+        this.browser?.webBotAuth?.applyProjectPolicy(params.projects, params.reset, params.revision ?? 0);
+        if (!params.reset) {
+          for (const [tabId, projectId] of this.webBotAuthProjects) {
+            if (typeof projectId === "string" && params.projects.includes(projectId)) continue;
+            this.webBotAuthProjects.delete(tabId);
+            await this.resumeWebBotAuthRestore(tabId, { allowUnsigned: true });
+          }
+        }
+        if (this.browser) await this.save();
+        return { id: request.id, ok: true, result: { updated: true } };
+      }
+      if (request.method === "host.secret" && request.params.op === "capture") {
+        return { id: request.id, ok: true, result: { value: await this.captureSecret(request.params, { signal }) } };
+      }
       if (request.method === "host.secret") {
+        const { _web_bot_auth: webBotAuth, ...params } = request.params ?? {};
         // MP-08 / MP-10 / MP-11: this internal owner-only flag does not
         // loosen ordinary Vault secret insertion into password fields.
-        const codeInput = request.params.mask_code_input === true;
-        if (codeInput && (!String(request.params.observed_by ?? "").startsWith("terminal:") ||
-            request.params.action?.kind !== "fill" || typeof request.params.action?.expected_document_url !== "string")) {
+        const codeInput = params.mask_code_input === true;
+        const factorInput = params.vault_factor_input === true;
+        if (codeInput && (!String(params.observed_by ?? "").startsWith("terminal:") ||
+            params.action?.kind !== "fill" || typeof params.action?.expected_document_url !== "string")) {
+          throw new UserDomainRefusal("not_granted");
+        }
+        if (factorInput && (request.params.action?.kind !== "fill" || typeof request.params.action?.expected_document_url !== "string")) {
           throw new UserDomainRefusal("not_granted");
         }
         await this.start({ signal });
         if (this.protection.unknown) throw new Error("MD-5: observation registry unavailable");
-        const tab = await this.target(request.params);
-        if (tab.document_id !== request.params.document_id) throw new UserDomainRefusal("stale_reference");
+        const tab = await this.target(params);
+        if (tab.document_id !== params.document_id) throw new UserDomainRefusal("stale_reference");
+        if (webBotAuth !== undefined) {
+          await this.browser.configureWebBotAuth(params.tab_id, webBotAuth, tab.target_id);
+          if (disablesWebBotAuth(webBotAuth)) this.webBotAuthProjects.delete(params.tab_id);
+          else if (this.browser.webBotAuth?.byTab.has(params.tab_id)) this.webBotAuthProjects.set(params.tab_id, webBotAuth.project_id);
+          await this.resumeWebBotAuthRestore(params.tab_id, { allowUnsigned: disablesWebBotAuth(webBotAuth) });
+        }
         // MP-08/MP-11: a Vault fill is the agent's input to an App Tab too,
         // recorded before the field's input/change handlers can run.
-        const { app, agent } = this.appAgent(tab, request.params, true);
-        if (app && agent) this.browser.appTabs.noteAgent(tab.target_id, agent);
-        const action = codeInput ? { ...request.params.action, mask_code_input: true } : request.params.action;
+        const app = this.appForInput(tab, params, true);
+        if (app) this.browser.appTabs.noteActivity(tab.target_id);
+        const action = { ...params.action, mask_code_input: codeInput, vault_factor_input: factorInput, plain_target: params.plain_target === true };
         await this.sampleLane(tab).run("input", () => this.browser.performAction({ target_id: tab.target_id, document_id: tab.document_id,
-          node_ref: request.params.node_ref, action, timeout_ms: 10_000 }, { signal }));
+          node_ref: params.node_ref, action, timeout_ms: 10_000 }, { signal }));
         await this.save();
         return { id: request.id, ok: true, result: { inserted: true } };
       }
@@ -1202,7 +1336,20 @@ export class KernelBrowserHost {
         if(this.nativeComputer.held.size && ['input','open','close','navigate','resize'].includes(request.params.op))throw new Error('MP-11: native keys held; release desktop input first');
         const at = timestamp();
         // MP-08/MP-11: the kernel's opener ledger names the agent Tabs ([{tab_id, label}]).
-        const { _tab_groups: groups, ...params } = request.params ?? {};
+        const { _tab_groups: groups, _web_bot_auth: webBotAuth, ...params } = request.params ?? {};
+        if (webBotAuth !== undefined) {
+          await this.start({ signal });
+          if (params.op === "open") params.tab_id ??= `host-tab-${randomUUID()}`;
+          if (typeof params.tab_id === "string") {
+            const tab = this.tabs.get(params.tab_id);
+            await this.browser.configureWebBotAuth(params.tab_id, webBotAuth, tab?.target_id);
+            if (disablesWebBotAuth(webBotAuth)) this.webBotAuthProjects.delete(params.tab_id);
+            else if (this.browser.webBotAuth?.byTab.has(params.tab_id)) this.webBotAuthProjects.set(params.tab_id, webBotAuth.project_id);
+            if (params.op !== "navigate") {
+              await this.resumeWebBotAuthRestore(params.tab_id, { allowUnsigned: disablesWebBotAuth(webBotAuth) });
+            }
+          }
+        }
         let result;
         try { result = await this.request(params, { signal }); }
         // A person's keys and wheel never wake a state read; Tab changes and an agent acting do.
@@ -1231,6 +1378,7 @@ export class KernelBrowserHost {
         if (result.ok) {
           await this.reconcile();
           if (request.method === "browser.app.open") {
+            await this.rebindWindows();
             result.result.tab_id = [...this.tabs.values()].find(tab => tab.target_id === result.result.target_id)?.tab_id;
             result.result.generation = this.generation;
           }
@@ -1262,7 +1410,7 @@ export class KernelBrowserHost {
 }
 
 if (process.argv[2] === "stdio" && process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
-  const host = new KernelBrowserHost(process.argv[3]);
+  const host = new KernelBrowserHost(process.argv[3], { appStorageRoot: process.argv[4] });
   let closing = false;
   const stop = async () => { if (closing) return; closing = true; await host.stop(); process.exit(0); };
   process.on("SIGTERM", stop);

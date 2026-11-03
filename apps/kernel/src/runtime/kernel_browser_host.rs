@@ -24,8 +24,10 @@ use std::time::Duration;
 pub(crate) struct KernelBrowserHost {
     inner: Arc<Mutex<HostState>>,
     root: PathBuf,
+    app_storage_root: PathBuf,
     /// Counts ownership changes, taken under the actor lock, so the browser host can order their input retirements.
     authority_epoch: Arc<AtomicU64>,
+    web_bot_auth_revision: Arc<AtomicU64>,
     terminal_leases: terminal_lease::TerminalLeases,
 }
 #[derive(Default)]
@@ -134,13 +136,21 @@ impl KernelBrowserAdmission {
 }
 
 impl KernelBrowserHost {
+    #[cfg(test)]
     pub(crate) fn new(root: PathBuf) -> Self {
-        Self {
+        Self::for_database(root.clone(), &root.join("kernel.db")).expect("test database path")
+    }
+    pub(crate) fn for_database(root: PathBuf, database: &std::path::Path) -> std::io::Result<Self> {
+        let app_storage_root = chariox_app_runtime::worker_process::wasm::storage::root(database)
+            .map_err(std::io::Error::other)?;
+        Ok(Self {
             inner: Arc::new(Mutex::new(HostState::default())),
             root: root.join("kernel-browser"),
+            app_storage_root,
             authority_epoch: Arc::default(),
+            web_bot_auth_revision: Arc::default(),
             terminal_leases: Arc::default(),
-        }
+        })
     }
     // MD-DISPLAY-04: queued credits wait asynchronously, away from the
     // controller mutex. Input can enter between captures rather than behind
@@ -195,6 +205,38 @@ impl KernelBrowserHost {
 
     pub(crate) fn profile_root(&self, user: &str) -> PathBuf {
         self.root.join(Self::profile_key(user))
+    }
+    pub(crate) fn update_web_bot_auth_policy(
+        &self,
+        projects: &[String],
+        reset: bool,
+    ) -> Result<(), String> {
+        let revision = self.web_bot_auth_revision.fetch_add(1, Ordering::SeqCst) + 1;
+        let browsers = self
+            .inner
+            .lock()
+            .map_err(|_| "browser host lock poisoned")?
+            .browsers
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        for browser in browsers {
+            let mut backend = browser
+                .lock()
+                .map_err(|_| "browser operation lock poisoned")?;
+            if backend.health()?.state
+                == super::browser_controller_process::BrowserControllerProcessState::Ready
+            {
+                backend.host_request(
+                    "host.web_bot_auth_policy",
+                    serde_json::json!({"projects": projects, "reset": reset, "revision": revision}),
+                )?;
+            }
+        }
+        Ok(())
+    }
+    pub(crate) fn web_bot_auth_revision(&self) -> u64 {
+        self.web_bot_auth_revision.load(Ordering::SeqCst)
     }
     pub(crate) fn profile_key(user: &str) -> String {
         format!("{:x}", Sha256::digest(user.as_bytes()))
@@ -258,6 +300,29 @@ impl KernelBrowserHost {
         let backend = backend.lock().ok()?;
         backend.direct_frames()
     }
+
+    pub(crate) fn update_protection_if_running(
+        &self,
+        user: &str,
+        policy: Value,
+    ) -> Result<(), String> {
+        let backend = self
+            .inner
+            .lock()
+            .map_err(|_| "MD-2: browser host lock poisoned")?
+            .browsers
+            .get(user)
+            .cloned();
+        if let Some(backend) = backend {
+            let mut backend = backend.lock().map_err(|_| "MD-2: browser lock poisoned")?;
+            if backend.host_is_live()? {
+                backend
+                    .protect_host(policy)
+                    .map_err(|_| "MD-5: display audience update failed")?;
+            }
+        }
+        Ok(())
+    }
     fn backend(
         &self,
         user: &str,
@@ -285,6 +350,7 @@ impl KernelBrowserHost {
                     script.display().to_string(),
                     "stdio".into(),
                     self.profile_root(user).display().to_string(),
+                    self.app_storage_root.display().to_string(),
                 ],
                 Duration::from_secs(20),
             )
@@ -485,6 +551,11 @@ impl KernelBrowserHost {
         crate::transport::kernel_browser_display::slow("rust_backend_queue", &op_label, queued);
         self.require_running()?;
         self.check_admission(admission)?;
+        if let Some(revision) = params["_web_bot_auth"]["policy_revision"].as_u64() {
+            if revision != self.web_bot_auth_revision() {
+                return Err("Web Bot Auth policy changed; retry the browser operation".into());
+            }
+        }
         self.scope_browser_request(admission, method, &params)?;
         if method == "host.browser"
             && matches!(params["op"].as_str(), Some("open" | "navigate" | "input"))
@@ -774,7 +845,14 @@ impl KernelBrowserHost {
         // Dropping a display stream releases its compositor on the controller, which can take seconds
         // (the Browser view does it right after a navigation paints): input must not queue behind it.
         let display_release = method == "host.browser" && params["op"] == "unsubscribe";
-        let mut result = if display
+        let mut result = if method == "browser.app.agent" {
+            // The page action may enqueue a `browser.app.calls` request while
+            // running. Start its CDP request under the backend lock, then let
+            // the UserAppViews pump drain and answer that call before waiting.
+            let pending = backend.begin_app_view_request(method, params)?;
+            drop(backend);
+            pending.wait().map_err(crate::error::HostFailure::Other)
+        } else if display
             || mirror_credit
             || display_subscribe
             || note
@@ -1237,6 +1315,32 @@ fn require_loaded(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn web_bot_auth_policy_change_rejects_material_prepared_before_a_browser_started() {
+        let root = std::env::temp_dir().join(format!("wba-policy-{:032x}", rand::random::<u128>()));
+        let host = KernelBrowserHost::new(root.clone());
+        let revision = host.web_bot_auth_revision();
+        host.update_web_bot_auth_policy(&[], false).unwrap();
+        for material in [
+            serde_json::json!({"policy_revision": revision}),
+            serde_json::json!({"policy_revision": revision, "disabled": true}),
+        ] {
+            let error = host
+                .protected_request(
+                    "owner",
+                    None,
+                    "host.browser",
+                    serde_json::json!({"op": "open", "url": "https://example.com",
+                        "_web_bot_auth": material}),
+                    Value::Null,
+                )
+                .unwrap_err();
+            assert!(error.to_string().contains("Web Bot Auth policy changed"));
+        }
+        drop(host);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     /// A hot reload keeps the user-domain tools a running agent loaded, for
     /// its live grant, though the user has since focused another agent (who

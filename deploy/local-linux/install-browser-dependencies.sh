@@ -16,6 +16,7 @@ chromium_packages=(libasound2 libatk-bridge2.0-0 libatk1.0-0 libatspi2.0-0 libca
 chromium_sonames=(libasound.so.2 libatk-1.0.so.0 libatk-bridge-2.0.so.0 libatspi.so.0 libcups.so.2 libgbm.so.1 libnspr4.so libnss3.so libxkbcommon.so.0 libXcomposite.so.1 libXdamage.so.1 libXrandr.so.2 libX11.so.6 libXext.so.6 libXtst.so.6)
 probe() {
   for name in "${desktop[@]}"; do [[ -x $root/usr/bin/$name ]] || return 1; done
+  [[ -r $root/etc/at-spi2/accessibility.conf || -r $root/usr/share/defaults/at-spi2/accessibility.conf ]] || return 1
   "$python" -I -B -c 'from Xlib import X, display; from Xlib.ext import xtest; from PIL import Image; import gi, pyatspi' >/dev/null 2>&1
 }
 probe_libraries() {
@@ -38,5 +39,5 @@ printf '[chariox-install] install system browser dependencies\n'
 DEBIAN_FRONTEND=noninteractive "$apt" update
 libraries=()
 for name in "${chromium_packages[@]}"; do libraries+=("$(resolve_package "$name")"); done
-DEBIAN_FRONTEND=noninteractive "$apt" install -y --no-install-recommends python3-xlib python3-pil python3-gi python3-pyatspi xvfb openbox bubblewrap dbus-daemon x11-xkb-utils "${libraries[@]}"
+DEBIAN_FRONTEND=noninteractive "$apt" install -y --no-install-recommends python3-xlib python3-pil python3-gi python3-pyatspi at-spi2-core xvfb openbox bubblewrap dbus-daemon x11-xkb-utils "${libraries[@]}"
 probe && probe_libraries || { printf '[chariox-install] browser dependencies still missing after installation\n' >&2; exit 1; }

@@ -259,6 +259,8 @@ pub struct CloudCollaborator {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelayStatus {
+    /// The answering kernel's protocol, independent of control-plane heartbeat freshness.
+    pub local_daemon_protocol_version: u32,
     /// Native Linux process identity for independent signed-artifact observation.
     /// Legacy and non-Linux kernels provide no implied process proof.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -286,8 +288,6 @@ pub struct KernelRuntimeProcessIdentity {
 /// Shared by direct kernel status and relay discovery. These advertise support,
 /// not authorization; every operation still checks its caller and home binding.
 pub const RUNTIME_CONTROL_CAPABILITIES: &[&str] = &[
-    "disposable_worker_control_v1",
-    "managed_environment_keep_running_v1",
     "terminal_relay_authorization_renewal_v1",
     "exact_prompt_cancellation_v499",
     "owner_managed_context_transfer_v1",

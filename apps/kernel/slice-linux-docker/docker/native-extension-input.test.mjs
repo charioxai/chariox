@@ -11,6 +11,8 @@ import {setTimeout as delay} from 'node:timers/promises';
 import {LinuxOwnedDesktop} from './linux-owned-desktop.mjs';
 import {CdpConnection} from './browser-controller-cdp.mjs';
 import {NativeComputer} from './native-computer.mjs';
+import {ensureBrowserAccount,ownedBrowserDirectory} from './linux-browser-user.mjs';
+import {executable} from './kernel-browser-process.mjs';
 
 // Only the fixture's public control labels/geometry are returned. No page text.
 const findControl=`import pyatspi,json,sys
@@ -29,8 +31,18 @@ while pending and seen<12000:
  except Exception:pass
 print(json.dumps(out))`;
 
-test('MP-08/MP-10/MP-11 a pinned popup-free extension cannot receive native agent clicks with an empty clipboard', {timeout:45000}, async()=>{
+test('MP-08/MP-10/MP-11 a pinned popup-free extension cannot receive native agent clicks with an empty clipboard', {timeout:60000}, async()=>{
  const root=await mkdtemp(path.join(os.tmpdir(),'native-extension-'));
+ if(process.geteuid?.()===0){
+  const {uid,gid}=await ensureBrowserAccount();
+  await ownedBrowserDirectory(root,uid,gid,0o700);
+  try{
+   const env={...process.env,TMPDIR:root};delete env.NODE_TEST_CONTEXT;
+   const child=spawn(process.execPath,['--test',fileURLToPath(import.meta.url)],{uid,gid,env,stdio:['ignore','inherit','inherit'],timeout:55000});
+   assert.equal(await new Promise((resolve,reject)=>{child.once('error',reject);child.once('exit',resolve)}),0,'unprivileged native extension drill');
+  }finally{await rm(root,{recursive:true,force:true})}
+  return;
+ }
  const desktop=new LinuxOwnedDesktop(root,{environment:{PATH:process.env.PATH,HOME:root,LANG:'C.UTF-8'}});
  let cdp,adapter;
  try {
@@ -42,7 +54,7 @@ test('MP-08/MP-10/MP-11 a pinned popup-free extension cannot receive native agen
   // Reuse the production bounded socket path for a long external TMPDIR.
   const {open}=await import('node:fs/promises');const held=await open(desktop.runtime);
   try {
-   const child=await desktop.launch(process.env.CHARIOX_KERNEL_BROWSER_EXECUTABLE??'/opt/google/chrome/chrome',[
+   const child=await desktop.launch(await executable(),[
     '--user-data-dir='+profile,'--remote-debugging-port=0','--enable-unsafe-extension-debugging','--force-renderer-accessibility=basic',
     '--no-first-run','--no-default-browser-check','--password-store=basic','--disable-dev-shm-usage','--window-size=1280,800','https://en.wikipedia.org/wiki/Ada_Lovelace',
    ],{...environment,TMPDIR:`/proc/${process.pid}/fd/${held.fd}`});
@@ -67,11 +79,13 @@ test('MP-08/MP-10/MP-11 a pinned popup-free extension cannot receive native agen
     assert.equal(await new Promise(resolve=>helper.once('exit',resolve)),0);return JSON.parse(output);
    };
    const click=async(point,agent=false)=>adapter.request({op:'input',surface_id:base.surface_id,generation:base.generation,...(agent?{_agent_input:true}:{}),input:{kind:'click',x:point.x,y:point.y}},{});
-   await delay(1000);
-   const menu=(await controls('Extensions')).find(node=>node.name==='Extensions');assert(menu);await click(menu);await delay(200);
-   const pin=(await controls('Pin')).find(node=>node.name.includes('MP11'));assert(pin);await click(pin);
-   await adapter.request({op:'input',surface_id:base.surface_id,generation:base.generation,input:{kind:'key',key:'Escape'}},{});await delay(200);
-   const action=(await controls('MP11')).find(node=>node.name==='MP11 Popup Free Action');assert(action);
+   const control=async(label,match)=>{
+    const deadline=Date.now()+10000;
+    while(Date.now()<deadline){const found=(await controls(label)).find(match);if(found)return found;await delay(200)}
+    assert.fail('Chrome accessibility control ready: '+label+'; visible fixture controls: '+JSON.stringify((await controls('')).map(node=>node.name)));
+   };
+   // The pinned Chromium developer loader exposes the action on the toolbar.
+   let action=await control('MP11 Popup Free Action',node=>node.name==='MP11 Popup Free Action');
    const worker=async()=> (await cdp.send('Target.getTargets')).targetInfos.find(target=>target.type==='service_worker'&&target.url===`chrome-extension://${id}/background.js`);
    const count=async()=>{
     let target;for(let i=0;i<50&&!target;i++){target=await worker();if(!target)await delay(100)}assert(target);const {sessionId}=await cdp.send('Target.attachToTarget',{targetId:target.targetId,flatten:true});
@@ -80,11 +94,24 @@ test('MP-08/MP-10/MP-11 a pinned popup-free extension cannot receive native agen
    };
    const page=(await cdp.send('Target.getTargets')).targetInfos.find(target=>target.type==='page'&&target.url.startsWith('https://en.wikipedia.org/'));assert(page);
    const {sessionId:pageSession}=await cdp.send('Target.attachToTarget',{targetId:page.targetId,flatten:true});
+   const pageDeadline=Date.now()+15000;let pageReady=false;
+   while(Date.now()<pageDeadline){
+    const observation=await cdp.send('Runtime.evaluate',{expression:"location.href.startsWith('https://en.wikipedia.org/')&&document.readyState==='complete'",returnByValue:true},pageSession).catch(()=>null);
+    if(observation?.result?.value){pageReady=true;break}await delay(100);
+   }
+   assert(pageReady,'public page navigation completed before installing click observation');
    await cdp.send('Runtime.evaluate',{expression:"window.mp11NativeClicks=0;window.addEventListener('click',()=>window.mp11NativeClicks++)"},pageSession);
    await click({x:500,y:500},true);
-   assert.equal((await cdp.send('Runtime.evaluate',{expression:'window.mp11NativeClicks',returnByValue:true},pageSession)).result.value,1,'ordinary page native fallback remains admitted');
+   let pageClicks=0;const clickDeadline=Date.now()+3000;
+   while(Date.now()<clickDeadline&&(pageClicks=(await cdp.send('Runtime.evaluate',{expression:'window.mp11NativeClicks',returnByValue:true},pageSession)).result.value)!==1)await delay(100);
+   assert.equal(pageClicks,1,'ordinary page native fallback remains admitted');
    await cdp.send('Target.detachFromTarget',{sessionId:pageSession});
-   assert.equal(await count(),0);await click(action);await delay(300);assert.equal(await count(),1,'owner invokes the actual background action');
+   assert.equal(await count(),0);
+   action=await control('MP11 Popup Free Action',node=>node.name==='MP11 Popup Free Action');
+   await click(action);
+   let ownerCount=0;const actionDeadline=Date.now()+3000;
+   while(Date.now()<actionDeadline&&(ownerCount=await count())===0)await delay(100);
+   assert.equal(ownerCount,1,'owner invokes the actual background action at '+JSON.stringify(action));
    // No App/Vault state and no clipboard owner can account for the refusal.
    const probe=spawn('/usr/bin/python3',['-c',`import importlib.util; s=importlib.util.spec_from_file_location('nc',${JSON.stringify(fileURLToPath(new URL('./native-computer.py',import.meta.url)))});m=importlib.util.module_from_spec(s);s.loader.exec_module(m);c=m.load('native-x11').open_display(m.display);assert not c.get_selection_owner(c.intern_atom('CLIPBOARD'));c.close()`],{env:environment,stdio:'ignore'});
    assert.equal(await new Promise(resolve=>probe.once('exit',resolve)),0,'empty clipboard');

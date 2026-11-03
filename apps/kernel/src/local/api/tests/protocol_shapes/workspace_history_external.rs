@@ -1047,6 +1047,7 @@ fn local_daemon_protocol_session_process_memory_outcomes_are_versioned() {
                     pid: 42,
                     command: "python3".into(),
                     resident_set_bytes: 1048576,
+                    disk_io_bytes: Some(4096),
                     cpu_millis: 250,
                     sampled_at_ms: 10000,
                     age_ms: 3000,
@@ -1059,6 +1060,7 @@ fn local_daemon_protocol_session_process_memory_outcomes_are_versioned() {
                     pid: 43,
                     command: "cargo".into(),
                     resident_set_bytes: 1048576,
+                    disk_io_bytes: Some(4096),
                     cpu_millis: 0,
                     sampled_at_ms: 10000,
                     age_ms: 1000,
@@ -1077,6 +1079,7 @@ fn local_daemon_protocol_session_process_memory_outcomes_are_versioned() {
                     pid: 44,
                     command: "pnpm".into(),
                     resident_set_bytes: 1048576,
+                    disk_io_bytes: Some(4096),
                     cpu_millis: 0,
                     sampled_at_ms: 10000,
                     age_ms: 1000,
@@ -1116,7 +1119,7 @@ fn local_daemon_protocol_session_process_memory_outcomes_are_versioned() {
         },
     ]});
     let expected: serde_json::Value =
-        serde_json::from_str(include_str!("session-processes-800.json")).unwrap();
+        serde_json::from_str(include_str!("session-processes-954.json")).unwrap();
     assert_eq!(snapshot, expected);
     assert_eq!(
         LOCAL_DAEMON_PROTOCOL_VERSION,
@@ -1127,6 +1130,6 @@ fn local_daemon_protocol_session_process_memory_outcomes_are_versioned() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "b7f622582867e1cddfb2bb79b6ee1559f44834f0bddb8318d1bd6f765b4d978e"
+        "9ac4e64f7096997409619a023b88308869b18ac59f5a58a9874218a1966d4863"
     );
 }

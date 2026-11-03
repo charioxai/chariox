@@ -67,18 +67,38 @@ impl KernelRuntimeState {
         grant_id: &str,
         request: &LocalDaemonRequest,
     ) -> Result<(), DaemonError> {
-        if grant_id.starts_with("sudo:") {
-            return Err(error("a sudo window does not reach other kernels"));
-        }
         if carries_passkey(request) {
             return Err(Refusal::HumanOnly.error());
         }
-        let owner = self.grant_owner(grant_id)?;
+        let owner = if grant_id.starts_with("sudo:") {
+            self.sudo_window_bound(grant_id)?.owner_user_id
+        } else {
+            self.grant_owner(grant_id)?
+        };
         if restricted_request(request) {
             self.audit_human_only_denial(grant_id, &owner);
             return Err(Refusal::HumanOnly.error());
         }
         Ok(())
+    }
+
+    /// Both owner-authorized entry points keep their existing lifetime. A Room
+    /// bearer alone has neither, and revocation ends access on the next use.
+    pub(crate) fn gateway_origin(
+        &self,
+        id: &str,
+    ) -> Option<crate::runtime::kernel_gateway::Origin> {
+        self.sweep_kernel_access();
+        let harness = if id.starts_with("sudo:") {
+            self.sudo_window_bound(id).ok()?;
+            "Chariox agent".to_string()
+        } else {
+            crate::runtime::kernel_gateway::harness_name(&self.access_grant_summary(id)?)
+        };
+        Some(crate::runtime::kernel_gateway::Origin {
+            grant_id: id.to_string(),
+            harness,
+        })
     }
 
     /// Target half of a forwarded request: the same shape check as the origin,
@@ -241,6 +261,7 @@ pub(crate) fn restricted_request(request: &LocalDaemonRequest) -> bool {
         || matches!(
             request,
             LocalDaemonRequest::RequestKernelAccess(_)
+            | LocalDaemonRequest::GetKernelAccessStatus(_)
             | LocalDaemonRequest::CoverKernelAccessProcess(_)
                 | LocalDaemonRequest::ManageCredentialVault(_)
                 | LocalDaemonRequest::OwnerVault(_)

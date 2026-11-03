@@ -1154,6 +1154,16 @@ pub(crate) fn map_kernel_error(error: &DaemonError) -> KernelTransportError {
             kernel_error("credential_vault_locked", error, false)
         }
         DaemonError::RelayTransport {
+            operation: "connected control plane",
+            code,
+            message,
+            retryable,
+        } => KernelTransportError {
+            code: code.clone(),
+            message: message.clone(),
+            retryable: *retryable,
+        },
+        DaemonError::RelayTransport {
             operation: "dictation",
             code,
             retryable,

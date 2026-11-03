@@ -3,7 +3,8 @@
 //!
 //! A failed turn gets its kind from the harness's own error (EA2-75). Chariox
 //! reports the kind and retryability, preserving the harness's explicit
-//! retryability when it supplies one. It never retries, backs off or tracks usage limits; the provider's
+//! retryability when it supplies one. Native diagnostics go to the kernel log.
+//! It never retries, backs off or tracks usage limits; the provider's
 //! native behaviour stays as it is. A reader decides to retry or stop from `kind` and
 //! `retryable` only; `reason` is for people.
 
@@ -52,7 +53,7 @@ pub struct TurnOutcome {
     pub kind: TurnOutcomeKind,
     /// A later attempt may succeed without anyone changing anything.
     pub retryable: bool,
-    /// For people: the harness's own error text, with credentials removed.
+    /// A calm explanation for people. Native provider diagnostics stay in the log.
     pub reason: String,
 }
 
@@ -148,14 +149,17 @@ impl TurnOutcome {
             (TurnOutcomeKind::InterruptedByRestart, _) => {
                 "The kernel restarted while this turn was running; send the request again and the agent continues the same conversation."
             }
-            (TurnOutcomeKind::Overloaded, _) => {
-                "The provider is overloaded; send the request again in a moment."
+            (TurnOutcomeKind::Overloaded, true) => {
+                "Try again in a moment or choose another model."
+            }
+            (TurnOutcomeKind::Overloaded, false) => {
+                "Choose another model, then send the request again."
             }
             (TurnOutcomeKind::UsageLimit, true) => {
                 "The provider is rate limiting requests; wait a minute, then send the request again."
             }
             (TurnOutcomeKind::UsageLimit, false) => {
-                "Wait for the limit to reset (the message gives the time when the provider does) or switch this agent to another account, then send the request again."
+                "Wait for the limit to reset or choose another account, then send the request again."
             }
             (TurnOutcomeKind::SignInRequired, _) => {
                 "Sign in again in Provider Accounts, then send the request again."
@@ -168,36 +172,25 @@ impl TurnOutcome {
             }
             (TurnOutcomeKind::Other | TurnOutcomeKind::Unknown, true) => "Send the request again.",
             (TurnOutcomeKind::Other | TurnOutcomeKind::Unknown, false) => {
-                "Fix the cause named in the message, then send the request again."
+                "Check the provider account and model settings, then send the request again."
             }
         }
     }
 
-    /// The transcript line every client shows for a failed turn: the cause,
-    /// the harness's own words and what to do next.
+    /// The transcript line every client shows. Adapter diagnostics enter only
+    /// through classification; kernel-authored reasons can name a missing workspace.
     pub fn notice(&self) -> String {
-        const MAX_MESSAGE_CHARS: usize = 400;
-        let message = self.reason.split_whitespace().collect::<Vec<_>>().join(" ");
-        let message = if message.chars().count() > MAX_MESSAGE_CHARS {
-            format!(
-                "{}...",
-                message.chars().take(MAX_MESSAGE_CHARS).collect::<String>()
-            )
+        let reason = if self.reason.is_empty() {
+            format!("{}.", self.kind.headline())
         } else {
-            message
+            self.reason.clone()
         };
-        let message = message.trim_end_matches('.');
-        let headline = self.kind.headline();
-        let reason = if message.is_empty() {
-            String::new()
-        } else {
-            format!(" {message}.")
-        };
-        format!("{headline}.{reason} {}", self.recovery())
+        format!("{reason} {}", self.recovery())
             .trim_end()
             .to_string()
     }
 
+    /// A kernel-authored explanation, such as a removed workspace or worker.
     pub(crate) fn new(kind: TurnOutcomeKind, retryable: bool, reason: &str) -> Self {
         Self::of(
             kind,
@@ -206,16 +199,41 @@ impl TurnOutcome {
         )
     }
 
+    /// Provider text belongs in the log, never in the public explanation.
+    pub(crate) fn provider_failure(kind: TurnOutcomeKind, retryable: bool) -> Self {
+        let reason = match kind {
+            TurnOutcomeKind::Completed | TurnOutcomeKind::Cancelled => "",
+            TurnOutcomeKind::InterruptedByRestart => "The kernel restarted during this turn.",
+            TurnOutcomeKind::Overloaded => "The provider is at capacity.",
+            TurnOutcomeKind::UsageLimit => "The provider's usage limit was reached.",
+            TurnOutcomeKind::SignInRequired => "The provider needs you to sign in.",
+            TurnOutcomeKind::ProviderCrashed => "The provider process stopped unexpectedly.",
+            TurnOutcomeKind::Network => "The connection to the provider was interrupted.",
+            TurnOutcomeKind::Other | TurnOutcomeKind::Unknown => {
+                "The provider could not complete this request."
+            }
+        };
+        Self::of(kind, retryable, reason)
+    }
+
     /// Types a harness error from the code its adapter framed (see
     /// `provider_coded_failure_text`), then from the words of the error.
     pub(crate) fn classify(adapter_key: &str, text: &str) -> Self {
+        crate::logging::info_with_fields(
+            "daemon.provider",
+            "provider reported a turn failure",
+            serde_json::json!({
+                "adapter_key": adapter_key,
+                "diagnostic": crate::secret_redaction::redact_secrets(text),
+            }),
+        );
         let text = text.strip_prefix(DISPATCH_PREFIX).unwrap_or(text);
         let text = text.strip_prefix(SUBSTITUTABLE_PREFIX).unwrap_or(text);
         if let Some((code, message, native_retryable)) =
             super::prompt_signals::split_coded_failure(text)
         {
             let mut failure = if let Some((cause, retryable)) = failure_for_code(code, message) {
-                Self::new(cause, retryable, message)
+                Self::provider_failure(cause, retryable)
             } else {
                 Self::classify_words(adapter_key, message)
             };
@@ -284,7 +302,7 @@ impl TurnOutcome {
         } else {
             (TurnOutcomeKind::Other, false)
         };
-        Self::new(cause, retryable, message)
+        Self::provider_failure(cause, retryable)
     }
 }
 
@@ -342,8 +360,11 @@ fn failure_for_code(code: &str, message: &str) -> Option<(TurnOutcomeKind, bool)
         });
     }
     Some(match code {
-        "server_overloaded" => (Overloaded, true),
+        "server_overloaded" | "flex_unavailable" | "policy_capacity_unavailable" => {
+            (Overloaded, true)
+        }
         "usage_limit_exceeded" | "billing_error" | "session_budget_exceeded" => (UsageLimit, false),
+        "message_aborted" => (Cancelled, false),
         "rate_limit_exceeded" | "rate_limit" => {
             (UsageLimit, rate_limit_clears(&message.to_lowercase()))
         }
@@ -353,7 +374,8 @@ fn failure_for_code(code: &str, message: &str) -> Option<(TurnOutcomeKind, bool)
         | "provider_auth_error" => (SignInRequired, false),
         "http_connection_failed"
         | "response_stream_connection_failed"
-        | "response_stream_disconnected" => {
+        | "response_stream_disconnected"
+        | "response_too_many_failed_attempts" => {
             // Older app-server errors can omit the HTTP status detail.
             if super::renewal_failure::renewal_failed("codex", message) {
                 (SignInRequired, false)
@@ -369,6 +391,10 @@ fn failure_for_code(code: &str, message: &str) -> Option<(TurnOutcomeKind, bool)
             }
         }
         "context_window_exceeded"
+        | "invalid_prompt"
+        | "too_many_denials"
+        | "active_turn_not_steerable"
+        | "bio_policy"
         | "max_output_tokens"
         | "bad_request"
         | "invalid_request"
@@ -405,82 +431,54 @@ mod tests {
     }
 
     #[test]
-    fn the_harness_text_stays_whole_except_for_credentials() {
-        let failure = TurnOutcome::classify(
-            "claude",
-            "Provider prompt dispatch failed: Claude StopFailure [server_error]: \
-             API Error: 500 request failed for Authorization: Bearer sk-ant-abcdefghijklmnop0123456789",
-        );
-        assert_eq!(failure.kind, TurnOutcomeKind::Other);
-        assert!(failure.retryable);
-        assert!(failure
-            .reason
-            .starts_with("API Error: 500 request failed for"));
-        assert!(
-            !failure.reason.contains("abcdefghijklmnop"),
-            "{}",
-            failure.reason
-        );
-    }
-
-    #[test]
-    fn native_failure_text_keeps_whitespace_and_is_not_truncated() {
-        let message = format!("  First line\n{}\n  ", "native diagnostic ".repeat(200));
-        let framed =
-            super::super::prompt_signals::provider_coded_failure_text("Codex", "other", &message);
-        assert_eq!(TurnOutcome::classify("codex", &framed).reason, message);
-    }
-
-    #[test]
-    fn every_class_notice_names_the_cause_the_harness_words_and_a_recovery() {
-        let weekly = TurnOutcome::classify(
-            "claude",
-            "You've hit your weekly limit \u{b7} resets Oct 28, 9pm (UTC)",
-        );
-        assert_eq!(weekly.kind, TurnOutcomeKind::UsageLimit);
-        assert!(!weekly.retryable);
-        assert_eq!(
-            weekly.notice(),
-            "Usage limit reached. You've hit your weekly limit \u{b7} resets Oct 28, 9pm (UTC). Wait for the limit to reset (the message gives the time when the provider does) or switch this agent to another account, then send the request again."
-        );
-        for (adapter, text, headline, recovery) in [
-            (
-                "claude",
-                "API Error: 529 Overloaded. This is a server-side issue",
-                "Provider overloaded.",
-                "send the request again in a moment",
-            ),
-            (
-                "claude",
-                "Not logged in \u{b7} Please run /login",
-                "Sign-in required.",
-                "Sign in again in Provider Accounts",
-            ),
-            (
-                "claude",
-                "API Error: Connection refused (ECONNREFUSED)",
-                "Network problem.",
-                "Check the connection to the provider",
-            ),
-            (
-                "claude",
-                "Claude Code exited before completing the active turn: exit status: 1",
-                "Provider stopped unexpectedly.",
-                "send the request again to start it",
-            ),
+    fn native_diagnostics_never_become_person_facing_reasons_or_notices() {
+        for (adapter, text, kind, retryable) in [
+            ("codex", "Codex error [server_overloaded]: Selected model is at capacity. Please try a different model.", TurnOutcomeKind::Overloaded, true),
+            ("claude", "Claude StopFailure [rate_limit]: You've hit your weekly limit · resets Oct 28, 9pm (UTC)", TurnOutcomeKind::UsageLimit, false),
+            ("claude", "Not logged in · Please run /login", TurnOutcomeKind::SignInRequired, false),
+            ("claude", "API Error: Connection refused (ECONNREFUSED)", TurnOutcomeKind::Network, true),
+            ("codex", "Codex error [other]: something odd", TurnOutcomeKind::Other, false),
         ] {
-            let notice = TurnOutcome::classify(adapter, text).notice();
-            assert!(notice.starts_with(headline), "{notice}");
-            assert!(notice.contains(text.trim_end_matches('.')), "{notice}");
-            assert!(notice.contains(recovery), "{notice}");
+            let outcome = TurnOutcome::classify(adapter, text);
+            assert_eq!((outcome.kind, outcome.retryable), (kind, retryable));
+            assert!(!outcome.reason.contains(text));
+            assert!(!outcome.notice().contains(text));
+            assert!(outcome.notice().contains("again"));
         }
+        let diagnostic = "API Error: 500 request failed for Authorization: Bearer sk-ant-abcdefghijklmnop0123456789";
+        let outcome = TurnOutcome::classify("claude", diagnostic);
+        assert_eq!(
+            outcome.reason,
+            "The provider could not complete this request."
+        );
+        assert!(!outcome.notice().contains("API Error"));
     }
 
     #[test]
-    fn an_unrecognised_failure_is_other_and_not_retryable() {
-        let failure = TurnOutcome::classify("codex", "Codex error [other]: something odd");
-        assert_eq!(failure.kind, TurnOutcomeKind::Other);
-        assert!(!failure.retryable);
-        assert_eq!(failure.reason, "something odd");
+    fn ea2_75_native_diagnostics_reach_the_kernel_log_with_secrets_redacted() {
+        let capture = crate::logging::capture::start();
+        let diagnostic = "Codex error [server_overloaded]: Selected model is at capacity. Please try a different model.";
+        let outcome = TurnOutcome::classify("codex", diagnostic);
+        assert!(capture
+            .records()
+            .iter()
+            .any(|record| record.contains(diagnostic)));
+        assert!(!outcome.notice().contains(diagnostic));
+        let secret = "sk-ant-abcdefghijklmnop0123456789";
+        TurnOutcome::classify("claude", &format!("Claude StopFailure [server_error]: API Error: 500 for Authorization: Bearer {secret}"));
+        let records = capture.records();
+        assert!(records
+            .iter()
+            .any(|record| record.contains("API Error: 500")));
+        assert!(records.iter().all(|record| !record.contains(secret)));
+    }
+
+    #[test]
+    fn provider_failure_notice_has_an_explanation_and_recovery() {
+        let outcome = TurnOutcome::provider_failure(TurnOutcomeKind::Overloaded, true);
+        assert_eq!(
+            outcome.notice(),
+            "The provider is at capacity. Try again in a moment or choose another model."
+        );
     }
 }

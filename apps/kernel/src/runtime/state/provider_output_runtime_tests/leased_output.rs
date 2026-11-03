@@ -186,7 +186,7 @@ async fn leased_claude_failure_reaches_home_projection_without_terminal_polling(
         received.is_file(),
         "native provider must have received the prompt and emitted its error; projected errors: {projected_errors:?}"
     );
-    assert!(projected_errors.iter().any(|message| message.contains("Fixture Claude login required")),
+    assert!(projected_errors.iter().any(|message| message.contains("Sign in again in Provider Accounts")),
         "accepted leased provider error must reach home projection without a terminal-output request: {projected_errors:?}");
     let session = runtime
         .owned

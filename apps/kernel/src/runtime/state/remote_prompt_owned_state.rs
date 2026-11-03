@@ -1631,10 +1631,9 @@ mod tests {
                 ExecutionState::Cancelled
             }
         );
-        assert!(
-            task.reason.contains("Provider run failed:"),
-            "{}",
-            task.reason
+        assert_eq!(
+            task.reason,
+            "provider process terminated by signal SIGKILL The provider process ended; send the request again to start it."
         );
         assert!(
             completion::evaluation(&task).is_none(),

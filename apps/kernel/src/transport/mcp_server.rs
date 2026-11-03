@@ -119,6 +119,35 @@ async fn handle_http_request_inner(
     request: Request<Incoming>,
     shutdown: tokio::sync::watch::Receiver<()>,
 ) -> Result<Response<HttpBody>, DaemonError> {
+    // Operators reverse-proxy only this public path. MCP retains its existing
+    // bind address and authentication; directory discovery needs no run token.
+    if request.uri().path() == "/.well-known/http-message-signatures-directory" {
+        if *request.method() != Method::GET {
+            return Ok(empty_response(StatusCode::METHOD_NOT_ALLOWED));
+        }
+        let authority = request
+            .headers()
+            .get(hyper::header::HOST)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("");
+        let (body, headers) = router.web_bot_auth_directory(authority)?;
+        let mut response = Response::builder()
+            .status(StatusCode::OK)
+            .header(
+                CONTENT_TYPE,
+                "application/http-message-signatures-directory+json",
+            )
+            .header(hyper::header::CACHE_CONTROL, "no-store");
+        for (name, value) in headers {
+            response = response.header(name, value);
+        }
+        return response
+            .body(Full::new(Bytes::from(body)).boxed_unsync())
+            .map_err(|_| DaemonError::LocalTransport {
+                operation: "web_bot_auth_directory",
+                message: "directory response encoding failed".into(),
+            });
+    }
     if let Some(origin) = request.headers().get(ORIGIN) {
         if !origin.to_str().ok().is_some_and(valid_runtime_origin) {
             return Ok(text_response(

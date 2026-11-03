@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct PasteArgs {
+pub(super) struct PasteArgs {
     credential_id: String,
     tab_id: String,
     generation: u64,
@@ -21,7 +21,7 @@ struct PasteArgs {
 pub(super) fn paste_spec() -> RuntimeToolSpec {
     RuntimeToolSpec {
         name: PASTE.into(),
-        description: "MD-5: insert a Vault credential into an observed editable text field in a user-domain tab. Use tab/generation/document_id/node_ref from a fresh snapshot. Secret bytes never enter tool arguments/results. Default submit=false; use ordinary input to click a separate sign-in button.".into(),
+        description: "MD-5: insert a Vault credential into an observed editable text field in a user-domain tab. Use tab/generation/document_id/node_ref from a fresh snapshot. Secret bytes never enter tool arguments/results. TOTP handles compute a current code at insertion; backup_codes consumes an unused code. Default submit=false; use ordinary input to click a separate sign-in button.".into(),
         input_schema: json!({"type":"object","properties":{"credential_id":{"type":"string"},"tab_id":{"type":"string"},"generation":{"type":"integer","minimum":1},"document_id":{"type":"string"},"node_ref":{"type":"string"},"submit":{"type":"boolean","default":false}},"required":["credential_id","tab_id","generation","document_id","node_ref"],"additionalProperties":false}),
     }
 }
@@ -113,8 +113,7 @@ impl KernelRuntimeState {
         let scope = KernelBrowserHost::profile_key(user);
         let policy = if protect {
             protection.require(&scope, false)?;
-            serde_json::from_str(&protection.capture_policy(&scope)?)
-                .map_err(|_| host_error("MD-5: invalid observation policy".into()))?
+            self.kernel_browser_capture_policy(user)?
         } else {
             Value::Null
         };
@@ -178,15 +177,19 @@ impl KernelRuntimeState {
         Ok(())
     }
 
+    // `plain` is VAUDIT S3 fill_field: an unmasked target (an env var value box)
+    // the kernel masks in model-bound observations instead of a password field.
     pub(super) async fn kernel_browser_paste_secret(
         &self,
         session: &str,
         agent: &crate::agent::AgentInstance,
         arguments: Value,
         admission: KernelBrowserAdmission,
+        plain: bool,
     ) -> Result<RuntimeToolResult, DaemonError> {
         let args: PasteArgs = serde_json::from_value(arguments)
             .map_err(|_| host_error("MD-5: invalid Vault input arguments".into()))?;
+        let target = SecretTarget::of(&args);
         let user = self.provider_account_authority_owner_user_id(agent.owner_user_id());
         let user = user.as_str();
         require_vault_owner(user)?;
@@ -200,25 +203,57 @@ impl KernelRuntimeState {
         // Validate the observed document before prompting for unlock. Recheck
         // metadata, focus and target afterward, under the actual input barrier.
         let url = self
-            .kernel_browser_secret_target_url(user, &admission, &args)
+            .kernel_browser_secret_target_url(user, &admission, &target, true)
             .await?;
         check_authority()?;
-        crate::runtime::state::sudo::require_login_handle_scope(
-            self.home_runtime_secret_service()?
-                .validate_browser_secret_input_for_target_url(&args.credential_id, &url)?,
-            session,
-        )?;
+        let service = self.home_runtime_secret_service()?;
+        let credential = service.credential(&args.credential_id)?.clone();
+        if let Err(error) =
+            service.validate_browser_secret_input_for_target_url(&args.credential_id, &url)
+        {
+            self.record_vault_refusal(
+                &args.credential_id,
+                &service.browser_vault_target(&args.credential_id, &url)?,
+                agent.id(),
+            )?;
+            return Err(error);
+        }
         let protection = &self.owned.kernel_browser_secret_observations;
         let scope = KernelBrowserHost::profile_key(user);
-        // MP-11 A06: discovery fixes the protection epoch the fill relies on.
+        // Discovery fixes the protection epoch before either unlock or card consent.
         let epoch = protection.revision(&scope)?;
         let _unlock = self
             .ensure_vault_unlocked_for_agent(session, agent.id(), "kernel_browser_paste_secret")
             .await?;
+        let signing_material = self
+            .web_bot_auth_browser_material(session, agent.id())
+            .await?;
+        check_authority()?;
+        let approval = if credential
+            .metadata
+            .as_ref()
+            .is_some_and(|m| m.use_binding.is_some())
+        {
+            Some(
+                self.authorize_vault_use(
+                    agent.owner_user_id(),
+                    agent.id(),
+                    &credential,
+                    &service.browser_vault_target(&args.credential_id, &url)?,
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
         check_authority()?;
         let (service, _vault_guard) = self
             .scoped_secret_input_service(protection, &scope, &args.credential_id)
             .await?;
+        let service = match approval {
+            Some(approval) => service.with_vault_use_approval(approval),
+            None => service,
+        };
         check_authority()?;
         let _barrier = protection.barrier(&scope)?.write_owned().await;
         check_authority()?;
@@ -237,38 +272,183 @@ impl KernelRuntimeState {
             ));
         }
         let url = self
-            .kernel_browser_secret_target_url_bound(user, &admission, &args)
+            .kernel_browser_secret_target_url_bound(user, &admission, &target, true)
             .await?;
         check_authority()?;
-        crate::runtime::state::sudo::require_login_handle_scope(
-            service.validate_browser_secret_input_for_target_url(&args.credential_id, &url)?,
-            session,
+        service.validate_browser_secret_input_for_target_url(&args.credential_id, &url)?;
+        service.record_vault_activity(
+            &args.credential_id,
+            &format!("Use attempted in browser by {}", agent.id()),
         )?;
-        let secret = zeroize::Zeroizing::new(
-            service.browser_secret_input_for_target_url(&args.credential_id, &url)?,
-        );
+        self.insert_kernel_browser_secret(
+            user,
+            &admission,
+            &args,
+            &service,
+            url,
+            SecretFillContext {
+                actor: None,
+                signing_material,
+                plain,
+            },
+        )
+        .await?;
+        service.record_vault_activity(
+            &args.credential_id,
+            &format!("Used in browser by {}", agent.id()),
+        )?;
+        Ok(RuntimeToolResult {
+            ok: true,
+            payload: json!({"inserted":true}),
+        })
+    }
+
+    pub(super) async fn kernel_browser_terminal_paste_secret(
+        &self,
+        caller: &crate::runtime::command::KernelCommand,
+        credential_id: String,
+        tab_id: String,
+        generation: u64,
+    ) -> Result<Value, DaemonError> {
+        let (user, actor) = self.kernel_browser_terminal_context(caller)?;
+        require_vault_owner(&user)?;
+        let admission = self
+            .owned
+            .kernel_browser_host
+            .admit_terminal(&user, caller.terminal_lifetime.clone().unwrap_or_default());
+        let snapshot = self.kernel_browser_operation_admitted(&user, Some(admission.clone()),
+            "host.browser", json!({"op":"snapshot","tab_id":tab_id,"generation":generation,"observed_by":actor})).await?;
+        let snapshot: crate::runtime::browser_controller_snapshot::BrowserControllerStructuredSnapshot =
+            serde_json::from_value(snapshot["snapshot"].clone()).map_err(|_| host_error("MD-5: invalid browser snapshot".into()))?;
+        let node_ref = snapshot
+            .accessibility_nodes
+            .iter()
+            .find(|node| {
+                node.focused
+                    && snapshot.dom_nodes.iter().any(|dom| {
+                        dom.node_ref == node.node_ref
+                            && (dom.node_name.eq_ignore_ascii_case("input")
+                                || dom.node_name.eq_ignore_ascii_case("textarea")
+                                || dom.attributes.contains_key("contenteditable"))
+                    })
+            })
+            .map(|node| node.node_ref.clone())
+            .ok_or_else(|| {
+                host_error("Focus the page field to fill, then choose Fill from Vault.".into())
+            })?;
+        let args = PasteArgs {
+            credential_id,
+            tab_id,
+            generation,
+            document_id: snapshot.document_id,
+            node_ref,
+            submit: false,
+        };
+        let url = self
+            .kernel_browser_secret_target_url(&user, &admission, &SecretTarget::of(&args), true)
+            .await?;
+        let credential = self
+            .home_runtime_secret_service()?
+            .credential(&args.credential_id)?
+            .clone();
+        let approval = if credential
+            .metadata
+            .as_ref()
+            .is_some_and(|m| m.use_binding.is_some())
+        {
+            let owner = self.owner_client_user_id(caller)?;
+            Some(
+                self.authorize_vault_use(
+                    &owner,
+                    &actor,
+                    &credential,
+                    &self
+                        .home_runtime_secret_service()?
+                        .browser_vault_target(&args.credential_id, &url)?,
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
+        let protection = &self.owned.kernel_browser_secret_observations;
+        let scope = KernelBrowserHost::profile_key(&user);
+        let epoch = protection.revision(&scope)?;
+        let (service, _vault_guard) = self
+            .scoped_secret_input_service(protection, &scope, &args.credential_id)
+            .await?;
+        let service = match approval {
+            Some(approval) => service.with_vault_use_approval(approval),
+            None => service,
+        };
+        let _barrier = protection.barrier(&scope)?.write_owned().await;
+        if protection.revision(&scope)? != epoch {
+            return Err(host_error(
+                "The page protection changed. Focus the field and try again.".into(),
+            ));
+        }
+        let url = self
+            .kernel_browser_secret_target_url_bound(
+                &user,
+                &admission,
+                &SecretTarget::of(&args),
+                true,
+            )
+            .await?;
+        service.record_vault_activity(&args.credential_id, "Use attempted in browser by owner")?;
+        self.insert_kernel_browser_secret(
+            &user,
+            &admission,
+            &args,
+            &service,
+            url,
+            SecretFillContext {
+                actor: Some(&actor),
+                signing_material: Value::Null,
+                plain: false,
+            },
+        )
+        .await?;
+        service.record_vault_activity(&args.credential_id, "Used in browser by owner")?;
+        Ok(json!({"inserted":true}))
+    }
+
+    async fn insert_kernel_browser_secret(
+        &self,
+        user: &str,
+        admission: &KernelBrowserAdmission,
+        args: &PasteArgs,
+        service: &crate::secret::RuntimeSecretService,
+        url: String,
+        context: SecretFillContext<'_>,
+    ) -> Result<(), DaemonError> {
+        let protection = &self.owned.kernel_browser_secret_observations;
+        let scope = KernelBrowserHost::profile_key(user);
         // Reuse Room registration before any input handler, including failures.
         let snapshot = self
             .kernel_browser_bound_operation(
                 user,
-                Some(&admission),
+                Some(admission),
                 "host.browser",
                 json!({"op":"snapshot","tab_id":args.tab_id,"generation":args.generation}),
                 true,
             )
             .await?;
-        check_authority()?;
         let target = snapshot["snapshot"]["target_id"]
             .as_str()
             .ok_or_else(|| host_error("MD-5: missing target identity".into()))?;
+        let secret = zeroize::Zeroizing::new(
+            service.browser_secret_input_for_target_url(&args.credential_id, &url)?,
+        );
         let action = BrowserLocatorAction::Fill {
             text: secret.to_string(),
             append: false,
             submit: args.submit,
-            expected_document_url: Some(url),
+            expected_document_url: Some(url.clone()),
         };
         let command =
             crate::transport::room_browser_controller::RoomBrowserControllerCommand::Action {
+                agent_id: None,
                 execution_id: "kernel-browser-secret".into(),
                 target_id: target.into(),
                 document_id: args.document_id.clone(),
@@ -278,22 +458,38 @@ impl KernelRuntimeState {
             };
         protection.register_command(&scope, &command)?;
         let mut params = json!({"tab_id":args.tab_id,"generation":args.generation,"document_id":args.document_id,"node_ref":args.node_ref,"action":action});
+        // OTP and recovery forms commonly use plain inputs. The registered
+        // target protects model observations without changing the owner's field.
+        params["vault_factor_input"] = matches!(
+            service
+                .validate_browser_secret_input_for_target_url(&args.credential_id, &url)?
+                .injection,
+            crate::config::UserCredentialInjectionConfig::Totp(_)
+                | crate::config::UserCredentialInjectionConfig::BackupCodes
+        )
+        .into();
+        params["_web_bot_auth"] = context.signing_material;
+        if context.plain {
+            params["plain_target"] = json!(true);
+        }
         // MP-08/MP-11: the fill is the agent's input to an App Tab too.
-        self.claim_app_view_tab(user, &admission, &mut params)?;
-        check_authority()?;
-        self.kernel_browser_bound_operation(user, Some(&admission), "host.secret", params, true)
+        if admission.is_agent() {
+            self.claim_app_view_tab(user, admission, &mut params)?;
+        }
+        if let Some(actor) = context.actor {
+            params["observed_by"] = json!(actor);
+        }
+        self.kernel_browser_bound_operation(user, Some(admission), "host.secret", params, true)
             .await?;
-        Ok(RuntimeToolResult {
-            ok: true,
-            payload: json!({"inserted":true}),
-        })
+        Ok(())
     }
 
-    async fn kernel_browser_secret_target_url(
+    pub(super) async fn kernel_browser_secret_target_url(
         &self,
         user: &str,
         admission: &KernelBrowserAdmission,
-        args: &PasteArgs,
+        target: &SecretTarget<'_>,
+        editable: bool,
     ) -> Result<String, DaemonError> {
         let scope = KernelBrowserHost::profile_key(user);
         let _barrier = self
@@ -302,41 +498,58 @@ impl KernelRuntimeState {
             .barrier(&scope)?
             .read_owned()
             .await;
-        self.kernel_browser_secret_target_url_bound(user, admission, args)
+        self.kernel_browser_secret_target_url_bound(user, admission, target, editable)
             .await
     }
-    async fn kernel_browser_secret_target_url_bound(
+    // Caller holds the scope's barrier. Every node must be in the observed
+    // document; the URL is that of the first one.
+    pub(super) async fn kernel_browser_secret_target_url_bound(
         &self,
         user: &str,
         admission: &KernelBrowserAdmission,
-        args: &PasteArgs,
+        target: &SecretTarget<'_>,
+        editable: bool,
     ) -> Result<String, DaemonError> {
         let result = self
             .kernel_browser_bound_operation(
                 user,
                 Some(admission),
                 "host.browser",
-                json!({"op":"snapshot","tab_id":args.tab_id,"generation":args.generation}),
+                json!({"op":"snapshot","tab_id":target.tab_id,"generation":target.generation}),
                 true,
             )
             .await?;
         let snapshot: crate::runtime::browser_controller_snapshot::BrowserControllerStructuredSnapshot = serde_json::from_value(result["snapshot"].clone()).map_err(|_| host_error("MD-5: invalid browser snapshot".into()))?;
         snapshot
-            .validate(&snapshot.target_id, &args.document_id)
+            .validate(&snapshot.target_id, target.document_id)
             .map_err(host_error)?;
         let node = snapshot
             .dom_nodes
             .iter()
-            .find(|node| node.node_ref == args.node_ref)
+            .find(|node| node.node_ref == target.node_ref)
             .ok_or_else(|| host_error("MD-5: rediscover the fill field".into()))?;
-        let editable = node.node_name.eq_ignore_ascii_case("input")
+        let url = snapshot
+            .document_url_for_node(target.node_ref)
+            .map(str::to_string)
+            .map_err(host_error)?;
+        if let Some(reveal) = target.reveal_node_ref {
+            if snapshot.document_url_for_node(reveal).ok() != Some(url.as_str()) {
+                return Err(host_error(
+                    "VAUDIT: rediscover the reveal control; it must be in the same document as the value".into(),
+                ));
+            }
+        }
+        if !editable {
+            return Ok(url);
+        }
+        let node_editable = node.node_name.eq_ignore_ascii_case("input")
             || node.node_name.eq_ignore_ascii_case("textarea")
             || node.attributes.get("contenteditable").is_some_and(|value| {
                 value.is_empty()
                     || value.eq_ignore_ascii_case("true")
                     || value.eq_ignore_ascii_case("plaintext-only")
             });
-        if !editable
+        if !node_editable
             || node.attributes.contains_key("disabled")
             || node.attributes.contains_key("readonly")
         {
@@ -344,10 +557,28 @@ impl KernelRuntimeState {
                 "MD-5: Vault input requires an editable text field".into(),
             ));
         }
-        snapshot
-            .document_url_for_node(&args.node_ref)
-            .map(str::to_string)
-            .map_err(host_error)
+        Ok(url)
+    }
+}
+
+/// The observed page node a Vault operation binds to.
+pub(super) struct SecretTarget<'a> {
+    pub(super) tab_id: &'a str,
+    pub(super) generation: u64,
+    pub(super) document_id: &'a str,
+    pub(super) node_ref: &'a str,
+    pub(super) reveal_node_ref: Option<&'a str>,
+}
+
+impl<'a> SecretTarget<'a> {
+    fn of(args: &'a PasteArgs) -> Self {
+        Self {
+            tab_id: &args.tab_id,
+            generation: args.generation,
+            document_id: &args.document_id,
+            node_ref: &args.node_ref,
+            reveal_node_ref: None,
+        }
     }
 }
 
@@ -465,7 +696,7 @@ fn scrub_display_metadata(
     Ok(value)
 }
 
-fn require_vault_owner(user: &str) -> Result<(), DaemonError> {
+pub(super) fn require_vault_owner(user: &str) -> Result<(), DaemonError> {
     // The configured Vault is host-owner state. Collaborators' browser profiles
     // remain independent and cannot resolve this owner's credential handles.
     if user != crate::session::DEFAULT_LOCAL_USER_ID {
@@ -475,6 +706,13 @@ fn require_vault_owner(user: &str) -> Result<(), DaemonError> {
     }
     Ok(())
 }
+
+struct SecretFillContext<'a> {
+    actor: Option<&'a str>,
+    signing_material: Value,
+    plain: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

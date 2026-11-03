@@ -233,12 +233,42 @@ mod failure_cause_tests {
     }
 
     #[test]
+    fn ea2_75_opencode_opaque_errors_use_status_and_native_retryability() {
+        for (status, kind, retryable) in [
+            (401, SignInRequired, false),
+            (429, UsageLimit, true),
+            (503, Overloaded, true),
+            (529, Overloaded, false),
+            (408, Network, true),
+            (500, Other, true),
+            (403, Other, false),
+        ] {
+            let outcome = session_error(
+                serde_json::json!({"name":"APIError", "data": {"message":"Request rejected", "statusCode":status, "isRetryable":retryable}}),
+            );
+            assert_eq!(
+                (outcome.kind, outcome.retryable),
+                (kind, retryable),
+                "{status}"
+            );
+        }
+        for (name, kind) in [
+            ("ProviderAuthError", SignInRequired),
+            ("ContextOverflowError", Other),
+            ("MessageOutputLengthError", Other),
+            ("MessageAbortedError", Cancelled),
+        ] {
+            let outcome = session_error(
+                serde_json::json!({"name":name,"data":{"message":"Request rejected"}}),
+            );
+            assert_eq!((outcome.kind, outcome.retryable), (kind, false), "{name}");
+        }
+    }
+
+    #[test]
     fn opencode_errors_are_typed_from_name_and_status() {
-        let expected = |kind, retryable, reason: &str| TurnOutcome {
-            kind,
-            retryable,
-            reason: reason.to_string(),
-        };
+        let expected =
+            |kind, retryable, _diagnostic: &str| TurnOutcome::provider_failure(kind, retryable);
         assert_eq!(
             session_error(serde_json::json!({
                 "name": "ProviderAuthError",

@@ -1,0 +1,328 @@
+{
+  "cases": [
+    {
+      "expected": {
+        "atoms": [
+          "clipboard:read",
+          "connection:dev.chariox.slack:post_message",
+          "network:https://api.example.com GET",
+          "network:https://api.example.com POST",
+          "route:https://api.example.com POST /lists todo_account",
+          "route:https://api.example.com POST /todos todo_account",
+          "verified-route:https://api.example.com POST /todos todo_account",
+          "workflows:select"
+        ],
+        "digest": "sha256:886d722f5ea97064efe12719deee3317760b2fbc2911a7cff31ccdaeeeffda0d"
+      },
+      "input": {
+        "actions": [
+          {
+            "criticalValidation": {
+              "reason": "Confirm",
+              "userVerification": true
+            },
+            "effectRoutes": [
+              {
+                "connection": "todo_account",
+                "method": "POST",
+                "origin": "https://api.example.com",
+                "path": "/todos"
+              }
+            ],
+            "inputSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "name": "create_todo"
+          },
+          {
+            "effectRoutes": [
+              {
+                "connection": "todo_account",
+                "method": "POST",
+                "origin": "https://api.example.com",
+                "path": "/lists"
+              }
+            ],
+            "inputSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "name": "list_todos"
+          }
+        ],
+        "capabilities": {
+          "clipboard": [
+            "read"
+          ],
+          "connections": [
+            {
+              "actions": [
+                "post_message"
+              ],
+              "generator": "dev.chariox.slack"
+            }
+          ],
+          "network": [
+            {
+              "methods": [
+                "POST",
+                "GET"
+              ],
+              "origin": "https://api.example.com"
+            }
+          ],
+          "workflows": [
+            "select"
+          ]
+        },
+        "kind": "authority"
+      },
+      "name": "atoms-of-capabilities-and-routes"
+    },
+    {
+      "expected": {
+        "atoms": [
+          "clipboard:read",
+          "connection:dev.chariox.slack:post_message",
+          "network:https://api.example.com GET",
+          "network:https://api.example.com POST",
+          "route:https://api.example.com POST /lists todo_account",
+          "route:https://api.example.com POST /todos todo_account",
+          "verified-route:https://api.example.com POST /todos todo_account",
+          "workflows:select"
+        ],
+        "digest": "sha256:886d722f5ea97064efe12719deee3317760b2fbc2911a7cff31ccdaeeeffda0d"
+      },
+      "input": {
+        "actions": [
+          {
+            "criticalValidation": {
+              "reason": "Please confirm",
+              "userVerification": true
+            },
+            "effectRoutes": [
+              {
+                "connection": "todo_account",
+                "method": "POST",
+                "origin": "https://api.example.com",
+                "path": "/todos"
+              }
+            ],
+            "inputSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "name": "make_todo"
+          },
+          {
+            "effectRoutes": [
+              {
+                "connection": "todo_account",
+                "method": "POST",
+                "origin": "https://api.example.com",
+                "path": "/lists"
+              }
+            ],
+            "inputSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "name": "show_lists"
+          }
+        ],
+        "capabilities": {
+          "clipboard": [
+            "read"
+          ],
+          "connections": [
+            {
+              "actions": [
+                "post_message"
+              ],
+              "generator": "dev.chariox.slack"
+            }
+          ],
+          "network": [
+            {
+              "methods": [
+                "POST",
+                "GET"
+              ],
+              "origin": "https://api.example.com"
+            }
+          ],
+          "workflows": [
+            "select"
+          ]
+        },
+        "kind": "authority"
+      },
+      "name": "renamed-and-reworded-actions-keep-the-same-atoms"
+    },
+    {
+      "expected": {
+        "added": [
+          "clipboard:read",
+          "network:https://api.example.com GET",
+          "network:https://api.example.com POST"
+        ],
+        "decision": "prompt"
+      },
+      "input": {
+        "approved": null,
+        "candidate": [
+          "clipboard:read",
+          "network:https://api.example.com GET",
+          "network:https://api.example.com POST"
+        ],
+        "kind": "requirement"
+      },
+      "name": "first-install-always-asks"
+    },
+    {
+      "expected": {
+        "decision": "reuse"
+      },
+      "input": {
+        "approved": [
+          "clipboard:read",
+          "network:https://api.example.com GET",
+          "network:https://api.example.com POST"
+        ],
+        "candidate": [
+          "clipboard:read",
+          "network:https://api.example.com GET",
+          "network:https://api.example.com POST"
+        ],
+        "kind": "requirement"
+      },
+      "name": "unchanged-reuses"
+    },
+    {
+      "expected": {
+        "decision": "reuse"
+      },
+      "input": {
+        "approved": [
+          "clipboard:read",
+          "network:https://api.example.com GET",
+          "network:https://api.example.com POST"
+        ],
+        "candidate": [
+          "clipboard:read"
+        ],
+        "kind": "requirement"
+      },
+      "name": "removed-authority-reuses"
+    },
+    {
+      "expected": {
+        "added": [
+          "files:user_selected"
+        ],
+        "decision": "prompt"
+      },
+      "input": {
+        "approved": [
+          "clipboard:read",
+          "network:https://api.example.com GET",
+          "network:https://api.example.com POST"
+        ],
+        "candidate": [
+          "clipboard:read",
+          "network:https://api.example.com GET",
+          "network:https://api.example.com POST",
+          "files:user_selected"
+        ],
+        "kind": "requirement"
+      },
+      "name": "added-authority-asks-for-only-the-addition"
+    },
+    {
+      "expected": {
+        "added": [
+          "verified-route:https://api.example.com POST /todos todo_account"
+        ],
+        "decision": "prompt"
+      },
+      "input": {
+        "approved": [
+          "route:https://api.example.com POST /todos todo_account"
+        ],
+        "candidate": [
+          "route:https://api.example.com POST /todos todo_account",
+          "verified-route:https://api.example.com POST /todos todo_account"
+        ],
+        "kind": "requirement"
+      },
+      "name": "critical-effect-on-existing-route-asks"
+    },
+    {
+      "expected": {
+        "allowed": true
+      },
+      "input": {
+        "approvedNow": [
+          "clipboard:read",
+          "network:https://api.example.com GET",
+          "network:https://api.example.com POST"
+        ],
+        "candidate": [
+          "clipboard:read",
+          "network:https://api.example.com GET",
+          "network:https://api.example.com POST"
+        ],
+        "decidedTrustRevision": 3,
+        "kind": "commit",
+        "trustRevisionNow": 3
+      },
+      "name": "commit-with-unchanged-authority"
+    },
+    {
+      "expected": {
+        "added": [
+          "network:https://api.example.com GET",
+          "network:https://api.example.com POST"
+        ],
+        "refusal": "authority_changed"
+      },
+      "input": {
+        "approvedNow": [
+          "clipboard:read"
+        ],
+        "candidate": [
+          "clipboard:read",
+          "network:https://api.example.com GET",
+          "network:https://api.example.com POST"
+        ],
+        "decidedTrustRevision": 3,
+        "kind": "commit",
+        "trustRevisionNow": 3
+      },
+      "name": "commit-after-authority-was-narrowed"
+    },
+    {
+      "expected": {
+        "refusal": "trust_changed"
+      },
+      "input": {
+        "approvedNow": [
+          "clipboard:read",
+          "network:https://api.example.com GET",
+          "network:https://api.example.com POST"
+        ],
+        "candidate": [
+          "clipboard:read",
+          "network:https://api.example.com GET",
+          "network:https://api.example.com POST"
+        ],
+        "decidedTrustRevision": 3,
+        "kind": "commit",
+        "trustRevisionNow": 4
+      },
+      "name": "commit-after-trust-changed"
+    }
+  ],
+  "contract": "docs/APPS_V2_CONTRACTS.md §4: normalized authority, the prompt rule and the commit-time revalidation"
+}

@@ -1,19 +1,20 @@
 {
-  "local": 957,
-  "peer": 406,
+  "local": 966,
+  "peer": 415,
   "requests": [
-    {
-      "OwnerVault": {
-        "action": "list"
-      }
-    },
     {
       "OwnerVault": {
         "action": "create",
         "kind": "Password",
         "name": "GitHub",
-        "usage": "github.com",
-        "value": "owner-input"
+        "value": "owner-input",
+        "use_binding": {
+          "target": {
+            "kind": "site",
+            "origin": "https://github.com"
+          },
+          "value_kind": "secret"
+        }
       }
     },
     {
@@ -21,7 +22,13 @@
         "action": "generate",
         "kind": "Password",
         "name": "GitHub",
-        "usage": "github.com"
+        "use_binding": {
+          "target": {
+            "kind": "site",
+            "origin": "https://github.com"
+          },
+          "value_kind": "secret"
+        }
       }
     },
     {
@@ -51,24 +58,6 @@
     }
   ],
   "responses": [
-    {
-      "OwnerVault": {
-        "result": {
-          "action": "list",
-          "entries": [
-            {
-              "created_at_ms": 1,
-              "created_by": "user",
-              "id": "entry",
-              "kind": "Password",
-              "name": "GitHub",
-              "updated_at_ms": 1,
-              "usage": "github.com"
-            }
-          ]
-        }
-      }
-    },
     {
       "OwnerVault": {
         "result": {

@@ -1,0 +1,194 @@
+{
+  "cases": [
+    {
+      "expected": {
+        "entryCanonical": "{\"componentDigest\":\"sha256:c0\",\"cpuFeaturePolicy\":\"x86-64-v2\",\"engineConfigDigest\":\"sha256:e0\",\"targetTriple\":\"x86_64-unknown-linux-gnu\",\"wasmtimeVersion\":\"44.0.0\",\"workerBuild\":\"worker-2026.10.26\"}",
+        "entryId": "sha256:3de39b6fe3b44b37f09b084d693e692f1da86ae1b24514a936420e18531b33f8",
+        "runningId": "sha256:3de39b6fe3b44b37f09b084d693e692f1da86ae1b24514a936420e18531b33f8",
+        "usable": true
+      },
+      "input": {
+        "entry": {
+          "componentDigest": "sha256:c0",
+          "cpuFeaturePolicy": "x86-64-v2",
+          "engineConfigDigest": "sha256:e0",
+          "targetTriple": "x86_64-unknown-linux-gnu",
+          "wasmtimeVersion": "44.0.0",
+          "workerBuild": "worker-2026.10.26"
+        },
+        "running": {
+          "componentDigest": "sha256:c0",
+          "cpuFeaturePolicy": "x86-64-v2",
+          "engineConfigDigest": "sha256:e0",
+          "targetTriple": "x86_64-unknown-linux-gnu",
+          "wasmtimeVersion": "44.0.0",
+          "workerBuild": "worker-2026.10.26"
+        }
+      },
+      "name": "same-build"
+    },
+    {
+      "expected": {
+        "entryCanonical": "{\"componentDigest\":\"sha256:c0\",\"cpuFeaturePolicy\":\"x86-64-v2\",\"engineConfigDigest\":\"sha256:e0\",\"targetTriple\":\"x86_64-unknown-linux-gnu\",\"wasmtimeVersion\":\"44.0.0\",\"workerBuild\":\"worker-2026.10.26\"}",
+        "entryId": "sha256:3de39b6fe3b44b37f09b084d693e692f1da86ae1b24514a936420e18531b33f8",
+        "runningId": "sha256:c1f89ef8fcceb7e1da4949139205c86959739fdbf83e1328ecdf042994e3f052",
+        "usable": false
+      },
+      "input": {
+        "entry": {
+          "componentDigest": "sha256:c0",
+          "cpuFeaturePolicy": "x86-64-v2",
+          "engineConfigDigest": "sha256:e0",
+          "targetTriple": "x86_64-unknown-linux-gnu",
+          "wasmtimeVersion": "44.0.0",
+          "workerBuild": "worker-2026.10.26"
+        },
+        "running": {
+          "componentDigest": "sha256:c0",
+          "cpuFeaturePolicy": "x86-64-v2",
+          "engineConfigDigest": "sha256:e0",
+          "targetTriple": "x86_64-unknown-linux-gnu",
+          "wasmtimeVersion": "44.0.0",
+          "workerBuild": "worker-2026.11.02"
+        }
+      },
+      "name": "worker-security-update-invalidates"
+    },
+    {
+      "expected": {
+        "entryCanonical": "{\"componentDigest\":\"sha256:c0\",\"cpuFeaturePolicy\":\"x86-64-v2\",\"engineConfigDigest\":\"sha256:e0\",\"targetTriple\":\"x86_64-unknown-linux-gnu\",\"wasmtimeVersion\":\"44.0.0\",\"workerBuild\":\"worker-2026.10.26\"}",
+        "entryId": "sha256:3de39b6fe3b44b37f09b084d693e692f1da86ae1b24514a936420e18531b33f8",
+        "runningId": "sha256:df54e3bfd49c9dd84807c50b6cd0c1bc7d6f6edbc9487aaa5d7a21f37dc42fb6",
+        "usable": false
+      },
+      "input": {
+        "entry": {
+          "componentDigest": "sha256:c0",
+          "cpuFeaturePolicy": "x86-64-v2",
+          "engineConfigDigest": "sha256:e0",
+          "targetTriple": "x86_64-unknown-linux-gnu",
+          "wasmtimeVersion": "44.0.0",
+          "workerBuild": "worker-2026.10.26"
+        },
+        "running": {
+          "componentDigest": "sha256:c0",
+          "cpuFeaturePolicy": "x86-64-v2",
+          "engineConfigDigest": "sha256:e0",
+          "targetTriple": "x86_64-unknown-linux-gnu",
+          "wasmtimeVersion": "44.0.1",
+          "workerBuild": "worker-2026.10.26"
+        }
+      },
+      "name": "wasmtime-update-invalidates"
+    },
+    {
+      "expected": {
+        "entryCanonical": "{\"componentDigest\":\"sha256:c0\",\"cpuFeaturePolicy\":\"x86-64-v2\",\"engineConfigDigest\":\"sha256:e0\",\"targetTriple\":\"x86_64-unknown-linux-gnu\",\"wasmtimeVersion\":\"44.0.0\",\"workerBuild\":\"worker-2026.10.26\"}",
+        "entryId": "sha256:3de39b6fe3b44b37f09b084d693e692f1da86ae1b24514a936420e18531b33f8",
+        "runningId": "sha256:9ce2c17fc3b4cae3cddb15adb45748c37a876de894772e951f87a48ddc6f487a",
+        "usable": false
+      },
+      "input": {
+        "entry": {
+          "componentDigest": "sha256:c0",
+          "cpuFeaturePolicy": "x86-64-v2",
+          "engineConfigDigest": "sha256:e0",
+          "targetTriple": "x86_64-unknown-linux-gnu",
+          "wasmtimeVersion": "44.0.0",
+          "workerBuild": "worker-2026.10.26"
+        },
+        "running": {
+          "componentDigest": "sha256:c0",
+          "cpuFeaturePolicy": "x86-64-v3",
+          "engineConfigDigest": "sha256:e0",
+          "targetTriple": "x86_64-unknown-linux-gnu",
+          "wasmtimeVersion": "44.0.0",
+          "workerBuild": "worker-2026.10.26"
+        }
+      },
+      "name": "other-cpu-policy-invalidates"
+    },
+    {
+      "expected": {
+        "entryCanonical": "{\"componentDigest\":\"sha256:c0\",\"cpuFeaturePolicy\":\"x86-64-v2\",\"engineConfigDigest\":\"sha256:e0\",\"targetTriple\":\"x86_64-unknown-linux-gnu\",\"wasmtimeVersion\":\"44.0.0\",\"workerBuild\":\"worker-2026.10.26\"}",
+        "entryId": "sha256:3de39b6fe3b44b37f09b084d693e692f1da86ae1b24514a936420e18531b33f8",
+        "runningId": "sha256:db39c8639a1747d0a861d7ec8b38c3d4a7c4f9f4b2214301ef7a0f9a8d74ba22",
+        "usable": false
+      },
+      "input": {
+        "entry": {
+          "componentDigest": "sha256:c0",
+          "cpuFeaturePolicy": "x86-64-v2",
+          "engineConfigDigest": "sha256:e0",
+          "targetTriple": "x86_64-unknown-linux-gnu",
+          "wasmtimeVersion": "44.0.0",
+          "workerBuild": "worker-2026.10.26"
+        },
+        "running": {
+          "componentDigest": "sha256:c0",
+          "cpuFeaturePolicy": "x86-64-v2",
+          "engineConfigDigest": "sha256:e0",
+          "targetTriple": "aarch64-apple-darwin",
+          "wasmtimeVersion": "44.0.0",
+          "workerBuild": "worker-2026.10.26"
+        }
+      },
+      "name": "other-target-invalidates"
+    },
+    {
+      "expected": {
+        "entryCanonical": "{\"componentDigest\":\"sha256:c0\",\"cpuFeaturePolicy\":\"x86-64-v2\",\"engineConfigDigest\":\"sha256:e0\",\"targetTriple\":\"x86_64-unknown-linux-gnu\",\"wasmtimeVersion\":\"44.0.0\",\"workerBuild\":\"worker-2026.10.26\"}",
+        "entryId": "sha256:3de39b6fe3b44b37f09b084d693e692f1da86ae1b24514a936420e18531b33f8",
+        "runningId": "sha256:88bd95e2b3b80a88d830d098cb9ee232f8f46134325393d1c796b3591ae8484c",
+        "usable": false
+      },
+      "input": {
+        "entry": {
+          "componentDigest": "sha256:c0",
+          "cpuFeaturePolicy": "x86-64-v2",
+          "engineConfigDigest": "sha256:e0",
+          "targetTriple": "x86_64-unknown-linux-gnu",
+          "wasmtimeVersion": "44.0.0",
+          "workerBuild": "worker-2026.10.26"
+        },
+        "running": {
+          "componentDigest": "sha256:c0",
+          "cpuFeaturePolicy": "x86-64-v2",
+          "engineConfigDigest": "sha256:e1",
+          "targetTriple": "x86_64-unknown-linux-gnu",
+          "wasmtimeVersion": "44.0.0",
+          "workerBuild": "worker-2026.10.26"
+        }
+      },
+      "name": "other-engine-config-invalidates"
+    },
+    {
+      "expected": {
+        "entryCanonical": "{\"componentDigest\":\"sha256:c0\",\"cpuFeaturePolicy\":\"x86-64-v2\",\"engineConfigDigest\":\"sha256:e0\",\"targetTriple\":\"x86_64-unknown-linux-gnu\",\"wasmtimeVersion\":\"44.0.0\",\"workerBuild\":\"worker-2026.10.26\"}",
+        "entryId": "sha256:3de39b6fe3b44b37f09b084d693e692f1da86ae1b24514a936420e18531b33f8",
+        "runningId": "sha256:e3cd162296938a245ae93f982ca67f591030cc1dc95bca534b0c157521e4a86c",
+        "usable": false
+      },
+      "input": {
+        "entry": {
+          "componentDigest": "sha256:c0",
+          "cpuFeaturePolicy": "x86-64-v2",
+          "engineConfigDigest": "sha256:e0",
+          "targetTriple": "x86_64-unknown-linux-gnu",
+          "wasmtimeVersion": "44.0.0",
+          "workerBuild": "worker-2026.10.26"
+        },
+        "running": {
+          "componentDigest": "sha256:c1",
+          "cpuFeaturePolicy": "x86-64-v2",
+          "engineConfigDigest": "sha256:e0",
+          "targetTriple": "x86_64-unknown-linux-gnu",
+          "wasmtimeVersion": "44.0.0",
+          "workerBuild": "worker-2026.10.26"
+        }
+      },
+      "name": "changed-component-is-another-entry"
+    }
+  ],
+  "contract": "docs/APPS_V2_CONTRACTS.md §6: when a locally derived AOT entry may be deserialized"
+}

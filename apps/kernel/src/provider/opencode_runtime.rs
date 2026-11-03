@@ -21,6 +21,9 @@ pub use state::{OpenCodeAssistantCompletion, OpenCodeOutputChunk};
 use transcript::ToolTranscriptUpdate;
 
 #[cfg(test)]
+pub(crate) use tests::assert_native_non_retryability;
+
+#[cfg(test)]
 mod tests {
     use std::sync::mpsc;
 
@@ -48,6 +51,30 @@ mod tests {
         transcript::render_tool_transcript_update,
         OpenCodeAssistantCompletion, OpenCodeRuntimeState, ToolTranscriptUpdate,
     };
+
+    pub(crate) fn assert_native_non_retryability() {
+        let (tx, rx) = mpsc::channel();
+        tx.send(OpenCodeEvent::SessionError {
+            session_id: "session-1".into(),
+            message: "OpenCode error [server_overloaded; retryable=false]: Overloaded".into(),
+        })
+        .unwrap();
+        let mut state = super::OpenCodeRuntimeState::new(
+            busy_native_endpoint(),
+            "session-1".into(),
+            crate::provider::OpenCodeEventSubscription::for_tests(rx),
+        );
+        state.note_prompt_submitted("user-1".into());
+        let result = super::drain_opencode_events(&test_run(), &mut state, None).unwrap();
+        let failure = crate::provider::TurnOutcome::classify(
+            "opencode",
+            result.terminal_failure.as_deref().unwrap(),
+        );
+        assert_eq!(
+            (failure.kind, failure.retryable),
+            (crate::provider::TurnOutcomeKind::Overloaded, false)
+        );
+    }
 
     // Event-focused tests retain a healthy native fallback status endpoint.
     // A connected event channel cannot substitute for HTTP availability.

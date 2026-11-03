@@ -122,6 +122,7 @@ impl DaemonApp {
             Ok::<bool, DaemonError>(relay_state.read().await.connected())
         })?;
         Ok(RelayStatus {
+            local_daemon_protocol_version: crate::local::LOCAL_DAEMON_PROTOCOL_VERSION,
             runtime_process_identity: crate::runtime::kernel_process_identity::current(),
             capabilities: crate::local::RUNTIME_CONTROL_CAPABILITIES
                 .iter()

@@ -4,6 +4,11 @@ pub(crate) fn message(code: &str) -> Option<&'static str> {
         return Some(crate::provider_account_copy::failure_message(code));
     }
     Some(match code {
+        "control_plane_grant_required" => "Use the owner's Chariox access grant for machine requests",
+        "control_plane_unavailable" => "This kernel has no connected machine service",
+        "control_plane_authorization_denied" => "Reconnect the owner's signed-in client and refresh machine capabilities",
+        "control_plane_binding_invalid" => "The connected service returned an invalid machine binding",
+
         "provider_profile_unverified" => "provider profile has not been verified; run RefreshProviderAccountProfile {provider, account_profile} on the executing kernel, then retry the prompt",
         "provider_profile_unauthenticated" => "provider profile is not authenticated; run RefreshProviderAccountProfile {provider, account_profile} on the executing kernel. If it remains unauthenticated, reconnect it in Provider Accounts before retrying",
         "provider_profile_usage_exhausted" => "provider profile usage is exhausted; run RefreshProviderAccountProfile {provider, account_profile} to refresh usage, or select another account before starting work",
