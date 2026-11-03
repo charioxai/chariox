@@ -1409,9 +1409,7 @@ fn assert_code(f: &Fixture, handle: &str, digits: u32, period: u64) {
     };
     let (before, code, after) = (now(), stored(f, handle), now());
     assert!(
-        [code_at(before), code_at(after)]
-            .iter()
-            .any(|expected| *expected == *code),
+        [code_at(before), code_at(after)].contains(&*code),
         "the Vault computes a code from the captured seed"
     );
 }
