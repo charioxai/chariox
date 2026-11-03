@@ -1,6 +1,5 @@
-//! MP-08/MP-10/MP-11 #992: retain AppView authority through cold start and reply.
+//! MP-08/MP-10/MP-11 #992: a Room App view call keeps the calling agent's identity and binding.
 use super::*;
-use crate::local::UserDomainResource;
 use chariox_app_package::{verify, VerificationPolicy};
 use chariox_app_runtime::{
     release_store::{ReleaseStore, StageBudget},
@@ -12,7 +11,6 @@ struct ViewFixture {
     state: KernelRuntimeState,
     agent: crate::agent::AgentInstance,
     binding: AppViewBinding,
-    view: String,
     observations: Arc<Mutex<Vec<chariox_app_runtime::worker_process::test_fixture::Observation>>>,
     _cleanup: super::cold_start_tests::Cleanup,
 }
@@ -81,7 +79,6 @@ fn prepare_with_turn(mode: Mode, with_turn: bool) -> ViewFixture {
         state,
         agent,
         binding,
-        view: view.view_id,
         observations,
         _cleanup: cleanup,
     }
