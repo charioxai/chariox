@@ -6229,6 +6229,18 @@ Clients need kernel protocol >=923 (`credentialVaultUnlockMinimumProtocolVersion
 web). The managed-upgrade list is [629, 636, 923]. Focused checks:
 `cargo test -p chariox-kernel --lib vault_unlock` and `node --test scripts/protocol-versions.test.mjs`.
 
+### Agent reach — local 974
+
+A Room agent of the kernel owner reaches other rooms and kernels through a second runtime MCP server,
+`chariox-reach` at `/mcp/reach` (tools `kernels` and `request`; see `docs/KERNEL_ACCESS.md`). The wire
+changes are small: user config gains `agents.ask_before_renting_machines` (`GetUserConfigSchema` lists
+it; `SetUserConfigValue` takes `"true"`/`"false"`; it is owner-only, so a gateway or sudo caller is
+refused), a rental question in the agent's room when it is on, and `on_behalf_of.harness` naming
+`<room>/<agent> (Chariox agent)` in the target's audit and paired-clients list. Relay peer 415 is
+unchanged. A client that shows the setting needs kernel protocol >=974; development stage kernels are
+re-provisioned. The managed-upgrade list is [629, 636, 974]. Focused checks:
+`cargo test -p chariox-kernel --lib mcp_server::tests::reach` and `node scripts/drills/agent-reach.mjs`.
+
 ### Apps v2 — local 966 / relay peer 415
 
 One allocation carries the whole Apps v2 Stage 1 line. Local requests: `BeginAppInstall` and
