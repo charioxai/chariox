@@ -532,7 +532,11 @@ impl KernelRuntimeState {
         let Some(resolution) = self
             .await_vault_unlock_interaction(
                 session_id,
-                vault_passphrase_interaction(&self.vault_requester(session_id, agent_id), agent_id),
+                vault_passphrase_interaction(
+                    &self.vault_requester(session_id, agent_id),
+                    agent_id,
+                    vault_unlock_card_seconds(operation),
+                ),
                 operation,
                 &vault_path,
                 &mut unlocks,
@@ -752,9 +756,10 @@ impl KernelRuntimeState {
     }
 }
 
-/// A person has to find and fill this card; the waiting tool call is cut by the provider
+/// A person has to find and fill the card; the waiting tool call is cut by the provider
 /// at 300 s, so the kernel ends the card itself just before that with a clear error.
-const VAULT_UNLOCK_CARD_SECONDS: u64 = 280;
+const VAULT_UNLOCK_TOOL_CARD_SECONDS: u64 = 280;
+const VAULT_UNLOCK_LAUNCH_CARD_SECONDS: u64 = 60;
 const VAULT_PASSPHRASE_CHANGE: &str = "credential_vault_change_passphrase";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -813,9 +818,28 @@ fn vault_passphrase_change_interaction(
     )
 }
 
+/// A launch must end quickly with retry guidance; an agent's tool call can wait for a person.
+fn vault_unlock_card_seconds(operation: &str) -> u64 {
+    let agent_tool = operation.starts_with("runtime_tool_")
+        || matches!(
+            operation,
+            "vault_generate"
+                | "credential_vault_manage"
+                | "kernel_browser_paste_secret"
+                | "vault_capture_browser"
+                | "web_bot_auth"
+        );
+    if agent_tool {
+        VAULT_UNLOCK_TOOL_CARD_SECONDS
+    } else {
+        VAULT_UNLOCK_LAUNCH_CARD_SECONDS
+    }
+}
+
 fn vault_passphrase_interaction(
     requester: &VaultRequester,
     agent_id: &str,
+    seconds: u64,
 ) -> crate::session::RuntimeInteraction {
     let choices = vec![crate::session::RuntimeInteractionChoice::new(
         "cancel",
@@ -841,7 +865,7 @@ fn vault_passphrase_interaction(
             Some(1),
             Some(512),
         )),
-        Some(VAULT_UNLOCK_CARD_SECONDS),
+        Some(seconds),
         None,
     )
 }
@@ -1184,7 +1208,7 @@ mod tests {
 
     #[test]
     fn vault_passphrase_prompt_cannot_encode_an_unlock_lease_as_the_secret() {
-        let interaction = vault_passphrase_interaction(&requester(None, None), "agent-1");
+        let interaction = vault_passphrase_interaction(&requester(None, None), "agent-1", 60);
 
         assert_eq!(
             interaction
@@ -1289,7 +1313,7 @@ mod tests {
         ] {
             let requester = requester(agent, room);
             let mut interactions = vec![
-                vault_passphrase_interaction(&requester, agent_id),
+                vault_passphrase_interaction(&requester, agent_id, 60),
                 vault_manage_interaction(&requester, agent_id),
             ];
             for step in [
