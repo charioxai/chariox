@@ -394,6 +394,9 @@ impl KernelRuntimeState {
         // Installation IDs are stable handles in the agent's own Room. After
         // idle retirement they open a fresh Tab from the current verified release.
         // Physical targets from the earlier catalog remain accepted while live.
+        if let Some(context) = self.bound_user_view(agent, target).await? {
+            return Ok(context);
+        }
         let opened_target;
         let target = if agent.has_extension_grant(ExtensionKind::App, target) {
             let authority = AppViewAuthority::new(
@@ -404,10 +407,6 @@ impl KernelRuntimeState {
                 Some(self.app_binding_epoch(agent.id(), target)),
             );
             authority.check()?;
-            if let Some(context) = self.bound_user_view(agent, target).await? {
-                authority.check()?;
-                return Ok(context);
-            }
             let mut retired = None;
             let existing = match self.bound_view(agent, target) {
                 Ok(context) => {
@@ -489,7 +488,7 @@ impl KernelRuntimeState {
     }
 
     /// A user-domain App is reachable only through its owner's retained view
-    /// record. The caller already proved this exact installation is granted.
+    /// record and an exact grant on that record's installation.
     async fn bound_user_view(
         &self,
         agent: &crate::agent::AgentInstance,
