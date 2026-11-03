@@ -15,6 +15,14 @@ impl Fixture {
         &self,
         permission: crate::provider::AgentPermissionLevel,
     ) -> (Arc<Mutex<DaemonApp>>, CommandRouter, String, String, String) {
+        self.router_for(permission, "alice")
+    }
+    /// A Room owned by `alice` whose agent belongs to `agent_owner`.
+    fn router_for(
+        &self,
+        permission: crate::provider::AgentPermissionLevel,
+        agent_owner: &str,
+    ) -> (Arc<Mutex<DaemonApp>>, CommandRouter, String, String, String) {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
         crate::durable_state::app_state::fixture_catalog(&app.durable_state_store());
         let session = app
@@ -27,7 +35,7 @@ impl Fixture {
         let agent = crate::app::KernelSessionService::new(&mut app)
             .spawn_agent(
                 CreateAgentRequest::new(session.id(), "dev-stub")
-                    .with_owner_user_id("alice")
+                    .with_owner_user_id(agent_owner)
                     .with_permission_level_override(permission),
             )
             .unwrap();
@@ -354,6 +362,41 @@ async fn an_agents_own_request_binds_an_installed_app_at_once_without_asking_a_p
         assert!(!missing.ok);
         assert!(!granted_app(&app, &agent, "missing").await);
     }
+}
+
+#[tokio::test]
+async fn a_guests_agent_asks_for_the_room_owners_app_inside_the_invited_room() {
+    let fixture = Fixture::new();
+    let (app, router, _session, agent, auth) =
+        fixture.router_for(crate::provider::AgentPermissionLevel::Required, "bob");
+    let listed = router
+        .runtime_state
+        .dispatch_authenticated_runtime_tool_call(
+            &auth,
+            crate::transport::runtime_tools::LIST_EXTENSIONS_TOOL,
+            serde_json::json!({"kind":"app"}),
+        )
+        .await
+        .unwrap();
+    let apps = listed.payload["extensions"]["apps"].as_array().unwrap();
+    assert!(apps
+        .iter()
+        .any(|app| app["name"] == "installed" && app["granted"] == false));
+    let result = timeout(
+        Duration::from_secs(2),
+        router
+            .runtime_state
+            .dispatch_authenticated_runtime_tool_call(
+                &auth,
+                crate::transport::runtime_tools::REQUEST_EXTENSION_TOOL,
+                serde_json::json!({"kind":"app","name":"installed"}),
+            ),
+    )
+    .await
+    .expect("a guest's App request must not wait for a person")
+    .unwrap();
+    assert!(result.ok);
+    assert!(granted(&app, &agent).await);
 }
 
 #[tokio::test]
