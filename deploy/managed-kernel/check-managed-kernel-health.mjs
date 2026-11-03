@@ -4,7 +4,6 @@ import { connect } from "node:net"
 import { constants } from "node:fs"
 import { open } from "node:fs/promises"
 import { basename, join } from "node:path"
-import { allocationWorkerReleaseMatches } from "./allocation-worker-receipt.mjs"
 
 const MAX_RECEIPT_BYTES = 96 * 1024
 const MAX_PRESENCE_BYTES = 32 * 1024
@@ -53,30 +52,16 @@ function validIdentifier(value) {
   return typeof value === "string" && /^[a-z0-9][a-z0-9._:-]{0,127}$/.test(value)
 }
 
-async function matchingPresence(receiptPath, releaseOverridePath, presenceRoot, host, port, protocol, releaseDigest, notBeforeMs) {
+async function matchingPresence(receiptPath, presenceRoot, host, port, protocol, releaseDigest, notBeforeMs) {
   const receipt = await readBoundedJson(receiptPath, MAX_RECEIPT_BYTES)
-  let kernelId
-  let machineId
-  if (receipt && Object.hasOwn(receipt, "allocationId")) {
-    const releaseOverride = await readBoundedJson(releaseOverridePath, MAX_RECEIPT_BYTES)
-    try {
-      if (!allocationWorkerReleaseMatches(receipt, releaseOverride, releaseDigest)) return false
-    } catch { return false }
-    kernelId = receipt.kernelId
-    machineId = receipt.machineId
-  } else if (receipt?.kind === "disposable_worker") {
-    return false
-  } else {
-    if (
-      ![1, 2, 3].includes(receipt?.schemaVersion) ||
-      receipt.status !== "confirmed" ||
-      !validIdentifier(receipt.kernelId) ||
-      !validIdentifier(receipt.machineId) ||
-      receipt.runtimeReleaseDigest !== releaseDigest
-    ) return false
-    kernelId = receipt.kernelId
-    machineId = receipt.machineId
-  }
+  if (
+    ![1, 2, 3].includes(receipt?.schemaVersion) ||
+    receipt.status !== "confirmed" ||
+    !validIdentifier(receipt.kernelId) ||
+    !validIdentifier(receipt.machineId) ||
+    receipt.runtimeReleaseDigest !== releaseDigest
+  ) return false
+  const { kernelId, machineId } = receipt
   const presence = await readBoundedJson(
     join(presenceRoot, `${kernelId}.json`),
     MAX_PRESENCE_BYTES,
@@ -116,7 +101,6 @@ async function checkManagedKernel(
   portText,
   timeoutText,
   receiptPath,
-  releaseOverridePath,
   presenceRoot,
   protocolText,
   releaseDigest,
@@ -139,7 +123,7 @@ async function checkManagedKernel(
   const deadline = Date.now() + timeoutMs
   do {
     if (await matchingPresence(
-      receiptPath, releaseOverridePath, presenceRoot, host, port, protocol, releaseDigest, notBeforeMs,
+      receiptPath, presenceRoot, host, port, protocol, releaseDigest, notBeforeMs,
     )) return
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 100))
   } while (Date.now() < deadline)
@@ -147,8 +131,8 @@ async function checkManagedKernel(
 }
 
 try {
-  if (process.argv.length !== 11) {
-    fail("usage: check-managed-kernel-health <host> <port> <timeout-ms> <receipt> <release-override> <presence-root> <protocol> <release-digest> <not-before-ms>")
+  if (process.argv.length !== 10) {
+    fail("usage: check-managed-kernel-health <host> <port> <timeout-ms> <receipt> <presence-root> <protocol> <release-digest> <not-before-ms>")
   }
   await checkManagedKernel(...process.argv.slice(2))
 } catch (error) {

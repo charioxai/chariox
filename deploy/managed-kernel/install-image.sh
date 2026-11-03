@@ -133,7 +133,6 @@ if [ -e "$image_root/etc/systemd/system/chariox-path1-managed-bootstrap.service"
   || [ -L "$image_root/etc/systemd/system/chariox-path1-managed-bootstrap.service" ]; then
   require_regular_file "$image_root/etc/systemd/system/chariox-path1-managed-bootstrap.service"
 fi
-require_regular_file "$image_root/etc/systemd/system/chariox-disposable-worker-bootstrap.service"
 require_regular_file "$image_root/etc/systemd/system/chariox-rootless-docker.service"
 require_regular_file "$image_root/etc/systemd/system/chariox-slice-broker.service"
 if [ "$managed_provider_topology" = path1 ]; then
@@ -279,10 +278,8 @@ repair_root_control_tree() {
 
 repair_root_control_state() {
   repair_root_control_tree "$state_root/managed" "managed control state"
-  repair_root_control_tree "$state_root/disposable-worker" "disposable-worker control state"
   repair_root_control_tree "$state_root/kernels" "managed kernel presence state"
   repair_root_control_file "$state_root/managed-bootstrap.json" "managed bootstrap state"
-  repair_root_control_file "$state_root/disposable-worker-bootstrap.json" "disposable-worker bootstrap state"
 }
 
 validate_state_root_entries() {
@@ -293,9 +290,7 @@ validate_state_root_entries() {
   if ! unknown_state_entry=$(find "$state_root" -mindepth 1 -maxdepth 1 \
     ! \( \
       -name managed-bootstrap.json -o \
-      -name disposable-worker-bootstrap.json -o \
       -name managed -o \
-      -name disposable-worker -o \
       -name kernels -o \
       -name home -o \
       -name home-migration.json -o \
@@ -560,7 +555,6 @@ if [ ! -e "$published_release" ]; then
   if path_exists "$image_root/etc/systemd/system/chariox-path1-managed-bootstrap.service"; then
     install -o root -g root -m 0644 "$image_root/etc/systemd/system/chariox-path1-managed-bootstrap.service" "$pending_release/etc/systemd/system/chariox-path1-managed-bootstrap.service"
   fi
-  install -o root -g root -m 0644 "$image_root/etc/systemd/system/chariox-disposable-worker-bootstrap.service" "$pending_release/etc/systemd/system/chariox-disposable-worker-bootstrap.service"
   install -o root -g root -m 0644 "$image_root/etc/systemd/system/chariox-rootless-docker.service" "$pending_release/etc/systemd/system/chariox-rootless-docker.service"
   # Modern signed releases include these artifacts for shared-host verification too;
   # older shared-host releases omit the set and remain installable.
@@ -595,7 +589,6 @@ elif path_exists "$install_root/etc/systemd/system/chariox-path1-managed-bootstr
   echo "Path-1 managed-home service link is present but the signed release does not declare that service" >&2
   exit 1
 fi
-atomic_symlink "../../../usr/lib/chariox/current/etc/systemd/system/chariox-disposable-worker-bootstrap.service" "$install_root/etc/systemd/system/chariox-disposable-worker-bootstrap.service"
 atomic_symlink "../../../usr/lib/chariox/current/etc/systemd/system/chariox-rootless-docker.service" "$install_root/etc/systemd/system/chariox-rootless-docker.service"
 atomic_symlink "../../../usr/lib/chariox/current/etc/systemd/system/chariox-slice-broker.service" "$install_root/etc/systemd/system/chariox-slice-broker.service"
 if [ "$managed_provider_topology" = path1 ]; then

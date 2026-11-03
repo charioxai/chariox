@@ -8,7 +8,6 @@ import test from "node:test"
 const installSource = await readFile(new URL("./install-image.sh", import.meta.url), "utf8")
 const upgradeSource = await readFile(new URL("./upgrade-image.sh", import.meta.url), "utf8")
 const path1Service = await readFile(new URL("./chariox-path1-managed-bootstrap.service", import.meta.url), "utf8")
-const disposableWorkerService = await readFile(new URL("./chariox-disposable-worker-bootstrap.service", import.meta.url), "utf8")
 const providerPathSource = await readFile(new URL("../../apps/kernel/src/managed_bootstrap/provider_path.rs", import.meta.url), "utf8")
 const providerResolverSources = await Promise.all(["codex", "claude", "opencode"].map((provider) =>
   readFile(new URL(`../../apps/kernel/src/provider/${provider}.rs`, import.meta.url), "utf8")))
@@ -28,15 +27,9 @@ function sourceFunction(source, name, nextName) {
 
 test("Path-1 services keep bootstrap PATH while provider lookup uses the isolated login PATH resolver", () => {
   const bootstrapPath = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-  const units = [
-    [path1Service, "/usr/local/bin/chariox-managed-bootstrap"],
-    [disposableWorkerService, "/usr/local/bin/chariox-managed-bootstrap --disposable-worker"],
-  ]
-  for (const [unit, command] of units) {
-    assert.ok(unit.includes(`Environment=PATH=${bootstrapPath}`), "bootstrap PATH must remain system-owned")
-    assert.ok(unit.includes(`ExecStart=${command}`), "service must launch the trusted bootstrap directly")
-    assert.doesNotMatch(unit, /^ExecStart=.*bash --login/m)
-  }
+  assert.ok(path1Service.includes(`Environment=PATH=${bootstrapPath}`), "bootstrap PATH must remain system-owned")
+  assert.ok(path1Service.includes("ExecStart=/usr/local/bin/chariox-managed-bootstrap\n"), "service must launch the trusted bootstrap directly")
+  assert.doesNotMatch(path1Service, /^ExecStart=.*bash --login/m)
 
   const [codex, claude, opencode] = providerResolverSources
   assert.match(sourceFunction(codex, "resolve_candidate", "is_executable_file"),
@@ -66,7 +59,7 @@ test("Path-1 services keep bootstrap PATH while provider lookup uses the isolate
   assert.ok(parser.includes("OsString::from_vec(framed.to_vec())"), "only the validated PATH frame is returned")
 })
 
-test("Path-1 role units do not inherit shared-host provider sandbox controls", () => {
+test("Path-1 home unit does not inherit shared-host provider sandbox controls", () => {
   const forbidden = [
     "CHARIOX_MANAGED_PROVIDER_ISOLATION",
     "CHARIOX_CAPABILITY_ISOLATION_ROOT",
@@ -98,10 +91,8 @@ test("Path-1 role units do not inherit shared-host provider sandbox controls", (
     "CapabilityBoundingSet=",
     "SupplementaryGroups=chariox-slice",
   ]
-  for (const unit of [path1Service, disposableWorkerService]) {
-    assert.ok(unit.includes("Environment=CHARIOX_MANAGED_PROVIDER_TOPOLOGY=path1"))
-    for (const control of forbidden) assert.ok(!unit.includes(control), `Path-1 unit must omit ${control}`)
-  }
+  assert.ok(path1Service.includes("Environment=CHARIOX_MANAGED_PROVIDER_TOPOLOGY=path1"))
+  for (const control of forbidden) assert.ok(!path1Service.includes(control), `Path-1 unit must omit ${control}`)
 })
 
 test("install refuses to replace an invalid digest-named release", () => {
@@ -350,15 +341,15 @@ test("upgrade recovers interrupted phases and rolls back failed migration or hea
   assert.ok(upgradeSource.includes("write_phase rolled_back"))
 })
 
-test("Path-1 upgrade checks both effective units before recovery and after reload", async (context) => {
-  const guard = upgradeSource.match(/assert_path1_units_have_no_dropins\(\) \{\n[\s\S]*?^\}/m)?.[0]
+test("Path-1 upgrade checks the effective unit before recovery and after reload", async (context) => {
+  const guard = upgradeSource.match(/assert_path1_unit_has_no_dropins\(\) \{\n[\s\S]*?^\}/m)?.[0]
   assert.ok(guard, "upgrade must inspect effective systemd drop-ins")
 
-  const initialGuard = indexOf(upgradeSource, "assert_path1_units_have_no_dropins\nif [ \"$recover_only\" -eq 1 ]; then", "pre-recovery guard")
+  const initialGuard = indexOf(upgradeSource, "assert_path1_unit_has_no_dropins\nif [ \"$recover_only\" -eq 1 ]; then", "pre-recovery guard")
   const transaction = indexOf(upgradeSource, "pending_transaction=$chariox_root/.managed-kernel-upgrade.pending", "transaction preparation")
   assert.ok(initialGuard < transaction, "drop-ins must block recovery and transaction writes")
-  assert.match(upgradeSource, /systemctl daemon-reload \|\| return 1\n\s*assert_path1_units_have_no_dropins \|\| return 1\n[\s\S]*?systemctl start "\$service_name"/, "rollback must recheck after reload before starting")
-  assert.match(upgradeSource, /if ! systemctl daemon-reload \\\n\s*\|\| ! assert_path1_units_have_no_dropins \\\n[\s\S]*?\|\| ! systemctl start "\$service_name"/, "activation must recheck after reload before starting")
+  assert.match(upgradeSource, /systemctl daemon-reload \|\| return 1\n\s*assert_path1_unit_has_no_dropins \|\| return 1\n[\s\S]*?systemctl start "\$service_name"/, "rollback must recheck after reload before starting")
+  assert.match(upgradeSource, /if ! systemctl daemon-reload \\\n\s*\|\| ! assert_path1_unit_has_no_dropins \\\n[\s\S]*?\|\| ! systemctl start "\$service_name"/, "activation must recheck after reload before starting")
 
   const scratch = await mkdtemp(join(tmpdir(), "chariox-upgrade-dropin-test-"))
   context.after(() => rm(scratch, { recursive: true, force: true }))
@@ -371,12 +362,6 @@ case "$4" in
     reload_error=\${SYSTEMD_HOME_RELOAD_QUERY_FAIL:-}
     drop_ins=\${SYSTEMD_HOME_DROP_IN_PATHS:-}
     drop_ins_error=\${SYSTEMD_HOME_DROP_INS_QUERY_FAIL:-}
-    ;;
-  chariox-disposable-worker-bootstrap.service)
-    reload=\${SYSTEMD_WORKER_NEED_DAEMON_RELOAD:-no}
-    reload_error=\${SYSTEMD_WORKER_RELOAD_QUERY_FAIL:-}
-    drop_ins=\${SYSTEMD_WORKER_DROP_IN_PATHS:-}
-    drop_ins_error=\${SYSTEMD_WORKER_DROP_INS_QUERY_FAIL:-}
     ;;
   *) exit 2 ;;
 esac
@@ -393,20 +378,16 @@ case "$2" in
 esac
 `)
   await chmod(systemctl, 0o755)
-  const command = `${guard}\nassert_path1_units_have_no_dropins\n`
+  const command = `${guard}\nassert_path1_unit_has_no_dropins\n`
   const env = { ...process.env, PATH: `${scratch}:${process.env.PATH}`, managed_provider_topology: "path1" }
   for (const [name, overrides, expectedExit, expectedError] of [
     ["clean", {}, 0, null],
     ["home drop-in", { SYSTEMD_HOME_DROP_IN_PATHS: "/etc/systemd/system/home.d/50-hardening.conf" }, 1, /Path-1 service .* has systemd drop-ins/],
-    ["worker drop-in", { SYSTEMD_WORKER_DROP_IN_PATHS: "/etc/systemd/system/worker.d/50-hardening.conf" }, 1, /Path-1 service .* has systemd drop-ins/],
     ["home needs daemon-reload", { SYSTEMD_HOME_NEED_DAEMON_RELOAD: "yes" }, 1, /needs systemd daemon-reload/],
-    ["worker needs daemon-reload", { SYSTEMD_WORKER_NEED_DAEMON_RELOAD: "yes" }, 1, /needs systemd daemon-reload/],
+    ["malformed home reload state", { SYSTEMD_HOME_NEED_DAEMON_RELOAD: "no\nno" }, 1, /could not verify systemd reload state/],
     ["unknown home reload state", { SYSTEMD_HOME_NEED_DAEMON_RELOAD: "unknown" }, 1, /could not verify systemd reload state/],
-    ["malformed worker reload state", { SYSTEMD_WORKER_NEED_DAEMON_RELOAD: "no\nno" }, 1, /could not verify systemd reload state/],
     ["home reload query failure", { SYSTEMD_HOME_RELOAD_QUERY_FAIL: "1" }, 1, /could not inspect systemd reload state/],
-    ["worker reload query failure", { SYSTEMD_WORKER_RELOAD_QUERY_FAIL: "1" }, 1, /could not inspect systemd reload state/],
     ["home drop-in query failure", { SYSTEMD_HOME_DROP_INS_QUERY_FAIL: "1" }, 1, /could not inspect effective systemd drop-ins/],
-    ["worker drop-in query failure", { SYSTEMD_WORKER_DROP_INS_QUERY_FAIL: "1" }, 1, /could not inspect effective systemd drop-ins/],
   ]) {
     const result = spawnSync("/bin/sh", ["-c", command], {
       encoding: "utf8",
