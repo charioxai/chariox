@@ -9,7 +9,7 @@ import test from "node:test"
 import { installLocal, targetPlatform, publicUrl } from "./installer.mjs"
 import { setupFixture } from "./fixture.mjs"
 import { launchdDefinition, launchdManager } from "./launchd.mjs"
-import { runMachine } from "../kernel/ssh-machine/remote.mjs"
+import { runMachine } from "./machine/remote.mjs"
 const extractorSource = await readFile(new URL("../../deploy/managed-kernel/extract-release.py", import.meta.url), "utf8")
 const state = await realpath(process.env.CHARIOX_BYOM_TEST_STATE ?? tmpdir())
 async function harness(t, overrides = {}) {

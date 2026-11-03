@@ -10,7 +10,7 @@ import { createRequire } from "node:module"
 import { tmpdir } from "node:os"
 import { setupFixture } from "./fixture.mjs"
 import { installLocal } from "./installer.mjs"
-import { availablePort, stopOwned } from "../kernel/ssh-machine/ssh-target-fixture.mjs"
+import { availablePort, stopOwned } from "./machine/process-fixture.mjs"
 const { WebSocketServer, WebSocket } = createRequire(new URL("../../packages/kernel-client/package.json", import.meta.url))("ws")
 const kernel = process.env.CHARIOX_BYOM_DRILL_KERNEL
 if (!kernel?.startsWith("/")) throw new Error("MP-07/MP-08/MP-11: choose exact built CHARIOX_BYOM_DRILL_KERNEL")

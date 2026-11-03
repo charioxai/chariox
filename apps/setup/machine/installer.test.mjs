@@ -7,7 +7,6 @@ import { tmpdir } from "node:os"
 import test from "node:test"
 import { createFixture } from "./fixture.mjs"
 import { runMachine, validateRequest, ensureSystemdUserPersistence } from "./remote.mjs"
-import { sshArguments, validateDestination } from "./transport.mjs"
 
 const base = process.env.CHARIOX_BYOM_TEST_STATE ?? join(tmpdir(), "chariox-byom-tests")
 await mkdir(base, { recursive: true, mode: 0o700 })
@@ -59,11 +58,6 @@ test("MP-07/MP-11 user persistence uses logind's owner operation and verifies it
     }, 1001), /sudo loginctl enable-linger 1001, then retry Setup\. No enrollment code was consumed/)
   }
   await assert.rejects(ensureSystemdUserPersistence(undefined, -1), /cannot identify/)
-})
-test("MP-11 SSH destination never becomes an option or shell command; normal config/agent retained", () => {
-  for (const bad of ["-oProxyCommand=evil", "host;id", "host x", "a\n", "x$(id)", "../foo", ""]) assert.throws(() => validateDestination(bad))
-  for (const good of ["linux-lan", "alice@host.example", "10.0.0.3", "alice@[::1]"]) assert.equal(validateDestination(good), good)
-  assert.deepEqual(sshArguments("linux-lan", "uname -s"), ["-oBatchMode=yes", "-oClearAllForwardings=yes", "-oForwardAgent=no", "--", "linux-lan", "uname -s"])
 })
 test("MP-07 invalid roots/IDs/digests/default port are refused before target work", () => {
   const r = { action: "install", installId: "byom-test", port: 55129, releaseDigest: `sha256:${"a".repeat(64)}` }

@@ -3,7 +3,7 @@ import { createHash, verify } from "node:crypto"
 import { spawn } from "node:child_process"
 import { copyFile, lstat, mkdir, mkdtemp, readFile, readlink, realpath, rename, rm, symlink, writeFile } from "node:fs/promises"
 import { join } from "node:path"
-import { runMachine, command, regular, tree, validateRequest } from "../kernel/ssh-machine/remote.mjs"
+import { runMachine, command, regular, tree, validateRequest } from "./machine/remote.mjs"
 import { launchdDefinition, launchdManager } from "./launchd.mjs"
 import { publicKeyFromHex, verifyBundle } from "../../scripts/release-bundle.mjs"
 

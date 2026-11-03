@@ -1,5 +1,10 @@
 # Chariox Setup (MP-07 / MP-08 / MP-11)
 
+An owner's agent (or the owner, with `/machine add`) gets a one-line command from
+the kernel's `IssueOwnMachineEnrollment` request; running it in the new machine's
+own shell downloads this Setup and redeems its single-use code with `--enroll`.
+Chariox does not log in to the machine or install over SSH.
+
 One generic executable contains public release selection and verification inputs,
 never a user enrollment code or credential. Linux x86_64 and macOS arm64 share
 PR1's marked per-user installer, signed immutable release trees, isolated service
@@ -117,8 +122,7 @@ The kernel uses the existing ticket variant of `/auth/device/poll` to obtain onl
 its own credential. Buffers are cleared and ticket references dropped after
 redemption. A browser code without an expected-owner hint is refused for an
 already-enrolled root rather than silently claiming another user's enrollment;
-use ordinary device-flow repair for that root. SSH push retains its strict
-expected-owner check and stdin contract. Copy-kernel/context UX is PR4, using the
+use ordinary device-flow repair for that root. Copy-kernel/context UX is PR4, using the
 existing encrypted context transfer; provider logins remain per machine.
 
 ## MP-07 / MP-08 / MP-10 / MP-11 evidence limits
