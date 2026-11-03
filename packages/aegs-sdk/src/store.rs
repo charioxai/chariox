@@ -10,8 +10,8 @@ use chariox_event_protocol::{AegsProviderActionResponse, EventRouteAudience};
 
 mod inbox;
 pub use inbox::{
-    ClaimedInboxDelivery, DeliveryStatus, InboxDelivery, InboxEntry, InboxStatus, Requeue,
-    SelectedInterest,
+    ClaimedInboxDelivery, DeliveryStatus, InboxDelivery, InboxEntry, InboxMetrics, InboxStatus,
+    Requeue, SelectedInterest,
 };
 
 pub use chariox_event_protocol::AegsSubscriptionClaim as SubscriptionClaim;

@@ -23,6 +23,8 @@ pub struct NormalizedEvent {
     pub occurred_at: String,
     pub connection_scope: String,
     pub prompt: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<Value>,
     pub metadata: Value,
     pub reply_context: Option<Value>,
 }
@@ -58,9 +60,24 @@ pub struct ControlWebhookResponse {
 }
 
 pub trait AegsProvider: Send + Sync {
+    /// The payload schema from this producer's signed event declaration. The
+    /// event service and kernel independently check the pinned publisher schema.
+    fn event_payload_schema(
+        &self,
+        _event_type: &str,
+        _version: u32,
+    ) -> Result<Option<Value>, String> {
+        Ok(None)
+    }
+
     fn generator_id(&self) -> &'static str;
 
     fn provider_slug(&self) -> &'static str;
+
+    /// Reject provider-specific subscription inputs before storing desired state.
+    fn validate_subscription(&self, _subscription: &SubscriptionClaim) -> Result<(), String> {
+        Ok(())
+    }
 
     fn authorization_configured(&self) -> bool {
         false

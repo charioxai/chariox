@@ -651,10 +651,12 @@ name = "chariox-event-protocol"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "chariox-app-package",
  "chrono",
  "p256",
  "serde",
  "serde_json",
+ "serde_json_canonicalizer",
  "sha2 0.10.9",
 ]
 

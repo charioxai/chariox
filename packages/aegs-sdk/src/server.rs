@@ -275,6 +275,13 @@ impl AegsServer {
                         ),
                     );
                 }
+                for subscription in &reconcile.subscriptions {
+                    if subscription.active {
+                        if let Err(message) = self.provider.validate_subscription(subscription) {
+                            return error(StatusCode::BAD_REQUEST, "invalid_subscription", message);
+                        }
+                    }
+                }
                 let (subscriptions, refused) = match self
                     .vet_subscription_claims(&reconcile.owner_id, &reconcile.subscriptions)
                     .await
@@ -1925,6 +1932,7 @@ mod mp11_ingress_tests {
 
 #[cfg(test)]
 mod mp11_delivery_http_tests {
+    mod polling;
     use super::*;
     use std::io::{Read, Write};
     use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -1980,6 +1988,7 @@ mod mp11_delivery_http_tests {
             occurred_at: "2026-10-05T00:00:00Z".into(),
             connection_scope: "scope".into(),
             prompt: "fixture".into(),
+            data: None,
             metadata: serde_json::Value::Null,
             reply_context: None,
         }
@@ -2749,6 +2758,7 @@ mod mp11_delivery_http_tests {
     ) -> (u16, serde_json::Value) {
         management_send("POST", server, path, owner, body).await
     }
+
     async fn management_send(
         method: &'static str,
         server: &Arc<AegsServer>,

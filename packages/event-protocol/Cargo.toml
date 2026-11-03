@@ -8,6 +8,8 @@ repository = "https://github.com/charioxai/chariox"
 
 [dependencies]
 base64 = "0.22.1"
+chariox-app-package = { path = "../app-package" }
+serde_json_canonicalizer = "0.3.2"
 chrono = { version = "0.4.45", default-features = false, features = ["std"] }
 p256 = { version = "0.13.2", features = ["ecdsa"] }
 serde = { version = "1.0.219", features = ["derive"] }

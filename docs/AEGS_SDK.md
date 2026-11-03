@@ -285,3 +285,25 @@ the canonical unsigned manifest again; `VALIDATION_FAILED` reports the bounded
 attestation or management-surface error; protocol mismatches require the
 matching public SDK; and a non-public management target must be installed as an
 explicit self-hosted target instead of submitted to the Store.
+
+## Typed public facts (MP-08 / MP-09 / MP-10 / MP-11)
+
+Use manifest `schema_version:2`, management `protocol_version:5`, and a new event
+version to add `payload_schema` plus named `{name,data}` examples. Their canonical
+bytes are signed with the rest of the manifest. Text-only v1 definitions remain
+valid and omit these fields. The schema must be a closed Draft 7 object; examples
+must validate. See [`EVENT_TRIGGER_PROTOCOL.md`](EVENT_TRIGGER_PROTOCOL.md#typed-generator-facts-delivery-4-management-5)
+for byte, depth, integer and example limits.
+
+Set `NormalizedEvent.data` to the typed object and implement
+`AegsProvider::event_payload_schema(event_type, version)` to return the exact
+signed event schema. The SDK checks normalized data before adding a publication
+to its durable inbox. `PublishEventBuilder::data` and `payload_schema` enforce the
+same contract for direct builders. The ordinary AEDS publication/retry path carries
+data without replacing occurrence identity or resetting expiry. Provision the same
+schema in AEDS's scoped producer capability; the kernel independently checks its
+pinned publisher contract and the App's signed incoming schema before ACK.
+
+Do not put consumer inventory, urgency routing or summary windows in the producer.
+Preserve public severity as an upstream fact where available; absent severity stays
+unknown. A consumer's revisioned workflow gate chooses its policy.
