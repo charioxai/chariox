@@ -940,6 +940,7 @@ impl KernelRuntimeState {
         for (agent_id, scope) in scopes {
             if let Some(next_scope) = changed.get(&agent_id).filter(|next| **next != scope) {
                 self.claude_session_grants.forget(&agent_id);
+                self.terminal_input_grants.forget(&agent_id);
                 terminated_run_ids.extend(self.owned.apply_agent_execution_config_to_provider(
                     session_id,
                     &agent_id,
@@ -999,6 +1000,7 @@ impl KernelRuntimeState {
         )?;
         if update.scope_changed && update.remote_update.is_none() {
             self.claude_session_grants.forget(agent_id);
+            self.terminal_input_grants.forget(agent_id);
         }
         self.remove_terminated_provider_processes(update.terminated_run_ids)
             .await;
@@ -1060,6 +1062,7 @@ impl KernelRuntimeState {
             )?;
             if update.scope_changed {
                 self.claude_session_grants.forget(agent_id);
+                self.terminal_input_grants.forget(agent_id);
             }
         }
         self.append_agent_durable_event("agent.updated", &agent, None)

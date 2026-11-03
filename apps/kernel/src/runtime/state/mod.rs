@@ -189,6 +189,7 @@ mod room_secret_observation;
 mod room_shared_display;
 mod room_terminal_runtime_state;
 mod runtime_tool_call_activity;
+mod terminal_input_grants;
 mod usage_snapshot;
 mod visible_region_capture;
 mod web_bot_auth_runtime;
@@ -220,6 +221,8 @@ pub(crate) struct KernelRuntimeState {
     /// What the person granted with "Allow for this session" on Claude permission prompts, per
     /// agent, so a restarted Claude process starts with it again.
     claude_session_grants: claude_permission_rules::StandingGrants,
+    /// The agents whose terminal input a person allowed for the session.
+    terminal_input_grants: terminal_input_grants::TerminalInputGrants,
     /// The only strong handle on the terminal wake driver. The driver holds a runtime copy made
     /// before this field was set, and the Room terminal service and wake registry hold it weakly,
     /// so dropping the runtime frees the kernel instead of leaving a cycle.
@@ -1027,6 +1030,7 @@ impl KernelRuntimeState {
             detached_workflow_provider_launches: Arc::new(std::sync::Mutex::new(BTreeSet::new())),
             restart_recovery_dispatched: Arc::new(std::sync::Mutex::new(BTreeSet::new())),
             claude_session_grants: claude_permission_rules::StandingGrants::default(),
+            terminal_input_grants: terminal_input_grants::TerminalInputGrants::default(),
             terminal_wake_driver: None,
             interaction_wake_driver: None,
             managed_terminal_activity: None,
