@@ -25,6 +25,9 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::StopSessionProcesses(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
+        LocalDaemonRequest::StartSessionProcessNow(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
         LocalDaemonRequest::AddSshMachine(_) | LocalDaemonRequest::RemoveSshMachine(_) => None,
         LocalDaemonRequest::PrepareBrowserImport(request) => Some(
             SessionMembershipScope::SessionId(request.selection.session_id.clone()),
@@ -136,10 +139,22 @@ pub(crate) fn request_session_scope(
                     .filter_map(|prompt| prompt.session_id.as_deref()),
             ),
         ),
-        LocalDaemonRequest::CreateAgentPromptSchedule(request) => Some(
+        LocalDaemonRequest::CreateAgentTrigger(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::UpdateAgentTrigger(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::DeleteAgentTrigger(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::InvokeAgentTrigger(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::ResendTriggerDelivery(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
-        LocalDaemonRequest::CancelAgentPromptSchedule(request) => Some(
+        LocalDaemonRequest::ReadAgentTriggerTranscript(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
         LocalDaemonRequest::CompletePrompt(request) => Some(SessionMembershipScope::SessionId(
@@ -643,6 +658,8 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::RestoreAppDataSnapshot(_)
         | LocalDaemonRequest::RevokeAppFileGrants(_)
         | LocalDaemonRequest::RequestKernelSudo(_)
+        | LocalDaemonRequest::RequestVaultSecret(_)
+        | LocalDaemonRequest::GetVaultSecretStatus(_)
         | LocalDaemonRequest::RenewKernelSudoRequester(_)
         | LocalDaemonRequest::RequestKernelAccess(_)
         | LocalDaemonRequest::CoverKernelAccessProcess(_)

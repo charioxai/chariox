@@ -11,7 +11,9 @@ mod delegation;
 mod delivery;
 mod leased_processes;
 pub(crate) use leased_processes::LeasedProcessMutation;
+mod worker_stops;
 pub use leased_processes::{LeasedProcessBinding, LeasedProcessReceipt};
+pub(crate) use worker_stops::{UnstoppedWorkerRun, WorkerStopMutation};
 #[cfg(test)]
 mod blocked_intent_tests;
 mod delivery_waits;
@@ -108,6 +110,7 @@ pub(super) fn initialize(db: &mut Connection) -> Result<(), DaemonError> {
     deadlines::initialize(db)?;
     wakes::initialize(db)?;
     leased_processes::initialize(db)?;
+    worker_stops::initialize(db)?;
     workflow_tasks::initialize(db)?;
     migration::migrate(db)
 }

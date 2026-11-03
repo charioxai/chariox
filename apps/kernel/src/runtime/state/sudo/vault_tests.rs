@@ -201,6 +201,33 @@ async fn a06_elevated_generation_commits_one_handle_and_never_returns_the_value(
     assert!(generate(&f, "after-revoke", SITE).await.is_err());
 }
 
+#[tokio::test]
+async fn a06_a_generated_handle_never_takes_a_slot_that_holds_a_value() {
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    let turn = elevated(&f);
+    unlock(&f);
+    let handle = super::vault::generated_handle(&turn, "signup");
+    f.state
+        .home_runtime_secret_service()
+        .unwrap()
+        .set_vault_secret(&handle, "original-value")
+        .unwrap();
+
+    assert!(
+        generate(&f, "signup", SITE).await.is_err(),
+        "a generated password replaced a stored value"
+    );
+    let value = f
+        .state
+        .home_runtime_secret_service()
+        .unwrap()
+        .vault_secret_for_dictation(&handle)
+        .unwrap()
+        .unwrap();
+    assert_eq!(value.as_str(), "original-value");
+}
+
 /// Answers the Vault unlock interactions as the owner, after `during` runs.
 /// Returns early when `during` already withdrew the prompt.
 async fn owner_unlocks(f: &Fixture, session: &str, during: impl FnOnce()) {

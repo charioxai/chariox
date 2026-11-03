@@ -5,18 +5,40 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 mod control;
+#[cfg(test)]
+pub(crate) use control::pause_sampling_for_key;
 use control::WatchCommand;
-pub(crate) use control::{end_owner, outside_ended_for_key, stop_for_key, stop_released};
+pub(crate) use control::{
+    end_owner, outside_ended_for_key, start_now_for_key, stop_for_key, stop_released,
+};
 pub use control::{ProcessControlOutcome, ProcessControlResult, ProcessControlTarget};
+pub(crate) use handover::{adopt_released, hand_over_released, ReleasedJobs};
+
+/// The commands whose admission has stopped them, for a kernel that replaces
+/// its program in place.
+pub(crate) fn hand_over_admission() -> Vec<HeldCommand> {
+    pool::Pool::shared().held_commands()
+}
+mod admission;
+mod handover;
 mod pool;
 mod projection;
 mod sampling;
 mod session_sweep;
+mod submissions;
+#[cfg(test)]
+pub(crate) use admission::WaitReason;
+pub(crate) use admission::{adopt_admission, HeldCommand};
 #[cfg(test)]
 pub(crate) use projection::released_keys_for_session;
+#[cfg(test)]
+pub(crate) use projection::SessionProcessState;
 pub(crate) use projection::{for_session, keys_for_session};
 pub use projection::{SessionProcess, SessionProcessOwner};
 pub(crate) use session_sweep::SessionSweep;
+pub(crate) use submissions::Submissions;
+#[cfg(test)]
+mod admission_tests;
 #[cfg(target_os = "linux")]
 mod cgroup;
 #[cfg(test)]
@@ -26,6 +48,8 @@ mod tests;
 
 pub use sampling::ProcessSample;
 const MIB: u64 = 1024 * 1024;
+/// A kernel short of descriptors for long says so once per this interval.
+const SHORT_LOG_INTERVAL: Duration = Duration::from_secs(60);
 const INTERVAL: Duration = Duration::from_millis(250);
 
 #[cfg(unix)]
@@ -69,6 +93,9 @@ pub(crate) struct PreparedDomain {
     /// job that detached from its parent is still found.
     #[cfg(target_os = "linux")]
     marker: Option<String>,
+    /// Who launched what, as the watch's first sample finds it: an agent's
+    /// unless the workload is an adopted terminal.
+    submissions: Submissions,
 }
 
 impl PreparedDomain {
@@ -111,6 +138,7 @@ impl PreparedDomain {
             cgroup,
             #[cfg(target_os = "linux")]
             marker,
+            submissions: Submissions::new(true),
         }
     }
 
@@ -125,7 +153,42 @@ impl PreparedDomain {
             cgroup: None,
             #[cfg(target_os = "linux")]
             marker: Some(sampling::new_marker()),
+            submissions: Submissions::new(true),
         }
+    }
+
+    /// For a child the previous kernel program started (hot reload): it joins
+    /// its owner's unit in this program's budget, and the domain it had goes.
+    /// A child that cannot move is watched by resident memory instead.
+    pub(crate) fn adopted(unit: &str, previous: Option<&std::path::Path>) -> std::io::Result<Self> {
+        Ok(Self::new(unit)?.taking_over(previous))
+    }
+
+    #[cfg_attr(not(target_os = "linux"), allow(unused_mut, unused_variables))]
+    fn taking_over(mut self, previous: Option<&std::path::Path>) -> Self {
+        #[cfg(target_os = "linux")]
+        if let Some(group) = self.cgroup.take() {
+            let moved = previous.is_some_and(|previous| group.take_over(previous));
+            if previous.is_some() && !moved {
+                // It may hold what moved before the takeover fell short: that
+                // keeps running where it is, watched by its resident memory.
+                group.leave_members_running();
+                crate::logging::warn_with_fields(
+                    "process_resources.handover",
+                    "a handed-over process could not join its owner's memory domain; watching its resident memory instead",
+                    serde_json::json!({"unit": self.unit}),
+                );
+            }
+            self.cgroup = moved.then_some(group);
+        }
+        self
+    }
+
+    /// The commands keep the owners the previous program found for them, from
+    /// the watch's first sample.
+    pub(crate) fn launched_by(mut self, submissions: Submissions) -> Self {
+        self.submissions = submissions;
+        self
     }
 
     /// A domain without a cgroup, for tests that only need the launch shape:
@@ -180,7 +243,30 @@ impl PreparedDomain {
             ));
         }
         sampling::ensure_available()?;
-        let mut tree = sampling::ProcessTree::new(pid);
+        self.watch(sampling::ProcessTree::new(pid), None)
+    }
+
+    /// Watches `tree` as the watch of `listing`'s owner: a released workload
+    /// whose previous program handed it over. It is listed, counted and
+    /// stoppable again, and ends with its last process.
+    fn start_released(
+        self,
+        tree: sampling::ProcessTree,
+        listing: projection::Listing,
+    ) -> std::io::Result<()> {
+        sampling::ensure_available()?;
+        let domain = self.watch(tree, Some(listing))?;
+        // The watch owns itself from here, as for any released workload.
+        drop(domain);
+        Ok(())
+    }
+
+    fn watch(
+        self,
+        mut tree: sampling::ProcessTree,
+        listing: Option<projection::Listing>,
+    ) -> std::io::Result<ProcessDomain> {
+        let root = tree.root();
         #[cfg(target_os = "linux")]
         if let Some(group) = &self.cgroup {
             tree.set_cgroup(group.clone());
@@ -193,34 +279,37 @@ impl PreparedDomain {
         let in_cgroup = self.cgroup.is_some();
         #[cfg(not(target_os = "linux"))]
         let in_cgroup = false;
+        #[cfg(target_os = "linux")]
+        let cgroup = self.cgroup.as_ref().map(|group| group.path().to_path_buf());
+        #[cfg(not(target_os = "linux"))]
+        let cgroup = None;
+        let handed_over = listing.is_some();
         let state = Arc::new(Mutex::new(Observation {
             unit: self.unit.clone(),
             cap: self.cap,
             in_cgroup,
+            cgroup,
+            listed: listing,
+            released: handed_over,
+            root,
+            submissions: self.submissions,
             ..Observation::default()
         }));
         self.pool.join(&state);
         let watched = state.clone();
         let (stop, stopped) = mpsc::channel();
         state.lock().unwrap_or_else(|e| e.into_inner()).control = Some(stop.clone());
-        let mut released = false;
-        // Per command: process-table time, resident bytes, growth per second.
-        let mut previous = std::collections::BTreeMap::<u32, (u64, u64, u64)>::new();
+        let mut released = handed_over;
+        // When the monitor last said it is waiting for the kernel's resources.
+        let mut short_logged: Option<std::time::Instant> = None;
+        // Per command: process-table time, resident and written bytes, and
+        // their growth per second.
+        let mut previous = std::collections::BTreeMap::<u32, Rates>::new();
         let worker = std::thread::Builder::new()
             .name("chariox-process-resources".into())
             .spawn(move || loop {
-                let samples = match tree.sample() {
-                    Ok(samples) => samples,
-                    Err(error) => {
-                        crate::logging::error_with_fields(
-                            "process_resources.monitor",
-                            "process resource sampling failed; stopping its owned tree",
-                            serde_json::json!({"pid": pid, "error": error}),
-                        );
-                        tree.terminate();
-                        break;
-                    }
-                };
+                let ended = match tree.sample() {
+                    Ok(samples) => {
                 // A job that left soon after its parent may not be observed yet;
                 // its cgroup still holds it, and ending the watch would kill it.
                 // Without one, only a fresh process table can tell.
@@ -239,50 +328,98 @@ impl PreparedDomain {
                 let commands = tree
                     .commands(&samples)
                     .into_iter()
-                    .map(|(pid, resident)| {
+                    .map(|(pid, (resident, pids))| {
+                        let writes = pids.iter().map(|pid| admission::written(*pid)).sum();
+                        let rate = |now: u64, before: u64, at: u64, rate: u64| {
+                            (now.saturating_sub(before).saturating_mul(1000) / (sampled_at - at))
+                                .max(rate / 2)
+                        };
                         // A runaway slowed by the pressure brake is still the
                         // runaway: its rate decays by half per new sample.
-                        let growth = match previous.get(&pid) {
-                            Some((at, before, growth)) if sampled_at > *at => {
-                                (resident.saturating_sub(*before).saturating_mul(1000)
-                                    / (sampled_at - at))
-                                    .max(growth / 2)
-                            }
-                            Some((_, _, growth)) => *growth,
-                            None => 0,
+                        let (growth, write_growth) = match previous.get(&pid) {
+                            Some(before) if sampled_at > before.at => (
+                                rate(resident, before.resident, before.at, before.growth),
+                                rate(writes, before.writes, before.at, before.write_growth),
+                            ),
+                            Some(before) => (before.growth, before.write_growth),
+                            None => (0, 0),
                         };
                         pool::CommandUse {
                             pid,
+                            group: process_group(pid),
                             resident,
                             growth,
+                            writes,
+                            write_growth,
+                            effective: tree.effective(pid, &samples),
+                            root: tree.in_harness(pid),
                         }
                     })
                     .collect::<Vec<_>>();
                 previous = commands
                     .iter()
                     .map(|command| {
-                        let entry = previous
+                        let rates = previous
                             .get(&command.pid)
-                            .filter(|(at, ..)| *at >= sampled_at)
+                            .filter(|before| before.at >= sampled_at)
                             .copied()
-                            .unwrap_or((sampled_at, command.resident, command.growth));
-                        (command.pid, entry)
+                            .unwrap_or(Rates {
+                                at: sampled_at,
+                                resident: command.resident,
+                                growth: command.growth,
+                                writes: command.writes,
+                                write_growth: command.write_growth,
+                            });
+                        (command.pid, rates)
                     })
                     .collect();
                 {
                     let mut observation = watched.lock().unwrap_or_else(|e| e.into_inner());
                     observation.samples = samples;
                     observation.commands = commands;
+                    observation.owned = Some(tree.owned());
                 }
                 #[cfg(target_os = "linux")]
                 let unit_charged = self.cgroup.as_ref().and_then(|group| group.unit_charged());
                 #[cfg(not(target_os = "linux"))]
                 let unit_charged = None;
                 self.pool.enforce(&watched, unit_charged);
+                        admit(&tree, &watched);
+                        ended
+                    }
+                    // The kernel is short of descriptors or memory for a
+                    // moment, which says nothing of the tree: leave it and
+                    // what was last sampled alone, and read again next tick.
+                    Err(sampling::SamplingError::Short(errno)) => {
+                        if short_logged.is_none_or(|at| at.elapsed() >= SHORT_LOG_INTERVAL) {
+                            short_logged = Some(std::time::Instant::now());
+                            crate::logging::warn_with_fields(
+                                "process_resources.monitor",
+                                "process resource sampling is waiting for the kernel to get descriptors or memory back",
+                                serde_json::json!({"pid": root, "errno": errno}),
+                            );
+                        }
+                        false
+                    }
+                    Err(error) => {
+                        crate::logging::error_with_fields(
+                            "process_resources.monitor",
+                            "process resource sampling failed; stopping its owned tree",
+                            serde_json::json!({"pid": root, "error": error.to_string()}),
+                        );
+                        tree.terminate();
+                        break;
+                    }
+                };
                 if ended {
                     break;
                 }
                 match stopped.recv_timeout(INTERVAL) {
+                    #[cfg(test)]
+                    Ok(WatchCommand::PauseSampling { reply, resume }) => {
+                        let _ = reply.send(Ok(Vec::new()));
+                        let _ = resume.recv();
+                    }
                     Ok(WatchCommand::Release) => released = true,
                     Ok(WatchCommand::MemoryStop {
                         pid,
@@ -326,21 +463,85 @@ impl PreparedDomain {
                         );
                         let _ = reply.send(result);
                     }
-                    Err(mpsc::RecvTimeoutError::Timeout) => {}
+                    Ok(WatchCommand::StartNow { process_id, reply }) => {
+                        let started = tree.command_of(&process_id).is_some_and(|command| {
+                            watched
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .admission
+                                .get_mut(&command)
+                                .is_some_and(admission::Entry::force)
+                        });
+                        admit(&tree, &watched);
+                        let _ = reply.send(if started {
+                            Ok(vec![process_id])
+                        } else {
+                            Err("the process is not waiting; refresh Health".into())
+                        });
+                    }
+                    Ok(WatchCommand::Apply) | Err(mpsc::RecvTimeoutError::Timeout) => {}
                     _ => {
                         tree.terminate();
                         break;
                     }
                 }
             })?;
+        if handed_over {
+            registry().lock().unwrap_or_else(|e| e.into_inner()).insert(
+                format!("released-{:032x}", rand::random::<u128>()),
+                Arc::downgrade(&state),
+            );
+        }
         Ok(ProcessDomain {
             state,
             stop,
             worker: Some(worker),
-            released: false,
+            released: handed_over,
             started: control::domain_started(),
         })
     }
+}
+
+/// Process-table time, resident and written bytes of one command, and their
+/// growth per second.
+#[derive(Clone, Copy)]
+struct Rates {
+    at: u64,
+    resident: u64,
+    growth: u64,
+    writes: u64,
+    write_growth: u64,
+}
+
+/// Applies admission's decisions: a waiting command's subtree is stopped
+/// (again each tick, so what it started meanwhile stops too); one that may run
+/// continues.
+fn admit(tree: &sampling::ProcessTree, watched: &Arc<Mutex<Observation>>) {
+    let signals = watched
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .admission
+        .iter_mut()
+        .filter_map(|(command, entry)| {
+            let waiting = entry.wait.is_some();
+            let signal = (waiting || entry.stopped).then_some((*command, waiting));
+            entry.stopped = waiting;
+            signal
+        })
+        .collect::<Vec<_>>();
+    #[cfg(unix)]
+    for (command, waiting) in signals {
+        tree.signal(
+            command,
+            if waiting {
+                libc::SIGSTOP
+            } else {
+                libc::SIGCONT
+            },
+        );
+    }
+    #[cfg(not(unix))]
+    let _ = (tree, signals);
 }
 
 fn configured_cap(value: Option<&str>) -> std::io::Result<Option<u64>> {
@@ -400,16 +601,27 @@ struct Observation {
     unit: String,
     cap: Option<u64>,
     in_cgroup: bool,
+    /// The memory domain directory, which a hot reload hands to the next program.
+    cgroup: Option<std::path::PathBuf>,
+    /// The workload's own process.
+    root: u32,
+    /// Whether each command may wait for room follows who submitted the line
+    /// that started it: a person's own terminal command never does.
+    submissions: submissions::Submissions,
     control: Option<mpsc::Sender<WatchCommand>>,
     outside_ended: bool,
     samples: Vec<ProcessSample>,
     commands: Vec<pool::CommandUse>,
+    /// Admission per command, by the command's top process.
+    admission: std::collections::BTreeMap<u32, admission::Entry>,
     memory_stop: Option<MemoryStop>,
     /// Who Health lists the processes under when no run or terminal does.
     listed: Option<projection::Listing>,
     /// Set once the workload's own process ended: what it left running is
     /// still this owner's, listed, counted and stoppable until it ends.
     released: bool,
+    /// The watched processes at the last sample, which a hot reload hands over.
+    owned: Option<sampling::Owned>,
 }
 impl Observation {
     fn resident(&self) -> u64 {
@@ -457,6 +669,16 @@ impl ProcessDomain {
         );
         drop(registry);
         self.released = self.stop.send(WatchCommand::Release).is_ok();
+    }
+    /// The memory domain a hot reload hands over with the process.
+    pub(crate) fn cgroup_path(&self) -> Option<std::path::PathBuf> {
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.cgroup.clone()
+    }
+    /// Who launched each command, which a hot reload hands over with the process.
+    pub(crate) fn submissions(&self) -> Submissions {
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.submissions.clone()
     }
     /// Set once the workload itself was the command stopped for memory.
     pub(crate) fn memory_limit_bytes(&self) -> Option<u64> {
@@ -541,6 +763,86 @@ pub(crate) fn samples_for_key(key: &str) -> Vec<ProcessSample> {
             crate::session::unix_epoch_ms().saturating_sub(sample.sampled_at_ms) <= 5000
         })
         .collect()
+}
+
+fn observation_for_key(key: &str) -> Option<Arc<Mutex<Observation>>> {
+    registry()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(key)
+        .and_then(std::sync::Weak::upgrade)
+}
+
+fn with_submissions_for_key(key: &str, update: impl FnOnce(&mut submissions::Submissions)) {
+    if let Some(state) = observation_for_key(key) {
+        update(&mut state.lock().unwrap_or_else(|e| e.into_inner()).submissions);
+    }
+}
+
+/// The workload of `key` is a terminal's shell: its own start is a person's,
+/// and `reports_lines` says whether the shell marks the lines it runs.
+pub(crate) fn bind_terminal_for_key(key: &str, reports_lines: bool) {
+    with_submissions_for_key(key, |lines| lines.for_terminal(reports_lines));
+}
+
+/// An Enter was accepted at the prompt of the terminal bound to `key`: the
+/// command its line starts may wait for room unless a person submitted it.
+pub(crate) fn submit_line_for_key(key: &str, holdable: bool) {
+    let Some(state) = observation_for_key(key) else {
+        return;
+    };
+    let root = {
+        let observation = state.lock().unwrap_or_else(|e| e.into_inner());
+        observation
+            .submissions
+            .takes_over(holdable)
+            .then_some(observation.root)
+    };
+    // Read outside the lock: the sampler waits for it.
+    let alive = root.map(sampling::live_groups).unwrap_or_default();
+    state
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .submissions
+        .submit(holdable, std::time::Instant::now(), &alive);
+}
+
+/// The shell of the terminal bound to `key` started the next accepted line.
+pub(crate) fn line_started_for_key(key: &str) {
+    with_submissions_for_key(key, |lines| lines.line_started(std::time::Instant::now()));
+}
+
+/// The shell is back at its prompt; `jobs` are the process groups of its job
+/// table.
+pub(crate) fn line_finished_for_key(key: &str, jobs: &[u32]) {
+    with_submissions_for_key(key, |lines| {
+        lines.line_finished(jobs, std::time::Instant::now())
+    });
+}
+
+fn process_group(pid: u32) -> Option<u32> {
+    // SAFETY: getpgid only reads the kernel's process table.
+    let group = unsafe { libc::getpgid(i32::try_from(pid).ok()?) };
+    u32::try_from(group).ok().filter(|group| *group > 1)
+}
+
+/// Whether the command whose top process is `pid` may wait, once the sampler
+/// has seen it.
+#[cfg(test)]
+pub(crate) fn command_holdable_for_key(key: &str, pid: u32) -> Option<bool> {
+    registry()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(key)
+        .and_then(std::sync::Weak::upgrade)
+        .and_then(|state| {
+            state
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .admission
+                .get(&pid)
+                .map(|entry| entry.holdable())
+        })
 }
 
 pub(crate) fn has_key(key: &str) -> bool {

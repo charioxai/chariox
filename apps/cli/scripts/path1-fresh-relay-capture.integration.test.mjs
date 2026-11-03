@@ -67,7 +67,7 @@ async function buildRuntime() {
   for (const name of [
     "build.mjs",
     "path1-fresh-relay-capture.mjs",
-    "path1-provider-rebuild-capture.mjs",
+    "path1-capture-output.mjs",
   ]) {
     await copyFile(join(sourceRoot, "apps/cli/scripts", name), join(cliRoot, "scripts", name))
   }

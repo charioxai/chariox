@@ -116,6 +116,11 @@ impl KernelRuntimeState {
                     .provider_store
                     .record_terminal_diagnostic(provider_run_id, message.clone())?;
                 owned.provider_run_projection.update(run);
+                if crate::app::claude_workspace_trust_declined(&message) {
+                    self.stop_turn_after_declined_workspace_trust(session_id, provider_run_id)
+                        .await?;
+                    return Ok(Vec::new());
+                }
                 self.fail_owned_provider_prompt(session_id, provider_run_id, &message, true)
                     .await?;
                 return Ok(Vec::new());

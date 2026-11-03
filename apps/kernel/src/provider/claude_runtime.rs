@@ -20,16 +20,19 @@ const CLAUDE_EVENT_DRAIN_MAX_MESSAGES: usize = 256;
 const DEFAULT_CLAUDE_TURN_STALL_TIMEOUT: Duration = Duration::from_secs(60);
 
 mod events;
+mod handover;
 mod input;
 mod process;
 mod runtime_tool_wait;
 mod session_restart;
 mod state;
 mod tool_transcript;
+pub(crate) use tool_transcript::{bounded_result, bounded_result_images};
 pub(crate) mod usage;
 mod watchdog;
 
 use events::apply_claude_message;
+pub(crate) use handover::ClaudeHandover;
 use input::claude_user_content;
 use process::{spawn_claude_child, stop_child, write_json_line, ClaudeRuntimeMessage};
 pub(crate) use runtime_tool_wait::{
@@ -82,20 +85,37 @@ pub(crate) fn initialize_claude_runtime_with_credentials(
     let env_remove = claude_env_remove(run);
     let working_directory = run.working_directory().cloned();
     let output_notifier = crate::provider::output_ready::ProviderEventNotifier::default();
-    let (child, stdin, receiver, resources) = spawn_claude_child(
-        run.id(),
-        run.agent_instance_id().unwrap_or(run.id()),
-        &program,
-        &args,
-        &env,
-        credentials,
-        &env_remove,
-        working_directory.as_ref(),
-        "initialize_claude_runtime",
-        &output_notifier,
-    )?;
+    let (child, stdin, output, resources, adopted) = match crate::hot_reload::take_claude(run.id())
+    {
+        Some(handover) => {
+            let resources = handover::adopted_resources(
+                run.id(),
+                run.agent_instance_id().unwrap_or(run.id()),
+                &handover,
+            )?;
+            // SAFETY: the handover names the pipes this program inherited for this run.
+            let (child, stdin, output, adopted) =
+                unsafe { handover::adopt(handover, &output_notifier) };
+            (child, stdin, output, resources, Some(adopted))
+        }
+        None => {
+            let (child, stdin, output, resources) = spawn_claude_child(
+                run.id(),
+                run.agent_instance_id().unwrap_or(run.id()),
+                &program,
+                &args,
+                &env,
+                credentials,
+                &env_remove,
+                working_directory.as_ref(),
+                "initialize_claude_runtime",
+                &output_notifier,
+            )?;
+            (child, stdin, output, resources, None)
+        }
+    };
 
-    Ok(ClaudeRuntimeBinding {
+    let mut binding = ClaudeRuntimeBinding {
         state: ClaudeRuntimeState {
             program,
             args,
@@ -120,7 +140,7 @@ pub(crate) fn initialize_claude_runtime_with_credentials(
             child,
             resources: Some(resources),
             stdin,
-            receiver,
+            output,
             output_notifier,
             active_model: run.model().to_string(),
             active_variant: run.variant().map(str::to_string),
@@ -140,12 +160,17 @@ pub(crate) fn initialize_claude_runtime_with_credentials(
             tool_transcript: Default::default(),
             completed_text_blocks: Default::default(),
             exit_reported: false,
+            adopted_turn: None,
         },
         selection: ClaudeRunSelection {
             model: Some(run.model().to_string()),
             variant: run.variant().map(str::to_string),
         },
-    })
+    };
+    if let Some(adopted) = adopted {
+        binding.state.adopted_turn = Some(adopted.restore_turn(&mut binding.state));
+    }
+    Ok(binding)
 }
 
 fn install_claude_mcp_config_argument(
@@ -190,6 +215,20 @@ pub(crate) fn submit_claude_prompt(
     state: &mut ClaudeRuntimeState,
     envelope: &PromptEnvelope,
 ) -> Result<(), DaemonError> {
+    if let Some(adopted) = state.adopted_turn.take() {
+        // The process already runs this prompt's turn: a hot reload handed it
+        // over. Continue reading it instead of sending the prompt again.
+        crate::logging::info_with_fields(
+            "hot_reload.claude",
+            "continuing a handed-over Claude turn",
+            serde_json::json!({ "provider_run_id": run.id(), "turn_id": adopted.turn_id }),
+        );
+        state.active_turn_id = adopted.turn_id;
+        state.active_prompt_message = adopted.prompt_message;
+        state.turn_watchdog.begin(Instant::now());
+        state.output.release();
+        return Ok(());
+    }
     if claude_runtime_selection_changed(run, state) || claude_runtime_child_exited(state) {
         restart_claude_runtime(run, state, "claude_restart_for_selection_change")?;
     }
@@ -219,6 +258,14 @@ pub(crate) fn submit_claude_prompt(
     Ok(())
 }
 
+/// On a hot reload: keeps the running turn for the next kernel program, or
+/// gives the state back to stop as for a restart.
+pub(crate) fn hand_over_claude_runtime(
+    state: ClaudeRuntimeState,
+) -> Result<ClaudeHandover, Box<ClaudeRuntimeState>> {
+    handover::hand_over(state)
+}
+
 pub(crate) fn abort_claude_turn(
     run: &RuntimeProviderRun,
     state: &mut ClaudeRuntimeState,
@@ -240,7 +287,7 @@ pub(crate) fn drain_claude_events(
 ) -> Result<ProviderPromptSignalBatch, DaemonError> {
     let mut batch = ProviderPromptSignalBatch::default();
     for _ in 0..CLAUDE_EVENT_DRAIN_MAX_MESSAGES {
-        match state.receiver.try_recv() {
+        match state.output.receiver.try_recv() {
             Ok(ClaudeRuntimeMessage::Stdout(value)) => {
                 state.turn_watchdog.record_runtime_message(Instant::now());
                 handle_claude_tool_uses(run.id(), state, &value, &mut batch)?;
@@ -556,7 +603,7 @@ fn restart_claude_runtime(
     let env_remove = claude_env_remove(run);
     let working_directory = run.working_directory().cloned();
     let output_notifier = state.output_notifier.clone();
-    let (child, stdin, receiver, resources) = spawn_claude_child(
+    let (child, stdin, output, resources) = spawn_claude_child(
         run.id(),
         run.agent_instance_id().unwrap_or(run.id()),
         &state.program,
@@ -578,7 +625,7 @@ fn restart_claude_runtime(
     state.child = child;
     state.resources = Some(resources);
     state.stdin = stdin;
-    state.receiver = receiver;
+    state.output = output;
     state.args = base_args;
     state.env = env;
     state.env_remove = env_remove;
@@ -707,7 +754,8 @@ mod tests {
             .spawn()
             .expect("fixture child should spawn");
         let stdin = child.stdin.take().expect("fixture stdin should exist");
-        let (_tx, receiver) = std::sync::mpsc::channel();
+        let child = super::process::ClaudeChild::Started(child);
+        let output = super::process::ClaudeOutput::detached();
         (
             ClaudeRuntimeState {
                 program: "/bin/sh".to_string(),
@@ -729,7 +777,7 @@ mod tests {
                 child,
                 resources: None,
                 stdin,
-                receiver,
+                output,
                 output_notifier: Default::default(),
                 active_model: "sonnet".to_string(),
                 active_variant: Some("low".to_string()),
@@ -747,6 +795,7 @@ mod tests {
                 tool_transcript: Default::default(),
                 completed_text_blocks: Default::default(),
                 exit_reported: false,
+                adopted_turn: None,
             },
             ProviderPromptSignalBatch::default(),
         )
@@ -989,7 +1038,8 @@ mod tests {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
         loop {
             let contents = std::fs::read_to_string(path).unwrap_or_default();
-            if contents.lines().count() >= expected {
+            // The child appends each row in several writes; wait for its final newline.
+            if contents.bytes().filter(|byte| *byte == b'\n').count() >= expected {
                 return contents;
             }
             assert!(
@@ -1016,6 +1066,7 @@ set -eu
   printf 'argv'
   printf '\t%s' "$0"
   for arg in "$@"; do printf '\t%s' "$arg"; done
+  printf '\tmarker:%s' "${IS_SANDBOX+x}"
   printf '\n'
 } >> "$CLAUDE_TEST_TRACE"
 cat >/dev/null
@@ -1043,7 +1094,7 @@ cat >/dev/null
                     "CLAUDE_TEST_TRACE".to_string(),
                     trace.display().to_string(),
                 )]),
-                pty_env_remove: Vec::new(),
+                pty_env_remove: vec!["IS_SANDBOX".to_string()],
                 working_directory: Some(root.clone()),
                 structured_endpoint: None,
             },
@@ -1071,12 +1122,36 @@ cat >/dev/null
             .collect::<Vec<_>>();
         let latest = launches.last().expect("restarted child should log argv");
         assert!(latest.contains("\t--permission-mode\tplan"));
+        assert!(latest.ends_with("\tmarker:"));
         assert!(!latest.contains("bypassPermissions"));
         assert!(!latest.contains("--allow-dangerously-skip-permissions"));
         assert!(
             !latest.contains("\t--resume\t"),
             "a restart before native init must not resume a nonexistent conversation: {latest}"
         );
+
+        let mut yolo_run = plan_run;
+        yolo_run.set_execution_config(AgentExecutionMode::Build, AgentPermissionLevel::Yolo);
+        restart_claude_runtime(&yolo_run, &mut binding.state, "test root YOLO restart")
+            .expect("YOLO selection should restart the provider child");
+        let trace_contents = wait_for_trace_lines(&trace, 3);
+        let latest = trace_contents.lines().last().unwrap();
+        assert!(latest.contains("\t--permission-mode\tbypassPermissions"));
+        assert_eq!(
+            latest.ends_with("\tmarker:x"),
+            unsafe { libc::geteuid() } == 0,
+            "only root YOLO restarts receive the compatibility environment"
+        );
+
+        yolo_run.set_execution_config(AgentExecutionMode::Build, AgentPermissionLevel::Required);
+        restart_claude_runtime(&yolo_run, &mut binding.state, "test required restart")
+            .expect("Required selection should restart the provider child");
+        let trace_contents = wait_for_trace_lines(&trace, 4);
+        assert!(trace_contents
+            .lines()
+            .last()
+            .unwrap()
+            .ends_with("\tmarker:"));
 
         drop(binding);
         let _ = std::fs::remove_dir_all(root);

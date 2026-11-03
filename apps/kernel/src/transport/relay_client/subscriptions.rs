@@ -42,7 +42,7 @@ pub(super) async fn abort_subscription_tasks(
     for task in guard.values() {
         task.handle.abort();
         if let Some(pump) = &task.display_pump {
-            pump.stop();
+            pump.stop_on(subscription_tasks);
         }
     }
     guard.clear();
@@ -142,7 +142,7 @@ pub(super) async fn handle_relay_subscribe(
         heartbeat_interval,
         caller: crate::runtime::command::KernelCaller::for_relay_request(caller_identity.clone()),
         user_id: if paired {
-            crate::session::DEFAULT_LOCAL_USER_ID.into()
+            router.self_host_terminal_owner_user_id()
         } else {
             relay_subscription_caller_user_id(caller_identity.as_ref())
         },
@@ -398,7 +398,7 @@ pub(super) async fn handle_relay_unsubscribe(
     if let Some(task) = existing {
         task.handle.abort();
         if let Some(pump) = &task.display_pump {
-            pump.stop();
+            pump.stop_on(subscription_tasks);
         }
     }
     let ack = match encrypt_json_response(

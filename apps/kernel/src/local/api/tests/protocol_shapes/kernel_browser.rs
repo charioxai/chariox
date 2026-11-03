@@ -578,7 +578,7 @@ fn mp08_mp10_mp11_mirror_completion_550_158_snapshot_hash() {
     let bytes = include_bytes!("browser-mirror2-completion-550.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "33bb0655f85c4cac7677ce67ebd73f3f6bc097cf6855aae2c11ddddbdabd787a"
+        "caf09a7bd12622a5353c8bbfae283deeb053a3d9f53692103ebb9ca4cfedb44e"
     );
     let value: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(value["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
@@ -681,7 +681,7 @@ fn browser_resize_protocol629_snapshot() {
     let bytes = include_bytes!("browser-resize-629.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "74115dd7637381a2e37b16ad76a5458d64ae465be91eb15bf7d11b0c8bb9829c"
+        "9319c1f67991e3c8d0ab20d0609cea1db31c0569a231e793f0bd9d17436a771e"
     );
     let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     let request: LocalDaemonRequest = serde_json::from_value(snapshot["request"].clone()).unwrap();
@@ -708,4 +708,27 @@ fn browser_dialog_protocol630_snapshot() {
         .unwrap()
         .remove("dialog_id");
     assert!(serde_json::from_value::<LocalDaemonRequest>(invalid).is_err());
+}
+
+// MP-08/MP-10: coordinator-allocated portable Browser header, including no-band clients.
+#[test]
+fn mp08_mp10_browser_header_933_shape_and_hash() {
+    const {
+        assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 933);
+    }
+    const {
+        assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 382);
+    }
+    let bytes = include_bytes!("browser-header-933.json");
+    assert_eq!(
+        format!("{:x}", Sha256::digest(bytes)),
+        "c40616d3090c0400564b46218885c55180ba190eaaa73b1bf20def5bd984b555"
+    );
+    let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    let response: LocalDaemonResponse =
+        serde_json::from_value(snapshot["response"].clone()).unwrap();
+    assert_eq!(
+        serde_json::to_value(response).unwrap(),
+        snapshot["response"]
+    );
 }

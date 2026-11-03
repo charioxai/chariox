@@ -30,6 +30,7 @@ mod provider_focus;
 mod provider_launch_failure_retry;
 mod provider_launch_policy;
 mod provider_launch_request;
+pub(crate) use provider_launch_request::handed_over_credentials;
 mod provider_liveness;
 pub(crate) mod provider_output;
 mod provider_output_claude_native;
@@ -90,7 +91,8 @@ pub(crate) use provider_output_claude_native::clear_claude_context_delivery_for_
 #[cfg(test)]
 pub(crate) use provider_output_claude_native::tests::{startup_readiness_run, StartupTrustBridge};
 pub(crate) use provider_output_claude_native::{
-    claude_native_pending_prompt_cancel_input, claude_native_recent_terminal_failure,
+    claude_headless_prompt_queued_behind_running_turn, claude_native_pending_prompt_cancel_input,
+    claude_native_recent_terminal_failure, claude_workspace_trust_declined,
     format_claude_permission_message, ClaudeNativeDispatchAttempt, ClaudeNativeProcessOutcome,
     NativePromptHandoffPolicy, CLAUDE_NATIVE_CONTEXT_REJECTION_MESSAGE,
 };
@@ -490,6 +492,7 @@ impl DaemonApp {
             .set_agent_move_admission(app.agent_moves.clone());
         let restore_started = Instant::now();
         app.restore_durable_state()?;
+        app.enroll_existing_local_state()?;
         app.restore_agent_move_backings()?;
         if app.config.kernel_runtime_role == crate::config::KernelRuntimeRole::RemoteLeaseWorker
             && app

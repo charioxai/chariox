@@ -34,9 +34,9 @@ const REMOTE_COMPLETION_HARVEST_RESPONSE_TIMEOUT: std::time::Duration =
 pub(crate) struct RemoteRuntimeProjectionOutcome {
     pub(crate) accepted: bool,
     pub(crate) completions: Vec<PromptCompletion>,
-    /// A leased workflow turn failed on the worker's provider. Substitutes
+    /// The leased turn failed on the worker's provider, and why. Substitutes
     /// rerun only local turns, so the home settles it without one.
-    pub(crate) provider_failed: bool,
+    pub(crate) failure: Option<crate::provider::TurnOutcome>,
     pub(crate) remote_dispatches: Vec<crate::app::KernelRemotePromptDispatchIntent>,
 }
 
@@ -1311,7 +1311,15 @@ impl<'a> RemoteLeaseRuntime<'a> {
                                 .and_then(|run| run.terminal_diagnostic().map(str::to_string))
                                 .filter(|message| !message.trim().is_empty())
                         });
-                    let provider_failed = provider_diagnostic.is_some();
+                    let task_failure = provider_diagnostic.as_deref().map(|diagnostic| {
+                        projected_failure.clone().unwrap_or_else(|| {
+                            crate::provider::TurnOutcome::new(
+                                crate::provider::TurnOutcomeKind::ProviderCrashed,
+                                true,
+                                diagnostic,
+                            )
+                        })
+                    });
                     if provider_diagnostic.is_none()
                         && self.app.follow_up_missing_workflow_output(
                             session_id,
@@ -1383,8 +1391,8 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     let completed = self
                         .app
                         .prompt_owner_complete_active_prompt_only(session_id, agent_id)?;
-                    outcome.provider_failed = provider_failed;
-                    if provider_failed {
+                    outcome.failure = task_failure;
+                    if outcome.failure.is_some() {
                         let _ = self
                             .app
                             .agents()
@@ -1453,7 +1461,13 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 })
                 .filter(|_| !intentionally_cancelled)
             {
-                outcome.provider_failed = true;
+                outcome.failure = Some(projected_failure.clone().unwrap_or_else(|| {
+                    crate::provider::TurnOutcome::new(
+                        crate::provider::TurnOutcomeKind::ProviderCrashed,
+                        true,
+                        failure_message,
+                    )
+                }));
                 let _ = self
                     .app
                     .agents()

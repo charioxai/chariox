@@ -11,7 +11,7 @@ import {
 } from "./verify-image-release-fixture-helper.mjs"
 
 const verifier = new URL("./verify-image-release.mjs", import.meta.url)
-const imagePreparation = new URL("./prepare-hetzner-image.sh", import.meta.url)
+const imagePreparation = new URL("./prepare-worker-image.sh", import.meta.url)
 const SOURCE_COMMIT = "a".repeat(40)
 const SOURCE_TREE = "b".repeat(40)
 const TARGET = "x86_64-unknown-linux-gnu"

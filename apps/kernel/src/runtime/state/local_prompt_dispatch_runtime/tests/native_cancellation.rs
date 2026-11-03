@@ -307,3 +307,308 @@ async fn runtime_native_cancel_releases_the_acknowledgement_wait() {
         .is_some_and(|text| text.contains("Provider prompt dispatch failed")
             || text.contains("Request not carried out"))));
 }
+
+/// The prompt that waits behind the active one: an ordinary prompt, or a workflow node
+/// whose workflow flushes the agent's context before the run when `Some(true)`.
+fn successor_prompt(
+    app: &mut DaemonApp,
+    session_id: &str,
+    agent_id: &str,
+    source_id: &str,
+    workflow_node_with_fresh_context: Option<bool>,
+) -> PromptQueueItem {
+    match workflow_node_with_fresh_context {
+        None => PromptQueueItem::new(
+            app.sessions_mut().reserve_prompt_id(),
+            source_id,
+            agent_id,
+            "the next prompt",
+            PromptStatus::Queued,
+        ),
+        Some(fresh_context) => {
+            let workflow_id = app
+                .sessions_mut()
+                .create_workflow(session_id, Some("wf-native-stop".to_string()))
+                .unwrap()
+                .id()
+                .to_string();
+            let node_id = app
+                .sessions_mut()
+                .add_workflow_node(session_id, &workflow_id, agent_id)
+                .unwrap()
+                .id()
+                .to_string();
+            app.sessions_mut()
+                .create_workflow_endpoint(session_id, &workflow_id, &node_id, Some("entry".into()))
+                .unwrap();
+            app.sessions_mut()
+                .set_workflow_flush_agent_context_before_run(
+                    session_id,
+                    &workflow_id,
+                    fresh_context,
+                )
+                .unwrap();
+            let workflow_run = app
+                .sessions_mut()
+                .invoke_workflow_endpoint(
+                    session_id,
+                    &workflow_id,
+                    "entry",
+                    Some("start".to_string()),
+                )
+                .unwrap();
+            PromptQueueItem::new(
+                app.sessions_mut().reserve_prompt_id(),
+                crate::scheduler::runtime::workflow_prompt_source_attachment_id(workflow_run.id()),
+                agent_id,
+                "the workflow node",
+                PromptStatus::Queued,
+            )
+            .with_workflow_context(workflow_run.id(), workflow_run.node_runs()[0].id())
+        }
+    }
+}
+
+/// The person's next prompt arrives while the Stop is still settling: the settlement promotes it,
+/// and it must then be delivered to Claude rather than stay active and undelivered.
+#[tokio::test]
+async fn a_prompt_queued_behind_a_native_stop_is_delivered_when_the_stop_settles() {
+    queued_behind_native_stop(None).await;
+}
+
+/// A workflow node that waits behind the stopped turn needs the workflow tools, so it starts on
+/// the run the shared queue preparation provides, not on the stopped conversation's run.
+#[tokio::test]
+async fn a_workflow_node_queued_behind_a_native_stop_starts_on_a_workflow_capable_run() {
+    queued_behind_native_stop(Some(false)).await;
+}
+
+#[tokio::test]
+async fn a_fresh_context_node_queued_behind_a_native_stop_starts_on_a_fresh_run() {
+    queued_behind_native_stop(Some(true)).await;
+}
+
+async fn queued_behind_native_stop(workflow_node_with_fresh_context: Option<bool>) {
+    crate::test_support::isolated_env_test!();
+    let (_worktree, runtime, session_id, agent_id, source_id, run, dispatch) =
+        runtime_with_claude_headless_active_prompt().await;
+    // Like Claude, the fixture survives the Stop's Ctrl-C.
+    std::fs::write(
+        std::env::var_os("CHARIOX_CLAUDE_BIN").unwrap(),
+        "#!/bin/sh\ntrap '' INT\nprintf '❯ '\nwhile IFS= read -r line; do printf '❯ '; done\n",
+    )
+    .unwrap();
+    runtime
+        .with_app_side_effect(|app| {
+            crate::app::ProviderLaunchProcessRuntime::new(app).spawn_for_launch(&run)
+        })
+        .await
+        .unwrap();
+    let stopped_prompt_id = dispatch.prompt_id.clone();
+    let cancellation = runtime
+        .owned
+        .cancel_local_prompt(&session_id, &agent_id, &source_id)
+        .unwrap()
+        .unwrap();
+    runtime
+        .with_app_side_effect(|app| {
+            let next = successor_prompt(
+                app,
+                &session_id,
+                &agent_id,
+                &source_id,
+                workflow_node_with_fresh_context,
+            );
+            app.prompt_owner_submit_prepared_prompt(&session_id, next, false)
+                .map(|_| ())
+        })
+        .await
+        .unwrap();
+    runtime.spawn_prompt_abort(
+        cancellation.dispatch.unwrap(),
+        runtime.provider_runtime_lanes.clone(),
+    );
+    // The queued prompt's acknowledgement is recorded beside the run that received it.
+    let origin_of_current_run = || {
+        let current = runtime
+            .owned
+            .provider_store
+            .get_run_for_agent(&session_id, &agent_id)?;
+        let context = current
+            .pty_env()
+            .get("CHARIOX_CLAUDE_NATIVE_CONTEXT")?
+            .clone();
+        Some(std::path::PathBuf::from(format!(
+            "{context}.approval-origin"
+        )))
+    };
+    let delivered = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let session = runtime
+                .owned
+                .session_store
+                .get_session(&session_id)
+                .unwrap();
+            let active = runtime
+                .owned
+                .prompt_state_owner
+                .active_prompt_for_agent(&session, &agent_id);
+            if let Some(active) = active.filter(|active| active.id() != stopped_prompt_id) {
+                // The replacement run of a workflow node has no process in this fixture, so its
+                // delivery is judged by the run the node was given.
+                let delivered = if workflow_node_with_fresh_context.is_some() {
+                    runtime
+                        .owned
+                        .provider_store
+                        .get_run_for_agent(&session_id, &agent_id)
+                        .is_some_and(|current| current.workflow_tools_enabled())
+                } else {
+                    origin_of_current_run()
+                        .and_then(|path| std::fs::read_to_string(path).ok())
+                        .as_deref()
+                        == Some(active.id())
+                };
+                if delivered {
+                    break;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    let session = runtime
+        .owned
+        .session_store
+        .get_session(&session_id)
+        .unwrap();
+    let state = format!(
+        "failed={:?} active={:?} queued={:?} run={:?} origin={:?}",
+        failed_requests(&runtime, &agent_id),
+        runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &agent_id)
+            .map(|p| (p.id().to_string(), p.status())),
+        runtime
+            .owned
+            .prompt_state_owner
+            .peek_next_queued_prompt(&session, &agent_id)
+            .map(|p| p.id().to_string()),
+        runtime
+            .owned
+            .provider_store
+            .get_run(run.id())
+            .map(|r| r.state()),
+        origin_of_current_run().and_then(|path| std::fs::read_to_string(path).ok()),
+    ) + &format!(
+        " current_run={:?} original_run={}",
+        runtime
+            .owned
+            .provider_store
+            .get_run_for_agent(&session_id, &agent_id)
+            .map(|r| (
+                r.id().to_string(),
+                r.state(),
+                r.workflow_tools_enabled(),
+                r.pty_env().contains_key("CHARIOX_CLAUDE_NATIVE_CONTEXT")
+            )),
+        run.id()
+    );
+    let successor_run = runtime
+        .owned
+        .provider_store
+        .get_run_for_agent(&session_id, &agent_id);
+    if let Some(successor_run) = &successor_run {
+        runtime
+            .retire_owned_provider_run_after_terminal_failure(&session_id, successor_run.id())
+            .await;
+    }
+    runtime
+        .retire_owned_provider_run_after_terminal_failure(&session_id, run.id())
+        .await;
+    delivered.unwrap_or_else(|_| {
+        panic!(
+            "the prompt queued behind the Stop must reach the native acknowledgement wait: {state}"
+        )
+    });
+    if let Some(fresh_context) = workflow_node_with_fresh_context {
+        let successor_run = successor_run.expect("the workflow node runs on a provider run");
+        assert!(
+            successor_run.workflow_tools_enabled(),
+            "the workflow node must start on a run with the workflow tools: {state}"
+        );
+        assert!(
+            successor_run.id() != run.id(),
+            "a workflow run replaces the ordinary run: {state}"
+        );
+        assert_eq!(
+            successor_run.workflow_fresh_context_node_run_id().is_some(),
+            fresh_context,
+            "a node that flushes the context starts on a fresh run: {state}"
+        );
+    }
+}
+
+/// A dispatch that fails retires its run. A workflow node queued behind it starts on the
+/// workflow-capable run the shared queue preparation provides, not on a plain replacement.
+#[tokio::test]
+async fn a_workflow_node_queued_behind_a_failed_dispatch_starts_on_a_workflow_capable_run() {
+    workflow_node_behind_failed_dispatch(false).await;
+}
+
+/// The same when the failure leaves the run alive and the queue advances onto it.
+#[tokio::test]
+async fn a_workflow_node_queued_behind_a_dispatch_failing_on_a_live_run_gets_workflow_tools() {
+    workflow_node_behind_failed_dispatch(true).await;
+}
+
+async fn workflow_node_behind_failed_dispatch(run_survives_the_failure: bool) {
+    crate::test_support::isolated_env_test!();
+    let (_worktree, runtime, session_id, agent_id, source_id, run, dispatch) =
+        runtime_with_claude_headless_active_prompt().await;
+    runtime
+        .with_app_side_effect(|app| {
+            let next = successor_prompt(app, &session_id, &agent_id, &source_id, Some(false));
+            app.prompt_owner_submit_prepared_prompt(&session_id, next, false)
+                .map(|_| ())
+        })
+        .await
+        .unwrap();
+    let error = if run_survives_the_failure {
+        DaemonError::LocalTransport {
+            operation: "write prompt to provider",
+            message: "the provider refused the prompt".to_string(),
+        }
+    } else {
+        prompt_ack_timeout_error(&dispatch)
+    };
+    let _ = runtime.fail_prompt_dispatch(dispatch, error).await;
+    let successor_run = runtime
+        .owned
+        .provider_store
+        .get_run_for_agent(&session_id, &agent_id)
+        .expect("the queued node has a provider run");
+    let session = runtime
+        .owned
+        .session_store
+        .get_session(&session_id)
+        .unwrap();
+    let active_workflow_node = runtime
+        .owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&session, &agent_id)
+        .is_some_and(|active| active.workflow_run_id().is_some());
+    runtime
+        .retire_owned_provider_run_after_terminal_failure(&session_id, successor_run.id())
+        .await;
+    assert!(
+        successor_run.id() != run.id() && successor_run.workflow_tools_enabled(),
+        "the workflow node must start on a run with the workflow tools: {:?} (original {})",
+        (successor_run.id(), successor_run.workflow_tools_enabled()),
+        run.id()
+    );
+    assert!(
+        active_workflow_node,
+        "the workflow node becomes the active prompt"
+    );
+}

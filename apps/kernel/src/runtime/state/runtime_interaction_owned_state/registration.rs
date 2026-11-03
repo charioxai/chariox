@@ -48,6 +48,18 @@ impl KernelRuntimeOwnedState {
             );
         }
         if session_id == crate::runtime::kernel_access::ACCESS_INTERACTION_SCOPE {
+            if interaction
+                .kernel_operation_id()
+                .is_some_and(|id| id.starts_with(crate::runtime::state::VAULT_SECRET_OPERATION))
+            {
+                return self.register_kernel_wide_secret_interaction(
+                    interaction,
+                    responder,
+                    kernel_operation_owner,
+                    forwarding,
+                    terminal_credential_owner,
+                );
+            }
             return self.register_kernel_wide_access_interaction(
                 interaction,
                 responder,
@@ -149,8 +161,7 @@ impl KernelRuntimeOwnedState {
                     self.publish_outside_interaction(
                         session_id,
                         &previous,
-                        crate::local::EventInteractionState::Resolved,
-                        None,
+                        InteractionPhase::cancelled(),
                     )?;
                 }
                 if pending
@@ -187,8 +198,7 @@ impl KernelRuntimeOwnedState {
                     self.publish_outside_interaction(
                         session_id,
                         &previous,
-                        crate::local::EventInteractionState::Resolved,
-                        None,
+                        InteractionPhase::cancelled(),
                     )?;
                 }
                 pending.remove(id);
@@ -361,8 +371,7 @@ impl KernelRuntimeOwnedState {
         if let Err(error) = self.publish_outside_interaction(
             session_id,
             &interaction,
-            crate::local::EventInteractionState::Pending,
-            passkey_prompt.as_deref(),
+            InteractionPhase::Pending(&pending),
         ) {
             self.answer_goal_native_approval(pending.goal_approval.as_ref())?;
             return Err(error);
@@ -406,8 +415,7 @@ impl KernelRuntimeOwnedState {
                         .publish_outside_interaction(
                             session_id,
                             &interaction,
-                            crate::local::EventInteractionState::Resolved,
-                            None,
+                            InteractionPhase::cancelled(),
                         )
                         .is_err()
                     {

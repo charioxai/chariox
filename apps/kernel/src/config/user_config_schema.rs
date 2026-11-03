@@ -107,6 +107,7 @@ pub(super) fn entries() -> Vec<UserConfigSchemaEntry> {
         entry("slices.linux.idle_timeout_minutes", "u32", &[], true, true, "no_runtime_effect", "unwired", "Future idle-stop timeout for Linux slices."),
         entry("slices.linux.screen_width", "u32", &[], true, true, "none", "live", "Linux slice virtual screen width."),
         entry("slices.linux.screen_height", "u32", &[], true, true, "none", "live", "Linux slice virtual screen height."),
+        entry("secret_link.page_url", "string|null", &[], true, true, "runtime_policy", "live", "HTTPS origin of the page where the owner types a value an outside agent asked for; defaults to the web app of the enrolled Cloud."),
         entry("kernel_access.grant_default_minutes", "u32", &[], true, true, "runtime_policy", "live", "Default access-grant term in minutes; defaults to 480."),
         entry("kernel_access.grant_max_minutes", "u32", &[], true, true, "runtime_policy", "live", "Maximum access-grant term in minutes; defaults to 1440; cannot exceed 1440."),
         entry("kernel_access.grant_extend_notice_minutes", "u32", &[], true, true, "runtime_policy", "live", "Minutes before expiry to offer an extension; defaults to 5."),

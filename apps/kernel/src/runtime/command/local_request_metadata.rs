@@ -340,13 +340,29 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
                 .session(&request.session_id)
                 .attachment(&request.attachment_id)
         }
-        LocalDaemonRequest::CreateAgentPromptSchedule(request) => {
-            LocalRequestMetadata::new("agent_prompt_schedule.create", Interactive)
+        LocalDaemonRequest::CreateAgentTrigger(request) => {
+            LocalRequestMetadata::new("agent_trigger.create", Interactive)
                 .session(&request.session_id)
                 .agent(&request.agent_id)
         }
-        LocalDaemonRequest::CancelAgentPromptSchedule(request) => {
-            LocalRequestMetadata::new("agent_prompt_schedule.cancel", Interactive)
+        LocalDaemonRequest::UpdateAgentTrigger(request) => {
+            LocalRequestMetadata::new("agent_trigger.update", Interactive)
+                .session(&request.session_id)
+        }
+        LocalDaemonRequest::DeleteAgentTrigger(request) => {
+            LocalRequestMetadata::new("agent_trigger.delete", Interactive)
+                .session(&request.session_id)
+        }
+        LocalDaemonRequest::InvokeAgentTrigger(request) => {
+            LocalRequestMetadata::new("agent_trigger.invoke", Interactive)
+                .session(&request.session_id)
+        }
+        LocalDaemonRequest::ResendTriggerDelivery(request) => {
+            LocalRequestMetadata::new("agent_trigger.resend_delivery", Interactive)
+                .session(&request.session_id)
+        }
+        LocalDaemonRequest::ReadAgentTriggerTranscript(request) => {
+            LocalRequestMetadata::new("agent_trigger.transcript", Background)
                 .session(&request.session_id)
         }
         LocalDaemonRequest::CancelActivePrompt(request) => {
@@ -635,6 +651,10 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
         LocalDaemonRequest::StopSessionProcesses(request) => {
             LocalRequestMetadata::new("session_process.stop", Normal).session(&request.session_id)
         }
+        LocalDaemonRequest::StartSessionProcessNow(request) => {
+            LocalRequestMetadata::new("session_process.start_now", Normal)
+                .session(&request.session_id)
+        }
         _ => LocalRequestMetadata::new(local_request_command_type(request), Normal),
     }
 }
@@ -647,6 +667,8 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::RequestKernelAccess(_) => "kernel_access.request",
         LocalDaemonRequest::CoverKernelAccessProcess(_) => "kernel_access.cover",
         LocalDaemonRequest::RequestKernelSudo(_) => "kernel_access.sudo_request",
+        LocalDaemonRequest::RequestVaultSecret(_) => "kernel_access.vault_secret_request",
+        LocalDaemonRequest::GetVaultSecretStatus(_) => "kernel_access.vault_secret_status",
         LocalDaemonRequest::ExtendKernelSudo(_) => "kernel_access.sudo_extend",
         LocalDaemonRequest::RenewKernelSudoRequester(_) => "kernel_access.sudo_requester_renew",
         LocalDaemonRequest::ListKernelAccessGrants(_) => "kernel_access.list",
@@ -992,6 +1014,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::CancelProviderLogin(_) => "provider.login.cancel",
         LocalDaemonRequest::LogoutProvider(_) => "provider.logout",
         LocalDaemonRequest::StopSessionProcesses(_) => "session_process.stop",
+        LocalDaemonRequest::StartSessionProcessNow(_) => "session_process.start_now",
         LocalDaemonRequest::ListProviderProcesses(_) => "provider_process.list",
         LocalDaemonRequest::TeardownProviderProcesses(_) => "provider_process.teardown",
         LocalDaemonRequest::QueryRecall(_) => "recall.query",
@@ -1010,8 +1033,12 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
             "native_provider.interaction.request"
         }
         LocalDaemonRequest::CompletePrompt(_) => "prompt.complete",
-        LocalDaemonRequest::CreateAgentPromptSchedule(_) => "agent_prompt_schedule.create",
-        LocalDaemonRequest::CancelAgentPromptSchedule(_) => "agent_prompt_schedule.cancel",
+        LocalDaemonRequest::CreateAgentTrigger(_) => "agent_trigger.create",
+        LocalDaemonRequest::UpdateAgentTrigger(_) => "agent_trigger.update",
+        LocalDaemonRequest::DeleteAgentTrigger(_) => "agent_trigger.delete",
+        LocalDaemonRequest::InvokeAgentTrigger(_) => "agent_trigger.invoke",
+        LocalDaemonRequest::ResendTriggerDelivery(_) => "agent_trigger.resend_delivery",
+        LocalDaemonRequest::ReadAgentTriggerTranscript(_) => "agent_trigger.transcript",
         LocalDaemonRequest::UpdateSessionConfig(_) => "session.config.update",
         LocalDaemonRequest::UpdateAgentConfig(_) => "agent.config.update",
         LocalDaemonRequest::UpdateAgentSubstitutes(_) => "agent.substitutes.update",

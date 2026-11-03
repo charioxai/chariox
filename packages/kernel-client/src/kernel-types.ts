@@ -1,6 +1,6 @@
 import type { TurnOutcome } from "./kernel-types-runtime.js"
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 923
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 933
 
 export type * from "./kernel-types-apps.js"
 
@@ -29,13 +29,20 @@ export * from "./notes.js"
 /** MP-08 / MP-09 / MP-10 / MP-11: state changes pulled by an outside grant. */
 export type EventTarget = { kernel: string; session_id: string; agent_id?: string }
 export type EventSubscription = { subscription_id: string; targets: EventTarget[]; kernels: { kernel: string; online: boolean; error?: { code: string; message: string } }[]; acknowledged_cursor: number; ended: string | null }
+/** A pending decision the holder may answer, as the person sees it (protocol 928). */
+export type EventQuestion = {
+  title?: string; message: string
+  choices: { id: string; label: string; style?: "primary" | "secondary" | "danger" }[]
+  text_reply?: { id: string; label: string; placeholder?: string; min_length: number; max_length?: number }
+  expires_at_ms?: number; default_on_timeout?: string
+}
 export type OutsideEvent = {
   cursor: number; kernel: string; machine: string; session_id: string; agent_id?: string
   summary: string; at_ms: number
   refs: { task_id?: string; run_id?: string; interaction_id?: string; terminal_id?: string }
 } & (
   | { type: "agent"; value: { run_state?: "idle" | "working" | "error"; task_state?: "working" | "waiting" | "blocked" | "done" | "cancelled"; reason?: string; prompt_id?: string; turn_id?: string; outcome?: TurnOutcome } }
-  | { type: "interaction"; value: { state: "pending" | "resolved"; pointer?: { approval_id: string; kind: string; kernel: string; one_line: string; link?: string; expires_at: number } } }
+  | { type: "interaction"; value: { state: "pending" | "resolved"; pointer?: { approval_id: string; kind: string; kernel: string; one_line: string; link?: string; expires_at: number }; question?: EventQuestion; resolution?: { via: "terminal" | "external_agent" | "timeout" | "cancelled"; choice_id?: string } } }
   | { type: "terminal"; value: { exit_code: number | null } }
   | { type: "steer"; value: { steer_id: string } }
   | { type: "session"; value: { state: "agent_added" | "agent_removed" | "ended" } }

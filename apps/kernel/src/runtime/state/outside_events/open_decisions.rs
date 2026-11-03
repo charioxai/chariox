@@ -33,11 +33,8 @@ impl KernelRuntimeOwnedState {
                 else {
                     continue;
                 };
-                let (value, summary) = self.outside_interaction_value(
-                    interaction,
-                    EventInteractionState::Pending,
-                    pending.passkey_prompt.as_deref(),
-                );
+                let (value, summary) = self
+                    .outside_interaction_value(interaction, InteractionPhase::Pending(&pending));
                 open.push(OpenDecision {
                     session_id: id.into(),
                     agent_id: interaction.agent_id().map(str::to_string),

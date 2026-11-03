@@ -5,8 +5,9 @@ use std::collections::BTreeMap;
 use std::net::TcpListener;
 use std::thread::{self, JoinHandle};
 
+use crate::provider::test_codex_connect as connect;
 use serde_json::json;
-use tokio_tungstenite::tungstenite::{accept, connect, Message};
+use tokio_tungstenite::tungstenite::{accept, Message};
 
 use super::super::drain::drain_codex_events;
 use super::super::state::CodexRuntimeState;

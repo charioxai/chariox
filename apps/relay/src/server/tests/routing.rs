@@ -83,7 +83,7 @@ async fn duplicate_daemon_aliases_do_not_bind_clients_arbitrarily() {
         match serde_json::from_str::<RelayEnvelope>(&close_payload)
             .expect("ambiguous close should decode")
         {
-            RelayEnvelope::Close { reason } => {
+            RelayEnvelope::Close { reason, .. } => {
                 assert_eq!(reason, "target daemon is not connected to relay");
             }
             RelayEnvelope::ClientConnected {

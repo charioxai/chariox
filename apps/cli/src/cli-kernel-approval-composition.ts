@@ -76,9 +76,9 @@ export function createCliKernelApprovalComposition(deps: {
     onOpen: opened,
     onClose: closed,
     scroll: popupSurface.scroll,
-    respond: (prompt, choiceId, proof) =>
-      prompt.session_id === "kernel-access" && (prompt.kind === "access_grant" || prompt.kind === "access_extension")
-        ? respondToKernelAccessDecision(deps.client, prompt.interaction_id, choiceId, proof)
+    respond: (prompt, choiceId, proof, reply) =>
+      prompt.session_id === "kernel-access" && (prompt.kind === "access_grant" || prompt.kind === "access_extension" || prompt.kind === "vault_secret")
+        ? respondToKernelAccessDecision(deps.client, prompt.interaction_id, choiceId, proof, reply)
         : prompt.session_id === ""
           ? respondUserPrompt(prompt.interaction_id, choiceId, proof)
           : respondToInteraction(deps.client, prompt.session_id, prompt.interaction_id, choiceId, null, proof),

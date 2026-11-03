@@ -300,6 +300,97 @@ async fn leased_delegate_completion_wakes_the_home_delegator(worker_completes: b
 
 // MP-08/MP-10/MP-11 R947: requested replies use the same public answer projection.
 #[test]
+fn mp10_a10s04_killed_worker_provider_wakes_the_delegator_with_the_exit_status() {
+    run_test(killed_worker_provider_wakes_the_delegator_with_the_exit_status);
+}
+
+/// The worker's provider process is killed mid-turn. The helper ends failed,
+/// never done, and the delegator's wake carries the typed outcome with the exit
+/// status instead of a bare "source lost".
+async fn killed_worker_provider_wakes_the_delegator_with_the_exit_status() {
+    let _tools = with_room_tools();
+    let mut fixture = LiveWorker::start().await;
+    let room = fixture.rooms[0].clone();
+    let (child, attachment) = spawn_leased(&mut fixture, &room).await;
+    let parent = local_agent(&fixture, &room, &child).await;
+    let store = store(&fixture).await;
+    delegator_waiting_on(&store, &room, &parent, &child);
+    dispatch_json(
+        &fixture.home,
+        json!({"FocusAgent":{"session_id":room,"agent_id":child}}),
+    )
+    .await
+    .unwrap();
+    dispatch_json(
+        &fixture.home,
+        json!({"SubmitPrompt":{
+            "session_id":room,"attachment_id":attachment,"target_agent_id":child,
+            "prompt":"A10-S04 delegated work the provider never finishes"
+        }}),
+    )
+    .await
+    .expect("submit the delegated turn through the real relay");
+    leased_run(&fixture, &room, &child).await;
+    let leased = binding(&fixture, &child).await.leased_agent_id;
+    let (backing_session, worker_run) = {
+        let mut worker = fixture.worker.app.lock().await;
+        let leases = crate::app::RemoteLeaseRuntime::new(&mut worker);
+        let (backing_session, _) = leases
+            .leased_agent_backing(&leased)
+            .expect("worker backing agent");
+        let run = leases
+            .leased_agent_provider_run_id(&leased)
+            .unwrap()
+            .expect("the worker runs the turn");
+        (backing_session, run)
+    };
+    let killed =
+        crate::provider::ProviderRunTermination::process_exit(137, crate::session::unix_epoch_ms());
+    fixture
+        .worker
+        .runtime_state()
+        .fail_provider_run_for_test(&backing_session, &worker_run, killed)
+        .await
+        .expect("the worker settles the killed turn");
+    let events = eventually("the delegator's wake", || {
+        let events: Vec<_> = store
+            .agent_inbox(&room, &parent, 0)
+            .unwrap()
+            .into_iter()
+            .filter(|event| event.source_id == child)
+            .collect();
+        (!events.is_empty()).then_some(events)
+    })
+    .await;
+    let child_tasks = store.agent_tasks(Some(&room), Some(&child)).unwrap();
+    fixture
+        .worker
+        .app
+        .lock()
+        .await
+        .teardown_provider_processes(Some("managed-dev-stub"), true)
+        .unwrap();
+    fixture.stop().await;
+
+    assert_eq!(events.len(), 1, "one wake: {events:?}");
+    assert_eq!(events[0].kind, "source_lost", "{events:?}");
+    let outcome = &events[0].payload["public_answer"]["outcome"];
+    assert_eq!(outcome["kind"], "provider_crashed", "{events:?}");
+    assert!(
+        outcome["reason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("status 137")),
+        "the wake carries the exit status: {outcome}"
+    );
+    assert!(
+        child_tasks
+            .iter()
+            .all(|task| task.state == ledger::ExecutionState::Cancelled),
+        "a killed helper is not done: {child_tasks:?}"
+    );
+}
+
+#[test]
 fn mp10_a10_leased_requested_reply_carries_worker_answer() {
     run_test(leased_requested_reply_carries_worker_answer);
 }
@@ -2083,3 +2174,6 @@ async fn leased_required_agent_with_a_home_sudo_window_types_without_approval() 
 
 mod connectivity;
 mod process_requests;
+
+#[cfg(target_os = "linux")]
+mod watched_process_fences;

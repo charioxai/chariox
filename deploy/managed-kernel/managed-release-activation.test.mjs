@@ -7,7 +7,7 @@ import test from "node:test"
 
 const installSource = await readFile(new URL("./install-image.sh", import.meta.url), "utf8")
 const upgradeSource = await readFile(new URL("./upgrade-image.sh", import.meta.url), "utf8")
-const prepareSource = await readFile(new URL("./prepare-hetzner-image.sh", import.meta.url), "utf8")
+const prepareSource = await readFile(new URL("./prepare-worker-image.sh", import.meta.url), "utf8")
 const path1Service = await readFile(new URL("./chariox-path1-managed-bootstrap.service", import.meta.url), "utf8")
 const disposableWorkerService = await readFile(new URL("./chariox-disposable-worker-bootstrap.service", import.meta.url), "utf8")
 const providerPathSource = await readFile(new URL("../../apps/kernel/src/managed_bootstrap/provider_path.rs", import.meta.url), "utf8")

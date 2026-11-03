@@ -1073,11 +1073,28 @@ fn write_publication_caller_claims_config(
             format!("failed to serialize caller claims config: {error}"),
         )
     })?;
+    write_one_shot_private_file("chariox-publication-caller-claims", ".json", &payload).map_err(
+        |error| {
+            publication_runtime_error(
+                "start workflow publication runtime",
+                format!("failed to write caller claims config: {error}"),
+            )
+        },
+    )
+}
+
+/// A new owner-only file in the temp directory that a gateway reads once and
+/// removes, so its secret never reaches a command line or an environment value.
+pub(super) fn write_one_shot_private_file(
+    prefix: &str,
+    extension: &str,
+    payload: &[u8],
+) -> std::io::Result<PathBuf> {
     for _ in 0..8 {
         let mut suffix = [0u8; 16];
         rand::thread_rng().fill_bytes(&mut suffix);
         let path = std::env::temp_dir().join(format!(
-            "chariox-publication-caller-claims-{}.json",
+            "{prefix}-{}{extension}",
             suffix
                 .iter()
                 .map(|byte| format!("{byte:02x}"))
@@ -1089,27 +1106,19 @@ fn write_publication_caller_claims_config(
         options.mode(0o600);
         match options.open(&path) {
             Ok(mut file) => {
-                if let Err(error) = file.write_all(&payload).and_then(|_| file.sync_all()) {
+                if let Err(error) = file.write_all(payload).and_then(|_| file.sync_all()) {
                     let _ = fs::remove_file(&path);
-                    return Err(publication_runtime_error(
-                        "start workflow publication runtime",
-                        format!("failed to write caller claims config: {error}"),
-                    ));
+                    return Err(error);
                 }
                 return Ok(path);
             }
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(error) => {
-                return Err(publication_runtime_error(
-                    "start workflow publication runtime",
-                    format!("failed to create caller claims config: {error}"),
-                ));
-            }
+            Err(error) => return Err(error),
         }
     }
-    Err(publication_runtime_error(
-        "start workflow publication runtime",
-        "failed to allocate caller claims config",
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        "no unused file name",
     ))
 }
 
@@ -2004,7 +2013,7 @@ fn is_package_digest_mismatch(error: &DaemonError) -> bool {
     )
 }
 
-fn resolve_chariox_cli_bin() -> Result<PathBuf, DaemonError> {
+pub(super) fn resolve_chariox_cli_bin() -> Result<PathBuf, DaemonError> {
     if let Some(value) = std::env::var_os("CHARIOX_CLI_BIN") {
         return Ok(PathBuf::from(value));
     }

@@ -4,15 +4,24 @@
 //! submission work to the provider runtime without exposing owned-state internals to transports.
 
 use super::prompt_queue_owned_state::RemoteQueuedPromptSteerPreparation;
+use super::structured_prompt_dispatch::SteerReceipt;
 use super::*;
 
-struct RemoteQueuedPromptSteerReservation {
+/// Whether the provider confirmed a trigger's steer. `Unconfirmed` firings are
+/// consumed, never replayed, because the provider may already hold them.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum TriggerSteerDelivery {
+    Confirmed,
+    Unconfirmed,
+}
+
+pub(super) struct RemoteQueuedPromptSteerReservation {
     prompt: crate::session::PromptQueueItem,
     id: u64,
 }
 
 impl RemoteQueuedPromptSteerReservation {
-    fn new(prompt: crate::session::PromptQueueItem, id: u64) -> Self {
+    pub(super) fn new(prompt: crate::session::PromptQueueItem, id: u64) -> Self {
         Self { prompt, id }
     }
 
@@ -607,6 +616,7 @@ impl KernelRuntimeState {
                 prompt.id(),
                 prompt.prompt(),
                 prompt.attachments(),
+                prompt.prompt_origin(),
             )?;
             owned.echo_steering_prompt_to_other_attachments(
                 session_id,
@@ -638,7 +648,7 @@ impl KernelRuntimeState {
         prepared: crate::app::KernelPreparedPromptSubmission,
         authority: Option<(&str, &crate::local::LocalDaemonRequest)>,
     ) -> Result<crate::app::KernelPromptSubmission, DaemonError> {
-        self.submit_prepared_prompt_authorized(prepared, true, authority)
+        self.submit_prepared_prompt_authorized(prepared, true, authority, None)
             .await
     }
 
@@ -647,7 +657,16 @@ impl KernelRuntimeState {
         prepared: crate::app::KernelPreparedPromptSubmission,
         allow_queue: bool,
     ) -> Result<crate::app::KernelPromptSubmission, DaemonError> {
-        self.submit_prepared_prompt_authorized(prepared, allow_queue, None)
+        self.submit_prepared_prompt_authorized(prepared, allow_queue, None, None)
+            .await
+    }
+
+    pub(super) async fn submit_prepared_agent_trigger_prompt(
+        &self,
+        prepared: crate::app::KernelPreparedPromptSubmission,
+        claim: Option<&crate::session::AgentTriggerDispatch>,
+    ) -> Result<crate::app::KernelPromptSubmission, DaemonError> {
+        self.submit_prepared_prompt_authorized(prepared, true, None, claim)
             .await
     }
 
@@ -656,12 +675,17 @@ impl KernelRuntimeState {
         mut prepared: crate::app::KernelPreparedPromptSubmission,
         allow_queue: bool,
         authority: Option<(&str, &crate::local::LocalDaemonRequest)>,
+        trigger_claim: Option<&crate::session::AgentTriggerDispatch>,
     ) -> Result<crate::app::KernelPromptSubmission, DaemonError> {
         // MP-08 / MP-11: delegated prompts also retain the room caller's epoch
         // and typed authority, including after waiting to launch a cold peer.
-        let authorize = || {
+        let authorize = || -> Result<(), DaemonError> {
             self.authorize_current_external_command()?;
-            self.authorize_prompt_command(authority)
+            self.authorize_prompt_command(authority)?;
+            if let Some(claim) = trigger_claim {
+                self.owned.ensure_current_agent_trigger_claim(claim)?;
+            }
+            Ok(())
         };
         authorize()?;
         self.owned.require_publication_activation()?;
@@ -718,6 +742,7 @@ impl KernelRuntimeState {
             let delegated_parent = self.delegated_prompt_parent(&prepared.session_id)?;
             // Boxed: keeps the outer submission future small on deep call stacks.
             let submission = Box::pin(async {
+                authorize()?;
                 if let Some(mut submission) =
                     owned.submit_local_prepared_prompt_with_queue_policy(&prepared, allow_queue)?
                 {
@@ -993,6 +1018,85 @@ impl KernelRuntimeState {
                         .to_string(),
             })
         }
+    }
+
+    pub(super) async fn steer_agent_trigger_prompt(
+        &self,
+        session_id: &str,
+        target_agent_id: &str,
+        attachment_id: &str,
+        prompt_id: &str,
+        settle_firing: impl FnOnce(TriggerSteerDelivery) -> Result<(), DaemonError>,
+    ) -> Result<TriggerSteerDelivery, DaemonError> {
+        let owned = &self.owned;
+        if owned
+            .agent_store
+            .get_agent(target_agent_id)?
+            .remote_execution()
+            .is_some()
+        {
+            return self
+                .steer_queued_prompt_with_external_authority(
+                    session_id,
+                    target_agent_id,
+                    attachment_id,
+                    prompt_id,
+                    None,
+                )
+                .await
+                .map(|_| TriggerSteerDelivery::Confirmed);
+        }
+        let prepared = owned.prepare_local_queued_prompt_steer(
+            session_id,
+            target_agent_id,
+            attachment_id,
+            prompt_id,
+        )?;
+        let result = async {
+            let _permit = self
+                .provider_runtime_lanes
+                .acquire(&prepared.dispatch.provider_run_id)
+                .await;
+            let recorded_sequence = owned.record_local_queued_prompt_steer(&prepared)?;
+            owned.hold_local_queued_prompt_steer(&prepared, true)?;
+            let delivery = match self
+                .enqueue_prompt_dispatch_with_receipt(&prepared.dispatch, SteerReceipt::Awaited)
+                .await
+            {
+                Ok(true) => TriggerSteerDelivery::Confirmed,
+                // The provider may already hold the message, so the firing
+                // leaves the queue instead of being replayed as a second one.
+                Err(DaemonError::ProviderPromptSteerUnconfirmed { .. }) => {
+                    TriggerSteerDelivery::Unconfirmed
+                }
+                // The provider never took the message: release the hold so
+                // the retained firing can run on a later turn.
+                Ok(false) => {
+                    owned.hold_local_queued_prompt_steer(&prepared, false)?;
+                    return Err(DaemonError::LocalTransport {
+                        operation: "steer queued prompt",
+                        message: "provider did not accept the queued prompt steer".into(),
+                    });
+                }
+                Err(error) => {
+                    owned.hold_local_queued_prompt_steer(&prepared, false)?;
+                    return Err(error);
+                }
+            };
+            // The trigger is settled while the hold still stands, so a stop
+            // before the queue removal cannot leave it due without a firing.
+            settle_firing(delivery)?;
+            owned.finish_local_queued_prompt_steer(&prepared, recorded_sequence)?;
+            Ok(delivery)
+        }
+        .await;
+        drop(prepared);
+        if result.is_err() {
+            // Completion may have found the reserved head and left the run
+            // idle. Resume the retained queue after releasing its reservation.
+            self.spawn_idle_local_prompt_queue_promotion(session_id, target_agent_id)?;
+        }
+        result
     }
 
     pub(crate) async fn steer_queued_prompt_with_external_authority(

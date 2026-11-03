@@ -13,7 +13,7 @@ when the coordinator starts the test; use your admitted home network
 Both remote Chromiums run side by side on one quiet Ubuntu 26.04 CCX43.
 Use your Mac browser and Retina display with browser zoom at 100%.
 
-1. **Minutes 0–3:** open Chariox, select Machine **vidlat-owner-ab CCX43**,
+1. **Minutes 0–3:** open Chariox, select Machine **vidlat-owner-ab drill host**,
    Kernel **vidlat-owner-ab**, then session **owner-ab** under **Open Existing
    Sessions**. Open **Browser**, enter the Wikipedia URL below and choose
    **New tab**. Select **Video** if offered.

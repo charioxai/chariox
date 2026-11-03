@@ -13,7 +13,7 @@ import { validateDrillChaosReplayBundle } from "./lib/drill-chaos-contract.mjs"
 const execFile = promisify(execFileWithCallback)
 const scriptPath = fileURLToPath(new URL("./live-runtime-resilience-chaos-matrix-drill.mjs", import.meta.url))
 
-test("runtime resilience chaos matrix dry-run covers local, slice, Hetzner, and hosted recovery axes", async () => {
+test("runtime resilience chaos matrix dry-run covers local, slice, remote kernel, and hosted recovery axes", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-runtime-resilience-chaos-matrix-"))
   const reportPath = path.join(rootDir, "matrix.json")
   const artifactIndexPath = path.join(rootDir, "chariox-drill-artifacts.json")
@@ -22,7 +22,7 @@ test("runtime resilience chaos matrix dry-run covers local, slice, Hetzner, and 
       scriptPath,
       "--dry-run",
       "--include-slices",
-      "--include-hetzner",
+      "--include-remote-kernel",
       "--include-hosted-cloud",
       "--provider-model",
       "codex=gpt-test-codex",
@@ -70,7 +70,7 @@ test("runtime resilience chaos matrix dry-run covers local, slice, Hetzner, and 
       "local-slice-display-process-faults",
       "slice-restart-codex",
       "slice-restart-opencode",
-      "hetzner-collaborator-reconnect-authority",
+      "remote-kernel-collaborator-reconnect-authority",
       "hosted-cloud-relay-second-kernel-reconnect",
     ])
     assert.deepEqual(report.scenarios.find((scenario) => scenario.id === "slice-restart-codex").requires, ["slice"])
@@ -83,7 +83,7 @@ test("runtime resilience chaos matrix dry-run covers local, slice, Hetzner, and 
       "--slice-build-image",
       "auto",
     ])
-    assert.deepEqual(report.scenarios.find((scenario) => scenario.id === "hetzner-collaborator-reconnect-authority").requires, ["hetzner"])
+    assert.deepEqual(report.scenarios.find((scenario) => scenario.id === "remote-kernel-collaborator-reconnect-authority").requires, ["remote-kernel"])
     assert.deepEqual(report.scenarios.find((scenario) => scenario.id === "hosted-cloud-relay-second-kernel-reconnect").requires, ["hosted-cloud"])
     assert.deepEqual(report.scenarios.find((scenario) => scenario.id === "worker-provider-resume-codex").args.slice(-2), [
       "--provider-model",
@@ -158,11 +158,11 @@ test("runtime resilience chaos matrix dry-run covers local, slice, Hetzner, and 
       "--output",
       path.join(rootDir, "replay.json"),
     ])
-    assert.equal(report.metadata.deploymentPresets, "hetzner,hosted-cloud,local,same-host-remote,self-hosted-relay")
+    assert.equal(report.metadata.deploymentPresets, "hosted-cloud,local,remote-kernel,same-host-remote,self-hosted-relay")
     assert.equal(report.metadata.providers, "claude,codex,opencode")
     assert.equal(report.metadata.providerAccountAliases, "claude=work_claude,codex=work_codex")
     assert.equal(report.metadata.includeSlices, true)
-    assert.equal(report.metadata.includeHetzner, true)
+    assert.equal(report.metadata.includeRemoteKernel, true)
     assert.equal(report.metadata.includeHostedCloud, true)
     assert.equal(report.metadata.generatedMatrixNames, "runtime-resilience-chaos-matrix")
     assert.equal(report.metadata.generatedMatrixRepos, "oss")

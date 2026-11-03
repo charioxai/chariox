@@ -1,0 +1,25 @@
+{
+  "name": "@chariox/transcript-view",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./dist/index.js",
+    "./styles": "./dist/styles/index.js",
+    "./markdown/*": "./dist/markdown/*.js",
+    "./terminal/*": "./dist/terminal/*.js",
+    "./terminal-runtime-notice": "./dist/terminal-runtime-notice.js"
+  },
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "lint": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@chariox/tool-display": "workspace:*",
+    "markdown-it": "15.0.2",
+    "dompurify": "3.4.17",
+    "katex": "0.19.0",
+    "shiki": "4.5.0"
+  }
+}

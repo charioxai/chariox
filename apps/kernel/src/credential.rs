@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::config::{validate_credentials, UserCredentialConfig};
+use crate::config::{validate_credentials, UserCredentialConfig, UserCredentialSourceConfig};
 use crate::error::DaemonError;
 use crate::mcp::validate_registry_name;
 
@@ -109,6 +109,22 @@ impl CharioxCredentialRegistry {
             entries.entry(credential.id.clone()).or_insert(credential);
         }
         Ok(entries.into_values().collect())
+    }
+
+    /// The id of a handle other than `excluding` that keeps its value under the Vault key `key`.
+    pub fn other_handle_using_vault_key(
+        &self,
+        key: &str,
+        excluding: &str,
+    ) -> Result<Option<String>, DaemonError> {
+        Ok(self
+            .list()?
+            .into_iter()
+            .find(|credential| {
+                credential.id != excluding
+                    && matches!(&credential.source, UserCredentialSourceConfig::Vault { key: used } if used.trim() == key.trim())
+            })
+            .map(|credential| credential.id))
     }
 
     pub fn path_for(&self, id: &str) -> Result<PathBuf, DaemonError> {

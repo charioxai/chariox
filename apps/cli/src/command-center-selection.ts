@@ -1,4 +1,5 @@
 import type { CommandCenterItem } from "./command-center-types.js"
+import type { CommandNode } from "./command-center-tree-projection.js"
 import { parseSlashCommand } from "./commands.js"
 import { formatPromptAgentAliasAddress } from "@chariox/kernel-client/prompt-submission"
 
@@ -46,6 +47,28 @@ export function promptAddsArgumentsToCommandCenterItem(item: CommandCenterItem, 
   }
   const command = item.value.endsWith(" ") ? item.value : `${item.value} `
   return prompt.startsWith(command) && prompt.slice(command.length).trim() !== ""
+}
+
+/**
+ * The line starts with a command the catalog knows and adds arguments, while the
+ * highlighted item belongs to another command because the whole line fuzzy-matched
+ * its words (e.g. "/trigger list" matching the "/workflow" group). The typed line
+ * wins over that highlight unless the person moved to it.
+ */
+export function typedCommandOutranksCommandCenterItem(
+  item: CommandCenterItem,
+  prompt: string,
+  commandTree: readonly CommandNode[],
+): boolean {
+  const [firstWord = "", ...rest] = prompt.trimStart().split(/\s+/)
+  if (!firstWord.startsWith("/") || rest.every((word) => word === "")) {
+    return false
+  }
+  if (!commandTree.some((node) => node.value.trim() === firstWord)) {
+    return false
+  }
+  const target = commandCenterCompletionText(item)
+  return target !== firstWord && !target.startsWith(`${firstWord} `)
 }
 
 export function shouldSubmitExactCommandCenterMatch(item: CommandCenterItem, currentPrompt: string) {

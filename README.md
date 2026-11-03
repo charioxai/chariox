@@ -119,6 +119,9 @@ Those launch the cached debug binaries directly and only rebuild when the Rust
 sources are newer than the binary. Keep `cargo run ...` for lower-level Rust
 debugging when you explicitly want Cargo in the loop.
 
+Run the kernel as a normal user. For root self-hosting and Claude YOLO
+compatibility, see [Running Chariox Locally](docs/RUNNING_LOCAL.md#claude-yolo-when-self-hosting-as-root).
+
 OpenCode setup currently requires:
 
 - `opencode` installed locally and reachable on `PATH`, or `CHARIOX_OPENCODE_BIN` set to the executable path

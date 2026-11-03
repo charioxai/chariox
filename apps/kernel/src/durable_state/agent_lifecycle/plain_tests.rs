@@ -58,6 +58,29 @@ fn turn_with_a_registered_obligation_keeps_the_ledger_correction() {
 }
 
 #[test]
+fn owner_stop_leaves_a_receipt_the_person_can_read() {
+    let f = Fixture::new();
+    f.begin("p");
+    let before = f.task();
+    let Outcome::Task(stopped) = f.apply(Operation::CancelTask {
+        task: "p".into(),
+        owner: "owner".into(),
+        revision: before.revision,
+    }) else {
+        panic!("stopped task")
+    };
+    assert_eq!(stopped.state, ExecutionState::Cancelled);
+    assert!(stopped.stopped_by_owner());
+    for internal in ["supervised", "physical", "settlement", "resource"] {
+        assert!(
+            !stopped.reason.contains(internal),
+            "the Stopped stripe shows the reason: {}",
+            stopped.reason
+        );
+    }
+}
+
+#[test]
 fn agent_archive_cancels_parent_participation_without_cancelling_child_work() {
     let f = Fixture::new();
     f.begin("p");

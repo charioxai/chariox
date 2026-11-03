@@ -191,9 +191,10 @@ jobs:
       - name: Cache cargo artifacts
         uses: Swatinem/rust-cache@v2
 
-      - name: Install Linux isolation test dependency
+      - name: Install Linux test dependencies
         # MP-01/MP-03: inner-slice/shared-host launch assembly validates bwrap.
-        run: sudo apt-get update && sudo apt-get install -y bubblewrap
+        # The room terminal tests drive real zsh shells (/usr/bin/zsh).
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap zsh
 
       - name: Install native display build dependencies
         # Clippy builds --all-features, which compiles the native-display C sources.

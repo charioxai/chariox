@@ -459,6 +459,67 @@ fn budget_parent() -> std::path::PathBuf {
         .to_owned()
 }
 
+/// The previous program's domain for a hot reload: the kernel's PID is kept
+/// across it, so it is a `chariox-<pid>-*` budget.
+#[cfg(target_os = "linux")]
+fn previous_domain() -> std::path::PathBuf {
+    let path = budget_parent()
+        .join(format!("chariox-{}-previous", std::process::id()))
+        .join("unit-previous")
+        .join("process-previous");
+    std::fs::create_dir_all(&path).unwrap();
+    path
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "requires a writable cgroup-v2 delegated parent"]
+fn a_takeover_that_moved_only_some_processes_leaves_them_running() {
+    let previous = previous_domain();
+    let prepared = PreparedDomain::in_pool("partial-takeover-test", None, roomy());
+    let destination = prepared
+        .cgroup
+        .as_ref()
+        .expect("cgroup delegation required")
+        .path()
+        .to_owned();
+    let unit = destination.parent().unwrap().to_owned();
+    let budget = unit.parent().unwrap().to_owned();
+    let mut workload = std::process::Command::new("sleep")
+        .arg("30")
+        .spawn()
+        .unwrap();
+    std::fs::write(previous.join("cgroup.procs"), workload.id().to_string()).unwrap();
+    // The takeover moves the process, then runs out of passes before it can
+    // see the old domain empty, as it does for a workload that keeps forking.
+    cgroup::DRAIN_PASSES_OVERRIDE.store(1, std::sync::atomic::Ordering::Relaxed);
+    let taken = prepared.taking_over(Some(&previous));
+    cgroup::DRAIN_PASSES_OVERRIDE.store(8, std::sync::atomic::Ordering::Relaxed);
+    let resident_watch = taken.cgroup.is_none();
+    drop(taken);
+    std::thread::sleep(Duration::from_millis(300));
+    let alive = workload.try_wait().unwrap().is_none();
+    let _ = workload.kill();
+    let _ = workload.wait();
+    let previous_unit = previous.parent().unwrap().to_owned();
+    let previous_budget = previous_unit.parent().unwrap().to_owned();
+    for directory in [
+        destination,
+        unit,
+        budget,
+        previous,
+        previous_unit,
+        previous_budget,
+    ] {
+        let _ = std::fs::remove_dir(directory);
+    }
+    assert!(
+        resident_watch,
+        "a failed takeover must fall back to resident memory"
+    );
+    assert!(alive, "a failed takeover ended the process it was adopting");
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 #[ignore = "requires a writable cgroup-v2 delegated parent"]
@@ -581,7 +642,7 @@ fn a_root_unreadable_at_start_is_listed_and_counted_once_readable() {
         assert!(
             commands
                 .get(&child.id())
-                .is_some_and(|resident| *resident > 0),
+                .is_some_and(|(resident, _)| *resident > 0),
             "errno {errno}: the root's memory is not counted for limits and pressure: {commands:?}"
         );
     }
@@ -610,4 +671,84 @@ fn a_root_unreadable_for_one_sample_stays_owned() {
         after.iter().any(|sample| sample.pid == child.id()),
         "one unreadable sample ended ownership of the root"
     );
+}
+
+/// Starting `ps` fails with `errno` until dropped.
+#[cfg(unix)]
+struct PsFailing;
+#[cfg(unix)]
+impl PsFailing {
+    fn with(errno: i32) -> Self {
+        sampling::ps_failure::set(Some(errno));
+        Self
+    }
+}
+#[cfg(unix)]
+impl Drop for PsFailing {
+    fn drop(&mut self) {
+        sampling::ps_failure::set(None);
+    }
+}
+
+#[cfg(unix)]
+fn watched_sleep(unit: &str) -> (std::process::Child, ProcessDomain, String) {
+    let child = std::process::Command::new("sleep")
+        .arg("30")
+        .spawn()
+        .unwrap();
+    let domain = PreparedDomain::watchdog(unit, None, roomy())
+        .start(child.id())
+        .unwrap();
+    let key = format!("{unit}-{:016x}", rand::random::<u64>());
+    domain.bind_key(&key);
+    (child, domain, key)
+}
+
+#[cfg(unix)]
+#[test]
+fn a_kernel_out_of_descriptors_for_a_moment_keeps_the_tree_it_watches() {
+    let (mut child, _domain, key) = watched_sleep("descriptors-short");
+    let pid = child.id();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while !samples_for_key(&key).iter().any(|sample| sample.pid == pid) {
+        assert!(std::time::Instant::now() < deadline, "never sampled");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let failing = PsFailing::with(libc::EMFILE);
+    std::thread::sleep(Duration::from_secs(3));
+    let kept = child.try_wait().unwrap().is_none();
+    drop(failing);
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while !samples_for_key(&key).iter().any(|sample| sample.pid == pid) {
+        if std::time::Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let sampled_again = samples_for_key(&key).iter().any(|sample| sample.pid == pid);
+    let _ = child.kill();
+    let _ = child.wait();
+    assert!(
+        kept,
+        "the sampler ended the tree because ps could not start for a moment"
+    );
+    assert!(
+        sampled_again,
+        "sampling did not resume once descriptors were free"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_missing_ps_ends_the_tree_it_watches() {
+    let (mut child, _domain, _key) = watched_sleep("ps-missing");
+    let _failing = PsFailing::with(libc::ENOENT);
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while child.try_wait().unwrap().is_none() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "a tree nobody can meter kept running"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }

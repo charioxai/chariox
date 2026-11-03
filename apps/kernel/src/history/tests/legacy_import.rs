@@ -30,7 +30,7 @@ fn operational_history_imports_missing_legacy_transcripts_idempotently() {
         .expect("external prompt should append");
     assert!(
         store
-            .load_chariox_owned_prompt_texts("session-1", "agent-1")
+            .load_chariox_owned_prompts("session-1", "agent-1")
             .expect("chariox-owned prompt index should load")
             .is_empty(),
         "external-observed prompts should not count as Chariox-owned prompt text"
@@ -55,9 +55,12 @@ fn operational_history_imports_missing_legacy_transcripts_idempotently() {
     assert_eq!(imported.len(), 2);
     assert_eq!(
         store
-            .load_chariox_owned_prompt_texts("session-1", "agent-1")
+            .load_chariox_owned_prompts("session-1", "agent-1")
             .expect("chariox owned prompt should load"),
-        vec!["legacy prompt".to_string()]
+        vec![crate::history::CharioxOwnedPrompt {
+            text: "legacy prompt".to_string(),
+            attachment_paths: Vec::new()
+        }]
     );
 
     let imported_again = store

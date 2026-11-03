@@ -1,6 +1,6 @@
 {
-  "protocol_version": 923,
-  "relay_peer_protocol_version": 374,
+  "protocol_version": 933,
+  "relay_peer_protocol_version": 382,
   "shapes": [
     {
       "event": "session_processes_changed",
@@ -17,7 +17,49 @@
           "cpu_millis": 250,
           "sampled_at_ms": 10000,
           "age_ms": 3000,
-          "process_id": "process-issued-1"
+          "process_id": "process-issued-1",
+          "state": {
+            "kind": "running"
+          }
+        },
+        {
+          "owner": {
+            "kind": "agent",
+            "id": "agent-1"
+          },
+          "pid": 43,
+          "command": "cargo",
+          "resident_set_bytes": 1048576,
+          "cpu_millis": 0,
+          "sampled_at_ms": 10000,
+          "age_ms": 1000,
+          "process_id": "process-issued-2",
+          "state": {
+            "kind": "held",
+            "reason": "memory",
+            "position": 2,
+            "need_bytes": 6442450944,
+            "free_bytes": 2147483648,
+            "command_line": "cargo build --release"
+          }
+        },
+        {
+          "owner": {
+            "kind": "agent",
+            "id": "agent-2"
+          },
+          "pid": 44,
+          "command": "pnpm",
+          "resident_set_bytes": 1048576,
+          "cpu_millis": 0,
+          "sampled_at_ms": 10000,
+          "age_ms": 1000,
+          "process_id": "process-issued-3",
+          "state": {
+            "kind": "paused",
+            "reason": "disk",
+            "command_line": "pnpm test"
+          }
         }
       ]
     },
@@ -60,12 +102,23 @@
     },
     {
       "category": "outside_end",
-      "reason": "provider process tree stopped by a session controller",
+      "reason": "Stopped from Health.",
       "timestamp_ms": 10000,
       "failure": {
-        "kind": "other",
+        "kind": "cancelled",
         "retryable": false,
-        "reason": "provider process tree stopped by a session controller"
+        "reason": ""
+      }
+    },
+    {
+      "StartSessionProcessNow": {
+        "session_id": "room-1",
+        "process_id": "process-issued-2"
+      }
+    },
+    {
+      "SessionProcessStartedNow": {
+        "process_id": "process-issued-2"
       }
     }
   ]

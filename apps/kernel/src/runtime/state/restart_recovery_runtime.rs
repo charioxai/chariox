@@ -75,11 +75,17 @@ impl Drop for DurableRestartRecoveryTask {
 
 impl KernelRuntimeState {
     pub(crate) fn spawn_durable_restart_recovery(&self) -> DurableRestartRecoveryTask {
+        // A steer that was being handed to the provider when the kernel stopped
+        // may already be in its turn: drop it before recovery can promote it.
+        self.owned.reconcile_inactive_local_steers();
         // Recovery belongs only to work that survived this kernel restart.
         // Keep that identity set fixed across the retry window so prompts
         // accepted after startup can never be mistaken for orphaned work.
         let recovery_targets = self.durable_restart_recovery_targets();
         let queued_recovery_targets = self.durable_restart_queued_recovery_targets();
+        // Read after the hold cleanup: a previous run may have stopped between
+        // removing a hold and promoting the work behind it.
+        let idle_queue_agents = self.durable_restart_idle_queue_agents(&queued_recovery_targets);
         let uncertain_steer_targets = self.durable_restart_uncertain_remote_steer_targets();
         crate::logging::info_with_fields(
             "durable_state.recovery",
@@ -94,6 +100,7 @@ impl KernelRuntimeState {
         DurableRestartRecoveryTask(tokio::spawn(async move {
             state.owned.publication_activation.wait().await;
             tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            state.resume_idle_agent_trigger_queues(idle_queue_agents);
             for (session_id, agent_id, prompt_id) in uncertain_steer_targets {
                 state.spawn_remote_queued_steer_receipt_reconciliation(
                     session_id, agent_id, prompt_id,
@@ -129,6 +136,27 @@ impl KernelRuntimeState {
     }
 
     async fn drive_durable_restart_recovery(
+        &self,
+        recovery_targets: &BTreeSet<DurableRestartRecoveryTarget>,
+        queued_recovery_targets: &BTreeSet<DurableRestartRecoveryTarget>,
+        window: std::time::Duration,
+        retry_delay: std::time::Duration,
+    ) -> DurableRestartRecoverySummary {
+        let summary = self
+            .drive_durable_restart_recovery_passes(
+                recovery_targets,
+                queued_recovery_targets,
+                window,
+                retry_delay,
+            )
+            .await;
+        // Recovered prompts claimed their handed-over turns by now.
+        #[cfg(unix)]
+        crate::hot_reload::end_unclaimed_providers();
+        summary
+    }
+
+    async fn drive_durable_restart_recovery_passes(
         &self,
         recovery_targets: &BTreeSet<DurableRestartRecoveryTarget>,
         queued_recovery_targets: &BTreeSet<DurableRestartRecoveryTarget>,
@@ -345,6 +373,38 @@ impl KernelRuntimeState {
                                 prompt.id().to_string(),
                             )
                         })
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
+    /// Agents that stopped idle with ordinary accepted work still queued.
+    /// Publication prompts have their own recovery path and are left to it.
+    fn durable_restart_idle_queue_agents(
+        &self,
+        queued_recovery_targets: &BTreeSet<DurableRestartRecoveryTarget>,
+    ) -> BTreeSet<(String, String)> {
+        self.owned
+            .session_store
+            .list_all_sessions()
+            .into_iter()
+            .flat_map(|session| {
+                session
+                    .prompt_states()
+                    .iter()
+                    .filter(|(_, prompt_state)| prompt_state.active_prompt().is_none())
+                    .filter_map(|(agent_id, prompt_state)| {
+                        let prompt = prompt_state.queued_prompts().front()?;
+                        let held = prompt.local_steer_submitted()
+                            || prompt.remote_steer_outcome_uncertainty().is_some();
+                        let publication = queued_recovery_targets.iter().any(
+                            |(session_id, queued_agent_id, _)| {
+                                session_id == session.id() && queued_agent_id == agent_id
+                            },
+                        );
+                        (!held && !publication)
+                            .then(|| (session.id().to_string(), agent_id.to_string()))
                     })
                     .collect::<Vec<_>>()
             })
@@ -875,7 +935,7 @@ impl KernelRuntimeState {
                 let _ = self.fail_prompt_dispatch(dispatch, error).await;
             }
         }
-        if failed_delivery.is_some()
+        if (failed_delivery.is_some() || cancellation.queue_head_deferred)
             && self
                 .owned
                 .prompt_state_owner
@@ -885,20 +945,8 @@ impl KernelRuntimeState {
                 )
                 .is_some()
         {
-            let session_id_owned = session_id.to_string();
-            let agent_id_owned = agent_id.to_string();
-            let replacement_provider_run_id = self
-                .with_app_side_effect(move |app| {
-                    app.ensure_prompt_provider_run_for_agent(&session_id_owned, &agent_id_owned)
-                })
-                .await?;
-            if let Some(dispatch) = self.owned.advance_next_queued_prompt_dispatch(
-                session_id,
-                agent_id,
-                &replacement_provider_run_id,
-            )? {
-                self.spawn_prompt_dispatch(dispatch, self.provider_runtime_lanes.clone());
-            }
+            Box::pin(self.advance_project_queued_prompt_after_settlement(session_id, agent_id))
+                .await;
         }
         Ok(CancelledLocalPromptRestartOutcome::Finalized)
     }
@@ -972,7 +1020,12 @@ impl KernelRuntimeState {
     ) -> Result<UncertainLocalRecoveryOutcome, DaemonError> {
         let mut prompt = prompt.clone();
         let adapter_key = crate::provider::adapter_key_for_provider(agent.provider());
-        if adapter_key == "dev-stub" {
+        // A hot reload handed the running turn over: the same prompt continues it.
+        #[cfg(unix)]
+        let handed_over = crate::hot_reload::provider_handed_over(session_id, agent.id());
+        #[cfg(not(unix))]
+        let handed_over = false;
+        if adapter_key == "dev-stub" || handed_over {
             self.redispatch_local_prompt(session_id, agent.id(), &prompt)
                 .await?;
             return Ok(UncertainLocalRecoveryOutcome::OriginalRedispatched);

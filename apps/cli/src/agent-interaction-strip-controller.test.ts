@@ -26,6 +26,9 @@ test("agent interaction strip controller renders current pane and interaction in
     queuedPromptStripItemsForAgent: (agentId) => agentId === "agent-a" ? [queuedPromptFixture()] : [],
     selectedQueuedPromptIndexForAgent: () => 0,
     onQueuedPromptAction: () => {},
+    agentTriggerStripItemsForAgent: (agentId) => agentId === "agent-a"
+      ? [{ id: "trigger-1", label: "every 10m", busyPolicy: "steer", enabled: true, nextRunAtMs: 1, fired: 0, lastError: null }]
+      : [],
     renderStrips: (options) => {
       rendered.push(options)
     },
@@ -51,6 +54,7 @@ test("agent interaction strip controller renders current pane and interaction in
     customEditing: (interactionId: string) => boolean
     queuedPromptStripItemsForAgent: (agentId: string) => readonly QueuedPromptStripItem[]
     selectedQueuedPromptIndexForAgent: (agentId: string) => number
+    agentTriggerStripItemsForAgent: (agentId: string) => ReadonlyArray<{ id: string }>
   }
   assert.equal(first.renderer, "renderer")
   assert.equal(first.primaryBox, "primary")
@@ -58,6 +62,8 @@ test("agent interaction strip controller renders current pane and interaction in
   assert.deepEqual(first.visibleAgents, [{ id: "agent-a" }, { id: "agent-b" }])
   assert.equal(first.maxAgentsPerScreen, 3)
   assert.equal(first.focusedAgentId, "agent-a")
+  assert.deepEqual(first.agentTriggerStripItemsForAgent("agent-a").map((item) => item.id), ["trigger-1"])
+  assert.deepEqual(first.agentTriggerStripItemsForAgent("agent-b"), [])
   assert.equal(first.activeInteractionForAgent("agent-a"), interaction)
   assert.equal(first.selectedChoiceIndex("interaction-a"), 1)
   assert.equal(first.customReply("interaction-a"), "custom")

@@ -431,16 +431,73 @@ pub(crate) fn claude_native_pasted_prompt_body(text: &str) -> Option<&str> {
 }
 
 pub(crate) fn normalized_observed_prompt_text(text: &str) -> Option<String> {
+    normalized_observed_prompt_text_after_mentions(text, &[])
+}
+
+/// `normalized_observed_prompt_text` for the echo of a Chariox prompt: Claude's native prompt starts with
+/// the `@path` mention of each file the kernel attached (`claude_attachment_mention`), so those leading
+/// mentions, and only those paths, are not part of what the person typed.
+pub(crate) fn normalized_observed_prompt_text_after_mentions(
+    text: &str,
+    attachment_paths: &[String],
+) -> Option<String> {
     let text = claude_native_pasted_prompt_body(text).unwrap_or(text);
     let without_account_handoff = strip_observed_account_handoff(text);
     let without_provider_attachment_suffix =
         strip_observed_provider_attachment_suffix(without_account_handoff);
     let without_attachments = strip_observed_attachment_markup(without_provider_attachment_suffix);
-    let normalized = strip_observed_generated_prompt_context(&without_attachments)
+    let without_mentions =
+        strip_leading_native_attachment_mentions(&without_attachments, attachment_paths);
+    let normalized = strip_observed_generated_prompt_context(without_mentions)
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ");
     (!normalized.is_empty()).then_some(normalized)
+}
+
+fn strip_leading_native_attachment_mentions<'a>(
+    text: &'a str,
+    attachment_paths: &[String],
+) -> &'a str {
+    let mut rest = text.trim_start();
+    loop {
+        let Some(mention) = rest.strip_prefix('@') else {
+            return rest;
+        };
+        let (path, end) = if let Some(quoted) = mention.strip_prefix("\"/") {
+            let mut escaped = false;
+            let Some(close) = quoted.char_indices().find_map(|(index, ch)| {
+                let closing = ch == '"' && !escaped;
+                escaped = ch == '\\' && !escaped;
+                closing.then_some(index)
+            }) else {
+                return rest;
+            };
+            let mut path = String::from("/");
+            let mut chars = quoted[..close].chars();
+            while let Some(ch) = chars.next() {
+                path.push(if ch == '\\' {
+                    chars.next().unwrap_or(ch)
+                } else {
+                    ch
+                });
+            }
+            (path, 3 + close + 1)
+        } else if mention.starts_with('/') {
+            let length = mention.find(char::is_whitespace).unwrap_or(mention.len());
+            (mention[..length].to_string(), 1 + length)
+        } else {
+            return rest;
+        };
+        if !attachment_paths.contains(&path) {
+            return rest;
+        }
+        let after = &rest[end..];
+        if !after.is_empty() && !after.starts_with(char::is_whitespace) {
+            return rest;
+        }
+        rest = after.trim_start();
+    }
 }
 
 fn strip_observed_account_handoff(text: &str) -> &str {

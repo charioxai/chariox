@@ -69,6 +69,7 @@ fn next_phase_deadline(
             .filter(|r| {
                 r.prompt_id == prompt_id
                     && r.count < CLAUDE_HEADLESS_SUBMIT_RETRY_LIMIT
+                    && !r.queued_in_claude
                     && r.last_attempt_ms > 0
             })
             .map(|r| r.last_attempt_ms.saturating_add(CLAUDE_HEADLESS_RETRY_MS));
@@ -106,6 +107,7 @@ mod tests {
             count: 0,
             last_attempt_ms: 1000,
             visible_prompt: String::new(),
+            queued_in_claude: false,
         };
         assert_eq!(
             next_phase_deadline(Some("injected:p"), "p", true, 0, Some(&retry)),

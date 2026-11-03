@@ -84,6 +84,17 @@ trait WakeDriver: Send + Sync {
   Cancel retires its wakes.
 - A deadline that lapses with healthy sources is one `deadline_reached` wake; a
   new wait needs a fresh deadline. A lost source is one `source_lost` wake.
+- A helper's work that can no longer complete ends with a definitive outcome and
+  wakes whoever waits on it (A10-S04). The helper's task ends `cancelled` with
+  its obligations `failed`, and the waiter's `source_lost` wake carries
+  `public_answer`: the typed turn outcome (`outcome.kind`, `retryable`, `reason`,
+  the same one the turn's event, history and state carry), `recovery` and, for a
+  leased helper, its `host` (the slice or worker kernel). Three causes are
+  covered: the provider process is killed (`provider_crashed` with the exit or
+  signal), the relay reports the slice or worker kernel offline for 20 s
+  (`provider_crashed`, the turn is never replayed), and the turn's workspace
+  (a git worktree the sweep saw earlier) is removed. A task that owes ledger work
+  stays `blocked` for the owner instead of cancelled.
 
 ## What clients see
 

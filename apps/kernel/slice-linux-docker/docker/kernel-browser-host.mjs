@@ -1,8 +1,9 @@
+import { BrowserHeaderState } from "./kernel-browser-header.mjs";
 import {resolveDisplayTarget,nativeStateObservationOptions} from './kernel-browser-display-document.mjs';
 import {capturePageScreenshot} from './kernel-browser-screenshot.mjs';
 import { mirror2ObserverExpression } from './kernel-browser-mirror2-observer.mjs';
 import {captureVisiblePage,pngFallbackCommand,subscribeVisiblePage,visiblePageInputSource,viewerPageInputActive,nativeInputDocumentTarget} from './kernel-browser-page-display.mjs';
-import {reserveDisplay} from './kernel-browser-display-admission.mjs';
+import {reserveDisplay,maxDisplays} from './kernel-browser-display-admission.mjs';
 import { appRestoreOrigin } from "./browser-app-restore.mjs";
 import { DesktopDisplay } from './kernel-desktop-display.mjs';
 import {displayGeometry as geometry,hostViewport,featureOn} from './kernel-browser-geometry.mjs';
@@ -127,10 +128,12 @@ export class KernelBrowserHost {
     this.compositors = new Map();
     this.foreground = new WindowForeground();
     this.restoring = false;
+    this.adoptedByInput = new WeakSet();
     this.keepaliveTarget = null;
     this.observedDocuments = new Map();
     this.displayDocuments = new DisplayDocuments((stage, started, ended) => this.timing?.(stage, started, ended));
     this.stateSignal = new StateSignal();
+    this.header = new BrowserHeaderState(() => this.stateSignal.notify());
     this.mirror = new MirrorService(this);
     this.protection = { values: [], targets: [], unknown: false };
     // MP-08/MP-11: desktop consumers place CDP protection regions on X11 pixels.
@@ -192,6 +195,7 @@ export class KernelBrowserHost {
     if (this.starting) return this.starting;
     if (this.isBrowserLive()) return;
     if (!allowStart && !this.recovery.enabled) throw new BrowserActionError("browser_unavailable", "MP-11: user browser is stopped or unavailable; explicitly start/open the browser");
+    if (!allowStart && this.recovery.waiting()) throw new BrowserActionError("browser_unavailable", "MP-08: the browser was lost and restarts after a short wait");
     const recovering = this.recovery.enabled;
     this.recovery.enabled = true;
     this.recovery.disarm();
@@ -225,7 +229,7 @@ export class KernelBrowserHost {
     this.tabGroups?.close?.();this.tabGroups=null;
     await this.browser?.close();
     this.browser = null;
-    this.tabs.clear();this.layouts.clear();this.layoutRevisions.clear();this.windowLayout=null;this.resizeSettled=null;
+    this.tabs.clear();this.header.clear();this.layouts.clear();this.layoutRevisions.clear();this.windowLayout=null;this.resizeSettled=null;
     this.popupEvidence.clear();
     this.observed = ++this.observations;
     this.observedDocuments.clear();
@@ -270,6 +274,7 @@ export class KernelBrowserHost {
       // target so startup and closing the last user tab never stop the browser.
       const pages = targetInfos.filter(target => target.type === "page");
       this.keepaliveTarget = await this.openKeepalive(connection, pages);
+      await this.tabGroups?.keepalive(this.keepaliveTarget);
       for (const target of (await connection.send("Target.getTargets")).targetInfos.filter(target => target.type === "page")) {
         if (target.targetId !== this.keepaliveTarget) {
           await connection.send("Target.closeTarget", { targetId: target.targetId });
@@ -474,11 +479,13 @@ export class KernelBrowserHost {
   // MP-08/MP-10/MP-11: reconciles can overlap (a state poll beside input). They
   // apply in start order: an older observation reports the newer current tabs.
   tabState() {
+    const active = this.pendingActive ? null : [...this.tabs.values()].find(tab => tab.target_id === this.activeTarget)?.tab_id ?? null;
+    this.header.update([...this.tabs.values()], active, this.browser, this.tabGroups);
     // MP-08: private creation evidence for the kernel, stripped before client projection.
     const _tab_creation_actions = this.popupEvidence.inventory([...this.tabs.values()]);
     const dialogs = this.pendingDialogs();
     return redactObservation({ state: "ready", generation: this.generation, _observation: this.observed, _tab_creation_actions,
-      tabs: [...this.tabs.values()].map(({ target_id, opener_target_id, ...tab }) => tab), dialogs, viewport:this.viewport(), chrome_window: this.chromeWindow(),
+      active_tab_id: active, tabs: [...this.tabs.values()].map(({ target_id, opener_target_id, ...tab }) => ({ ...tab, ...this.header.read(tab) })), dialogs, viewport:this.viewport(), chrome_window: this.chromeWindow(),
       // MP-11: whether Chromium's managed policies apply, or only the kernel's CDP lockdown layer.
       browser_lockdown: this.chromium?.policy ?? null }, this.protection.values);
   }
@@ -591,10 +598,14 @@ export class KernelBrowserHost {
     const intent = this.pendingActive;
     const boundOrigins = new Set([...(this.browser.appTabs?.apps?.values() ?? [])].filter(app => app.ready === true).map(app => app.origin));
     const restoreReady = intent && (intent.apps.every(origin => boundOrigins.has(origin)) || Date.now() >= intent.until);
-    const restored = !this.restoring && restoreReady && [...this.tabs.values()].find(tab => intent.app_origin
+    const nativeActive = await this.tabGroups?.active?.().catch(() => null) ?? null;
+    // MP-08/MP-10: a Tab the page opened after the human input (window.open, target=_blank) is what Chromium now shows;
+    // the opener's input selection must not pull the foreground back over it.
+    const openedByInput = intent?.known && nativeActive && !intent.known.has(nativeActive) && [...this.tabs.values()].some(tab => tab.target_id === nativeActive);
+    if (openedByInput && this.pendingActive === intent) { this.pendingActive = null; this.adoptedByInput.add(intent); }
+    const restored = !openedByInput && !this.restoring && restoreReady && [...this.tabs.values()].find(tab => intent.app_origin
       ? [...(this.browser.appTabs?.apps?.values() ?? [])].some(app => app.ready === true && app.targetId === tab.target_id && app.origin === intent.app_origin)
       : tab.tab_id === intent.tab_id);
-    const nativeActive = await this.tabGroups?.active?.().catch(() => null) ?? null;
     if (restored) {
       if (this.pendingActive !== intent) return this.reconcile();
       if (nativeActive !== restored.target_id) {
@@ -611,6 +622,10 @@ export class KernelBrowserHost {
     }
     this.activeTarget = restored?.target_id ?? nativeActive;
     if (this.activeTarget !== previous) await this.retireNativeForeground(this.activeTarget);
+    const activeId = [...this.tabs.values()].find(tab => tab.target_id === this.activeTarget)?.tab_id ?? null;
+    this.header.update([...this.tabs.values()], activeId, this.browser, this.tabGroups);
+    const history = this.header.history(activeId);
+    if (history) await withinMs(history, 10);
     const result = this.tabState();
     if (!this.restoring) await this.save();
     return result;
@@ -865,7 +880,7 @@ export class KernelBrowserHost {
       if (!featureOn("CHARIOX_KERNEL_BROWSER_DISPLAY")) throw new Error("MD-DISPLAY: display disabled");
       if (!Array.isArray(command.codecs) || !command.codecs.includes("png") || command.codecs.length > 8 ||
         !Number.isInteger(command.bitrate) || command.bitrate < 500_000 || command.bitrate > 64_000_000 ||
-        ![1, 2].includes(command.device_scale_factor) || this.displays.size >= 8) throw new Error("MD-DISPLAY: invalid display negotiation");
+        ![1, 2].includes(command.device_scale_factor) || this.displays.size >= maxDisplays) throw new Error("MD-DISPLAY: invalid display negotiation");
       // MP-08/MP-10/MP-11: observation never changes the native page density.
       const scale = this.viewport().device_scale_factor;
       this.scales.set(tab.tab_id, scale);
@@ -932,16 +947,21 @@ export class KernelBrowserHost {
       // Retiring an encoded row on each key forces an IDR and can delay echo
       // behind its byte budget. Epochs still retire exact work; policy/document
       // retirement still closes the source/producer and resets every row.
+      // Review #1072 P2: the Tab inventory is taken once, at dispatch. Reading it again after the
+      // acknowledgement would count a popup adopted meanwhile as known and give the opener its focus back.
+      let selection = null;
       const rememberSelection = () => {
         // MP-08/MP-10/MP-11: CDP can type into a background window. Its
         // admitted human selection supersedes older native restore intent.
+        if (agent || command._agent_input || command.focused_agent) return;
+        // A newer observation that adopted a popup retired this intent for good.
+        if (selection && (this.pendingActive === selection || this.adoptedByInput.has(selection))) return;
         const intent = this.pendingActive, origin = appRestoreOrigin(tab.url);
         // The cached target can still match while a late native window fold
         // changed Chrome's selection. Reconcile checks the live native target
         // before activating, so ordinary keys do not refocus an active tab.
-        if (!agent && !command._agent_input && !command.focused_agent) {
-          this.pendingActive = {tab_id:tab.tab_id,app_origin:origin,apps:intent?.apps ?? [],until:intent?.until ?? Date.now()};
-        }
+        selection = {tab_id:tab.tab_id,app_origin:origin,apps:intent?.apps ?? [],until:intent?.until ?? Date.now(),known:selection?.known ?? new Set([...this.tabs.values()].map(known => known.target_id))};
+        this.pendingActive = selection;
       };
       const onDispatch = () => {
         if (dispatched) return;

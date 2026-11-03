@@ -130,18 +130,18 @@ async function writeFocusedRuntimeMatrices(matrixRoot) {
   }))
   await writeJson(path.join(matrixRoot, "remote-home-extension.json"), matrixReport({
     matrix: "remote-home-extension-matrix",
-    deploymentPresets: ["hetzner", "local", "self-hosted-relay"],
+    deploymentPresets: ["local", "remote-kernel", "self-hosted-relay"],
     providers: ["codex"],
     scenarios: [
       scenario("local-single", "remote-extension-sync", ["home-extension-manifest-sync", "lease-health"]),
       scenario("local-collab", "kernel-authority", ["home-extension-manifest-sync", "session-authority"]),
-      scenario("hetzner-single", "worker-execution", ["home-extension-manifest-sync", "provider-run-lifecycle"]),
-      scenario("hetzner-collab", "remote-extension-sync", ["home-extension-manifest-sync", "lease-health"]),
+      scenario("remote-kernel-single", "worker-execution", ["home-extension-manifest-sync", "provider-run-lifecycle"]),
+      scenario("remote-kernel-collab", "remote-extension-sync", ["home-extension-manifest-sync", "lease-health"]),
     ],
   }))
   await writeJson(path.join(matrixRoot, "workspace-live-sync.json"), matrixReport({
     matrix: "workspace-live-sync-matrix",
-    deploymentPresets: ["hetzner", "local", "same-host-remote", "self-hosted-relay"],
+    deploymentPresets: ["local", "remote-kernel", "same-host-remote", "self-hosted-relay"],
     providers: ["codex", "opencode"],
     scenarios: [
       scenario("local-managed-codex", "workspace-live-sync-conflict", ["session-authority", "workspace-live-sync-state"]),

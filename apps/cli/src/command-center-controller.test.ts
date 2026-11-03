@@ -341,3 +341,69 @@ for (const rejects of [false, true]) {
     assert.equal(harness.errors.length, rejects ? 1 : 0)
   })
 }
+
+function typeWithPopup(harness: ReturnType<typeof createHarness>, text: string) {
+  harness.promptText = ""
+  for (const char of text) {
+    harness.promptText += char
+    harness.controller.sync()
+  }
+}
+
+for (const typed of ["/trigger list", "/mode plan"]) {
+  test(`Enter submits ${typed} as typed although other commands match its words`, () => {
+    const harness = createHarness()
+    typeWithPopup(harness, typed)
+    assert.equal(harness.controller.open(), true, "a fuzzy match from another command keeps the popup open")
+
+    assert.equal(harness.controller.handleKey(handledKey("return").event), false)
+    assert.equal(harness.controller.selectFromSubmit(), false)
+    assert.deepEqual(harness.executed, [])
+    assert.equal(harness.promptText, typed)
+  })
+}
+
+test("Enter on an exact command line still takes a highlight the person moved to", () => {
+  const harness = createHarness()
+  typeWithPopup(harness, "/trigger list")
+  assert.equal(harness.controller.handleKey(handledKey("down").event), true)
+
+  assert.equal(harness.controller.handleKey(handledKey("return").event), true)
+  assert.equal(harness.promptText, "/workflow ")
+})
+
+test("Tab completes the top item of an exact command line", () => {
+  const harness = createHarness()
+  typeWithPopup(harness, "/trigger list")
+
+  assert.equal(harness.controller.handleKey(handledKey("tab").event), true)
+  assert.equal(harness.promptText, "/workflow ")
+})
+
+test("typing again after an arrow move hands Enter back to the typed line", () => {
+  const harness = createHarness()
+  typeWithPopup(harness, "/trigger lis")
+  harness.controller.handleKey(handledKey("down").event)
+  harness.promptText += "t"
+  harness.controller.sync()
+
+  assert.equal(harness.controller.handleKey(handledKey("return").event), false)
+  assert.equal(harness.promptText, "/trigger list")
+})
+
+test("Enter on a partial command still completes it", () => {
+  const harness = createHarness()
+  typeWithPopup(harness, "/wo")
+
+  assert.equal(harness.controller.handleKey(handledKey("return").event), true)
+  assert.equal(harness.promptText, "/workflow ")
+})
+
+test("Enter on a partial subcommand of the typed command still picks it", () => {
+  const harness = createHarness()
+  typeWithPopup(harness, "/workflow li")
+  const picked = harness.controller.selectedItem()?.value
+  assert.ok(picked?.startsWith("/workflow "), "the popup offers /workflow subcommands")
+
+  assert.equal(harness.controller.handleKey(handledKey("return").event), true)
+})

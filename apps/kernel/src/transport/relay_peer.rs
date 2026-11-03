@@ -156,7 +156,17 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// MP-08/MP-10/MP-11: allocated 371 pairs the embedded local response union with local 920.
 /// 374 pairs the embedded local response union with local 923 (`CredentialVaultUnlocked`).
 /// Landing union 374 pairs the embedded local union with local 923 (it carries peers 364, 370 and 371).
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 374;
+/// Allocated 375 pairs the embedded local response union with local 924 (opaque reimage `providerId`).
+/// MP-08/MP-09/MP-10/MP-11: 376 pairs local 925 (the relay close's `kernel_reload`).
+/// 377 pairs the embedded local union with local 926 (direct data channel liveness).
+/// 378 pairs the embedded local union with local 927 (`SessionProcess.state`, `StartSessionProcessNow`).
+/// Allocated 379 pairs the embedded local response union with local 928 (`question` and `resolution` on outside interaction events).
+/// Allocated 380 carries the local 931 `schedule` and `notification` prompt origins.
+/// Allocated 386 carries the local 932 HTTP agent trigger variants with the `http` prompt origin.
+/// Landing union 381 pairs the embedded local union with local 932; it carries peers 375 to 380 and
+/// takes 381 for the HTTP trigger variants (allocated as 386).
+/// Browser header 382 carries the local 933 header state.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 382;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;

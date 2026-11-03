@@ -147,7 +147,7 @@ async fn hosted_kernel_temporary_peer_keeps_machine_binding_and_rejects_alias_fo
     };
     assert!(
         matches!(serde_json::from_str::<RelayEnvelope>(&text).unwrap(),
-        RelayEnvelope::Close { reason }
+        RelayEnvelope::Close { reason, .. }
         if reason == "relay token subject does not match daemon registration")
     );
 

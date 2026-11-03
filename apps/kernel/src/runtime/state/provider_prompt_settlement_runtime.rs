@@ -419,12 +419,14 @@ impl KernelRuntimeState {
             // disappear. Finish its workflow transition before publishing that
             // disappearance, so settlement cannot stop the resumed invocation.
             owned.workflow_cancel_prompt(session_id, &active_prompt)?;
-            let cancellation = owned.finalize_local_prompt_cancellation_with_queued_advance(
-                session_id,
-                &agent_id,
-                active_prompt.id(),
-                Some(provider_run_id),
-            )?;
+            let cancellation = self
+                .finalize_cancelled_prompt(
+                    session_id,
+                    &agent_id,
+                    active_prompt.id(),
+                    Some(provider_run_id),
+                )
+                .await?;
             if let Err(error) =
                 Box::pin(self.finish_agent_task_settlement(task_settlement, &active_prompt)).await
             {
@@ -446,6 +448,12 @@ impl KernelRuntimeState {
                 {
                     let _ = self.fail_prompt_dispatch(dispatch, error).await;
                 }
+            }
+            if cancellation.queue_head_deferred {
+                Box::pin(
+                    self.advance_project_queued_prompt_after_settlement(session_id, &agent_id),
+                )
+                .await;
             }
             return Ok(crate::app::ProviderRunExitSessionSummary {
                 had_active_prompt: true,

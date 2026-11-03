@@ -145,7 +145,8 @@ export function createPasskeyPopupRenderer(renderer: CliRenderer, actions: {
         return node
       }
       const header = new BoxRenderable(renderer, { flexDirection: "row", justifyContent: "space-between", flexShrink: 0 })
-      header.add(text("Chariox passkey", { bold: true }))
+      const secret = view.prompt?.kind === "vault_secret"
+      header.add(text(secret ? "Chariox Vault" : "Chariox passkey", { bold: true }))
       header.add(text("Esc hides", { muted: true }))
       panel.add(header)
       const prompt = view.prompt
@@ -154,14 +155,14 @@ export function createPasskeyPopupRenderer(renderer: CliRenderer, actions: {
       // The request scrolls when the terminal is too short for all of it.
       const fixedRows = 15 + (prompt.sudo_request ? 2 : 0) + (showDetails ? 8 : 0) + (view.error ? 2 : 0)
       const access = prompt.kind === "access_grant" || prompt.kind === "access_extension"
-      const kernelAccess = access && prompt.session_id === "kernel-access"
+      const kernelAccess = (access || secret) && prompt.session_id === "kernel-access"
       const showKind = !access || view.count > 1
       const wanted = (prompt.sudo_request ? 5 : 0) + (showKind ? 2 : 1) + rows(prompt.title || "Critical approval", width - 5) + rows(prompt.message, width - 5)
       body = new ScrollBoxRenderable(renderer, {
         height: Math.max(2, Math.min(wanted, dimensions.height - top - 1 - fixedRows)),
         flexShrink: 0, scrollY: true, scrollX: false,
       })
-      if (showKind) body.add(text(`${prompt.kind === "critical_approval" ? "Critical approval" : prompt.kind === "sudo" ? "Sudo window" : "External agent access"}${view.count > 1 ? ` · ${view.index + 1} of ${view.count}` : ""}`, { muted: true }))
+      if (showKind) body.add(text(`${prompt.kind === "critical_approval" ? "Critical approval" : prompt.kind === "sudo" ? "Sudo window" : secret ? "Vault value" : "External agent access"}${view.count > 1 ? ` · ${view.index + 1} of ${view.count}` : ""}`, { muted: true }))
       body.add(text(prompt.title || "Critical approval", { accent: true, bold: true }))
       body.add(text(prompt.message))
       if (prompt.sudo_request) {
@@ -189,25 +190,25 @@ export function createPasskeyPopupRenderer(renderer: CliRenderer, actions: {
       if (!kernelAccess && !prompt.sudo_request) section(text(`${prompt.session_id === "kernel-access" && (prompt.kind === "access_grant" || prompt.kind === "access_extension")
         ? "Local kernel" : prompt.session_id ? `Session: ${session}` : "User domain"} · expires ${expiry(prompt.expires_at_ms)}`, { muted: true }))
       // Hidden input: only the length is ever rendered.
-      const remember = text(prompt.kind === "critical_approval"
+      const remember = secret ? null : text(prompt.kind === "critical_approval"
         ? `Remember for: ${view.passkey.rememberMinutes ? `${view.passkey.rememberMinutes} minutes` : "off"}`
         : prompt.kind === "sudo" ? `Window: ${hours(view.passkey.lifetime)} · maximum ${hours(prompt.max_lifetime_minutes)} · fresh passkey required`
         : `Access for: ${view.passkey.lifetime === UNTIL_AGENT_EXITS ? "until the agent exits" : `${view.passkey.lifetime} minutes`}`)
-      remember.onMouseUp = (event) => {
+      if (remember) remember.onMouseUp = (event) => {
         event.stopPropagation()
         if (event.button === MouseButton.LEFT) actions.cycleRemember()
       }
-      const input = text(`Passkey: ${"•".repeat(Math.min(view.passkey.length, 40))}▏`, { accent: true })
-      section(input, remember)
+      const input = text(`${secret ? "Secret" : "Passkey"}: ${"•".repeat(Math.min(view.passkey.length, 40))}▏`, { accent: true })
+      section(input, ...remember ? [remember] : [])
       if (view.error) section(text(view.error))
       const enabled = view.connected && !view.pending
       const buttons = new BoxRenderable(renderer, { flexDirection: "row", gap: 2, flexShrink: 0 })
-      buttons.add(button("Approve", enabled, actions.approve))
-      buttons.add(button("Refuse", enabled, actions.refuse))
+      buttons.add(button(secret ? "Send" : "Approve", enabled, actions.approve))
+      buttons.add(button(secret ? "Cancel" : "Refuse", enabled, actions.refuse))
       panel.add(buttons)
       section(text(view.pending ? "Waiting for the kernel…"
         : !view.connected ? "Disconnected · reconnect to answer"
-        : `Enter approves · Ctrl+R refuses${view.prompt?.kind === "critical_approval" ? " · Tab remember" : view.prompt?.kind === "sudo" ? " · Tab duration" : " · Tab lifetime"}${view.count > 1 ? " · ←/→ requests" : ""}`, { muted: true }))
+        : `${secret ? "Enter sends · Ctrl+R cancels" : `Enter approves · Ctrl+R refuses${view.prompt?.kind === "critical_approval" ? " · Tab remember" : view.prompt?.kind === "sudo" ? " · Tab duration" : " · Tab lifetime"}`}${view.count > 1 ? " · ←/→ requests" : ""}`, { muted: true }))
       scrim.add(panel)
       box.add(scrim)
       box.requestRender()

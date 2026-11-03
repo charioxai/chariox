@@ -432,3 +432,10 @@ pub struct StopSessionProcessesRequest {
     pub session_id: String,
     pub target: crate::runtime::process_resources::ProcessControlTarget,
 }
+
+/// Start now: a command waiting for room starts whatever the room.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StartSessionProcessNowRequest {
+    pub session_id: String,
+    pub process_id: String,
+}

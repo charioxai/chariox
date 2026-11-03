@@ -154,5 +154,44 @@ test('ordinary frame registration stays bounded and preserves live isolated desc
  assert.equal(registry.get('nested'),'tab');assert.equal(registry.get('foreign'),'other');assert.equal([...registry.frames.values()].filter(f=>f.targetId==='tab').length,64);assert.deepEqual(calls,['Page.getFrameTree']);
  registry.record({method:'Page.frameDetached',params:{frameId:'isolated',reason:'remove'}},'tab');assert.equal(registry.get('nested'),undefined);
  await assert.rejects(registerBrowserFrameTargets(connection,'session','tab','old-doc',registry),{code:'stale_document_reference'});
- await assert.rejects(withBrowserFrames(connection,'session','tab','doc',registry=>registry),{code:'snapshot_frame_limit'},'structured snapshots still refuse the existing global isolated-frame bound');
+ await assert.rejects(withBrowserFrames(connection,'session','tab','doc',registry=>registry,{strict:true}),{code:'snapshot_frame_limit'},'a strict (protection) read refuses a page above the frame bound');
 })
+
+// browserfix: a page's frames are found from its own top frame, not from every iframe target the browser holds.
+function frameBrowser({ rootTree, targets, trees = {} }) {
+  const calls = [];
+  const sessions = new Map();
+  return { calls, async send(method, params, sessionId) {
+    calls.push({ method, params, sessionId });
+    if (method === "Page.getFrameTree") return { frameTree: sessionId === "page" ? rootTree : trees[sessions.get(sessionId)] };
+    if (method === "Target.getTargets") return { targetInfos: targets };
+    if (method === "Target.attachToTarget") { const id = "s-" + params.targetId; sessions.set(id, params.targetId); return { sessionId: id }; }
+    return {};
+  } };
+}
+const loaded = (id, parentId, childFrames = []) => ({ frame: { id, parentId, loaderId: "doc-" + id }, childFrames });
+
+test("a small page in a browser holding 70 foreign iframe targets reads normally and attaches none of them", async () => {
+  const connection = frameBrowser({ rootTree: loaded("root", undefined), targets: Array.from({ length: 70 }, (_, i) => ({ type: "iframe", targetId: "foreign-" + i, parentFrameId: "other-tab-frame-" + i })) });
+  const seen = await withBrowserFrames(connection, "page", "tab", "doc-root", async (frames, info) => ({ count: frames.length, truncated: info.truncated }));
+  assert.deepEqual(seen, { count: 1, truncated: false });
+  assert.ok(!connection.calls.some((call) => call.method === "Target.attachToTarget"), "no foreign frame is attached");
+});
+
+test("isolated frames are followed down from the top frame, nested ones included", async () => {
+  const connection = frameBrowser({
+    rootTree: loaded("root", undefined, [loaded("ad", "root")]),
+    targets: [{ type: "iframe", targetId: "t-ad", parentFrameId: "root" }, { type: "iframe", targetId: "t-inner", parentFrameId: "ad" }, { type: "iframe", targetId: "t-foreign", parentFrameId: "elsewhere" }],
+    trees: { "t-ad": loaded("ad", "root", [loaded("inner", "ad")]), "t-inner": loaded("inner", "ad") },
+  });
+  const frames = await withBrowserFrames(connection, "page", "tab", "doc-root", async (entries) => entries.map((entry) => [entry.frame.id, entry.parent?.frame.id ?? null]));
+  assert.deepEqual(frames, [["root", null], ["ad", "root"], ["inner", "ad"]]);
+  assert.deepEqual(connection.calls.filter((call) => call.method === "Target.attachToTarget").map((call) => call.params.targetId), ["t-ad", "t-inner"]);
+});
+
+test("a page owning more than 64 frames is read up to the bound and reported truncated, not refused", async () => {
+  const connection = frameBrowser({ rootTree: loaded("root", undefined, Array.from({ length: 70 }, (_, i) => loaded("f" + i, "root"))), targets: [] });
+  const seen = await withBrowserFrames(connection, "page", "tab", "doc-root", async (frames, info) => ({ count: frames.length, truncated: info.truncated }));
+  assert.deepEqual(seen, { count: 1, truncated: true });
+  await assert.rejects(withBrowserFrames(connection, "page", "tab", "doc-root", (frames) => frames, { strict: true }), { code: "snapshot_frame_limit" });
+});

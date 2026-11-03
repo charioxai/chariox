@@ -190,8 +190,9 @@ impl KernelRuntimeState {
     }
 
     // MP-08/MP-11: ordinary grant holders may answer routine Room questions.
-    // Critical and credential decisions retain the terminal boundary for every
-    // choice, including refusal, without exposing interaction metadata.
+    // Every other decision keeps the terminal boundary for every choice,
+    // including refusal, without exposing interaction metadata. A pending
+    // decision that cannot be classified is refused.
     pub(crate) fn interaction_requires_terminal(
         &self,
         answer: &RespondToInteractionRequest,
@@ -203,12 +204,10 @@ impl KernelRuntimeState {
             .get(&answer.interaction_id)
             .cloned();
         let Some(pending) = pending else { return false };
-        if pending.passkey_prompt.is_some() || pending.terminal_credential_owner.is_some() {
-            return true;
-        }
         let interaction = pending
             .kernel_wide_interaction
-            .or(pending.user_domain_interaction)
+            .clone()
+            .or_else(|| pending.user_domain_interaction.clone())
             .or_else(|| {
                 self.owned
                     .session_store
@@ -219,19 +218,13 @@ impl KernelRuntimeState {
                     .find(|interaction| interaction.id() == answer.interaction_id)
                     .cloned()
             });
-        interaction.is_some_and(|interaction| {
-            interaction.level() == crate::session::RuntimeInteractionLevel::Critical
-                || interaction
-                    .choices()
-                    .iter()
-                    .any(|choice| choice.requires_passkey())
-        })
+        interaction.is_none_or(|interaction| pending.requires_terminal(&interaction))
     }
 }
 
 fn protected_config(path: &str) -> bool {
     let path = path.trim().to_ascii_lowercase();
-    ["kernel_access", "credential_vault", "relay"]
+    ["kernel_access", "credential_vault", "relay", "secret_link"]
         .iter()
         .any(|prefix| path == *prefix || path.starts_with(&format!("{prefix}.")))
 }

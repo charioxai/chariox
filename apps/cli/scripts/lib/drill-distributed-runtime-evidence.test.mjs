@@ -100,7 +100,7 @@ test("builds distributed runtime matrix command contracts", () => {
     "codex=work_codex",
     "--provider-account",
     "opencode=zen",
-    "--include-hetzner",
+    "--include-remote-kernel",
   ])
   assert.deepEqual(commands[1].args, [
     "--dry-run",
@@ -111,7 +111,7 @@ test("builds distributed runtime matrix command contracts", () => {
     "codex=work_codex",
     "--provider-account",
     "opencode=zen",
-    "--include-hetzner",
+    "--include-remote-kernel",
     "--include-hosted-cloud",
   ])
   assert.deepEqual(commands[2].args, [
@@ -124,10 +124,10 @@ test("builds distributed runtime matrix command contracts", () => {
     "--provider-account",
     "opencode=zen",
     "--include-slices",
-    "--include-hetzner",
+    "--include-remote-kernel",
     "--include-hosted-cloud",
   ])
-  assert.deepEqual(commands[3].args, ["--dry-run", "--continue-on-failure", "--include-hetzner"])
+  assert.deepEqual(commands[3].args, ["--dry-run", "--continue-on-failure", "--include-remote-kernel"])
   assert.deepEqual(commands[4].args, [
     "--dry-run",
     "--continue-on-failure",
@@ -147,7 +147,7 @@ test("builds distributed runtime matrix command contracts", () => {
     "--provider-account",
     "opencode=zen",
     "--include-remote",
-    "--include-hetzner",
+    "--include-remote-kernel",
     "--include-opencode",
   ])
   assert.deepEqual(commands[6].args, [
@@ -160,7 +160,7 @@ test("builds distributed runtime matrix command contracts", () => {
     "--provider-account",
     "opencode=zen",
     "--include-hosted-cloud",
-    "--include-hetzner",
+    "--include-remote-kernel",
   ])
   assert.deepEqual(commands[7].args, [
     "--dry-run",
@@ -303,7 +303,7 @@ test("builds distributed runtime generated evidence summary", () => {
   assert.deepEqual(summary.matrixReports.commands[0], {
     artifactIndexFlag: "--artifact-index",
     artifactIndexPath: path.join("/tmp/matrices/oss", "native-provider-tui-matrix-artifacts.json"),
-    args: ["--dry-run", "--continue-on-failure", "--provider-account", "codex=work_codex", "--include-hetzner"],
+    args: ["--dry-run", "--continue-on-failure", "--provider-account", "codex=work_codex", "--include-remote-kernel"],
     cwd: "/repo/chariox",
     matrix: "native-provider-tui-matrix",
     nodeArgs: [
@@ -312,7 +312,7 @@ test("builds distributed runtime generated evidence summary", () => {
       "--continue-on-failure",
       "--provider-account",
       "codex=work_codex",
-      "--include-hetzner",
+      "--include-remote-kernel",
       "--report",
       path.join("/tmp/matrices/oss", "native-provider-tui-matrix.json"),
       "--artifact-index",
@@ -444,7 +444,7 @@ test("matrix report child failures include generated evidence context", async ()
     await assert.rejects(
       runDistributedRuntimeMatrixReportCommand({
         artifactIndexFlag: "--artifact-index",
-        args: ["--label", "Alice's matrix run", "--include-hetzner"],
+        args: ["--label", "Alice's matrix run", "--include-remote-kernel"],
         cwd: rootDir,
         matrix: "remote-agent-runtime-matrix",
         outputDir: path.join(rootDir, "out"),
@@ -458,7 +458,7 @@ test("matrix report child failures include generated evidence context", async ()
         assert.match(error.message, /repo: oss/)
         assert.match(error.message, /matrix: remote-agent-runtime-matrix/)
         assert.match(error.message, /--label 'Alice'\\''s matrix run'/)
-        assert.match(error.message, /args: .*--include-hetzner .*--report .*matrix\.json .*--artifact-index .*matrix-artifacts\.json/)
+        assert.match(error.message, /args: .*--include-remote-kernel .*--report .*matrix\.json .*--artifact-index .*matrix-artifacts\.json/)
         assert.match(error.message, /report: .*matrix\.json/)
         assert.match(error.message, /artifact-index: .*matrix-artifacts\.json/)
         assert.match(error.message, /stderr:\nmatrix failed/)

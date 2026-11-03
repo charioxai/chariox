@@ -1,8 +1,9 @@
 //! MP-08 / MP-10: generated lifecycle and RPC cancellation interleavings.
 use super::*;
+use crate::provider::test_codex_connect as connect;
 use std::net::{Shutdown, TcpListener};
 use std::thread;
-use tokio_tungstenite::tungstenite::{accept, connect, Message};
+use tokio_tungstenite::tungstenite::{accept, Message};
 
 // MP-08 / MP-10: generated socket interleavings, not per-window implementations.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -188,10 +189,7 @@ fn generated_interrupt_fixture(case: RaceCase) {
         }
     });
     let (socket, _) = connect(&endpoint).unwrap();
-    let tokio_tungstenite::tungstenite::stream::MaybeTlsStream::Plain(stream) = socket.get_ref()
-    else {
-        unreachable!()
-    };
+    let stream = socket.get_ref().tcp();
     stream.set_nodelay(true).unwrap();
     let close = stream.try_clone().unwrap();
     let mut state = CodexRuntimeState::new(endpoint, "thread".into(), socket, 1);
@@ -425,11 +423,7 @@ fn mp08_interrupt_generated_retry_results_reconcile_successor() {
                 interrupts
             });
             let (socket, _) = connect(&endpoint).unwrap();
-            let tokio_tungstenite::tungstenite::stream::MaybeTlsStream::Plain(stream) =
-                socket.get_ref()
-            else {
-                unreachable!()
-            };
+            let stream = socket.get_ref().tcp();
             let close = stream.try_clone().unwrap();
             let mut state = CodexRuntimeState::new(endpoint, "thread".into(), socket, 1);
             state.active_turn_id = Some("submitted".into());

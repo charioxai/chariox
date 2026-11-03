@@ -48,13 +48,14 @@ use permission::{
     claude_workspace_trust_selection_started_at,
     claude_yolo_rendered_permission_confirmation_pending, clear_claude_hook_permission_tombstone,
     clear_claude_permission_recent, clear_claude_yolo_rendered_permission_confirmation,
-    extract_native_hidden_instructions, mark_claude_yolo_rendered_permission_confirmed,
-    normalize_claude_visible_prompt_for_headless, read_claude_headless_submit_retry,
-    redact_native_hidden_instructions, should_bridge_claude_permission,
-    take_claude_permission_inputs, take_matching_claude_hook_permission_tombstone,
-    timestamp_millis, update_claude_permission_recent,
-    write_claude_headless_bypass_selection_marker, write_claude_headless_startup_wait_marker,
-    write_claude_headless_submit_retry, write_claude_headless_workspace_trust_denied_marker,
+    extract_native_hidden_instructions, mark_claude_headless_prompt_queued,
+    mark_claude_yolo_rendered_permission_confirmed, normalize_claude_visible_prompt_for_headless,
+    read_claude_headless_submit_retry, redact_native_hidden_instructions,
+    should_bridge_claude_permission, take_claude_permission_inputs,
+    take_matching_claude_hook_permission_tombstone, timestamp_millis,
+    update_claude_permission_recent, write_claude_headless_bypass_selection_marker,
+    write_claude_headless_startup_wait_marker, write_claude_headless_submit_retry,
+    write_claude_headless_workspace_trust_denied_marker,
     write_claude_headless_workspace_trust_interaction_marker, write_claude_hook_context_response,
     write_claude_hook_permission_tombstone, write_claude_native_marker,
     write_claude_permission_input, write_claude_permission_passthrough,
@@ -79,6 +80,11 @@ const CLAUDE_WORKSPACE_TRUST_SELECTION_FAILED: &str =
     "Claude Code could not select the approved workspace trust option; no task text was dispatched. Retry after the trust dialog is fully displayed.";
 const CLAUDE_WORKSPACE_TRUST_SELECTION_FAILED_PREFIX: &str =
     "startup-workspace-trust-selection-failed:";
+
+/// The failure of a trust question that was denied or never answered: the person chose nothing wrong, so it ends the turn like a Stop.
+pub(crate) fn claude_workspace_trust_declined(failure: &str) -> bool {
+    failure == CLAUDE_WORKSPACE_TRUST_DENIED
+}
 
 fn claude_workspace_trust_failure(context_file: &str) -> Option<&'static str> {
     if claude_headless_workspace_trust_denied(context_file) {
@@ -334,6 +340,32 @@ fn claude_transcript_paths_from_hook_events(events_file: &str) -> Vec<String> {
                 .map(str::to_string)
         })
         .collect()
+}
+
+/// Claude queues a prompt typed while it answers another one; that record proves it received
+/// the prompt, so the retries must not type it again.
+fn record_claude_headless_enqueue(context_file: &str, enqueued_prompts: &[String]) {
+    let retry = read_claude_headless_submit_retry(context_file);
+    if retry.prompt_id.is_empty() || retry.queued_in_claude {
+        return;
+    }
+    if enqueued_prompts.iter().any(|prompt| {
+        claude_headless_dispatch_matches_prompt(context_file, &retry.prompt_id, prompt)
+    }) {
+        mark_claude_headless_prompt_queued(context_file);
+    }
+}
+
+/// Whether Claude holds the dispatched prompt in its queue behind a turn that is still running.
+pub(crate) fn claude_headless_prompt_queued_behind_running_turn(
+    provider_run: &RuntimeProviderRun,
+    prompt_id: &str,
+) -> bool {
+    let Some(context_file) = provider_run.pty_env().get("CHARIOX_CLAUDE_NATIVE_CONTEXT") else {
+        return false;
+    };
+    let retry = read_claude_headless_submit_retry(context_file);
+    retry.prompt_id == prompt_id && retry.queued_in_claude
 }
 
 fn acknowledge_claude_headless_steering_enqueue(
@@ -1095,6 +1127,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                     .flatten()
             })
             .map(|prompt| prompt.id().to_string());
+        record_claude_headless_enqueue(context_file, &drain.enqueued_prompts);
         acknowledge_claude_headless_steering_enqueue(
             context_file,
             active_prompt_id.as_deref(),
@@ -1951,6 +1984,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             let recent = claude_permission_recent_file(context_file)
                 .and_then(|path| fs::read_to_string(path).ok())
                 .unwrap_or_default();
+            let queued_in_claude = retry.prompt_id == prompt.id && retry.queued_in_claude;
             let count = if retry.prompt_id == prompt.id {
                 retry.count
             } else {
@@ -1967,7 +2001,8 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             } else {
                 claude_headless_prompt_input(prompt, context_file)
             };
-            if count < CLAUDE_HEADLESS_SUBMIT_RETRY_LIMIT
+            if !queued_in_claude
+                && count < CLAUDE_HEADLESS_SUBMIT_RETRY_LIMIT
                 && now.saturating_sub(last_attempt_ms) >= CLAUDE_HEADLESS_RETRY_MS
                 && claude_headless_prompt_waiting_in_composer(
                     &recent,
@@ -1988,7 +2023,8 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                     now,
                     &visible_prompt,
                 );
-            } else if count < CLAUDE_HEADLESS_SUBMIT_RETRY_LIMIT
+            } else if !queued_in_claude
+                && count < CLAUDE_HEADLESS_SUBMIT_RETRY_LIMIT
                 && now.saturating_sub(last_attempt_ms) >= CLAUDE_HEADLESS_RETRY_MS
                 && claude_headless_composer_visible(&recent)
             {

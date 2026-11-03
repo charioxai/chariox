@@ -447,7 +447,9 @@ test("MD-5: metadata scrubs echoes and never persists a secret-bearing restore U
   assert(candidates.includes("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"));
   assert(candidates.includes("/Users/md-test/Applications/Chromium.app/Contents/MacOS/Chromium"));
   const environment = { HOME: "/private/drill/home", DISPLAY: ":99", XAUTHORITY: "/unused", WAYLAND_DISPLAY: "wayland-0" };
-  assert.deepEqual(macEnvironment(environment), { HOME: environment.HOME });
+  assert.deepEqual(macEnvironment(environment), { HOME: environment.HOME, CHARIOX_KERNEL_BROWSER_HEADLESS: "1" });
+  const offscreen = macEnvironment({ ...environment, CHARIOX_KERNEL_BROWSER_HEADLESS: "0" });
+  assert(launchArguments("/private/drill/profile", offscreen.CHARIOX_KERNEL_BROWSER_HEADLESS === "1", true).includes("--headless=new"), "Browser does not create native windows on the owner's Mac desktop");
   assert.equal(environment.DISPLAY, ":99");
   assert.throws(() => linuxEnvironment({}, 0), /normal Unix user/);
   assert.deepEqual(linuxEnvironment({ DISPLAY: ":99" }, 501), { DISPLAY: ":99" });
@@ -1443,8 +1445,8 @@ test('MP-11 agents cannot reach extension management; the person can', () => usi
 
 // MP-08/MP-10/MP-11 (protocol 530/138): the public Browser state keys are the hashed
 // Rust fixture's; a new key needs a protocol bump and a new fixture.
-test('MP-08 public Browser state keys match the protocol 630 fixture', () => using(async ({ host }) => {
-  const fixture = JSON.parse(await readFile(new URL('../../src/local/api/tests/protocol_shapes/browser-chrome-ui-530.json', import.meta.url), 'utf8'));
+test('MP-08 public Browser state keys match the protocol 933 fixture', () => using(async ({ host }) => {
+  const fixture = JSON.parse(await readFile(new URL('../../src/local/api/tests/protocol_shapes/browser-header-933.json', import.meta.url), 'utf8'));
   const display = process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;
   process.env.CHARIOX_KERNEL_BROWSER_DISPLAY = '1';
   try {
@@ -1453,8 +1455,7 @@ test('MP-08 public Browser state keys match the protocol 630 fixture', () => usi
     host.tabGroups = { active: async () => host.tabs.get(tab.tab_id).target_id };
     host.chromium.policy = 'managed';
     const state = await host.request({ op: 'state' });
-    const dialogs = JSON.parse(await readFile(new URL('../../src/local/api/tests/protocol_shapes/browser-dialog-630.json', import.meta.url), 'utf8'));
-    assert.deepEqual(Object.keys(state).filter(key => !key.startsWith('_')).sort(), dialogs.state_keys);
+    assert.deepEqual(Object.keys(state).filter(key => !key.startsWith('_')).sort(), fixture.state_keys);
     assert.deepEqual(Object.keys(state.chrome_window).sort(), fixture.chrome_window_keys);
     host.chromeWindows.auxiliaryState = () => [{ auxiliary_id: 1, x: 0, y: 0, width: 2, height: 2 }];
     assert.deepEqual(Object.keys((await host.request({ op: 'state' })).chrome_window.auxiliary[0]).sort(), fixture.auxiliary_keys);
@@ -2221,7 +2222,7 @@ test('MP-08/MP-10 a parked wait starts no browser and never queues behind the ho
 }));
 
 
-test('MP-08/MP-10 browser death automatically restores stable tabs, active tab and groups', {timeout: 10000}, () => using(async ({host,chromium,handlers,sent,connection}) => {
+test('MP-08/MP-10 the first read after browser death restores stable tabs, active tab and groups', {timeout: 10000}, () => using(async ({host,chromium,handlers,sent,connection}) => {
   const a=await host.request({op:'open',url:'https://www.wikipedia.org/'});
   const b=await host.request({op:'open',url:'https://github.com/charioxai/chariox'});
   host.activeTarget=host.tabs.get(a.tab_id).target_id;
@@ -2230,9 +2231,8 @@ test('MP-08/MP-10 browser death automatically restores stable tabs, active tab a
   const generation=host.generation;
   chromium.child.signalCode='SIGSEGV';
   for(const handler of [...handlers])handler({method:'Chariox.browserDisconnected',params:{code:'browser_cdp_disconnected'}});
-  for(let n=0;n<150&&host.generation===generation;n++)await new Promise(r=>setTimeout(r,10));
-  await host.starting;
-  assert.equal(host.generation,generation+1,'the loss signal restarts without a user request');
+  await new Promise(r=>setTimeout(r,300));await host.start({allowStart:false}); // what the first read after the short wait does
+  assert.equal(host.generation,generation+1,'the first read after the short wait restarts it');
   assert.deepEqual([...host.tabs.keys()],[a.tab_id,b.tab_id]);
   assert.equal(host.activeTarget,host.tabs.get(a.tab_id).target_id);
   assert.deepEqual(host.savedGroups,[{tab_id:b.tab_id,label:'Mara'}]);
@@ -2256,8 +2256,7 @@ test('MP-08/MP-10 interrupted old-browser actions settle without replay or stopp
   await began.promise;
   chromium.child.signalCode='SIGSEGV';
   for(const handler of [...handlers])handler({method:'Chariox.browserDisconnected',params:{code:'browser_cdp_disconnected'}});
-  for(let n=0;n<150&&host.generation===opened.generation;n++)await new Promise(r=>setTimeout(r,10));
-  await host.starting;ended.resolve();
+  await askAfterBackoff(host);ended.resolve();
   const reply=await action;
   assert.equal(reply.ok,false);assert.equal(reply.error.code,'browser_unavailable');assert.match(reply.error.message,/disconnected.*not replayed/);
   assert.equal(host.generation,opened.generation+1);assert(host.browser);assert.equal(chromium.child.signalCode,null);
@@ -2272,6 +2271,26 @@ test('MP-08/MP-10 concurrent recovery reads launch one browser and explicit stop
   assert(states.every(state=>state.tabs.length===1&&state.tabs[0].tab_id===opened.tab_id));
   await host.stop();await new Promise(r=>setTimeout(r,300));assert.equal(starts,2);assert.equal(host.recovery.enabled,false);
   await assert.rejects(host.request({op:'state'}),{code:'browser_unavailable'});
+}));
+
+// A lost browser comes back when a request asks for it, after the short wait the recovery sets; a read inside the wait is refused.
+async function askAfterBackoff(host){
+  await new Promise(r=>setTimeout(r,300));
+  return host.request({op:'state'});
+}
+// 2026-10-31: closing the kernel browser's window brought it back at once, with nobody looking.
+test('MP-08/MP-10 a lost browser is not relaunched while nothing asks for it; the next request starts it', {timeout:10000}, () => using(async ({host,chromium,handlers}) => {
+  const opened=await host.request({op:'open',url:'https://www.wikipedia.org/'});
+  let starts=0;const start=chromium.start;chromium.start=async()=>{starts++;return start();};
+  chromium.child.signalCode='SIGSEGV';
+  for(const handler of [...handlers])handler({method:'Chariox.browserDisconnected',params:{code:'browser_cdp_disconnected'}});
+  await assert.rejects(host.request({op:'state'}),{code:'browser_unavailable'},'a read inside the wait is refused');
+  await new Promise(r=>setTimeout(r,700));
+  assert.equal(starts,0,'nobody is asking: no relaunch');
+  assert.equal(host.recovery.enabled,true);
+  const state=await host.request({op:'state'});
+  assert.equal(starts,1,'a request is demand');
+  assert.equal(state.generation,opened.generation+1);assert(state.tabs.some(tab=>tab.tab_id===opened.tab_id),'its tabs come back');
 }));
 
 test('MP-08/MP-10 a cancelled viewer does not cancel shared browser recovery', () => using(async ({host,chromium}) => {
@@ -2307,10 +2326,10 @@ for(const late of [false,true])test(`MP-08/MP-10 a disconnected page input never
  const action=host.handle({id:'page-input',method:'host.browser',params:{op:'input',_agent_input:true,tab_id:opened.tab_id,generation:opened.generation,document_id:tab.document_id,input:{kind:'scroll',x:20,y:20,delta_x:0,delta_y:120}}});
  await began.promise;chromium.child.signalCode='SIGSEGV';live=false;
  for(const handler of [...handlers])handler({method:'Chariox.browserDisconnected',params:{code:'browser_cdp_disconnected'}});
- if(late){for(let n=0;n<150&&host.generation===opened.generation;n++)await new Promise(r=>setTimeout(r,10));await host.starting;}
+ if(late)await askAfterBackoff(host);
  gate.resolve();const reply=await action;
  assert.equal(reply.ok,false);assert.equal(reply.error.code,'browser_unavailable');assert.match(reply.error.message,/not replayed/);
- for(let n=0;n<150&&host.generation===opened.generation;n++)await new Promise(r=>setTimeout(r,10));await host.starting;
+ await askAfterBackoff(host);
  assert.equal(host.generation,opened.generation+1);assert(host.browser);assert.equal(host.recovery.enabled,true);assert(host.tabs.has(opened.tab_id));assert.equal(presses,1,'the old input is never replayed');
 }));
 
@@ -2448,6 +2467,42 @@ for (const mirrored of [false,true]) test(`MP-08/MP-10/MP-11: ${mirrored?'DOM':'
  assert.equal(active,target(todo.tab_id));assert.equal(activations,1);
  await host.request(input);assert.equal(activations,1,'already selected native tab requires no activation');
  const saved=JSON.parse(await readFile(path.join(root,'tabs.json'),'utf8'));assert.equal(saved.active_tab_id,todo.tab_id);
+}));
+
+// MP-08/MP-10: a click whose page opens a Tab (window.open, target=_blank) leaves Chromium showing that Tab; the opener's admitted selection must not pull focus back.
+test('MP-08/MP-10 a Tab opened by the clicked page keeps the foreground over the opener selection', () => using(async ({host,connection}) => {
+ const opener=await host.request({op:'open',url:'https://example.com/opener'});
+ const target=id=>host.tabs.get(id).target_id;let active=target(opener.tab_id),activations=0,popup;
+ host.tabGroups={active:async()=>active};host.activeTarget=target(opener.tab_id);
+ const send=connection.send.bind(connection);
+ connection.send=async(method,params,session)=>{
+  if(method==='Target.activateTarget'){active=params.targetId;activations++}
+  if(method.startsWith('Input.')&&!popup){popup=(await send('Target.createTarget',{url:'https://example.com/popup'})).targetId;active=popup}
+  return send(method,params,session)};
+ await host.request({op:'input',tab_id:opener.tab_id,generation:opener.generation,document_id:host.tabs.get(opener.tab_id).document_id,input:{kind:'text',text:'x'}});
+ assert(popup,'the click opened a Tab');
+ assert.equal(activations,0,'the opener selection must not re-activate over the new Tab');
+ await host.reconcile();
+ assert.equal(host.activeTarget,popup,'the new Tab is the active Tab');
+ assert.equal(host.pendingActive,null);
+}));
+
+// Review #1072 P2: a state read that adopts the popup while the input acknowledgement is pending must not let the ack rebuild the opener intent.
+test('MP-08/MP-10 a popup adopted before the input acknowledgement keeps the foreground', () => using(async ({host,connection}) => {
+ const opener=await host.request({op:'open',url:'https://example.com/opener'});
+ const target=id=>host.tabs.get(id).target_id;let active=target(opener.tab_id),activations=0,popup;
+ host.tabGroups={active:async()=>active};host.activeTarget=target(opener.tab_id);
+ const send=connection.send.bind(connection);
+ connection.send=async(method,params,session)=>{
+  if(method==='Target.activateTarget'){active=params.targetId;activations++}
+  if(method.startsWith('Input.')&&!popup){popup=(await send('Target.createTarget',{url:'https://example.com/popup'})).targetId;active=popup;await host.reconcile()}
+  return send(method,params,session)};
+ await host.request({op:'input',tab_id:opener.tab_id,generation:opener.generation,document_id:host.tabs.get(opener.tab_id).document_id,input:{kind:'text',text:'x'}});
+ assert(popup,'the click opened a Tab');
+ assert.equal(host.pendingActive,null,'the acknowledgement must not rebuild the opener selection');
+ await host.reconcile();
+ assert.equal(activations,0,'the opener selection must not re-activate over the new Tab');
+ assert.equal(host.activeTarget,popup,'the new Tab is the active Tab');
 }));
 
 // MP-08/MP-10/MP-11: an input can publish before its focus reconciliation settles.
@@ -2592,4 +2647,15 @@ test('MP-08/MP-10/MP-11: a crash arriving during inventory does not cancel recov
   assert.ok(!closedCrashed.tabs.some(tab => tab.tab_id === crashed.tab_id));
   assert.equal(browser.rendererRecovery.crashed.size, 0);
   assert.equal(sent.filter(call => call.method === 'Page.reload').length, 0, 'pressure must hold recovery while close stays usable');
+}));
+
+test('MP-08/MP-10 protocol933 portable header follows Chromium without a native band', () => using(async ({host,connection}) => {
+ const first=await host.request({op:'open',url:'https://example.com/first'}),second=await host.request({op:'open',url:'https://example.com/second'});
+ const png=encodePng(16,16,Buffer.alloc(16*16*4,255));
+ const send=connection.send;connection.send=async(method,params,session)=>method==='Page.getNavigationHistory'?{currentIndex:1,entries:[{id:1},{id:2}]}:send(method,params,session);
+ host.tabGroups={active:async()=>host.tabs.get(second.tab_id).target_id,favicon:async()=>png};
+ await host.request({op:'state'});await new Promise(r=>setTimeout(r,300));await host.request({op:'state'});await new Promise(r=>setTimeout(r,10));const state=await host.request({op:'state'});
+ assert.equal(state.chrome_window,null);assert.equal(state.active_tab_id,second.tab_id);
+ const tab=state.tabs.find(t=>t.tab_id===second.tab_id);assert.equal(tab.can_go_back,true);assert.equal(tab.can_go_forward,false);assert.equal(tab.favicon_png_base64,png);
+ assert(state.tabs.some(t=>t.tab_id===first.tab_id));
 }));

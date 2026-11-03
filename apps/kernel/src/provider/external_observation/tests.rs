@@ -254,6 +254,70 @@ fn normalized_observed_prompt_text_ignores_provider_native_attachment_suffixes()
 }
 
 #[test]
+fn normalized_observed_prompt_text_ignores_only_the_leading_mentions_of_attached_files() {
+    let prompt = "Say hello";
+    let shot = "/tmp/chariox-terminal-prompt-attachments/s/a/1-0-shot.png".to_string();
+    let second = "/tmp/chariox-terminal-prompt-attachments/s/a/2-1-shot.png".to_string();
+    let spaced = "/tmp/with space/shot.png".to_string();
+    let attached = [shot.clone(), second.clone(), spaced.clone()];
+
+    for mentions in [
+        format!("@{shot}"),
+        format!("@{shot} @{second}"),
+        format!("@\"{spaced}\" @{shot}"),
+    ] {
+        assert_eq!(
+            normalized_observed_prompt_text_after_mentions(
+                &format!("{mentions}\n\n{prompt}"),
+                &attached
+            ),
+            Some(prompt.to_string()),
+            "{mentions}"
+        );
+    }
+    // A mention of a file nobody attached is the person's own text; only the attached files' mentions in front of it go.
+    for (typed, expected) in [
+        (
+            "@/repo/lib.rs Say hello".to_string(),
+            "@/repo/lib.rs Say hello".to_string(),
+        ),
+        (
+            format!("@{shot} @/repo/lib.rs Say hello"),
+            "@/repo/lib.rs Say hello".to_string(),
+        ),
+        (
+            format!("@/repo/lib.rs @{shot} Say hello"),
+            format!("@/repo/lib.rs @{shot} Say hello"),
+        ),
+    ] {
+        assert_eq!(
+            normalized_observed_prompt_text_after_mentions(&typed, &attached),
+            Some(expected),
+            "{typed}"
+        );
+    }
+    assert_eq!(
+        normalized_observed_prompt_text_after_mentions(
+            "Say hello to @/tmp/x.png",
+            &["/tmp/x.png".to_string()]
+        ),
+        Some("Say hello to @/tmp/x.png".to_string())
+    );
+    assert_eq!(
+        normalized_observed_prompt_text_after_mentions("@agent-2 Say hello", &attached),
+        Some("@agent-2 Say hello".to_string())
+    );
+}
+
+#[test]
+fn normalized_observed_prompt_text_keeps_a_leading_file_mention_nobody_attached() {
+    assert_eq!(
+        normalized_observed_prompt_text("@/repo/lib.rs Review this"),
+        Some("@/repo/lib.rs Review this".to_string())
+    );
+}
+
+#[test]
 fn observed_account_handoff_matches_only_the_current_request() {
     let envelope = "<chariox_context_handoff>Prior prompt and output</chariox_context_handoff> Provider/account switch: codex [a] -> codex [b]. <user_request>Reply SWITCHED</user_request>";
     assert_eq!(

@@ -1,8 +1,9 @@
 //! MP-08 / MP-10: cleanup belongs to the provider thread, never an OS PID.
 use super::*;
+use crate::provider::test_codex_connect as connect;
 use std::net::{Shutdown, TcpListener};
 use std::thread;
-use tokio_tungstenite::tungstenite::{accept, connect, Message};
+use tokio_tungstenite::tungstenite::{accept, Message};
 
 #[test]
 fn mp08_terminal_cleanup_retains_cancellation_on_error_and_cleans_idle_thread() {
@@ -40,11 +41,7 @@ fn mp08_terminal_cleanup_retains_cancellation_on_error_and_cleans_idle_thread() 
                     .unwrap();
             });
             let (socket, _) = connect(&endpoint).unwrap();
-            let tokio_tungstenite::tungstenite::stream::MaybeTlsStream::Plain(stream) =
-                socket.get_ref()
-            else {
-                unreachable!()
-            };
+            let stream = socket.get_ref().tcp();
             let close = stream.try_clone().unwrap();
             let mut state = CodexRuntimeState::new(endpoint, "owned-thread".into(), socket, 1);
             if active {
@@ -107,10 +104,7 @@ fn mp08_terminal_cleanup_ack_cannot_hide_successor_start() {
         }
     });
     let (socket, _) = connect(&endpoint).unwrap();
-    let tokio_tungstenite::tungstenite::stream::MaybeTlsStream::Plain(stream) = socket.get_ref()
-    else {
-        unreachable!()
-    };
+    let stream = socket.get_ref().tcp();
     let close = stream.try_clone().unwrap();
     let mut state = CodexRuntimeState::new(endpoint, "thread".into(), socket, 1);
     state.active_turn_id = Some("submitted".into());
@@ -147,10 +141,7 @@ fn mp08_cleanup_is_sent_before_interrupt_reply_and_matches_reversed_acks() {
         }
     });
     let (socket, _) = connect(&endpoint).unwrap();
-    let tokio_tungstenite::tungstenite::stream::MaybeTlsStream::Plain(stream) = socket.get_ref()
-    else {
-        unreachable!()
-    };
+    let stream = socket.get_ref().tcp();
     let close = stream.try_clone().unwrap();
     let mut state = CodexRuntimeState::new(endpoint, "thread".into(), socket, 1);
     state.active_turn_id = Some("submitted".into());

@@ -901,25 +901,78 @@ impl SessionRuntimeStore {
         self.with_session_projection_action_result(result).await
     }
 
-    pub(super) async fn create_agent_prompt_schedule(
+    pub(super) async fn create_agent_trigger(
         &self,
-        request: crate::local::CreateAgentPromptScheduleRequest,
+        request: crate::local::CreateAgentTriggerRequest,
+        caller_user_id: &str,
     ) -> (
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
     ) {
-        let result = self.state.create_agent_prompt_schedule(request).await;
+        let result = self
+            .state
+            .create_agent_trigger(request, caller_user_id)
+            .await;
         self.with_session_projection_action_result(result).await
     }
 
-    pub(super) async fn cancel_agent_prompt_schedule(
+    pub(super) async fn update_agent_trigger(
         &self,
-        request: crate::local::CancelAgentPromptScheduleRequest,
+        request: crate::local::UpdateAgentTriggerRequest,
+        caller_user_id: &str,
     ) -> (
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
     ) {
-        let result = self.state.cancel_agent_prompt_schedule(request).await;
+        let result = self
+            .state
+            .update_agent_trigger(request, caller_user_id)
+            .await;
+        self.with_session_projection_action_result(result).await
+    }
+
+    pub(super) async fn invoke_agent_trigger(
+        &self,
+        request: crate::local::InvokeAgentTriggerRequest,
+        caller_user_id: &str,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<SessionProjectionAction>,
+    ) {
+        let result = self
+            .state
+            .invoke_agent_trigger(request, caller_user_id)
+            .await;
+        self.with_session_projection_action_result(result).await
+    }
+
+    pub(super) async fn delete_agent_trigger(
+        &self,
+        request: crate::local::DeleteAgentTriggerRequest,
+        caller_user_id: &str,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<SessionProjectionAction>,
+    ) {
+        let result = self
+            .state
+            .delete_agent_trigger(request, caller_user_id)
+            .await;
+        self.with_session_projection_action_result(result).await
+    }
+
+    pub(super) async fn resend_trigger_delivery(
+        &self,
+        request: crate::local::ResendTriggerDeliveryRequest,
+        caller_user_id: &str,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<SessionProjectionAction>,
+    ) {
+        let result = self
+            .state
+            .resend_trigger_delivery(request, caller_user_id)
+            .await;
         self.with_session_projection_action_result(result).await
     }
 

@@ -4,6 +4,7 @@ use super::*;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum LocalDaemonResponse {
     SessionProcessesStopped { result: crate::runtime::process_resources::ProcessControlResult },
+    SessionProcessStartedNow { process_id: String },
     ProviderUsageSnapshot { accounts: Vec<ProviderUsageAccount> },
     AgentUsageSnapshot { snapshot: AgentUsageSnapshot },
     EventSubscription { subscription: EventSubscription },
@@ -27,6 +28,9 @@ pub enum LocalDaemonResponse {
     WorkflowNotificationDetached { subscription_id: String },
     WorkflowNotifications { sources: Vec<WorkflowNotificationSourceSummary>, subscriptions: Vec<WorkflowNotificationSubscription>, diagnostics: Vec<WorkflowNotificationDiagnostic> },
     KernelSudoRequested { agent_id: String },
+    /// Protocol 929: the secret prompt is up; `link` opens it on the owner's page.
+    VaultSecretRequested { interaction_id: String, link: String, expires_at: u64, credential_id: String },
+    VaultSecretStatusReported { interaction_id: String, credential_id: String, status: VaultSecretStatus },
     KernelSudoExtended { turn: KernelSudoTurn },
     KernelAccessGranted { grant: KernelAccessGrant, },
     /// Protocol 641: the grant now covers this process by name.
@@ -390,8 +394,12 @@ pub enum LocalDaemonResponse {
     PromptSetting { setting: crate::prompt_assembly::PromptSettingRecord, },
     PromptSettingPreview { id: String, markdown: String, variables: BTreeMap<String, String>, },
     PromptSettingsReset { settings: Vec<crate::prompt_assembly::PromptSettingRecord>, },
-    AgentPromptScheduleCreated { schedule: crate::session::AgentPromptSchedule, session: RuntimeSession, },
-    AgentPromptScheduleCancelled { schedule: crate::session::AgentPromptSchedule, session: RuntimeSession, },
+    AgentTriggerTranscript { trigger: crate::session::AgentTrigger, agent_alias: String, online: bool, busy: bool, history: Box<LocalDaemonResponse>, deliveries: Vec<crate::session::TriggerDelivery>, },
+    AgentTriggerInvoked { invocation: AgentTriggerInvocation, },
+    AgentTriggerCreated { trigger: crate::session::AgentTrigger, session: RuntimeSession, },
+    AgentTriggerUpdated { trigger: crate::session::AgentTrigger, session: RuntimeSession, },
+    AgentTriggerDeleted { trigger: crate::session::AgentTrigger, session: RuntimeSession, },
+    TriggerDeliveryResent { session: RuntimeSession, },
     RecallEvents { events: Vec<HistoryEvent>, next_sequence: Option<u64>, },
     SemanticRecallEvents {
         results: Vec<SemanticRecallMatch>,

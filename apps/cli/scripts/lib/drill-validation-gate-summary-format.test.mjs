@@ -217,12 +217,12 @@ test("formats generated evidence provenance when present", () => {
         ],
         commands: [
           {
-            args: ["--include-hetzner"],
+            args: ["--include-remote-kernel"],
             artifactIndexFlag: "--artifact-index",
             artifactIndexPath: "/tmp/matrices/oss/a-artifacts.json",
             cwd: "/repo/chariox",
             matrix: "native-provider-tui-matrix",
-            nodeArgs: ["/repo/chariox/a.mjs", "--include-hetzner", "--report", "/tmp/matrices/oss/a.json", "--artifact-index", "/tmp/matrices/oss/a-artifacts.json"],
+            nodeArgs: ["/repo/chariox/a.mjs", "--include-remote-kernel", "--report", "/tmp/matrices/oss/a.json", "--artifact-index", "/tmp/matrices/oss/a-artifacts.json"],
             repo: "oss",
             reportPath: "/tmp/matrices/oss/a.json",
             scriptPath: "/repo/chariox/a.mjs",

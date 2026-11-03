@@ -6,6 +6,7 @@ import {
   promptAddsArgumentsToCommandCenterItem,
   shouldBypassCommandCenterSubmitSelection,
   shouldSubmitExactCommandCenterMatch,
+  typedCommandOutranksCommandCenterItem,
 } from "./command-center-selection.js"
 import type { CommandCenterItem } from "./command-center-types.js"
 import type { CommandNode } from "./command-center-tree-projection.js"
@@ -74,6 +75,8 @@ export function createCommandCenterController<TBox = unknown>(
   let items: CommandCenterItem[] = []
   let selectedIndex = 0
   let box: TBox | undefined
+  // True once the person moved the highlight with the arrow keys; typing resets it.
+  let highlightChosen = false
 
   const open = () => items.length > 0 && (query.startsWith("/") || query.startsWith("@"))
 
@@ -93,6 +96,9 @@ export function createCommandCenterController<TBox = unknown>(
   const sync = (value = options.getPromptText()) => {
     const previousValue = query
     query = value
+    if (value !== previousValue) {
+      highlightChosen = false
+    }
     options.refreshWorkflowRegistryEntries?.(value)
     items = buildCommandCenterItems(value, {
       providerCatalog: options.getProviderCatalog(),
@@ -116,10 +122,15 @@ export function createCommandCenterController<TBox = unknown>(
     query = ""
     items = []
     selectedIndex = 0
+    highlightChosen = false
     render()
   }
 
   const selectedItem = () => items[selectedIndex] ?? items[0] ?? null
+
+  const typedLineOutranks = (item: CommandCenterItem, prompt: string) => (
+    !highlightChosen && typedCommandOutranksCommandCenterItem(item, prompt, options.getCommandTree())
+  )
 
   const selectItem = async (item: CommandCenterItem) => {
     const command = commandCenterExecutionCommand(item)
@@ -151,6 +162,7 @@ export function createCommandCenterController<TBox = unknown>(
       return
     }
     selectedIndex = (selectedIndex + delta + items.length) % items.length
+    highlightChosen = true
     render()
   }
 
@@ -200,7 +212,8 @@ export function createCommandCenterController<TBox = unknown>(
           return false
         }
         if (shouldBypassCommandCenterSubmitSelection(options.getPromptText())
-          || promptAddsArgumentsToCommandCenterItem(item, options.getPromptText())) {
+          || promptAddsArgumentsToCommandCenterItem(item, options.getPromptText())
+          || typedLineOutranks(item, options.getPromptText())) {
           // Not handled: the prompt's own submit sends the typed command.
           return false
         }
@@ -228,6 +241,11 @@ export function createCommandCenterController<TBox = unknown>(
       }
       const currentPrompt = options.getPromptText()
       if (shouldBypassCommandCenterSubmitSelection(currentPrompt)) {
+        return false
+      }
+      if (typedLineOutranks(item, currentPrompt)) {
+        clear()
+        sync("")
         return false
       }
       if (shouldSubmitExactCommandCenterMatch(item, currentPrompt)) {

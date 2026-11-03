@@ -68,15 +68,14 @@ try:
   elif c=='\b':col=max(0,col-1)
   elif c.isprintable():screen[row][col]=c;col=min(143,col+1)
  text='\n'.join(''.join(line).rstrip() for line in screen)
- # Retain only the carrier strip; linked-profile history is outside this drill.
+ # Retain only the footer strip; linked-profile history is outside this drill.
  text=text.splitlines()[-1]
  (out/'terminal-cells.txt').write_text(text+'\n')
  (out/'terminal-cells.html').write_text('<meta charset="utf-8"><body style="background:#111;color:#ddd"><p>MP-08 / MP-10 / MP-11 — captured real TUI cells</p><pre style="font:12px monospace">'+html.escape(text)+'</pre></body>')
- label='Local connect' if spec['expectLocal'] else 'Relay connect'
- assert label in text,'expected current carrier indicator absent'
+ assert not re.search(r'(local|relay|direct) connection',text,re.I),'footer names how the connection is established'
  result['status']='PASS';result['expectedLocal']=spec['expectLocal']
 except Exception:
- result['failure']='real detached TUI did not retain the expected carrier and connection';raise
+ result['failure']='real detached TUI did not stay connected with a plain footer';raise
 finally:
  done.set()
  if child.poll() is None:

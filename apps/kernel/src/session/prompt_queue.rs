@@ -22,6 +22,24 @@ pub enum PromptOrigin {
     Chariox,
     CompletionCheck,
     External,
+    /// A schedule trigger fired this prompt.
+    Schedule,
+    /// A local HTTP trigger fired this prompt.
+    Http,
+    /// A workflow notification was delivered as this prompt.
+    Notification,
+}
+
+impl PromptOrigin {
+    /// Prompts Chariox itself shows as its own: a person typed them, or a
+    /// trigger or notification fired them. Not an external provider's prompts
+    /// and not the hidden completion check.
+    pub fn is_chariox_prompt(self) -> bool {
+        matches!(
+            self,
+            Self::Chariox | Self::Schedule | Self::Http | Self::Notification
+        )
+    }
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -164,7 +182,7 @@ pub(crate) struct DurablePromptPrivateState {
     pub(crate) session_id: String,
     pub(crate) prompt_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) agent_prompt_schedule_id: Option<String>,
+    pub(crate) agent_trigger_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) source_client_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -198,11 +216,16 @@ pub(crate) struct DurablePromptPrivateState {
     pub(crate) recovery_phase: Option<DurablePromptDeliveryPhase>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     remote_steer_uncertainty: Option<DurableRemoteQueuedSteerUncertainty>,
+    /// The kernel was about to hand this queued firing to the provider as a
+    /// steer. A restart cannot tell whether the provider received it, so the
+    /// firing is never replayed.
+    #[serde(default, skip_serializing_if = "is_false_bool")]
+    local_steer_submitted: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct PromptPrivateMetadata {
-    agent_prompt_schedule_id: Option<String>,
+    agent_trigger_id: Option<String>,
     source_client_id: Option<String>,
     source_user_id: Option<String>,
     owner_request: bool,
@@ -218,6 +241,7 @@ struct PromptPrivateMetadata {
     recovery_generation: u32,
     recovery_operation_id: Option<String>,
     recovery_phase: Option<DurablePromptDeliveryPhase>,
+    local_steer_submitted: bool,
 }
 
 fn is_zero_u32(value: &u32) -> bool {
@@ -244,7 +268,7 @@ impl DurablePromptPrivateState {
         (prompt.private_metadata.is_some() || remote_steer_uncertainty.is_some()).then(|| Self {
             session_id: session_id.to_string(),
             prompt_id: prompt.id.clone(),
-            agent_prompt_schedule_id: metadata.agent_prompt_schedule_id,
+            agent_trigger_id: metadata.agent_trigger_id,
             source_client_id: metadata.source_client_id,
             source_user_id: metadata.source_user_id,
             owner_request: metadata.owner_request,
@@ -261,6 +285,7 @@ impl DurablePromptPrivateState {
             recovery_operation_id: metadata.recovery_operation_id,
             recovery_phase: metadata.recovery_phase,
             remote_steer_uncertainty,
+            local_steer_submitted: metadata.local_steer_submitted,
         })
     }
 }
@@ -408,7 +433,7 @@ impl PromptQueueItem {
             if let Some(metadata) = self.private_metadata.as_mut() {
                 metadata.hidden_system_context.clear();
                 if metadata.operation_id.is_none()
-                    && metadata.agent_prompt_schedule_id.is_none()
+                    && metadata.agent_trigger_id.is_none()
                     && metadata.delivery_phase.is_none()
                     && metadata.recovery_operation_id.is_none()
                     && metadata.source_client_id.is_none()
@@ -462,13 +487,13 @@ impl PromptQueueItem {
             .as_ref()
             .is_some_and(|metadata| metadata.owner_request)
             && self.workflow_run_id.is_none()
-            && self.agent_prompt_schedule_id().is_none()
+            && self.agent_trigger_id().is_none()
     }
 
-    pub(crate) fn with_agent_prompt_schedule(mut self, schedule_id: impl Into<String>) -> Self {
+    pub(crate) fn with_agent_trigger(mut self, trigger_id: impl Into<String>) -> Self {
         self.private_metadata
             .get_or_insert_with(|| Box::new(PromptPrivateMetadata::default()))
-            .agent_prompt_schedule_id = Some(schedule_id.into());
+            .agent_trigger_id = Some(trigger_id.into());
         self
     }
 
@@ -483,6 +508,26 @@ impl PromptQueueItem {
         metadata.operation_id = Some(operation_id.into());
         metadata.operation_fingerprint = Some(fingerprint.into());
         self
+    }
+
+    pub(crate) const TRIGGER_RESEND_OPERATION_PREFIX: &str = "agent-trigger-resend:";
+
+    /// The operation identity is kept in the admission event, so recovery can
+    /// consume the original resend only when its replacement was admitted.
+    pub(crate) fn with_trigger_resend(self, original_prompt_id: &str) -> Self {
+        self.with_durable_operation(
+            format!(
+                "{}{original_prompt_id}",
+                Self::TRIGGER_RESEND_OPERATION_PREFIX
+            ),
+            original_prompt_id,
+        )
+    }
+
+    pub(crate) fn trigger_resend_of(&self) -> Option<&str> {
+        self.agent_trigger_id()?;
+        self.durable_operation_id()?
+            .strip_prefix(Self::TRIGGER_RESEND_OPERATION_PREFIX)
     }
 
     pub fn with_workflow_context(
@@ -579,7 +624,10 @@ impl PromptQueueItem {
     }
 
     pub(crate) fn remote_steer_reserved(&self) -> bool {
-        self.remote_steer_reservation.id.load(Ordering::Acquire) != 0
+        // Local trigger steers share the queue reservation. Their durable
+        // delivery hold outlives the mailbox claim if settlement cannot commit.
+        self.local_steer_submitted()
+            || self.remote_steer_reservation.id.load(Ordering::Acquire) != 0
             || self.remote_steer_outcome_uncertainty().is_some()
     }
 
@@ -728,10 +776,10 @@ impl PromptQueueItem {
             .and_then(|metadata| metadata.source_client_id.as_deref())
     }
 
-    pub(crate) fn agent_prompt_schedule_id(&self) -> Option<&str> {
+    pub(crate) fn agent_trigger_id(&self) -> Option<&str> {
         self.private_metadata
             .as_ref()
-            .and_then(|metadata| metadata.agent_prompt_schedule_id.as_deref())
+            .and_then(|metadata| metadata.agent_trigger_id.as_deref())
     }
 
     pub(crate) fn source_user_id(&self) -> Option<&str> {
@@ -843,6 +891,20 @@ impl PromptQueueItem {
             .and_then(|metadata| metadata.recovery_operation_id.as_deref())
     }
 
+    pub(crate) fn local_steer_submitted(&self) -> bool {
+        self.private_metadata
+            .as_ref()
+            .is_some_and(|metadata| metadata.local_steer_submitted)
+    }
+
+    pub(crate) fn set_local_steer_submitted(&mut self, submitted: bool) {
+        if submitted || self.private_metadata.is_some() {
+            self.private_metadata
+                .get_or_insert_with(|| Box::new(PromptPrivateMetadata::default()))
+                .local_steer_submitted = submitted;
+        }
+    }
+
     pub(crate) fn durable_recovery_phase(&self) -> Option<DurablePromptDeliveryPhase> {
         self.private_metadata
             .as_ref()
@@ -885,7 +947,7 @@ impl PromptQueueItem {
 
     pub(crate) fn restore_durable_private_state(&mut self, private: &DurablePromptPrivateState) {
         if private.hidden_system_context.is_empty()
-            && private.agent_prompt_schedule_id.is_none()
+            && private.agent_trigger_id.is_none()
             && private.operation_id.is_none()
             && private.delivery_phase.is_none()
             && !private.delivery_reconciliation_pending
@@ -894,13 +956,14 @@ impl PromptQueueItem {
             && private.source_client_id.is_none()
             && private.source_user_id.is_none()
             && private.remote_steer_uncertainty.is_none()
+            && !private.local_steer_submitted
         {
             self.private_metadata = None;
             self.restore_remote_steer_outcome_uncertainty(private.remote_steer_uncertainty.clone());
             return;
         }
         self.private_metadata = Some(Box::new(PromptPrivateMetadata {
-            agent_prompt_schedule_id: private.agent_prompt_schedule_id.clone(),
+            agent_trigger_id: private.agent_trigger_id.clone(),
             source_client_id: private.source_client_id.clone(),
             source_user_id: private.source_user_id.clone(),
             owner_request: private.owner_request,
@@ -916,6 +979,7 @@ impl PromptQueueItem {
             recovery_generation: private.recovery_generation,
             recovery_operation_id: private.recovery_operation_id.clone(),
             recovery_phase: private.recovery_phase,
+            local_steer_submitted: private.local_steer_submitted,
         }));
         self.restore_remote_steer_outcome_uncertainty(private.remote_steer_uncertainty.clone());
     }
@@ -933,10 +997,8 @@ impl PromptQueueItem {
     }
 
     pub fn is_chariox_owned(&self) -> bool {
-        matches!(
-            self.prompt_origin,
-            PromptOrigin::Chariox | PromptOrigin::CompletionCheck
-        )
+        self.prompt_origin.is_chariox_prompt()
+            || self.prompt_origin == PromptOrigin::CompletionCheck
     }
 
     pub fn external_observed_id(&self) -> Option<crate::history::ExternalProviderObservedId> {
@@ -1046,7 +1108,7 @@ mod tests {
             PromptStatus::Queued,
         )
         .with_source_attribution("client-private", "user-private")
-        .with_agent_prompt_schedule("schedule-private")
+        .with_agent_trigger("schedule-private")
         .with_hidden_system_context("HIDDEN_CONTEXT_TOKEN")
         .with_durable_operation("operation-private", "fingerprint-private");
         item.set_durable_initially_queued(true);
@@ -1103,6 +1165,31 @@ mod tests {
         assert!(!restored.remote_steer_reserved());
         assert!(clone.release_remote_steer(reservation));
         assert!(!prompt.remote_steer_reserved());
+    }
+
+    #[test]
+    fn local_steer_hold_survives_durable_restore_and_stays_private() {
+        let mut prompt = PromptQueueItem::new(
+            "queued-steer-1",
+            "attachment-1",
+            "agent-1",
+            "queued body",
+            PromptStatus::Queued,
+        );
+        assert!(DurablePromptPrivateState::from_prompt("session-1", &prompt).is_none());
+        prompt.set_local_steer_submitted(true);
+        let private = DurablePromptPrivateState::from_prompt("session-1", &prompt)
+            .expect("the hold is durable private state");
+        let private: DurablePromptPrivateState =
+            serde_json::from_value(serde_json::to_value(private).unwrap()).unwrap();
+        let public_prompt = serde_json::to_value(&prompt).unwrap();
+        assert!(public_prompt.get("local_steer_submitted").is_none());
+        let mut restored: PromptQueueItem = serde_json::from_value(public_prompt).unwrap();
+        assert!(!restored.local_steer_submitted());
+        restored.restore_durable_private_state(&private);
+        assert!(restored.local_steer_submitted());
+        restored.set_local_steer_submitted(false);
+        assert!(!restored.local_steer_submitted());
     }
 
     #[test]
@@ -1192,7 +1279,7 @@ mod tests {
     }
 
     #[test]
-    fn agent_prompt_schedule_provenance_survives_private_state_and_queue_promotion() {
+    fn agent_trigger_provenance_survives_private_state_and_queue_promotion() {
         let prompt = PromptQueueItem::new(
             "scheduled-prompt",
             "attachment-1",
@@ -1200,7 +1287,7 @@ mod tests {
             "same text",
             PromptStatus::Queued,
         )
-        .with_agent_prompt_schedule("wait-1")
+        .with_agent_trigger("wait-1")
         .with_hidden_system_context("")
         .into_pending_queue_item("pending-1");
         let private = DurablePromptPrivateState::from_prompt("session-1", &prompt).unwrap();
@@ -1208,19 +1295,11 @@ mod tests {
             serde_json::from_value(serde_json::to_value(private).unwrap()).unwrap();
         let mut restored: PromptQueueItem =
             serde_json::from_value(serde_json::to_value(&prompt).unwrap()).unwrap();
-        assert_eq!(restored.agent_prompt_schedule_id(), None);
+        assert_eq!(restored.agent_trigger_id(), None);
         restored.restore_durable_private_state(&private);
         let promoted = restored.with_id("running-1");
-        assert_eq!(promoted.agent_prompt_schedule_id(), Some("wait-1"));
+        assert_eq!(promoted.agent_trigger_id(), Some("wait-1"));
         assert!(promoted.hidden_system_context().is_empty());
-
-        let mut legacy = serde_json::to_value(private).unwrap();
-        legacy
-            .as_object_mut()
-            .unwrap()
-            .remove("agent_prompt_schedule_id");
-        let legacy: DurablePromptPrivateState = serde_json::from_value(legacy).unwrap();
-        assert_eq!(legacy.agent_prompt_schedule_id, None);
     }
 
     #[test]
@@ -1294,6 +1373,17 @@ mod tests {
         assert!(!chariox_prompt.is_external());
         assert!(external_prompt.is_external());
         assert!(!external_prompt.is_chariox_owned());
+        for origin in [
+            PromptOrigin::Schedule,
+            PromptOrigin::Http,
+            PromptOrigin::Notification,
+        ] {
+            let fired = chariox_prompt.clone().with_prompt_origin(origin);
+            assert!(
+                fired.is_chariox_owned() && !fired.is_external(),
+                "a firing is Chariox's own prompt, so steering and dispatch admit it"
+            );
+        }
     }
 
     #[test]

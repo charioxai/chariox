@@ -53,7 +53,11 @@ pub use auth::{ProviderAuthStatus, ProviderLoginStart};
 pub use health::{codex_endpoint_is_healthy, CODEX_ENDPOINT_STARTUP_TIMEOUT};
 pub(crate) use notifications::codex_error_text;
 pub use notifications::CodexNotification;
-pub use socket_io::CodexSocket;
+#[cfg(unix)]
+pub(crate) use socket_io::continue_codex_socket;
+#[cfg(test)]
+pub(crate) use socket_io::test_codex_connect;
+pub use socket_io::{CodexSocket, CodexStream};
 pub use thread_runtime::{CodexThread, CodexThreadStartResponse};
 
 #[derive(Clone)]
@@ -1473,8 +1477,9 @@ mod metadata_discovery_tests {
     use super::*;
     #[test]
     fn review971_assessment_denies_native_shell_file_network_and_mcp_requests() {
+        use crate::provider::test_codex_connect as connect;
         use std::{net::TcpListener, thread};
-        use tokio_tungstenite::tungstenite::{accept, connect};
+        use tokio_tungstenite::tungstenite::accept;
         let methods = [
             (
                 "item/commandExecution/requestApproval",

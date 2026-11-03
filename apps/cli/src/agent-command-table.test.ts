@@ -4,7 +4,7 @@ import { readdirSync, readFileSync } from "node:fs"
 import { COMMANDS, EXIT_CODES, REQUEST_EXAMPLES, CommandFailure, exitCodeFor, guideText, parseArguments, usageOf } from "./agent-command-table.js"
 import {
   attachToSessionRequest, cancelActivePromptRequest, createSessionRequest, endSessionRequest, getSessionStateRequest,
-  listProjectsRequest, listSessionsRequest, searchWorkspaceDirectoriesRequest, spawnAgentRequest, submitPromptRequest,
+  listProjectsRequest, listSessionsRequest, respondToInteractionRequest, searchWorkspaceDirectoriesRequest, spawnAgentRequest, submitPromptRequest,
 } from "./ipc-requests.js"
 
 const knownFlags = new Set(COMMANDS.flatMap(spec => spec.flags.map(flag => flag.name)))
@@ -27,9 +27,22 @@ test("the guide mentions exactly the commands and flags the parser knows", () =>
   const flags = new Set(guide.match(/--[a-z0-9-]+/g))
   for (const flag of flags) assert.ok(knownFlags.has(flag), `guide mentions unknown flag ${flag}`)
   for (const flag of knownFlags) assert.ok(flags.has(flag), `guide omits flag ${flag}`)
-  assert.ok(guide.split("\n").length <= 105)
+  assert.ok(guide.split("\n").length <= 117)
   assert.match(guide, /show it to the user verbatim and wait/)
   assert.match(guide, /exit 0 and a printed grant mean approved: go on to step 2/, "an agent must not mistake the waiting note for a pending approval")
+})
+
+test("the guide tells an agent what to do with a secret link, from the command table", () => {
+  const guide = guideText()
+  const request = COMMANDS.find(spec => spec.name === "secret request")!
+  assert.ok(request.note, "the paragraph lives in the table")
+  assert.ok(guide.includes(request.note), "the guide prints the table's paragraph")
+  assert.match(guide, /Show the link to the user verbatim and do not open it/)
+  assert.match(guide, /Never ask for the value in chat/)
+  assert.equal(exitCodeFor("secret_link_unavailable"), 3)
+  assert.match(usageOf("secret request"), /--label TEXT/)
+  assert.match(usageOf("secret request"), /--host HOST \[--host HOST \.\.\.\]/)
+  assert.match(guide, /the owner sees them before typing/)
 })
 
 test("the parser accepts every flag the table lists and refuses anything else", () => {
@@ -37,9 +50,10 @@ test("the parser accepts every flag the table lists and refuses anything else", 
     const positionals = (spec.args ?? []).map(name => name.toLowerCase())
     for (const flag of spec.flags) {
       const parsed = parseArguments(spec.name, [...positionals, ...flag.value ? [flag.name, "x"] : [flag.name]])
-      assert.equal(parsed.flags.get(flag.name), flag.value ? "x" : true)
+      assert.equal(flag.repeat ? parsed.repeated.get(flag.name)?.[0] : parsed.flags.get(flag.name), flag.value ? "x" : true)
       assert.deepEqual(parsed.positionals, positionals)
-      assert.throws(() => parseArguments(spec.name, [...positionals, ...flag.value ? [flag.name, "x", flag.name, "y"] : [flag.name, flag.name]]), CommandFailure)
+      if (flag.repeat) assert.deepEqual(parseArguments(spec.name, [...positionals, flag.name, "x", flag.name, "y"]).repeated.get(flag.name), ["x", "y"])
+      else assert.throws(() => parseArguments(spec.name, [...positionals, ...flag.value ? [flag.name, "x", flag.name, "y"] : [flag.name, flag.name]]), CommandFailure)
       if (flag.value) assert.throws(() => parseArguments(spec.name, [...positionals, flag.name]), CommandFailure)
     }
     assert.throws(() => parseArguments(spec.name, [...positionals, "--passkey", "never"]), (error: unknown) => error instanceof CommandFailure && error.code === "usage")
@@ -93,7 +107,7 @@ function requestFields(struct: string): { name: string; required: boolean }[] | 
 test("every request example is one kernel request variant with the kernel's field names", () => {
   assert.deepEqual(REQUEST_EXAMPLES.map(entry => Object.keys(entry.body)[0]), [
     "ListSessions", "ListProjects", "SearchWorkspaceDirectories", "CreateSession", "AttachToSession", "GetSessionState",
-    "SpawnAgent", "SubmitPrompt", "CancelActivePrompt", "RunShellCommand", "EndSession", "RequestKernelSudo",
+    "SpawnAgent", "SubmitPrompt", "CancelActivePrompt", "RunShellCommand", "EndSession", "RequestKernelSudo", "RespondToInteraction",
   ])
   const guide = guideText()
   for (const { body } of REQUEST_EXAMPLES) {
@@ -118,7 +132,7 @@ test("request examples equal what the kernel-client builders produce", () => {
     listSessionsRequest(), listProjectsRequest(), searchWorkspaceDirectoriesRequest("NAME", 20), createSessionRequest("/PATH", "/PATH"),
     attachToSessionRequest("SESSION_ID", "CLIENT_NAME"), getSessionStateRequest("SESSION_ID"), spawnAgentRequest("SESSION_ID", "codex"),
     submitPromptRequest("SESSION_ID", "ATTACHMENT_ID", null, "PROMPT", []), cancelActivePromptRequest("SESSION_ID", "ATTACHMENT_ID", null),
-    endSessionRequest("SESSION_ID"),
+    endSessionRequest("SESSION_ID"), respondToInteractionRequest("SESSION_ID", "INTERACTION_ID", "CHOICE_ID"),
   ]
   for (const request of built) assert.deepEqual(byName.get(Object.keys(request)[0]!), request)
 })
@@ -152,4 +166,15 @@ test("the guide teaches long-running commands in a terminal that outlives the ag
   const guide = guideText()
   assert.match(guide, /6\. Run long commands: chariox terminal open\|send\|read\|wait\|close/)
   assert.match(guide, /keep running if you disconnect; read them later with --since/)
+})
+
+test("the guide teaches showing a pending question with the harness's own chooser and answering it", () => {
+  const guide = guideText()
+  assert.match(guide, /record with value\.question[^\n]*ask the person[^\n]*your own question tool/)
+  assert.match(guide, /options are question\.choices[^\n]*text_reply/)
+  assert.match(guide, /RespondToInteraction with the chosen id and refs\.interaction_id/)
+  assert.match(guide, /interaction_closed[^\n]*someone else answered or it expired[^\n]*drop the question/)
+  assert.match(guide, /no question but a pointer[^\n]*show pointer\.one_line[^\n]*verbatim[^\n]*do not answer/)
+  assert.ok(guide.includes(JSON.stringify(respondToInteractionRequest("SESSION_ID", "INTERACTION_ID", "CHOICE_ID"))))
+  assert.ok(guide.split("\n").length <= 117)
 })

@@ -26,6 +26,8 @@ futures-util = "0.3.31"
 futures-channel = { version = "0.3.31", features = ["sink"] }
 wait-timeout = "0.2.0"
 libc = "0.2.172"
+# Named by portable-pty's MasterPty trait, implemented for adopted PTYs.
+anyhow = "1"
 jsonschema = "0.18.0"
 tracing = "0.1.40"
 hyper = { version = "1.6.0", features = ["http1", "server", "client"] }

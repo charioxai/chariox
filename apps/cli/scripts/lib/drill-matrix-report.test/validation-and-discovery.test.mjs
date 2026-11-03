@@ -271,7 +271,7 @@ test("rejects unknown deployment preset labels in report metadata", () => {
   assert.throws(
     () => validateDrillMatrixReport(matrixReport({
       metadata: {
-        deploymentPresets: "local,hetzner",
+        deploymentPresets: "local,remote-kernel",
         deploymentPresetCount: 1,
       },
     })),

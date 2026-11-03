@@ -1,8 +1,9 @@
 //! MP-08 / MP-10: provider RPC races must settle ordinary workflow controls.
 use super::*;
+use crate::provider::test_codex_connect as connect;
 use std::net::{Shutdown, TcpListener};
 use std::thread;
-use tokio_tungstenite::tungstenite::{accept, connect, Message};
+use tokio_tungstenite::tungstenite::{accept, Message};
 
 #[derive(Clone, Copy)]
 enum StartTiming {
@@ -119,10 +120,7 @@ fn interrupt_fixture_with_event(
         methods
     });
     let (socket, _) = connect(&endpoint).unwrap();
-    let tokio_tungstenite::tungstenite::stream::MaybeTlsStream::Plain(stream) = socket.get_ref()
-    else {
-        unreachable!()
-    };
+    let stream = socket.get_ref().tcp();
     let close = stream.try_clone().unwrap();
     let mut state = CodexRuntimeState::new(endpoint, "thread".into(), socket, 1);
     state.active_turn_id = Some("submitted".into());
@@ -287,10 +285,7 @@ fn round4_after_list_fixture(completed: bool) {
         interrupted_actual
     });
     let (socket, _) = connect(&endpoint).unwrap();
-    let tokio_tungstenite::tungstenite::stream::MaybeTlsStream::Plain(stream) = socket.get_ref()
-    else {
-        unreachable!()
-    };
+    let stream = socket.get_ref().tcp();
     let close = stream.try_clone().unwrap();
     let mut state = CodexRuntimeState::new(endpoint, "thread".into(), socket, 1);
     state.active_turn_id = Some("submitted".into());

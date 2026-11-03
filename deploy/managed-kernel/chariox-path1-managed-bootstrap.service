@@ -27,6 +27,8 @@ Environment=CHARIOX_SLICE_DOCKER_BROKER_SOCKET=/var/lib/chariox-slice-share/.bro
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ExecStartPre=-+/usr/bin/systemctl restart chariox-slice-broker.service
 ExecStart=/usr/local/bin/chariox-managed-bootstrap
+# The bootstrap forwards a reload to its kernel, which replaces its program in place.
+ExecReload=/bin/kill -USR2 $MAINPID
 # Apps keep their own contained worker domain on this ordinary Path-1 host.
 # Prepare after systemd puts the supervisor in its child cgroup, so enabling
 # controllers does not prevent the main process from starting.

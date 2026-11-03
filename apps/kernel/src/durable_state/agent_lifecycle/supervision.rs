@@ -521,8 +521,8 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
 }
 pub(super) const AGENT_ARCHIVED_REASON: &str =
     "Agent archived; its running and queued work was cancelled";
-pub(super) const OWNER_CANCELLED_REASON: &str =
-    "Owner cancelled; owned resource cancellation remains supervised until physical settlement";
+/// Shown to the person on the Stopped stripe; the supervised cancellation state itself stays in the task's obligations.
+pub(super) const OWNER_CANCELLED_REASON: &str = "Stopped by you";
 pub(super) fn cancel_intent(
     tx: &Transaction<'_>,
     task: &mut AgentTaskExecution,

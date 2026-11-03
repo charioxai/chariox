@@ -5,7 +5,7 @@ import { lstat, readFile, realpath } from "node:fs/promises"
 import { isAbsolute, resolve } from "node:path"
 import { promisify } from "node:util"
 import { pathToFileURL } from "node:url"
-import { validateCaptureOutput, writeCaptureOutput } from "./path1-provider-rebuild-capture.mjs"
+import { validateCaptureOutput, writeCaptureOutput } from "./path1-capture-output.mjs"
 
 const execFile = promisify(execFileCallback)
 const HOST_CAPTURE_SCHEMA = "chariox.path1-host-identity-capture/v1"

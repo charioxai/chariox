@@ -78,6 +78,8 @@ const IPC_CLIENT_CLOSE_TIMEOUT_MS = 1_500
 const KERNEL_RECONNECT_BASE_DELAY_MS = 250
 const KERNEL_RECONNECT_MAX_DELAY_MS = 5_000
 const KERNEL_RECONNECT_JITTER_MS = 250
+// A link that stayed up this long was healthy; a shorter one does not reset the backoff.
+const KERNEL_RECONNECT_STABLE_LINK_MS = 60_000
 const KERNEL_CONTROL_REQUEST_RETRY_DEADLINE_MS = 60_000
 const KERNEL_CONTROL_RESPONSE_STALL_MS = 5_000
 // The kernel runs these again when they are replayed: they carry no request id
@@ -316,6 +318,7 @@ export class LocalIpcClient {
   private activeKernelSubscription: KernelSubscriptionState | null = null
   private reconnectTimeout: NodeJS.Timeout | null = null
   private reconnectDelayMs = 250
+  private linkResumedAt: number | null = null
   private lastReceivedEventId: number | null = null
   private lastKernelEventAtMs = 0
   private readonly relaySubscriptionSockets = new WeakMap<KernelSubscriptionState, WebSocket>()
@@ -525,7 +528,7 @@ export class LocalIpcClient {
           "event",
         )
       }
-      this.clearReconnectState()
+      this.noteLinkResumed()
       this.markKernelEventReceived()
     } catch (error) {
       this.scheduleReconnect()
@@ -567,7 +570,7 @@ export class LocalIpcClient {
           "event",
         )
       }
-      this.clearReconnectState()
+      this.noteLinkResumed()
       this.markKernelEventReceived()
     } catch (error) {
       this.scheduleReconnect()
@@ -1087,10 +1090,7 @@ export class LocalIpcClient {
             const closeMessage = reason.length > 0
               ? reason.toString("utf8")
               : `kernel websocket closed${code ? ` (${code})` : ""}`
-            if (this.relayRenewal && /relay token (?:has been )?(?:expired|revoked)/i.test(closeMessage)) {
-              this.refuseRelayAuthorization()
-              return
-            }
+            if (this.handleRelayTokenRefusal(closeMessage)) return
             this.rejectPending(closeMessage, lane)
             this.setWebSocket(lane, null)
             this.setRelayDaemonPublicKey(lane, null)
@@ -1188,6 +1188,10 @@ export class LocalIpcClient {
           }
           if (frame.kind === "close") {
             const error = relayCloseError(frame.reason)
+            // A refused token must not come back on the next reconnect.
+            if (!this.handleRelayTokenRefusal(frame.reason) && /relay token has been revoked/i.test(frame.reason)) {
+              this.invalidateRelayAuthorization(error)
+            }
             fail("connect relay transport", error.message, error.code, error.retryable)
             return
           }
@@ -1292,6 +1296,23 @@ export class LocalIpcClient {
     }
   }
 
+  /**
+   * The relay refused the token as expired or revoked. A client that can renew
+   * does so before it connects again; one that cannot ends the connection
+   * instead of presenting the same token on every reconnect.
+   */
+  private handleRelayTokenRefusal(reason: string): boolean {
+    const refusal = /relay token (?:is |has been )?(expired|revoked)/i.exec(reason)?.[1]?.toLowerCase()
+    if (!refusal) return false
+    if (!this.relayRenewal && refusal !== "expired") return false
+    if (this.relayAuthRenewal) {
+      this.relayAuthRenewal.refused()
+      return false
+    }
+    this.refuseRelayAuthorization()
+    return true
+  }
+
   private refuseRelayAuthorization(upgradeMessage?: string): void {
     if (this.relayAuthorizationFailure) return
     this.reportTransportDiagnostic("control", "authorization_ended")
@@ -1367,10 +1388,11 @@ export class LocalIpcClient {
         || frame.reason === "client renewal reduced permissions"
         || frame.reason === "client renewal changed identity or key"
         || frame.reason === "relay authorization renewal changed identity or reduced permissions"
-      if (this.relayRenewal && (authorizationRefused || /relay token (?:has been )?expired/i.test(frame.reason))) {
+      if (this.relayRenewal && authorizationRefused) {
         this.refuseRelayAuthorization()
         return
       }
+      if (this.handleRelayTokenRefusal(frame.reason)) return
       this.rejectPending(frame.reason, lane)
       if (authorizationRefused) {
         this.invalidateRelayAuthorization(Object.assign(new Error("Relay authorization revoked"), { code: "authorization_denied" }))
@@ -1446,7 +1468,17 @@ export class LocalIpcClient {
     }
   }
 
+  /** The link came back; the delay only starts over once it has stayed up (a relay that drops us right after admitting us must not reset the backoff). */
+  private noteLinkResumed() {
+    if (this.reconnectTimeout) {
+      clearTimeout(this.reconnectTimeout)
+      this.reconnectTimeout = null
+    }
+    this.linkResumedAt = Date.now()
+  }
+
   private clearReconnectState() {
+    this.linkResumedAt = null
     if (this.reconnectTimeout) {
       clearTimeout(this.reconnectTimeout)
       this.reconnectTimeout = null
@@ -1545,11 +1577,16 @@ export class LocalIpcClient {
     this.setMissedKernelPongs(lane, 0)
   }
 
-  private scheduleReconnect(delayMs = this.reconnectDelayMs) {
+  private scheduleReconnect(requestedDelayMs?: number) {
     if (!this.activeKernelSubscription || this.eventHandlers.size === 0 || this.reconnectTimeout) {
       return
     }
 
+    if (this.linkResumedAt !== null && Date.now() - this.linkResumedAt >= KERNEL_RECONNECT_STABLE_LINK_MS) {
+      this.reconnectDelayMs = KERNEL_RECONNECT_BASE_DELAY_MS
+    }
+    this.linkResumedAt = null
+    const delayMs = requestedDelayMs ?? this.reconnectDelayMs
     this.reconnectTimeout = setTimeout(() => {
       this.reconnectTimeout = null
       void this.resumeKernelSubscription()
@@ -1594,7 +1631,7 @@ export class LocalIpcClient {
           "event",
         )
       }
-      this.clearReconnectState()
+      this.noteLinkResumed()
       this.markKernelEventReceived()
       this.emitSyntheticEvent({
         event: "transport_resumed",

@@ -97,6 +97,10 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
 }
 
 fn run_serve_command(workspace_root: &Path, args: &[String]) -> Result<ExitCode, String> {
+    if args == ["prepare"] {
+        ensure_server_built(workspace_root)?;
+        return Ok(ExitCode::SUCCESS);
+    }
     if args.first().map(String::as_str) == Some("--help")
         || args.first().map(String::as_str) == Some("-h")
     {
@@ -148,9 +152,19 @@ fn run_serve_command(workspace_root: &Path, args: &[String]) -> Result<ExitCode,
         print_serve_help();
         return Ok(ExitCode::SUCCESS);
     }
+    if matches!(&target, ServeTarget::AgentTrigger { .. })
+        && !["127.0.0.1", "::1"].contains(&host.as_str())
+    {
+        return Err("agent HTTP triggers bind to loopback only (127.0.0.1 or ::1)".into());
+    }
     ensure_server_built(workspace_root)?;
     let node = env::var("NODE_BIN").unwrap_or_else(|_| "node".to_string());
-    let server_entry = workspace_root.join("apps/server/dist/index.js");
+    let server_entry =
+        workspace_root.join(if matches!(&target, ServeTarget::AgentTrigger { .. }) {
+            "apps/server/dist/agent-trigger-main.js"
+        } else {
+            "apps/server/dist/index.js"
+        });
     let mut command = Command::new(&node);
     command
         .arg(server_entry)
@@ -161,6 +175,14 @@ fn run_serve_command(workspace_root: &Path, args: &[String]) -> Result<ExitCode,
         .env("HOST", host)
         .env("PORT", port);
     match target {
+        ServeTarget::AgentTrigger {
+            session_id,
+            trigger_id,
+        } => {
+            command
+                .env("CHARIOX_AGENT_TRIGGER_SESSION_ID", session_id)
+                .env("CHARIOX_AGENT_TRIGGER_ID", trigger_id);
+        }
         ServeTarget::Package(package_path) => {
             command.env("CHARIOX_PUBLICATION_PACKAGE", package_path);
         }
@@ -198,6 +220,10 @@ fn run_serve_command(workspace_root: &Path, args: &[String]) -> Result<ExitCode,
 }
 
 enum ServeTarget {
+    AgentTrigger {
+        session_id: String,
+        trigger_id: String,
+    },
     Package(PathBuf),
     Source {
         session_id: String,
@@ -206,7 +232,10 @@ enum ServeTarget {
 }
 
 fn parse_serve_target(args: &[String]) -> Result<(ServeTarget, String, usize), String> {
-    if args.first().map(String::as_str) == Some("source") {
+    if matches!(
+        args.first().map(String::as_str),
+        Some("source" | "agent-trigger")
+    ) {
         let session_id = args
             .get(1)
             .filter(|value| !value.trim().is_empty() && !value.starts_with('-'))
@@ -219,9 +248,16 @@ fn parse_serve_target(args: &[String]) -> Result<(ServeTarget, String, usize), S
             .ok_or_else(serve_usage)?;
         let port = parse_serve_port(args.get(3))?;
         return Ok((
-            ServeTarget::Source {
-                session_id,
-                publication_id,
+            if args[0] == "agent-trigger" {
+                ServeTarget::AgentTrigger {
+                    session_id,
+                    trigger_id: publication_id,
+                }
+            } else {
+                ServeTarget::Source {
+                    session_id,
+                    publication_id,
+                }
             },
             port,
             4,
@@ -296,6 +332,7 @@ fn print_serve_help() {
         [
             "usage: chariox serve <publication-package-or-publication.json> <port> [options]",
             "       chariox serve source <session-id> <publication-id> <port> [options]",
+            "       chariox serve prepare    Build the local gateway before starting it",
             "",
             "Options:",
             "  --host <host>              Bind host (default: 127.0.0.1)",
@@ -594,6 +631,33 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::thread;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn serve_prepare_finishes_without_launching_a_server() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-serve-prepare-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        for directory in ["apps/server", "packages/kernel-client"] {
+            let directory = root.join(directory);
+            fs::create_dir_all(directory.join("src")).unwrap();
+            fs::write(directory.join("package.json"), "{}").unwrap();
+            fs::write(directory.join("tsconfig.json"), "{}").unwrap();
+        }
+        fs::create_dir_all(root.join("apps/server/dist")).unwrap();
+        fs::write(
+            root.join("apps/server/dist/index.js"),
+            "throw Error('must not launch');",
+        )
+        .unwrap();
+        let result = super::run_serve_command(&root, &["prepare".into()]);
+        fs::remove_dir_all(root).unwrap();
+        assert_eq!(result.unwrap(), std::process::ExitCode::SUCCESS);
+    }
 
     #[test]
     fn freshness_requires_build_when_dist_output_is_missing() {

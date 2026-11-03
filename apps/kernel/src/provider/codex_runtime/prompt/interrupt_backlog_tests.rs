@@ -1,12 +1,13 @@
 //! MP-08 / MP-10: continuous command output cannot starve cancellation.
 use super::*;
+use crate::provider::test_codex_connect as connect;
 use std::net::{Shutdown, TcpListener};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     mpsc, Arc,
 };
 use std::thread;
-use tokio_tungstenite::tungstenite::{accept, connect, protocol::Role, Message, WebSocket};
+use tokio_tungstenite::tungstenite::{accept, protocol::Role, Message, WebSocket};
 
 #[test]
 fn mp08_interrupt_backlogged_command_output_sends_before_timeout() {
@@ -87,11 +88,7 @@ fn mp08_interrupt_backlogged_command_output_sends_before_timeout() {
             (request.is_some(), elapsed, sent, clean.is_some())
         });
         let (socket, _) = connect(&endpoint).unwrap();
-        let tokio_tungstenite::tungstenite::stream::MaybeTlsStream::Plain(stream) =
-            socket.get_ref()
-        else {
-            unreachable!()
-        };
+        let stream = socket.get_ref().tcp();
         let close = stream.try_clone().unwrap();
         ready_rx.recv().unwrap();
         // Let the producer fill the TCP receive queue before cancellation.

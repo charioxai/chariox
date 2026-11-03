@@ -16,7 +16,7 @@ test(`${script} does not inherit root-private installer scratch`, async () => {
 })
 }
 test("image preparation BuildKit client does not inherit private installer scratch", async () => {
-  const source = await readFile(new URL("../deploy/managed-kernel/prepare-hetzner-image.sh", import.meta.url), "utf8")
+  const source = await readFile(new URL("../deploy/managed-kernel/prepare-worker-image.sh", import.meta.url), "utf8")
   const start = source.indexOf("runuser -u chariox-docker -- env \\\n  DOCKER_BUILDKIT=1")
   assert.ok(start > 0)
   const end = source.indexOf("\nrunuser", start + 1)

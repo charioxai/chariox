@@ -798,7 +798,8 @@ async fn vault_delete_and_rotation_retire_values_without_disabling_affected_room
                     &registry,
                     browser_credential("another-handle", "login"),
                     "synthetic-new-value",
-                    false,
+                    // A new handle takes a slot that holds a value only when it asks to replace it.
+                    true,
                 )
                 .await
                 .unwrap();

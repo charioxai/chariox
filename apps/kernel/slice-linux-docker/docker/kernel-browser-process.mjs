@@ -21,6 +21,8 @@ function platformPolicy(platform) {
   throw new Error("MD-2: kernel browser supports Linux and macOS only");
 }
 
+export function headlessLaunch(platform, environment) { return platformPolicy(platform).headless(environment); }
+
 export async function executable(environment = process.env, platform = process.platform) {
   const candidates = environment.CHARIOX_KERNEL_BROWSER_EXECUTABLE
     ? [environment.CHARIOX_KERNEL_BROWSER_EXECUTABLE]
@@ -157,7 +159,7 @@ export class HostChromium {
       environment = chromiumTemporaryEnvironment(environment, this.temporaryDirectory.fd);
     }
     const args = launchArguments(profile,
-      environment.CHARIOX_KERNEL_BROWSER_HEADLESS === "1", featureOn("CHARIOX_KERNEL_BROWSER_DISPLAY",environment) || featureOn("CHARIOX_KERNEL_BROWSER_MIRROR",environment), this.desktop?.binding() ? 1 : this.scale, platformPolicy(process.platform).videoDecodeArguments(environment));
+      headlessLaunch(process.platform, environment), featureOn("CHARIOX_KERNEL_BROWSER_DISPLAY",environment) || featureOn("CHARIOX_KERNEL_BROWSER_MIRROR",environment), this.desktop?.binding() ? 1 : this.scale, platformPolicy(process.platform).videoDecodeArguments(environment));
     this.policy = process.platform === "linux" && linux.policyNamespaceAvailable() ? "managed" : "unavailable";
     const launch = this.policy === "managed" ? linux.policyLaunch(await writePolicyLayer(this.root, this.environment), temporary, binary, args) : { command: binary, args };
     const command = this.desktop?.binding() ? desktopCommand(launch.command, launch.args) : { binary: launch.command, args: launch.args };

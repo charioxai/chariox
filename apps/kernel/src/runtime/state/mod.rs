@@ -98,6 +98,7 @@ mod critical_approval_passkey;
 mod kernel_access;
 mod outside_events;
 pub(crate) use outside_events::is_outside_event_request;
+use outside_events::InteractionPhase;
 mod sudo;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod user_app_view_browser;
@@ -114,6 +115,7 @@ pub(crate) use sudo::SudoWindowProjection;
 pub(crate) use sudo::SUDO_WINDOW_LENGTH_FOR_TEST;
 pub(crate) use sudo::{is_sudo_control, is_sudo_prompt, sudo_window_minutes};
 mod passkey_prompts;
+pub(crate) use passkey_prompts::INTERACTION_CLOSED;
 #[cfg(test)]
 pub(crate) use passkey_prompts::PASSKEY_ALREADY_ANSWERED;
 mod native_catalog_refresh;
@@ -217,6 +219,11 @@ pub(crate) struct KernelRuntimeState {
     owned: KernelRuntimeOwnedState,
 }
 
+/// (task, worker kernel, lease) of a leased task whose worker did not answer.
+type UncertainLeasedTasks = Arc<
+    std::sync::Mutex<BTreeMap<(String, String, String), leased_task_connectivity::Uncertainty>>,
+>;
+
 #[derive(Clone)]
 struct KernelRuntimeOwnedState {
     app_control: crate::runtime::app_control::AppControlService,
@@ -244,6 +251,7 @@ struct KernelRuntimeOwnedState {
             BTreeMap<String, crate::provider::ProviderCredentialEnvironment>,
         >,
     >,
+    trigger_resend_claims: agent_trigger_runtime_state::TriggerResendClaims,
     workflow_provider_launch_lock: Arc<std::sync::Mutex<()>>,
     workflow_instance_provision_lock: Arc<std::sync::Mutex<()>>,
     workflow_entry_claims: workflow_queue_durable::WorkflowEntryClaims,
@@ -264,7 +272,9 @@ struct KernelRuntimeOwnedState {
         crate::runtime::browser_controller_process::BrowserControllerProcessStore,
     browser_import_admission: crate::runtime::browser_import_admission::BrowserImportAdmission,
     human_control_task_waits: Arc<std::sync::Mutex<BTreeMap<String, u64>>>,
-    uncertain_leased_tasks: Arc<std::sync::Mutex<BTreeSet<(String, String, String)>>>,
+    uncertain_leased_tasks: UncertainLeasedTasks,
+    /// Running provider runs whose working directory the sweep has seen as a git worktree.
+    git_workspaces_seen: Arc<std::sync::Mutex<BTreeSet<String>>>,
     room_computer_revoked: Arc<std::sync::Mutex<BTreeSet<String>>>,
     room_display_leases: room_shared_display::RoomDisplayLeases,
     room_secret_observations: room_secret_observation::RoomSecretObservations,
@@ -365,6 +375,7 @@ struct KernelRuntimeOwnedState {
     remote_steer_receipt_reconciliations:
         Arc<std::sync::Mutex<BTreeSet<(String, String, String)>>>,
     slice_private_relay_connectors: Arc<Mutex<BTreeMap<String, SlicePrivateRelayConnector>>>,
+    agent_trigger_gateways: agent_trigger_gateway::AgentTriggerGatewayStore,
     workflow_publication_runtimes:
         crate::runtime::state::workflow_publication_runtime_lifecycle::WorkflowPublicationRuntimeProcessStore,
     project_environment_placements: project_environment_placement::ProjectEnvironmentPlacements,
@@ -448,7 +459,9 @@ mod agent_config_runtime_state;
 mod agent_lifecycle_owned_state;
 mod agent_profile_compaction;
 mod agent_profile_owned_state;
-mod agent_prompt_schedule_runtime_state;
+mod agent_trigger_gateway;
+mod agent_trigger_http;
+mod agent_trigger_runtime_state;
 mod agent_turn_actions_runtime_state;
 mod agent_utility_runtime_state;
 mod attachment_owned_state;
@@ -568,6 +581,8 @@ mod slice_development_runtime_state;
 mod slice_project_source;
 mod slice_runtime_state;
 mod vault_owner_gate;
+mod vault_secret_request;
+pub(crate) use vault_secret_request::{SecretRequest, VAULT_SECRET_OPERATION};
 mod vault_unlock_request;
 mod vault_unlock_requests;
 pub(crate) use slice_runtime_state::SliceAgentRelaunchManifest;
@@ -579,6 +594,7 @@ mod kernel_browser_secret_runtime;
 mod kernel_browser_state_wait;
 mod owner_handoff_runtime;
 pub(crate) use owner_handoff_runtime::{is_handoff_interaction_id, HANDOFF_OBLIGATION_KIND};
+mod declined_workspace_trust_runtime;
 mod dictation_runtime;
 mod kernel_computer_runtime;
 mod leased_computer_runtime;
@@ -1017,6 +1033,7 @@ impl KernelRuntimeState {
                 pending_provider_launch_credentials: Arc::new(std::sync::Mutex::new(
                     BTreeMap::new(),
                 )),
+                trigger_resend_claims: Default::default(),
                 workflow_provider_launch_lock: Arc::new(std::sync::Mutex::new(())),
                 workflow_instance_provision_lock: Arc::new(std::sync::Mutex::new(())),
                 workflow_entry_claims: workflow_queue_durable::WorkflowEntryClaims::default(),
@@ -1038,6 +1055,7 @@ impl KernelRuntimeState {
                 environment_execution_gates: Default::default(),
                 human_control_task_waits: Default::default(),
                 uncertain_leased_tasks: Default::default(),
+                git_workspaces_seen: Default::default(),
                 room_computer_revoked,
                 room_secret_observations,
                 room_display_leases: Default::default(),
@@ -1137,6 +1155,7 @@ impl KernelRuntimeState {
                     BTreeSet::new(),
                 )),
                 slice_private_relay_connectors: Arc::new(Mutex::new(BTreeMap::new())),
+                agent_trigger_gateways: Default::default(),
                 workflow_publication_runtimes:
                     crate::runtime::state::workflow_publication_runtime_lifecycle::WorkflowPublicationRuntimeProcessStore::default(),
                 project_environment_placements: Default::default(),
@@ -1469,7 +1488,9 @@ mod agent_turn_task_tests;
 mod agent_wake_cancellation;
 mod agent_wake_scheduler;
 mod agent_workflow_tasks;
+mod agent_workspace_loss;
 mod leased_task_connectivity;
+mod leased_worker_stop_obligation;
 mod room_dispatch_obligation;
 mod terminal_wake;
 mod terminal_wake_worker;

@@ -18,6 +18,9 @@ pub(crate) fn external_request_failure_message(code: &str) -> &'static str {
     }
     match code {
         "session_not_found" => "session not found; check its name or list available sessions",
+        "interaction_closed" => {
+            "the decision is no longer open: someone else answered it or it expired"
+        }
         _ => "external request failed; details are available only in the host terminal",
     }
 }
@@ -401,6 +404,10 @@ pub enum DaemonError {
         "steer `{steer_id}` was delivered but its event was not recorded; do not send it again"
     )]
     SteerDeliveredEventUnrecorded { steer_id: String },
+    /// A steer was written but its acknowledgement failed, so the provider may
+    /// already hold it. Replaying it could show the agent the message twice.
+    #[error("provider steer for run `{provider_run_id}` was not confirmed and is not replayed")]
+    ProviderPromptSteerUnconfirmed { provider_run_id: String },
     #[error("provider protocol `{operation}` failed for run `{provider_run_id}`: {message}")]
     ProviderProtocol {
         provider_run_id: String,
@@ -416,6 +423,8 @@ pub enum DaemonError {
         provider_run_id: String,
         message: String,
     },
+    #[error("too many open files in this kernel; close a terminal and try again")]
+    TooManyOpenFiles,
     #[error("failed to clean up PTY for provider run `{provider_run_id}`: {message}")]
     PtyCleanup {
         provider_run_id: String,

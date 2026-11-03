@@ -124,6 +124,17 @@ function createDeps(overrides: {
   }
 }
 
+// The summary box starts after the status indicator: the summary is shortened to the room that is left, not to the whole terminal.
+test("the footer summary is shortened to the width left after the status indicator", () => {
+  const calls: string[] = []
+  const deps = createDeps({ calls, attached: false, terminalWidth: 100 })
+  const controller = createSessionChromeRenderController({ ...deps, getFooterSummaryColumn: (box) => box === "footer-box" ? 17 : 0 })
+  controller.assignFooterSummaryBox("footer-box")
+  controller.apply()
+  const summary = calls.find(call => call.startsWith("summary:"))!.split(":")[5]!
+  assert.ok(summary.length <= 100 - 17, `${summary.length}: ${summary}`)
+})
+
 function session(): RuntimeSession {
   return {
     id: "session-1",
@@ -133,19 +144,16 @@ function session(): RuntimeSession {
 }
 
 
-test("MP-08 detached TUI projects a connection label only when supplied for a local kernel", () => {
-  const calls: string[] = []
-  let label: string | null = "Relay connection"
-  const deps = Object.assign(createDeps({ calls, attached: false, terminalWidth: 160 }), {
-    getConnectionLabel: () => label,
-  })
-  const controller = createSessionChromeRenderController(deps)
-  controller.apply()
-  assert.match(calls.find(call => call.startsWith("summary:")) ?? "", / • Relay connection:none$/)
-  calls.length = 0
-  label = null
-  controller.apply()
-  assert.doesNotMatch(calls.find(call => call.startsWith("summary:")) ?? "", /connection/)
+test("directfirst r11 the TUI footer never names how the connection is established", () => {
+  // A stale caller that still supplies a path label for a local-direct, relay or freshly discovered client.
+  for (const label of ["Local connection", "Relay connection", "Local connection"]) {
+    for (const attached of [false, true]) {
+      const calls: string[] = []
+      const deps = Object.assign(createDeps({ calls, attached, terminalWidth: 160 }), { getConnectionLabel: () => label })
+      createSessionChromeRenderController(deps).apply()
+      assert.doesNotMatch(calls.find(call => call.startsWith("summary:")) ?? "", /connection|relay|direct|local/i)
+    }
+  }
 })
 
 test("MP-08 / MP-10 OWNER-24 pending chrome identifies the selected session without an attachment", () => {

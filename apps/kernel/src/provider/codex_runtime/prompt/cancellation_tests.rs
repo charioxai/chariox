@@ -6,7 +6,8 @@ use std::net::{Shutdown, TcpListener, TcpStream};
 use std::thread;
 use std::time::Duration;
 
-use tokio_tungstenite::tungstenite::{accept, connect, stream::MaybeTlsStream, Message};
+use crate::provider::test_codex_connect as connect;
+use tokio_tungstenite::tungstenite::{accept, Message};
 
 // Only bound missing completion events. The server must remain connected while
 // the full parallel suite schedules kernel setup between RPCs.
@@ -181,9 +182,7 @@ fn cancelled_codex_turn_continuity(through_kernel: bool, next_context: &str, idl
         (methods, applied_context)
     });
     let (socket, _) = connect(&endpoint).unwrap();
-    let MaybeTlsStream::Plain(stream) = socket.get_ref() else {
-        unreachable!("fixture uses a plain local WebSocket");
-    };
+    let stream = socket.get_ref().tcp();
     let _close_fixture_socket = CloseFixtureSocket(stream.try_clone().unwrap());
     let mut run = RuntimeProviderRun::new(
         "provider-run-cancel-continuity",

@@ -4,7 +4,7 @@ import { createHash } from "node:crypto"
 import { lstat, readFile, realpath } from "node:fs/promises"
 import { resolve } from "node:path"
 import { pathToFileURL } from "node:url"
-import { validateCaptureOutput, writeCaptureOutput } from "./path1-provider-rebuild-capture.mjs"
+import { validateCaptureOutput, writeCaptureOutput } from "./path1-capture-output.mjs"
 
 const DIGEST = /^sha256:[a-f0-9]{64}$/
 const SOURCE = /^[a-f0-9]{40}$/
