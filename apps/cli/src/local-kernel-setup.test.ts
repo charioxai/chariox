@@ -23,7 +23,7 @@ test("MP-08 setup offer observes fresh per-install presence and ignores stale re
   const address = server.address(); assert.ok(address && typeof address !== "string")
   process.env.CHARIOX_KERNEL_PORT = String(address.port)
   await new Promise<void>(r => server.close(() => r()))
-  const registry = join(home, ".chariox/dev/ssh-machines/local/kernels/active")
+  const registry = join(home, ".chariox/dev/machines/local/kernels/active")
   mkdirSync(registry, { recursive: true })
   const file = join(registry, "setup-kernel.json")
   const record = { schema_version: 1, kernel_id: "setup-kernel", machine_id: "setup-machine", host: "127.0.0.1", port: 55139, heartbeat_at_ms: Date.now() }
@@ -31,7 +31,7 @@ test("MP-08 setup offer observes fresh per-install presence and ignores stale re
   assert.equal(await hasLocalKernel(), true, "running isolated kernel must suppress setup offer")
   writeFileSync(file, JSON.stringify({ ...record, heartbeat_at_ms: Date.now() - 60_000 }))
   assert.equal(await hasLocalKernel(), false, "stale presence must not suppress repair/setup")
-  process.env.CHARIOX_HOME = join(home, ".chariox/dev/ssh-machines/local")
+  process.env.CHARIOX_HOME = join(home, ".chariox/dev/machines/local")
   writeFileSync(file, JSON.stringify(record))
   assert.equal(await hasLocalKernel(), true, "explicit kernel home uses the same freshness rule")
 })
@@ -49,16 +49,16 @@ for (const installId of ["local", "second"]) {
     })
     process.env.HOME = home
     process.env.CHARIOX_HOME = join(home, ".chariox/dev/foreign-staging")
-    const root = join(home, ".local/share/chariox/ssh-machines", installId)
+    const root = join(home, ".local/share/chariox/machines", installId)
     const bin = join(root, "releases", "a".repeat(64), "bin")
     mkdirSync(bin, { recursive: true })
     symlinkSync(`releases/${"a".repeat(64)}`, join(root, "current"))
-    const marker = { format: "chariox.ssh-machine-install.v1", installId, port: 55149, service: `chariox-ssh-${installId}.service`, releaseDigest: `sha256:${"a".repeat(64)}` }
+    const marker = { format: "chariox.machine-install.v1", installId, port: 55149, service: `chariox-machine-${installId}.service`, releaseDigest: `sha256:${"a".repeat(64)}` }
     writeFileSync(join(root, "install.json"), JSON.stringify(marker), { mode: 0o600 })
     if (installId === "second") {
-      const local = join(home, ".local/share/chariox/ssh-machines/local")
+      const local = join(home, ".local/share/chariox/machines/local")
       mkdirSync(local, { recursive: true })
-      writeFileSync(join(local, "install.json"), JSON.stringify({ ...marker, installId: "local", service: "chariox-ssh-local.service", port: 55139 }), { mode: 0o600 })
+      writeFileSync(join(local, "install.json"), JSON.stringify({ ...marker, installId: "local", service: "chariox-machine-local.service", port: 55139 }), { mode: 0o600 })
     }
     writeFileSync(join(bin, "chariox"), "fixture CLI")
     writeFileSync(join(bin, "chariox-setup"), `#!/usr/bin/env node\nconst fs = require("node:fs"); fs.writeFileSync(${JSON.stringify(join(home, "handoff.json"))}, JSON.stringify({ args: process.argv.slice(2), inheritedKernelHome: process.env.CHARIOX_HOME ?? null }))\n`, { mode: 0o700 })

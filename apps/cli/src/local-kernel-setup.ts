@@ -14,7 +14,7 @@ export async function hasLocalKernel(): Promise<boolean> {
   // Setup uses isolated kernel homes; inspect the same ordinary public heartbeat records.
   const registries: string[] = []
   if (process.env.CHARIOX_HOME) registries.push(join(process.env.CHARIOX_HOME, "kernels/active"))
-  const installs = join(homedir(), ".chariox/dev/ssh-machines")
+  const installs = join(homedir(), ".chariox/dev/machines")
   try {
     for (const entry of readdirSync(installs, { withFileTypes: true }).filter(e => e.isDirectory() && /^[a-z][a-z0-9-]{0,47}$/.test(e.name)).slice(0, 128)) {
       registries.push(join(installs, entry.name, "kernels/active"))
@@ -28,7 +28,7 @@ export async function hasLocalKernel(): Promise<boolean> {
 // MP-07 / MP-08 / MP-11: resolve the marked CLI release before choosing Setup defaults.
 async function setupCommand(profile: RelayCloudProfile): Promise<{ executable: string; args: string[] }> {
   const invoking = await realpath(process.execPath), home = homedir()
-  const installs = join(home, ".local/share/chariox/ssh-machines")
+  const installs = join(home, ".local/share/chariox/machines")
   const path = relative(installs, invoking).split("/")
   const marked = path.length === 5 && path[1] === "releases" && path[3] === "bin" && path[4] === "chariox"
   const installId = marked ? path[0]! : "local"
@@ -42,8 +42,8 @@ async function setupCommand(profile: RelayCloudProfile): Promise<{ executable: s
   if (metadata) {
     if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.uid !== process.getuid?.() || (metadata.mode & 0o022) || metadata.size > 65536) throw new Error("Chariox install marker must be a bounded user-owned regular file")
     const marker = JSON.parse(await readFile(markerPath, "utf8"))
-    const service = process.platform === "darwin" ? `com.chariox.kernel.${installId}.plist` : `chariox-ssh-${installId}.service`
-    if (marker.format !== "chariox.ssh-machine-install.v1" || marker.installId !== installId || marker.service !== service || !Number.isInteger(marker.port) || marker.port < 1024 || marker.port > 65534 || [43117, 43118, 43119, 43120].includes(marker.port) || !/^sha256:[a-f0-9]{64}$/.test(marker.releaseDigest ?? "")) throw new Error("Chariox install marker has an invalid identity or port")
+    const service = process.platform === "darwin" ? `com.chariox.kernel.${installId}.plist` : `chariox-machine-${installId}.service`
+    if (marker.format !== "chariox.machine-install.v1" || marker.installId !== installId || marker.service !== service || !Number.isInteger(marker.port) || marker.port < 1024 || marker.port > 65534 || [43117, 43118, 43119, 43120].includes(marker.port) || !/^sha256:[a-f0-9]{64}$/.test(marker.releaseDigest ?? "")) throw new Error("Chariox install marker has an invalid identity or port")
     selection = { installId, port: marker.port }
   }
   const candidates = marked

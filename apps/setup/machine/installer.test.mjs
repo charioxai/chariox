@@ -18,7 +18,7 @@ async function harness(t, kernelBytes) {
   for (const [name, p] of [["extract-release.py", "../../../deploy/managed-kernel/extract-release.py"], ["verify-image-release.mjs", "../../../deploy/managed-kernel/verify-image-release.mjs"], ["path1-service-policy.mjs", "../../../deploy/managed-kernel/path1-service-policy.mjs"]]) await copyFile(new URL(p, import.meta.url), join(stage, name))
   const calls = [], request = { action: "install", installId: "byom-test", port: 55129, releaseDigest: f.releaseDigest }
   const options = { home, stage, servicePersistence: async () => {}, serviceManager: async args => { calls.push(args); return "LoadState=not-found\nFragmentPath=\nDropInPaths=\nActiveState=inactive\nUnitFileState=disabled\n" } }
-  const root = join(home, ".local/share/chariox/ssh-machines/byom-test")
+  const root = join(home, ".local/share/chariox/machines/byom-test")
   return { dir, home, stage, f, calls, request, options, root }
 }
 test("MP-07/MP-08/MP-11 start refuses a session-bound user manager before consuming enrollment", async t => {
@@ -69,8 +69,8 @@ test("MP-07/MP-08 verified install preserves staging and state; repetition, stop
   const result = await runMachine(h.request, h.options)
   assert.equal(result.status, "installed"); assert.equal(result.enrolled, false)
   assert.equal((await runMachine(h.request, h.options)).status, "installed")
-  const ownState = join(h.home, ".chariox/dev/ssh-machines/byom-test"); await mkdir(ownState, { recursive: true }); await writeFile(join(ownState, "sentinel"), "state retained")
-  const unitPath = join(h.home, ".config/systemd/user/chariox-ssh-byom-test.service")
+  const ownState = join(h.home, ".chariox/dev/machines/byom-test"); await mkdir(ownState, { recursive: true }); await writeFile(join(ownState, "sentinel"), "state retained")
+  const unitPath = join(h.home, ".config/systemd/user/chariox-machine-byom-test.service")
   const unit = await readFile(unitPath, "utf8")
   assert.match(unit, /CHARIOX_KERNEL_PORT=55129/); assert.match(unit, /UnsetEnvironment=CHARIOX_MANAGED_PROVIDER_TOPOLOGY/)
   assert.doesNotMatch(unit, /sudo|bwrap|ProtectHome=|PrivateTmp=/)
@@ -79,7 +79,7 @@ test("MP-07/MP-08 verified install preserves staging and state; repetition, stop
   assert.equal(await readFile(join(old, "sentinel"), "utf8"), "keep")
   assert.equal(await readFile(join(ownState, "sentinel"), "utf8"), "state retained")
   assert.ok(h.calls.flat().every(arg => !arg.includes("chariox-md-staging")))
-  assert.deepEqual(await readdir(join(h.home, ".local/share/chariox/ssh-machines")), [])
+  assert.deepEqual(await readdir(join(h.home, ".local/share/chariox/machines")), [])
 })
 test("MP-07 tampered archive or untrusted public pin never publishes a service", async t => {
   for (const kind of ["archive", "pin"]) {
@@ -95,7 +95,7 @@ test("MP-11 symlink ancestor and foreign service collision are refused", async t
   await assert.rejects(runMachine(h.request, h.options), /without links/)
   await rm(join(h.home, ".local"))
   await mkdir(join(h.home, ".config/systemd/user"), { recursive: true })
-  await writeFile(join(h.home, ".config/systemd/user/chariox-ssh-byom-test.service"), "foreign")
+  await writeFile(join(h.home, ".config/systemd/user/chariox-machine-byom-test.service"), "foreign")
   await assert.rejects(runMachine(h.request, h.options), /another installation/)
 })
 test("MP-07 occupied port refuses installation and preserves existing listener", async t => {
@@ -130,7 +130,7 @@ test("MP-11 state ancestor link cannot point the future service at staging", asy
 })
 test("MP-11 existing unmarked state is never adopted as an install", async t => {
   const h = await harness(t)
-  const state = join(h.home, ".chariox/dev/ssh-machines/byom-test")
+  const state = join(h.home, ".chariox/dev/machines/byom-test")
   await mkdir(state, { recursive: true }); await writeFile(join(state, "operator-sentinel"), "keep")
   await assert.rejects(runMachine(h.request, h.options), /state.*another installation|unmarked state/)
   assert.equal(await readFile(join(state, "operator-sentinel"), "utf8"), "keep")
@@ -160,7 +160,7 @@ test("MP-08/MP-11 failed redemption never starts service; relay failure stops on
   await assert.rejects(runMachine(request, { ...h.options, enrollment, kernelCommand: async () => { throw new Error("redemption refused") } }), /redemption refused/)
   assert.equal(h.calls.some(args => args[0] === "enable"), false)
   await assert.rejects(runMachine(request, { ...h.options, enrollment, kernelCommand: async args => ({ kernelId: "kernel", machineId: "machine", userId: "owner", publicKeyThumbprint: "key", connected: args[0] === "--owner-managed-enroll-stdin" }) }), /relay/)
-  assert.ok(h.calls.some(args => args[0] === "disable" && args.includes("chariox-ssh-byom-test.service")))
+  assert.ok(h.calls.some(args => args[0] === "disable" && args.includes("chariox-machine-byom-test.service")))
 })
 
 test("MP-07/MP-11 an occupied companion MCP port fails before install publication", async t => {
@@ -180,7 +180,7 @@ test("MP-07/MP-08 a signed pre-BYOM kernel release cannot publish an install", a
 
 test("MP-07/MP-11 repair recreates only a missing marked service, retaining runtime state", async t => {
   const h = await harness(t); await runMachine(h.request, h.options)
-  const unit = join(h.home, ".config/systemd/user/chariox-ssh-byom-test.service")
+  const unit = join(h.home, ".config/systemd/user/chariox-machine-byom-test.service")
   const previous = await readFile(unit)
   await rm(unit)
   assert.equal((await runMachine({ ...h.request, action: "repair" }, h.options)).status, "installed")
@@ -194,7 +194,7 @@ test("MP-07/MP-11 explicit upgrade accepts same release idempotently", async t =
 test("MP-08/MP-11 inspection recognizes published signed installs and refuses changed service ownership", async t => {
   const h = await harness(t); await runMachine(h.request, h.options)
   assert.equal((await runMachine({ ...h.request, action:"inspect" }, h.options)).status,"installed")
-  await writeFile(join(h.home,".config/systemd/user/chariox-ssh-byom-test.service"),"foreign edited service")
+  await writeFile(join(h.home,".config/systemd/user/chariox-machine-byom-test.service"),"foreign edited service")
   await assert.rejects(runMachine({ ...h.request, action:"inspect" }, h.options), /changed/)
 })
 
@@ -206,7 +206,7 @@ for (const prior of [{ active: true, enabled: true }, { active: true, enabled: f
     const calls = []
     const serviceManager = async args => {
       calls.push(args)
-      if (args[0] === "show") return `LoadState=loaded\nFragmentPath=${join(h.home, ".config/systemd/user/chariox-ssh-byom-test.service")}\nDropInPaths=\nActiveState=${active ? "active" : "inactive"}\nUnitFileState=${enabled ? "enabled" : "disabled"}\n`
+      if (args[0] === "show") return `LoadState=loaded\nFragmentPath=${join(h.home, ".config/systemd/user/chariox-machine-byom-test.service")}\nDropInPaths=\nActiveState=${active ? "active" : "inactive"}\nUnitFileState=${enabled ? "enabled" : "disabled"}\n`
       if (args[0] === "enable") { enabled = true; if (args.includes("--now")) active = true }
       if (args[0] === "disable") { enabled = false; if (args.includes("--now")) active = false }
       if (args[0] === "start") active = true
@@ -224,8 +224,8 @@ for (const prior of [{ active: true, enabled: true }, { active: true, enabled: f
 
 test("MP-07/MP-11 removal retries after unit unlink and reload failure, retaining private state", async t => {
   const h = await harness(t); await runMachine(h.request, h.options)
-  const unit = join(h.home, ".config/systemd/user/chariox-ssh-byom-test.service")
-  const state = join(h.home, ".chariox/dev/ssh-machines/byom-test/sentinel")
+  const unit = join(h.home, ".config/systemd/user/chariox-machine-byom-test.service")
+  const state = join(h.home, ".chariox/dev/machines/byom-test/sentinel")
   await writeFile(state, "keep private state")
   await assert.rejects(runMachine({ ...h.request, action: "remove" }, { ...h.options, serviceManager: async args => {
     if (args[0] === "daemon-reload") throw new Error("transient reload failure")
@@ -247,7 +247,7 @@ test("MP-11 interrupted removal still rejects replacement foreign units and acti
     if (args[0] === "daemon-reload") throw new Error("interrupted removal")
     return h.options.serviceManager(args)
   } }), /interrupted removal/)
-  const unit = join(h.home, ".config/systemd/user/chariox-ssh-byom-test.service")
+  const unit = join(h.home, ".config/systemd/user/chariox-machine-byom-test.service")
   await writeFile(unit, "foreign replacement")
   await assert.rejects(runMachine(request, h.options), /changed/)
   await rm(unit)
@@ -260,7 +260,7 @@ test("MP-11 interrupted removal still rejects replacement foreign units and acti
 
 test("MP-11 a missing unit without proven removal intent cannot be adopted", async t => {
   const h = await harness(t); await runMachine(h.request, h.options)
-  await rm(join(h.home, ".config/systemd/user/chariox-ssh-byom-test.service"))
+  await rm(join(h.home, ".config/systemd/user/chariox-machine-byom-test.service"))
   await assert.rejects(runMachine({ ...h.request, action: "remove" }, h.options), { code: "ENOENT" })
   await assert.rejects(runMachine({ ...h.request, action: "inspect" }, h.options), { code: "ENOENT" })
   assert.ok((await readFile(join(h.root, "install.json"))).length)
@@ -268,7 +268,7 @@ test("MP-11 a missing unit without proven removal intent cannot be adopted", asy
 
 test("MP-07 / MP-11 occupied install lock reports its path and guarded recovery without changing ownership", async t => {
   const h = await harness(t)
-  const lock = join(h.home, ".local/share/chariox/ssh-machines/.byom-test.lock")
+  const lock = join(h.home, ".local/share/chariox/machines/.byom-test.lock")
   await mkdir(lock, {recursive: true, mode: 0o700})
   await assert.rejects(runMachine(h.request, h.options), error => {
     assert.match(error.message, /another install operation owns this install ID/)
@@ -285,14 +285,14 @@ test("MP-07/MP-08/MP-11 signed ownership predecessor 478 publishes no service, r
   const h = await harness(t, Buffer.from('#!/bin/sh\nprintf "478\\n"\n'))
   await assert.rejects(runMachine(h.request,h.options), /bootstrap protocol 479/)
   await assert.rejects(readFile(join(h.root, "install.json")), { code: "ENOENT" })
-  await assert.rejects(readFile(join(h.home, ".config/systemd/user/chariox-ssh-byom-test.service")), { code: "ENOENT" })
-  await assert.rejects(readFile(join(h.home, ".chariox/dev/ssh-machines/byom-test/ssh-install-owner.json")), { code: "ENOENT" })
+  await assert.rejects(readFile(join(h.home, ".config/systemd/user/chariox-machine-byom-test.service")), { code: "ENOENT" })
+  await assert.rejects(readFile(join(h.home, ".chariox/dev/machines/byom-test/machine-install-owner.json")), { code: "ENOENT" })
   assert.ok(!h.calls.some(args => ["daemon-reload", "enable", "start"].includes(args[0])))
 })
 
 test("MP-07/MP-08/MP-11 repair restores the original service after PATH changes", async t => {
   const h = await harness(t); await runMachine(h.request, h.options)
-  const unit = join(h.home, ".config/systemd/user/chariox-ssh-byom-test.service")
+  const unit = join(h.home, ".config/systemd/user/chariox-machine-byom-test.service")
   const original = await readFile(unit)
   const previousPath = process.env.PATH
   try {

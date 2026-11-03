@@ -17,6 +17,9 @@ export async function setupFixture(root, { version = "0.3.0", platform = "linux-
   await put("bin/chariox", '#!/bin/sh\nexit 0\n', 0o755)
   await put("bin/chariox-setup", '#!/bin/sh\nexit 0\n', 0o755)
   await put("bin/chariox-app-wasm-worker", "synthetic WASM worker; never executed\n", 0o755)
+  // The signed bundle verifier requires the slice build context's Dockerfile and its local inputs to exist.
+  await put("share/chariox/slice-build-context/apps/kernel/slice-linux-docker/docker/Dockerfile", "FROM scratch\nCOPY apps/kernel/slice-linux-docker/input /input\n")
+  await put("share/chariox/slice-build-context/apps/kernel/slice-linux-docker/input", "synthetic slice input\n")
   const publicKeyHex = keys.publicKey.export({ format: "der", type: "spki" }).subarray(-32).toString("hex")
   const manifest = Buffer.from(JSON.stringify({ schema: "chariox.release-bundle.v1", version, platform, sourceCommit: "a".repeat(40), files: entries }))
   const signature = sign(null, manifest, keys.privateKey).toString("hex")

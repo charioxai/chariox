@@ -89,7 +89,7 @@ test("MP-07/MP-08/MP-11 real self-setup device approval, stdin ticket, idempoten
   const staging = join(home, ".chariox/dev/md-staging"); await mkdir(staging, { recursive: true }); await writeFile(join(staging, "sentinel"), "keep")
   const port = await availablePort(), port2 = await availablePort()
   const probe = async (id, selectedPort, expected) => {
-    const authPath = join(home, `.chariox/dev/ssh-machines/${id}/state/kernel-local-auth/${selectedPort}.token`)
+    const authPath = join(home, `.chariox/dev/machines/${id}/state/kernel-local-auth/${selectedPort}.token`)
     let auth
     for (let i = 0; i < 50; i++) { try { auth = await readFile(authPath, "utf8"); break } catch { await pause() } }
     assert.ok(auth, "MP-11 own kernel must expose its ordinary authenticated status surface")
@@ -113,7 +113,7 @@ test("MP-07/MP-08/MP-11 real self-setup device approval, stdin ticket, idempoten
   }
   const enabledServices = new Set()
   const serviceManager = async args => {
-    const service = args.at(-1), id = service === "chariox-ssh-second.service" ? "second" : "local"
+    const service = args.at(-1), id = service === "chariox-machine-second.service" ? "second" : "local"
     if (args[0] === "show") {
       const path = join(home, ".config/systemd/user", args[1]); let exists = true
       try { await readFile(path) } catch { exists = false }
@@ -122,8 +122,8 @@ test("MP-07/MP-08/MP-11 real self-setup device approval, stdin ticket, idempoten
     if (args[0] === "enable") enabledServices.add(id)
     if (args[0] === "start" && !services.has(id)) {
       const selectedPort = id === "local" ? port : port2
-      const env = { PATH: process.env.PATH, LANG: "C.UTF-8", HOME: home, CHARIOX_HOME: `${home}/.chariox/dev/ssh-machines/${id}`, CHARIOX_KERNEL_HOST: "127.0.0.1", CHARIOX_KERNEL_PORT: String(selectedPort), CHARIOX_MCP_HOST: "127.0.0.1", CHARIOX_MCP_PORT: String(selectedPort + 1), CHARIOX_PROVIDER_PROCESS_ORPHAN_TTL_MS: "18446744073709551615", CODEX_HOME: `${home}/.codex`, CLAUDE_CONFIG_DIR: `${home}/.claude`, OPENCODE_CONFIG_DIR: `${home}/.config/opencode`, XDG_CONFIG_HOME: `${home}/.config`, XDG_DATA_HOME: `${home}/.local/share`, XDG_STATE_HOME: `${home}/.local/state` }
-      const child = spawn(`${home}/.local/share/chariox/ssh-machines/${id}/current/bin/chariox-kernel`, [], { env, stdio: ["ignore","ignore","pipe"] });
+      const env = { PATH: process.env.PATH, LANG: "C.UTF-8", HOME: home, CHARIOX_HOME: `${home}/.chariox/dev/machines/${id}`, CHARIOX_KERNEL_HOST: "127.0.0.1", CHARIOX_KERNEL_PORT: String(selectedPort), CHARIOX_MCP_HOST: "127.0.0.1", CHARIOX_MCP_PORT: String(selectedPort + 1), CHARIOX_PROVIDER_PROCESS_ORPHAN_TTL_MS: "18446744073709551615", CODEX_HOME: `${home}/.codex`, CLAUDE_CONFIG_DIR: `${home}/.claude`, OPENCODE_CONFIG_DIR: `${home}/.config/opencode`, XDG_CONFIG_HOME: `${home}/.config`, XDG_DATA_HOME: `${home}/.local/share`, XDG_STATE_HOME: `${home}/.local/state` }
+      const child = spawn(`${home}/.local/share/chariox/machines/${id}/current/bin/chariox-kernel`, [], { env, stdio: ["ignore","ignore","pipe"] });
       child.stderr.on("data", chunk => { const match = chunk.toString().match(/operation: "([a-zA-Z0-9 _.-]{1,80})"/); if (match) operations.push(match[1]); for (const category of ["panicked","public key","token","credential","bind","Address already in use"]) if (chunk.toString().includes(category)) operations.push(`contains-${category.replaceAll(" ","-")}`) }); children.add(child); services.set(id, child); calls.push(`start-${id}`); t.diagnostic(`MP-07/MP-08/MP-11 start ${id}, public kernel port=${selectedPort}`); await probe(id, selectedPort, {...lastIdentity})
     }
     if (args[0] === "disable") enabledServices.delete(id)
@@ -136,7 +136,7 @@ test("MP-07/MP-08/MP-11 real self-setup device approval, stdin ticket, idempoten
   assert.equal(first.status, "ready"); assert.equal(first.userId, "owner")
   assert.ok(calls.indexOf("device-start") < calls.indexOf("open-browser"))
   assert.ok(calls.indexOf("open-browser") < calls.indexOf("device-approved"))
-  const active = join(home, ".chariox/dev/ssh-machines/local/kernels/active")
+  const active = join(home, ".chariox/dev/machines/local/kernels/active")
   const records = await Promise.all((await readdir(active)).filter(name => name.endsWith(".json")).map(async name => JSON.parse(await readFile(join(active,name),"utf8"))))
   assert.ok(records.some(record => record.kernel_id === first.kernelId && Date.now() - record.heartbeat_at_ms < 30_000), "ordinary fresh presence supports repeat-login setup suppression")
   assert.ok(calls.indexOf("device-approved") < calls.indexOf("start-local"))
@@ -170,7 +170,7 @@ test("MP-07/MP-08/MP-11 real self-setup device approval, stdin ticket, idempoten
       else if (entry.isFile()) assert.equal((await readFile(path)).includes(Buffer.from(secondTicket)), false, "ticket absent from state/logs")
     }
   }
-  await noSecrets(join(home, ".chariox/dev/ssh-machines"))
+  await noSecrets(join(home, ".chariox/dev/machines"))
   assert.deepEqual(errors,[])
   assert.equal(notices.some(value => value.includes(secondTicket)), false)
   phase = "complete"

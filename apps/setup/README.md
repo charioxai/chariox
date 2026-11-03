@@ -11,7 +11,7 @@ PR1's marked per-user installer, signed immutable release trees, isolated servic
 and state roots. Linux uses systemd --user; macOS uses launchd in the user's GUI
 domain. Setup requires Python 3 for the existing bounded archive extractor.
 For MP-07 / MP-08, Linux Setup checks logind lingering before enrollment/start,
-repair or upgrade so the user service survives SSH logout. It enables lingering
+repair or upgrade so the user service survives logout. It enables lingering
 for the current user when host policy permits. Otherwise it stops with the exact
 administrator command before consuming an enrollment code; it never invokes sudo.
 The Linux executable carries its JavaScript runtime (no Node/Bun install); its
@@ -48,8 +48,8 @@ service and removes its marked release root and CLI links; private kernel state
 and Cloud directory ownership are retained. Unlink/identity retirement remains
 an explicit ordinary kernel action, not implicit filesystem deletion.
 
-Default install ID `local` uses `~/.local/share/chariox/ssh-machines/local`,
-`~/.chariox/dev/ssh-machines/local`, Linux `chariox-ssh-local.service` or macOS
+Default install ID `local` uses `~/.local/share/chariox/machines/local`,
+`~/.chariox/dev/machines/local`, Linux `chariox-machine-local.service` or macOS
 `com.chariox.kernel.local.plist`, loopback ports 55139/55140, and `~/.local/bin`
 CLI links. Other `--id ID --port PORT` installs get independent roots/services
 and `chariox-ID` / `chariox-setup-ID` links. Existing installations and
