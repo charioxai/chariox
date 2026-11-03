@@ -295,6 +295,13 @@ impl CommandRouter {
         self.remote_relay_inventory_projection.clear();
     }
 
+    /// The last inventory refresh failed and its retry time has not come.
+    pub(crate) fn remote_relay_inventory_backing_off(&self) -> bool {
+        self.remote_relay_inventory_projection
+            .backing_off(crate::session::unix_epoch_ms())
+            .is_some()
+    }
+
     pub(crate) async fn refresh_remote_relay_inventory_projection(
         &self,
     ) -> Result<(), DaemonError> {

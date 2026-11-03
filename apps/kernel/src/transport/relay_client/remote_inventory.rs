@@ -96,9 +96,64 @@ where
     }
 }
 
+/// The one way the inventory is refreshed, for the periodic refresh, the gateway and the
+/// catalog alike. One refresh runs at a time and callers that waited for it share its outcome.
+/// After a failure, no refresh asks Cloud again until the retry time, so an outage costs one
+/// request per retry however many callers ask. The projection keeps its last list meanwhile.
 pub(crate) async fn refresh_remote_inventory_projection(
     config_projection: DaemonConfigProjectionStore,
     projection: RemoteRelayInventoryProjectionStore,
+) -> Result<(), DaemonError> {
+    let asked_at_ms = crate::session::unix_epoch_ms();
+    let flight = projection.refresh_flight();
+    let _only_refresh = flight.lock().await;
+    match projection.outcome_since(asked_at_ms) {
+        Some(Ok(())) => return Ok(()),
+        Some(Err(message)) => return Err(inventory_refresh_error(message)),
+        None => {}
+    }
+    if let Some(message) = projection.backing_off(crate::session::unix_epoch_ms()) {
+        return Err(inventory_refresh_error(message));
+    }
+    let mut attempt = RefreshAttempt {
+        projection: &projection,
+        finished: false,
+    };
+    let result = refresh_remote_inventory_once(&config_projection, &projection).await;
+    attempt.finished = true;
+    if let Err(error) = &result {
+        projection.record_failure(crate::session::unix_epoch_ms(), error.to_string());
+    }
+    result
+}
+
+fn inventory_refresh_error(message: String) -> DaemonError {
+    DaemonError::LocalTransport {
+        operation: "remote relay inventory refresh",
+        message,
+    }
+}
+
+/// A refresh its caller gave up on (a deadline) is a failed refresh too.
+struct RefreshAttempt<'a> {
+    projection: &'a RemoteRelayInventoryProjectionStore,
+    finished: bool,
+}
+
+impl Drop for RefreshAttempt<'_> {
+    fn drop(&mut self) {
+        if !self.finished {
+            self.projection.record_failure(
+                crate::session::unix_epoch_ms(),
+                "the refresh did not finish in time".to_string(),
+            );
+        }
+    }
+}
+
+async fn refresh_remote_inventory_once(
+    config_projection: &DaemonConfigProjectionStore,
+    projection: &RemoteRelayInventoryProjectionStore,
 ) -> Result<(), DaemonError> {
     let mut runtime_config = config_projection.snapshot();
     if runtime_config.relay_url.is_none() || runtime_config.relay_token.is_none() {
@@ -240,6 +295,34 @@ mod tests {
             cloud.accept().is_err(),
             "private inventory refresh must not reach the Cloud API"
         );
+    }
+
+    // Staging, 11-03: every caller (heartbeat, gateway request, event pull) started its own refresh
+    // and each retried straight after a failure. A failed refresh now costs one attempt, and the
+    // callers that ask meanwhile get that attempt's outcome.
+    #[tokio::test]
+    async fn callers_share_one_refresh_and_a_failed_one_is_not_asked_again_at_once() {
+        let relay = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        relay.set_nonblocking(true).unwrap();
+        let connections = || std::iter::from_fn(|| relay.accept().ok()).count();
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.relay_url = Some(format!("ws://{}", relay.local_addr().unwrap()));
+        config.relay_token = Some("synthetic-private-transport".into());
+        config.relay_request_timeout_ms = 200;
+        let config = DaemonConfigProjectionStore::new(config);
+        let projection = RemoteRelayInventoryProjectionStore::default();
+        let refresh = || refresh_remote_inventory_projection(config.clone(), projection.clone());
+
+        let first_wave = futures_util::future::join_all((0..8).map(|_| refresh())).await;
+        assert!(first_wave.iter().all(Result::is_err));
+        assert!(
+            connections() <= 3,
+            "eight concurrent callers share one refresh's attempts"
+        );
+        for _ in 0..8 {
+            assert!(refresh().await.is_err());
+        }
+        assert_eq!(connections(), 0, "no attempt before the retry time");
     }
 
     #[tokio::test]

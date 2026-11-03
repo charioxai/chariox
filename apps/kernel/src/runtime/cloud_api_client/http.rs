@@ -8,6 +8,11 @@ mod bounded_artifact;
 pub(super) const CLOUD_API_REQUEST_TIMEOUT: std::time::Duration =
     std::time::Duration::from_secs(20);
 
+/// The agent of every Cloud API call: it waits out a rate limit Cloud announced.
+pub(super) fn cloud_agent_builder() -> ureq::AgentBuilder {
+    crate::outbound_dial::agent_builder().middleware(super::rate_limit::CloudRateLimit)
+}
+
 pub(crate) fn normalize_cloud_api_url(api_url: &str) -> Result<String, DaemonError> {
     let normalized = api_url.trim().trim_end_matches('/').to_string();
     if normalized.is_empty() {
@@ -144,7 +149,7 @@ pub(crate) async fn get_cloud_kernel_directory(
                     operation: "read My kernels",
                     message: "independent kernel enrollment is required".into(),
                 })?;
-        let response = crate::outbound_dial::agent_builder()
+        let response = cloud_agent_builder()
             .timeout(CLOUD_API_REQUEST_TIMEOUT)
             .build()
             .get(&url)
@@ -193,7 +198,7 @@ pub(crate) async fn post_cloud_to_file(
             operation: "download cloud artifact",
             message,
         };
-        let agent = crate::outbound_dial::agent_builder()
+        let agent = cloud_agent_builder()
             .timeout(std::time::Duration::from_secs(30 * 60))
             .build();
         let response = agent
@@ -234,10 +239,7 @@ fn post_cloud_acknowledged_blocking_with_timeout(
     body: serde_json::Value,
     timeout: std::time::Duration,
 ) -> Result<(), DaemonError> {
-    let agent = crate::outbound_dial::agent_builder()
-        .timeout(timeout)
-        .redirects(0)
-        .build();
+    let agent = cloud_agent_builder().timeout(timeout).redirects(0).build();
     let response = agent
         .post(&format!("{api_url}{path}"))
         .set("content-type", "application/json")
@@ -274,10 +276,7 @@ where
 {
     let url = format!("{api_url}{path}");
     // Native Cloud calls must not follow browser login redirects.
-    let agent = crate::outbound_dial::agent_builder()
-        .timeout(timeout)
-        .redirects(0)
-        .build();
+    let agent = cloud_agent_builder().timeout(timeout).redirects(0).build();
     let response = agent
         .post(&url)
         .set("content-type", "application/json")
@@ -310,7 +309,7 @@ where
     T: serde::de::DeserializeOwned,
 {
     let url = format!("{api_url}{path}");
-    let agent = crate::outbound_dial::agent_builder()
+    let agent = cloud_agent_builder()
         .timeout(CLOUD_API_REQUEST_TIMEOUT)
         .build();
     let response = agent.get(&url).call().map_err(cloud_transport_error)?;
@@ -335,7 +334,7 @@ where
     T: serde::de::DeserializeOwned,
 {
     let url = format!("{api_url}{path}");
-    let agent = crate::outbound_dial::agent_builder()
+    let agent = cloud_agent_builder()
         .timeout(CLOUD_API_REQUEST_TIMEOUT)
         .build();
     let response = agent
@@ -356,7 +355,7 @@ where
     T: serde::de::DeserializeOwned,
 {
     let url = format!("{api_url}{path}");
-    let agent = crate::outbound_dial::agent_builder()
+    let agent = cloud_agent_builder()
         .timeout(CLOUD_API_REQUEST_TIMEOUT)
         .build();
     let response = agent
@@ -463,6 +462,16 @@ pub(crate) fn cloud_error_code(error: &DaemonError) -> Option<&str> {
     };
     let code = message.split_once("cloud_api_code=")?.1;
     Some(code.split(':').next().unwrap_or(code))
+}
+
+pub(crate) fn cloud_retry_hint(message: &str) -> Option<std::time::Duration> {
+    let after = message.split_once("retry in ")?.1;
+    let digits: String = after.chars().take_while(char::is_ascii_digit).collect();
+    let seconds: u64 = digits.parse().ok()?;
+    after[digits.len()..]
+        .trim_start()
+        .starts_with("second")
+        .then(|| std::time::Duration::from_secs(seconds.min(3_600)))
 }
 
 pub(crate) fn cloud_error_is_retryable(error: &DaemonError) -> bool {

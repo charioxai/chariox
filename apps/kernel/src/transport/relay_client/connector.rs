@@ -3,6 +3,7 @@
 use std::future::Future;
 
 use super::*;
+use crate::runtime::cloud_api_client::cloud_retry_hint;
 use crate::runtime::cloud_relay_control::cloud_relay_token_is_expired;
 
 mod managed_slice_activation;
@@ -220,16 +221,6 @@ fn token_renewal_retry_delay(
         .and_then(cloud_retry_hint)
         .unwrap_or(Duration::ZERO);
     cloud_token_refresh_retry_delay(daemon_id, failures).max(hint)
-}
-
-fn cloud_retry_hint(message: &str) -> Option<Duration> {
-    let after = message.split_once("retry in ")?.1;
-    let digits: String = after.chars().take_while(char::is_ascii_digit).collect();
-    let seconds: u64 = digits.parse().ok()?;
-    after[digits.len()..]
-        .trim_start()
-        .starts_with("second")
-        .then(|| Duration::from_secs(seconds.min(3_600)))
 }
 
 /// The relay says this token is no good; the kernel does not present it again.
@@ -1215,6 +1206,7 @@ async fn run_daemon_relay_connector_inner(
                                 published_accounts = accounts;
                             }
                             if refresh_remote_inventory
+                                && !router.remote_relay_inventory_backing_off()
                                 && remote_inventory_refresh_due(
                                     heartbeat_tick,
                                     &mut inventory_refresh_task,

@@ -16,6 +16,8 @@ const GATEWAY_CAPABILITY: &str = "kernel_gateway_v1";
 const REFRESH_TIMEOUT: Duration = Duration::from_secs(10);
 /// How old the list may be when `chariox kernels` shows it.
 const LISTING_MAX_AGE_MS: u64 = 1_000;
+/// A kernel last confirmed live this long ago is not shown as online while the list cannot be renewed.
+const LISTING_STALE_MS: u64 = 5 * 60 * 1000;
 
 struct Seen {
     kernel: RelayKernelPresence,
@@ -41,10 +43,16 @@ impl Directory {
 
     pub(super) async fn kernels(&self) -> Result<Vec<GatewayKernel>, GatewayError> {
         // The list is shown as the truth, so it is renewed unless it was taken a moment ago.
+        // When it cannot be renewed the last list is shown: that says nothing about the kernels.
         if !self.source.refreshed_within(LISTING_MAX_AGE_MS) {
-            self.refresh_now().await?;
+            if let Err(error) = self.refresh_now().await {
+                if self.seen.lock().expect("directory poisoned").is_empty() {
+                    return Err(error);
+                }
+            }
         }
         self.merge();
+        let now = crate::session::unix_epoch_ms();
         let via = self.source.via();
         let seen = self.seen.lock().expect("directory poisoned");
         let known: Vec<&RelayKernelPresence> = seen.values().map(|seen| &seen.kernel).collect();
@@ -56,7 +64,9 @@ impl Directory {
                     kernel_id: seen.kernel.kernel_id.clone(),
                     machine_id: seen.kernel.machine_id.clone(),
                     machine_alias: seen.kernel.machine_alias.clone(),
-                    status: if seen.online {
+                    status: if seen.online
+                        && now.saturating_sub(seen.last_seen_ms) < LISTING_STALE_MS
+                    {
                         GatewayKernelStatus::Online
                     } else {
                         GatewayKernelStatus::Offline
@@ -81,8 +91,12 @@ impl Directory {
                 return Ok(kernel);
             }
         }
-        self.refresh().await?;
-        self.lookup(name)
+        match self.refresh().await {
+            Ok(()) => self.lookup(name),
+            // A list that could not be renewed says nothing about the kernel: the connection to
+            // it decides whether it is there, so the kernel the last list showed live is used.
+            Err(error) => self.lookup(name).map_err(|_| error),
+        }
     }
 
     /// The one live kernel `name` means; unknown, ambiguous and offline are errors.
@@ -121,16 +135,22 @@ impl Directory {
         tokio::time::timeout(REFRESH_TIMEOUT, self.source.refresh())
             .await
             .map_err(|_| unreachable_inventory("the kernel list did not refresh in time".into()))?
-            .map_err(|error| {
-                unreachable_inventory(super::error::plain_cause(
+            .map_err(|error| match super::error::cloud_busy(&error) {
+                Some(busy) => busy,
+                None => unreachable_inventory(super::error::plain_cause(
                     "the relay did not answer the request for the kernel list",
                     &error,
-                ))
+                )),
             })
     }
 
-    /// Takes the source's latest list as what is live now.
+    /// Takes the source's latest list as what is live now. A source that has no list (its relay
+    /// connection restarted, or Cloud has not answered for minutes) reports nothing about the
+    /// kernels, so what was last seen stays.
     fn merge(&self) {
+        if !self.source.is_usable() {
+            return;
+        }
         let now = crate::session::unix_epoch_ms();
         let live = self.source.kernels();
         let mut seen = self.seen.lock().expect("directory poisoned");
@@ -320,6 +340,87 @@ mod tests {
             self.refreshes.fetch_add(1, Ordering::SeqCst);
             Box::pin(async { Ok(()) })
         }
+    }
+
+    /// The list a kernel gets while Cloud refuses it with 429: the relay link restarted (so the
+    /// projection was cleared) and every refresh since has been refused.
+    struct RateLimited {
+        listed: Mutex<Vec<RelayKernelPresence>>,
+        has_list: AtomicBool,
+        refreshes: std::sync::atomic::AtomicU32,
+    }
+
+    impl InventorySource for RateLimited {
+        fn via(&self) -> GatewayKernelVia {
+            GatewayKernelVia::Hosted
+        }
+        fn kernels(&self) -> Vec<RelayKernelPresence> {
+            self.listed.lock().unwrap().clone()
+        }
+        fn is_fresh(&self) -> bool {
+            self.has_list.load(Ordering::SeqCst)
+        }
+        fn refreshed_within(&self, _max_age_ms: u64) -> bool {
+            self.has_list.load(Ordering::SeqCst)
+        }
+        fn is_usable(&self) -> bool {
+            self.has_list.load(Ordering::SeqCst)
+        }
+        fn refresh(
+            &self,
+        ) -> Pin<Box<dyn Future<Output = Result<(), crate::error::DaemonError>> + Send + '_>>
+        {
+            self.refreshes.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async {
+                Err(crate::error::DaemonError::LocalTransport {
+                    operation: "cloud relay request",
+                    message: "cloud relay request failed with 429: cloud_api_code=rate_limited: Rate limit exceeded, retry in 7 seconds".into(),
+                })
+            })
+        }
+    }
+
+    // Staging, 11-03: Cloud answered 429 to the inventory refresh after the relay link restarted;
+    // the gateway then called a healthy kernel unreachable for minutes.
+    #[tokio::test]
+    async fn a_live_kernel_stays_usable_while_cloud_refuses_the_list() {
+        let source = Arc::new(RateLimited {
+            listed: Mutex::new(vec![kernel("k-b3", Some("b3"), "ovh-b3", true)]),
+            has_list: AtomicBool::new(true),
+            refreshes: std::sync::atomic::AtomicU32::new(0),
+        });
+        let directory = Directory::new(source.clone());
+        assert_eq!(directory.resolve("b3").await.unwrap().kernel_id, "k-b3");
+        // The relay link restarted: the projection is empty and Cloud refuses every refresh.
+        source.listed.lock().unwrap().clear();
+        source.has_list.store(false, Ordering::SeqCst);
+        assert_eq!(
+            directory
+                .resolve("b3")
+                .await
+                .expect("the last list stands")
+                .kernel_id,
+            "k-b3"
+        );
+        let listed = directory.kernels().await.expect("the last list is shown");
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].status, GatewayKernelStatus::Online);
+    }
+
+    #[tokio::test]
+    async fn an_unlisted_kernel_while_cloud_refuses_is_told_to_retry_not_called_unreachable() {
+        let source = Arc::new(RateLimited {
+            listed: Mutex::new(Vec::new()),
+            has_list: AtomicBool::new(false),
+            refreshes: std::sync::atomic::AtomicU32::new(0),
+        });
+        let error = Directory::new(source).resolve("b3").await.unwrap_err();
+        assert_eq!(error, GatewayError::CloudBusy { retry_in_secs: 7 });
+        assert!(
+            error.message().contains("Retry in 7 seconds"),
+            "{}",
+            error.message()
+        );
     }
 
     #[tokio::test]

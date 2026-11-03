@@ -6,9 +6,23 @@ use chariox_relay::protocol::RelayKernelPresence;
 use crate::local::RemoteMachineRecord;
 use crate::session::unix_epoch_ms;
 
+/// The longest the next refresh waits after refreshes failed one after another.
+const MAX_REFRESH_RETRY_DELAY_MS: u64 = 60_000;
+
 #[derive(Clone, Default)]
 pub(crate) struct RemoteRelayInventoryProjectionStore {
     state: Arc<StdMutex<RemoteRelayInventoryProjectionState>>,
+    /// Held while a refresh runs: callers that ask meanwhile share its outcome.
+    refresh_flight: Arc<tokio::sync::Mutex<()>>,
+}
+
+#[derive(Debug, Clone)]
+struct RefreshFailure {
+    at_ms: u64,
+    message: String,
+    /// Refreshes in a row that failed; each doubles the wait before the next.
+    count: u32,
+    retry_not_before_ms: u64,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -17,6 +31,7 @@ struct RemoteRelayInventoryProjectionState {
     remote_kernels: Vec<RelayKernelPresence>,
     refreshed_at_ms: u64,
     refresh_requested_at_ms: u64,
+    failure: Option<RefreshFailure>,
 }
 
 impl RemoteRelayInventoryProjectionStore {
@@ -26,6 +41,55 @@ impl RemoteRelayInventoryProjectionStore {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         (state.remote_machines.clone(), state.remote_kernels.clone())
+    }
+
+    /// Held across one refresh; a caller that waited for it reads `outcome_since` instead of asking Cloud again.
+    pub(crate) fn refresh_flight(&self) -> Arc<tokio::sync::Mutex<()>> {
+        Arc::clone(&self.refresh_flight)
+    }
+
+    /// What a refresh that finished after `asked_at_ms` came to, if one did.
+    pub(crate) fn outcome_since(&self, asked_at_ms: u64) -> Option<Result<(), String>> {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.refreshed_at_ms >= asked_at_ms && state.refreshed_at_ms != 0 {
+            return Some(Ok(()));
+        }
+        state
+            .failure
+            .as_ref()
+            .filter(|failure| failure.at_ms >= asked_at_ms)
+            .map(|failure| Err(failure.message.clone()))
+    }
+
+    /// Why no refresh is tried yet: the last one failed and its retry time has not come.
+    pub(crate) fn backing_off(&self, now_ms: u64) -> Option<String> {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state
+            .failure
+            .as_ref()
+            .filter(|failure| now_ms < failure.retry_not_before_ms)
+            .map(|failure| failure.message.clone())
+    }
+
+    pub(crate) fn record_failure(&self, now_ms: u64, message: String) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let count = state.failure.as_ref().map_or(0, |failure| failure.count) + 1;
+        let delay_ms = (1_000_u64 << count.min(6)).min(MAX_REFRESH_RETRY_DELAY_MS);
+        state.failure = Some(RefreshFailure {
+            at_ms: now_ms,
+            message,
+            count,
+            retry_not_before_ms: now_ms + delay_ms,
+        });
     }
 
     pub(crate) fn is_fresh(&self, now_ms: u64, stale_after_ms: u64) -> bool {
@@ -85,6 +149,7 @@ impl RemoteRelayInventoryProjectionStore {
             .collect();
         state.refreshed_at_ms = unix_epoch_ms();
         state.refresh_requested_at_ms = state.refreshed_at_ms;
+        state.failure = None;
     }
 
     pub(crate) fn update_machine(&self, machine: RemoteMachineRecord) {
@@ -128,6 +193,7 @@ impl RemoteRelayInventoryProjectionStore {
         state.remote_kernels.clear();
         state.refreshed_at_ms = 0;
         state.refresh_requested_at_ms = 0;
+        state.failure = None;
     }
 }
 
@@ -171,6 +237,35 @@ mod tests {
             projection.should_request_refresh(16_000, 5_000, 1_000),
             "stale empty projection should request another refresh after the cooldown"
         );
+    }
+
+    #[test]
+    fn failed_refreshes_back_off_and_a_good_one_ends_the_wait() {
+        let projection = RemoteRelayInventoryProjectionStore::default();
+        projection.record_failure(10_000, "cloud refused".into());
+        assert_eq!(
+            projection.backing_off(10_500).as_deref(),
+            Some("cloud refused")
+        );
+        assert!(
+            projection.backing_off(12_000).is_none(),
+            "first retry after 2 s"
+        );
+        projection.record_failure(12_000, "cloud refused".into());
+        assert!(
+            projection.backing_off(15_900).is_some(),
+            "second retry after 4 s"
+        );
+        assert!(projection.backing_off(16_000).is_none());
+        assert_eq!(
+            projection.outcome_since(11_000),
+            Some(Err("cloud refused".to_string())),
+            "a caller that waited for the failed refresh shares its outcome"
+        );
+        assert!(projection.outcome_since(12_001).is_none());
+        projection.update(Vec::new(), Vec::new());
+        assert!(projection.backing_off(12_001).is_none());
+        assert_eq!(projection.outcome_since(10_000), Some(Ok(())));
     }
 
     #[test]

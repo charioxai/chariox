@@ -465,6 +465,22 @@ async fn check_busy_kernel() {
     assert_eq!(health_events(), 1);
     gateway.event_health(&origin, "remote", Ok(())).unwrap();
     assert_eq!(health_events(), 2, "recovery is reported once");
+    // A kernel list or a Cloud that cannot answer says nothing about this kernel (the 429 storm).
+    for unavailable in [
+        GatewayError::ListUnavailable {
+            detail: "the relay did not answer".into(),
+        },
+        GatewayError::CloudBusy { retry_in_secs: 7 },
+    ] {
+        gateway
+            .event_health(&origin, "remote", Err(unavailable))
+            .unwrap();
+    }
+    assert_eq!(
+        health_events(),
+        2,
+        "no evidence about the kernel, no change"
+    );
     // Any other failure is reported at once, with no grace.
     gateway
         .event_health(

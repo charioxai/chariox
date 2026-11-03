@@ -24,6 +24,11 @@ pub(crate) enum GatewayError {
     ListUnavailable {
         detail: String,
     },
+    /// Cloud asked this kernel to wait before it is asked again (HTTP 429). Nothing is known about
+    /// any kernel from it, so it never counts against one.
+    CloudBusy {
+        retry_in_secs: u64,
+    },
     /// The owner revoked this kernel's gateway in the Cloud clients list.
     GatewayRevoked,
     /// The grant the request acts under ended while the connection was being set up.
@@ -65,13 +70,27 @@ pub(crate) fn plain_cause(what: &str, error: &dyn std::fmt::Display) -> String {
     what.to_string()
 }
 
+/// The wait Cloud asked for, when `error` carries its rate limit (any error that wraps the text).
+pub(crate) fn cloud_busy(error: &crate::error::DaemonError) -> Option<GatewayError> {
+    let text = error.to_string();
+    if !text.contains("cloud_api_code=rate_limited") {
+        return None;
+    }
+    let wait = crate::runtime::cloud_api_client::cloud_retry_hint(&text).unwrap_or_default();
+    Some(GatewayError::CloudBusy {
+        retry_in_secs: wait.as_secs().max(1),
+    })
+}
+
 impl GatewayError {
     pub(crate) fn code(&self) -> &str {
         match self {
             Self::Unknown { .. } => "kernel_unknown",
             Self::Ambiguous { .. } => "kernel_ambiguous",
             Self::Offline { .. } => "kernel_offline",
-            Self::Unreachable { .. } | Self::ListUnavailable { .. } => "kernel_unreachable",
+            Self::Unreachable { .. } | Self::ListUnavailable { .. } | Self::CloudBusy { .. } => {
+                "kernel_unreachable"
+            }
             Self::Unpaired { .. } | Self::GatewayRevoked => "kernel_unpaired",
             Self::AccessEnded { .. } => "kernel_access_ended",
             Self::Incompatible { .. } => "kernel_incompatible",
@@ -101,6 +120,9 @@ impl GatewayError {
             ),
             Self::ListUnavailable { detail } => format!(
                 "Could not get the list of your kernels ({detail}). Retry; check that this machine can reach the Chariox relay."
+            ),
+            Self::CloudBusy { retry_in_secs } => format!(
+                "Chariox Cloud asked this kernel to slow down, so no kernel was contacted. Retry in {retry_in_secs} seconds."
             ),
             Self::Unpaired { name } => format!(
                 "Kernel \"{name}\" does not accept this kernel. Pair it again from a Chariox terminal."
@@ -134,6 +156,7 @@ impl GatewayError {
         match self {
             Self::Unreachable { .. }
             | Self::ListUnavailable { .. }
+            | Self::CloudBusy { .. }
             | Self::RequestTimeout { .. }
             | Self::ConnectionLost { .. }
             | Self::SubscriptionEnded { .. } => true,

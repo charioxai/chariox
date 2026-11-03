@@ -223,6 +223,13 @@ impl KernelGateway {
         status: Result<(), GatewayError>,
         now: Instant,
     ) -> Result<(), crate::error::DaemonError> {
+        // The kernel list or Cloud being unavailable says nothing about this kernel.
+        if matches!(
+            status,
+            Err(GatewayError::ListUnavailable { .. } | GatewayError::CloudBusy { .. })
+        ) {
+            return Ok(());
+        }
         let key = (origin.grant_id.clone(), kernel.to_string());
         {
             let mut timing_out = self

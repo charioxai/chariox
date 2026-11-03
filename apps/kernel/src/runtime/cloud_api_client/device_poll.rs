@@ -17,7 +17,7 @@ pub(crate) async fn post_cloud_device_poll(
         if supports_access_denied {
             body["supportsAccessDenied"] = serde_json::json!(true);
         }
-        let agent = crate::outbound_dial::agent_builder()
+        let agent = super::http::cloud_agent_builder()
             .timeout(CLOUD_API_REQUEST_TIMEOUT)
             .build();
         let request = agent
