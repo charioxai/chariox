@@ -145,10 +145,11 @@ async function cliLink(home, root, id, remove = false) {
   }
 }
 export async function installLocal(options) {
-  const { home = process.env.HOME, version, publicKeyHex, releaseBase = "https://github.com/charioxai/chariox/releases/download", apiUrl = "https://chariox.com", installId = "local", port = 55139, action = "install", ticket, userId, extractorSource, openBrowser = async () => {}, notice = message => process.stdout.write(`${message}\n`), serviceManager, servicePersistence, kernelCommand } = options
+  const { home = process.env.HOME, version, publicKeyHex, releaseBase = "https://github.com/charioxai/chariox/releases/download", apiUrl, installId = "local", port = 55139, action = "install", ticket, userId, extractorSource, openBrowser = async () => {}, notice = message => process.stdout.write(`${message}\n`), serviceManager, servicePersistence, kernelCommand } = options
   if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version ?? "")) fail("a pinned release version is required")
   const platform = targetPlatform(options.platform?.split("-")[0], options.platform?.split("-")[1])
 
+  if (!apiUrl) fail("a control plane URL is required (build Setup with one or pass --api-url)")
   publicUrl(apiUrl)
   validateRequest({ action, installId, port, releaseDigest: `sha256:${"a".repeat(64)}` })
   if (!home || !home.startsWith("/") || home === "/" || await realpath(home) !== home) fail("user HOME must be canonical and absolute")

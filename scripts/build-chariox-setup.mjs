@@ -5,15 +5,22 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
+// The one default connected-service URL lives in the kernel client; a build may override it.
+export async function defaultControlPlaneUrl(repository) {
+  const source = await readFile(join(repository, "packages/kernel-client/src/default-control-plane.ts"), "utf8")
+  const url = /DEFAULT_CONTROL_PLANE_URL = "(https:\/\/[A-Za-z0-9.-]+)"/.exec(source)?.[1]
+  if (!url) throw new Error("packages/kernel-client/src/default-control-plane.ts must export DEFAULT_CONTROL_PLANE_URL")
+  return url
+}
 export function renderInstallScript(source, { version, publicKeyHex, releaseBase }) {
   if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version) || !/^[a-f0-9]{64}$/.test(publicKeyHex) || !/^https:\/\/[A-Za-z0-9./_-]+$/.test(releaseBase)) throw new Error("invalid public Setup build inputs")
   return source.replaceAll("@VERSION@", version).replaceAll("@RELEASE_PUBLIC_KEY@", publicKeyHex).replaceAll("@RELEASE_BASE@", releaseBase)
 }
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const args = process.argv.slice(2), options = {}
-  for (let i = 0; i < args.length; i += 2) { if (!/^--(version|public-key|release-base|target|output)$/.test(args[i]) || !args[i + 1]) throw new Error("invalid Setup build arguments"); options[args[i].slice(2)] = args[i + 1] }
+  for (let i = 0; i < args.length; i += 2) { if (!/^--(version|public-key|release-base|control-plane-url|target|output)$/.test(args[i]) || !args[i + 1]) throw new Error("invalid Setup build arguments"); options[args[i].slice(2)] = args[i + 1] }
   const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..")
-  const build = { version: options.version, publicKeyHex: options["public-key"], releaseBase: options["release-base"] ?? "https://github.com/charioxai/chariox/releases/download" }
+  const build = { version: options.version, publicKeyHex: options["public-key"], releaseBase: options["release-base"] ?? "https://github.com/charioxai/chariox/releases/download", controlPlaneUrl: options["control-plane-url"] ?? await defaultControlPlaneUrl(repository) }
   const script = renderInstallScript(await readFile(join(repository, "deploy/setup/install.sh"), "utf8"), build)
   if (!["linux-x64", "darwin-arm64"].includes(options.target)) throw new Error("unsupported Setup build target")
   const output = resolve(options.output)

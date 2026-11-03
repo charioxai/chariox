@@ -62,6 +62,10 @@ node scripts/build-chariox-setup.mjs --version VERSION --public-key PUBLIC_HEX \
   --target linux-x64 --output /absolute/task-owned/output
 ```
 
+The connected service Setup enrolls with comes from the build: `--control-plane-url URL`, or by
+default `DEFAULT_CONTROL_PLANE_URL` in `packages/kernel-client/src/default-control-plane.ts`, the one
+place the repository names a default host. `--api-url` at run time overrides it.
+
 MP-07 / MP-11: the shell bootstrap requires curl, Python 3 and an OpenSSL build
 with Ed25519 `pkeyutl -rawin` verification on `PATH`. It verifies a public RFC 8032
 test vector before downloading Setup; compatible OpenSSL versions pass, while

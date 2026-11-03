@@ -42,6 +42,9 @@ const EXEMPT_PATH = /^(?:docs(?:-site)?|spikes|patches)\/|(?:^|\/)[Tt]ests?\/|(?
 // The guard and its allowlists name the words they forbid.
 const SELF_FILES = new Set(['scripts/oss-boundary-guard.mjs', 'scripts/oss-boundary-leaks.allow.json', 'scripts/control-plane-paths.allow.json', 'scripts/control-plane-requests.allow.json'])
 
+// The one file that names the connected service a client signs in to by default.
+export const DEFAULT_HOST_FILE = 'packages/kernel-client/src/default-control-plane.ts'
+
 // Whole-file exceptions, each justified: the name is not a compute provider's business logic.
 export const ALLOWED_FILES = new Map([
   ['apps/kernel/src/secret_redaction.rs', 'detects leaked cloud-account secret formats (AWS access keys); not compute-provider logic'],
@@ -212,7 +215,7 @@ function vocabularyProblems(root, files) {
     const text = readText(root, path)
     if (text === null) continue
     problems.push(...providerNameFindings(path, text))
-    const vocabulary = vocabularyFindings(path, text)
+    const vocabulary = vocabularyFindings(path, text).filter(f => !(path === DEFAULT_HOST_FILE && f.kind === 'vendor host'))
     if (vocabulary.length === 0) continue
     if (leaks.has(path)) matched.add(path)
     else problems.push(...vocabulary.map(f => ({ ...f, kind: `${f.kind}: Cloud-only vocabulary in OSS (no entry in scripts/oss-boundary-leaks.allow.json)` })))

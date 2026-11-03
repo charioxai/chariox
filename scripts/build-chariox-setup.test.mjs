@@ -3,8 +3,9 @@ import assert from "node:assert/strict"
 import { execFile } from "node:child_process"
 import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join, resolve } from "node:path"
+import { dirname, join, resolve } from "node:path"
 import test from "node:test"
+import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
 const execute = promisify(execFile)
 
@@ -21,4 +22,11 @@ test("MP-07 / MP-11 generated Setup entry retains the actionable failure without
   assert.equal(result.stdout, "")
   assert.equal(result.stderr, "MP-07/MP-08/MP-11: Setup failed: invalid Setup arguments; enrollment codes belong on stdin\n")
   assert.doesNotMatch(result.stderr, /at runSetup|entry\.mjs/)
+})
+
+test("OSS boundary: Setup's default connected service is the kernel client's one default", async () => {
+  const { defaultControlPlaneUrl } = await import("./build-chariox-setup.mjs")
+  const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..")
+  const { DEFAULT_CONTROL_PLANE_URL } = await import(join(repository, "packages/kernel-client/dist/default-control-plane.js"))
+  assert.equal(await defaultControlPlaneUrl(repository), DEFAULT_CONTROL_PLANE_URL)
 })

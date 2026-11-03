@@ -1,23 +1,15 @@
 [
   {
     "path": "apps/browser-session-import/chrome-extension/external-port-broker.mjs",
-    "removedBy": "OSS-boundary item 11 (neutral default-host source)"
+    "removedBy": "OSS-boundary follow-up: the extension manifest origins come from the Cloud release build, not this repository (not part of item 11)"
   },
   {
     "path": "apps/browser-session-import/chrome-extension/manifest.json",
-    "removedBy": "OSS-boundary item 11 (neutral default-host source)"
+    "removedBy": "OSS-boundary follow-up: the extension manifest origins come from the Cloud release build, not this repository (not part of item 11)"
   },
   {
     "path": "apps/cli/package.json",
     "removedBy": "OSS-boundary item 2 (delete TUI rental chooser and /machine reimage)"
-  },
-  {
-    "path": "apps/cli/scripts/lib/live-hosted-cloud-relay-drill-helpers.mjs",
-    "removedBy": "OSS-boundary item 11 (neutral default-host source)"
-  },
-  {
-    "path": "apps/cli/scripts/live-hosted-cloud-relay-drill.mjs",
-    "removedBy": "OSS-boundary item 11 (neutral default-host source)"
   },
   {
     "path": "apps/cli/scripts/live-project-environment-setup-drill.mjs",
@@ -60,24 +52,12 @@
     "removedBy": "OSS-boundary item 2 (delete TUI rental chooser and /machine reimage)"
   },
   {
-    "path": "apps/cli/src/cloud-client-command.ts",
-    "removedBy": "OSS-boundary item 11 (neutral default-host source)"
-  },
-  {
-    "path": "apps/cli/src/cloud-command-lifecycle.ts",
-    "removedBy": "OSS-boundary item 11 (neutral default-host source)"
-  },
-  {
     "path": "apps/cli/src/deployed-workflow-command.ts",
     "removedBy": "kept by Miguel 11-03, revisit (/cloud deployments stay in the TUI for now)"
   },
   {
     "path": "apps/cli/src/deployed-workflow-types.ts",
     "removedBy": "kept by Miguel 11-03, revisit (/cloud deployments stay in the TUI for now)"
-  },
-  {
-    "path": "apps/cli/src/local-kernel-setup.ts",
-    "removedBy": "OSS-boundary item 11 (neutral default-host source)"
   },
   {
     "path": "apps/cli/src/managed-environment-api.ts",
@@ -206,14 +186,6 @@
   {
     "path": "apps/kernel/src/transport/relay_peer.rs",
     "removedBy": "OSS-boundary items 3 to 8 (rental plan and neutral names)"
-  },
-  {
-    "path": "apps/setup/installer.mjs",
-    "removedBy": "OSS-boundary item 11 (neutral default-host source)"
-  },
-  {
-    "path": "apps/setup/main.mjs",
-    "removedBy": "OSS-boundary item 11 (neutral default-host source)"
   },
   {
     "path": "packages/kernel-client/src/ipc-managed-environment-requests.ts",

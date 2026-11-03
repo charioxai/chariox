@@ -92,6 +92,13 @@ test('a planted Cloud vocabulary leak is red until it is listed, and a stale ent
   assert.deepEqual(problemsOf({ 'apps/cli/src/plan.test.ts': 'const rent = "auto-stop"' }), [])
 })
 
+test('a vendor host is allowed only in the default-host file', () => {
+  const host = 'export const DEFAULT_CONTROL_PLANE_URL = "https://chariox.com"\n'
+  assert.deepEqual(problemsOf({ 'packages/kernel-client/src/default-control-plane.ts': host }), [])
+  assert.equal(problemsOf({ 'apps/cli/src/other.ts': host }).length, 1)
+  assert.equal(problemsOf({ 'packages/kernel-client/src/default-control-plane.ts': 'const x = "reimage"\n' }).length, 1)
+})
+
 test('a planted control-plane path is red until it is listed with a caller, and a stale caller is red', () => {
   const files = { 'apps/kernel/src/runtime/new_client.rs': 'const P: &str = "/v1/machines/start";\n' }
   const entry = { path: '/v1/machines/start', callers: ['apps/kernel/src/runtime/new_client.rs'], why: 'w', seam: 's' }

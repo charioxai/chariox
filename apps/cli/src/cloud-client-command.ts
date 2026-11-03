@@ -2,6 +2,7 @@ import { offerLocalKernelSetup, startLocalKernelSetup } from "./local-kernel-set
 import { CloudClient } from "./cloud-client.js"
 import { openExternalUrl } from "./external-url.js"
 import { loadPreferences, relayCloudProfile, saveRelayCloudProfile, type RelayCloudProfile } from "./preferences.js"
+import { DEFAULT_CONTROL_PLANE_URL } from "@chariox/kernel-client/default-control-plane"
 import { resolveConfiguredCloudRelayApiUrl } from "./cli-options.js"
 
 export function createCloudClientCommands(options: {
@@ -52,7 +53,7 @@ export async function runCloudClientCommand(argv: string[]): Promise<boolean> {
   if (argv[0] === "setup") argv = ["cloud", "setup", ...argv.slice(1)]
   if (argv[0] !== "cloud" || !["login", "logout", "status", "kernels", "setup"].includes(argv[1] ?? "")) return false
   const preferences = await loadPreferences()
-  let apiUrl = resolveConfiguredCloudRelayApiUrl(preferences) ?? "https://staging.chariox.com"
+  let apiUrl = resolveConfiguredCloudRelayApiUrl(preferences) ?? DEFAULT_CONTROL_PLANE_URL
   for (let index=2; index<argv.length; index++) {
     if (argv[index] !== "--api-url" || !argv[index+1]) throw new Error("usage: chariox cloud login|logout|status|kernels [--api-url <url>]")
     apiUrl = argv[++index]!

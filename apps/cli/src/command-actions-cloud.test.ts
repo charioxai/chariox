@@ -1,4 +1,5 @@
 import assert from "node:assert/strict"
+import { DEFAULT_CONTROL_PLANE_URL } from "@chariox/kernel-client/default-control-plane"
 import { mkdtemp, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -40,7 +41,7 @@ test("relay cloud login without args uses device flow", async () => {
       machine_alias: "laptop",
     }),
     startCloudDeviceLogin: async (apiUrl: string, input: { clientId?: string; machineId?: string; machineAlias?: string }) => {
-      assert.equal(apiUrl, "https://staging.chariox.com")
+      assert.equal(apiUrl, DEFAULT_CONTROL_PLANE_URL)
       assert.equal(input.clientId, undefined)
       assert.equal(input.machineId, "machine-1")
       assert.equal(input.machineAlias, "laptop")
