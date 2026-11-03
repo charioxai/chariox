@@ -10,7 +10,7 @@ const DIGEST = /^sha256:[a-f0-9]{64}$/
 const SOURCE = /^[a-f0-9]{40}$/
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/
 const UNITS = new Set(["chariox-path1-managed-bootstrap.service", "chariox-managed-bootstrap.service",
-  "chariox-disposable-worker-bootstrap.service", "chariox-rootless-docker.service", "chariox-slice-broker.service"])
+  "chariox-rootless-docker.service", "chariox-slice-broker.service"])
 
 function requireValue(condition, message) {
   if (!condition) throw new Error(message)
@@ -38,14 +38,14 @@ function hostIdentity(capture, expected, { path1 = false } = {}) {
   "host boot or machine identity does not match Cloud")
   const release = sameRelease(identity.release, expected.release)
   const services = identity.serviceInstances
-  requireValue(Array.isArray(services) && services.length > 0 && services.length <= 5
+  requireValue(Array.isArray(services) && services.length > 0 && services.length <= 4
     && services.every(service => UNITS.has(service.unit) && /^[a-f0-9]{32}$/.test(service.invocationId))
     && new Set(services.map(service => service.unit)).size === services.length
     && new Set(services.map(service => service.invocationId)).size === services.length,
   "host capture has ambiguous service identities")
   if (path1) {
     requireValue(services.some(service => service.unit === "chariox-path1-managed-bootstrap.service")
-      && !services.some(service => ["chariox-managed-bootstrap.service", "chariox-disposable-worker-bootstrap.service"].includes(service.unit)),
+      && !services.some(service => service.unit === "chariox-managed-bootstrap.service"),
     "new host does not select the Path-1 service topology")
   }
   const states = identity.stateInstances

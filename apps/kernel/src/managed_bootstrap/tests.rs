@@ -91,7 +91,7 @@ fn path1_rebuild_freshness_must_match_the_protected_volume_identity() {
     };
     let envelope = ManagedBootstrapEnvelope {
         schema_version: 3,
-        cloud_api_url: "https://cloud.example.test".to_string(),
+        control_plane_url: "https://cloud.example.test".to_string(),
         environment_id: "environment-1".to_string(),
         token: format!("mkboot_{}", "x".repeat(40)),
         expires_at: "2026-09-27T00:00:00Z".to_string(),
@@ -495,7 +495,7 @@ fn schema_two_bootstrap_persists_the_exact_managed_repository_root() {
         &fixture.config.envelope_path,
         serde_json::to_vec(&serde_json::json!({
             "schemaVersion": 2,
-            "cloudApiUrl": "https://cloud.example.test",
+            "controlPlaneUrl": "https://cloud.example.test",
             "environmentId": "managed-env-1",
             "token": fixture.token,
             "expiresAt": (fixture.now + chrono::Duration::minutes(1)).to_rfc3339(),
@@ -554,7 +554,7 @@ fn schema_three_exchange_receipt_and_confirmation_preserve_the_exact_repository_
     let repository_root = "/srv/path1 managed workspaces";
     let envelope = ManagedBootstrapEnvelope {
         schema_version: 3,
-        cloud_api_url: "https://cloud.example.test".to_string(),
+        control_plane_url: "https://cloud.example.test".to_string(),
         environment_id: "managed-env-1".to_string(),
         token: fixture.token.clone(),
         expires_at: (fixture.now + chrono::Duration::minutes(1)).to_rfc3339(),
@@ -1615,7 +1615,7 @@ fn confirmed_path1_receipt_does_not_delete_a_same_claims_different_token_envelop
     let original = path1_test_envelope(&fixture.release_digest, "/srv/path1 managed workspaces");
     let original_bytes = serde_json::to_vec(&serde_json::json!({
         "schemaVersion": original.schema_version,
-        "cloudApiUrl": &original.cloud_api_url,
+        "controlPlaneUrl": &original.control_plane_url,
         "environmentId": &original.environment_id,
         "token": &original.token,
         "expiresAt": &original.expires_at,
@@ -1677,7 +1677,7 @@ fn schema_two_bootstrap_rejects_a_cloud_repository_root_mismatch() {
         &fixture.config.envelope_path,
         serde_json::to_vec(&serde_json::json!({
             "schemaVersion": 2,
-            "cloudApiUrl": "https://cloud.example.test",
+            "controlPlaneUrl": "https://cloud.example.test",
             "environmentId": "managed-env-1",
             "token": fixture.token,
             "expiresAt": (fixture.now + chrono::Duration::minutes(1)).to_rfc3339(),
@@ -2197,57 +2197,6 @@ fn managed_systemd_unit_keeps_bootstrap_and_kernel_in_one_hardened_cgroup() {
 }
 
 #[test]
-fn disposable_worker_systemd_unit_runs_path1_without_provider_isolation() {
-    let unit = include_str!(
-        "../../../../deploy/managed-kernel/chariox-disposable-worker-bootstrap.service"
-    );
-    for required in [
-        "User=chariox",
-        "Group=chariox",
-        "Environment=CHARIOX_MANAGED_PROVIDER_TOPOLOGY=path1",
-        "Environment=HOME=/home/chariox",
-        "Environment=CHARIOX_HOME=/home/chariox/.chariox",
-        "Environment=CHARIOX_MANAGED_VAULT_PATH=/home/chariox/.chariox/vault/vault.json",
-        "Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-        "After=network-online.target chariox-rootless-docker.service",
-        "Requires=chariox-rootless-docker.service",
-        "ExecStart=/usr/local/bin/chariox-managed-bootstrap --disposable-worker",
-        // Managed-machine automatic shutdown triggers stay on the Path-1 unit.
-        "Conflicts=chariox-managed-bootstrap.service",
-        "KillMode=control-group",
-    ] {
-        assert!(
-            unit.contains(required),
-            "missing disposable worker contract: {required}"
-        );
-    }
-    // Path 1 providers use the ordinary HOME; the worker has no separate provider home.
-    assert!(!unit.contains("CHARIOX_MANAGED_PROVIDER_HOME"));
-    assert!(!unit.contains("CHARIOX_DISPOSABLE_WORKER_BOOTSTRAP_PATH="));
-    // Path 1 executes providers directly in the disposable VM. The VM is the
-    // provider boundary, so this unit must not carry Bubblewrap/provider
-    // isolation or the managed shared-host systemd hardening restrictions.
-    for forbidden in [
-        "CHARIOX_MANAGED_PROVIDER_ISOLATION",
-        "CHARIOX_CAPABILITY_ISOLATION_ROOT",
-        "CHARIOX_MANAGED_PROVIDER_BWRAP",
-        "bwrap",
-        "NoNewPrivileges=",
-        "ProtectSystem=",
-        "ProtectHome=",
-        "RestrictSUIDSGID=",
-        "RestrictAddressFamilies=",
-        "SupplementaryGroups=chariox-slice",
-        "/var/lib/chariox/home",
-    ] {
-        assert!(
-            !unit.contains(forbidden),
-            "Path-1 disposable worker must not carry: {forbidden}"
-        );
-    }
-}
-
-#[test]
 fn managed_rootless_docker_unit_never_exposes_the_rootful_socket() {
     let unit = include_str!("../../../../deploy/managed-kernel/chariox-rootless-docker.service");
     for required in [
@@ -2439,7 +2388,7 @@ impl Fixture {
             &envelope_path,
             serde_json::to_vec(&serde_json::json!({
                 "schemaVersion": 1,
-                "cloudApiUrl": "https://cloud.example.test",
+                "controlPlaneUrl": "https://cloud.example.test",
                 "environmentId": "managed-env-1",
                 "token": token,
                 "expiresAt": (now + chrono::Duration::minutes(1)).to_rfc3339(),
@@ -2784,7 +2733,7 @@ fn path1_test_envelope(
 ) -> ManagedBootstrapEnvelope {
     ManagedBootstrapEnvelope {
         schema_version: 3,
-        cloud_api_url: "https://cloud.example.test".to_string(),
+        control_plane_url: "https://cloud.example.test".to_string(),
         environment_id: "managed-env-1".to_string(),
         token: format!("mkboot_{}", "x".repeat(43)),
         expires_at: "2026-09-27T00:00:00Z".to_string(),
@@ -3163,7 +3112,7 @@ fn local_disk_exchange_confirm_and_restore_bind_the_protected_grant() {
     let repository_root = "/srv/path1 managed workspaces";
     let envelope = ManagedBootstrapEnvelope {
         schema_version: 4,
-        cloud_api_url: "https://cloud.example.test".to_string(),
+        control_plane_url: "https://cloud.example.test".to_string(),
         environment_id: "managed-env-1".to_string(),
         token: fixture.token.clone(),
         expires_at: (fixture.now + chrono::Duration::minutes(1)).to_rfc3339(),

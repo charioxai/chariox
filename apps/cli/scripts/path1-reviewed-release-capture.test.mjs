@@ -17,7 +17,6 @@ const RELEASE_ARTIFACTS = [
   ["chariox-managed-bootstrap", "/usr/local/bin/chariox-managed-bootstrap", "file", 0o755],
   ["chariox-managed-bootstrap.service", "/etc/systemd/system/chariox-managed-bootstrap.service", "file", 0o644],
   ["chariox-path1-managed-bootstrap.service", "/etc/systemd/system/chariox-path1-managed-bootstrap.service", "file", 0o644],
-  ["chariox-disposable-worker-bootstrap.service", "/etc/systemd/system/chariox-disposable-worker-bootstrap.service", "file", 0o644],
   ["chariox-rootless-docker.service", "/etc/systemd/system/chariox-rootless-docker.service", "file", 0o644],
   ["chariox-slice-broker.service", "/etc/systemd/system/chariox-slice-broker.service", "file", 0o644],
   ["chariox-slice-build-context", "/usr/lib/chariox/slice-build-context", "tree", 0o755],
@@ -134,7 +133,6 @@ async function createFixture(options = {}) {
   const services = [
     ["/etc/systemd/system/chariox-managed-bootstrap.service", "service managed"],
     ["/etc/systemd/system/chariox-path1-managed-bootstrap.service", "service path1"],
-    ["/etc/systemd/system/chariox-disposable-worker-bootstrap.service", "service worker"],
     ["/etc/systemd/system/chariox-rootless-docker.service", "service rootless"],
     ["/etc/systemd/system/chariox-slice-broker.service", "service slice"],
   ]
@@ -294,7 +292,7 @@ test("captures the exact installed schema-v2 release format with independently t
       path: "/usr/local/bin/chariox-kernel",
       sha256: evidence.artifactBindings[0].actualSha256,
     })
-    assert.equal(evidence.artifactBindings.length, 11)
+    assert.equal(evidence.artifactBindings.length, 10)
     assert.equal(evidence.artifactBindings[3].name, "chariox-path1-managed-bootstrap.service")
     assert.equal(evidence.artifactBindings[3].sha256, evidence.artifactBindings[3].actualSha256)
     assert.equal(evidence.artifactBindings[7].name, "chariox-slice-build-context")
@@ -447,14 +445,14 @@ test("rejects symlinked artifacts, duplicate manifest entries, and unknown execu
   })
 })
 
-test("captures schema-3 releases with the current 16-artifact Path-1 inventory (MP-11-RD-F5)", async () => {
+test("captures schema-3 releases with the current 15-artifact Path-1 inventory (MP-11-RD-F5)", async () => {
   await withFixture({ dataVolumeArtifacts: true, manifestPatch: { schemaVersion: 3, managedUpdateEvidenceVersion: 1 } }, async (fixture) => {
     const evidence = await capturePath1ReviewedRelease(fixture.options)
-    assert.equal(evidence.artifactBindings.length, 16)
+    assert.equal(evidence.artifactBindings.length, 15)
     const manifest = JSON.parse(Buffer.from(evidence.releaseManifestBase64, "base64"))
     assert.equal(manifest.schemaVersion, 3)
     assert.equal(manifest.managedUpdateEvidenceVersion, 1)
-    assert.deepEqual(evidence.artifactBindings.slice(8, 11).map(({ name }) => name), DATA_VOLUME_ARTIFACTS.map(([name]) => name))
+    assert.deepEqual(evidence.artifactBindings.slice(7, 10).map(({ name }) => name), DATA_VOLUME_ARTIFACTS.map(([name]) => name))
     for (const artifact of evidence.artifactBindings) assert.equal(artifact.sha256, artifact.actualSha256)
   })
 })
@@ -462,7 +460,7 @@ test("captures schema-3 releases with the current 16-artifact Path-1 inventory (
 test("captures legacy schema-2 releases with a complete optional data-volume inventory", async () => {
   await withFixture({ dataVolumeArtifacts: true }, async (fixture) => {
     const evidence = await capturePath1ReviewedRelease(fixture.options)
-    assert.equal(evidence.artifactBindings.length, 14)
+    assert.equal(evidence.artifactBindings.length, 13)
     assert.equal(JSON.parse(Buffer.from(evidence.releaseManifestBase64, "base64")).schemaVersion, 2)
   })
 })

@@ -34,7 +34,6 @@ const ARTIFACTS = [
   ["chariox-managed-bootstrap", "/usr/local/bin/chariox-managed-bootstrap", "file", 0o755],
   ["chariox-managed-bootstrap.service", "/etc/systemd/system/chariox-managed-bootstrap.service", "file", 0o644],
   ["chariox-path1-managed-bootstrap.service", "/etc/systemd/system/chariox-path1-managed-bootstrap.service", "file", 0o644],
-  ["chariox-disposable-worker-bootstrap.service", "/etc/systemd/system/chariox-disposable-worker-bootstrap.service", "file", 0o644],
   ["chariox-rootless-docker.service", "/etc/systemd/system/chariox-rootless-docker.service", "file", 0o644],
   ["chariox-slice-broker.service", "/etc/systemd/system/chariox-slice-broker.service", "file", 0o644],
   ["chariox-slice-build-context", "/usr/lib/chariox/slice-build-context", "tree", 0o755],

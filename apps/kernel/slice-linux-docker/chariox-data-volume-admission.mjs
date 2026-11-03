@@ -20,7 +20,6 @@ export const {
 export const {
   PROTECTED_BOOTSTRAP_ROOT,
   MANAGED_BOOTSTRAP_PATH,
-  WORKER_BOOTSTRAP_PATH,
   BINDING_PATH,
 } = protectedIo
 
