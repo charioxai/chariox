@@ -314,6 +314,13 @@ impl AegsServer {
                         ),
                     );
                 }
+                for subscription in &reconcile.subscriptions {
+                    if subscription.active {
+                        if let Err(message) = self.provider.validate_subscription(subscription) {
+                            return error(StatusCode::BAD_REQUEST, "invalid_subscription", message);
+                        }
+                    }
+                }
                 let allowed_connection_owners = match &authorization {
                     ManagementAuthorization::Signed(claims) => Some(claims.owner_ids.as_slice()),
                     ManagementAuthorization::Static => None,
@@ -1957,6 +1964,7 @@ mod mp11_ingress_tests {
 
 #[cfg(test)]
 mod mp11_delivery_http_tests {
+    mod polling;
     use super::*;
     use std::io::{Read, Write};
     use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -1996,6 +2004,7 @@ mod mp11_delivery_http_tests {
             occurred_at: "2026-10-05T00:00:00Z".into(),
             connection_scope: "scope".into(),
             prompt: "fixture".into(),
+            data: None,
             metadata: serde_json::Value::Null,
             reply_context: None,
         }
@@ -2418,6 +2427,16 @@ mod mp11_delivery_http_tests {
         owner: &'static str,
         body: serde_json::Value,
     ) -> (u16, serde_json::Value) {
+        management_request(server, "POST", path, owner, body).await
+    }
+
+    async fn management_request(
+        server: &Arc<AegsServer>,
+        method: &'static str,
+        path: &'static str,
+        owner: &'static str,
+        body: serde_json::Value,
+    ) -> (u16, serde_json::Value) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}{path}", listener.local_addr().unwrap());
         let server = server.clone();
@@ -2436,7 +2455,7 @@ mod mp11_delivery_http_tests {
                 .unwrap();
         });
         let response = tokio::task::spawn_blocking(move || {
-            let request = ureq::post(&url)
+            let request = ureq::request(method, &url)
                 .set("authorization", "Bearer management-token")
                 .set("x-chariox-owner-id", owner)
                 .set("connection", "close");

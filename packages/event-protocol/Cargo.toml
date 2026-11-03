@@ -7,6 +7,8 @@ license = "MIT"
 repository = "https://github.com/charioxai/chariox"
 
 [dependencies]
+chariox-app-package = { path = "../app-package" }
+serde_json_canonicalizer = "0.3.2"
 chrono = { version = "0.4.45", default-features = false, features = ["std"] }
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.140"

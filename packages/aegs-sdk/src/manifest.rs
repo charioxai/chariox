@@ -8,6 +8,7 @@ use sha2::{Digest, Sha256};
 
 #[derive(Debug, Clone)]
 pub struct PublishEventBuilder {
+    payload_schema: Option<Value>,
     request: PublishEventRequest,
 }
 
@@ -21,6 +22,7 @@ impl PublishEventBuilder {
         prompt: impl Into<String>,
     ) -> Self {
         Self {
+            payload_schema: None,
             request: PublishEventRequest {
                 producer_id: producer_id.into(),
                 event_interest_key: event_interest_key.into(),
@@ -29,6 +31,7 @@ impl PublishEventBuilder {
                 event_type_version: 1,
                 occurred_at: occurred_at.into(),
                 prompt: prompt.into(),
+                data: None,
                 artifacts: Vec::new(),
                 metadata: Value::Null,
                 reply_context: None,
@@ -39,6 +42,16 @@ impl PublishEventBuilder {
 
     pub fn event_type_version(mut self, version: u32) -> Self {
         self.request.event_type_version = version;
+        self
+    }
+
+    pub fn payload_schema(mut self, schema: Value) -> Self {
+        self.payload_schema = Some(schema);
+        self
+    }
+
+    pub fn data(mut self, data: Value) -> Self {
+        self.request.data = Some(data);
         self
     }
 
@@ -60,6 +73,10 @@ impl PublishEventBuilder {
     pub fn build(mut self) -> Result<PublishEventRequest, String> {
         self.request.occurred_at = canonical_utc_timestamp(&self.request.occurred_at)?;
         self.request.validate()?;
+        chariox_event_protocol::validate_payload(
+            self.payload_schema.as_ref(),
+            self.request.data.as_ref(),
+        )?;
         Ok(self.request)
     }
 }
@@ -68,8 +85,11 @@ pub fn validate_manifest_envelope(manifest: &Value) -> Result<String, String> {
     let object = manifest
         .as_object()
         .ok_or_else(|| "event generator manifest must be an object".to_string())?;
-    if object.get("schema_version").and_then(Value::as_u64) != Some(1) {
-        return Err("manifest schema_version must be 1".to_string());
+    if !matches!(
+        object.get("schema_version").and_then(Value::as_u64),
+        Some(1 | 2)
+    ) {
+        return Err("manifest schema_version must be 1 or 2".to_string());
     }
     for field in ["generator_id", "version", "name"] {
         require_manifest_string(object.get(field), field)?;
@@ -126,6 +146,21 @@ pub fn validate_manifest_envelope(manifest: &Value) -> Result<String, String> {
         {
             return Err("event.filter_schema must be an object".to_string());
         }
+        let examples: Vec<chariox_event_protocol::EventPayloadExample> = event
+            .get("examples")
+            .map(|value| serde_json::from_value(value.clone()))
+            .transpose()
+            .map_err(|_| "invalid event examples")?
+            .unwrap_or_default();
+        if object.get("schema_version").and_then(Value::as_u64) == Some(1)
+            && (event.contains_key("payload_schema") || event.contains_key("examples"))
+        {
+            return Err("payload_schema/examples require manifest schema_version 2".into());
+        }
+        chariox_event_protocol::validate_payload_definition(
+            event.get("payload_schema"),
+            &examples,
+        )?;
         if !event_keys.insert(format!("{event_type}@{version}")) {
             return Err(format!("duplicate manifest event {event_type}@{version}"));
         }

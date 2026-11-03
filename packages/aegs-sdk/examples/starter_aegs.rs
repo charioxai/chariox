@@ -44,6 +44,7 @@ impl AegsProvider for StarterProvider {
             occurred_at: "2026-01-01T00:00:00.000Z".to_string(),
             connection_scope: connection_scope.to_string(),
             prompt: "Handle the provider event.".to_string(),
+            data: None,
             metadata: json!({"provider_payload": payload}),
             reply_context: None,
         })

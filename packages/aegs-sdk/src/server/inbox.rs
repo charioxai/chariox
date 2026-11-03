@@ -127,6 +127,10 @@ impl AegsServer {
         let Ok(_delivery_guard) = self.store.delivery_guard(&subscription, generation).await else {
             return Ok(None);
         };
+        let schema = self
+            .provider
+            .event_payload_schema(&normalized.event_type, subscription.event_type_version)?;
+        chariox_event_protocol::validate_payload(schema.as_ref(), normalized.data.as_ref())?;
         let accepted_connection_id = subscription.connection_id.clone();
         let response = self
             .publisher
@@ -138,6 +142,7 @@ impl AegsServer {
                 event_type_version: subscription.event_type_version,
                 occurred_at: normalized.occurred_at.clone(),
                 prompt: normalized.prompt.clone(),
+                data: normalized.data.clone(),
                 artifacts: Vec::new(),
                 metadata: normalized.metadata.clone(),
                 reply_context: normalized.reply_context.clone(),

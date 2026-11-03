@@ -1,12 +1,13 @@
+mod payload;
 use chrono::{DateTime, SecondsFormat, Utc};
+pub use payload::*;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-// Version 3 adds provider reply context to publish and delivery envelopes and
-// makes same-interest fan-out an explicit route contract.
-pub const EVENT_DELIVERY_PROTOCOL_VERSION: u32 = 3;
-pub const AEGS_MANAGEMENT_PROTOCOL_VERSION: u32 = 4;
+// Version 4 carries publisher-schema-validated structured event data.
+pub const EVENT_DELIVERY_PROTOCOL_VERSION: u32 = 4;
+pub const AEGS_MANAGEMENT_PROTOCOL_VERSION: u32 = 5;
 pub const DEFAULT_EVENT_DELIVERY_TTL_SECONDS: u64 = 7 * 24 * 60 * 60;
 pub const MAX_EVENT_PROMPT_BYTES: usize = 1024 * 1024;
 pub const MAX_EVENT_ARTIFACTS: usize = 32;
@@ -77,6 +78,8 @@ pub struct EventDeliveryEnvelope {
     pub occurrence_id: String,
     pub occurred_at: String,
     pub prompt: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<Value>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub artifacts: Vec<EventArtifact>,
     #[serde(default, skip_serializing_if = "is_json_null")]
@@ -99,6 +102,7 @@ impl EventDeliveryEnvelope {
         if self.event_type_version == 0 {
             return Err("event_type_version must be greater than zero".to_string());
         }
+        validate_event_data(self.data.as_ref())?;
         validate_utc_timestamp("occurred_at", &self.occurred_at)?;
         if self.prompt.trim().is_empty() {
             return Err("prompt is required".to_string());
@@ -710,6 +714,8 @@ pub struct PublishEventRequest {
     pub event_type_version: u32,
     pub occurred_at: String,
     pub prompt: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<Value>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub artifacts: Vec<EventArtifact>,
     #[serde(default, skip_serializing_if = "is_json_null")]
@@ -731,6 +737,7 @@ impl PublishEventRequest {
         if self.event_type_version == 0 {
             return Err("event_type_version must be greater than zero".to_string());
         }
+        validate_event_data(self.data.as_ref())?;
         validate_utc_timestamp("occurred_at", &self.occurred_at)?;
         if self.prompt.trim().is_empty() || self.prompt.len() > MAX_EVENT_PROMPT_BYTES {
             return Err("prompt is empty or exceeds the workflow endpoint limit".to_string());
@@ -850,6 +857,7 @@ mod tests {
             occurrence_id: "occurrence-1".to_string(),
             occurred_at: "2026-07-27T00:00:00Z".to_string(),
             prompt: "Handle the test event.".to_string(),
+            data: None,
             artifacts: Vec::new(),
             metadata: Value::Null,
             reply_context: None,
