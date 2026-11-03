@@ -35,7 +35,6 @@ const imageReleaseVerifierUrl = new URL("../deploy/managed-kernel/verify-image-r
 const managedServiceUrl = new URL("../deploy/managed-kernel/chariox-managed-bootstrap.service", import.meta.url)
 const path1ManagedServiceUrl = new URL("../deploy/managed-kernel/chariox-path1-managed-bootstrap.service", import.meta.url)
 const workerServiceUrl = new URL("../deploy/managed-kernel/chariox-disposable-worker-bootstrap.service", import.meta.url)
-const workerKernelSourceUrl = new URL("../apps/kernel/src/managed_bootstrap/worker.rs", import.meta.url)
 const workerSupervisorSourceUrl = new URL("../apps/kernel/src/managed_bootstrap/supervisor.rs", import.meta.url)
 const rootlessServiceUrl = new URL("../deploy/managed-kernel/chariox-rootless-docker.service", import.meta.url)
 const brokerServiceUrl = new URL("../deploy/managed-kernel/chariox-slice-broker.service", import.meta.url)
@@ -270,7 +269,6 @@ test("managed Docker authority and publication access remain narrowly separated"
   const bootstrapEntrypoint = await readFile(bootstrapEntrypointUrl, "utf8")
   const managed = await readFile(managedServiceUrl, "utf8")
   const worker = await readFile(workerServiceUrl, "utf8")
-  const workerKernel = await readFile(workerKernelSourceUrl, "utf8")
   const workerSupervisor = await readFile(workerSupervisorSourceUrl, "utf8")
   const providerLaunchProbe = await readFile(providerLaunchProbeUrl, "utf8")
   const rootless = await readFile(rootlessServiceUrl, "utf8")
@@ -280,11 +278,7 @@ test("managed Docker authority and publication access remain narrowly separated"
   const managedBroker = await readFile(managedBrokerUrl, "utf8")
   const rootlessNamespace = await readFile(rootlessNamespaceUrl, "utf8")
 
-  assert.match(bootstrapEntrypoint, /\(Some\("--disposable-worker"\), 1\) => true/)
-  assert.match(
-    bootstrapEntrypoint,
-    /if disposable_worker \{[\s\S]*worker::run_from_env\(\)/,
-  )
+  assert.doesNotMatch(bootstrapEntrypoint, /disposable-worker|worker::run_from_env/)
   assert.match(managed, /Wants=network-online\.target chariox-rootless-docker\.service/)
   assert.doesNotMatch(managed, /(?:Wants|After)=.*chariox-slice-broker/)
   assert.match(managed, /ExecStartPre=-\+\/usr\/bin\/systemctl restart chariox-slice-broker\.service/)
@@ -323,11 +317,6 @@ test("managed Docker authority and publication access remain narrowly separated"
   // The supervisor needs this endpoint to claim the one-shot broker. Its
   // child kernel receives only the scoped lease FD, never the socket path.
   assert.match(worker, /^Environment=CHARIOX_SLICE_DOCKER_BROKER_SOCKET=\/var\/lib\/chariox-slice-share\/\.broker-private\/control\/control\.sock$/m)
-  assert.match(
-    workerKernel,
-    /super::supervisor::spawn_with_broker_lease\(&mut command,\s*topology\)/,
-    "worker kernel launch must delegate to the supervisor broker boundary",
-  )
   const brokerSpawnStart = workerSupervisor.indexOf("pub(super) fn spawn_with_broker_lease(")
   const brokerSpawnEnd = workerSupervisor.indexOf("\n#[cfg(all(test, unix))]", brokerSpawnStart)
   assert.ok(brokerSpawnStart >= 0 && brokerSpawnEnd > brokerSpawnStart)

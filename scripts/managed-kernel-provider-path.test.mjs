@@ -6,10 +6,8 @@ import { spawnSync } from "node:child_process"
 import { test } from "node:test"
 
 const homeServiceUrl = new URL("../deploy/managed-kernel/chariox-path1-managed-bootstrap.service", import.meta.url)
-const workerServiceUrl = new URL("../deploy/managed-kernel/chariox-disposable-worker-bootstrap.service", import.meta.url)
 const providerPathSourceUrl = new URL("../apps/kernel/src/managed_bootstrap/provider_path.rs", import.meta.url)
 const supervisorSourceUrl = new URL("../apps/kernel/src/managed_bootstrap/supervisor.rs", import.meta.url)
-const workerSourceUrl = new URL("../apps/kernel/src/managed_bootstrap/worker.rs", import.meta.url)
 const bootstrapPath = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 const probeCommand = "printf '\\000CHARIOX_PROVIDER_PATH_V1\\000%s\\000' \"${PATH-}\""
 const probeMarker = Buffer.from("\0CHARIOX_PROVIDER_PATH_V1\0")
@@ -23,20 +21,13 @@ function serviceEnvironment(unit, name) {
 
 test("Path-1 provider PATH is resolved after verification without importing profile trust variables", async (context) => {
   const homeUnit = await readFile(homeServiceUrl, "utf8")
-  const workerUnit = await readFile(workerServiceUrl, "utf8")
-  for (const [unit, expectedCommand] of [
-    [homeUnit, "ExecStart=/usr/local/bin/chariox-managed-bootstrap"],
-    [workerUnit, "ExecStart=/usr/local/bin/chariox-managed-bootstrap --disposable-worker"],
-  ]) {
-    assert.equal(serviceEnvironment(unit, "PATH"), bootstrapPath)
-    assert.ok(unit.split("\n").includes(expectedCommand), `missing direct command ${expectedCommand}`)
-    assert.doesNotMatch(unit, /--login|EnvironmentFile=|\.profile|\.bashrc/)
-  }
+  assert.equal(serviceEnvironment(homeUnit, "PATH"), bootstrapPath)
+  assert.ok(homeUnit.split("\n").includes("ExecStart=/usr/local/bin/chariox-managed-bootstrap"), "missing direct command")
+  assert.doesNotMatch(homeUnit, /--login|EnvironmentFile=|\.profile|\.bashrc/)
 
-  const [providerPathSource, supervisorSource, workerSource] = await Promise.all([
+  const [providerPathSource, supervisorSource] = await Promise.all([
     readFile(providerPathSourceUrl, "utf8"),
     readFile(supervisorSourceUrl, "utf8"),
-    readFile(workerSourceUrl, "utf8"),
   ])
   assert.match(providerPathSource, /\.env_clear\(\)/)
   assert.match(providerPathSource, /libc::poll/)
@@ -48,19 +39,8 @@ test("Path-1 provider PATH is resolved after verification without importing prof
   const supervisorLaunchEnd = supervisorSource.indexOf("\nfn configured_managed_slice_boundary(", supervisorLaunchStart)
   assert.ok(supervisorLaunchStart >= 0 && supervisorLaunchEnd > supervisorLaunchStart)
   const supervisorLaunchSource = supervisorSource.slice(supervisorLaunchStart, supervisorLaunchEnd)
-  const workerLaunchStart = workerSource.indexOf("fn spawn_kernel(")
-  const workerLaunchEnd = workerSource.indexOf(
-    '\nfn confirm_when_relay_ready(',
-    workerLaunchStart,
-  )
-  assert.ok(workerLaunchStart >= 0 && workerLaunchEnd > workerLaunchStart)
-  const workerLaunchSource = workerSource.slice(workerLaunchStart, workerLaunchEnd)
   const verifiedPathLaunch = /release: &VerifiedRelease,[\s\S]*?resolve_login_path\(\s*&config\.process_home\s*,?\s*\)[\s\S]*?\.env\("PATH",\s*provider_path\)/
   assert.match(supervisorLaunchSource, verifiedPathLaunch)
-  assert.match(
-    workerLaunchSource,
-    /release: &VerifiedRelease,[\s\S]*?resolve_worker_login_path\(\s*&config\.process_home\s*,?\s*\)[\s\S]*?\.env\("PATH",\s*provider_path\)/,
-  )
   assert.ok(
     supervisorLaunchSource.indexOf("resolve_login_path") <
       supervisorLaunchSource.indexOf("prepare_kernel_local_auth_file(config)"),
@@ -73,10 +53,6 @@ test("Path-1 provider PATH is resolved after verification without importing prof
   assert.match(
     providerPathSource,
     /pub\(super\) fn resolve_login_path\(home: &Path\) -> OsString \{\s*resolve_login_path_with_fallback\(home\)/,
-  )
-  assert.match(
-    providerPathSource,
-    /pub\(super\) fn resolve_worker_login_path\(home: &Path\) -> OsString \{\s*resolve_login_path_with_fallback\(home\)/,
   )
   assert.match(
     providerPathSource,
