@@ -18,6 +18,8 @@ use zeroize::Zeroizing;
 const DIRECTORY: &str = "project-environment-setup";
 /// The output a run keeps; older lines are dropped first.
 const OUTPUT_TAIL_BYTES: usize = 64 * 1024;
+/// How long output may still arrive after the script exited.
+const OUTPUT_DRAIN_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
 /// How long a run's progress may sit only in memory.
 const PERSIST_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
 
@@ -272,8 +274,13 @@ impl SetupRuns {
             .wait()
             .await
             .map_err(|_| "Setup could not be awaited".to_string());
+        // A script that leaves a background process holding the pipes must not keep the run open.
+        let drain_until = tokio::time::Instant::now() + OUTPUT_DRAIN_GRACE;
         for reader in readers.into_iter().flatten() {
-            let _ = reader.await;
+            let abort = reader.abort_handle();
+            if tokio::time::timeout_at(drain_until, reader).await.is_err() {
+                abort.abort();
+            }
         }
         status
     }
@@ -507,6 +514,21 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
         panic!("the Setup process kept running after Stop");
+    }
+
+    #[tokio::test]
+    async fn a_background_process_holding_the_output_does_not_keep_the_run_open() {
+        let dir = scratch();
+        let runs = SetupRuns::new(&dir.0);
+        runs.start(spec(&dir, "op-background", "sleep 4 & echo done"))
+            .unwrap();
+        let view = finished(&runs, "op-background").await;
+        assert_eq!(view.state, EnvironmentOperationState::Succeeded);
+        assert!(view.output_tail.contains("done"));
+        assert!(
+            view.ended_at_ms.unwrap() - view.started_at_ms < 3_500,
+            "the run waited for the background process"
+        );
     }
 
     #[tokio::test]
