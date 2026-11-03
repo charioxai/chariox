@@ -38,5 +38,12 @@
   "docker/kernel-browser-geometry.mjs": "584f6641a2e8f650caad71a9a107fecf7b3882b43a2311009d872ef49f47ba2a",
   "docker/kernel-browser-native-worker.mjs": "ac9f9831d06d641e2c8fe37e8bdd7777c1006fda662ccbbc0952efb33d12cfce",
   "docker/kernel-browser-pixels.mjs": "1970012af310bd3a328ba61e1bc41e6edaabeb754dda1ccc76371dcd45df1af1",
-  "docker/room-desktop-environment.py": "6191304189483b3914721dfc803fcca94a4cbd6a8be106c677086ec8aba25c79"
+  "docker/room-desktop-environment.py": "6191304189483b3914721dfc803fcca94a4cbd6a8be106c677086ec8aba25c79",
+  "docker/slice-keyboard.py": "4a86c371a7b478f4ba97c4d7f365b66b4c8eb51fd09670b85ec168ac3c9cb653",
+  "docker/native-x11.py": "fe5e28642a0ec174cabbd8cf54ff6a18fc42d6b86d181f39f24fefabba4caaa1",
+  "docker/x11-text-keyboard.py": "d6cc923d4fdd82f35a400ac8656c2d77e43f53a4e8f3d630bc938d78c3a8a9cd",
+  "docker/x11-keymap-fence.py": "1c6c0b6e9973b7763410e33d71759e653508b4e0115270881cc0e7d8aaf5737f",
+  "docker/native-fill-targets.py": "836e00a3e6016b0b290285ec4087da2db68708f955ab5aa1f8cdc1f4dcf0a6dd",
+  "docker/room-native-protection.py": "86a89a4100c8dcfd5b447552599c732c6755d5f657c14e6ea47de9824e22980d",
+  "docker/native-accessibility.py": "abfc36f523dabda06378cd95da9070e26eaa572562b782fa0cbad96e34425746"
 }
