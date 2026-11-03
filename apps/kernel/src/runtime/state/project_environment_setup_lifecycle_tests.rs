@@ -2481,7 +2481,7 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
     );
     assert_eq!(repair_started_status.platform, target_platform);
 
-    let utility_prompt_deadline = Instant::now() + Duration::from_secs(3);
+    let utility_prompt_deadline = Instant::now() + SETUP_TRANSPORT_RECOVERY_BARRIER_TIMEOUT;
     while utility_prompt_requests(&provider_fixture.trace_entries()).is_empty() {
         if Instant::now() >= utility_prompt_deadline {
             let status = runtime
@@ -4093,7 +4093,7 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
     // Rebootstrap the same worker from the same durable state path. No setup
     // entry is fabricated: the public Cancel above persisted the worker's
     // attempt-one state, which this fresh app must restore.
-    let release_deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+    let release_deadline = tokio::time::Instant::now() + SETUP_TRANSPORT_RECOVERY_BARRIER_TIMEOUT;
     let restored_worker = loop {
         match crate::DaemonApp::bootstrap(config_worker.clone()) {
             Ok(app) => break app,
@@ -4351,10 +4351,13 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
         ProjectEnvironmentSetupPhase::Requested
     );
     assert_eq!(retry_started_status.attempt, 1);
-    tokio::time::timeout(Duration::from_secs(3), fake_worker_start_seen)
-        .await
-        .expect("external worker should observe the public Start")
-        .expect("external worker Start barrier should remain available");
+    tokio::time::timeout(
+        SETUP_TRANSPORT_RECOVERY_BARRIER_TIMEOUT,
+        fake_worker_start_seen,
+    )
+    .await
+    .expect("external worker should observe the public Start")
+    .expect("external worker Start barrier should remain available");
 
     let first_cancelled = response_status(
         get_setup_status(
@@ -4391,10 +4394,13 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
         retry_accepted_status.attempt, 2,
         "home Retry must advance the authoritative operation attempt"
     );
-    tokio::time::timeout(Duration::from_secs(3), fake_worker_retry_seen)
-        .await
-        .expect("external worker should observe the public Retry")
-        .expect("external worker Retry barrier should remain available");
+    tokio::time::timeout(
+        SETUP_TRANSPORT_RECOVERY_BARRIER_TIMEOUT,
+        fake_worker_retry_seen,
+    )
+    .await
+    .expect("external worker should observe the public Retry")
+    .expect("external worker Retry barrier should remain available");
     let second_attempt = response_status(
         get_setup_status(
             &runtime,
