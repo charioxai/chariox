@@ -371,6 +371,81 @@ exit 2
         let _ = std::fs::remove_dir_all(root);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn a_lease_uses_the_login_the_transfer_installed_instead_of_making_a_second_copy() {
+        crate::test_support::isolated_env_test!();
+        let _guard = crate::env_lock::lock();
+        let root = std::env::temp_dir().join(format!(
+            "chariox-remote-account-transferred-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let _cleanup = install_opencode_auth_fixture(&root);
+        let (mut app, context) = remote_account_fixture(&root);
+        let registry = app.provider_account_profile_registry();
+        let materialization = ProviderAccountMaterialization {
+            profile: crate::account_profile::ProviderAccountReplicaMetadata {
+                owner_user_id: "owner-a".to_string(),
+                provider: "opencode".to_string(),
+                profile_id: "home-work".to_string(),
+                label: "Work".to_string(),
+                origin: crate::account_profile::ProviderAccountProfileOrigin::CharioxCreated,
+                is_default: false,
+            },
+            files: vec![crate::account_profile::ProviderAccountMaterializationFile {
+                relative_path: "data/opencode/auth.json".to_string(),
+                contents_base64: base64::Engine::encode(
+                    &base64::engine::general_purpose::STANDARD,
+                    serde_json::to_vec(&serde_json::json!({
+                        "opencode": {"type": "api", "key": "synthetic-home"}
+                    }))
+                    .unwrap(),
+                ),
+            }],
+            generated_at_ms: 1,
+        };
+        // The transfer installed this account here under the worker's own id.
+        let mut installed = materialization.clone();
+        installed.profile.profile_id = "worker-work".to_string();
+        let receipt = registry
+            .materialize_managed_context_replica(
+                "owner-a",
+                "context-a",
+                &"a".repeat(64),
+                &installed,
+            )
+            .unwrap();
+        registry
+            .record_transfer_origin("owner-a", &receipt, "home-kernel", "home-work")
+            .unwrap();
+        let before = registry.list("owner-a", Some("opencode")).unwrap().len();
+
+        let profile = RemoteLeaseRuntime::new(&mut app)
+            .ensure_remote_provider_account(context.clone(), materialization.clone())
+            .unwrap();
+
+        assert_eq!(
+            profile.profile_id, "worker-work",
+            "the lease runs on the login that is already here"
+        );
+        assert_eq!(
+            registry.list("owner-a", Some("opencode")).unwrap().len(),
+            before,
+            "no second copy of the login"
+        );
+
+        // A copy from another account of the same kernel is not this one.
+        let mut other = materialization;
+        other.profile.profile_id = "home-other".to_string();
+        let replica = RemoteLeaseRuntime::new(&mut app)
+            .ensure_remote_provider_account(context, other)
+            .unwrap();
+        assert_eq!(replica.profile_id, "home-other");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     #[test]
     fn remote_auth_validation_policy_preserves_codex_and_claude_handoffs() {
         assert!(remote_provider_account_requires_auth_validation(

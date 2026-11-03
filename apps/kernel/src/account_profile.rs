@@ -904,6 +904,15 @@ struct StoredProviderAccountProfile {
     replica_root_identity: Option<(u64, u64)>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     managed_context_replica: Option<ManagedContextReplicaBinding>,
+    /// Which account of which kernel a managed-context transfer installed here, so a lease from that kernel can use it instead of making a second copy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    transferred_from: Option<TransferredAccountOrigin>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct TransferredAccountOrigin {
+    source_kernel_id: String,
+    source_profile_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1143,6 +1152,7 @@ impl ProviderAccountProfileRegistry {
                 replica_previous_default_profile_id: None,
                 replica_root_identity: None,
                 managed_context_replica: None,
+                transferred_from: None,
             });
             changed = true;
         }
@@ -1694,6 +1704,7 @@ impl ProviderAccountProfileRegistry {
             replica_previous_default_profile_id: None,
             replica_root_identity: None,
             managed_context_replica: None,
+            transferred_from: None,
         });
         self.persist_locked(&document)?;
         Ok(profile)
@@ -1754,6 +1765,7 @@ impl ProviderAccountProfileRegistry {
             replica_previous_default_profile_id: None,
             replica_root_identity: None,
             managed_context_replica: None,
+            transferred_from: None,
         });
         self.persist_locked(&document)?;
         Ok(profile)
@@ -1812,6 +1824,7 @@ impl ProviderAccountProfileRegistry {
             replica_previous_default_profile_id: None,
             replica_root_identity: None,
             managed_context_replica: None,
+            transferred_from: None,
         });
         self.persist_locked(&document)?;
         Ok(profile)
@@ -2935,6 +2948,61 @@ impl ProviderAccountProfileRegistry {
         })
     }
 
+    /// Remembers which account of which kernel the managed-context transfer installed as `receipt`'s profile.
+    pub(crate) fn record_transfer_origin(
+        &self,
+        owner_user_id: &str,
+        receipt: &ManagedContextProviderAccountReceipt,
+        source_kernel_id: &str,
+        source_profile_id: &str,
+    ) -> Result<(), DaemonError> {
+        let mut document = self.write_document()?;
+        let original = document.clone();
+        let Some(stored) = document.profiles.iter_mut().find(|stored| {
+            stored.public.owner_user_id == owner_user_id
+                && stored.public.provider == receipt.provider
+                && stored.public.profile_id == receipt.profile_id
+        }) else {
+            return Err(registry_error(
+                "record transferred account origin",
+                "the transferred account profile is missing",
+            ));
+        };
+        stored.transferred_from = Some(TransferredAccountOrigin {
+            source_kernel_id: source_kernel_id.to_string(),
+            source_profile_id: source_profile_id.to_string(),
+        });
+        if let Err(error) = self.persist_locked(&document) {
+            *document = original;
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// The profile a managed-context transfer installed from `source_profile_id` of `source_kernel_id`, if it is still here.
+    pub(crate) fn transferred_profile(
+        &self,
+        owner_user_id: &str,
+        provider: &str,
+        source_kernel_id: &str,
+        source_profile_id: &str,
+    ) -> Result<Option<ProviderAccountProfile>, DaemonError> {
+        let provider = normalize_provider(provider)?;
+        Ok(self
+            .read_document()?
+            .profiles
+            .iter()
+            .find(|stored| {
+                stored.public.owner_user_id == owner_user_id
+                    && stored.public.provider == provider
+                    && stored.transferred_from.as_ref().is_some_and(|origin| {
+                        origin.source_kernel_id == source_kernel_id
+                            && origin.source_profile_id == source_profile_id
+                    })
+            })
+            .map(|stored| stored.public.clone()))
+    }
+
     fn materialize_replica_internal(
         &self,
         owner_user_id: &str,
@@ -3293,6 +3361,7 @@ impl ProviderAccountProfileRegistry {
             existing.replica_previous_default_profile_id = previous_default_profile_id.clone();
             existing.replica_root_identity = replica_root_identity;
             existing.managed_context_replica = managed_context_binding;
+            existing.transferred_from = None;
             existing.public.clone()
         } else {
             let public = new_public_profile(
@@ -3313,6 +3382,7 @@ impl ProviderAccountProfileRegistry {
                 replica_previous_default_profile_id: previous_default_profile_id.clone(),
                 replica_root_identity,
                 managed_context_replica: managed_context_binding,
+                transferred_from: None,
             });
             public
         };
@@ -3434,6 +3504,7 @@ impl ProviderAccountProfileRegistry {
                 replica_previous_default_profile_id: None,
                 replica_root_identity: None,
                 managed_context_replica: None,
+                transferred_from: None,
             };
         } else {
             document.profiles.remove(index);
@@ -7913,6 +7984,98 @@ mod tests {
         let _ = fs::remove_dir_all(target_root);
         assert!(refresh_result.is_err());
         assert_eq!(published_auth.unwrap(), r#"{"token":"first"}"#);
+    }
+
+    #[test]
+    fn a_login_the_transfer_installed_is_found_by_the_account_and_kernel_it_came_from() {
+        crate::test_support::isolated_env_test!();
+        std::env::remove_var("CODEX_HOME");
+        let (_source_root, source) = fixture();
+        let source_profile = source
+            .create_managed("owner-a", "codex", "Source default")
+            .unwrap();
+        source
+            .set_default("owner-a", "codex", &source_profile.profile_id)
+            .unwrap();
+        let environment = source
+            .resolve_environment("owner-a", "codex", "default")
+            .unwrap();
+        fs::write(
+            Path::new(&environment["CODEX_HOME"]).join("auth.json"),
+            br#"{"token":"source"}"#,
+        )
+        .unwrap();
+        let materialization = source
+            .export_managed_context_materialization("owner-a", "codex", "default")
+            .unwrap();
+        let (target_root, target) = fixture();
+        target
+            .migrate_effective_defaults("owner-a", &target_root.join("home"))
+            .unwrap();
+        let receipt = target
+            .materialize_managed_context_replica(
+                "owner-a",
+                "context-a",
+                &"a".repeat(64),
+                &materialization,
+            )
+            .unwrap();
+
+        assert!(
+            target
+                .transferred_profile(
+                    "owner-a",
+                    "codex",
+                    "home-kernel",
+                    &source_profile.profile_id
+                )
+                .unwrap()
+                .is_none(),
+            "nothing says where the login came from until the transfer records it"
+        );
+        target
+            .record_transfer_origin(
+                "owner-a",
+                &receipt,
+                "home-kernel",
+                &source_profile.profile_id,
+            )
+            .unwrap();
+
+        let found = target
+            .transferred_profile(
+                "owner-a",
+                "codex",
+                "home-kernel",
+                &source_profile.profile_id,
+            )
+            .unwrap()
+            .expect("the installed login");
+        assert_eq!(found.profile_id, receipt.profile_id);
+        for (kernel, profile) in [
+            ("other-kernel", source_profile.profile_id.as_str()),
+            ("home-kernel", "another-account"),
+        ] {
+            assert!(
+                target
+                    .transferred_profile("owner-a", "codex", kernel, profile)
+                    .unwrap()
+                    .is_none(),
+                "only that account of that kernel"
+            );
+        }
+        assert!(
+            target
+                .transferred_profile(
+                    "owner-b",
+                    "codex",
+                    "home-kernel",
+                    &source_profile.profile_id
+                )
+                .unwrap()
+                .is_none(),
+            "only that owner's"
+        );
     }
 
     #[test]
