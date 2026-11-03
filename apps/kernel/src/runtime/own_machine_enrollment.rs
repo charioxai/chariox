@@ -45,14 +45,23 @@ fn owner_profile<'a>(
     command: &KernelCommand,
 ) -> Result<&'a crate::config::PersistedCloudRelayProfile, DaemonError> {
     let profile = crate::runtime::cloud_relay_control::active_cloud_profile(config)
-        .filter(|p| p.kernel_credential.as_deref().is_some_and(|c| !c.is_empty()))
-        .ok_or_else(|| error("this kernel is not signed in to Chariox; sign in before enrolling another machine"))?;
+        .filter(|p| {
+            p.kernel_credential
+                .as_deref()
+                .is_some_and(|c| !c.is_empty())
+        })
+        .ok_or_else(|| {
+            error(
+                "this kernel is not signed in to Chariox; sign in before enrolling another machine",
+            )
+        })?;
     let named_other = command
         .caller
         .user_id
         .as_deref()
         .is_some_and(|user| user != profile.user_id);
-    if !crate::runtime::cloud_relay_authorization::kernel_cloud_owner(config, command) || named_other
+    if !crate::runtime::cloud_relay_authorization::kernel_cloud_owner(config, command)
+        || named_other
     {
         return Err(error("only this kernel's owner may enroll a machine"));
     }
@@ -137,12 +146,26 @@ fn quote(value: &str) -> String {
 /// One line for the new machine's own shell. The code reaches Setup on stdin through a
 /// shell builtin, so it never appears in any process's argument list; the leading space
 /// keeps it out of history for shells that ignore space-prefixed lines.
-fn installer_command(install_url: &str, ticket: &str, api_url: &str) -> Result<String, DaemonError> {
+fn installer_command(
+    install_url: &str,
+    ticket: &str,
+    api_url: &str,
+) -> Result<String, DaemonError> {
     let install = url::Url::parse(install_url)
         .ok()
-        .filter(|u| u.scheme() == "https" && u.query().is_none() && u.fragment().is_none() && u.username().is_empty() && u.password().is_none())
+        .filter(|u| {
+            u.scheme() == "https"
+                && u.query().is_none()
+                && u.fragment().is_none()
+                && u.username().is_empty()
+                && u.password().is_none()
+        })
         .ok_or_else(|| error("Chariox did not provide a valid installer address"))?;
-    if ticket.is_empty() || !ticket.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-') {
+    if ticket.is_empty()
+        || !ticket
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    {
         return Err(error("the enrollment ticket has an unexpected form"));
     }
     Ok(format!(
@@ -157,7 +180,9 @@ fn checked_expiry(expires_at: &str, now: chrono::DateTime<chrono::Utc>) -> Resul
     let expiry = chrono::DateTime::parse_from_rfc3339(expires_at)
         .map_err(|_| error("the enrollment ticket has an invalid expiry"))?;
     let ttl = expiry.signed_duration_since(now);
-    if ttl <= chrono::Duration::zero() || ttl > chrono::Duration::seconds(TICKET_SECONDS + CLOCK_SKEW_SECONDS) {
+    if ttl <= chrono::Duration::zero()
+        || ttl > chrono::Duration::seconds(TICKET_SECONDS + CLOCK_SKEW_SECONDS)
+    {
         return Err(error("the enrollment ticket has an unexpected lifetime"));
     }
     Ok(())
@@ -169,13 +194,17 @@ fn issue_command(
 ) -> Result<OwnMachineEnrollmentCommand, DaemonError> {
     let ticket = issue_blocking(profile, label)?;
     let built = checked_expiry(&ticket.expires_at, chrono::Utc::now()).and_then(|()| {
-        let install_url = ticket.setup_install_url.as_deref().ok_or_else(|| {
-            error("this Chariox service has no machine installer configured")
-        })?;
+        let install_url = ticket
+            .setup_install_url
+            .as_deref()
+            .ok_or_else(|| error("this Chariox service has no machine installer configured"))?;
         installer_command(install_url, &ticket.ticket, &profile.api_url)
     });
     match built {
-        Ok(command) => Ok(OwnMachineEnrollmentCommand { command, expires_at: ticket.expires_at.clone() }),
+        Ok(command) => Ok(OwnMachineEnrollmentCommand {
+            command,
+            expires_at: ticket.expires_at.clone(),
+        }),
         Err(refused) => {
             revoke_blocking(profile, &ticket.ticket_id)?;
             Err(refused)
@@ -190,8 +219,13 @@ pub(crate) async fn execute(
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let profile = owner_profile(&config, command)?.clone();
     let label = request.machine_label.filter(|l| !l.trim().is_empty());
-    if label.as_deref().is_some_and(|l| l.chars().count() > LABEL_LIMIT) {
-        return Err(error("the machine name is too long; use at most 200 characters"));
+    if label
+        .as_deref()
+        .is_some_and(|l| l.chars().count() > LABEL_LIMIT)
+    {
+        return Err(error(
+            "the machine name is too long; use at most 200 characters",
+        ));
     }
     let enrollment = tokio::task::spawn_blocking(move || issue_command(&profile, label.as_deref()))
         .await
@@ -235,13 +269,21 @@ mod tests {
                 let mut body = vec![0; length];
                 reader.read_exact(&mut body).unwrap();
                 let first = line.trim().to_string();
-                log.lock().unwrap().push(format!("{} {}", first.trim_end_matches(" HTTP/1.1"), String::from_utf8_lossy(&body)));
+                log.lock().unwrap().push(format!(
+                    "{} {}",
+                    first.trim_end_matches(" HTTP/1.1"),
+                    String::from_utf8_lossy(&body)
+                ));
                 let (status, payload) = if first.starts_with("POST") {
                     ("201 Created", ticket_body.clone())
                 } else {
                     ("204 No Content", String::new())
                 };
-                let _ = write!(stream, "HTTP/1.1 {status}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{payload}", payload.len());
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 {status}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{payload}",
+                    payload.len()
+                );
             }
         });
         (url, seen)
@@ -271,7 +313,9 @@ mod tests {
     }
 
     fn command(user: Option<&str>) -> (KernelCommand, IssueOwnMachineEnrollmentRequest) {
-        let request = IssueOwnMachineEnrollmentRequest { machine_label: Some("build box".into()) };
+        let request = IssueOwnMachineEnrollmentRequest {
+            machine_label: Some("build box".into()),
+        };
         let mut command = KernelCommand::from_local_request(
             "enroll",
             None,
@@ -291,10 +335,20 @@ mod tests {
         else {
             panic!("expected an enrollment command")
         };
-        assert!(!enrollment.command.contains('\n'), "one line for the agent's shell");
-        assert!(enrollment.command.starts_with(" ("), "leading space keeps it out of history");
-        assert!(enrollment.command.contains("curl -fsSL https://downloads.example/install.sh"));
-        assert!(enrollment.command.contains(&format!("printf '%s\\n' {TICKET} |")));
+        assert!(
+            !enrollment.command.contains('\n'),
+            "one line for the agent's shell"
+        );
+        assert!(
+            enrollment.command.starts_with(" ("),
+            "leading space keeps it out of history"
+        );
+        assert!(enrollment
+            .command
+            .contains("curl -fsSL https://downloads.example/install.sh"));
+        assert!(enrollment
+            .command
+            .contains(&format!("printf '%s\\n' {TICKET} |")));
         assert!(enrollment.command.contains(&format!("--api-url {api})")));
         let log = seen.lock().unwrap();
         assert_eq!(log.len(), 1, "no ticket is revoked: {log:?}");
@@ -307,15 +361,22 @@ mod tests {
     async fn a_guests_agent_is_refused_before_cloud_is_contacted() {
         let (api, seen) = cloud(ticket_body(Some("https://downloads.example/install.sh")));
         let (command, request) = command(Some("guest"));
-        let refusal = execute(signed_in(&api), &command, request).await.unwrap_err();
-        assert!(refusal.to_string().contains("only this kernel's owner"), "{refusal}");
+        let refusal = execute(signed_in(&api), &command, request)
+            .await
+            .unwrap_err();
+        assert!(
+            refusal.to_string().contains("only this kernel's owner"),
+            "{refusal}"
+        );
         assert!(seen.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
     async fn a_kernel_that_is_not_signed_in_says_what_to_do() {
         let (command, request) = command(Some("owner"));
-        let refusal = execute(DaemonConfig::for_tests(), &command, request).await.unwrap_err();
+        let refusal = execute(DaemonConfig::for_tests(), &command, request)
+            .await
+            .unwrap_err();
         assert!(refusal.to_string().contains("sign in"), "{refusal}");
     }
 
@@ -323,8 +384,13 @@ mod tests {
     async fn a_cloud_without_an_installer_revokes_the_ticket_it_issued() {
         let (api, seen) = cloud(ticket_body(None));
         let (command, request) = command(Some("owner"));
-        let refusal = execute(signed_in(&api), &command, request).await.unwrap_err();
-        assert!(refusal.to_string().contains("no machine installer"), "{refusal}");
+        let refusal = execute(signed_in(&api), &command, request)
+            .await
+            .unwrap_err();
+        assert!(
+            refusal.to_string().contains("no machine installer"),
+            "{refusal}"
+        );
         assert!(!refusal.to_string().contains(TICKET));
         let log = seen.lock().unwrap();
         assert_eq!(log.len(), 2, "{log:?}");
@@ -333,13 +399,27 @@ mod tests {
 
     #[test]
     fn installer_address_must_be_plain_https_and_the_code_a_bare_token() {
-        for bad in ["http://x.example/install.sh", "https://u:p@x.example/i", "https://x.example/i?a=b", "not a url"] {
-            assert!(installer_command(bad, TICKET, "https://api.example").is_err(), "{bad}");
+        for bad in [
+            "http://x.example/install.sh",
+            "https://u:p@x.example/i",
+            "https://x.example/i?a=b",
+            "not a url",
+        ] {
+            assert!(
+                installer_command(bad, TICKET, "https://api.example").is_err(),
+                "{bad}"
+            );
         }
         assert!(installer_command("https://x.example/i", "a b", "https://api.example").is_err());
-        assert!(installer_command("https://x.example/i", "$(rm -rf ~)", "https://api.example").is_err());
-        let spaced = installer_command("https://x.example/a b", TICKET, "https://api.example/").unwrap();
-        assert!(spaced.contains("curl -fsSL 'https://x.example/a%20b'"), "{spaced}");
+        assert!(
+            installer_command("https://x.example/i", "$(rm -rf ~)", "https://api.example").is_err()
+        );
+        let spaced =
+            installer_command("https://x.example/a b", TICKET, "https://api.example/").unwrap();
+        assert!(
+            spaced.contains("curl -fsSL 'https://x.example/a%20b'"),
+            "{spaced}"
+        );
         assert!(spaced.ends_with("--api-url https://api.example)"));
     }
 
