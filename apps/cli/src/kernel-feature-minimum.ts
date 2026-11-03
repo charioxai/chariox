@@ -75,10 +75,6 @@ export function kernelFeatureMinimum(request: unknown): FeatureMinimum | undefin
     feature = name === "KeepManagedEnvironmentRunning"
       ? { feature: "Managed environment keep running", minimum: requests.managedEnvironmentKeepRunningMinimumProtocolVersion }
       : { feature: "Disposable worker control", minimum: requests.disposableWorkerControlMinimumProtocolVersion }
-  } else if (name === "ConfigureAppAutomation" && payload?.delivery_mode === "inject") {
-    feature = { feature: "App automation injection", minimum: 491 }
-  } else if (name === "UpdateQueuedWorkflowPrompt" && payload?.retry_delivery === true) {
-    feature = { feature: "Held notification retry", minimum: requests.queuedNotificationRetryMinimumProtocolVersion }
   } else if (name === "CancelActivePrompt" && payload?.expected_prompt_id != null) {
     feature = { feature: "Exact prompt cancellation", minimum: requests.exactPromptCancellationMinimumProtocolVersion }
   } else if (name === "MoveAgentToLocal" && payload?.abort_pending === true) {

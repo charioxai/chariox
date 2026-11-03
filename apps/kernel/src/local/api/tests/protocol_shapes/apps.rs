@@ -35,6 +35,7 @@ fn app_installation_protocol_shapes_are_versioned_and_preserve_generations() {
                 channel: chariox_app_runtime::installation::channel::InstallationChannel::Release,
                 dev_room_id: None,
                 installation_id: "todo".into(),
+                events: vec![],
                 app_id: "com.chariox.todo".into(),
                 generation: "9223372036854775807".into(),
                 active_release: Some(release.clone()),
@@ -192,7 +193,6 @@ fn app_worker_control_and_automation_shapes_are_versioned_and_owner_free() {
             installation_id: "todo".into(),
         }),
         LocalDaemonRequest::ConfigureAppAutomation(ConfigureAppAutomationRequest {
-            delivery_mode: crate::local::NotificationDeliveryMode::Queue,
             installation_id: "todo".into(),
             automation_id: "reminders".into(),
             expected_revision: 0,
@@ -209,7 +209,6 @@ fn app_worker_control_and_automation_shapes_are_versioned_and_owner_free() {
         }),
     ];
     let automation = AppAutomationSummary {
-        delivery_mode: crate::local::NotificationDeliveryMode::Queue,
         automation_id: "reminders".into(),
         revision: 1,
         event_name: "todo_due".into(),

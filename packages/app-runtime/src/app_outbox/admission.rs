@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 
 struct Event {
     version: u32,
+    title: Option<String>,
     schema_digest: String,
     validator: jsonschema::JSONSchema,
 }
@@ -38,6 +39,11 @@ impl EventCatalog {
                 declaration.name.clone(),
                 Event {
                     version: declaration.schema_version,
+                    title: declaration
+                        .payload_schema
+                        .get("title")
+                        .and_then(|title| title.as_str())
+                        .map(str::to_owned),
                     schema_digest: digest(&schema),
                     validator,
                 },
@@ -58,6 +64,12 @@ impl EventCatalog {
         self.events
             .get(name)
             .map(|event| event.schema_digest.as_str())
+    }
+    /// The App's outgoing events in name order, each with the title its payload schema declares.
+    pub fn outgoing_events(&self) -> impl Iterator<Item = (&str, Option<&str>)> {
+        self.events
+            .iter()
+            .map(|(name, event)| (name.as_str(), event.title.as_deref()))
     }
     pub fn event_version(&self, name: &str) -> Option<u32> {
         self.events.get(name).map(|event| event.version)
@@ -88,7 +100,6 @@ pub(super) struct Binding {
     pub queue_id: String,
     pub status: String,
     pub scheduled: bool,
-    pub delivery_mode: NotificationDeliveryMode,
 }
 impl VerifiedAutomation {
     pub fn load_in(
@@ -171,7 +182,7 @@ pub(super) fn load(
     id: &str,
 ) -> Result<Binding> {
     let binding = connection.query_row(
-        "SELECT automation_id,revision,event_name,event_version,schema_digest,session_id,publication_id,endpoint_id,queue_id,status,scheduled,delivery_mode
+        "SELECT automation_id,revision,event_name,event_version,schema_digest,session_id,publication_id,endpoint_id,queue_id,status,scheduled
          FROM app_automations WHERE owner_id=?1 AND installation_id=?2 AND automation_id=?3",
         rusqlite::params![owner,installation,id],
         |row| Ok(Binding {
@@ -179,7 +190,6 @@ pub(super) fn load(
             event_name:row.get(2)?, event_version:row.get::<_,i64>(3)?.try_into().map_err(|_|rusqlite::Error::InvalidQuery)?,
             schema_digest:row.get(4)?,session_id:row.get(5)?,publication_id:row.get(6)?,endpoint_id:row.get(7)?,queue_id:row.get(8)?,status:row.get(9)?,
             scheduled:match row.get::<_,i64>(10)? {0=>false,1=>true,_=>return Err(rusqlite::Error::InvalidQuery)},
-            delivery_mode: match row.get::<_,String>(11)?.as_str() {"queue"=>NotificationDeliveryMode::Queue,"inject"=>NotificationDeliveryMode::Inject,_=>return Err(rusqlite::Error::InvalidQuery)},
         }),
     ).optional()?.ok_or(OutboxError::NotFound)?;
     if binding.revision == 0 || binding.event_version == 0 {

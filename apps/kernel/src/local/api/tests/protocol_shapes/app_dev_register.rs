@@ -42,6 +42,7 @@ fn app_dev_register_snapshot_and_default_source() {
     let response = LocalDaemonResponse::AppInstallation {
         installation: AppInstallationSummary {
             installation_id: "dev".into(),
+            events: vec![],
             app_id: "com.example.dev".into(),
             channel: InstallationChannel::Dev,
             dev_room_id: Some("room".into()),

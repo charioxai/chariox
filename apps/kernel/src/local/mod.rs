@@ -4,11 +4,10 @@ pub use api::{
 };
 pub use api::{
     AttachWorkflowNotificationRequest, DetachWorkflowNotificationRequest,
-    ListWorkflowNotificationsRequest, NotificationDeliveryMode,
-    RegisterWorkflowNotificationSourceRequest, WorkflowNotificationAck,
-    WorkflowNotificationDiagnostic, WorkflowNotificationEnvelope, WorkflowNotificationEvents,
-    WorkflowNotificationSource, WorkflowNotificationSourceSummary, WorkflowNotificationStatus,
-    WorkflowNotificationSubscription, WorkflowNotificationTargetKind,
+    ListWorkflowNotificationsRequest, RegisterWorkflowNotificationSourceRequest,
+    WorkflowNotificationAck, WorkflowNotificationDiagnostic, WorkflowNotificationEnvelope,
+    WorkflowNotificationSource, WorkflowNotificationSourceSummary,
+    WorkflowNotificationSubscription, WorkflowNotificationTargetKind, NOTIFICATION_RETENTION_MS,
 };
 pub use api::{CreatedResource, CreatedResourceState, ResourceRevokeMethod};
 mod api;
@@ -264,21 +263,21 @@ pub use api::{
 };
 pub use api::{
     AcceptAppHostActionRequest, AnswerUserDomainInteractionRequest, AppAutomationStatus,
-    AppAutomationSummary, AppCapabilityDecisionStatus, AppConnectionSummary, AppFileContents,
-    AppFrontendAsset, AppFrontendBundle, AppHostAction, AppInboxConnection, AppInboxRouteRequest,
-    AppInboxRouteSummary, AppInstallationRequest, AppInstallationSummary, AppLogEntrySummary,
-    AppReleaseSummary, AppRequestErrorCode, AppSetInstallation, AppUpdatePhase, AppUpdateSummary,
-    AppViewChannelError, AppWorkerAction, AppWorkerPhase, AppWorkerRequest, AppWorkerSummary,
-    CallUserAppViewRequest, ConfigureAppAutomationRequest, ControlAppWorkerRequest,
-    CreateAppInboxRouteRequest, DeploymentAppsConsent, DeploymentAppsConsentStatus,
-    DisableAppAutomationRequest, GetAppLogsRequest, GetAppSetRequest, GrantAppConnectionRequest,
-    GrantAppFileRequest, InspectAppViewRequest, ListAppInstallationsRequest,
-    ListUserAppViewsRequest, OpenAppViewRequest, OpenUserAppViewRequest,
-    PrepareDeploymentAppsRequest, PreviewDeploymentAppsRequest, RestoreAppDataSnapshotRequest,
-    RevokeAppConnectionRequest, RevokeAppFileGrantsRequest, SaveAppFileExportRequest,
-    SetAppViewPanelRequest, SubscribeUserAppViewsRequest, TestAppInboxRouteRequest,
-    UninstallAppRequest, UserAppView, UserAppViewBrowser, UserAppViewHost, UserAppViewRequest,
-    APP_SET_SCHEMA,
+    AppAutomationSummary, AppCapabilityDecisionStatus, AppConnectionSummary, AppEventSummary,
+    AppFileContents, AppFrontendAsset, AppFrontendBundle, AppHostAction, AppInboxConnection,
+    AppInboxRouteRequest, AppInboxRouteSummary, AppInstallationRequest, AppInstallationSummary,
+    AppLogEntrySummary, AppReleaseSummary, AppRequestErrorCode, AppSetInstallation, AppUpdatePhase,
+    AppUpdateSummary, AppViewChannelError, AppWorkerAction, AppWorkerPhase, AppWorkerRequest,
+    AppWorkerSummary, CallUserAppViewRequest, ConfigureAppAutomationRequest,
+    ControlAppWorkerRequest, CreateAppInboxRouteRequest, DeploymentAppsConsent,
+    DeploymentAppsConsentStatus, DisableAppAutomationRequest, GetAppLogsRequest, GetAppSetRequest,
+    GrantAppConnectionRequest, GrantAppFileRequest, InspectAppViewRequest,
+    ListAppInstallationsRequest, ListUserAppViewsRequest, OpenAppViewRequest,
+    OpenUserAppViewRequest, PrepareDeploymentAppsRequest, PreviewDeploymentAppsRequest,
+    RestoreAppDataSnapshotRequest, RevokeAppConnectionRequest, RevokeAppFileGrantsRequest,
+    SaveAppFileExportRequest, SetAppViewPanelRequest, SubscribeUserAppViewsRequest,
+    TestAppInboxRouteRequest, UninstallAppRequest, UserAppView, UserAppViewBrowser,
+    UserAppViewHost, UserAppViewRequest, APP_SET_SCHEMA,
 };
 pub use api::{
     AppDevPushFailureCode, AppDevPushRequest, AppInstallOperationPhase, AppInstallOperationRequest,

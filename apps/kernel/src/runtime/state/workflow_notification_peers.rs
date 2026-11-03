@@ -1,6 +1,6 @@
 //! Notification peer adapter: existing discovery, owner-bound E2EE transport,
 //! bounded picker refresh. No directory, scheduler, or credential ownership.
-use super::workflow_notification_router::{source_available, summary};
+use super::workflow_notification_router::{source_available, summaries};
 use super::*;
 use crate::durable_state::{
     notification_target::WorkflowNotificationTarget,
@@ -171,7 +171,9 @@ impl KernelRuntimeState {
                     {
                         if sources.len() > 1024
                             || sources.iter().any(|s| {
-                                s.kernel_id != kernel || s.fields.len() > 14 || s.name.len() > 512
+                                s.kernel_id != kernel
+                                    || s.name.len() > 512
+                                    || s.display_name.len() > 520
                             })
                         {
                             continue;
@@ -214,8 +216,12 @@ impl KernelRuntimeState {
         request: LocalDaemonRequest,
         owner: &str,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        self.ensure_notification_profile_owner(owner)?;
+        let room_member_listing = self.is_room_member_listing(&request, owner);
+        if !room_member_listing {
+            self.ensure_notification_profile_owner(owner)?;
+        }
         if self.notification_grant().is_none()
+            && !room_member_listing
             && matches!(&request, LocalDaemonRequest::ListWorkflowNotifications(_))
         {
             self.refresh_notification_sources(owner).await?;
@@ -272,7 +278,7 @@ impl KernelRuntimeState {
                         &subscription.source_kernel_id,
                         RelayPeerRequest::SubscribeWorkflowNotifications {
                             protocol_version: VERSION,
-                            source_workflow_ref: subscription.source_id.clone(),
+                            source_id: subscription.source_id.clone(),
                             target_ref: subscription.clone(),
                         },
                     )
@@ -334,11 +340,13 @@ impl KernelRuntimeState {
                             .owned
                             .durable_state_store
                             .notification_inventory(owner)?;
-                        let sources = sources
-                            .into_iter()
-                            .filter(|s| s.enabled && source_available(&sessions, s))
-                            .map(|s| summary(&s))
-                            .collect();
+                        let sources = summaries(
+                            &sessions,
+                            &sources
+                                .into_iter()
+                                .filter(|s| s.enabled && source_available(&sessions, s))
+                                .collect::<Vec<_>>(),
+                        );
                         Ok(RelayPeerResponse::WorkflowNotificationSources {
                             protocol_version: VERSION,
                             sources,
@@ -346,7 +354,7 @@ impl KernelRuntimeState {
                     }
                     RelayPeerRequest::SubscribeWorkflowNotifications {
                         protocol_version: VERSION,
-                        source_workflow_ref,
+                        source_id,
                         target_ref,
                     } => {
                         let (sources, _, _) = self
@@ -356,7 +364,7 @@ impl KernelRuntimeState {
                         let source = sources
                             .into_iter()
                             .find(|s| {
-                                s.source_id == source_workflow_ref
+                                s.source_id == source_id
                                     && s.enabled
                                     && source_available(&sessions, s)
                             })
@@ -753,36 +761,57 @@ mod tests {
             .unwrap()
             .is_empty());
     }
+    // A room member lists this room's sources only: nothing cached from other kernels and
+    // nothing of the owner's other rooms.
     #[tokio::test]
-    async fn security_f9_member_cannot_list_profile_owner_inventory() {
+    async fn member_lists_only_this_rooms_sources() {
         let mut f = Fixture::for_kernel("notification-home");
-        let (_, runtime, _) = peer(&mut f, "ws://127.0.0.1:1", "test-only");
-        let result = runtime
-            .execute_workflow_notification_command(
-                LocalDaemonRequest::ListWorkflowNotifications(ListWorkflowNotificationsRequest {
-                    session_id: f.session.clone(),
-                }),
-                "member",
-            )
-            .await;
-        assert!(result.is_err());
+        let (workflow, _, _) = f.workflow("source");
+        let (_, runtime, mut config) = peer(&mut f, "ws://127.0.0.1:1", "test-only");
+        let source = f.source(&workflow);
+        let mut remote =
+            summaries(&runtime.owned.session_store.read(), &[source.clone()]).remove(0);
+        remote.source_id = "remote-source".into();
+        remote.kernel_id = "other-home".into();
+        runtime
+            .owned
+            .durable_state_store
+            .notify(NotificationOperation::Cache {
+                owner: "local".into(),
+                kernel: remote.kernel_id.clone(),
+                sources: vec![remote],
+            })
+            .unwrap();
+        for standalone in [false, true] {
+            if standalone {
+                config.cloud_relay = None;
+                runtime.owned.config_projection.update(config.clone());
+            }
+            let LocalDaemonResponse::WorkflowNotifications { sources, .. } = runtime
+                .execute_workflow_notification_command(
+                    LocalDaemonRequest::ListWorkflowNotifications(
+                        ListWorkflowNotificationsRequest {
+                            session_id: f.session.clone(),
+                        },
+                    ),
+                    "member",
+                )
+                .await
+                .unwrap()
+            else {
+                panic!()
+            };
+            assert_eq!(
+                sources
+                    .iter()
+                    .map(|s| s.source_id.as_str())
+                    .collect::<Vec<_>>(),
+                vec![source.source_id.as_str()],
+                "standalone={standalone}"
+            );
+        }
     }
 
-    #[test]
-    fn security_f9_standalone_member_cannot_list_session_owner_inventory() {
-        let mut f = Fixture::for_kernel("notification-home");
-        let (_, runtime, mut config) = peer(&mut f, "ws://127.0.0.1:1", "test-only");
-        config.cloud_relay = None;
-        runtime.owned.config_projection.update(config);
-        assert!(runtime
-            .execute_workflow_notification_request(
-                LocalDaemonRequest::ListWorkflowNotifications(ListWorkflowNotificationsRequest {
-                    session_id: f.session.clone()
-                }),
-                "member"
-            )
-            .is_err());
-    }
     async fn relay_drill() {
         let relay_config = RelayConfig {
             host: "127.0.0.1".into(),
@@ -889,14 +918,9 @@ mod tests {
         let LocalDaemonResponse::WorkflowNotificationAttached { subscription } = target_runtime
             .execute_workflow_notification_command(
                 LocalDaemonRequest::AttachWorkflowNotification(AttachWorkflowNotificationRequest {
-                    delivery_mode: crate::local::NotificationDeliveryMode::Queue,
                     session_id: target.session.clone(),
                     source_id: source_record.source_id.clone(),
                     publication_ref: bp.clone(),
-                    queue_ref: None,
-                    ttl_days: 7,
-                    events: WorkflowNotificationEvents::Both,
-                    filters: serde_json::Value::Null,
                 }),
                 "local",
             )
@@ -924,7 +948,7 @@ mod tests {
                 &sc.daemon_id,
                 RelayPeerRequest::SubscribeWorkflowNotifications {
                     protocol_version: VERSION,
-                    source_workflow_ref: source_record.source_id.clone(),
+                    source_id: source_record.source_id.clone(),
                     target_ref: bad,
                 }
             )
@@ -1089,7 +1113,7 @@ mod tests {
                         session_id: source.session.clone(),
                         workflow_ref: a.clone(),
                         enabled: false,
-                        output_fields: None,
+                        exit_node_id: "exit-1".into(),
                     },
                 ),
                 "local",
@@ -1149,7 +1173,7 @@ mod tests {
             },
             RelayPeerRequest::SubscribeWorkflowNotifications {
                 protocol_version: VERSION,
-                source_workflow_ref: source_record.source_id.clone(),
+                source_id: source_record.source_id.clone(),
                 target_ref: subscription.clone(),
             },
             RelayPeerRequest::UnsubscribeWorkflowNotifications {

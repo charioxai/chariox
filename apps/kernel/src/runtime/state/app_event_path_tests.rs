@@ -138,7 +138,6 @@ fn configure(state: &KernelRuntimeState, session: &str, publication: &str, autom
                 publication_ref: publication.into(),
                 queue_ref: None,
                 scheduled: false,
-                delivery_mode: crate::local::NotificationDeliveryMode::Queue,
             },
             budget(),
         )

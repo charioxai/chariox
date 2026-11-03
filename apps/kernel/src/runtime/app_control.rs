@@ -451,7 +451,9 @@ fn read(
                 installations: page
                     .installations
                     .into_iter()
-                    .map(projection::installation)
+                    .map(|installation| {
+                        projection::installation_with_events(store, owner, installation)
+                    })
                     .collect(),
                 next_cursor: page.next_cursor,
             })
@@ -464,7 +466,7 @@ fn read(
                 .get_app_installation(owner, &request.installation_id)
                 .map_err(registry_error)?;
             Ok(LocalDaemonResponse::AppInstallation {
-                installation: projection::installation(installation),
+                installation: projection::installation_with_events(store, owner, installation),
             })
         }
         LocalDaemonRequest::GetAppInstallationJournal(request) => {

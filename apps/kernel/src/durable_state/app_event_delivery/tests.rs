@@ -33,7 +33,6 @@ fn setup(fixture: &Fixture) -> (DurableKernelStateStore, SessionService, String,
             "local",
             fixture.catalog.clone(),
             AppAutomationMutation::Configure {
-                delivery_mode: crate::local::NotificationDeliveryMode::Queue,
                 automation_id: "automation".into(),
                 expected_revision: 0,
                 event_name: "changed".into(),
@@ -614,22 +613,42 @@ fn d1_opaque_app_fixture(generator: &str) {
         .resolve_workflow_publication_ref(&session, &publication)
         .unwrap();
     let reviewer = p.workflow_id().to_owned();
-    let state = sessions.get_session(&session).unwrap();
+    // The reviewer's one node is its exit, the only place a notification starts from.
+    let mut state = sessions.get_session(&session).unwrap();
+    let node_id = state.workflow(&reviewer).unwrap().nodes()[0]
+        .id()
+        .to_owned();
+    state
+        .workflow_mut(&reviewer)
+        .unwrap()
+        .node_mut(&node_id)
+        .unwrap()
+        .set_can_complete_workflow_run(true);
+    sessions.restore_session(state.clone());
     store
         .persist_workflow_runtime_transition(&state, "D1 fixture")
         .unwrap();
+    let w = sessions.resolve_workflow_ref(&session, &reviewer).unwrap();
+    let exit = w
+        .nodes()
+        .iter()
+        .find(|node| node.can_complete_workflow_run())
+        .unwrap()
+        .id()
+        .to_owned();
     let source = WorkflowNotificationSource {
         source_id: "fixture-reviewer-source".into(),
         owner_user_id: "local".into(),
         kernel_id: state.host_daemon_id().into(),
         session_id: session.clone(),
         workflow_id: reviewer.clone(),
+        exit_node_id: exit.clone(),
         enabled: true,
         available: true,
         name: "Reviewer".into(),
-        output_fields: vec!["verdict".into(), "review_url".into()],
+        exit_ordinal: 0,
+        display_name: String::new(),
     };
-    let w = sessions.resolve_workflow_ref(&session, &reviewer).unwrap();
     store
         .notify(NotificationOperation::Register(SourceAdmission {
             source: source.clone(),
@@ -681,10 +700,10 @@ fn d1_opaque_app_fixture(generator: &str) {
     )
     .unwrap();
     let subscription = crate::local::WorkflowNotificationSubscription {
-        delivery_mode: crate::local::NotificationDeliveryMode::Queue,
         subscription_id: "fixture-consumer-sub".into(),
         source_id: source.source_id.clone(),
         owner_user_id: "local".into(),
+        created_by_user_id: "local".into(),
         source_kernel_id: source.kernel_id.clone(),
         target_kernel_id: source.kernel_id.clone(),
         target_kind: crate::local::WorkflowNotificationTargetKind::WorkflowEndpoint,
@@ -693,10 +712,9 @@ fn d1_opaque_app_fixture(generator: &str) {
         publication_id: publication2.id().into(),
         endpoint_id: endpoint.id().into(),
         queue_id: target.target().queue_id.clone(),
-        ttl_days: 7,
         source_available: true,
-        events: crate::local::WorkflowNotificationEvents::Both,
-        filters: serde_json::json!({"repo":"fixture/repo"}),
+        agent_id: None,
+        trigger_id: None,
     };
     store
         .notify(NotificationOperation::Attach {
@@ -712,7 +730,6 @@ fn d1_opaque_app_fixture(generator: &str) {
             "local",
             fixture.catalog.clone(),
             AppAutomationMutation::Configure {
-                delivery_mode: crate::local::NotificationDeliveryMode::Queue,
                 automation_id: "github-fixture".into(),
                 expected_revision: 0,
                 event_name: event.into(),
@@ -773,6 +790,13 @@ fn d1_opaque_app_fixture(generator: &str) {
     sessions.restore_session(ready.after().clone());
     let mut state = sessions.get_session(&session).unwrap();
     let run = state.workflow_run_mut(&run_id).unwrap();
+    let exit_run = run.add_node_run(crate::session::WorkflowNodeRun::new(
+        "exit-run",
+        exit,
+        "agent",
+        0,
+        crate::session::WorkflowNodeRunStatus::Completed,
+    ));
     run.set_final_output(
         Some(WorkflowOutputPayload::new(
             r#"{"verdict":"approved","review_url":"https://example.test/pr/873"}"#,
@@ -780,7 +804,7 @@ fn d1_opaque_app_fixture(generator: &str) {
         )),
         Some(true),
         None,
-        None,
+        Some(exit_run.id().to_owned()),
     );
     run.set_status(WorkflowRunStatus::Completed);
     store
@@ -792,9 +816,8 @@ fn d1_opaque_app_fixture(generator: &str) {
         .unwrap();
     assert_eq!(candidates.len(), 1);
     let (sub, env) = candidates.into_iter().next().unwrap();
-    assert_eq!(env.subject, Some(format!("{generator}:opaque/873")));
-    assert_eq!(env.fields["verdict"], "approved");
-    assert_eq!(env.fields["event_type"], event);
+    assert_eq!(env.display_name, "automation-test");
+    assert!(env.output.message().contains("approved"));
     assert!(matches!(
         store
             .notify(NotificationOperation::Accept {

@@ -134,18 +134,6 @@ impl KernelRuntimeOwnedState {
                     continue;
                 }
             }
-            match crate::runtime::state::notification_delivery::finish_structured_notification_submit(
-                &self.durable_state_store,
-                &self.session_store,
-                &finished,
-            ) {
-                Ok(true) => continue,
-                Ok(false) => {}
-                Err(_) => {
-                    self.provider_store.schedule_finished_structured_prompt_submit_retry(finished);
-                    continue;
-                }
-            }
             let settlement_retry_attempt = finished.settlement_retry_attempt;
             match finished.result {
                 Ok(acknowledgement) => {

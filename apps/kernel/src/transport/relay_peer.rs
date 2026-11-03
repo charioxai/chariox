@@ -773,7 +773,7 @@ pub enum RelayPeerRequest {
     },
     SubscribeWorkflowNotifications {
         protocol_version: u32,
-        source_workflow_ref: String,
+        source_id: String,
         target_ref: crate::local::WorkflowNotificationSubscription,
     },
     UnsubscribeWorkflowNotifications {
@@ -2486,10 +2486,10 @@ mod workflow_notification_shapes {
             crate::test_support::expected_relay_peer_protocol_version()
         );
         let sub = WorkflowNotificationSubscription {
-            delivery_mode: crate::local::NotificationDeliveryMode::Queue,
             subscription_id: "sub".into(),
             source_id: "source".into(),
             owner_user_id: "owner".into(),
+            created_by_user_id: "owner".into(),
             source_kernel_id: "source-kernel".into(),
             target_kernel_id: "target-kernel".into(),
             target_kind: WorkflowNotificationTargetKind::WorkflowEndpoint,
@@ -2498,18 +2498,15 @@ mod workflow_notification_shapes {
             publication_id: "publication".into(),
             endpoint_id: "endpoint".into(),
             queue_id: "queue".into(),
-            ttl_days: 7,
             source_available: true,
-            events: WorkflowNotificationEvents::Both,
-            filters: serde_json::json!({"repo":"fixture/repo","pr":[873]}),
+            agent_id: None,
+            trigger_id: None,
         };
         let env = WorkflowNotificationEnvelope {
             source_id: "source".into(),
+            display_name: "Reviewer-2".into(),
             occurrence_id: "run".into(),
-            output: None,
-            status: WorkflowNotificationStatus::Failure,
-            subject: Some("github:fixture/repo/pull/873".into()),
-            fields: serde_json::json!({"status":"failure","repo":"fixture/repo","pr":873}),
+            output: crate::session::WorkflowOutputPayload::new("approved", vec![]),
             ancestry: vec!["source-workflow".into()],
             deadline_ms: 604800000,
         };
@@ -2519,7 +2516,7 @@ mod workflow_notification_shapes {
             },
             RelayPeerRequest::SubscribeWorkflowNotifications {
                 protocol_version: RELAY_PEER_PROTOCOL_VERSION,
-                source_workflow_ref: "source".into(),
+                source_id: "source".into(),
                 target_ref: sub.clone(),
             },
             RelayPeerRequest::DeliverWorkflowNotification {
@@ -2540,9 +2537,10 @@ mod workflow_notification_shapes {
                     kernel_id: "kernel".into(),
                     session_id: "session".into(),
                     workflow_id: "workflow".into(),
+                    exit_node_id: "node-2".into(),
+                    exit_ordinal: 2,
                     name: "Reviewer".into(),
-                    events: WorkflowNotificationEvents::Both,
-                    fields: vec!["repo".into(), "pr".into()],
+                    display_name: "Reviewer-2".into(),
                     available: true,
                 }],
             },
@@ -2564,7 +2562,7 @@ mod workflow_notification_shapes {
         }
         assert_eq!(
             format!("{:x}", Sha256::digest(serde_json::to_vec(&wire).unwrap())),
-            "874bc240ba66a34636edf93b2aec7ef58cfbc9cbd4a18cbded6c51e687900b7a"
+            "8e88cadf45c30fbf7e3fc6321da84ad4a7a4c1fc6532768cdc1802875136d929"
         );
     }
 }

@@ -12,9 +12,7 @@ mod transactions;
 use crate::app_catalog::{AppCatalog, CatalogError};
 pub use admission::{EventCatalog, VerifiedAutomation};
 use chariox_app_package::VerifiedApp;
-pub use configuration::{
-    AutomationConfiguration, AutomationStatus, AutomationTarget, NotificationDeliveryMode,
-};
+pub use configuration::{AutomationConfiguration, AutomationStatus, AutomationTarget};
 pub use identity::occurrence_id;
 pub use invocation::{Artifact, Invocation, MAX_ARTIFACTS, MAX_INVOCATION_BYTES, MAX_PROMPT_BYTES};
 pub use maintenance::Maintenance;

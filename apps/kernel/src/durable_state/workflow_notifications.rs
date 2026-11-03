@@ -1,7 +1,7 @@
 //! Kernel-owned workflow notification store on the existing single durable writer.
 //! Completion/outbox, ACK/inbox and queue/receipt each commit atomically.
 mod completion;
-mod migration;
+pub(crate) mod naming;
 #[cfg(test)]
 pub(crate) mod tests;
 
@@ -71,18 +71,24 @@ fn decode<T: serde::de::DeserializeOwned>(value: &str) -> Result<T, DaemonError>
 fn protect_envelope(
     mut env: WorkflowNotificationEnvelope,
 ) -> Result<WorkflowNotificationEnvelope, DaemonError> {
-    crate::secret_redaction::redact_json_secrets(&mut env.fields);
-    if let Some(output) = env.output.take() {
-        let mut value =
-            serde_json::to_value(output).map_err(|_| error("notification encoding failed"))?;
-        crate::secret_redaction::redact_json_secrets(&mut value);
-        env.output =
-            Some(serde_json::from_value(value).map_err(|_| error("notification encoding failed"))?);
-    }
-    env.subject = env
-        .subject
-        .map(|s| crate::secret_redaction::redact_secrets(&s).into_owned());
+    let mut value =
+        serde_json::to_value(&env.output).map_err(|_| error("notification encoding failed"))?;
+    crate::secret_redaction::redact_json_secrets(&mut value);
+    env.output =
+        serde_json::from_value(value).map_err(|_| error("notification encoding failed"))?;
     Ok(env)
+}
+/// The identity a subscription's target contributes to, and is checked against, an
+/// occurrence's ancestry: its workflow, or the agent it prompts.
+pub(crate) fn ancestry_identity(sub: &WorkflowNotificationSubscription) -> String {
+    match sub.target_kind {
+        crate::local::WorkflowNotificationTargetKind::WorkflowEndpoint => {
+            workflow_identity(&sub.target_kernel_id, &sub.session_id, &sub.workflow_id)
+        }
+        crate::local::WorkflowNotificationTargetKind::Agent => {
+            format!("agent:{}", sub.endpoint_id)
+        }
+    }
 }
 pub(crate) fn workflow_identity(kernel: &str, session: &str, workflow: &str) -> String {
     // JSON tuple avoids delimiter ambiguity; identity stays stable across registration toggles.
@@ -93,10 +99,11 @@ pub(super) fn initialize(db: &mut Connection) -> Result<(), DaemonError> {
     // Registration and diagnostics are workflow metadata. Delivery state uses
     // the existing App automation/receipt store, not a second inbox/outbox.
     db.execute_batch(
-        "CREATE TABLE IF NOT EXISTS workflow_notification_sources (
+        "CREATE TABLE IF NOT EXISTS workflow_notification_exit_sources (
       source_id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, kernel_id TEXT NOT NULL,
-      session_id TEXT NOT NULL, workflow_id TEXT NOT NULL, enabled INTEGER NOT NULL,
-      payload_json TEXT NOT NULL, UNIQUE(kernel_id,session_id,workflow_id,owner_id));
+      session_id TEXT NOT NULL, workflow_id TEXT NOT NULL, exit_node_id TEXT NOT NULL,
+      enabled INTEGER NOT NULL, payload_json TEXT NOT NULL,
+      UNIQUE(kernel_id,session_id,workflow_id,exit_node_id,owner_id));
     CREATE TABLE IF NOT EXISTS workflow_notification_occurrences (
       source_id TEXT NOT NULL, occurrence_id TEXT NOT NULL, diagnostic TEXT,
       PRIMARY KEY(source_id,occurrence_id));
@@ -110,7 +117,6 @@ pub(super) fn initialize(db: &mut Connection) -> Result<(), DaemonError> {
       PRIMARY KEY(owner_id,subscription_id));",
     )
     .map_err(sql)?;
-    migration::migrate(db)?;
     prune_occurrences(db).map_err(sql)?;
     Ok(())
 }
@@ -221,7 +227,7 @@ impl DurableKernelStateStore {
         owner: &str,
     ) -> Result<WorkflowNotificationInventory, DaemonError> {
         let db = self.lock_connection("workflow.notifications.inventory")?;
-        let mut query = db.prepare("SELECT payload_json FROM workflow_notification_sources WHERE owner_id=?1 ORDER BY source_id LIMIT 1024").map_err(sql)?;
+        let mut query = db.prepare("SELECT payload_json FROM workflow_notification_exit_sources WHERE owner_id=?1 ORDER BY source_id LIMIT 1024").map_err(sql)?;
         let sources = query
             .query_map([owner], |r| r.get::<_, String>(0))
             .map_err(sql)?
@@ -233,7 +239,7 @@ impl DurableKernelStateStore {
             .map_err(sql)?
             .map(|r| decode(&r.map_err(sql)?))
             .collect::<Result<Vec<_>, _>>()?;
-        let mut query = db.prepare("SELECT DISTINCT o.source_id,o.occurrence_id,o.diagnostic FROM workflow_notification_occurrences o LEFT JOIN workflow_notification_sources s ON s.source_id=o.source_id LEFT JOIN app_automations a ON a.installation_id=o.source_id AND a.source_kind='workflow_completion' WHERE (s.owner_id=?1 OR a.owner_id=?1) AND o.diagnostic IS NOT NULL ORDER BY o.rowid DESC LIMIT 64").map_err(sql)?;
+        let mut query = db.prepare("SELECT DISTINCT o.source_id,o.occurrence_id,o.diagnostic FROM workflow_notification_occurrences o LEFT JOIN workflow_notification_exit_sources s ON s.source_id=o.source_id LEFT JOIN app_automations a ON a.installation_id=o.source_id AND a.source_kind='workflow_completion' WHERE (s.owner_id=?1 OR a.owner_id=?1) AND o.diagnostic IS NOT NULL ORDER BY o.rowid DESC LIMIT 64").map_err(sql)?;
         let diagnostics = query
             .query_map([owner], |r| {
                 Ok(WorkflowNotificationDiagnostic {
@@ -347,19 +353,9 @@ fn apply(
     match op {
         NotificationOperation::Register(admission) => {
             let mut source = admission.source;
-            if source.output_fields.len() > 8
-                || source.output_fields.iter().any(|key| {
-                    key.is_empty()
-                        || key.len() > 64
-                        || !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-                        || ["subject", "status"].contains(&key.as_str())
-                })
-            {
-                return Err(error("notification output field invalid"));
-            }
             require_source_workflow(tx, &source, Some(&admission.workflow_json))?;
             // The durable workflow identity owns its original source ID and owner.
-            let existing: Option<(String,String)> = tx.query_row("SELECT source_id,owner_id FROM workflow_notification_sources WHERE kernel_id=?1 AND session_id=?2 AND workflow_id=?3 AND owner_id=?4",params![source.kernel_id,source.session_id,source.workflow_id,source.owner_user_id],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(sql)?;
+            let existing: Option<(String,String)> = tx.query_row("SELECT source_id,owner_id FROM workflow_notification_exit_sources WHERE kernel_id=?1 AND session_id=?2 AND workflow_id=?3 AND exit_node_id=?4 AND owner_id=?5",params![source.kernel_id,source.session_id,source.workflow_id,source.exit_node_id,source.owner_user_id],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(sql)?;
             if let Some((id, owner)) = existing {
                 if owner != source.owner_user_id {
                     return Err(error("source not available"));
@@ -368,7 +364,7 @@ fn apply(
             } else {
                 let count: i64 = tx
                     .query_row(
-                        "SELECT count(*) FROM workflow_notification_sources WHERE owner_id=?1",
+                        "SELECT count(*) FROM workflow_notification_exit_sources WHERE owner_id=?1",
                         [&source.owner_user_id],
                         |r| r.get(0),
                     )
@@ -377,16 +373,13 @@ fn apply(
                     return Err(error("workflow notification source limit"));
                 }
             }
-            tx.execute("INSERT INTO workflow_notification_sources VALUES (?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(source_id) DO UPDATE SET enabled=excluded.enabled,payload_json=excluded.payload_json",params![source.source_id,source.owner_user_id,source.kernel_id,source.session_id,source.workflow_id,source.enabled,encode(&source)?]).map_err(sql)?;
+            tx.execute("INSERT INTO workflow_notification_exit_sources VALUES (?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT(source_id) DO UPDATE SET enabled=excluded.enabled,payload_json=excluded.payload_json",params![source.source_id,source.owner_user_id,source.kernel_id,source.session_id,source.workflow_id,source.exit_node_id,source.enabled,encode(&source)?]).map_err(sql)?;
             Ok(NotificationOutcome::Source(source))
         }
         NotificationOperation::Attach {
             mut subscription,
             target,
         } => {
-            if !(1..=30).contains(&subscription.ttl_days) {
-                return Err(error("TTL must be 1–30 days"));
-            }
             let source = load_source(tx, &subscription.source_id)?;
             if source.owner_user_id != subscription.owner_user_id || !source.enabled {
                 return Err(error("source not available"));
@@ -403,7 +396,7 @@ fn apply(
                 &subscription.workflow_id,
             );
             // Recursive reachability is UX; runtime ancestry below is authoritative.
-            let cycle: bool = tx.query_row("WITH RECURSIVE reachable(identity) AS (VALUES (?1) UNION SELECT json_array(json_extract(s.notification_json,'$.target_kernel_id'),s.session_id,json_extract(s.notification_json,'$.workflow_id')) FROM reachable r JOIN workflow_notification_sources src ON json_array(src.kernel_id,src.session_id,src.workflow_id)=r.identity JOIN app_automations s ON s.installation_id=src.source_id WHERE src.enabled=1 AND s.owner_id=?3 AND s.source_kind='workflow_completion' AND s.status='active') SELECT EXISTS(SELECT 1 FROM reachable WHERE identity=?2)", params![to,from,subscription.owner_user_id], |r|r.get(0)).map_err(sql)?;
+            let cycle: bool = tx.query_row("WITH RECURSIVE reachable(identity) AS (VALUES (?1) UNION SELECT json_array(json_extract(s.notification_json,'$.target_kernel_id'),s.session_id,json_extract(s.notification_json,'$.workflow_id')) FROM reachable r JOIN workflow_notification_exit_sources src ON json_array(src.kernel_id,src.session_id,src.workflow_id)=r.identity JOIN app_automations s ON s.installation_id=src.source_id WHERE src.enabled=1 AND s.owner_id=?3 AND s.source_kind='workflow_completion' AND s.status='active') SELECT EXISTS(SELECT 1 FROM reachable WHERE identity=?2)", params![to,from,subscription.owner_user_id], |r|r.get(0)).map_err(sql)?;
             if cycle {
                 return Err(error("workflow notification cycle"));
             }
@@ -507,7 +500,7 @@ fn apply(
         NotificationOperation::Sweep { now } => {
             prune_occurrences(tx).map_err(sql)?;
             tx.execute("UPDATE app_outbox SET state=CASE WHEN state IN ('accepted','retryable') THEN 'expired' ELSE state END,payload_json=NULL WHERE source_kind='workflow_completion' AND expires_at_ms<=?1",[now as i64]).map_err(sql)?;
-            tx.execute("DELETE FROM app_outbox WHERE sequence IN (SELECT sequence FROM app_outbox WHERE source_kind='workflow_completion' AND expires_at_ms<=?1 AND state NOT IN ('accepted','retryable') AND NOT EXISTS(SELECT 1 FROM durable_workflow_runs r WHERE r.status NOT IN ('Completed','Failed','Stopped') AND (json_extract(r.payload_json,'$.queue_item_id')=app_outbox.queued_prompt_id OR (r.session_id=app_outbox.queued_session_id AND r.run_id=json_extract(app_outbox.invocation_json,'$.injected_run_id')))) ORDER BY sequence LIMIT 256)",[now.saturating_sub(30*86_400_000) as i64]).map_err(sql)?;
+            tx.execute("DELETE FROM app_outbox WHERE sequence IN (SELECT sequence FROM app_outbox WHERE source_kind='workflow_completion' AND expires_at_ms<=?1 AND state NOT IN ('accepted','retryable') AND NOT EXISTS(SELECT 1 FROM durable_workflow_runs r WHERE r.status NOT IN ('Completed','Failed','Stopped') AND json_extract(r.payload_json,'$.queue_item_id')=app_outbox.queued_prompt_id) ORDER BY sequence LIMIT 256)",[now.saturating_sub(30*86_400_000) as i64]).map_err(sql)?;
             Ok(NotificationOutcome::Swept)
         }
     }
@@ -518,7 +511,7 @@ fn load_source(
 ) -> Result<WorkflowNotificationSource, DaemonError> {
     let value: Option<String> = tx
         .query_row(
-            "SELECT payload_json FROM workflow_notification_sources WHERE source_id=?1",
+            "SELECT payload_json FROM workflow_notification_exit_sources WHERE source_id=?1",
             [source_id],
             |r| r.get(0),
         )
@@ -542,28 +535,33 @@ fn require_source_workflow(
     Ok(())
 }
 fn validate_subscription(sub: &WorkflowNotificationSubscription) -> Result<(), DaemonError> {
-    if !(1..=30).contains(&sub.ttl_days) {
-        return Err(error("TTL must be 1–30 days"));
-    }
-    if !sub.filters.is_null()
-        && (!sub.filters.is_object()
-            || encode(&sub.filters)?.len() > 4096
-            || sub.filters.as_object().is_some_and(|f| f.len() > 16))
-    {
-        return Err(error("notification filter limit"));
-    }
+    use crate::local::WorkflowNotificationTargetKind::{Agent, WorkflowEndpoint};
+    let target_ids = match sub.target_kind {
+        WorkflowEndpoint => vec![&sub.workflow_id],
+        Agent => {
+            if sub.agent_id.as_deref() != Some(sub.endpoint_id.as_str())
+                || sub.trigger_id.as_deref() != Some(sub.publication_id.as_str())
+            {
+                return Err(error("notification identifier invalid"));
+            }
+            vec![&sub.endpoint_id]
+        }
+    };
     for id in [
         &sub.subscription_id,
         &sub.source_id,
         &sub.owner_user_id,
+        &sub.created_by_user_id,
         &sub.source_kernel_id,
         &sub.target_kernel_id,
         &sub.session_id,
-        &sub.workflow_id,
         &sub.publication_id,
         &sub.endpoint_id,
         &sub.queue_id,
-    ] {
+    ]
+    .into_iter()
+    .chain(target_ids)
+    {
         if id.is_empty()
             || id.len() > 128
             || id.chars().any(|c| c.is_control() || c.is_whitespace())
@@ -594,7 +592,6 @@ fn save_subscription(
         return Err(error("notification fanout limit"));
     }
     tx.execute("INSERT INTO app_automations(owner_id,installation_id,automation_id,revision,event_name,event_version,schema_digest,session_id,publication_id,endpoint_id,queue_id,status,source_kind,notification_json) VALUES(?1,?2,?3,1,'workflow_completion',1,'kernel',?4,?5,?6,?7,'active','workflow_completion',?8) ON CONFLICT(owner_id,installation_id,automation_id) DO UPDATE SET notification_json=excluded.notification_json,status='active'",params![sub.owner_user_id,sub.source_id,sub.subscription_id,sub.session_id,sub.publication_id,sub.endpoint_id,sub.queue_id,encode(sub)?]).map_err(sql)?;
-    tx.execute("UPDATE app_automations SET delivery_mode=?4 WHERE owner_id=?1 AND installation_id=?2 AND automation_id=?3",params![sub.owner_user_id,sub.source_id,sub.subscription_id,sub.delivery_mode.name()]).map_err(sql)?;
     // The latest attach owns the row: an owner attach unbinds, a granted one rebinds.
     tx.execute(
         "DELETE FROM workflow_notification_grants WHERE owner_id=?1 AND subscription_id=?2",
@@ -602,14 +599,6 @@ fn save_subscription(
     )
     .map_err(sql)?;
     Ok(())
-}
-/// Source and target both evaluate the same AEGS equality/any-of semantics.
-pub(crate) fn matches(
-    sub: &WorkflowNotificationSubscription,
-    env: &WorkflowNotificationEnvelope,
-) -> bool {
-    sub.events.accepts(env.status)
-        && chariox_event_protocol::metadata_matches_filter(&env.fields, &sub.filters)
 }
 pub(super) fn insert_receipt(
     tx: &Transaction<'_>,
@@ -669,29 +658,18 @@ fn accept(
 ) -> Result<NotificationOutcome, DaemonError> {
     require_attached(tx, sub, &env.source_id)?;
     let bytes = encode_notification_envelope(env)?;
-    if env.subject.as_ref().is_some_and(|s| s.len() > 512)
-        || !env.fields.is_object()
-        || (env.status == crate::local::WorkflowNotificationStatus::Failure && env.output.is_some())
-        || (env.status == crate::local::WorkflowNotificationStatus::Success && env.output.is_none())
-    {
-        return Err(error("notification envelope invalid"));
-    }
-    if !matches(sub, env) {
-        return Ok(NotificationOutcome::Ack(WorkflowNotificationAck::Filtered));
-    }
     let now = crate::session::unix_epoch_ms();
     if env.deadline_ms <= now {
         return Ok(NotificationOutcome::Ack(WorkflowNotificationAck::Expired));
     }
-    // Occurrence deadlines are immutable; binding TTL edits affect future captures only.
-    // Admission uses the fixed protocol ceiling so pending retries and ACKs remain valid.
-    if env.deadline_ms > now.saturating_add(30 * 86_400_000 + 300_000)
+    // Occurrence deadlines are immutable: the fixed retention plus a clock-skew allowance.
+    if env.deadline_ms > now.saturating_add(crate::local::NOTIFICATION_RETENTION_MS + 300_000)
         || env.ancestry.len() > 256
         || env.ancestry.iter().any(|id| id.len() > 512)
     {
         return Err(error("notification envelope invalid"));
     }
-    let identity = workflow_identity(&sub.target_kernel_id, &sub.session_id, &sub.workflow_id);
+    let identity = ancestry_identity(sub);
     if env.ancestry.contains(&identity) {
         tx.execute("INSERT INTO workflow_notification_occurrences VALUES (?1,?2,'workflow_notification_loop_dropped') ON CONFLICT(source_id,occurrence_id) DO UPDATE SET diagnostic=excluded.diagnostic",params![env.source_id,env.occurrence_id]).map_err(sql)?;
         tx.execute("UPDATE app_outbox SET state='failed' WHERE source_kind='workflow_completion' AND automation_id=?1 AND occurrence_id=?2",params![sub.subscription_id,env.occurrence_id]).map_err(sql)?;

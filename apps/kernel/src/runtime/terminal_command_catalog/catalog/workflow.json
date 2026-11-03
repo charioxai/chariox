@@ -192,12 +192,6 @@
             "value": "/workflow queue flush "
           },
           {
-            "id": "workflow-queue-retry",
-            "label": "retry",
-            "description": "Send a held notification again now; it may arrive twice",
-            "value": "/workflow queue retry "
-          },
-          {
             "id": "workflow-queue-remove",
             "label": "remove",
             "description": "Remove one queued workflow prompt",

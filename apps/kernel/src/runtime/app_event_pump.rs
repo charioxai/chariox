@@ -18,16 +18,6 @@ struct State {
     delivery: Option<AppCursor>,
     maintenance: Option<AppCursor>,
     dispatch: Option<String>,
-    notification_after: Option<(String, String)>,
-    /// Notification injections a task or pass is delivering right now.
-    notifications_claimed: std::collections::BTreeSet<AppCursor>,
-}
-/// Exclusive hold on one notification injection while it is delivered. A remote
-/// delivery moves it onto its own task, so the item stays held after the pass
-/// that admitted it has finished; dropping it wakes the pump.
-pub(crate) struct NotificationClaim {
-    state: Arc<Mutex<State>>,
-    key: AppCursor,
 }
 pub(crate) struct AppEventPass {
     state: Arc<Mutex<State>>,
@@ -46,41 +36,7 @@ impl AppEventPump {
             delivery: None,
             maintenance: None,
             dispatch: None,
-            notification_after: None,
-            notifications_claimed: std::collections::BTreeSet::new(),
         })))
-    }
-    pub(crate) fn claim_notification(&self, session: &str, id: &str) -> Option<NotificationClaim> {
-        let key = (session.to_owned(), id.to_owned());
-        self.0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .notifications_claimed
-            .insert(key.clone())
-            .then(|| NotificationClaim {
-                state: self.0.clone(),
-                key,
-            })
-    }
-    /// Rotate pending injections on the existing pump, including paused/retrying
-    /// items, so a retained first page cannot starve later receipts.
-    pub(crate) fn notification_batch(
-        &self,
-        mut candidates: Vec<(String, String)>,
-        limit: usize,
-    ) -> Vec<(String, String)> {
-        candidates.sort();
-        let mut state = self
-            .0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(after) = &state.notification_after {
-            let index = candidates.partition_point(|item| item <= after);
-            candidates.rotate_left(index);
-        }
-        candidates.truncate(limit);
-        state.notification_after = candidates.last().cloned();
-        candidates
     }
     pub(crate) fn wake(&self) {
         self.0
@@ -156,16 +112,6 @@ impl AppEventPass {
         self.finished = true;
     }
 }
-impl Drop for NotificationClaim {
-    fn drop(&mut self) {
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.notifications_claimed.remove(&self.key);
-        state.wake = true;
-    }
-}
 impl Drop for AppEventPass {
     fn drop(&mut self) {
         if !self.finished {
@@ -181,19 +127,6 @@ impl Drop for AppEventPass {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn retained_notification_page_does_not_starve_later_items() {
-        let pump = AppEventPump::new();
-        let candidates: Vec<_> = (0..11)
-            .map(|n| ("session".to_owned(), format!("queue-{n:02}")))
-            .collect();
-        let mut observed = std::collections::BTreeSet::new();
-        for _ in 0..2 {
-            observed.extend(pump.notification_batch(candidates.clone(), 8));
-        }
-        assert_eq!(observed.len(), 11);
-    }
-
     #[test]
     fn shared_pass_keeps_wakes_and_cursors_across_cancellation() {
         let pump = AppEventPump::new();

@@ -1,29 +1,25 @@
-/** MP-08 / MP-10: local 452 and encrypted peer 82 completion notifications. */
-export type NotificationDeliveryMode = "queue" | "inject"
-export type WorkflowNotificationEvents = "success" | "failure" | "both"
+/** MP-08 / MP-10: local 973 and encrypted peer 422 completion notifications. */
 export interface WorkflowNotificationSource {
   source_id: string; owner_user_id: string; kernel_id: string;
-  session_id: string; workflow_id: string; enabled: boolean; available: boolean;
-  name: string; output_fields: string[]
+  session_id: string; workflow_id: string; exit_node_id: string; enabled: boolean; available: boolean;
+  name: string; exit_ordinal: number; display_name: string
 }
 export interface WorkflowNotificationSourceSummary {
   source_id: string; kernel_id: string; session_id: string; workflow_id: string;
-  name: string; events: WorkflowNotificationEvents; fields: string[]; available: boolean
+  exit_node_id: string; exit_ordinal: number; name: string; display_name: string; available: boolean
 }
 export interface WorkflowNotificationSubscription {
-  subscription_id: string; source_id: string; owner_user_id: string;
-  target_kind: "workflow_endpoint"; target_kernel_id: string; source_kernel_id: string; session_id: string; workflow_id: string;
-  publication_id: string; endpoint_id: string; queue_id: string;
-  ttl_days: number; source_available: boolean; events: WorkflowNotificationEvents;
-  delivery_mode: NotificationDeliveryMode; filters: Record<string, unknown> | null
+  subscription_id: string; source_id: string; owner_user_id: string; created_by_user_id: string;
+  target_kind: "workflow_endpoint" | "agent"; target_kernel_id: string; source_kernel_id: string; session_id: string; workflow_id: string;
+  publication_id: string; endpoint_id: string; queue_id: string; source_available: boolean;
+  agent_id?: string; trigger_id?: string
 }
 export interface WorkflowNotificationEnvelope {
-  source_id: string; occurrence_id: string;
-  output: { message: string; artifacts?: { id: string; kind: string; path: string; display_name: string }[] } | null;
-  status: "success" | "failure"; subject: string | null; fields: Record<string, unknown>;
+  source_id: string; display_name: string; occurrence_id: string;
+  output: { message: string; artifacts?: { id: string; kind: string; path: string; display_name: string }[] };
   ancestry: string[]; deadline_ms: number
 }
-export type WorkflowNotificationAck = "accepted" | "duplicate" | "expired" | "filtered" | "loop_dropped"
+export type WorkflowNotificationAck = "accepted" | "duplicate" | "expired" | "loop_dropped"
 export interface WorkflowNotificationDiagnostic { source_id: string; occurrence_id: string; code: string }
 export type WorkflowNotificationSourceRegisteredResponse = { WorkflowNotificationSourceRegistered: { source: WorkflowNotificationSource } }
 export type WorkflowNotificationAttachedResponse = { WorkflowNotificationAttached: { subscription: WorkflowNotificationSubscription } }
