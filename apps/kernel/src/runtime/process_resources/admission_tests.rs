@@ -244,6 +244,53 @@ fn a_command_admission_paused_is_still_listed_and_startable_after_a_hot_reload()
     assert!(!writer.waiting("write"), "Start now did not start it");
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn start_now_keeps_a_running_writer_admitted_after_a_hot_reload() {
+    let (writer, _free, pool) = paused_writer();
+    let key = format!("admission-{:016x}", rand::random::<u64>());
+    writer.domain.bind_key(&key);
+    let pid = writer.pid("write") as u32;
+    let process_id = samples_for_key(&key)
+        .into_iter()
+        .find(|sample| sample.pid == pid)
+        .unwrap()
+        .process_id;
+    assert_eq!(
+        start_now_for_key(&key, process_id.clone()),
+        Ok(vec![process_id])
+    );
+    settle(1);
+    assert!(!writer.waiting("write"), "Start now did not start it");
+    assert!(
+        !writer.domain.state.lock().unwrap().admission[&pid].stopped,
+        "the handover must happen after admission continued the writer"
+    );
+
+    // The running override crosses the same JSON boundary as a hot reload;
+    // a new watch must honour it while the disk remains below its floor.
+    let handed_over =
+        serde_json::from_slice(&serde_json::to_vec(&pool.held_commands()).unwrap()).unwrap();
+    admission::adopt_admission(handed_over);
+    let written = std::fs::metadata(writer.dir.join("out")).unwrap().len();
+    let next = writer.watched_again(domain(&pool, "writer", false));
+    settle(4);
+    assert!(
+        !writer.waiting("write"),
+        "the reload forgot Start now and paused the running writer again"
+    );
+    assert_eq!(state(&writer, "write"), SessionProcessState::Running);
+    assert!(
+        std::fs::metadata(writer.dir.join("out")).unwrap().len() > written,
+        "the writer made no progress after the reload"
+    );
+    assert!(
+        next.state.lock().unwrap().admission.contains_key(&pid),
+        "the adopted watch never registered the writer"
+    );
+    writer.domain.unbind_key(&key);
+}
+
 /// How the terminal's shell found the line that started the writer.
 #[cfg(target_os = "linux")]
 #[derive(Clone, Copy)]

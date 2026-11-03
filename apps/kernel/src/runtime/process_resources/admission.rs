@@ -129,9 +129,8 @@ impl Entry {
     }
 }
 
-/// A command the previous kernel program's admission had stopped (or was
-/// resuming) when it handed its processes over: the next program keeps it
-/// waiting and controllable, and resumes it when room frees.
+/// A command whose admission policy must survive a hot reload: it is waiting,
+/// being resumed, or running with the person's Start now override.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct HeldCommand {
     pub(super) identity: crate::runtime::kernel_access::process::ProcessIdentity,
@@ -144,10 +143,10 @@ pub(crate) struct HeldCommand {
 }
 
 impl HeldCommand {
-    /// What a hot reload must carry for `pid`: a command admission has
-    /// stopped, or has resumed but not yet continued.
+    /// What a hot reload must carry for `pid`: a command admission has stopped,
+    /// is resuming, or must never pause again after Start now.
     pub(super) fn of(pid: u32, entry: &Entry) -> Option<Self> {
-        if entry.wait.is_none() && !entry.stopped {
+        if entry.wait.is_none() && !entry.stopped && !entry.forced {
             return None;
         }
         Some(Self {
@@ -161,8 +160,8 @@ impl HeldCommand {
         })
     }
 
-    /// Admission's view of the command in the program that adopts it: stopped,
-    /// so that whatever resumes it also continues the process.
+    /// Treat it as stopped so a pending resume sends SIGCONT. For an already
+    /// running forced command, the extra SIGCONT leaves its policy unchanged.
     fn into_entry(self) -> Entry {
         Entry {
             arrived: self.arrived,
@@ -183,8 +182,8 @@ impl HeldCommand {
 static ADOPTED: std::sync::Mutex<BTreeMap<u32, HeldCommand>> =
     std::sync::Mutex::new(BTreeMap::new());
 
-/// Remembers the commands the previous program's admission had stopped. Their
-/// watches are started after this, for the processes the handover names.
+/// Remembers the previous program's waiting commands and Start now overrides.
+/// Their watches start after this, for the processes the handover names.
 pub(crate) fn adopt_admission(held: Vec<HeldCommand>) {
     ADOPTED
         .lock()
@@ -277,7 +276,7 @@ impl Ledger {
                 std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
                 std::collections::btree_map::Entry::Vacant(vacant) => {
                     if let Some(held) = take_adopted(command.pid) {
-                        // Still stopped from the previous program: it waits on.
+                        // Keep the previous program's wait or Start now policy.
                         self.arrivals = self.arrivals.max(held.arrived);
                         let entry = vacant.insert(held.into_entry());
                         entry.seen = recognise(command.effective);

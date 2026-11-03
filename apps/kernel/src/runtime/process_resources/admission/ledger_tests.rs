@@ -574,3 +574,24 @@ fn owners_keep_their_turn_while_commands_resume_one_at_a_time() {
     }
     assert_eq!(started, [1, 4, 2, 3]);
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_running_start_now_override_cannot_pass_to_a_reused_pid() {
+    let pid = std::process::id();
+    let mut handed_over = HeldCommand::of(
+        pid,
+        &Entry {
+            forced: true,
+            admitted: true,
+            ..Entry::default()
+        },
+    )
+    .expect("the running Start now policy must be handed over");
+    handed_over.identity.start = handed_over.identity.start.wrapping_add(1);
+    adopt_admission(vec![handed_over]);
+    assert!(
+        take_adopted(pid).is_none(),
+        "a different process birth inherited the Start now override"
+    );
+}
