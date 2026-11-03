@@ -126,11 +126,22 @@ export type MetaagentTaskStatus = "active" | "paused" | "blocked" | "completed" 
 
 export type AgentTriggerBusyPolicy = "queue" | "steer"
 
+/** What a notification trigger listens to: one exit of a workflow, or one outgoing event of an installed App. */
+export type AgentTriggerNotificationSource =
+  | { workflow: { source_id: string } }
+  | { app: { installation_id: string; event_name: string } }
+
 export type AgentTriggerSource = { kind: "http"; ingress_id: string; port: number } | {
   kind: "schedule"
   interval_seconds: number
   repeat: "once" | "every"
   next_run_at_ms: number
+} | {
+  kind: "notification"
+  source: AgentTriggerNotificationSource
+  subscription_id: string
+  /** The source as the picker named it when the trigger was created. */
+  display_name: string
 }
 
 /** Protocol 900: what fires prompts into an agent's own conversation. */

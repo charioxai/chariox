@@ -5,8 +5,8 @@ import type { AgentTaskExecution } from "@chariox/kernel-client/kernel-types"
 import { getManagedContextTransferStatus } from "./managed-environment-api.js"
 import { getCloudClientControlProfile } from "./cloud-client-control.js"
 import { appHostOperationIds, type AppHostTerminal } from "./app-host-action.js"
-import { getAppInstallationRequest } from "@chariox/kernel-client/ipc-requests"
-import type { AppInstallationSummary } from "@chariox/kernel-client/kernel-types"
+import { getAppInstallationRequest, listWorkflowNotificationsRequest } from "@chariox/kernel-client/ipc-requests"
+import type { AppInstallationSummary, WorkflowNotificationSourceSummary } from "@chariox/kernel-client/kernel-types"
 import type { AppDevLoop } from "./app-dev-loop.js"
 import type { AppFileInstaller } from "./app-install-file.js"
 import type { AppPublisherEnrollment } from "./app-publisher-file.js"
@@ -877,6 +877,12 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
         throw new Error("kernel did not return the session after the trigger change")
       }
       return { session: payload.session }
+    },
+    listNotificationSources: async () => {
+      const response = await client.send<Record<string, unknown>>(listWorkflowNotificationsRequest(sessionState().id))
+      const listed = response.WorkflowNotifications as { sources: WorkflowNotificationSourceSummary[] } | undefined
+      if (!listed) throw new Error("kernel did not return the notification sources")
+      return listed.sources
     },
     applySessionState,
     refreshAgentPanes,
