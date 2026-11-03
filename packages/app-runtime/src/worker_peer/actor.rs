@@ -19,6 +19,11 @@ use tokio::{
     time::Instant,
 };
 
+#[path = "broker_queue.rs"]
+mod broker_queue;
+#[path = "call_queue.rs"]
+mod call_queue;
+
 struct Pending {
     method: String,
     reply: oneshot::Sender<Result<Message>>,
@@ -28,6 +33,11 @@ struct Pending {
     actor: Option<serde_json::Value>,
     _permit: OwnedSemaphorePermit,
 }
+struct Cancelled {
+    deadline: Instant,
+    _permit: OwnedSemaphorePermit,
+}
+
 struct Active {
     cancel: watch::Sender<bool>,
     cancellation_cause: Arc<AtomicU8>,
@@ -41,6 +51,8 @@ struct Actor {
     queued: VecDeque<Outgoing>,
     events: mpsc::Sender<ControlEvent>,
     pending: BTreeMap<String, Pending>,
+    waiting: VecDeque<Call>,
+    broker_waiting: VecDeque<broker_queue::Waiting>,
     publishing: BTreeMap<String, super::publication::Pending>,
     active: BTreeMap<String, Active>,
     handlers: JoinSet<(String, std::result::Result<serde_json::Value, RemoteError>)>,
@@ -48,7 +60,7 @@ struct Actor {
     /// response for each arrives. The SDK answers every call it holds with one,
     /// even when its handler ignores cancellation; none within the grace means
     /// the worker's event loop is blocked.
-    cancelled: BTreeMap<String, Instant>,
+    cancelled: BTreeMap<String, Cancelled>,
 }
 
 const UNRESPONSIVE_GRACE: Duration = Duration::from_secs(5);
@@ -92,6 +104,8 @@ where
         queued: VecDeque::new(),
         events,
         pending: BTreeMap::new(),
+        waiting: VecDeque::new(),
+        broker_waiting: VecDeque::new(),
         publishing: BTreeMap::new(),
         active: BTreeMap::new(),
         handlers: JoinSet::new(),
@@ -107,7 +121,7 @@ where
             _=transport::stop(&mut stop_receiver)=>break Ok(()),
             result=async {tokio::select! {
             ack=published.recv()=>match ack {Some(ack)=>actor.published(ack),None=>Err(PeerError::Io)},
-            command=commands.recv()=> match command {Some(command)=>actor.call(command),None=>Err(PeerError::Closed)},
+            command=commands.recv()=> match command {Some(command)=>{actor.waiting.push_back(command);Ok(())},None=>Err(PeerError::Closed)},
             message=incoming.recv()=>match message {Some(Ok(message))=>actor.receive(message),Some(Err(error))=>Err(error),None=>Err(PeerError::Io)},
             completed=actor.handlers.join_next(), if !actor.handlers.is_empty()=>match completed {
                 Some(Ok((id,outcome)))=>actor.complete(id,outcome),
@@ -120,6 +134,9 @@ where
             _=tick.tick()=>actor.expire(),
             }}=>result,
         };
+        let result = result
+            .and_then(|()| actor.dispatch_calls())
+            .and_then(|()| actor.dispatch_brokers());
         if let Err(error) = result {
             break if *stop_receiver.borrow() {
                 Ok(())
@@ -139,6 +156,8 @@ where
         pending.live.retire();
         let _ = pending.reply.send(Err(PeerError::Closed));
     }
+    actor.waiting.clear();
+    actor.discard_waiting_brokers();
     actor.queued.clear();
     for active in actor.active.values() {
         active.cancel.send_replace(true);
@@ -194,46 +213,6 @@ impl Actor {
             }),
         )
     }
-    fn call(&mut self, call: Call) -> Result<()> {
-        if call.reply.is_closed() {
-            return Ok(());
-        }
-        if Instant::now() >= call.deadline {
-            let _ = call.reply.send(Err(PeerError::Deadline));
-            return Ok(());
-        }
-        let Message::Request {
-            id,
-            method,
-            context,
-            ..
-        } = &call.message
-        else {
-            return Err(PeerError::Invalid);
-        };
-        let (id, method) = (id.clone(), method.clone());
-        let actor = context
-            .as_ref()
-            .and_then(|context| context.get("actor"))
-            .cloned();
-        if self.pending.contains_key(&id) || self.pending.len() >= self.limits.pending_calls {
-            return Err(PeerError::Protocol);
-        }
-        let live = Arc::new(FrameState::new());
-        self.send(call.message, Some(live.clone()))?;
-        self.pending.insert(
-            id,
-            Pending {
-                method,
-                reply: call.reply,
-                deadline: call.deadline,
-                live,
-                actor,
-                _permit: call.permit,
-            },
-        );
-        Ok(())
-    }
     fn receive(&mut self, message: Message) -> Result<()> {
         message
             .validate(&self.generation, crate::wire::Sender::Worker)
@@ -261,74 +240,7 @@ impl Actor {
                 params,
                 deadline_ms,
                 ..
-            } => {
-                self.publishing.retain(|_, pending| {
-                    !(pending.finished.load(Ordering::Acquire)
-                        && pending.physically_published.load(Ordering::Relaxed))
-                });
-                if self.active.contains_key(&id) || self.publishing.contains_key(&id) {
-                    return Err(PeerError::Protocol);
-                }
-                if self.active.len() + self.publishing.len() >= self.limits.broker_handlers {
-                    return self.failure(id, "BUSY", "Kernel App broker capacity is full");
-                }
-                let remaining = deadline_ms.saturating_sub(wall_ms()?);
-                if remaining == 0 {
-                    return self.failure(id, "DEADLINE_EXCEEDED", "App broker deadline exceeded");
-                }
-                let deadline =
-                    Instant::now() + Duration::from_millis(remaining).min(self.limits.max_deadline);
-                let (cancel, cancellation) = watch::channel(false);
-                let cancellation_cause = Arc::new(AtomicU8::new(CancellationCause::Teardown as u8));
-                self.active.insert(
-                    id.clone(),
-                    Active {
-                        cancel,
-                        cancellation_cause: cancellation_cause.clone(),
-                        deadline,
-                        replied: false,
-                    },
-                );
-                let broker = self.broker.clone();
-                let mut callers = Vec::new();
-                for actor in self.pending.values().filter_map(|call| call.actor.as_ref()) {
-                    if !callers.contains(actor) {
-                        callers.push(actor.clone());
-                    }
-                }
-                // Frames arrive in order, so a request the worker sent before
-                // answering a call is attributed to that call.
-                let open_calls: std::collections::BTreeSet<_> = self
-                    .pending
-                    .values()
-                    .filter(|pending| pending.live.sent())
-                    .map(|pending| pending.method.clone())
-                    .collect();
-                let request = BrokerRequest {
-                    id: id.clone(),
-                    method,
-                    params,
-                    deadline,
-                    cancellation: BrokerCancellation(cancellation, cancellation_cause),
-                    callers,
-                    open_calls: open_calls.into_iter().collect(),
-                };
-                self.handlers.spawn(async move {
-                    if request.cancellation.is_cancelled() || Instant::now() >= request.deadline {
-                        broker.request_not_dispatched(&request);
-                        return (
-                            id,
-                            Err(RemoteError {
-                                code: "CANCELLED".into(),
-                                message: "App broker call cancelled before dispatch".into(),
-                                retryable: Some(false),
-                            }),
-                        );
-                    }
-                    (id, broker.handle(request).await)
-                });
-                Ok(())
-            }
+            } => self.broker_request(id, method, params, deadline_ms),
             Message::Cancel { id, .. } => {
                 self.cancel_handler(&id, "CANCELLED", "App broker call cancelled")
             }
@@ -343,6 +255,9 @@ impl Actor {
         }
     }
     fn cancel_handler(&mut self, id: &str, code: &str, message: &str) -> Result<()> {
+        if self.cancel_waiting_broker(id, code)? {
+            return Ok(());
+        }
         if let Some(pending) = self.publishing.get_mut(id) {
             let _completion = pending
                 .completion
@@ -457,6 +372,15 @@ impl Actor {
     }
     fn expire(&mut self) -> Result<()> {
         let now = Instant::now();
+        let expired = self
+            .broker_waiting
+            .iter()
+            .filter(|entry| now >= entry.request.deadline)
+            .map(|entry| entry.request.id.clone())
+            .collect::<Vec<_>>();
+        for id in expired {
+            self.cancel_waiting_broker(&id, "DEADLINE_EXCEEDED")?;
+        }
         let expired: Vec<_> = self
             .pending
             .iter()
@@ -469,18 +393,27 @@ impl Actor {
                 .remove(&id)
                 .expect("collected live pending call");
             // Only a request the worker received owes a terminal response.
-            if pending.live.retire() {
-                self.cancelled.insert(id.clone(), now + UNRESPONSIVE_GRACE);
+            let sent = pending.live.retire();
+            if sent {
+                self.cancelled.insert(
+                    id.clone(),
+                    Cancelled {
+                        deadline: now + UNRESPONSIVE_GRACE,
+                        _permit: pending._permit,
+                    },
+                );
             }
             let _ = pending.reply.send(Err(PeerError::Deadline));
-            self.send(
-                Message::Cancel {
-                    version: WIRE_VERSION,
-                    generation: self.generation.clone(),
-                    id,
-                },
-                None,
-            )?;
+            if sent {
+                self.send(
+                    Message::Cancel {
+                        version: WIRE_VERSION,
+                        generation: self.generation.clone(),
+                        id,
+                    },
+                    None,
+                )?;
+            }
         }
         let expired: Vec<_> = self
             .active
@@ -508,7 +441,7 @@ impl Actor {
                 "App broker reply deadline exceeded",
             )?;
         }
-        if self.cancelled.values().any(|grace| now >= *grace) {
+        if self.cancelled.values().any(|entry| now >= entry.deadline) {
             return Err(PeerError::Unresponsive);
         }
         Ok(())

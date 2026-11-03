@@ -673,6 +673,57 @@ fn a_root_unreadable_for_one_sample_stays_owned() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn a_sampler_short_of_resources_keeps_ownership_beyond_the_unreadable_grace() {
+    let mut child = std::process::Command::new("sleep")
+        .arg("30")
+        .spawn()
+        .unwrap();
+    let mut tree = sampling::ProcessTree::new(child.id());
+    let before = sample_until_listed(&mut tree, child.id());
+    let mut skipped = 0;
+    let mut initial_roots = Vec::new();
+    for errno in [libc::EMFILE, libc::ENFILE, libc::EAGAIN, libc::ENOMEM] {
+        let mut initial = {
+            let _fault = crate::runtime::kernel_access::process::fault::inject(child.id(), errno);
+            let mut initial = sampling::ProcessTree::new(child.id());
+            for _ in 0..16 {
+                if matches!(tree.sample(), Err(sampling::SamplingError::Short(code)) if code == errno)
+                {
+                    skipped += 1;
+                }
+                let _ = initial.sample();
+            }
+            initial
+        };
+        initial_roots.push(
+            initial
+                .sample()
+                .unwrap()
+                .iter()
+                .any(|sample| sample.pid == child.id()),
+        );
+    }
+    let after = tree.sample().unwrap();
+    let _ = child.kill();
+    let _ = child.wait();
+    assert_eq!(
+        skipped, 64,
+        "resource failures must skip the sample, not age ownership"
+    );
+    assert!(
+        initial_roots.into_iter().all(|listed| listed),
+        "a shortage abandoned an initially unreadable root"
+    );
+    assert!(
+        before.iter().any(|old| after
+            .iter()
+            .any(|new| old.pid == child.id() && new.process_id == old.process_id)),
+        "resource pressure discarded the process identity"
+    );
+}
+
 /// Starting `ps` fails with `errno` until dropped.
 #[cfg(unix)]
 struct PsFailing;
@@ -706,7 +757,7 @@ fn watched_sleep(unit: &str) -> (std::process::Child, ProcessDomain, String) {
 
 #[cfg(unix)]
 #[test]
-fn a_kernel_out_of_descriptors_for_a_moment_keeps_the_tree_it_watches() {
+fn a_kernel_short_of_resources_for_a_moment_keeps_the_tree_it_watches() {
     let (mut child, _domain, key) = watched_sleep("descriptors-short");
     let pid = child.id();
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
@@ -714,28 +765,49 @@ fn a_kernel_out_of_descriptors_for_a_moment_keeps_the_tree_it_watches() {
         assert!(std::time::Instant::now() < deadline, "never sampled");
         std::thread::sleep(Duration::from_millis(50));
     }
-    let failing = PsFailing::with(libc::EMFILE);
-    std::thread::sleep(Duration::from_secs(3));
-    let kept = child.try_wait().unwrap().is_none();
-    drop(failing);
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    while !samples_for_key(&key).iter().any(|sample| sample.pid == pid) {
-        if std::time::Instant::now() >= deadline {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(50));
+    let mut outcomes = Vec::new();
+    for errno in [libc::EMFILE, libc::ENFILE, libc::EAGAIN, libc::ENOMEM] {
+        let failing = PsFailing::with(errno);
+        std::thread::sleep(Duration::from_millis(350));
+        let held = samples_for_key(&key);
+        std::thread::sleep(Duration::from_secs(1));
+        let kept = child.try_wait().unwrap().is_none();
+        let unchanged = samples_for_key(&key) == held;
+        drop(failing);
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let sampled_again = loop {
+            if samples_for_key(&key).iter().any(|sample| {
+                sample.pid == pid
+                    && held.iter().any(|old| {
+                        old.process_id == sample.process_id
+                            && old.sampled_at_ms < sample.sampled_at_ms
+                    })
+            }) {
+                break true;
+            }
+            if std::time::Instant::now() >= deadline {
+                break false;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        outcomes.push((errno, kept, unchanged, sampled_again));
     }
-    let sampled_again = samples_for_key(&key).iter().any(|sample| sample.pid == pid);
     let _ = child.kill();
     let _ = child.wait();
-    assert!(
-        kept,
-        "the sampler ended the tree because ps could not start for a moment"
-    );
-    assert!(
-        sampled_again,
-        "sampling did not resume once descriptors were free"
-    );
+    for (errno, kept, unchanged, sampled_again) in outcomes {
+        assert!(
+            kept,
+            "errno {errno}: sampler ended the tree because ps could not start"
+        );
+        assert!(
+            unchanged,
+            "errno {errno}: last known samples were changed during a shortage"
+        );
+        assert!(
+            sampled_again,
+            "errno {errno}: sampling did not resume with the same process identity"
+        );
+    }
 }
 
 #[cfg(unix)]
@@ -751,4 +823,32 @@ fn a_missing_ps_ends_the_tree_it_watches() {
         );
         std::thread::sleep(Duration::from_millis(50));
     }
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11: disk is active-process I/O, never filesystem capacity.
+#[cfg(target_os = "linux")]
+#[test]
+fn disk_io_sample_reports_real_owned_process_writes() {
+    use std::io::Write;
+    let file = std::env::temp_dir().join(format!("machines-disk-{:016x}", rand::random::<u64>()));
+    let mut child = std::process::Command::new("python3")
+        .args(["-c", "import os,sys; f=open(sys.argv[1],'wb'); f.write(b'x'*1048576); f.flush(); os.fsync(f.fileno()); print('ready',flush=True); sys.stdin.readline()"])
+        .arg(&file).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).spawn().unwrap();
+    use std::io::BufRead;
+    let mut ready = String::new();
+    std::io::BufReader::new(child.stdout.take().unwrap())
+        .read_line(&mut ready)
+        .unwrap();
+    let rows = sample_until_listed(&mut sampling::ProcessTree::new(child.id()), child.id());
+    child.stdin.take().unwrap().write_all(b"done\n").unwrap();
+    child.wait().unwrap();
+    std::fs::remove_file(file).unwrap();
+    let row = rows.iter().find(|row| row.pid == child.id()).unwrap();
+    let wire = serde_json::to_value(row).unwrap();
+    assert!(
+        wire["disk_io_bytes"]
+            .as_u64()
+            .is_some_and(|bytes| bytes >= 1048576),
+        "the shared process sample carries actual disk I/O: {wire}"
+    );
 }

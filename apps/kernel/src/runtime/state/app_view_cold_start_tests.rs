@@ -40,6 +40,13 @@ fn fixture() -> (KernelRuntimeState, String, Cleanup) {
 }
 
 pub(super) fn fixture_for_owner(owner: &str) -> (KernelRuntimeState, String, Cleanup) {
+    fixture_for_owner_with_turn(owner, false)
+}
+
+pub(super) fn fixture_for_owner_with_turn(
+    owner: &str,
+    with_turn: bool,
+) -> (KernelRuntimeState, String, Cleanup) {
     let root =
         std::env::temp_dir().join(format!("chariox-cold-pump-{:016x}", rand::random::<u64>()));
     std::fs::create_dir(&root).unwrap();
@@ -55,12 +62,24 @@ pub(super) fn fixture_for_owner(owner: &str) -> (KernelRuntimeState, String, Cle
     config.user_config.credential_vault.backend = CredentialVaultBackend::ProcessMemory;
     config.user_config.credential_vault.path = root.join("vault.json").display().to_string();
     let mut app = DaemonApp::bootstrap(config).unwrap();
+    let workspace = if with_turn {
+        root.display().to_string()
+    } else {
+        "cold-pump".into()
+    };
     let (session, _) = KernelSessionService::new(&mut app)
-        .create_session(
-            CreateSessionRequest::new("cold-pump", "cold-pump").with_owner_user_id(owner),
-        )
+        .create_session(CreateSessionRequest::new(&workspace, &workspace).with_owner_user_id(owner))
         .unwrap();
     let session = session.id().to_owned();
+    if with_turn {
+        let agent = app
+            .agents()
+            .list_agents()
+            .into_iter()
+            .find(|a| a.session_id() == session)
+            .unwrap();
+        crate::test_support::admit_room_test_turn(&mut app, &session, agent.id());
+    }
     let runtime =
         CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1).runtime_state();
     (runtime, session, cleanup)
@@ -657,4 +676,61 @@ fn mp08_inflight_restore_intent_survives_kernel_shutdown_and_restart() {
             .collect(),
     );
     assert_eq!(restarted.restore_batch(owner), vec!["todo", "documents"]);
+}
+
+#[tokio::test]
+async fn app_view_asset_budget_installs_and_opens_under_eight_mib_and_refuses_over() {
+    use chariox_app_package::{verify, VerificationPolicy};
+    use chariox_app_runtime::release_store::{ReleaseStore, StageBudget};
+    for (total, allowed) in [(8 * 1024 * 1024 - 1, true), (8 * 1024 * 1024 + 1, false)] {
+        let (runtime, _, _cleanup) = fixture_for_owner("alice");
+        let store = &runtime.owned.durable_state_store;
+        crate::durable_state::app_state::fixture_event_catalog(store);
+        let (bytes, publisher) = crate::durable_state::app_state::fixture_view_package(total);
+        let package = verify(
+            &bytes,
+            &VerificationPolicy::new(
+                crate::local::LOCAL_DAEMON_PROTOCOL_VERSION,
+                vec![publisher.clone()],
+            ),
+        )
+        .unwrap();
+        ReleaseStore::open_or_create(store.path())
+            .unwrap()
+            .stage(
+                &package,
+                &bytes,
+                StageBudget {
+                    max_stage_bytes: 64 * 1024 * 1024,
+                    reserved_bytes: 64 * 1024 * 1024,
+                    host_reserve_bytes: 1024 * 1024,
+                },
+            )
+            .unwrap();
+        crate::durable_state::app_state::fixture_update_installation(
+            store,
+            "alice",
+            "installed",
+            (bytes, publisher),
+        );
+        assert!(store
+            .get_app_installation("alice", "installed")
+            .unwrap()
+            .active
+            .is_some());
+        let opened = runtime
+            .open_user_app_view("alice", "installed", None)
+            .await
+            .unwrap();
+        if allowed {
+            let (view, frontend) = opened.expect("signed view just under 8 MiB opens");
+            assert_eq!(view.installation_id, "installed");
+            assert_eq!(frontend.assets.len(), 2);
+        } else {
+            assert!(matches!(
+                opened,
+                Err(crate::local::AppRequestErrorCode::LimitExceeded)
+            ));
+        }
+    }
 }

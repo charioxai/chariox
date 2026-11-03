@@ -5,7 +5,7 @@
 //! retries and a visible failed (poison) or expired outcome. Payloads are
 //! dropped once an occurrence is settled. Routing grants the App nothing else.
 
-use chariox_app_package::{EventDirection, Limits, VerifiedPackage};
+use chariox_app_package::{EventDirection, Limits, VerifiedApp};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -50,7 +50,7 @@ pub struct IncomingCatalog {
     events: BTreeMap<String, (u32, jsonschema::JSONSchema)>,
 }
 impl IncomingCatalog {
-    pub fn compile(package: &VerifiedPackage<'_>) -> Result<Self> {
+    pub fn compile(package: &impl VerifiedApp) -> Result<Self> {
         let mut events = BTreeMap::new();
         for declaration in &package.declarations().events {
             if declaration.direction == EventDirection::Outgoing {

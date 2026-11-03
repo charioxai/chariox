@@ -192,30 +192,9 @@ impl KernelRuntimeState {
                 {
                     return Err(ledger::error("watched processes require an unrestricted build agent with unattended command permission"));
                 }
-                let root = run
-                    .working_directory()
-                    .and_then(|p| p.canonicalize().ok())
-                    .ok_or_else(|| ledger::error("agent workspace unavailable"))?;
-                let cwd = match args["cwd"].as_str().filter(|c| !c.is_empty()) {
-                    None => root.clone(),
-                    Some(rel) => root
-                        .join(rel)
-                        .canonicalize()
-                        .ok()
-                        .filter(|p| p.starts_with(&root) && p.is_dir())
-                        .ok_or_else(|| {
-                            ledger::error("cwd must be a directory inside the agent workspace")
-                        })?,
-                };
-                let argv: Vec<String> = serde_json::from_value(args["argv"].clone())
-                    .ok()
-                    .filter(|a: &Vec<String>| {
-                        !a.is_empty()
-                            && a.len() <= 64
-                            && !a[0].is_empty()
-                            && a.iter().all(|s| s.len() <= 4_096 && !s.chars().any(char::is_control))
-                    })
-                    .ok_or_else(|| ledger::error("argv of 1-64 arguments required (no shell; control characters are refused)"))?;
+                let cwd =
+                    super::super::agent_process_watch::workspace_cwd(&run, args["cwd"].as_str())?;
+                let argv = super::super::agent_process_watch::command_argv(&args["argv"])?;
                 let match_text = match args["match_text"].as_str() {
                     Some(m) if m.is_empty() || m.len() > 200 => {
                         return Err(ledger::error("match_text of 1-200 bytes required"))

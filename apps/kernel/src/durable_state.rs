@@ -52,6 +52,7 @@ pub(crate) mod apps;
 #[cfg(test)]
 mod apps_tests;
 pub(crate) mod browser_import;
+mod created_resources;
 mod owner;
 mod retired_sessions;
 pub(crate) mod room_environment;
@@ -429,6 +430,10 @@ impl DurableKernelStateStore {
         app_automations::initialize(&mut connection)?;
         workflow_notifications::initialize(&mut connection)?;
         agent_lifecycle::initialize(&mut connection)?;
+        created_resources::initialize(&connection).map_err(|_| DaemonError::LocalTransport {
+            operation: "resource_register.initialize",
+            message: "cannot initialize resource register".into(),
+        })?;
         retired_sessions::initialize(&connection).map_err(|error| DaemonError::LocalTransport {
             operation: "durable_state.retired_sessions",
             message: error.to_string(),
@@ -1907,6 +1912,7 @@ fn commit_durable_write_batch(
                 .and_then(|_| {
                     let sequence = transaction.last_insert_rowid().max(0) as u64;
                     retired_sessions::apply_event(&transaction, kind, payload_json)?;
+                    created_resources::apply_event(&transaction, kind, payload_json)?;
                     if kind == crate::durable_prompt_state::DURABLE_PROMPT_STATE_EVENT_KIND {
                         workflow_dispatch_intents::record_prompt_state_in(
                             &transaction,

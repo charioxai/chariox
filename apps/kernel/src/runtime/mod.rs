@@ -11,6 +11,8 @@ pub(crate) mod app_call_errors;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod app_connection_broker;
 pub(crate) mod app_control;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+mod app_dev_push;
 pub(crate) mod app_event_pump;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 pub(crate) mod app_file_grant_broker;
@@ -76,10 +78,10 @@ pub(crate) mod command_latency;
 pub(crate) mod command_response_refresh;
 pub(crate) mod computer_input_action;
 pub(crate) mod computer_input_execution;
+pub(crate) mod control_plane;
 pub(crate) mod credential_enrollment_control;
 pub(crate) mod daemon_health_projection;
 pub(crate) mod debug_bundle_control;
-pub(crate) mod disposable_worker_control;
 pub(crate) mod event_catalog_control;
 pub mod event_log;
 pub(crate) mod external_provider_session_control;

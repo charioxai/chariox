@@ -1,7 +1,7 @@
 //! App views: the installation's signed UI runs as a managed Tab in the
 //! session's Room browser, so people and agents share one DOM and profile.
-//! `window.chariox.call(tool, input)` runs the App's own tool as the human
-//! owner through the same catalog, validation and durable path as agent calls.
+//! `window.chariox.call(tool, input)` runs the App's own tool as the
+//! controller-bound input actor through the shared catalog and durable path.
 use super::KernelRuntimeState;
 #[path = "app_view_recovery.rs"]
 mod recovery;
@@ -44,7 +44,9 @@ impl KernelRuntimeState {
         request: &LocalDaemonRequest,
     ) -> Option<Result<LocalDaemonResponse, DaemonError>> {
         let owner = match request {
-            LocalDaemonRequest::OpenAppView(_) | LocalDaemonRequest::SetAppViewPanel(_) => {
+            LocalDaemonRequest::OpenAppView(_)
+            | LocalDaemonRequest::SetAppViewPanel(_)
+            | LocalDaemonRequest::InspectAppView(_) => {
                 match crate::runtime::app_control::owner(command) {
                     Ok(owner) => owner,
                     Err(code) => return Some(Ok(crate::runtime::app_control::failed(code))),
@@ -53,6 +55,9 @@ impl KernelRuntimeState {
             _ => return None,
         };
         Some(match request {
+            LocalDaemonRequest::InspectAppView(request) => {
+                self.inspect_app_view(owner, request).await
+            }
             LocalDaemonRequest::OpenAppView(request) => {
                 self.open_app_view(owner, &request.session_id, &request.installation_id)
                     .await
@@ -94,9 +99,49 @@ impl KernelRuntimeState {
         session_id: &str,
         installation: &str,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        let opened = self
+            .ensure_room_app_view(
+                &owner,
+                session_id,
+                installation,
+                crate::runtime::browser_controller_app_view::AppViewProjection::Human,
+            )
+            .await?;
+        let views = self.app_control().views().clone();
+        // Project the new Tab into the Room so viewers and agents see it.
+        let _ = self
+            .reconcile_browser_controller_environment(session_id)
+            .await;
+        self.remember_app_logical_tabs(session_id, &views);
+        let bound_agent_id = self.foreground_app(session_id, &opened.target_id).await;
+        Ok(LocalDaemonResponse::AppViewOpened {
+            installation_id: installation.to_owned(),
+            target_id: opened.target_id,
+            origin: opened.origin,
+            bound_agent_id,
+        })
+    }
+
+    /// The existing Room controller owns both background and displayed Tabs.
+    /// Open is idempotent for an installation, including concurrent catalog reads.
+    pub(in crate::runtime::state) async fn ensure_room_app_view(
+        &self,
+        owner: &str,
+        session_id: &str,
+        installation: &str,
+        projection: crate::runtime::browser_controller_app_view::AppViewProjection,
+    ) -> Result<BrowserAppViewOpened, DaemonError> {
         let store = self.owned.durable_state_store.clone();
-        let (view_owner, view_installation) = (owner.clone(), installation.to_owned());
+        let (view_owner, view_installation) = (owner.to_owned(), installation.to_owned());
+        let room = session_id.to_owned();
         let view = tokio::task::spawn_blocking(move || {
+            if !store
+                .get_app_installation(&view_owner, &view_installation)
+                .map_err(|_| crate::durable_state::app_view_assets::AppViewAssetsError::NotFound)?
+                .visible_in_room(Some(&room))
+            {
+                return Err(crate::durable_state::app_view_assets::AppViewAssetsError::NotFound);
+            }
             store.app_view_assets(&view_owner, &view_installation)
         })
         .await
@@ -114,8 +159,10 @@ impl KernelRuntimeState {
                 environment.viewport.app_layout(layout, None).0
             });
         let (entry, assets) = view_assets(view);
+        let background = !projection.is_human();
         let request = BrowserAppViewRequest::Open {
-            origin_label: origin_label(&owner, installation),
+            projection,
+            origin_label: origin_label(owner, installation),
             installation_id: installation.to_owned(),
             instance_id: None,
             entry,
@@ -126,16 +173,17 @@ impl KernelRuntimeState {
         if let Some(page) = page {
             views.sent_page(session_id, &opened.target_id, page);
         }
-        if views.register(
+        if views.register_projection(
             session_id,
             &opened.target_id,
             AppViewBinding {
                 logical_tab: None,
-                owner: owner.clone(),
+                owner: owner.to_owned(),
                 installation: installation.to_owned(),
                 generation,
                 panel,
             },
+            background,
         ) {
             let state = self.clone();
             let session = session_id.to_owned();
@@ -144,7 +192,7 @@ impl KernelRuntimeState {
         // An uninstall commits, then unbinds the installation's views. Checking
         // only after registering means an Open racing it ends unbound either way.
         let store = self.owned.durable_state_store.clone();
-        let (check_owner, check_installation) = (owner.clone(), installation.to_owned());
+        let (check_owner, check_installation) = (owner.to_owned(), installation.to_owned());
         let active = tokio::task::spawn_blocking(move || {
             store
                 .active_app_release(&check_owner, &check_installation)
@@ -153,21 +201,10 @@ impl KernelRuntimeState {
         .await
         .unwrap_or(false);
         if !active {
-            views.forget_installation(&owner, installation);
+            views.forget_installation(owner, installation);
             return Err(open_error("The App release became unavailable while opening its view. Use /app status <installation-id> to check it before retrying."));
         }
-        // Project the new Tab into the Room so viewers and agents see it.
-        let _ = self
-            .reconcile_browser_controller_environment(session_id)
-            .await;
-        self.remember_app_logical_tabs(session_id, &views);
-        let bound_agent_id = self.foreground_app(session_id, &opened.target_id).await;
-        Ok(LocalDaemonResponse::AppViewOpened {
-            installation_id: installation.to_owned(),
-            target_id: opened.target_id,
-            origin: opened.origin,
-            bound_agent_id,
-        })
+        Ok(opened)
     }
 
     /// A view command either runs or is final, with two exceptions. An Open
@@ -175,7 +212,7 @@ impl KernelRuntimeState {
     /// Room command holds it (that rejection means it never ran; an Open is
     /// not idempotent, and a Reload refused this way would unbind a working
     /// view). An answer is idempotent, so any failure is retried.
-    async fn app_view_command<T: serde::de::DeserializeOwned>(
+    pub(in crate::runtime::state) async fn app_view_command<T: serde::de::DeserializeOwned>(
         &self,
         session_id: &str,
         request: BrowserAppViewRequest,
@@ -384,6 +421,8 @@ impl KernelRuntimeState {
             .app_view_command(
                 session,
                 BrowserAppViewRequest::Open {
+                    projection:
+                        crate::runtime::browser_controller_app_view::AppViewProjection::Human,
                     origin_label: origin_label(&binding.owner, &binding.installation),
                     installation_id: binding.installation.clone(),
                     instance_id: None,
@@ -582,13 +621,7 @@ impl KernelRuntimeState {
             }
             Some((binding, false)) if binding.installation == call.installation_id => {
                 match self
-                    .invoke_app_view_tool(
-                        ViewCaller::Owner(Some(&session_id)),
-                        &binding,
-                        &call.method,
-                        call.params,
-                        &mut tracked,
-                    )
+                    .invoke_room_app_view_tool(&session_id, &binding, &call, &mut tracked)
                     .await
                 {
                     // Built for an older generation: reload it with the current one.
@@ -756,6 +789,41 @@ impl KernelRuntimeState {
                 tokio::spawn(async move { state.pump_app_view_calls(session_id).await });
             }
         }
+    }
+
+    /// A controller actor names an existing agent in this Room, never an
+    /// owner substitute. The common invocation retains and rechecks its grant.
+    async fn invoke_room_app_view_tool(
+        &self,
+        session: &str,
+        binding: &AppViewBinding,
+        call: &BrowserAppViewCall,
+        tracked: &mut ViewCall,
+    ) -> Result<Value, BrowserAppViewError> {
+        let agent = match &call.actor {
+            None => None,
+            Some(actor) if actor.kind == "agent" => {
+                let agent = self
+                    .owned
+                    .agent_store
+                    .get_agent(&actor.id)
+                    .map_err(|_| agent_not_granted())?;
+                if agent.id() != actor.id
+                    || agent.session_id() != session
+                    || agent.owner_user_id() != binding.owner
+                {
+                    return Err(agent_not_granted());
+                }
+                Some(agent)
+            }
+            Some(_) => return Err(agent_not_granted()),
+        };
+        let caller = match &agent {
+            Some(agent) => ViewCaller::Agent(agent),
+            None => ViewCaller::Owner(Some(session)),
+        };
+        self.invoke_app_view_tool(caller, binding, &call.method, call.params.clone(), tracked)
+            .await
     }
 
     pub(super) async fn invoke_app_view_tool(
@@ -1133,6 +1201,7 @@ mod tests {
             assets: Vec::new(),
         };
         let open = BrowserAppViewRequest::Open {
+            projection: crate::runtime::browser_controller_app_view::AppViewProjection::Human,
             origin_label: "a".into(),
             installation_id: "app".into(),
             instance_id: None,

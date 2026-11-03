@@ -126,7 +126,7 @@ fn public_output_rejects_a_directory_writable_by_other_users() {
 }
 
 #[test]
-fn created_scaffold_packs_and_validates_with_no_signing_secret_or_machine_path() {
+fn created_scaffold_targets_wasm_without_signing_secrets_or_machine_paths() {
     let scratch = Scratch::new();
     let keys_dir = scratch.0.join("keys");
     disk::DirBuilder::new()
@@ -156,9 +156,16 @@ fn created_scaffold_packs_and_validates_with_no_signing_secret_or_machine_path()
     .unwrap();
     assert_eq!(created["status"], "created-locally");
     assert_eq!(created["manifest"]["version"], "0.1.0");
-    assert_eq!(created["manifest"]["minKernelProtocol"], 500);
-    let manifest = super::read_manifest(&project.join("app.json"), &Limits::default()).unwrap();
-    assert_eq!(manifest.runtime.entry, "runtime/main.mjs");
+    assert_eq!(created["manifest"]["schema"], "chariox.app.v2");
+    let manifest: crate::v2::ManifestV2 =
+        serde_json::from_slice(&disk::read(project.join("app.json")).unwrap()).unwrap();
+    manifest.validate(&Limits::default()).unwrap();
+    assert_eq!(manifest.runtime.engine, crate::v2::RuntimeEngineV2::Wasm);
+    assert_eq!(manifest.runtime.component, "runtime/app.wasm");
+    assert!(disk::read_to_string(project.join("src/app.ts"))
+        .unwrap()
+        .contains("@chariox/app-sdk-wasm"));
+    assert!(!project.join("bundle/runtime/main.mjs").exists());
     let seed = disk::read(&key).unwrap();
     fn verify_source(path: &std::path::Path, seed: &[u8], external_path: &str) -> usize {
         let mut files = 0;
@@ -179,21 +186,16 @@ fn created_scaffold_packs_and_validates_with_no_signing_secret_or_machine_path()
         verify_source(&project, &seed, scratch.0.to_str().unwrap()),
         7
     );
-    let archive = scratch.0.join("greeting.cxapp");
-    let report = super::pack_directory(
+    // A scaffold supplies source, not a pretend component. Packing requires
+    // the SDK build to produce the admitted WASM component first.
+    assert!(super::v2::pack_directory(
         &project.join("bundle"),
-        &manifest,
+        &project.join("app.json"),
         &key,
-        &archive,
-        500,
+        &scratch.0.join("greeting.cxapp"),
         &Limits::default(),
     )
-    .unwrap();
-    assert_eq!(report.file_count, Some(3));
-    let publisher =
-        super::read_publisher(&project.join("publisher.json"), &Limits::default()).unwrap();
-    let verified = super::validate_archive(&archive, &publisher, 500, &Limits::default()).unwrap();
-    assert_eq!(verified.package_digest, report.package_digest);
+    .is_err());
 }
 
 #[test]
@@ -273,7 +275,21 @@ fn numbered_migration_files_become_the_packed_chain_and_gaps_are_refused() {
         "500",
     ]))
     .unwrap();
-    let manifest = super::read_manifest(&project.join("app.json"), &Limits::default()).unwrap();
+    let publisher = super::read_publisher(&public, &Limits::default()).unwrap();
+    let mut options = super::ManifestOptions::new(
+        "com.example.migrating".into(),
+        "0.1.0".into(),
+        publisher.publisher,
+        500,
+    );
+    options.tools = Some("schemas/tools.json".into());
+    let manifest = super::generate_manifest(options, &Limits::default()).unwrap();
+    disk::create_dir(project.join("bundle/runtime")).unwrap();
+    disk::write(
+        project.join("bundle/runtime/main.js"),
+        "// package-format fixture",
+    )
+    .unwrap();
     assert!(manifest.migrations.is_none());
     let migrations = project.join("bundle/migrations");
     disk::create_dir(&migrations).unwrap();
@@ -328,4 +344,45 @@ fn numbered_migration_files_become_the_packed_chain_and_gaps_are_refused() {
     )
     .unwrap();
     assert_eq!(report.manifest.migrations, Some(chain));
+}
+
+#[test]
+fn manifest_cli_emits_contract2_wasm_instead_of_a_native_backend() {
+    let scratch = Scratch::new();
+    let public = scratch.0.join("publisher.json");
+    super::keygen(
+        "com.example",
+        "Developer",
+        &scratch.0.join("signing.key"),
+        &public,
+    )
+    .unwrap();
+    let output = scratch.0.join("app.json");
+    let args = [
+        "manifest",
+        "--app-id",
+        "com.example.test",
+        "--version",
+        "1.0.0",
+        "--publisher",
+        public.to_str().unwrap(),
+        "--kernel-protocol",
+        "962",
+        "--output",
+        output.to_str().unwrap(),
+    ]
+    .map(str::to_owned);
+    let response = super::run_cli(&args).unwrap();
+    assert_eq!(response["manifest"]["schema"], "chariox.app.v2");
+    assert_eq!(
+        response["manifest"]["runtime"],
+        serde_json::json!({"engine":"wasm","component":"runtime/app.wasm"})
+    );
+    let written: crate::v2::ManifestV2 =
+        serde_json::from_slice(&disk::read(output).unwrap()).unwrap();
+    written.validate(&Limits::default()).unwrap();
+    assert_eq!(
+        written.required_features,
+        vec![crate::v2::RequiredFeature::WasmComponent]
+    );
 }

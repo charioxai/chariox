@@ -6,13 +6,18 @@ members = [
     "apps/aegs-dummy",
     "packages/aegs-sdk",
     "packages/app-package",
+    "packages/app-wit",
+    "packages/app-sdk-rust",
+    "packages/app-sdk-tools",
     "packages/event-protocol",
     "packages/app-runtime",
+    "packages/app-wasm-worker",
     "adapters/rust",
 ]
 # Vendored upstreams and scratch worktrees carry their own Cargo manifests;
 # keep them out of this workspace.
 exclude = [
+    "packages/app-sdk-rust/template",
     "packages/app-runtime/fuzz",
     "codex-main",
     "happy-main",

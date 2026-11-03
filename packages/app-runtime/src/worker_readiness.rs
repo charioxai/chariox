@@ -6,7 +6,7 @@
 //! activation transaction before constructing a callable App handle.
 
 use crate::app_catalog::AppCatalog;
-use chariox_app_package::{EventDirection, VerifiedPackage};
+use chariox_app_package::{EventDirection, VerifiedApp};
 use serde_json::Value;
 use std::{collections::BTreeSet, sync::Arc};
 
@@ -47,7 +47,7 @@ pub struct RegisteredHandlers {
 }
 
 impl ReadinessContract {
-    pub fn from_verified(package: &VerifiedPackage<'_>, catalog: Arc<AppCatalog>) -> Result<Self> {
+    pub fn from_verified(package: &impl VerifiedApp, catalog: Arc<AppCatalog>) -> Result<Self> {
         if package.package_digest() != catalog.package_digest() {
             return Err(ReadinessError::Provenance);
         }

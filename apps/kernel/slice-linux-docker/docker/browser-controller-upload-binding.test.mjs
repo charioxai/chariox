@@ -43,9 +43,10 @@ async function ownedBrowser(t, root) {
   const lifecycle = fileURLToPath(new URL("./browser-lifecycle.py", import.meta.url));
   const profile = path.join(root, "profile"), portFile = path.join(root, "port");
   const code = `import socket,time\ns=socket.socket();s.bind(("127.0.0.1",0));s.listen()\nopen(${JSON.stringify(portFile)},"w").write(str(s.getsockname()[1]))\ntime.sleep(60)`;
-  const record = JSON.parse(execFileSync("python3", [lifecycle, "start", profile, path.join(root, "browser.log"), "python3", "-c", code, `--user-data-dir=${profile}`], { encoding: "utf8", timeout: 8000 }));
+  const env = { ...process.env, TMPDIR: root };
+  const record = JSON.parse(execFileSync("python3", [lifecycle, "start", profile, path.join(root, "browser.log"), "python3", "-c", code, `--user-data-dir=${profile}`], { env, encoding: "utf8", timeout: 8000 }));
   t.after(async () => {
-    try { execFileSync("python3", [lifecycle, "stop", profile], { timeout: 15000, stdio: "pipe" }); }
+    try { execFileSync("python3", [lifecycle, "stop", profile], { env, timeout: 15000, stdio: "pipe" }); }
     finally {
       if (previous === undefined) delete process.env.CHARIOX_BROWSER_LIFECYCLE_ROOT;
       else process.env.CHARIOX_BROWSER_LIFECYCLE_ROOT = previous;

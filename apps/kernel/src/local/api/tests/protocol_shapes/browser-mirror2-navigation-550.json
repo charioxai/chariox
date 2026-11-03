@@ -1,6 +1,6 @@
 {
-  "protocol_version": 550,
-  "relay_peer_version": 147,
+  "protocol_version": 962,
+  "relay_peer_version": 411,
   "commands": [
     {
       "KernelBrowser": {

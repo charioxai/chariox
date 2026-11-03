@@ -147,12 +147,7 @@ impl KernelRuntimeState {
         {
             return Ok(true);
         }
-        let safe_message = crate::provider::sanitize_provider_diagnostic(message);
-        let safe_message = if safe_message.is_empty() {
-            "provider reported an error".to_string()
-        } else {
-            safe_message
-        };
+        let safe_message = failure.notice();
         let failed_attempt = FailedProviderAttempt {
             provider_run: &provider_run,
             agent_id: &agent_id,
@@ -309,7 +304,11 @@ impl KernelRuntimeState {
                     .ok_or_else(|| {
                         crate::durable_state::agent_lifecycle::error("failed turn has no task")
                     })?;
-                crate::durable_state::agent_lifecycle::end_failed_turn(&owned.durable_state_store,&task,format!("Provider run failed: {safe_message}. Owner must reconcile and resume or cancel"))?;
+                crate::durable_state::agent_lifecycle::end_failed_turn(
+                    &owned.durable_state_store,
+                    &task,
+                    safe_message.clone(),
+                )?;
                 Ok(owned
                     .durable_state_store
                     .agent_tasks(Some(session_id), Some(&agent_id))?

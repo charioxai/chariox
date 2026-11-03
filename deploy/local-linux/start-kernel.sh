@@ -3,10 +3,7 @@
 #   start-kernel.sh KERNEL
 # Prepares the App cgroup domain, then execs KERNEL in its place, so the domain
 # exists before the kernel can start any App (it starts enabled Apps at once).
-# The user counterpart of `chariox-app-storage --prepare-managed-domain`: enables
-# cpu, memory and pids below the delegated unit and creates the empty App subtree
-# `apps` (mode 0700) that /etc/chariox/app-storage.json names as the owner's
-# cgroup root. systemd has already placed this process in the unit's `supervisor`
+# systemd places this process in the unit supervisor
 # subgroup, so the unit cgroup has no processes of its own. Enabling controllers
 # there from an ExecStartPre instead makes systemd 259 fail to spawn the main
 # process (EBUSY).

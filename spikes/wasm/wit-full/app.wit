@@ -1,0 +1,195 @@
+// Proposed Chariox App world 1.0: async from the start (WASI 0.3, Component
+// Model async). Derived 1:1 from @chariox/app-sdk 0.8 (packages/app-sdk/src/
+// index.d.ts); each import names its existing wire method. One App instance
+// serves many calls at once, so in-memory App state is shared by every caller.
+//
+// Rules: a call into the kernel is `async func`; a call that never leaves the
+// worker (registry, log, pure helpers) stays a plain `func`. Large or unbounded
+// data is a `stream`, never a `list`. The spike builds wit/app.wit, a subset.
+package chariox:app@1.0.0;
+
+/// Not `types`: WASI packages have `types` too, and componentize-py renames
+/// colliding modules (measured), which would break Python Apps on a minor.
+interface app-types {
+  /// JSON text checked by the host with the wire rules (depth 64, safe
+  /// integers, no duplicate keys) before any byte is sent.
+  type json = string;
+  record app-error { code: string, message: string, retryable: option<bool> }
+  enum actor-kind { human, agent, background }
+  record actor { kind: actor-kind, id: string }
+  record invocation-context {
+    deadline-ms: u64,
+    installation-id: option<string>, room-id: option<string>,
+    operation-id: option<string>, agent-id: option<string>,
+    task-id: option<string>, turn-id: option<string>,
+    actor: option<actor>,
+  }
+  record artifact { name: string, media-type: string, reference: string, size-bytes: option<u64>, digest: option<string> }
+  record invocation { prompt: string, artifacts: list<artifact> }
+  record occurrence {
+    automation-id: string, occurrence-id: string, event-version: u32,
+    occurred-at-ms: u64, payload: json, invocation: invocation,
+    schedule-revision: option<string>,
+  }
+  record receipt { receipt-id: string, state: string }
+  record wake { id: string, due-at-ms: u64, revision: option<string> }
+  /// A live, non-durable event (see `events.subscribe`).
+  record live-event { name: string, data: json }
+}
+
+/// Registration names; sealed by `worker.ready {tools, events, lifecycle}`.
+interface registry {
+  tool: func(name: string);
+  event: func(name: string);
+  lifecycle: func(event: string);
+}
+
+interface state {
+  use app-types.{json, app-error, occurrence, receipt, wake};
+  record state-record { value: json, version: u64 }
+  record check { key: string, version: option<u64> }
+  variant write { put(tuple<string, json>), delete(string) }
+  variant wake-change { set(wake), cancel(string) }
+  record transaction {
+    schema-version: u32, checks: list<check>, writes: list<write>,
+    occurrences: list<occurrence>, wakes: list<wake-change>,
+  }
+  record committed { revision: u64, receipts: list<receipt> }
+  get: async func(key: string) -> result<option<state-record>, app-error>;        // state.get
+  transact: async func(tx: transaction) -> result<committed, app-error>;          // state.transaction
+}
+
+interface schedule {
+  use app-types.{app-error, wake};
+  set: async func(wake: wake) -> result<list<wake>, app-error>;                   // schedule.set
+  cancel: async func(id: string) -> result<list<wake>, app-error>;                // schedule.cancel
+  %list: async func() -> result<list<wake>, app-error>;                            // schedule.list
+}
+
+interface events {
+  use app-types.{app-error, occurrence, receipt, live-event};
+  record automation { automation-id: string, event: string, event-version: u32, state: string, last-receipt: option<receipt> }
+  emit: async func(occurrence: occurrence) -> result<receipt, app-error>;         // events.emit
+  status: async func(receipt-id: string) -> result<receipt, app-error>;           // events.status
+  retry: async func(receipt-id: string) -> result<receipt, app-error>;            // events.retry
+  automations: async func() -> result<list<automation>, app-error>;               // events.automations
+  /// Pure function (no wire call): evt1.<ms>.<sha256>.
+  occurrence-id: func(source-key: string, occurred-at-ms: u64) -> result<string, app-error>;
+  /// Live feed of non-durable events (presence, connection pushes) for as
+  /// long as the App holds the stream. NEW wire: the kernel's `events.deliver`
+  /// for a subscribed name is answered once the event is in the stream's
+  /// bounded buffer (backpressure). Durable occurrences keep arriving through
+  /// `handlers.deliver-event` with receipts.
+  subscribe: async func(name: string) -> result<stream<live-event>, app-error>;
+}
+
+interface connections {
+  use app-types.{json, app-error};
+  record connection { generator-id: string, connection-id: string, actions: list<string> }
+  record action-request { connection-id: string, action: string, input: option<json>, context: option<json>, idempotency-key: option<string> }
+  record action-result { accepted: bool, %result: json, idempotency-key: string }
+  %list: async func() -> result<list<connection>, app-error>;                      // connections.list
+  action: async func(request: action-request) -> result<action-result, app-error>; // connections.action
+}
+
+/// Durable/brokered file operations. Plain reads and writes of the App's own
+/// data/tmp directories go through wasi:filesystem preopens instead.
+interface files {
+  use app-types.{app-error};
+  enum consistency { quiescent, crash-consistent }
+  record snapshot-info { snapshot-id: string, consistency: consistency, files: u64, bytes: u64 }
+  atomic-replace: async func(path: string, contents: stream<u8>) -> result<u64, app-error>;          // files.atomic_replace
+  snapshot: async func(name: string, consistency: consistency) -> result<snapshot-info, app-error>;  // files.snapshot
+  %import: async func(grant-id: string, destination: string) -> result<tuple<u64, string>, app-error>; // files.import
+  %export: async func(path: string) -> result<string, app-error>;                                     // files.export
+}
+
+interface http {
+  use app-types.{app-error};
+  record request {
+    url: string, method: string, headers: list<tuple<string, string>>,
+    connection-id: option<string>, operation-id: option<string>,
+  }
+  record response-head { status: u16, headers: list<tuple<string, string>>, url: string }
+  /// One broker stream (http.open/write/headers/read/cancel). The request
+  /// body is written as it is produced; the response body flows with
+  /// backpressure (bounded read-ahead in the worker). Dropping the returned
+  /// stream, or cancelling the call, cancels the broker stream.
+  /// wasi:http/client is virtualized onto this same broker path.
+  fetch: async func(req: request, body: option<stream<u8>>) -> result<tuple<response-head, stream<u8>>, app-error>;
+}
+
+interface log {
+  use app-types.{json};
+  enum level { debug, info, warn, error }
+  /// Fire-and-forget: queued by the worker, never holds the caller.
+  write: func(level: level, message: string, fields: json);                 // log.write
+}
+
+interface host {
+  use app-types.{app-error};
+  record offer { offer-id: string, state: string }
+  record pick { multiple: bool, accept: list<string> }
+  notify: async func(title: string, body: option<string>) -> result<string, app-error>;   // host.notify
+  open-link: async func(url: string) -> result<offer, app-error>;                         // host.open_link
+  write-clipboard: async func(text: string) -> result<offer, app-error>;                  // host.clipboard_write
+  /// Waits for the person's choice; the worker polls host.pick_file_status.
+  pick-file: async func(request: pick) -> result<list<string>, app-error>;               // host.pick_file (+ _status)
+}
+
+interface validation {
+  use app-types.{json, app-error};
+  enum op-state { pending, approved, denied, expired, cancelled, reconciliation }
+  record operation { operation-id: string, state: op-state }
+  record approval-request { action: string, parameters: json, operation-id: option<string>, connection-id: option<string> }
+  request: async func(request: approval-request) -> result<operation, app-error>;        // validation.request
+  status: async func(operation-id: string) -> result<operation, app-error>;       // validation.status
+}
+
+/// Supervisor-to-worker calls. Every call may run concurrently with others on
+/// the same instance. `cancel` resolves with a reason when the kernel cancels
+/// the call or its deadline passes; it never resolves for a call that ends
+/// normally. SDKs expose it as an AbortSignal / cancellation token.
+interface handlers {
+  use app-types.{json, app-error, invocation-context, wake};
+  /// Before any other export; then worker.ready.
+  register: func() -> result<_, app-error>;
+  call-tool: async func(name: string, input: json, context: invocation-context, cancel: future<string>) -> result<json, app-error>;   // tools.invoke
+  deliver-event: async func(name: string, occurrence-id: string, payload: json, context: invocation-context, cancel: future<string>) -> result<json, app-error>; // events.deliver
+  lifecycle: async func(event: string, data: option<json>) -> result<option<json>, app-error>;   // lifecycle.dispatch
+  deliver-wake: async func(wake: wake, overdue: bool) -> result<_, app-error>;                    // schedule.wake
+}
+
+/// Data migrations get only state (the kernel admits only state.get,
+/// state.transaction and migration.step before readiness).
+interface migration {
+  use app-types.{app-error};
+  migrate: async func(%from: u32, to: u32) -> result<_, app-error>;          // then migration.step {to}
+}
+
+world app {
+  import wasi:clocks/monotonic-clock@0.3.0;
+  import wasi:clocks/system-clock@0.3.0;
+  import wasi:random/random@0.3.0;
+  import wasi:filesystem/preopens@0.3.0;
+  import wasi:cli/stdout@0.3.0;
+  import wasi:cli/stderr@0.3.0;
+  /// Virtualized onto `http.fetch`: standard fetch()/requests work unchanged.
+  import wasi:http/client@0.3.0;
+  import registry;
+  import state;
+  import schedule;
+  import events;
+  import connections;
+  import files;
+  import http;
+  import log;
+  import host;
+  import validation;
+  export handlers;
+}
+
+world app-migrations {
+  import state;
+  export migration;
+}

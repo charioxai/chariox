@@ -159,6 +159,7 @@ fn local_request_payload(request: &LocalDaemonRequest) -> Value {
                 "encoded_bytes": request.data_base64.len(),
             }
         }),
+        LocalDaemonRequest::OwnerVault(_) => serde_json::json!({ "OwnerVault": "[redacted]" }),
         LocalDaemonRequest::SetCredentialSecret(request) => serde_json::json!({
             "SetCredentialSecret": {
                 "session_id": request.session_id,

@@ -159,10 +159,12 @@ async function handleBrowserControllerRequestInner(
       const apps = browser.appTabs;
       if (request.method === "browser.app.open") return successResponse(request.id, await apps.open(request.params));
       if (request.method === "browser.app.close") return successResponse(request.id, await apps.close(request.params));
+      if (request.method === "browser.app.inspect") return successResponse(request.id, await apps.inspect(request.params));
       if (request.method === "browser.app.calls") return successResponse(request.id, await apps.takeCalls(request.params));
       if (request.method === "browser.app.respond") return successResponse(request.id, await apps.respond(request.params));
       if (request.method === "browser.app.reload") return successResponse(request.id, await apps.reload(request.params));
       if (request.method === "browser.app.layout") return successResponse(request.id, await apps.layout(request.params));
+      if (request.method === "browser.app.agent") return successResponse(request.id, await apps.agent(request.params));
     }
     if (request.method === "browser.events.poll") {
       return successResponse(
@@ -448,7 +450,7 @@ export class BrowserControllerStdioServer {
 function classifyScheduling(request, browser) {
   const method = request?.method;
   if (method === "room.display") return {kind:"read",targetId:"room-shared-display"};
-  if (["browser.app.calls", "browser.app.respond"].includes(method)) return { kind: "bridge" };
+  if (["browser.app.calls", "browser.app.respond", "browser.app.agent"].includes(method)) return { kind: "bridge" };
   if (method === "browser.reconcile" && browser?.canReconcileConcurrently?.(request.params?.viewport, {
     browserBarVisible: request.params?.browser_bar_visible,
     appPanelCssWidth: request.params?.app_panel_css_width,

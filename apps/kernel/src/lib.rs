@@ -59,6 +59,7 @@ pub mod slice;
 pub mod slice_provider_auth;
 pub mod terminal;
 pub mod transport;
+pub mod web_bot_auth;
 pub mod workflow_code;
 pub(crate) mod workflow_publication_apps;
 pub(crate) mod workflow_publication_requirements;

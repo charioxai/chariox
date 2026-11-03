@@ -1,5 +1,5 @@
 //! Full shared runtime MCP routing against the fixed native ABI fixture. No
-//! provider process, Node runtime, OS sandbox or public activation is simulated.
+//! provider process, WASM worker, OS sandbox or public activation is simulated.
 use super::*;
 use chariox_app_package::{verify, VerificationPolicy};
 use chariox_app_runtime::{

@@ -121,8 +121,7 @@ verify_selected_release "$image_root" "$expected_release_digest" "$trusted_publi
 require_regular_file "$image_root/usr/local/bin/chariox-kernel"
 require_regular_file "$image_root/usr/local/bin/chariox-managed-bootstrap"
 require_regular_file "$image_root/usr/local/bin/chariox-app-package"
-require_regular_file "$image_root/usr/libexec/chariox-app-storage"
-require_regular_file "$image_root/etc/systemd/system/chariox-app-storage.service"
+require_regular_file "$image_root/usr/local/bin/chariox-app-wasm-worker"
 require_regular_file "$image_root/usr/lib/chariox/release-manifest.json"
 require_regular_file "$image_root/usr/lib/chariox/release-manifest.sig"
 require_regular_file "$image_root/usr/lib/chariox/release-public-key"
@@ -425,8 +424,6 @@ case "$docker_uid" in
 esac
 usermod --append --groups chariox-slice chariox
 
-. "$script_root/managed-app-storage.sh"
-enroll_managed_app_storage "$install_root" "$managed_provider_topology"
 
 install -d -o chariox -g chariox -m 0700 "$managed_home" "$managed_state"
 install -d -o chariox-docker -g chariox-docker -m 0700 \
@@ -551,8 +548,8 @@ if [ ! -e "$published_release" ]; then
   install -o root -g root -m 0755 "$image_root/usr/local/bin/chariox-kernel" "$pending_release/usr/local/bin/chariox-kernel"
   install -o root -g root -m 0755 "$image_root/usr/local/bin/chariox-managed-bootstrap" "$pending_release/usr/local/bin/chariox-managed-bootstrap"
   install -o root -g root -m 0755 "$image_root/usr/local/bin/chariox-app-package" "$pending_release/usr/local/bin/chariox-app-package"
-  install -o root -g root -m 0755 "$image_root/usr/libexec/chariox-app-storage" "$pending_release/usr/libexec/chariox-app-storage"
-  install -o root -g root -m 0644 "$image_root/etc/systemd/system/chariox-app-storage.service" "$pending_release/etc/systemd/system/chariox-app-storage.service"
+  # Beside the kernel, which opens its WASM App worker next to its own executable.
+  install -o root -g root -m 0755 "$image_root/usr/local/bin/chariox-app-wasm-worker" "$pending_release/usr/local/bin/chariox-app-wasm-worker"
   install -o root -g root -m 0644 "$image_root/usr/lib/chariox/release-manifest.json" "$pending_release/usr/lib/chariox/release-manifest.json"
   install -o root -g root -m 0644 "$image_root/usr/lib/chariox/release-manifest.sig" "$pending_release/usr/lib/chariox/release-manifest.sig"
   install -o root -g root -m 0644 "$image_root/usr/lib/chariox/release-public-key" "$pending_release/usr/lib/chariox/release-public-key"
@@ -591,8 +588,6 @@ install_docker_admission_artifacts "$published_release" "$install_root" || {
 atomic_symlink "../../../usr/lib/chariox/current/usr/local/bin/chariox-kernel" "$install_root/usr/local/bin/chariox-kernel"
 atomic_symlink "../../../usr/lib/chariox/current/usr/local/bin/chariox-managed-bootstrap" "$install_root/usr/local/bin/chariox-managed-bootstrap"
 atomic_symlink "../../../usr/lib/chariox/current/usr/local/bin/chariox-app-package" "$install_root/usr/local/bin/chariox-app-package"
-atomic_symlink "../lib/chariox/current/usr/libexec/chariox-app-storage" "$install_root/usr/libexec/chariox-app-storage"
-atomic_symlink "../../../usr/lib/chariox/current/etc/systemd/system/chariox-app-storage.service" "$install_root/etc/systemd/system/chariox-app-storage.service"
 atomic_symlink "../../../usr/lib/chariox/current/etc/systemd/system/chariox-managed-bootstrap.service" "$install_root/etc/systemd/system/chariox-managed-bootstrap.service"
 if path_exists "$image_root/etc/systemd/system/chariox-path1-managed-bootstrap.service"; then
   atomic_symlink "../../../usr/lib/chariox/current/etc/systemd/system/chariox-path1-managed-bootstrap.service" "$install_root/etc/systemd/system/chariox-path1-managed-bootstrap.service"
@@ -659,7 +654,6 @@ if ! rm -f -- "$install_root/etc/systemd/system/multi-user.target.wants/chariox-
   || ! loginctl enable-linger chariox-docker \
   || ! systemctl enable chariox-slice-disk-quota-allocator.service \
   || ! systemctl enable chariox-rootless-docker.service \
-  || ! systemctl enable chariox-app-storage.service \
   || ! systemctl enable "$selected_bootstrap_service"; then
   if restore_previous_current; then
     systemctl daemon-reload >/dev/null 2>&1 || true

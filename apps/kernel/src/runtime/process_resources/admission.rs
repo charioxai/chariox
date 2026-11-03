@@ -888,21 +888,23 @@ fn arguments(_pid: u32) -> Option<(Vec<String>, Option<PathBuf>)> {
     None
 }
 
-/// Bytes a process has written to storage.
+/// Storage I/O, shared by admission and the session process feed. Unreadable
+/// counters stay unknown in the feed rather than looking like zero usage.
 #[cfg(target_os = "linux")]
-pub(super) fn written(pid: u32) -> u64 {
-    std::fs::read_to_string(format!("/proc/{pid}/io"))
-        .ok()
-        .and_then(|io| {
-            io.lines()
-                .find_map(|line| line.strip_prefix("write_bytes:"))
-                .and_then(|value| value.trim().parse().ok())
-        })
-        .unwrap_or(0)
+pub(super) fn disk_io(pid: u32) -> Option<(u64, u64)> {
+    let io = std::fs::read_to_string(format!("/proc/{pid}/io")).ok()?;
+    let counter = |name: &str| {
+        io.lines()
+            .find_map(|line| line.strip_prefix(name))?
+            .trim()
+            .parse()
+            .ok()
+    };
+    Some((counter("read_bytes:")?, counter("write_bytes:")?))
 }
 
 #[cfg(target_os = "macos")]
-pub(super) fn written(pid: u32) -> u64 {
+pub(super) fn disk_io(pid: u32) -> Option<(u64, u64)> {
     let mut info = std::mem::MaybeUninit::<libc::rusage_info_v2>::zeroed();
     // SAFETY: the buffer is one rusage_info_v2, the flavor asked for.
     let read = unsafe {
@@ -913,15 +915,20 @@ pub(super) fn written(pid: u32) -> u64 {
         )
     };
     if read != 0 {
-        return 0;
+        return None;
     }
     // SAFETY: proc_pid_rusage succeeded and filled the buffer.
-    unsafe { info.assume_init() }.ri_diskio_byteswritten
+    let info = unsafe { info.assume_init() };
+    Some((info.ri_diskio_bytesread, info.ri_diskio_byteswritten))
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-pub(super) fn written(_pid: u32) -> u64 {
-    0
+pub(super) fn disk_io(_pid: u32) -> Option<(u64, u64)> {
+    None
+}
+
+pub(super) fn written(pid: u32) -> u64 {
+    disk_io(pid).map_or(0, |(_, written)| written)
 }
 
 /// Expected peaks by command key, kept across kernel restarts.

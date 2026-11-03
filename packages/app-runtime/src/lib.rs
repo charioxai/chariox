@@ -25,10 +25,7 @@ mod private_fs;
 pub mod publisher_trust;
 #[cfg(unix)]
 pub mod release_store;
-#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
-pub mod runtime_enrollment;
-#[cfg(all(test, target_os = "linux"))]
-mod storage_drill_fixture;
+pub mod view_catalog;
 pub mod wire;
 mod wire_json;
 pub mod worker_peer;

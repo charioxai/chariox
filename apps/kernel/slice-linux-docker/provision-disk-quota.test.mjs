@@ -97,13 +97,12 @@ test("managed saved-home restore mounts its verified archive directory read-only
 })
 
 test("fresh quota driver selection is gated by the exact XFS project-quota mount", async () => {
-  const [service, allocator, backend, unit, installer, imagePrep] = await Promise.all([
+  const [service, allocator, backend, unit, installer] = await Promise.all([
     read("./managed-rootless-service.sh"),
     read("./slice-disk-quota-allocator.mjs"),
     read("./slice-disk-quota-xfs-backend.mjs"),
     read("./chariox-slice-disk-quota-allocator.service"),
     read("../../../deploy/managed-kernel/install-image.sh"),
-    read("../../../deploy/managed-kernel/prepare-worker-image.sh"),
   ])
   assert.match(service, /\[ \"\$1\" = \"\$ROOTLESS_DATA_ROOT\" \] && \[ \"\$2\" = xfs \]/)
   assert.match(service, /pquota,\*\|\*,prjquota,\*/)
@@ -125,7 +124,6 @@ test("fresh quota driver selection is gated by the exact XFS project-quota mount
   assert.doesNotMatch(unit, /BindReadOnlyPaths=.*allocator\.sock/)
   assert.match(unit, /slice-disk-quota-service\.mjs/)
   assert.match(installer, /slice-disk-quota-xfs-backend\.mjs/)
-  assert.match(imagePrep, /xfsprogs/)
 })
 
 test("shared allocator coordination helper is packaged and writable to the broker only at its state root", async () => {

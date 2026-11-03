@@ -222,6 +222,12 @@ fn the_models_own_reply_on_the_recent_frame_is_not_a_provider_failure() {
     .unwrap();
     assert!(claude_native_recent_terminal_failure(&run).is_none());
 
+    fs::write(&recent, "The page said Credit balance is too low.\n").unwrap();
+    assert!(claude_native_recent_terminal_failure(&run).is_none());
+
+    fs::write(&recent, "API Error: 400 Credit balance is too low\n").unwrap();
+    assert!(claude_native_recent_terminal_failure(&run).is_some());
+
     // The provider's own limit dialog is still a failure.
     fs::write(
         &recent,

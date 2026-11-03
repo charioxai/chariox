@@ -1,9 +1,7 @@
 //! Blocking ownership of a native App worker and its existing SDK channel.
 //!
-//! Linux preparation consumes installed-runtime and verified-package leases,
-//! then provisions fixed storage, code views and the owned cgroup domain. macOS
-//! preparation provisions private APFS storage for the Seatbelt launcher.
-//! A private type or a native identity reply does not establish confinement.
+//! WASM preparation retains verified components, private storage and runtime
+//! leases. The worker enters its native OS policy before guest execution.
 //!
 //! Spawn, wait, shutdown and Drop are blocking. The kernel must own this handle
 //! on its bounded blocking service, never drop it on an async coordinator. A
@@ -17,23 +15,18 @@ pub use private_data::{
     PreparedDataReplace, PrivateData, PrivateDataError, TreeCopy, TreeFile, TreeLimits,
     DATA_QUOTA_BYTES,
 };
-#[cfg(target_os = "linux")]
-mod platform_linux;
-#[cfg(target_os = "macos")]
-mod platform_macos;
 mod record;
 mod spawn;
-#[cfg(target_os = "linux")]
-mod storage_linux;
-#[cfg(target_os = "macos")]
-mod storage_macos;
 #[cfg(feature = "test-fixtures")]
 #[doc(hidden)]
 pub mod test_fixture;
+pub mod wasm;
+pub mod wasm_config;
 #[cfg(any(target_os = "macos", test))]
 mod worker_platform;
 
 use crate::wire::{Channel, Sender};
+#[cfg(test)]
 use record::LaunchRecord;
 use std::{
     ffi::CString,
@@ -53,82 +46,11 @@ use std::{
 pub struct PreparedWorker {
     program: CString,
     arguments: Vec<CString>,
-    record: LaunchRecord,
+    record: record::PreparedLaunch,
     // Open objects AND the domain's pinning lease survive through the caller's
     // lifecycle join, including broker drain after actual process/domain reap.
     _objects: Vec<File>,
     domain: Box<dyn ResourceDomain>,
-}
-
-impl PreparedWorker {
-    /// Physical preparation only: the kernel must fence the current binding
-    /// and approval before this call and complete its readiness/activation path
-    /// after spawn. Paths, bootstrap source and limits are not caller arguments.
-    /// `migrate_from` is the data schema of a staged worker that first runs
-    /// its release's migration steps from there (the kernel's open migration).
-    /// `committed_generation` is the installation's committed generation: a
-    /// newer, staged worker starts on data the helper can roll back to. `None`
-    /// means no release has been committed yet.
-    #[cfg(target_os = "linux")]
-    pub fn prepare_linux(
-        runtime: crate::runtime_enrollment::EnrolledRuntime,
-        release: crate::release_store::VerifiedReleaseLease,
-        binding: &crate::installation::StageTrustBinding,
-        migrate_from: Option<u32>,
-        committed_generation: Option<u64>,
-    ) -> Result<Self, WorkerError> {
-        platform_linux::prepare(
-            runtime,
-            release,
-            binding,
-            migrate_from,
-            committed_generation,
-        )
-    }
-    /// macOS preparation. `storage_root` is the kernel-owned private storage
-    /// directory; the launcher applies Seatbelt to the derived canonical roots.
-    /// `committed_generation` is the installation's committed generation: it
-    /// may reuse storage last prepared for a newer, never-committed update.
-    #[cfg(target_os = "macos")]
-    pub fn prepare_macos(
-        runtime: crate::runtime_enrollment::EnrolledRuntime,
-        release: crate::release_store::VerifiedReleaseLease,
-        binding: &crate::installation::StageTrustBinding,
-        storage_root: &std::path::Path,
-        committed_generation: u64,
-        migrate_from: Option<u32>,
-    ) -> Result<Self, WorkerError> {
-        platform_macos::prepare(
-            runtime,
-            release,
-            binding,
-            storage_root,
-            committed_generation,
-            migrate_from,
-        )
-    }
-    /// Kernel startup recovery for macOS storage, before any worker of this
-    /// kernel is prepared: detaches volumes and clears interrupted creations.
-    /// The error is a stable code such as `app_storage_busy`, for diagnostics.
-    #[cfg(target_os = "macos")]
-    pub fn recover_macos_storage(storage_root: &std::path::Path) -> Result<(), &'static str> {
-        storage_macos::StorageRoot::open(storage_root)
-            .and_then(|root| root.recover_all_blocking())
-            .map_err(|error| error.code())
-    }
-    /// Deletes one installation's macOS storage once its workers are reaped:
-    /// the owner deleted the App's data. Deleting again finishes an interrupted
-    /// deletion. The error is a stable code such as `app_storage_busy`.
-    #[cfg(target_os = "macos")]
-    pub fn delete_macos_storage(
-        storage_root: &std::path::Path,
-        owner: &str,
-        installation: &str,
-    ) -> Result<(), &'static str> {
-        storage_macos::StorageRoot::open(storage_root)
-            .and_then(|root| root.delete_blocking(owner, installation))
-            .map_err(|error| error.code())
-    }
 }
 
 /// Each worker's memory limit on both platforms. macOS terminates a worker its
@@ -139,22 +61,6 @@ pub const WORKER_MEMORY_LIMIT_BYTES: u64 = 512 * 1024 * 1024;
 /// then gets its normal budget.
 pub const MIGRATION_TIMEOUT_MS: u64 = 120_000;
 
-/// The bootstrap configuration's migration steps from `from`, or None when
-/// the release declares none past it.
-pub fn migration_steps(
-    manifest: &chariox_app_package::Manifest,
-    from: u32,
-) -> Option<serde_json::Value> {
-    let steps: Vec<_> = manifest
-        .migrations
-        .iter()
-        .flat_map(|migrations| &migrations.steps)
-        .filter(|step| step.from >= from)
-        .map(|step| serde_json::json!({"from":step.from,"to":step.to,"entry":step.entry}))
-        .collect();
-    (!steps.is_empty()).then_some(serde_json::Value::Array(steps))
-}
-
 /// To be implemented by the enrolled platform provisioner, not by callers of
 /// WorkerProcess. Linux must own its exact cgroup + bundled bubblewrap namespace
 /// domain; a process group alone cannot contain bubblewrap's nested session.
@@ -164,10 +70,10 @@ trait ResourceDomain: Send {
     fn private_data_directory(&self) -> Result<File, WorkerError> {
         Err(WorkerError::Preparation)
     }
-    /// Trusted setup only: Linux inherits cgroup.procs at FD5 and the pinned
-    /// bubblewrap executable at FD6 and a borrowed storage lease at FD7. All
-    /// setup channels close before Bubblewrap exec. Ordinary
-    /// workers and macOS Apple-tool launches retain the original FD0..4 ABI.
+    /// The WASM launch retains the verified component, AOT artifact, config
+    /// and private directory handles. These are supervisor inputs, not paths
+    /// or descriptors selected by the App. The worker closes setup descriptors
+    /// before entering its native containment and exposing the SDK channel.
     fn setup_descriptors(&self) -> &[File] {
         &[]
     }
@@ -262,6 +168,9 @@ pub enum WorkerError {
     LogLimit,
     #[error("app_worker_exited_before_ready")]
     EarlyExit,
+    /// The worker could not enter its OS containment and refused to start.
+    #[error("app_worker_containment")]
+    Containment,
     #[error("app_worker_cancelled")]
     Cancelled,
     #[error("app_worker_supervisor")]
@@ -334,9 +243,9 @@ impl WorkerProcess {
         let limits = limits.validate()?;
         let record = prepared.record.encode()?;
         let ready = prepared.record.ready();
-        let generation = prepared.record.generation.clone();
-        let installation = prepared.record.installation.clone();
-        let release_digest = prepared.record.release_digest.clone();
+        let generation = prepared.record.generation().to_owned();
+        let installation = prepared.record.installation().to_owned();
+        let release_digest = prepared.record.release_digest().to_owned();
         let (sdk, child_sdk) = UnixStream::pair().map_err(|_| WorkerError::Io)?;
         let (control, child_control) = UnixStream::pair().map_err(|_| WorkerError::Io)?;
         let (stdout, child_stdout) = UnixStream::pair().map_err(|_| WorkerError::Io)?;
@@ -453,17 +362,3 @@ impl Drop for WorkerProcess {
 
 #[cfg(test)]
 mod tests;
-
-/// Deletes one installation's Linux storage through the storage helper once
-/// its workers are reaped: the owner deleted the App's data. Deleting again
-/// finishes an interrupted deletion. The error is a stable storage code.
-#[cfg(target_os = "linux")]
-pub fn delete_linux_storage(owner: &str, installation: &str) -> Result<(), String> {
-    storage_linux::delete(owner, installation).map_err(|error| error.to_string())
-}
-
-/// Installed root-only Linux storage helper entry. It does not accept App RPCs.
-#[cfg(target_os = "linux")]
-pub fn run_app_storage_helper(arguments: Vec<String>) -> Result<(), String> {
-    storage_linux::run(arguments).map_err(|error| error.to_string())
-}

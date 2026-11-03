@@ -73,6 +73,23 @@ test("isolated session admission resumes overflow without opening another listen
   await listener.close();
 });
 
+test("a dedicated worker the page starts is resumed at once and stays attachable", async () => {
+  const listener = new BrowserFrameSessions(new BrowserFrameTargets(), () => "tab");
+  const connection = frameConnection();
+  await listener.start(connection, "root");
+  const filter = connection.calls[0].params.filter;
+  assert.ok(filter.some((entry) => entry.type === "worker" && !entry.exclude), "workers must be reported so a paused one can be resumed");
+  const worker = { method: "Target.attachedToTarget", sessionId: "root", params: { sessionId: "worker-1", waitingForDebugger: true, targetInfo: { type: "worker" } } };
+  assert.equal(listener.observe(worker, connection), true);
+  await settle();
+  assert.deepEqual(connection.calls.slice(1).map((call) => [call.method, call.sessionId ?? call.params.sessionId]),
+    [["Runtime.runIfWaitingForDebugger", "worker-1"]], "resumed, never detached: a detached worker cannot be attached again");
+  assert.equal(listener.observe({ method: "Page.frameAttached", sessionId: "worker-1", params: {} }, connection), false);
+  assert.equal(listener.observe({ method: "Target.detachedFromTarget", params: { sessionId: "worker-1", targetId: "worker-target" } }, connection), true, "the detach of a worker is not a page detach");
+  assert.equal(listener.observe({ method: "Target.detachedFromTarget", params: { sessionId: "worker-1" } }, connection), false);
+  await listener.close();
+});
+
 function attached(sessionId, parent) {
   return { method: "Target.attachedToTarget", sessionId: parent, params: { sessionId, targetInfo: { type: "iframe" } } };
 }

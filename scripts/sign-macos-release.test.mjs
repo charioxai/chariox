@@ -21,7 +21,7 @@ async function fixture(t) {
   t.after(() => rm(root, { recursive: true, force: true }));
   const input = join(root, 'unsigned');
   await mkdir(join(input, 'sdk'), { recursive: true });
-  for (const name of ['chariox', 'chariox-kernel', 'chariox-app-runtime-install', 'chariox-app-worker', 'chariox-setup', 'libnode.137.dylib', 'libchariox-app-runtime.dylib'])
+  for (const name of ['chariox', 'chariox-kernel', 'chariox-relay', 'chariox-app-wasm-worker', 'chariox-setup', 'libexample.dylib', 'libclient.dylib'])
     await writeFile(join(input, name), Buffer.concat([MACH_O, Buffer.from(name)]));
   await writeFile(join(input, 'sdk/index.js'), 'export {};\n');
   return { root, input, output: join(root, 'signed') };
@@ -64,27 +64,27 @@ test('MP-07 / MP-11: the plan grants JIT to the CLI, App worker and Bun Setup', 
     { run: () => assert.fail('dry run executed a command'), platform: 'linux' });
   await assert.rejects(lstat(paths.output), { code: 'ENOENT' });
   assert.deepEqual(plan.files.map(file => [file.path, file.role]), [
-    ['chariox', 'cli-executable'], ['chariox-app-runtime-install', 'executable'], ['chariox-app-worker', 'jit-executable'],
-    ['chariox-kernel', 'executable'], ['chariox-setup', 'jit-executable'], ['libchariox-app-runtime.dylib', 'library'],
-    ['libnode.137.dylib', 'library'], ['sdk/index.js', 'data']]);
+    ['chariox', 'cli-executable'], ['chariox-app-wasm-worker', 'jit-executable'],
+    ['chariox-kernel', 'executable'], ['chariox-relay', 'executable'], ['chariox-setup', 'jit-executable'], ['libclient.dylib', 'library'],
+    ['libexample.dylib', 'library'], ['sdk/index.js', 'data']]);
   const signing = plan.steps.filter(step => step.phase === 'sign');
-  assert.deepEqual(signing.map(step => step.file.path), ['libchariox-app-runtime.dylib', 'libnode.137.dylib',
-    'chariox', 'chariox-app-runtime-install', 'chariox-app-worker', 'chariox-kernel', 'chariox-setup']);
+  assert.deepEqual(signing.map(step => step.file.path), ['libclient.dylib', 'libexample.dylib',
+    'chariox', 'chariox-app-wasm-worker', 'chariox-kernel', 'chariox-relay', 'chariox-setup']);
   for (const step of signing) {
     assert.deepEqual(step.command.slice(0, 7), ['/usr/bin/codesign', '--force', '--sign', IDENTITY, '--timestamp', '--options', 'runtime']);
     assert.equal(step.command.at(-1), join(plan.output, step.file.path));
-    const jit = ['chariox', 'chariox-app-worker', 'chariox-setup'].includes(step.file.path);
+    const jit = ['chariox', 'chariox-app-wasm-worker', 'chariox-setup'].includes(step.file.path);
     assert.equal(step.command.includes('--entitlements'), jit);
     if (jit) assert.equal(step.command[8], step.file.path === 'chariox' ? CLI_ENTITLEMENTS : WORKER_ENTITLEMENTS);
   }
   assert.equal(signing[2].command[8], CLI_ENTITLEMENTS);
-  assert.equal(signing[4].command[8], WORKER_ENTITLEMENTS);
+  assert.equal(signing[3].command[8], WORKER_ENTITLEMENTS);
   assert.deepEqual(plan.steps.map(step => step.phase).filter((phase, index, all) => phase !== all[index - 1]),
     ['copy', 'sign', 'verify', 'describe', 'entitlements', 'archive', 'notarize', 'notary-log', 'gatekeeper']);
   assert.deepEqual(plan.steps.find(step => step.phase === 'notarize').command, ['/usr/bin/xcrun', 'notarytool', 'submit',
     `${plan.output}.notarization.zip`, '--keychain-profile', PROFILE, '--wait', '--output-format', 'json']);
   assert.deepEqual(plan.steps.filter(step => step.phase === 'gatekeeper').map(step => step.file.path),
-    ['chariox', 'chariox-app-runtime-install', 'chariox-app-worker', 'chariox-kernel', 'chariox-setup']);
+    ['chariox', 'chariox-app-wasm-worker', 'chariox-kernel', 'chariox-relay', 'chariox-setup']);
   assert.ok(plan.steps.every(step => step.phase === 'copy'
     || !step.command.some(word => word === paths.input || word.startsWith(`${paths.input}/`))));
   const text = formatPlan(plan);
@@ -92,6 +92,19 @@ test('MP-07 / MP-11: the plan grants JIT to the CLI, App worker and Bun Setup', 
   assert.match(text, /\/usr\/bin\/codesign --force --sign 'Developer ID Application: Example Owner \(ABCDE12345\)' --timestamp/u);
   assert.match(text, new RegExp(`notarytool log '${SUBMISSION_ID}' --keychain-profile ${PROFILE}`, 'u'));
   assert.ok(text.includes(`# staple: ${STAPLE}`));
+});
+
+// The Seatbelt entry refuses a worker without a hardened-runtime signature that holds allow-jit and nothing else
+// (packages/app-wasm-worker/src/containment/macos.rs), so the kernel's WASM worker is signed like the V8 worker.
+test('the kernel-side WASM App worker is signed hardened with only the JIT entitlement', async t => {
+  const paths = await fixture(t);
+  await mkdir(join(paths.input, 'bin'));
+  await writeFile(join(paths.input, 'bin/chariox-app-wasm-worker'), Buffer.concat([MACH_O, Buffer.from('wasm worker')]));
+  const { plan } = await signMacosRelease(options(paths, ['--dry-run']),
+    { run: () => assert.fail('dry run executed a command'), platform: 'linux' });
+  assert.equal(plan.files.find(file => file.path === 'bin/chariox-app-wasm-worker').role, 'jit-executable');
+  const step = plan.steps.find(entry => entry.phase === 'sign' && entry.file.path === 'bin/chariox-app-wasm-worker');
+  assert.deepEqual(step.command.slice(5, 9), ['--options', 'runtime', '--entitlements', WORKER_ENTITLEMENTS]);
 });
 
 test('the entitlements files grant only the JIT, and for the CLI the unsigned OpenTUI library', () => {
@@ -103,7 +116,7 @@ test('the entitlements files grant only the JIT, and for the CLI the unsigned Op
 test('the plan refuses stale inventories, links, existing outputs and inputs without code', async t => {
   const paths = await fixture(t);
   await writeFile(join(paths.input, 'runtime-inventory.json'), '{}');
-  await assert.rejects(releasePlan(options(paths)), /runtime-inventory\.json; sign the Chariox runtime inventory after/u);
+  await assert.rejects(releasePlan(options(paths)), /runtime-inventory\.json; sign the Chariox release manifest after/u);
   await rm(join(paths.input, 'runtime-inventory.json'));
   await symlink('/etc/hosts', join(paths.input, 'sdk/hosts'));
   await assert.rejects(releasePlan(options(paths)), /link or special file: sdk\/hosts/u);
@@ -172,7 +185,7 @@ test('a signed run returns re-signed digests, the notarization and Gatekeeper re
     archive: `${receipt.output}.notarization.zip`, archiveSha256: receipt.notarization.archiveSha256,
     log: `${receipt.output}.notarization-log.json` });
   assert.deepEqual(tools.calls.find(command => command[2] === 'log').slice(3, 4), ['2efe2717-52ef-43a5-96dc-0797e4ca1041']);
-  assert.deepEqual(receipt.gatekeeper.map(entry => entry.path), ['chariox', 'chariox-app-runtime-install', 'chariox-app-worker', 'chariox-kernel', 'chariox-setup']);
+  assert.deepEqual(receipt.gatekeeper.map(entry => entry.path), ['chariox', 'chariox-app-wasm-worker', 'chariox-kernel', 'chariox-relay', 'chariox-setup']);
   assert.deepEqual(receipt.files.find(file => file.path === 'chariox-setup').entitlements, ['com.apple.security.cs.allow-jit']);
   assert.equal(readFileSync(join(paths.input, 'chariox-kernel')).toString('latin1').endsWith('signature'), false);
 });

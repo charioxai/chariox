@@ -1,0 +1,13 @@
+// WASI 0.3 / component-model async probe: can one instance serve concurrent
+// calls that each wait on the host?
+package spike:probe@0.1.0;
+
+interface kernel {
+  /// Stands in for a kernel broker call that takes 50 ms.
+  get: async func(key: string) -> string;
+}
+
+world probe {
+  import kernel;
+  export run: async func(n: u32) -> string;
+}

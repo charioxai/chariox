@@ -1,5 +1,17 @@
 # Managed Path-1 parity inventory (MP-11)
 
+## MP-08 / MP-09 / MP-10 / MP-11 process disk telemetry (2026-11-02)
+
+Local954 / peer403 adds nullable `disk_io_bytes` to the existing session process
+sample. It is the cumulative storage reads plus writes of each active process,
+read from Linux process I/O or macOS process rusage. Unavailable counters remain
+null. Ordinary and managed kernels use the same launch-owned sampling and
+session feed; process ownership, admission, Start now and stop authority are
+unchanged. Machines sums these counters upward and keeps unknown totals unknown.
+The focused real-write regression is
+`runtime::process_resources::tests::disk_io_sample_reports_real_owned_process_writes`.
+Hosted UI acceptance is recorded separately by the machinesui lane.
+
 ## MP-08 / MP-09 / MP-10 / MP-11 provider account references (2026-10-28)
 
 Local 770 / peer 320 projects account identity, authentication state and configured
@@ -137,6 +149,42 @@ version-bump drill](RUNNING_LOCAL.md#claude-yolo-when-self-hosting-as-root).
 The drill and focused real root-kernel comparison establish this compatibility
 case; they do not close the full ordinary/managed MP-10 matrix or replace
 independent review of this MP-11 provider-launch change.
+
+## MP-08 / MP-09 / MP-10 / MP-11: unprojected Room App Tabs (A3)
+
+The ordinary App-view path opens one background Tab per installation in the
+acting agent's Room. The catalog uses the installation ID as a stable view
+handle; after idle retirement it resolves to a fresh Tab on the active release.
+Human `OpenAppView` adopts the existing target and document. Agent catalog reads
+never demote an adopted Tab or focus another Room's browser.
+
+Security anchors: `state/tool_dispatch/app/view_agent.rs` checks the current
+agent/App binding before opening and after asynchronous admission;
+view resolution also fences the binding owner and verifies stable installation
+handles through a read-only registrations check before reuse, including the
+retirement/poll gap. Live agent calls preserve page panel requests and avoid
+resending the release bundle; only missing or controller-retired bindings Open
+once, with the existing post-Open authority recheck.
+`browser_controller_app_view.rs` carries a typed human/agent projection;
+`state/room_browser_controller.rs` authenticates peer support before sending it.
+`browser-controller-apps.mjs` attributes background startup calls to the opening
+agent and preserves the running handler's actor during adoption. The existing
+Room backend actor/grant/turn checks and observation protection still apply.
+Local 933 / peer 381 carry it; clients need no higher minimum to use
+an existing human open.
+
+`browser-controller-app-idle.mjs` uses a ten-minute default, configurable with
+`CHARIOX_APP_VIEW_IDLE_TIMEOUT_MS` for bounded drills. The existing kernel drain
+retires idle Room Tabs. Active page handlers (including handlers beyond their
+action deadline), pending backend replies and live Room display leases retain
+the Tab. User-domain instances keep their existing separate lifetime. Browser
+loss cancels old document authority; unprojected views carry no human restore
+intent and the stable handle can open again. Closing a display lease leaves
+accepted work running. No managed-placement branch or shutdown trigger changed.
+
+Focused source/Chromium checks and cost samples do not close S1-05, managed
+parity, hosted continuity or independent security-anchor review. The lane's
+external handoff records exact heads and which live cells were actually run.
 
 ## MP-08 / MP-10 / MP-11 owned preloaded observation world (2026-10-16)
 
@@ -2065,3 +2113,30 @@ navigation, link click, observed progress, readable bytes, cancellation, two Tab
 Room cleanup and browser cleanup. Kernel/provider tool acceptance also requires
 those operations through a real authenticated run. These checks alone do not
 close the wider MP-10 parity matrix or the MP-11 security-anchor review.
+
+## MP-08 / MP-09 / MP-10 / MP-11 owner Vault management (2026-11-02)
+
+Protocol 958/407 reconciles owner and agent creation: both persist a canonical
+`VaultUseBinding` in the credential registry and store each value in its own
+ordinary encrypted Vault slot. The owner form sends the same typed Site,
+CommandEnvironment, File or TOTP target; replacement cannot change that binding.
+The duplicate owner catalogue and owner-only inventory protocol are removed.
+`ListCredentials` is the single value-free inventory for both creators.
+
+Owner-only Create/Generate/Reveal/Activity/Replace/Delete remain checked at the
+router and executor. Agents, sudo/KA callers, forwarded Hosts and other users
+cannot reveal values. Owner controls bypass command receipts and client replay;
+Debug, payload redaction and the external response boundary protect values.
+
+Activity lives as a value-free encrypted log in the same Vault. It records owner
+creation, reveal and replacement, plus browser/HTTP agent operations and exact-use
+refusals, attributed to the caller. Agent-created entries also expose their
+creation metadata in Activity. The internal Activity key cannot be resolved or
+changed as a credential and never enters the ordinary value cache. Owner changes
+restore registry and value on failure; Activity also restores post-rename write
+failures. A failed rollback requires explicit recovery.
+
+These paths are common to ordinary and managed kernels. No placement branch,
+provider execution rule, relay admission, signing/trust or managed automatic
+shutdown behavior changes (MP-09). Focused router/storage and hosted owner-to-agent
+drills cover this seam only; they do not close the entire MP-10 comparison matrix.

@@ -684,7 +684,7 @@ impl KernelBrowserActors {
     pub(crate) fn project_tabs(&self, state: &mut Value) {
         self.tab_activity.project(state);
         let held = self.person_held_tabs();
-        if let Some(tabs) = state["tabs"].as_array_mut() {
+        if let Some(tabs) = state.get_mut("tabs").and_then(Value::as_array_mut) {
             for tab in tabs {
                 let taken = tab["tab_id"].as_str().is_some_and(|id| held.contains(id));
                 tab["taken_over"] = taken.into();

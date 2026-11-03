@@ -54,6 +54,15 @@ async fn headless_native_prompt_fails_on_recent_terminal_error() {
 }
 
 #[tokio::test]
+async fn headless_native_prompt_keeps_running_when_the_model_mentions_credit_balance() {
+    rejection_scenario(NativeContextScenario {
+        recent_reply: true,
+        ..Default::default()
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn home_projection_drain_leaves_hook_for_a_busy_provider_lane() {
     rejection_scenario(NativeContextScenario {
         leased: true,
@@ -88,6 +97,7 @@ struct NativeContextScenario {
     before_submit: bool,
     leased: bool,
     recent_failure: bool,
+    recent_reply: bool,
     hold_provider_lane: bool,
     same_batch: bool,
     stale_expired_delivery: bool,
@@ -100,6 +110,7 @@ async fn rejection_scenario(scenario: NativeContextScenario) {
         before_submit,
         leased,
         recent_failure,
+        recent_reply,
         hold_provider_lane,
         same_batch,
         stale_expired_delivery,
@@ -443,11 +454,15 @@ async fn rejection_scenario(scenario: NativeContextScenario) {
         assert!(!std::path::Path::new(&delivery_path).exists());
         return;
     }
-    if recent_failure {
+    if recent_failure || recent_reply {
         // The visible error arrived in earlier PTY chunks; this poll has no new bytes.
         fs::write(
             worktree.path().join("permission-recent.txt"),
-            "Credit balance is too low",
+            if recent_reply {
+                "The page said Credit balance is too low."
+            } else {
+                "API Error: 400 Credit balance is too low"
+            },
         )
         .unwrap();
     } else {
@@ -479,6 +494,29 @@ async fn rejection_scenario(scenario: NativeContextScenario) {
         .pump_owned_provider_output(session.id(), run.id(), vec![], true)
         .await
         .unwrap();
+    if recent_reply {
+        assert_eq!(
+            runtime
+                .owned
+                .provider_store
+                .get_run(run.id())
+                .unwrap()
+                .state(),
+            crate::provider::ProviderRunState::Running
+        );
+        assert_eq!(
+            runtime
+                .owned
+                .session_snapshot(session.id())
+                .unwrap()
+                .active_prompt_for_agent(agent.id())
+                .unwrap()
+                .id(),
+            original_prompt_id,
+            "the model's own reply must not settle the native prompt"
+        );
+        return;
+    }
     assert_eq!(
         runtime
             .owned

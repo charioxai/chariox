@@ -4,7 +4,7 @@
 use super::*;
 use crate::durable_state::app_activation::CommittedAppActivation;
 use crate::runtime::app_operation_budget::{AppOperationBudget, AppOperationStopped};
-use chariox_app_package::VerifiedPackage;
+use chariox_app_package::VerifiedApp;
 use chariox_app_runtime::{
     wire::RemoteError,
     worker_peer::{
@@ -43,7 +43,7 @@ struct ReadyReport {
 impl AppWorkerOwner {
     pub(crate) fn start_blocking(
         process: WorkerProcess,
-        package: &VerifiedPackage<'_>,
+        package: &impl VerifiedApp,
         catalog: Arc<EventCatalog>,
         delegate: Arc<dyn Broker>,
         limits: PeerLimits,
@@ -56,7 +56,7 @@ impl AppWorkerOwner {
     /// reports ready it may only read and write state and report steps.
     pub(crate) fn start_migrating_blocking(
         process: WorkerProcess,
-        package: &VerifiedPackage<'_>,
+        package: &impl VerifiedApp,
         catalog: Arc<EventCatalog>,
         delegate: Arc<dyn Broker>,
         limits: PeerLimits,
@@ -67,7 +67,7 @@ impl AppWorkerOwner {
 
     fn start_with(
         mut process: WorkerProcess,
-        package: &VerifiedPackage<'_>,
+        package: &impl VerifiedApp,
         catalog: Arc<EventCatalog>,
         delegate: Arc<dyn Broker>,
         limits: PeerLimits,
@@ -267,6 +267,36 @@ impl Broker for StartupBroker {
         self.delegate.drain()
     }
     fn handle(&self, request: BrokerRequest) -> BrokerFuture {
+        if request.method == "migration.failed" {
+            // The worker's own bootstrap says why the migration stopped; the
+            // App is not running yet and can no longer reach the broker.
+            let migrating = self
+                .admission
+                .migrating
+                .load(std::sync::atomic::Ordering::Acquire)
+                && self
+                    .admission
+                    .phase
+                    .lock()
+                    .is_ok_and(|phase| *phase == Phase::Starting);
+            let report = self.report.lock().ok().and_then(|mut report| report.take());
+            let admission = self.admission.clone();
+            return Box::pin(async move {
+                let (true, Some(report)) = (migrating, report) else {
+                    return Err(remote("APP_NOT_READY"));
+                };
+                let code = request
+                    .params
+                    .get("code")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                let _ = report.send(Err(AppWorkerError::Migration(
+                    MigrationFailure::from_worker(code),
+                )));
+                admission.stop();
+                Ok(Value::Null)
+            });
+        }
         if request.method != "worker.ready" {
             if self.admission.broker_open(&request.method) {
                 return self.delegate.handle(request);

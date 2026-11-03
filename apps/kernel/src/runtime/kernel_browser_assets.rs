@@ -3,8 +3,20 @@ use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 const ASSETS: &[(&str, &[u8])] = &[
     (
+        "browser-app-input-callers.mjs",
+        include_bytes!("../../slice-linux-docker/docker/browser-app-input-callers.mjs"),
+    ),
+    (
+        "linux-browser-user.mjs",
+        include_bytes!("../../slice-linux-docker/docker/linux-browser-user.mjs"),
+    ),
+    (
         "browser-app-drafts.mjs",
         include_bytes!("../../slice-linux-docker/docker/browser-app-drafts.mjs"),
+    ),
+    (
+        "browser-app-view-actions.mjs",
+        include_bytes!("../../slice-linux-docker/docker/browser-app-view-actions.mjs"),
     ),
     (
         "room-shared-display.mjs",
@@ -407,8 +419,20 @@ const ASSETS: &[(&str, &[u8])] = &[
         include_bytes!("../../slice-linux-docker/docker/browser-controller-actions.mjs"),
     ),
     (
+        "browser-controller-app-idle.mjs",
+        include_bytes!("../../slice-linux-docker/docker/browser-controller-app-idle.mjs"),
+    ),
+    (
         "browser-controller-apps.mjs",
         include_bytes!("../../slice-linux-docker/docker/browser-controller-apps.mjs"),
+    ),
+    (
+        "browser-controller-web-bot-auth.mjs",
+        include_bytes!("../../slice-linux-docker/docker/browser-controller-web-bot-auth.mjs"),
+    ),
+    (
+        "browser-controller-capture.mjs",
+        include_bytes!("../../slice-linux-docker/docker/browser-controller-capture.mjs"),
     ),
     (
         "browser-controller-artifacts.mjs",
@@ -521,6 +545,10 @@ const ASSETS: &[(&str, &[u8])] = &[
     (
         "kernel-browser-popup-evidence.mjs",
         include_bytes!("../../slice-linux-docker/docker/kernel-browser-popup-evidence.mjs"),
+    ),
+    (
+        "kernel-browser-window-geometry.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-window-geometry.mjs"),
     ),
     (
         "kernel-browser-resize.mjs",

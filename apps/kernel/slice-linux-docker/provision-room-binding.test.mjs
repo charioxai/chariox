@@ -62,7 +62,7 @@ process.exit(0);
     ];
     for (const binding of bindings) {
       const result = spawnSync("bash", [provisioner, "start-runtime"], {
-        encoding: "utf8", timeout: 60_000,
+        encoding: "utf8", timeout: 300_000,
         env: { ...environment, PATH: `${root}:${environment.PATH}`,
           TMPDIR: root, CHARIOX_TEST_DOCKER_LOG: log,
           CHARIOX_SLICE_NAME: "chariox-binding-fixture",

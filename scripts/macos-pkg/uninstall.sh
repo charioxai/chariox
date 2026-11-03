@@ -1,18 +1,5 @@
 #!/bin/bash
-# Removes what the Chariox macOS package (dev.chariox.pkg) installed:
-#   sudo /usr/local/libexec/chariox/uninstall.sh [--dry-run]
-#   1. stops the kernel LaunchAgent in every logged-in user's gui domain and
-#      removes it; it refuses while a Chariox kernel or App worker still runs;
-#   2. withdraws the App runtime enrollment, then retires every runtime
-#      generation with chariox-app-runtime-install cleanup, which takes each
-#      generation's exclusive lease first;
-#   3. removes the binaries the package put in /usr/local/bin and the slice
-#      build context in /usr/local/share/chariox, but only the files whose bytes
-#      are still the package's; a replaced file is kept and reported;
-#   4. removes the package's own files and forgets its receipt.
-# Every user's ~/.chariox (kernel state, Apps and their data) is kept; delete it
-# to remove those too. --dry-run prints each change without making it. A failed
-# run can be repeated.
+# Stop this installation's kernel and remove only unchanged release files.
 set -euo pipefail
 umask 022
 PATH=/usr/bin:/bin:/usr/sbin:/sbin
@@ -24,11 +11,9 @@ R='@@ROOT@@'
 LABEL=dev.chariox.kernel
 SUPPORT="$R/Library/Application Support/Chariox"
 PACKAGE="$R/usr/local/libexec/chariox"
-INSTALLER="$PACKAGE/chariox-app-runtime-install"
 MANIFEST="$PACKAGE/bin.sha256"
 CONTEXT="$R/usr/local/share/chariox/slice-build-context"
 CONTEXT_MANIFEST="$PACKAGE/slice-build-context.sha256"
-RUNTIMES="$SUPPORT/AppRuntimes"
 ENROLLMENT_DIR="$SUPPORT/AppRuntime"
 AGENT="$R/Library/LaunchAgents/$LABEL.plist"
 KERNEL="$R/usr/local/bin/chariox-kernel"
@@ -72,12 +57,11 @@ trusted() {
 # Chariox kernels and App workers of any user, by executable path.
 running() {
   ps -axo pid=,comm= | while read -r pid comm; do
-    case "$comm" in "$KERNEL"|"$RUNTIMES"/*) printf '%s ' "$pid" ;; esac
+    case "$comm" in "$KERNEL") printf '%s ' "$pid" ;; esac
   done
 }
 if [ -z "$R" ]; then
   [ "$(id -u)" = 0 ] || die "run it with sudo"
-  [ ! -e "$INSTALLER" ] || trusted "$INSTALLER" || die "$INSTALLER or a directory above it is not root's alone"
   [ ! -e "$CONTEXT" ] || trusted "$CONTEXT" || die "$CONTEXT or a directory above it is not root's alone"
 fi
 
@@ -99,23 +83,6 @@ if [ -n "$pids" ]; then
 fi
 [ ! -e "$AGENT" ] || act "remove $AGENT" rm -f -- "$AGENT"
 
-# 2. The App runtime. Without an enrollment no generation is current, so
-# cleanup may retire each one once its lease is free.
-[ ! -e "$ENROLLMENT_DIR/.runtime-enrollment.pending" ] \
-  || die "an interrupted runtime enrollment is pending; install the package again, then uninstall"
-[ ! -e "$ENROLLMENT_DIR/runtime-enrollment.json" ] \
-  || act "withdraw the App runtime enrollment" rm -f -- "$ENROLLMENT_DIR/runtime-enrollment.json"
-for generation in "$RUNTIMES"/* "$RUNTIMES"/.retiring-*; do
-  name=${generation##*/}
-  name=${name#.retiring-}
-  [ "${#name}" = 64 ] || continue
-  case "$name" in *[!0-9a-f]*) continue ;; esac
-  act "retire App runtime $name" "$INSTALLER" cleanup --inventory-sha256 "$name"
-done
-[ ! -e "$ENROLLMENT_DIR/.runtime-installer.lock" ] \
-  || act "remove the runtime installer lock" rm -f -- "$ENROLLMENT_DIR/.runtime-installer.lock"
-prune "$RUNTIMES"
-prune "$ENROLLMENT_DIR"
 
 # 3. Binaries and the slice build context.
 if [ -f "$MANIFEST" ]; then

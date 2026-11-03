@@ -20,6 +20,11 @@ pub(super) fn commit(
     }
     let tx = sql(connection.transaction_with_behavior(TransactionBehavior::Immediate))?;
     require_start(&tx, admission)?;
+    if admission.approval.authority_ref == "kernel_approved_authority"
+        && !super::authority::reuses_in(&tx, admission.binding.token())?
+    {
+        return Err(InstallOperationError::ApprovalRequired);
+    }
     limit(budget)?;
     limit(health.budget())?;
     let time = now()?;

@@ -86,23 +86,36 @@ impl Drop for TestState {
             if self.root.join("upload-browser-lifetimes").exists() {
                 let lifecycle = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                     .join("slice-linux-docker/docker/browser-lifecycle.py");
-                let stopped = std::process::Command::new("python3")
-                    .arg(lifecycle)
-                    .arg("stop")
-                    .arg(self.root.join("upload-browser-profile"))
-                    .env(
-                        "CHARIOX_BROWSER_LIFECYCLE_ROOT",
-                        self.root.join("upload-browser-lifetimes"),
-                    )
-                    .env("TMPDIR", &self.root)
-                    .output();
+                let stop = || {
+                    std::process::Command::new("python3")
+                        .arg(&lifecycle)
+                        .arg("stop")
+                        .arg(self.root.join("upload-browser-profile"))
+                        .env(
+                            "CHARIOX_BROWSER_LIFECYCLE_ROOT",
+                            self.root.join("upload-browser-lifetimes"),
+                        )
+                        .env("TMPDIR", &self.root)
+                        .output()
+                };
                 // Never panic again while unwinding: keep the original failure.
                 if !std::thread::panicking() {
-                    let stopped = stopped.expect("retire fixture-owned upload browser");
+                    // A loaded builder can need longer than one settlement
+                    // budget for the browser's descendants; the stop resumes.
+                    let mut stopped = stop().expect("retire fixture-owned upload browser");
+                    for _ in 0..2 {
+                        if stopped.status.success() {
+                            break;
+                        }
+                        stopped = stop().expect("retire fixture-owned upload browser");
+                    }
                     assert!(
                         stopped.status.success(),
-                        "fixture browser retirement failed"
+                        "fixture browser retirement failed: {}",
+                        String::from_utf8_lossy(&stopped.stderr)
                     );
+                } else {
+                    let _ = stop();
                 }
             }
             if let Err(error) = std::fs::remove_dir_all(&self.root) {

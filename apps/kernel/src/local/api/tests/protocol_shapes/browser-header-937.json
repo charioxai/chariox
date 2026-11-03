@@ -1,6 +1,6 @@
 {
-  "local_protocol": 937,
-  "peer_protocol": 386,
+  "local_protocol": 966,
+  "peer_protocol": 415,
   "state_keys": [
     "active_tab_id",
     "browser_lockdown",
@@ -47,7 +47,8 @@
             "title": "Example",
             "can_go_back": true,
             "can_go_forward": false,
-            "favicon_png_base64": null
+            "favicon_png_base64": null,
+            "taken_over": true
           }
         ],
         "viewport": {
@@ -57,7 +58,18 @@
         },
         "chrome_window": null,
         "browser_lockdown": "unavailable",
-        "downloads": []
+        "downloads": [],
+        "dialogs": [
+          {
+            "dialog_id": "permission-1",
+            "tab_id": "t",
+            "generation": 7,
+            "document_id": "d",
+            "kind": "permission",
+            "message": "geolocation",
+            "origin": "https://example.com"
+          }
+        ]
       }
     }
   }

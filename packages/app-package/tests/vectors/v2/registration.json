@@ -1,0 +1,67 @@
+{
+  "cases": [
+    {
+      "expected": "bind",
+      "input": {
+        "bound": null,
+        "signer": {
+          "keyId": "k1",
+          "publisherId": "com.example"
+        }
+      },
+      "name": "first-registration"
+    },
+    {
+      "expected": "preserve",
+      "input": {
+        "bound": "com.example",
+        "signer": {
+          "keyId": "k2",
+          "publisherId": "com.example"
+        }
+      },
+      "name": "same-publisher-new-key"
+    },
+    {
+      "expected": {
+        "bound_publisher_id": "com.example",
+        "refusal": "publisher_conflict"
+      },
+      "input": {
+        "bound": "com.example",
+        "signer": {
+          "keyId": "k1",
+          "publisherId": "com.other"
+        }
+      },
+      "name": "different-publisher-conflicts"
+    },
+    {
+      "expected": {
+        "refusal": "dev_identity"
+      },
+      "input": {
+        "bound": null,
+        "signer": {
+          "keyId": "k1",
+          "publisherId": "local_dev"
+        }
+      },
+      "name": "dev-identity-never-registers"
+    },
+    {
+      "expected": {
+        "refusal": "dev_identity"
+      },
+      "input": {
+        "bound": "com.example",
+        "signer": {
+          "keyId": "k1",
+          "publisherId": "local_dev"
+        }
+      },
+      "name": "dev-identity-cannot-bypass-binding"
+    }
+  ],
+  "contract": "docs/APPS_V2_CONTRACTS.md §2: registration binds, preserves or refuses; it never overwrites"
+}

@@ -2,6 +2,9 @@
  * authorize damage reuse. Owner 0 reads the root of the kernel-owned desktop
  * X server (never a login session); the kernel masks it before any encode.
  * No provider state. */
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
 #include <errno.h>
 #include <poll.h>
 #include <stdint.h>
@@ -12,6 +15,8 @@ static double capture_cpu(void) {struct timespec t;clock_gettime(CLOCK_THREAD_CP
 #include <string.h>
 #include <sys/ipc.h>
 #include <sys/shm.h>
+#include <sys/socket.h>
+#include <unistd.h>
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
 #include <X11/Xatom.h>
@@ -111,24 +116,62 @@ void cx_capture_close(struct Capture *c) {
 /* MP-08/MP-10/MP-11: the dedicated native worker is the only Xlib caller
  * in this process. Trap only this synchronous request, then restore the
  * previous handler. Another capture/compositor may already own Manual. */
-static Display *redirect_display;
-static int redirect_error;
-static XErrorHandler redirect_previous;
-static int redirect_failed(Display *display,XErrorEvent *event) {
-    if(display==redirect_display){redirect_error=event->error_code;return 0;}
-    return redirect_previous?redirect_previous(display,event):0;
+static Display *request_display;
+static int request_error;
+static XErrorHandler request_previous;
+static int request_failed(Display *display,XErrorEvent *event) {
+    if(display==request_display){request_error=event->error_code;return 0;}
+    return request_previous?request_previous(display,event):0;
+}
+static void begin_request(Display *display) {
+    XSync(display,False);request_display=display;request_error=0;
+    request_previous=XSetErrorHandler(request_failed);
+}
+static int end_request(Display *display) {
+    XSync(display,False);XSetErrorHandler(request_previous);request_display=NULL;
+    return !request_error;
 }
 static int redirect_window(struct Capture *c,int mode) {
-    XSync(c->display,False);redirect_display=c->display;redirect_error=0;
-    redirect_previous=XSetErrorHandler(redirect_failed);
-    XCompositeRedirectWindow(c->display,c->window,mode);XSync(c->display,False);
-    XSetErrorHandler(redirect_previous);redirect_display=NULL;
-    if(redirect_error)return 0;
+    begin_request(c->display);
+    XCompositeRedirectWindow(c->display,c->window,mode);
+    if(!end_request(c->display))return 0;
     c->redirected=1;c->redirect_mode=mode;return 1;
 }
 /* MP-08/MP-10: fixed-label refusal stage plus owned-window geometry on the
  * worker's private stderr channel. Sizes only; no titles, pixels or IDs. */
 static void open_refused(const char *stage) {fprintf(stderr,"MD-DISPLAY: native stage %s\n",stage);}
+/* A root kernel's owned X server runs as the browser user. Keep the pixel
+ * buffer private: lend that Unix peer ownership only until its attach is
+ * acknowledged, then restore the creator before any pixels are read. */
+static int attach_shared_image(struct Capture *c) {
+    struct shmid_ds original;
+    int transferred=0;
+    if(geteuid()==0) {
+        struct sockaddr_storage address; socklen_t address_size=sizeof(address);
+        struct ucred peer; socklen_t peer_size=sizeof(peer);
+        int fd=ConnectionNumber(c->display);
+        if(getpeername(fd,(struct sockaddr *)&address,&address_size)||address.ss_family!=AF_UNIX||
+            getsockopt(fd,SOL_SOCKET,SO_PEERCRED,&peer,&peer_size)||peer_size!=sizeof(peer)||peer.pid<=1) {
+            open_refused("shared_memory_peer");return 0;
+        }
+        if(peer.uid!=geteuid()) {
+            if(shmctl(c->shm.shmid,IPC_STAT,&original)) {open_refused("shared_memory_owner");return 0;}
+            struct shmid_ds temporary=original;temporary.shm_perm.uid=peer.uid;
+            if(shmctl(c->shm.shmid,IPC_SET,&temporary)) {open_refused("shared_memory_owner");return 0;}
+            transferred=1;
+        }
+    }
+    begin_request(c->display);
+    int requested=XShmAttach(c->display,&c->shm);
+    int accepted=end_request(c->display);
+    c->attached=requested&&accepted;
+    if(transferred&&shmctl(c->shm.shmid,IPC_SET,&original)) {
+        shmctl(c->shm.shmid,IPC_RMID,NULL);
+        open_refused("shared_memory_restore");return 0;
+    }
+    if(!c->attached) {open_refused("shared_memory_attach");return 0;}
+    return 1;
+}
 /* MP-08/MP-10/MP-11: a window manager reparents the owned client beneath
  * its frame. Search a bounded tree; capture only the exact PID/geometry,
  * never the manager frame. A partial/ambiguous search grants no capture. */
@@ -199,8 +242,7 @@ image:
     c->shm.shmaddr=shmat(c->shm.shmid,NULL,0);
     if (c->shm.shmaddr==(void *)-1) goto fail;
     c->image->data=c->shm.shmaddr;
-    if (!XShmAttach(c->display,&c->shm)) goto fail;
-    c->attached=1; XSync(c->display,False);
+    if (!attach_shared_image(c)) goto fail;
     if (shmctl(c->shm.shmid,IPC_RMID,NULL)) goto fail;
     c->previous=malloc(size);
     c->hash_cur=malloc(height*sizeof(uint64_t));c->hash_last=malloc(height*sizeof(uint64_t));
@@ -344,11 +386,11 @@ static int watch_ancestors(struct Capture *c) {
     }
     if(!complete)return 0;
     /* A window destroyed meanwhile makes the select fail: refuse instead of dying on the X error. */
-    XSync(c->display,False);redirect_display=c->display;redirect_error=0;
-    redirect_previous=XSetErrorHandler(redirect_failed);
+    XSync(c->display,False);request_display=c->display;request_error=0;
+    request_previous=XSetErrorHandler(request_failed);
     for(int i=0;i<c->ancestor_count;i++)XSelectInput(c->display,c->ancestors[i],StructureNotifyMask);
-    XSync(c->display,False);XSetErrorHandler(redirect_previous);redirect_display=NULL;
-    return !redirect_error;
+    XSync(c->display,False);XSetErrorHandler(request_previous);request_display=NULL;
+    return !request_error;
 }
 static int surface_atom(struct Capture *c,Atom atom) {return atom==c->pid_atom||atom==c->state_atom||atom==c->insets_atom;}
 /* Everything bound_surface reads: attributes and mapping of the window and its ancestors, and
@@ -702,11 +744,11 @@ int cx_capture_key_modifiers(struct Capture *c,unsigned long keysym,int modifier
     }
     Window focus;int revert;XGetInputFocus(c->display,&focus,&revert);
     if(focus!=c->window){
-        XSync(c->display,False);redirect_display=c->display;redirect_error=0;
-        redirect_previous=XSetErrorHandler(redirect_failed);
+        XSync(c->display,False);request_display=c->display;request_error=0;
+        request_previous=XSetErrorHandler(request_failed);
         XSetInputFocus(c->display,c->window,RevertToParent,CurrentTime);XSync(c->display,False);
-        XSetErrorHandler(redirect_previous);redirect_display=NULL;
-        if(redirect_error)return -1;
+        XSetErrorHandler(request_previous);request_display=NULL;
+        if(request_error)return -1;
     }
     KeySym names[4]={XK_Alt_L,XK_Control_L,XK_Super_L,XK_Shift_L};KeyCode mods[4]={0};
     for(int i=0;i<4;i++)if(modifiers&(1<<i)){mods[i]=XKeysymToKeycode(c->display,names[i]);if(!mods[i])return -1;}

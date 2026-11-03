@@ -245,6 +245,10 @@ impl KernelRuntimeState {
                             credentials,
                             &user_config.credential_vault,
                         )?;
+                        service.validate_browser_secret_input_for_target_url(
+                            &args.credential_id,
+                            &browser_url,
+                        )?;
                         zeroize::Zeroizing::new(service.browser_secret_input_for_target_url(
                             &args.credential_id,
                             &browser_url,

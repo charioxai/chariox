@@ -2,7 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { installPagePermissionShim } from './browser-page-permission-shim.mjs';
 
 export const permissionBinding = '__charioxPagePermission';
-const responseName = '__charioxPagePermissionResponse';
+// A registered symbol, so the page has no named global to find.
+const responseSlot = 'chariox.pagePermissionResponse';
 const allowed = new Set(['geolocation', 'notifications', 'clipboard-read']);
 const blocked = new Set(['camera', 'microphone', 'display-capture']);
 const invalid = () => Object.assign(new Error('Browser permission request is no longer pending; read the current browser state.'), {code:'browser_dialog_invalid'});
@@ -21,7 +22,7 @@ export class BrowserPagePermissions {
   async install(connection, sessionId) {
     await connection.send('Runtime.addBinding', {name:permissionBinding}, sessionId);
     await connection.send('Page.addScriptToEvaluateOnNewDocument', {
-      source:`(${installPagePermissionShim})(${JSON.stringify(permissionBinding)},${JSON.stringify(responseName)})`, runImmediately:true,
+      source:`(${installPagePermissionShim})(${JSON.stringify(permissionBinding)},${JSON.stringify(responseSlot)})`, runImmediately:true,
     }, sessionId);
   }
   observe(message) {
@@ -77,7 +78,7 @@ export class BrowserPagePermissions {
       await this.retire(dialog.dialog_id, setting);
       const replied = new Set(r.waiters.map(w => `${w.sessionId}:${w.contextId}`));
       await Promise.all([...this.contexts.values()].filter(c => c.origin === r.origin && !replied.has(`${c.sessionId}:${c.contextId}`)).map(c =>
-        this.owner.connection?.send('Runtime.evaluate', {expression:`globalThis[${JSON.stringify(responseName)}]?.(null,${JSON.stringify(setting)},${JSON.stringify(r.permission)})`, contextId:c.contextId, returnByValue:true}, c.sessionId).catch(() => {})));
+        this.owner.connection?.send('Runtime.evaluate', {expression:`globalThis[Symbol.for(${JSON.stringify(responseSlot)})]?.(null,${JSON.stringify(setting)},${JSON.stringify(r.permission)})`, contextId:c.contextId, returnByValue:true}, c.sessionId).catch(() => {})));
 
     } catch (error) {
       await this.retire(dialog.dialog_id); throw error;
@@ -86,7 +87,7 @@ export class BrowserPagePermissions {
   async respond(r, setting) {
     // Never evaluate in a replacement document (context ids are CDP-owned).
     if (!this.contexts.has(`${r.sessionId}:${r.contextId}`)) return;
-    await this.owner.connection?.send('Runtime.evaluate', {expression:`globalThis[${JSON.stringify(responseName)}]?.(${JSON.stringify(r.id)},${JSON.stringify(setting)})`, contextId:r.contextId, returnByValue:true}, r.sessionId).catch(() => {});
+    await this.owner.connection?.send('Runtime.evaluate', {expression:`globalThis[Symbol.for(${JSON.stringify(responseSlot)})]?.(${JSON.stringify(r.id)},${JSON.stringify(setting)})`, contextId:r.contextId, returnByValue:true}, r.sessionId).catch(() => {});
   }
   retire(id, setting = 'denied') {
     const r = this.requests.get(id); if (!r) return Promise.resolve();

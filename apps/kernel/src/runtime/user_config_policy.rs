@@ -31,6 +31,19 @@ pub(crate) async fn user_config_mutation_effects(
     runtime_state: &KernelRuntimeState,
     path: &str,
 ) -> Result<Vec<UserConfigMutationEffect>, DaemonError> {
+    if path.starts_with("web_bot_auth.") {
+        runtime_state
+            .apply_web_bot_auth_browser_policy(path == "web_bot_auth.signature_agent")
+            .await?;
+        return Ok(vec![UserConfigMutationEffect {
+            kind: "runtime_config".into(),
+            path: path.into(),
+            message:
+                "Web Bot Auth project policy updated for this kernel and its open browser tabs"
+                    .into(),
+            provider_reload: None,
+        }]);
+    }
     if path == "providers.workspace_live_sync" {
         let outcomes = runtime_state
             .apply_provider_reload_policy(ProviderReloadTrigger::UserConfigChanged {

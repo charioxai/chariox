@@ -75,7 +75,7 @@ pub(super) fn activate(
         .registered
         .check_local_health_blocking()
         .map_err(|_| LifecycleError::Health)?;
-    budget.check().map_err(|_| LifecycleError::Stopped)?;
+    budget.check()?;
     let report = healthy.take_health().map_err(|_| LifecycleError::Health)?;
     let committed =
         context

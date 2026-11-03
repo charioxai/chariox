@@ -47,7 +47,7 @@ export function findWarningRegressions(baseWarnings, headWarnings) {
   return regressions
 }
 
-async function runClippy(cwd, targetDir) {
+async function runClippy(cwd, targetDir, toolchain) {
   const child = spawn(
     "cargo",
     [
@@ -59,7 +59,7 @@ async function runClippy(cwd, targetDir) {
     ],
     {
       cwd,
-      env: { ...process.env, CARGO_TARGET_DIR: targetDir },
+      env: { ...process.env, CARGO_TARGET_DIR: targetDir, RUSTUP_TOOLCHAIN: toolchain },
       stdio: ["ignore", "pipe", "inherit"],
     },
   )
@@ -107,18 +107,25 @@ async function main() {
   const explicitBase = process.argv[2]?.trim()
   const base = clippyComparisonBase(explicitBase, process.env)
   const repositoryRoot = runGit(["rev-parse", "--show-toplevel"])
+  // The baseline checkout may carry an older pin; compare both with HEAD's compiler.
+  const active = spawnSync("rustup", ["show", "active-toolchain"], {
+    cwd: repositoryRoot, encoding: "utf8",
+  })
+  if (active.status !== 0) throw new Error(active.stderr || "Cannot resolve the Clippy toolchain")
+  const toolchain = active.stdout.trim().split(/\s+/)[0]
+  if (!toolchain) throw new Error("rustup returned no active toolchain")
   const targetDir = process.env.CARGO_TARGET_DIR || join(repositoryRoot, "target")
   const temporaryRoot = await mkdtemp(join(tmpdir(), "chariox-clippy-base-"))
   const baseWorktree = join(temporaryRoot, "checkout")
 
   let baseAdded = false
   try {
-    const headWarnings = await runClippy(repositoryRoot, targetDir)
+    const headWarnings = await runClippy(repositoryRoot, targetDir, toolchain)
     runGit(["worktree", "add", "--detach", "--quiet", baseWorktree, base], {
       cwd: repositoryRoot,
     })
     baseAdded = true
-    const baseWarnings = await runClippy(baseWorktree, targetDir)
+    const baseWarnings = await runClippy(baseWorktree, targetDir, toolchain)
     const regressions = findWarningRegressions(baseWarnings, headWarnings)
 
     if (regressions.length > 0) {
@@ -133,7 +140,7 @@ async function main() {
     }
 
     console.log(
-      `Clippy compared all workspace diagnostics with ${base}; no warning regressions found.`,
+      `Clippy compared all workspace diagnostics with ${base} using ${toolchain}; no warning regressions found.`,
     )
   } finally {
     if (baseAdded) {
