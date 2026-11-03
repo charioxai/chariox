@@ -82,21 +82,17 @@ impl Directory {
     /// The one live kernel `name` means; unknown, ambiguous and offline are errors.
     pub(super) async fn resolve(&self, name: &str) -> Result<RelayKernelPresence, GatewayError> {
         // A request is never held for the kernel list: a kernel the last list showed live is
-        // used at once and the list is renewed behind the request. Only an unknown or offline
-        // name, or no list at all, asks for a fresh list before answering.
-        if self.source.is_usable() {
-            self.merge();
-            if let Ok(kernel) = self.lookup(name) {
-                self.refresh_behind();
-                return Ok(kernel);
-            }
+        // used at once, whatever that list's age, and the list is renewed behind the request.
+        // The connection to the kernel is the evidence that it is gone, not a list that could
+        // not be renewed. Only an unknown or offline name, or no list at all, asks for a fresh
+        // list before answering.
+        self.merge();
+        if let Ok(kernel) = self.lookup(name) {
+            self.refresh_behind();
+            return Ok(kernel);
         }
-        match self.refresh().await {
-            Ok(()) => self.lookup(name),
-            // A list that could not be renewed says nothing about the kernel: the connection to
-            // it decides whether it is there, so the kernel the last list showed live is used.
-            Err(error) => self.lookup(name).map_err(|_| error),
-        }
+        self.refresh().await?;
+        self.lookup(name)
     }
 
     /// The one live kernel `name` means; unknown, ambiguous and offline are errors.

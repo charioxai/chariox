@@ -61,6 +61,8 @@ Exit codes and the error codes behind them:
 | 6 | approval pending (`access request --no-wait`, `secret request --no-wait`, `secret status` while pending) | |
 | 7 | event cursor expired: resync followed targets | `cursor_expired` |
 
+`kernel_unreachable` with "Chariox Cloud asked this kernel to slow down" means Cloud answered HTTP 429 to a hosted kernel lookup or connection grant, so nothing was sent to any kernel: wait the stated seconds and retry. The kernel waits out Cloud's `Retry-After` on every Cloud call, keeps the last kernel list while a new one cannot be fetched, and does not report a followed kernel offline for it; `events subscription` health changes only on a failure to reach that kernel.
+
 `kernel_response_too_large` means a state-changing request through the gateway (a `RunShellCommand` that prints a lot, for example) ran and finished, but its answer is more than the gateway can keep as a receipt (about 256 KiB; the message names the exact limit). It is not run again. Write the output to a file on that kernel and read it with `chariox files get`, or print less. Answers of reads are not limited this way.
 
 On `kernel_request_timeout`, `kernel_connection_lost` or `kernel_access_unconfirmed` (the kernel could not read the caller's process just now; the grant has not changed), retry once with the same `--command-id`. On `kernel_outcome_unknown`, read the state first. When the local connection drops with a request in flight, the CLI probes the kernel once: `kernel_access_ended` means the grant ended during the request; anything else is `kernel_connection_lost`.

@@ -21,8 +21,8 @@ enum RemoteInventoryRefreshResult {
 }
 
 /// The periodic refresh is slow on purpose; a failed one (Cloud unreachable
-/// after an outage) retries on the next heartbeat so the waiting room's
-/// machine list recovers within seconds.
+/// after an outage) retries on the first heartbeat after the projection's
+/// retry time so the waiting room's machine list recovers within seconds.
 pub(super) fn remote_inventory_refresh_due(
     heartbeat_tick: u64,
     task: &mut Option<JoinHandle<bool>>,

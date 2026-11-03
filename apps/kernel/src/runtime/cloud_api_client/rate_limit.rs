@@ -134,11 +134,22 @@ mod tests {
         (url, seen)
     }
 
-    fn call(url: &str) -> Result<Response, Error> {
+    fn call(url: &str) -> Result<Response, Box<Error>> {
         super::super::http::cloud_agent_builder()
             .build()
             .get(&format!("{url}/relay/targets"))
             .call()
+            .map_err(Box::new)
+    }
+
+    fn refusal_of(result: Result<Response, Box<Error>>) -> Option<Response> {
+        match result {
+            Err(error) => match *error {
+                Error::Status(429, response) => Some(response),
+                _ => None,
+            },
+            Ok(_) => None,
+        }
     }
 
     // The 429 storm: Cloud says "retry in 2 seconds"; a kernel that asks again before that is
@@ -146,9 +157,9 @@ mod tests {
     #[test]
     fn a_refused_call_keeps_every_cloud_call_quiet_until_retry_after() {
         let (url, seen) = cloud(1);
-        assert!(matches!(call(&url), Err(Error::Status(429, _))));
+        assert!(refusal_of(call(&url)).is_some());
         for _ in 0..20 {
-            let Err(Error::Status(429, response)) = call(&url) else {
+            let Some(response) = refusal_of(call(&url)) else {
                 panic!("a call inside the pause must be refused locally");
             };
             let body = response.into_string().unwrap();
@@ -192,7 +203,7 @@ mod tests {
     fn a_pause_is_per_cloud_and_ends_with_an_answer() {
         let (refusing, _) = cloud(1);
         let (other, other_seen) = cloud(0);
-        assert!(matches!(call(&refusing), Err(Error::Status(429, _))));
+        assert!(refusal_of(call(&refusing)).is_some());
         assert!(call(&other).is_ok(), "another Cloud is not paused");
         assert_eq!(other_seen.load(Ordering::SeqCst), 1);
         answered(&origin(&refusing).unwrap());
