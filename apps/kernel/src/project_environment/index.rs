@@ -5,6 +5,11 @@ use crate::error::DaemonError;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+/// A widely used name lists its first sites in path order; the rest add nothing to the review.
+const MAX_SITES_PER_NAME: usize = 128;
+/// The manifest holds at most this many references; a larger Project keeps the located ones first.
+const MAX_REFERENCES: usize = 512;
+
 pub struct ProjectEnvironmentIndex {
     pub evidence: ProjectEnvironmentEvidence,
     pub references: Vec<ProjectEnvironmentEntry>,
@@ -106,13 +111,8 @@ pub fn index_project_environment(
                                 path: path.clone(),
                                 line: (number + 1) as u32,
                             };
-                            if !sites.contains(&usage) {
+                            if sites.len() < MAX_SITES_PER_NAME && !sites.contains(&usage) {
                                 sites.push(usage);
-                            }
-                            if sites.len() > 128 {
-                                return Err(environment_error(
-                                    "configuration reference use bounds exceeded",
-                                ));
                             }
                         }
                     }
@@ -126,13 +126,8 @@ pub fn index_project_environment(
                         path: path.clone(),
                         line: (number + 1) as u32,
                     };
-                    if !sites.contains(&usage) {
+                    if sites.len() < MAX_SITES_PER_NAME && !sites.contains(&usage) {
                         sites.push(usage);
-                    }
-                    if sites.len() > 128 {
-                        return Err(environment_error(
-                            "environment reference use bounds exceeded",
-                        ));
                     }
                 }
             }
@@ -173,8 +168,10 @@ pub fn index_project_environment(
         }
         paths.insert(workspace.clone(), evidence_paths);
     }
-    if references.len() > 512 {
-        return Err(environment_error("environment reference bounds exceeded"));
+    if references.len() > MAX_REFERENCES {
+        // Names with a located value matter most; the speculative rest keep their path order.
+        references.sort_by_key(|entry| matches!(entry.locator, ProjectEnvironmentLocator::Missing));
+        references.truncate(MAX_REFERENCES);
     }
     let mut evidence = ProjectEnvironmentEvidence::capture(workspaces, &paths)?;
     for file in &private_files {

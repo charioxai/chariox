@@ -191,6 +191,44 @@ fn mp08_index_walks_a_workspace_beyond_twenty_thousand_files() {
 }
 
 #[test]
+fn mp08_index_keeps_the_first_sites_of_a_widely_used_name() {
+    let fixture = Fixture::new();
+    for file in 0..200 {
+        std::fs::write(
+            fixture.0.join(format!("f{file:03}.ts")),
+            b"const a = process.env.SHARED_NAME\n",
+        )
+        .unwrap();
+    }
+    let index = index_project_environment(&fixture.workspaces(), &BTreeMap::new()).unwrap();
+    assert_eq!(index.references.len(), 1);
+    assert_eq!(index.references[0].uses.len(), 128);
+    assert_eq!(index.references[0].uses[0].path, "f000.ts");
+    index.references[0]
+        .uses
+        .iter()
+        .for_each(|usage| assert!(!usage.path.is_empty()));
+}
+
+#[test]
+fn mp08_index_keeps_located_names_when_a_project_has_too_many_references() {
+    let fixture = Fixture::new();
+    let mut source = String::new();
+    for name in 0..600 {
+        source.push_str(&format!("const a = process.env.AAA_NAME_{name:03}\n"));
+    }
+    source.push_str("const b = process.env.ZZZ_LOCATED\n");
+    std::fs::write(fixture.0.join("config.ts"), source).unwrap();
+    std::fs::write(fixture.0.join(".env"), "ZZZ_LOCATED=value\n").unwrap();
+    let index = index_project_environment(&fixture.workspaces(), &BTreeMap::new()).unwrap();
+    assert_eq!(index.references.len(), 512);
+    assert!(index
+        .references
+        .iter()
+        .any(|entry| entry.name == "ZZZ_LOCATED"));
+}
+
+#[test]
 fn mp08_resolver_captures_only_referenced_names_and_refreshes_values() {
     let fixture = Fixture::new();
     std::fs::write(
