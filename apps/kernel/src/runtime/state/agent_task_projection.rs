@@ -34,8 +34,7 @@ impl KernelRuntimeOwnedState {
         };
         if snapshot.before.head_sha == snapshot.after.head_sha
             && snapshot.before.status_fingerprint == snapshot.after.status_fingerprint
-            && snapshot.before.workspace_live_sync_file_snapshots
-                == snapshot.after.workspace_live_sync_file_snapshots
+            && snapshot.files_unchanged
         {
             return Ok(());
         }
@@ -47,16 +46,7 @@ impl KernelRuntimeOwnedState {
         ) else {
             return Ok(());
         };
-        use sha2::{Digest, Sha256};
-        let normalized = serde_json::to_vec(&(
-            &snapshot.after.head_sha,
-            &snapshot.after.status_fingerprint,
-            &snapshot.after.workspace_live_sync_file_snapshots,
-        ))
-        .map_err(|_| {
-            crate::durable_state::agent_lifecycle::error("artifact receipt normalization failed")
-        })?;
-        let receipt = format!("git-artifact:{:x}", Sha256::digest(normalized));
+        let receipt = snapshot.artifact_receipt.clone();
         self.durable_state_store.agent_lifecycle(
             crate::durable_state::agent_lifecycle::Operation::Progress {
                 task: task.task_id,
