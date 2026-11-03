@@ -462,6 +462,33 @@ fn r4_detect_prompt_retains_plain_folder_inventory() {
 }
 
 #[test]
+fn envrows_detect_prompt_asks_for_the_indexed_decisions_the_parser_accepts() {
+    let root = TestWorktree::new("envrows-detect-decisions");
+    write(&root, "src/main.ts", "process.env.APP_SETTING;\nprocess.env.OTHER_SETTING;");
+    let folders = vec![folder(&root)];
+    let detection = detect_environment(&folders, "environment").unwrap();
+    let (input, _) = detection.discovery_input("project", &folders, &["folder".into()].into());
+    assert!(input.references.len() >= 2, "{}", input.references.len());
+    let prompt = project_environment_detect_prompt(&input).unwrap();
+    let metadata: serde_json::Value =
+        serde_json::from_str(prompt.split_once("Metadata:\n").unwrap().1).unwrap();
+    for (index, reference) in metadata["references"].as_array().unwrap().iter().enumerate() {
+        assert_eq!(reference["reference_index"], index);
+    }
+    assert!(prompt.contains("ONLY reference_index"));
+    assert!(!prompt.contains("entries copied from references"));
+    // A model that follows the prompt answers in the decision shape; the Detect parser must take it.
+    let answer = serde_json::json!({
+        "schema_version": 1, "project_id": input.project_id, "evidence_digest": input.evidence_digest,
+        "entries": [{"reference_index": 0, "classification": "non_secret"}],
+        "private_files": [], "toolchain_hints": [], "package_hints": [], "service_hints": []
+    })
+    .to_string();
+    let manifest = parse_project_environment_discovery_decisions(&answer, &input).unwrap();
+    assert_eq!(manifest.entries[0].classification, ProjectEnvironmentClassification::NonSecret);
+}
+
+#[test]
 fn r4_detect_excludes_generated_dependency_references() {
     let root = TestWorktree::new("r4-detect-generated");
     write(&root, "package.json", "{}");
