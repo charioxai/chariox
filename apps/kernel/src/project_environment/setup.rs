@@ -251,6 +251,12 @@ impl SetupRuns {
             .spawn()
             .map_err(|_| "Setup could not start bash".to_string())?;
         *lock(&live.pid) = child.id();
+        // A Stop that arrived before the process existed found no PID to end.
+        if live.cancelled.load(std::sync::atomic::Ordering::SeqCst) {
+            if let Some(pid) = child.id() {
+                crate::runtime::process_health::terminate_process_tree(pid);
+            }
+        }
         let secrets: Arc<Vec<(String, Zeroizing<String>)>> = Arc::new(spec.secrets.clone());
         let readers = [
             child
@@ -501,6 +507,16 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
         panic!("the Setup process kept running after Stop");
+    }
+
+    #[tokio::test]
+    async fn a_stop_sent_before_the_process_exists_still_ends_the_run() {
+        let dir = scratch();
+        let runs = SetupRuns::new(&dir.0);
+        runs.start(spec(&dir, "op-early", "sleep 60")).unwrap();
+        runs.cancel("op-early").unwrap();
+        let view = finished(&runs, "op-early").await;
+        assert_eq!(view.state, EnvironmentOperationState::Cancelled);
     }
 
     #[tokio::test]
