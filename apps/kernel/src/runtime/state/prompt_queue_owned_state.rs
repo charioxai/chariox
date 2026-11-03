@@ -1328,7 +1328,25 @@ impl KernelRuntimeOwnedState {
     /// in the provider's turn. Reconcile its durable hold without replaying it.
     pub(super) fn reconcile_inactive_local_steers(&self) -> Vec<(String, String, String)> {
         let mut dropped = Vec::new();
-        for session in self.session_store.list_all_sessions() {
+        // Only a Room holding a submitted steer is copied; the scan costs no more per Room.
+        let holding_rooms: Vec<String> = self
+            .session_store
+            .read()
+            .all_session_refs()
+            .filter(|session| {
+                session.prompt_states().values().any(|prompt_state| {
+                    prompt_state
+                        .queued_prompts()
+                        .iter()
+                        .any(|prompt| prompt.local_steer_submitted())
+                })
+            })
+            .map(|session| session.id().to_owned())
+            .collect();
+        for room in holding_rooms {
+            let Ok(session) = self.session_store.get_session(&room) else {
+                continue;
+            };
             for (agent_id, prompt_state) in session.prompt_states() {
                 for prompt in prompt_state.queued_prompts() {
                     if !prompt.local_steer_submitted() {

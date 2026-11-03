@@ -558,15 +558,13 @@ async fn stop_disabled_publication_runtimes(runtime_state: &KernelRuntimeState) 
         .owned
         .session_store
         .read()
-        .durable_sessions()
-        .into_iter()
+        .durable_session_refs()
         .flat_map(|session| {
             session
                 .workflow_publications()
                 .iter()
                 .filter(|publication| !publication.enabled())
                 .cloned()
-                .collect::<Vec<_>>()
         })
         .collect::<Vec<_>>();
     for publication in disabled {
@@ -1601,10 +1599,10 @@ async fn remove_orphaned_deployment_copies(runtime_state: &KernelRuntimeState) {
         .owned
         .session_store
         .read()
-        .durable_sessions()
-        .into_iter()
-        .flat_map(|session| session.workflow_publications().to_vec())
+        .durable_session_refs()
+        .flat_map(|session| session.workflow_publications())
         .filter(|publication| publication.apps().is_some() && !is_deployment_copy(publication))
+        .cloned()
         .collect::<Vec<_>>();
     let mut live = std::collections::BTreeMap::new();
     let mut retired = Vec::new();

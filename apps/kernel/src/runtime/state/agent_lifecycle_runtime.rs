@@ -28,12 +28,12 @@ impl KernelRuntimeOwnedState {
         let prompt = prepared.prompt.id();
         let existed = self
             .durable_state_store
-            .agent_tasks(
-                Some(&prepared.session_id),
-                Some(prepared.prompt.target_agent_id()),
+            .agent_turn_or_continuation_task(
+                &prepared.session_id,
+                prepared.prompt.target_agent_id(),
+                prompt,
             )?
-            .iter()
-            .any(|t| t.prompt_id == prompt || t.pending_prompt_id.as_deref() == Some(prompt));
+            .is_some();
         let continuation_task = prepared
             .prompt
             .durable_operation_fingerprint()
