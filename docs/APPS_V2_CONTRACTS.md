@@ -166,13 +166,14 @@ deliberate contract change (`CHARIOX_UPDATE_VECTORS=1`) and review the diff.
 
 ## 9. The agent bridge and the runtime MCP catalog (A2)
 
-- **Tools.** An agent holding an App grant gets `chariox.app_view_catalog`,
+- **Tools.** An agent that has asked for an installed App (`chariox.request_extension`
+  kind `app`; the kernel binds it at once and no person is asked) gets `chariox.app_view_catalog`,
   `_invoke`, `_state`, `_changes` and `_batch` on the existing runtime MCP. They
   address the open views of the agent's own Room by the id the catalog lists.
   A view's actions come only from the signed declarations of the generation it
   runs (`AppCatalog::ui_actions()`; empty for v1 packages, filled by R4).
-- **Order of gates for `invoke`.** Grant (`AppViewAuthority`, rechecked at every
-  step, cancelling the wait when revoked) → generation (a view of an older one
+- **Order of gates for `invoke`.** Binding (`AppViewAuthority`, rechecked at every
+  step, cancelling the wait when it is revoked; no browser claim is needed) → generation (a view of an older one
   is `APP_VIEW_STALE`) → declared (`find_declared`) → input against the signed
   schema (`check_input`) → approval for an `approval` action → the view's one
   queue → the page's registration against the declaration
@@ -182,7 +183,7 @@ deliberate contract change (`CHARIOX_UPDATE_VECTORS=1`) and review the diff.
   client of the Room; `/sudo` answers it like a provider permission). The
   existing session answer covers only that App, agent, action and active
   generation. Revocation invalidates it, including after a regrant. The App
-  grant alone does not approve an action. `batch` never decides one: it
+  binding alone does not approve an action. `batch` never decides one: it
   stops before the first approval step and reports it.
 - **Batch.** Every step is checked first (`plan_batch`), then run in order. It
   stops at the first error or approval and reports `completed` and `stopped`;

@@ -59,7 +59,7 @@ read visibility subject to existing Room policy; they gain no owner authority.
 | Wakes/processes | Cancel target's timers and watched work; retain receipts and await physical stop | Owner must create new work |
 | Goal/triggers | Cancel target's goal and remove its agent triggers (schedule and HTTP; `/wait` is a schedule trigger), retain outcomes in history | No automatic continuation or missed-interval replay; triggers are created again |
 | Interactions | Withdraw target's process-bound interactions | New run requests fresh decisions as needed |
-| App grants | Keep bindings; suspend use while archived | Existing unexpired, non-revoked grants become usable |
+| App bindings | Keep bindings; suspend use while archived | Existing non-revoked bindings become usable |
 | Terminals | Close target-owned provider/Room terminals; keep history | Fresh terminals on demand |
 | Worker/remote lease | Release with acknowledgement; retain old binding only as suspended placement intent | Reacquire through existing binding refresh, fail clearly if worker unavailable |
 | Environment/slice | Keep Room environment, profile, slice and worktree; remove target's live actors | Reconcile actors without restarting other agents |
