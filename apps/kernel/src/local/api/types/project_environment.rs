@@ -60,6 +60,47 @@ pub struct RunProjectEnvironmentSetupRequest {
     pub checkout_path: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum EnvironmentEntryKind {
+    Secret,
+    File,
+}
+
+/// One Secret (by name) or File (by relative path) of the Environment.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct EnvironmentEntryRef {
+    pub kind: EnvironmentEntryKind,
+    pub name: String,
+}
+
+/// Brings entries this kernel lacks from another kernel of the same user: the record when the
+/// source's revision is newer, then the Secret values and Files.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ImportProjectEnvironmentEntriesRequest {
+    pub project_id: String,
+    pub operation_id: String,
+    pub source_kernel_id: String,
+    /// Absent means every entry this kernel is missing (Update).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entries: Option<Vec<EnvironmentEntryRef>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkout_path: Option<String>,
+}
+
+/// The agent reads the Project's files and writes the Environment fields as revision 1.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DraftProjectEnvironmentRequest {
+    pub project_id: String,
+    pub operation_id: String,
+    /// An idle agent of the Project; the draft runs on its provider.
+    pub session_id: String,
+    pub agent_id: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EnvironmentOperationRequest {
@@ -155,6 +196,8 @@ pub struct ProjectEnvironmentView {
 #[serde(rename_all = "camelCase")]
 pub enum EnvironmentOperationKind {
     Setup,
+    Import,
+    Draft,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -164,6 +207,25 @@ pub enum EnvironmentOperationState {
     Succeeded,
     Failed,
     Cancelled,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum EnvironmentOperationEntryState {
+    Pending,
+    Importing,
+    Imported,
+    Failed,
+}
+
+/// One entry of an Import: where it stands and, when it failed, why.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct EnvironmentOperationEntry {
+    pub kind: EnvironmentEntryKind,
+    pub name: String,
+    pub state: EnvironmentOperationEntryState,
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -180,4 +242,8 @@ pub struct EnvironmentOperationView {
     pub reason: Option<String>,
     /// The last 64 KiB of output, with Secret values replaced by their names in brackets.
     pub output_tail: String,
+    /// Import only: the entries and their results, in order.
+    pub entries: Vec<EnvironmentOperationEntry>,
+    /// Import only: the display name of the kernel the entries come from.
+    pub source_label: Option<String>,
 }

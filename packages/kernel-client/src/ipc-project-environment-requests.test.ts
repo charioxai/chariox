@@ -3,9 +3,12 @@ import test from "node:test"
 
 import {
   cancelEnvironmentOperationRequest,
+  draftProjectEnvironmentRequest,
   environmentOperationFromResponse,
   getEnvironmentOperationRequest,
   getProjectEnvironmentRequest,
+  importProjectEnvironmentEntriesRequest,
+  parseEnvironmentOperationView,
   projectEnvironmentFromResponse,
   projectEnvironmentMinimumProtocolVersion,
   projectEnvironmentSaveOutcomeFromResponse,
@@ -40,10 +43,12 @@ const operation = {
   exitCode: null,
   reason: null,
   outputTail: "installing\n",
+  entries: [],
+  sourceLabel: null,
 }
 
 test("Environment v2 requests use the wire names and drop absent checkoutPath", () => {
-  assert.equal(projectEnvironmentMinimumProtocolVersion, 972)
+  assert.equal(projectEnvironmentMinimumProtocolVersion, 973)
   assert.deepEqual(getProjectEnvironmentRequest("p"), { GetProjectEnvironment: { projectId: "p" } })
   assert.deepEqual(getProjectEnvironmentRequest("p", "/work/p"), { GetProjectEnvironment: { projectId: "p", checkoutPath: "/work/p" } })
   assert.deepEqual(runProjectEnvironmentSetupRequest("p", "op"), { RunProjectEnvironmentSetup: { projectId: "p", operationId: "op" } })
@@ -51,6 +56,22 @@ test("Environment v2 requests use the wire names and drop absent checkoutPath", 
   assert.deepEqual(getEnvironmentOperationRequest("op"), { GetEnvironmentOperation: { operationId: "op" } })
   assert.deepEqual(cancelEnvironmentOperationRequest("op"), { CancelEnvironmentOperation: { operationId: "op" } })
   assert.deepEqual(setProjectEnvironmentSecretRequest("p", "API_KEY", "v"), { SetProjectEnvironmentSecret: { projectId: "p", name: "API_KEY", value: "v" } })
+})
+
+test("Import names its source and leaves out entries for Update; Draft names the agent", () => {
+  assert.deepEqual(importProjectEnvironmentEntriesRequest({ projectId: "p", operationId: "op", sourceKernelId: "k" }), { ImportProjectEnvironmentEntries: { projectId: "p", operationId: "op", sourceKernelId: "k" } })
+  assert.deepEqual(importProjectEnvironmentEntriesRequest({ projectId: "p", operationId: "op", sourceKernelId: "k", entries: [{ kind: "secret", name: "T" }], checkoutPath: "/w" }), {
+    ImportProjectEnvironmentEntries: { projectId: "p", operationId: "op", sourceKernelId: "k", entries: [{ kind: "secret", name: "T" }], checkoutPath: "/w" },
+  })
+  assert.deepEqual(draftProjectEnvironmentRequest({ projectId: "p", operationId: "op", sessionId: "s", agentId: "a" }), { DraftProjectEnvironment: { projectId: "p", operationId: "op", sessionId: "s", agentId: "a" } })
+})
+
+test("an Import operation reads with its entries and source", () => {
+  const parsed = parseEnvironmentOperationView({ ...operation, kind: "import", sourceLabel: "Mac", entries: [{ kind: "file", name: ".env", state: "failed", reason: "Source offline" }] })
+  assert.equal(parsed.kind, "import")
+  assert.equal(parsed.sourceLabel, "Mac")
+  assert.deepEqual(parsed.entries, [{ kind: "file", name: ".env", state: "failed", reason: "Source offline" }])
+  assert.throws(() => parseEnvironmentOperationView({ ...operation, entries: [{ kind: "mcp", name: "x", state: "failed", reason: null }] }), /kind/)
 })
 
 test("SaveProjectEnvironment carries the revision and wraps names and paths as rows", () => {

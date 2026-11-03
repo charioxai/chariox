@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 const MAX_SECRET_VALUE_BYTES: usize = 64 * 1024;
 
 impl KernelRuntimeState {
-    fn environment_store(&self) -> ProjectEnvironmentStore {
+    pub(super) fn environment_store(&self) -> ProjectEnvironmentStore {
         ProjectEnvironmentStore::new(
             &self
                 .owned
@@ -26,7 +26,14 @@ impl KernelRuntimeState {
         )
     }
 
-    fn owned_project(
+    pub(super) fn machine_label(config: &crate::config::DaemonConfig) -> String {
+        config
+            .host_machine_alias
+            .clone()
+            .unwrap_or_else(|| config.host_machine_id.clone())
+    }
+
+    pub(super) fn owned_project(
         &self,
         project_id: &str,
         caller_user_id: &str,
@@ -41,7 +48,7 @@ impl KernelRuntimeState {
     }
 
     /// The Project's own folder, a git worktree of it or a worktree of one of its sessions: nothing else is a checkout.
-    fn project_checkout(
+    pub(super) fn project_checkout(
         &self,
         project: &crate::session::RuntimeProject,
         requested: Option<&str>,
@@ -123,10 +130,7 @@ impl KernelRuntimeState {
                 })
                 .collect(),
             changed_at_ms: record.changed_at_ms,
-            machine_label: config
-                .host_machine_alias
-                .clone()
-                .unwrap_or_else(|| config.host_machine_id.clone()),
+            machine_label: Self::machine_label(&config),
             checkout_path: checkout.to_string_lossy().into_owned(),
             setup_state,
         })
@@ -266,10 +270,8 @@ impl KernelRuntimeState {
         caller_user_id: &str,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let operation = self
-            .owned
-            .project_environment_setups
-            .get(&request.operation_id)?
-            .ok_or_else(|| environment_error("this Setup run is unknown"))?;
+            .environment_operation(&request.operation_id)?
+            .ok_or_else(|| environment_error("this operation is unknown"))?;
         self.owned_project(&operation.project_id, caller_user_id)?;
         Ok(LocalDaemonResponse::EnvironmentOperation { operation })
     }
@@ -280,16 +282,11 @@ impl KernelRuntimeState {
         caller_user_id: &str,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let operation = self
-            .owned
-            .project_environment_setups
-            .get(&request.operation_id)?
-            .ok_or_else(|| environment_error("this Setup run is unknown"))?;
+            .environment_operation(&request.operation_id)?
+            .ok_or_else(|| environment_error("this operation is unknown"))?;
         self.owned_project(&operation.project_id, caller_user_id)?;
         Ok(LocalDaemonResponse::EnvironmentOperation {
-            operation: self
-                .owned
-                .project_environment_setups
-                .cancel(&request.operation_id)?,
+            operation: self.cancel_environment_operation_by_id(&request.operation_id)?,
         })
     }
 

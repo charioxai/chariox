@@ -183,7 +183,7 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// Peer 412 carries local963 one-use Vault capture bindings.
 /// Peer 414 carries local965 integrated Vault and machine contracts.
 /// Peer415 carries local966 WASM Apps plus Landing965 contracts.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 421;
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 422;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;
@@ -535,6 +535,38 @@ impl std::fmt::Debug for RemoteCredentialSecretInput {
     }
 }
 
+/// A Project file's bytes (base64) inside an encrypted kernel-to-kernel response; it can hold secrets.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct RemoteEnvironmentFileBytes(String);
+
+impl RemoteEnvironmentFileBytes {
+    pub fn encode(bytes: &[u8]) -> Self {
+        use base64::Engine;
+        Self(base64::engine::general_purpose::STANDARD.encode(bytes))
+    }
+
+    pub fn decode(&self) -> Option<zeroize::Zeroizing<Vec<u8>>> {
+        use base64::Engine;
+        base64::engine::general_purpose::STANDARD
+            .decode(&self.0)
+            .ok()
+            .map(zeroize::Zeroizing::new)
+    }
+}
+
+impl Drop for RemoteEnvironmentFileBytes {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.0);
+    }
+}
+
+impl std::fmt::Debug for RemoteEnvironmentFileBytes {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("[redacted Project file bytes]")
+    }
+}
+
 /// One provider launch secret carried only inside an encrypted kernel-to-kernel
 /// request. The worker validates the provider/profile binding, moves the value
 /// into its in-memory launch environment, and never writes it to a provider
@@ -738,6 +770,18 @@ fn default_workspace_live_sync_invocation_attempt() -> u32 {
 pub enum RelayPeerRequest {
     AgentMove {
         request: crate::agent_move::peer::AgentMovePeerRequest,
+    },
+    /// A kernel of the same user asks what this kernel holds of a Project's Environment.
+    ReadProjectEnvironment {
+        project_id: String,
+    },
+    PullProjectEnvironmentSecret {
+        project_id: String,
+        name: String,
+    },
+    PullProjectEnvironmentFile {
+        project_id: String,
+        path: String,
     },
     ListWorkflowNotificationSources {
         protocol_version: u32,
@@ -1172,6 +1216,24 @@ impl RelayPeerRequest {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RelayPeerResponse {
+    ProjectEnvironmentRead {
+        source_label: String,
+        record: Option<crate::project_environment::ProjectEnvironmentRecord>,
+        /// Secret names the source's Vault holds a value for.
+        secrets: Vec<String>,
+        /// Listed Files that exist in the source's checkout.
+        files: Vec<String>,
+    },
+    /// The source will not hand the Environment over (unknown Project, Vault locked, ...).
+    ProjectEnvironmentRefused {
+        reason: String,
+    },
+    ProjectEnvironmentSecretPulled {
+        value: Option<RemoteCredentialSecretInput>,
+    },
+    ProjectEnvironmentFilePulled {
+        content: Option<RemoteEnvironmentFileBytes>,
+    },
     AgentMove {
         response: crate::agent_move::peer::AgentMovePeerResponse,
     },

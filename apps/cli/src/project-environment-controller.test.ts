@@ -28,7 +28,7 @@ function environment(patch: Partial<ProjectEnvironmentView> = {}): ProjectEnviro
 function operation(patch: Partial<EnvironmentOperationView> = {}): EnvironmentOperationView {
   return {
     operationId: "op-1", projectId: "project-1", checkoutPath: "/work/project", kind: "setup", state: "running",
-    startedAtMs: NOW, endedAtMs: null, exitCode: null, reason: null, outputTail: "installing\n", ...patch,
+    startedAtMs: NOW, endedAtMs: null, exitCode: null, reason: null, outputTail: "installing\n", entries: [], sourceLabel: null, ...patch,
   }
 }
 

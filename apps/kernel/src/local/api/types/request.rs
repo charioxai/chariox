@@ -105,6 +105,8 @@ pub enum LocalDaemonRequest {
     SaveProjectEnvironment(SaveProjectEnvironmentRequest),
     SetProjectEnvironmentSecret(SetProjectEnvironmentSecretRequest),
     RunProjectEnvironmentSetup(RunProjectEnvironmentSetupRequest),
+    ImportProjectEnvironmentEntries(ImportProjectEnvironmentEntriesRequest),
+    DraftProjectEnvironment(DraftProjectEnvironmentRequest),
     GetEnvironmentOperation(EnvironmentOperationRequest),
     CancelEnvironmentOperation(EnvironmentOperationRequest),
     SetProjectPinned(SetProjectPinnedRequest),

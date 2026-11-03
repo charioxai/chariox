@@ -1,11 +1,12 @@
 import type {
+  EnvironmentEntryRef,
   EnvironmentOperationView,
   ProjectEnvironmentView,
   SetupState,
 } from "./kernel-types-project-environment.js"
 
-// Protocol 972 introduced the v2 Environment requests; older kernels answer an unknown-variant error.
-export const projectEnvironmentMinimumProtocolVersion = 972
+// Protocol 973 carries the Environment requests including Import and Draft; older kernels answer an unknown-variant error.
+export const projectEnvironmentMinimumProtocolVersion = 973
 
 export type SaveProjectEnvironmentInput = {
   readonly projectId: string
@@ -39,6 +40,35 @@ export function setProjectEnvironmentSecretRequest(projectId: string, name: stri
 
 export function runProjectEnvironmentSetupRequest(projectId: string, operationId: string, checkoutPath?: string) {
   return { RunProjectEnvironmentSetup: { projectId, operationId, ...(checkoutPath ? { checkoutPath } : {}) } } as const
+}
+
+/** Brings entries from another kernel of the same user; no `entries` means everything this kernel lacks. */
+export function importProjectEnvironmentEntriesRequest(input: {
+  readonly projectId: string
+  readonly operationId: string
+  readonly sourceKernelId: string
+  readonly entries?: readonly EnvironmentEntryRef[]
+  readonly checkoutPath?: string
+}) {
+  return {
+    ImportProjectEnvironmentEntries: {
+      projectId: input.projectId,
+      operationId: input.operationId,
+      sourceKernelId: input.sourceKernelId,
+      ...(input.entries ? { entries: input.entries } : {}),
+      ...(input.checkoutPath ? { checkoutPath: input.checkoutPath } : {}),
+    },
+  } as const
+}
+
+/** The agent reads the Project and fills the empty Environment. */
+export function draftProjectEnvironmentRequest(input: {
+  readonly projectId: string
+  readonly operationId: string
+  readonly sessionId: string
+  readonly agentId: string
+}) {
+  return { DraftProjectEnvironment: { ...input } } as const
 }
 
 export function getEnvironmentOperationRequest(operationId: string) {
@@ -170,13 +200,20 @@ export function parseEnvironmentOperationView(value: unknown): EnvironmentOperat
     operationId: text(value, "operationId", what),
     projectId: text(value, "projectId", what),
     checkoutPath: text(value, "checkoutPath", what),
-    kind: oneOf(value, "kind", ["setup"], what),
+    kind: oneOf(value, "kind", ["setup", "import", "draft"], what),
     state: oneOf(value, "state", ["running", "succeeded", "failed", "cancelled"], what),
     startedAtMs: count(value, "startedAtMs", what),
     endedAtMs: nullableCount(value, "endedAtMs", what),
     exitCode: nullableInteger(value, "exitCode", what),
     reason: nullableText(value, "reason", what),
     outputTail: text(value, "outputTail", what),
+    entries: list(value, "entries", what).map((row) => ({
+      kind: oneOf(row, "kind", ["secret", "file"], "Environment operation entry"),
+      name: text(row, "name", "Environment operation entry"),
+      state: oneOf(row, "state", ["pending", "importing", "imported", "failed"], "Environment operation entry"),
+      reason: nullableText(row, "reason", "Environment operation entry"),
+    })),
+    sourceLabel: nullableText(value, "sourceLabel", what),
   }
 }
 

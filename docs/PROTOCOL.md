@@ -6362,7 +6362,7 @@ identity handshake, and exposes only the versioned App WIT world through the
 kernel capability broker. The replaced engine's launch, runtime enrollment and
 privileged storage-helper paths are removed. Reinstall unsupported stored Apps.
 
-### Environments — local 972 / relay peer 421
+### Environments — local 973 / relay peer 422
 
 A Project has one Environment: a saved record (schema 2) with a Setup script, Variables (`.env` text),
 Secret names and Files outside Git. Values never enter the record. Each kernel keeps a Secret's value in
@@ -6384,6 +6384,19 @@ its own Vault under the Project scope, so presence differs per machine and is co
 - Variables and the present Secrets are environment variables of every provider run, shell capability and
   Room terminal the kernel starts for the Project. Files outside Git are copied into new worktrees of the
   Project and travel with moves and slices through the ignore rules.
+- `ImportProjectEnvironmentEntries { projectId, operationId, sourceKernelId, entries?, checkoutPath? }`
+  (Import here and Update) asks another kernel of the same authenticated owner for the record (adopted when
+  its revision is newer), then for each Secret value and File this kernel lacks, one peer request each
+  (`ReadProjectEnvironment`, `PullProjectEnvironmentSecret`, `PullProjectEnvironmentFile`; refusals answer
+  `ProjectEnvironmentRefused`). Without `entries` it brings every missing one. The operation reads like a
+  Setup run with `kind: "import"`, `entries` (pending, importing, imported, failed with a reason such as
+  "Source offline" or "Not on <machine>") and `sourceLabel`; Stop keeps what landed. Values travel only inside
+  the peer channel's end-to-end encryption, are never logged and never appear in a view; a File is at most
+  32 MiB (one peer message), 128 MiB per operation, and lands with mode 0600.
+- `DraftProjectEnvironment { projectId, operationId, sessionId, agentId }` runs an idle agent of the Project
+  on its own provider with no tools: the kernel sends the Project's manifest files and the names of the
+  files Git ignores (never their contents), and the answer becomes revision 1 of a Project that has no
+  Environment. The operation reads with `kind: "draft"`.
 - Removed: Detect, PreviewEnvironmentDiff, SaveProjectEnvironmentRevision, Plan, Apply, Check, Retry,
   Export, PreviewEnvironmentImport, CommitEnvironmentImport, GetProjectEnvironmentManifest,
   AdjustProjectEnvironment and the four Start/Get/Cancel/Retry `ProjectEnvironmentSetup` requests, the

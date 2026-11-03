@@ -100,6 +100,25 @@ impl ProjectEnvironmentStore {
         Ok(SaveOutcome::Saved(record))
     }
 
+    /// Stores a record that another kernel saved, unless this kernel already holds that revision or a newer one.
+    pub(crate) fn adopt(
+        &self,
+        project: &str,
+        record: ProjectEnvironmentRecord,
+    ) -> Result<(), DaemonError> {
+        let _guard = WRITES
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        record.validate().map_err(environment_error)?;
+        if self
+            .load(project)?
+            .is_some_and(|current| current.revision >= record.revision)
+        {
+            return Ok(());
+        }
+        self.write(project, &record)
+    }
+
     fn write(&self, project: &str, record: &ProjectEnvironmentRecord) -> Result<(), DaemonError> {
         fs::create_dir_all(&self.root)
             .map_err(|_| environment_error("the Environment directory is unavailable"))?;

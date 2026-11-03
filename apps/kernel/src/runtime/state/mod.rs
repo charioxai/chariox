@@ -131,6 +131,8 @@ mod metadata_utility_scratch;
 mod native_catalog_refresh;
 mod owner_context_review;
 mod project_environment;
+mod project_environment_draft;
+mod project_environment_transfer;
 mod project_prompt_promotion;
 mod provider_output_deadline_store;
 mod provider_reload;
@@ -388,6 +390,7 @@ struct KernelRuntimeOwnedState {
     workflow_publication_runtimes:
         crate::runtime::state::workflow_publication_runtime_lifecycle::WorkflowPublicationRuntimeProcessStore,
     project_environment_setups: Arc<crate::project_environment::SetupRuns>,
+    environment_operations: Arc<crate::project_environment::EnvironmentOperations>,
 }
 
 #[derive(Debug, Clone)]
@@ -1179,6 +1182,9 @@ impl KernelRuntimeState {
                 workflow_publication_runtimes:
                     crate::runtime::state::workflow_publication_runtime_lifecycle::WorkflowPublicationRuntimeProcessStore::default(),
                 project_environment_setups: crate::project_environment::SetupRuns::new(
+                    &config.private_runtime_state_root(),
+                ),
+                environment_operations: crate::project_environment::EnvironmentOperations::new(
                     &config.private_runtime_state_root(),
                 ),
             },

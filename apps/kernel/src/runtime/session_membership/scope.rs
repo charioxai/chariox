@@ -633,6 +633,8 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::SaveProjectEnvironment(_)
         | LocalDaemonRequest::SetProjectEnvironmentSecret(_)
         | LocalDaemonRequest::RunProjectEnvironmentSetup(_)
+        | LocalDaemonRequest::ImportProjectEnvironmentEntries(_)
+        | LocalDaemonRequest::DraftProjectEnvironment(_)
         | LocalDaemonRequest::CancelEnvironmentOperation(_)
         | LocalDaemonRequest::GetProjectEnvironment(_)
         | LocalDaemonRequest::KeepDisposableWorkerRunning(_)

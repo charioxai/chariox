@@ -1,4 +1,4 @@
-// Environment v2 wire (local daemon protocol 972). Values of Variables travel in the record;
+// Environment v2 wire (local daemon protocol 973). Values of Variables travel in the record;
 // the value of a Secret never leaves the Vault, so no shape here can carry one.
 
 export type EnvironmentSecretPresence = "present" | "missing" | "locked"
@@ -37,16 +37,35 @@ export type ProjectEnvironmentView = {
 }
 
 export type EnvironmentOperationState = "running" | "succeeded" | "failed" | "cancelled"
+export type EnvironmentOperationKind = "setup" | "import" | "draft"
+export type EnvironmentEntryKind = "secret" | "file"
+export type EnvironmentEntryState = "pending" | "importing" | "imported" | "failed"
+
+/** One Secret (by name) or File (by relative path) of an Environment. */
+export type EnvironmentEntryRef = {
+  readonly kind: EnvironmentEntryKind
+  readonly name: string
+}
+
+/** One entry of an Import and where it stands; `reason` says why a failed one failed. */
+export type EnvironmentOperationEntry = EnvironmentEntryRef & {
+  readonly state: EnvironmentEntryState
+  readonly reason: string | null
+}
 
 export type EnvironmentOperationView = {
   readonly operationId: string
   readonly projectId: string
   readonly checkoutPath: string
-  readonly kind: "setup"
+  readonly kind: EnvironmentOperationKind
   readonly state: EnvironmentOperationState
   readonly startedAtMs: number
   readonly endedAtMs: number | null
   readonly exitCode: number | null
   readonly reason: string | null
   readonly outputTail: string
+  /** Import only. */
+  readonly entries: readonly EnvironmentOperationEntry[]
+  /** Import only: the display name of the kernel the entries come from. */
+  readonly sourceLabel: string | null
 }

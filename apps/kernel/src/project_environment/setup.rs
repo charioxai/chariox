@@ -208,6 +208,8 @@ impl SetupRuns {
             exit_code: None,
             reason: None,
             output_tail: String::new(),
+            entries: Vec::new(),
+            source_label: None,
         };
         let stored = StoredRun {
             view: view.clone(),

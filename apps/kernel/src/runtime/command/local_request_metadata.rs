@@ -743,6 +743,8 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::SaveProjectEnvironment(_) => "project.environment.save",
         LocalDaemonRequest::SetProjectEnvironmentSecret(_) => "project.environment.secret.set",
         LocalDaemonRequest::RunProjectEnvironmentSetup(_) => "project.environment.setup.run",
+        LocalDaemonRequest::ImportProjectEnvironmentEntries(_) => "project.environment.import",
+        LocalDaemonRequest::DraftProjectEnvironment(_) => "project.environment.draft",
         LocalDaemonRequest::GetEnvironmentOperation(_) => "project.environment.operation.get",
         LocalDaemonRequest::CancelEnvironmentOperation(_) => "project.environment.operation.cancel",
         LocalDaemonRequest::ListProjects(_) => "project.list",

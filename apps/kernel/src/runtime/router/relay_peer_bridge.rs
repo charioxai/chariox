@@ -35,11 +35,20 @@ impl CommandRouter {
         self.runtime_state
             .receive_workflow_notification_peer(kernel, owner, request)
     }
-    pub(crate) fn notification_peer_owner(
+    pub(crate) fn relay_project_environment(
+        &self,
+        owner: &str,
+        request: crate::transport::relay_peer::RelayPeerRequest,
+    ) -> Result<crate::transport::relay_peer::RelayPeerResponse, DaemonError> {
+        self.runtime_state
+            .receive_project_environment_peer(owner, request)
+    }
+
+    pub(crate) fn same_owner_peer_user_id(
         &self,
         identity: &chariox_relay::protocol::RelayCallerIdentity,
     ) -> Option<String> {
-        self.runtime_state.notification_peer_owner(identity)
+        self.runtime_state.same_owner_peer_user_id(identity)
     }
 
     pub(crate) fn lease_worker_selected_home(

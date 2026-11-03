@@ -463,4 +463,5 @@ pub use workspace::*;
 /// MP-08/MP-09/MP-10/MP-11: 966 integrates WASM Apps with Landing965 (peer415).
 /// Environments 972 replace the Project Environment requests with one saved record per Project,
 /// its presence on this kernel and Setup runs (peer421 drops the leased Project environment requests).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 972;
+/// Environments 973 add Import from another kernel of the same user and Draft with agent (peer422).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 973;

@@ -347,14 +347,17 @@ pub(super) async fn handle_daemon_peer_request(
     } else {
         None
     };
-    let notification_request = matches!(
+    let same_owner_request = matches!(
         &request,
         RelayPeerRequest::ListWorkflowNotificationSources { .. }
             | RelayPeerRequest::SubscribeWorkflowNotifications { .. }
             | RelayPeerRequest::UnsubscribeWorkflowNotifications { .. }
             | RelayPeerRequest::DeliverWorkflowNotification { .. }
+            | RelayPeerRequest::ReadProjectEnvironment { .. }
+            | RelayPeerRequest::PullProjectEnvironmentSecret { .. }
+            | RelayPeerRequest::PullProjectEnvironmentFile { .. }
     );
-    if notification_request {
+    if same_owner_request {
         // The existing relay projects home-kernel claims to a bound Machine
         // identity for peer requests (the same seam used by execution leases).
         let identity = match require_bound_managed_context_sender(
@@ -376,7 +379,7 @@ pub(super) async fn handle_daemon_peer_request(
                 encrypted_response: None,
                 error: Some(relay_error(
                     "unauthorized",
-                    "workflow notification sender kernel invalid",
+                    "peer sender kernel invalid",
                     false,
                 )),
             };
@@ -391,18 +394,18 @@ pub(super) async fn handle_daemon_peer_request(
                 encrypted_response: None,
                 error: Some(relay_error(
                     "unauthorized",
-                    "workflow notification sender kernel mismatch",
+                    "peer sender kernel mismatch",
                     false,
                 )),
             };
         }
-        let Some(owner) = router.notification_peer_owner(identity) else {
+        let Some(owner) = router.same_owner_peer_user_id(identity) else {
             return RelayRequestOutcome {
                 display_event: None,
                 encrypted_response: None,
                 error: Some(relay_error(
                     "unauthorized",
-                    "workflow notifications require the same authenticated owner and realm",
+                    "this request requires the same authenticated owner and realm",
                     false,
                 )),
             };
@@ -411,11 +414,21 @@ pub(super) async fn handle_daemon_peer_request(
             stable_peer_daemon_id(from_daemon_id),
             requester_public_key.clone(),
         );
-        let response = match router.relay_workflow_notification(
-            stable_peer_daemon_id(from_daemon_id),
-            &owner,
-            request,
+        let outcome = if matches!(
+            &request,
+            RelayPeerRequest::ReadProjectEnvironment { .. }
+                | RelayPeerRequest::PullProjectEnvironmentSecret { .. }
+                | RelayPeerRequest::PullProjectEnvironmentFile { .. }
         ) {
+            router.relay_project_environment(&owner, request)
+        } else {
+            router.relay_workflow_notification(
+                stable_peer_daemon_id(from_daemon_id),
+                &owner,
+                request,
+            )
+        };
+        let response = match outcome {
             Ok(response) => response,
             Err(error) => {
                 return RelayRequestOutcome {
@@ -529,8 +542,11 @@ pub(super) async fn handle_daemon_peer_request(
         RelayPeerRequest::ListWorkflowNotificationSources { .. }
         | RelayPeerRequest::SubscribeWorkflowNotifications { .. }
         | RelayPeerRequest::UnsubscribeWorkflowNotifications { .. }
-        | RelayPeerRequest::DeliverWorkflowNotification { .. } => {
-            unreachable!("notification requests handled above")
+        | RelayPeerRequest::DeliverWorkflowNotification { .. }
+        | RelayPeerRequest::ReadProjectEnvironment { .. }
+        | RelayPeerRequest::PullProjectEnvironmentSecret { .. }
+        | RelayPeerRequest::PullProjectEnvironmentFile { .. } => {
+            unreachable!("same-owner requests handled above")
         }
         RelayPeerRequest::RoomBrowserController {
             session_id,

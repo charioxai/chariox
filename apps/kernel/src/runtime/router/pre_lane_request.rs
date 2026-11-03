@@ -188,6 +188,18 @@ impl CommandRouter {
                     .run_project_environment_setup(request.clone(), caller_user_id)
                     .map(Some)
             })),
+            LocalDaemonRequest::ImportProjectEnvironmentEntries(request) => {
+                Some(Box::pin(async move {
+                    self.runtime_state
+                        .import_project_environment_entries(request.clone(), caller_user_id)
+                        .map(Some)
+                }))
+            }
+            LocalDaemonRequest::DraftProjectEnvironment(request) => Some(Box::pin(async move {
+                self.runtime_state
+                    .draft_project_environment(request.clone(), caller_user_id)
+                    .map(Some)
+            })),
             LocalDaemonRequest::GetEnvironmentOperation(request) => Some(Box::pin(async move {
                 self.runtime_state
                     .get_environment_operation(request.clone(), caller_user_id)
