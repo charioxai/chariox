@@ -37,6 +37,7 @@ mod managed_environment;
 mod metaagent;
 mod notes;
 mod outside_events;
+mod own_machine_enrollment;
 mod project_environment_aggregate;
 mod project_environment_manifest;
 mod project_environment_setup;
@@ -52,7 +53,6 @@ mod room_terminal;
 mod screenshot;
 mod session_control;
 mod slice;
-mod ssh_machine;
 mod terminal_command_catalog;
 mod terminal_interaction;
 mod usage_snapshot;
@@ -90,6 +90,7 @@ pub use managed_environment::*;
 pub use metaagent::*;
 pub use notes::*;
 pub use outside_events::*;
+pub use own_machine_enrollment::*;
 pub use project_environment_aggregate::*;
 pub use project_environment_manifest::*;
 pub use project_environment_setup::*;
@@ -105,7 +106,6 @@ pub use room_terminal::*;
 pub use screenshot::*;
 pub use session_control::*;
 pub use slice::*;
-pub use ssh_machine::*;
 pub use terminal_command_catalog::*;
 pub use terminal_interaction::*;
 pub use usage_snapshot::*;
@@ -464,5 +464,5 @@ pub use workspace::*;
 /// MP-08/MP-09/MP-10/MP-11: 963 binds every captured Vault entry to one declared use (peer412).
 /// Connected service machine requests use the ordinary Chariox access grant.
 /// MP-08/MP-09/MP-10/MP-11: 965 integrates declared Vault uses and enrolled-kernel machine authority (peer414).
-/// MP-08/MP-09/MP-10/MP-11: 966 integrates WASM Apps with Landing965 (peer415).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 966;
+/// 971 replaces AddSshMachine/RemoveSshMachine with IssueOwnMachineEnrollment (peer420).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 971;

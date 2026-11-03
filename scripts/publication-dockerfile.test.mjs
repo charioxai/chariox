@@ -38,8 +38,8 @@ test("publication image copies compile-time workflow examples before building th
 })
 
 test("publication Rust stage copies the deploy files the kernel embeds at compile time", async () => {
-  const source = await readFile(new URL("../apps/kernel/src/runtime/ssh_machine_control.rs", import.meta.url), "utf8")
-  const embedded = [...source.matchAll(/include_str!\("(?:\.\.\/)+(deploy\/managed-kernel\/[^"]+)"\)/g)].map((match) => match[1])
+  const source = await readFile(new URL("../apps/kernel/src/runtime/managed_release_update.rs", import.meta.url), "utf8")
+  const embedded = [...source.matchAll(/include_(?:str|bytes)!\("(?:\.\.\/)+(deploy\/managed-kernel\/[^"]+)"\)/g)].map((match) => match[1])
   assert.ok(embedded.length > 0)
   const rustStageStart = dockerfile.indexOf("FROM rust:1.99.1-bookworm@sha256:")
   const rustStage = dockerfile.slice(rustStageStart, dockerfile.indexOf("\nFROM ", rustStageStart + 1))

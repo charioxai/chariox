@@ -139,11 +139,8 @@ impl CommandRouter {
             )
             .map(Some);
         }
-        if matches!(
-            request,
-            LocalDaemonRequest::AddSshMachine(_) | LocalDaemonRequest::RemoveSshMachine(_)
-        ) {
-            return crate::runtime::ssh_machine_control::execute(
+        if let LocalDaemonRequest::IssueOwnMachineEnrollment(request) = request {
+            return crate::runtime::own_machine_enrollment::execute(
                 self.config_projection.snapshot(),
                 command,
                 request.clone(),

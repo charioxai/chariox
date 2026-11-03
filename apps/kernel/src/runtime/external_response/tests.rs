@@ -602,15 +602,11 @@ async fn external_response_register_and_remove_existing_literal_credentials() {
 }
 
 #[test]
-fn mp07_mp08_mp11_ssh_receipts_share_the_typed_and_cached_public_boundary() {
-    let response = LocalDaemonResponse::SshMachine {
-        machine: crate::local::SshMachineResult {
-            install_id: "byom-owned".into(),
-            status: "ready".into(),
-            kernel_id: Some("kernel-owned".into()),
-            machine_id: Some("machine-owned".into()),
-            release_digest: format!("sha256:{}", "a".repeat(64)),
-            state_retained: false,
+fn own_machine_enrollment_reaches_agents_unchanged() {
+    let response = LocalDaemonResponse::OwnMachineEnrollment {
+        enrollment: crate::local::OwnMachineEnrollmentCommand {
+            command: " (curl -fsSL https://downloads.example/install.sh)".into(),
+            expires_at: "2026-11-03T13:10:00Z".into(),
         },
     };
     let expected = serde_json::to_value(&response).unwrap();

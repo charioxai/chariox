@@ -202,31 +202,7 @@ impl CommandRouter {
             {
                 command.caller.metaagent_id = Some(turn.agent_id.clone());
             }
-            let ssh_host = match &request {
-                crate::local::LocalDaemonRequest::AddSshMachine(r) => Some(r.host.clone()),
-                _ => None,
-            };
-            let ssh_removal = matches!(
-                &request,
-                crate::local::LocalDaemonRequest::RemoveSshMachine(_)
-            );
             let response = Box::pin(self.dispatch(command, request)).await?;
-            if let (Some(host), crate::local::LocalDaemonResponse::SshMachine { machine }) =
-                (ssh_host, &response)
-            {
-                if machine.status == "ready" {
-                    self.runtime_state
-                        .record_ssh_resource(&turn, &host, &machine.install_id)?;
-                }
-            }
-            if ssh_removal {
-                if let crate::local::LocalDaemonResponse::SshMachine { machine } = &response {
-                    if machine.status == "removed" {
-                        self.runtime_state
-                            .record_ssh_removal(&turn, &machine.install_id)?;
-                    }
-                }
-            }
             Ok(crate::transport::runtime_tools::RuntimeToolResult {
                 ok: true,
                 payload: serde_json::to_value(response).map_err(|_| {

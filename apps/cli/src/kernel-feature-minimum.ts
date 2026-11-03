@@ -10,8 +10,7 @@ type FeatureMinimum = { feature: string; minimum: number }
 const features: Record<string, FeatureMinimum> = {
   ListProviderAccountCopyOffers: { feature: "Provider account copy", minimum: requests.providerAccountCopyMinimumProtocolVersion },
   CopyProviderAccountFromKernel: { feature: "Provider account copy", minimum: requests.providerAccountCopyMinimumProtocolVersion },
-  AddSshMachine: { feature: "SSH machine management", minimum: requests.sshMachineMinimumProtocolVersion },
-  RemoveSshMachine: { feature: "SSH machine management", minimum: requests.sshMachineMinimumProtocolVersion },
+  IssueOwnMachineEnrollment: { feature: "own machine enrollment", minimum: requests.ownMachineEnrollmentMinimumProtocolVersion },
   GetClientCatalogRevisions: { feature: "Catalog revisions", minimum: requests.clientCatalogRevisionsMinimumProtocolVersion },
   CloudRelayStatus: { feature: "Kernel Cloud ownership", minimum: requests.kernelOwnershipMinimumProtocolVersion },
   StartCloudRelayLogin: { feature: "Kernel Cloud ownership", minimum: requests.kernelOwnershipMinimumProtocolVersion },

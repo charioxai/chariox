@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import { addSshMachineRequest, removeSshMachineRequest, sshMachineMinimumProtocolVersion, acceptAppHostActionRequest, appHostActionMinimumProtocolVersion, restoreAppDataSnapshotRequest, startSliceRequest, submitRoomEnvironmentBrowserActionRequest } from "@chariox/kernel-client/ipc-requests"
+import { issueOwnMachineEnrollmentRequest, ownMachineEnrollmentMinimumProtocolVersion, acceptAppHostActionRequest, appHostActionMinimumProtocolVersion, restoreAppDataSnapshotRequest, startSliceRequest, submitRoomEnvironmentBrowserActionRequest } from "@chariox/kernel-client/ipc-requests"
 import { requireKernelFeatureProtocol } from "./kernel-feature-minimum.js"
 
 test("MP-08 MP-10 native active steering requires allocated protocol 491", () => {
@@ -147,14 +147,12 @@ test("MP-08/MP-10/MP-11 shared Room offers require525 before an older kernel sil
  assert.doesNotThrow(()=>requireKernelFeatureProtocol(request,525))
 })
 
-// MP-07 / MP-08 / MP-11: SSH variants first shipped in the allocated C5 union.
-test("MP-07 / MP-08 / MP-11 SSH machine operations refuse older kernels before transport", () => {
-  for (const request of [addSshMachineRequest("linux-lan"), removeSshMachineRequest("owned-install")]) {
-    for (const version of [491, sshMachineMinimumProtocolVersion - 1]) {
-      assert.throws(() => requireKernelFeatureProtocol(request, version), /SSH machine management needs protocol ≥520.*update the kernel/)
-    }
-    assert.doesNotThrow(() => requireKernelFeatureProtocol(request, sshMachineMinimumProtocolVersion))
+test("own machine enrollment refuses older kernels before transport", () => {
+  const request = issueOwnMachineEnrollmentRequest("build box")
+  for (const version of [491, ownMachineEnrollmentMinimumProtocolVersion - 1]) {
+    assert.throws(() => requireKernelFeatureProtocol(request, version), /own machine enrollment needs protocol ≥971.*update the kernel/)
   }
+  assert.doesNotThrow(() => requireKernelFeatureProtocol(request, ownMachineEnrollmentMinimumProtocolVersion))
 })
 
 // An older kernel ignores `abort_pending` and would Return the agent instead of cancelling its Move.

@@ -677,8 +677,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
     match request {
         LocalDaemonRequest::ControlPlane(_) => "control_plane",
         LocalDaemonRequest::SetRoomPinned(_) => "room.pin",
-        LocalDaemonRequest::AddSshMachine(_) => "machine.ssh.add",
-        LocalDaemonRequest::RemoveSshMachine(_) => "machine.ssh.remove",
+        LocalDaemonRequest::IssueOwnMachineEnrollment(_) => "machine.enroll",
         LocalDaemonRequest::RequestKernelAccess(_) => "kernel_access.request",
         LocalDaemonRequest::GetKernelAccessStatus(_) => "kernel_access.status",
         LocalDaemonRequest::CoverKernelAccessProcess(_) => "kernel_access.cover",

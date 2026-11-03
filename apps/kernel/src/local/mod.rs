@@ -338,7 +338,7 @@ pub use api::{UserDomainGrant, UserDomainNotice, UserDomainResource, UserDomainW
 pub use client::LocalDaemonClient;
 pub use harness::{run_local_harness, LocalHarnessReport};
 
-pub use api::{AddSshMachineRequest, RemoveSshMachineRequest, SshMachineResult};
+pub use api::{IssueOwnMachineEnrollmentRequest, OwnMachineEnrollmentCommand};
 pub use api::{
     ApplyProjectEnvironmentRequest, CheckProjectEnvironmentRequest, CommitEnvironmentImportRequest,
     DetectProjectEnvironmentRequest, EnvironmentExportDestination, EnvironmentOperationRequest,

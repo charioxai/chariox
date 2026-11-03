@@ -52,13 +52,13 @@ test("slash command submit keeps a kernel pairing link out of every history", as
 
   const link = "/kernel add chariox-terminal-pair-v1.secret --relay-token-env OPERATOR_TOKEN"
   assert.equal((await controller.submit(link, { allowSlashCommandSubmission: true }))?.kind, "kernel")
-  assert.equal((await controller.submit("/machine add ssh linux-lan", { allowSlashCommandSubmission: true }))?.kind, "machine")
+  assert.equal((await controller.submit("/machine add linux-lan", { allowSlashCommandSubmission: true }))?.kind, "machine")
 
   assert.deepEqual(harness.calls(), [
     "kernel:add chariox-terminal-pair-v1.secret --relay-token-env OPERATOR_TOKEN",
-    "machine:add ssh linux-lan",
+    "machine:add linux-lan",
   ])
-  assert.deepEqual(harness.recordedHistory(), [{ sessionId: "session-1", rawPrompt: "/machine add ssh linux-lan" }])
+  assert.deepEqual(harness.recordedHistory(), [{ sessionId: "session-1", rawPrompt: "/machine add linux-lan" }])
   assert.deepEqual(harness.logErrors(), [])
 })
 

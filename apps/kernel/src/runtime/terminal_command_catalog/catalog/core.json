@@ -788,17 +788,10 @@
     "surfaces": ["session", "waiting_room"],
     "children": [
       {
-        "id": "machine-add-ssh",
-        "label": "add ssh",
-        "description": "Install a chosen signed kernel on your computer using your SSH config",
-        "value": "/machine add ssh ",
-        "surfaces": ["session", "waiting_room"]
-      },
-      {
-        "id": "machine-remove-ssh",
-        "label": "remove",
-        "description": "Stop and uninstall an owned SSH installation, retaining its kernel state",
-        "value": "/machine remove ",
+        "id": "machine-add",
+        "label": "add",
+        "description": "Get the command that enrolls another computer of yours",
+        "value": "/machine add ",
         "surfaces": ["session", "waiting_room"]
       },
       {

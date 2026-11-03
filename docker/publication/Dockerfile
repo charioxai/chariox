@@ -38,7 +38,7 @@ RUN pnpm --filter @chariox/tool-display run build \
 
 FROM rust:1.99.1-bookworm@sha256:9181b56c2a21ab1d5e73cffe04fc762426d30aa7fac3c91141dd033f49a7fc8b AS rust-builder
 ARG CARGO_BUILD_JOBS=1
-ARG CHARIOX_LOCAL_DAEMON_PROTOCOL_VERSION=966
+ARG CHARIOX_LOCAL_DAEMON_PROTOCOL_VERSION=971
 WORKDIR /opt/chariox
 COPY --from=ca-bundle /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 RUN printf '%s\n' 'deb [check-valid-until=no] https://snapshot.debian.org/archive/debian/20250701T000000Z bookworm main' > /etc/apt/sources.list \
@@ -65,8 +65,7 @@ COPY packages/app-wasm-worker packages/app-wasm-worker
 COPY packages/app-sdk-rust packages/app-sdk-rust
 COPY packages/app-sdk-tools packages/app-sdk-tools
 COPY deploy/managed-kernel/extract-release.py deploy/managed-kernel/extract-release.py
-COPY deploy/managed-kernel/verify-image-release.mjs deploy/managed-kernel/verify-image-release.mjs
-COPY deploy/managed-kernel/path1-service-policy.mjs deploy/managed-kernel/path1-service-policy.mjs
+COPY deploy/managed-kernel/release-update-storage.py deploy/managed-kernel/release-update-storage.py
 COPY packages/event-protocol packages/event-protocol
 RUN CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS}" cargo build --locked --manifest-path apps/kernel/Cargo.toml --release --bin chariox-kernel \
   && test "$(target/release/chariox-kernel --print-local-daemon-protocol-version)" = "${CHARIOX_LOCAL_DAEMON_PROTOCOL_VERSION}"
@@ -79,7 +78,7 @@ LABEL dev.chariox.debian-snapshot="20250701T000000Z"
 ARG CHARIOX_CODEX_VERSION=0.159.3
 ARG CHARIOX_OPENCODE_VERSION=1.19.0
 ARG CHARIOX_CLAUDE_VERSION=2.1.212
-ARG CHARIOX_LOCAL_DAEMON_PROTOCOL_VERSION=966
+ARG CHARIOX_LOCAL_DAEMON_PROTOCOL_VERSION=971
 LABEL dev.chariox.provider.codex.version="${CHARIOX_CODEX_VERSION}"
 LABEL dev.chariox.provider.opencode.version="${CHARIOX_OPENCODE_VERSION}"
 LABEL dev.chariox.provider.claude.version="${CHARIOX_CLAUDE_VERSION}"

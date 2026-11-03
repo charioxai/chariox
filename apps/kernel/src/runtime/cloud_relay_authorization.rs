@@ -66,8 +66,7 @@ pub(crate) fn authorize_kernel_cloud_request(
     let cloud_control = matches!(
         request,
         LocalDaemonRequest::PreflightProviderAccountPortability(_)
-            | LocalDaemonRequest::AddSshMachine(_)
-            | LocalDaemonRequest::RemoveSshMachine(_)
+            | LocalDaemonRequest::IssueOwnMachineEnrollment(_)
             | LocalDaemonRequest::CloudRelayStatus(_)
             | LocalDaemonRequest::StartCloudRelayLogin(_)
             | LocalDaemonRequest::PollCloudRelayLogin(_)

@@ -4315,33 +4315,29 @@ WebSocket frames through the ordinary router and provider-native export paths
 with disposable synthetic Codex, Claude and OpenCode profiles. It establishes
 local protocol/portability behavior, not live provider login, provisioning or
 fresh-machine MP-10 acceptance.
-### MP-07 / MP-08 / MP-11 owner-managed SSH machines (local 479)
+### Own machine enrollment (local 971 / relay peer 420)
 
-`AddSshMachine { host, install_id?, port?, release? }` and
-`RemoveSshMachine { install_id }` use the owning kernel's normal admitted
-request transport. Only that kernel's owner may execute them; session guests,
-peers and external agents do not receive enrollment/install authority. The
-kernel selects an approved signed release from its local operator catalogue
-and invokes the user's SSH config/agent. Client requests contain no release
-paths, trust pins, SSH credentials, enrollment tickets or provider credentials.
+`IssueOwnMachineEnrollment { machine_label? }` replaces `AddSshMachine` and
+`RemoveSshMachine`; Chariox no longer installs a kernel over SSH. Only the
+kernel's owner (and an agent or external client acting under the owner's sudo
+window or access grant) may send it. A request that names another user, such as a
+guest's agent, is refused before Cloud is contacted.
 
-The source requests a user-bound single-use `owner_managed_machine` ticket
-from Cloud using its per-kernel credential. The separate owner-managed target
-bootstrap receives it solely on SSH stdin and shares device enrollment's
-kernel/machine/public-key admission and private credential storage. Managed VM
-bootstrap admission remains unchanged. The target installs a marked per-user
-root, starts only its own `systemd --user` unit, and must report authenticated
-local status with a relay connection before returning ready. The selected
-kernel port and its companion MCP port (`port+1`) must both be available.
+The kernel asks Cloud for a user-bound, single-use `owner_managed_machine`
+ticket with its per-kernel credential and a ten-minute life. Cloud returns the
+public address of the Setup script with the ticket. The response is
+`OwnMachineEnrollment { enrollment: { command, expires_at } }`, where `command`
+is one line for the new machine's own shell: it downloads the Setup script and
+pipes the ticket to `--enroll` on stdin, so no process argument carries it. The
+command is the only place the ticket appears; the kernel stores and logs
+nothing. A Cloud without a configured installer address makes the kernel revoke
+the ticket it just issued and refuse with that reason.
 
-`SshMachine { machine: { install_id, status, kernel_id, machine_id,
-release_digest, state_retained } }` exposes only a deployment receipt. A repeat
-with the same ID/release/port reuses the enrolled identity; another release
-requires an explicit later upgrade. Remove stops/uninstalls the owned service
-and release tree while retaining private kernel state and directory identity.
-No VM provisioning/deletion or runtime proxy is involved. Relay peer protocol
-inherits 73 from the ownership base; native/web minimums are unchanged for existing behavior. The SSH
-commands themselves require a local-479-capable kernel/client pair.
+Setup installs the kernel, redeems the ticket once through the ordinary
+`/auth/kernel/enroll` exchange and the machine enrolls under the owner's
+account; a second use or an expired ticket is refused. The new variants need a
+local-971 kernel and client; relay peer 420 carries the changed embedded unions.
+The managed-upgrade list is [629, 636, 971].
 
 MP-07 / MP-08 / MP-11 self-setup reuses the owner-managed install core and
 existing device enrollment; local 479/relay 73 are retained. Generic Setup
@@ -5307,7 +5303,7 @@ observation authority. This composes unreleased mirror539 with union 540/148.
 ### BYOM C5 — local 520 / relay peer 128 (MP-05 / MP-08 / MP-10 / MP-11)
 
 Coordinator allocation for the main-merged owner-managed contract. Local 520
-binds SSH machine add/remove, interactive owner-managed context admission, and
+binds the former SSH machine add/remove, interactive owner-managed context admission, and
 credential-free destination receipts together with main's local 491 contract.
 Peer 128 binds owner-managed context arming and the merged embedded local
 request/response unions. C4's experimental local 480 / peer 88 and the interim

@@ -180,20 +180,28 @@ function remoteMachineHarness(kernelOverrides: Record<string, unknown> = {}) {
   }
 }
 
-test("MP-07/MP-08/MP-11 SSH add forwards selection and remove retains state", async () => {
-  const calls: unknown[] = []
-  const deps = { flashFooter: (m: string) => calls.push(m), appendNotice: (m: string) => calls.push(m),
-    addSshMachine: async (host: string, options: unknown) => { calls.push({ host, options }); return { install_id: "byom-lan", status: "ready", kernel_id: "kernel", machine_id: "machine", release_digest: "sha256:approved", state_retained: false } },
-    removeSshMachine: async (id: string) => { calls.push(id); return { install_id: id, status: "removed", kernel_id: null, machine_id: null, release_digest: "sha256:approved", state_retained: true } },
+test("machine add shows the single-use enrollment command in the footer only", async () => {
+  const labels: unknown[] = []
+  const footers: { message: string; tone: string }[] = []
+  const notices: string[] = []
+  const deps = { flashFooter: (message: string, tone: string) => footers.push({ message, tone }), appendNotice: (m: string) => notices.push(m),
+    issueOwnMachineEnrollment: async (label?: string) => { labels.push(label); return { command: " (curl -fsSL https://dl.example/install.sh | sh)", expires_at: "2026-11-03T13:10:00Z" } },
   }
-  await handleRemoteMachineSlashCommand(deps, { kind: "machine", raw: "/machine add ssh linux-lan", args: ["add", "ssh", "linux-lan", "--id", "byom-lan", "--port", "55129", "--release", "approved"] })
-  assert.ok(calls.some(c => typeof c === "object" && c !== null && JSON.stringify(c) === JSON.stringify({ host: "linux-lan", options: { install_id: "byom-lan", port: 55129, release: "approved" } })))
-  await handleRemoteMachineSlashCommand(deps, { kind: "machine", raw: "/machine remove byom-lan", args: ["remove", "byom-lan"] })
-  assert.ok(calls.some(c => typeof c === "string" && c.includes("state retained")))
-  const before = calls.length
-  await handleRemoteMachineSlashCommand(deps, { kind: "machine", raw: "/machine add ssh linux-lan", args: ["add", "ssh", "linux-lan", "--port", "43118"] })
-  assert.equal(calls.length, before + 1)
-  assert.match(String(calls.at(-1)), /usage:/)
+  await handleRemoteMachineSlashCommand(deps, { kind: "machine", raw: "/machine add build box", args: ["add", "build", "box"] })
+  await handleRemoteMachineSlashCommand(deps, { kind: "machine", raw: "/machine add", args: ["add"] })
+  assert.deepEqual(labels, ["build box", undefined])
+  assert.equal(footers.length, 2)
+  assert.match(footers[0]!.message, /before 2026-11-03T13:10:00Z:\n\(curl -fsSL https:\/\/dl\.example\/install\.sh \| sh\)$/)
+  assert.deepEqual(notices, [])
+})
+
+test("machine add says why the command could not be prepared", async () => {
+  const footers: { message: string; tone: string }[] = []
+  const deps = { flashFooter: (message: string, tone: string) => footers.push({ message, tone }), appendNotice: () => {},
+    issueOwnMachineEnrollment: async () => { throw new Error("this kernel is not signed in to Chariox; sign in before enrolling another machine") },
+  }
+  await handleRemoteMachineSlashCommand(deps, { kind: "machine", raw: "/machine add", args: ["add"] })
+  assert.deepEqual(footers, [{ message: "this kernel is not signed in to Chariox; sign in before enrolling another machine", tone: "error" }])
 })
 
 test("MP-08/MP-11 machine results never enter the agent transcript", async () => {
