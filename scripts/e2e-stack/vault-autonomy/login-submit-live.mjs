@@ -131,7 +131,7 @@ const publicSite={origin:'https://the-internet.herokuapp.com',user:'tomsmith',pa
 const pastes=[]
 // Every paste_secret call of the run, with its outcome, from the official provider transcript.
 async function transcriptPastes(files) {
- const calls=new Map()
+ const calls=new Map(),scripts=new Map()
  for(const filename of files) {
   for(const line of (await readFile(filename,'utf8')).split('\n').filter(Boolean)) {
    let entry;try{entry=JSON.parse(line)}catch{continue}
@@ -144,7 +144,10 @@ async function transcriptPastes(files) {
     const id=block.call_id??block.id??block.tool_use_id
     if(!id)continue
     if(['function_call','tool_use'].includes(block.type)&&/kernel_browser_paste_secret/.test(block.name??''))calls.set(id,{id,output:null})
+    // Codex code mode: one exec script may call the tool several times; they share the script's output.
+    if(block.type==='custom_tool_call'){const count=(String(block.input??'').match(/kernel_browser_paste_secret\(/g)??[]).length;if(count)scripts.set(id,count)}
     if(['function_call_output','tool_result'].includes(block.type)&&calls.has(id))calls.get(id).output=safe(JSON.stringify(block.output??block.content)).slice(0,600)
+    if(block.type==='custom_tool_call_output'&&scripts.has(id))for(let index=0;index<scripts.get(id);index++)calls.set(id+'#'+index,{id,output:safe(JSON.stringify(block.output)).slice(0,600)})
    }
   }
  }
@@ -253,7 +256,7 @@ try {
  checks.push({name:'paste_secret calls in the provider transcript',count:calls.length,outputs:calls.map(call=>call.output)})
  check('agent pasted exactly once',calls.length===1)
  check('the paste result reports the submit',calls.length>=1&&/submitted/.test(calls[0].output??'')&&/navigated/.test(calls[0].output??''))
- check('no host-browser error in any paste result',calls.every(call=>!/MD-2|operation failed|browser_controller_internal|error/i.test(call.output??'')))
+ check('no host-browser error in any paste result',calls.every(call=>!/isError\W+true|MD-2|operation failed|browser_controller_internal|tool call error/i.test(call.output??'')))
  for(const filename of own){const bytes=await readFile(filename);check('no Vault value in own official provider transcript',leaks(bytes).length===0&&!serviceSecrets.some(value=>value&&bytes.includes(Buffer.from(value))&&site==='gitea'))}
  const scanned=await scanArtifacts(fixture.scratch)
  checks.push({name:'artifact scan',files:scanned})
