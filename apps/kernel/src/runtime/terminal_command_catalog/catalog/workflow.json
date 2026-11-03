@@ -38,7 +38,7 @@
       {
         "id": "workflow-notifications",
         "label": "notifications",
-        "description": "Enable or disable private workflow completion notifications",
+        "description": "Turn the notification of one workflow exit on or off",
         "value": "/workflow notifications ",
         "searchAliases": [
           "outbound notifications",
@@ -48,13 +48,13 @@
           {
             "id": "workflow-notifications-on",
             "label": "on",
-            "description": "Send completion notifications; append workflow reference and optional --fields",
+            "description": "Notify when the exit finishes the workflow; append workflow reference and exit (exit-N)",
             "value": "/workflow notifications on "
           },
           {
             "id": "workflow-notifications-off",
             "label": "off",
-            "description": "Stop sending completion notifications; append workflow reference",
+            "description": "Stop notifying for the exit; append workflow reference and exit (exit-N)",
             "value": "/workflow notifications off "
           }
         ]
@@ -636,25 +636,25 @@
           {
             "id": "workflow-trigger-notification",
             "label": "notification",
-            "description": "Attach private workflow completion notifications to an event-based trigger",
+            "description": "Subscribe the selected workflow's event trigger to a notification",
             "value": "/workflow trigger notification ",
             "children": [
               {
                 "id": "workflow-trigger-notification-list",
                 "label": "list",
-                "description": "List available private workflow sources and subscriptions",
+                "description": "List notification sources and what is subscribed to them",
                 "value": "/workflow trigger notification list"
               },
               {
                 "id": "workflow-trigger-notification-attach",
                 "label": "attach",
-                "description": "Attach a source; append source reference and --publication trigger-reference",
+                "description": "Subscribe to a source; append its name, kernel/name or id",
                 "value": "/workflow trigger notification attach "
               },
               {
                 "id": "workflow-trigger-notification-detach",
                 "label": "detach",
-                "description": "Detach a completion subscription; append subscription id",
+                "description": "Remove a subscription; append subscription id",
                 "value": "/workflow trigger notification detach "
               }
             ]
