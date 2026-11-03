@@ -77,8 +77,16 @@ const MAX_PROVIDER_FIXTURE_TRACE_ENTRIES: usize = 64;
 #[cfg(unix)]
 const SETUP_TRANSPORT_RECOVERY_REALM: &str = "realm-transport-recovery";
 
+/// One status observation keeps the product's own budget; a 500 ms bound made
+/// every earlier Get fail on a loaded builder.
 #[cfg(unix)]
-const SETUP_TRANSPORT_RECOVERY_RELAY_REQUEST_TIMEOUT_MS: u64 = 500;
+const SETUP_TRANSPORT_RECOVERY_RELAY_REQUEST_TIMEOUT_MS: u64 =
+    DEFAULT_REMOTE_SETUP_OBSERVATION_BUDGET.as_millis() as u64;
+
+/// Upper bound for each wait on the product in the transport-recovery test: one
+/// status observation. Passing runs finish every wait in milliseconds.
+#[cfg(unix)]
+const SETUP_TRANSPORT_RECOVERY_BARRIER_TIMEOUT: Duration = DEFAULT_REMOTE_SETUP_OBSERVATION_BUDGET;
 
 /// The Get under test keeps one observation budget while the test holds the
 /// authenticated Retry and races a Cancel against it; 500 ms is too tight for a
@@ -3010,7 +3018,8 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
     // replay can be hidden after cancellation intent.
     let mut pre_intent_start_observed = false;
     let mut get_releases = Vec::new();
-    let cancellation_barrier_deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    let cancellation_barrier_deadline =
+        tokio::time::Instant::now() + SETUP_TRANSPORT_RECOVERY_BARRIER_TIMEOUT;
     let first_get_release = tokio::time::timeout_at(cancellation_barrier_deadline, async {
         loop {
             match worker_request_rx.recv().await {
@@ -3090,7 +3099,7 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
     });
 
     let mut cancel_releases = Vec::new();
-    tokio::time::timeout(Duration::from_secs(2), async {
+    tokio::time::timeout(SETUP_TRANSPORT_RECOVERY_BARRIER_TIMEOUT, async {
         loop {
             match worker_request_rx.recv().await {
                 Some(TestPeerRequestObservation::CancelProjectEnvironmentSetup {
@@ -3833,7 +3842,7 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
             .is_some(),
         "same worker should re-register after connector-only interruption"
     );
-    let reconnect_deadline = Instant::now() + Duration::from_secs(2);
+    let reconnect_deadline = Instant::now() + SETUP_TRANSPORT_RECOVERY_BARRIER_TIMEOUT;
     let reconnect_first_status = loop {
         let result = runtime
             .execute_project_environment_setup_request(
@@ -3864,7 +3873,7 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
         }
     };
     assert_eq!(reconnect_first_status.attempt, 2);
-    let reconnect_recovery_deadline = Instant::now() + Duration::from_secs(2);
+    let reconnect_recovery_deadline = Instant::now() + SETUP_TRANSPORT_RECOVERY_BARRIER_TIMEOUT;
     let reconnect_recovered = loop {
         let result = runtime
             .execute_project_environment_setup_request(
@@ -4140,7 +4149,7 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
     // attempt 2, or reject stale attempt-1 state while leaving home on
     // attempt 2 for the bounded recovery poll below.
     let first_post_restart = tokio::time::timeout(
-        Duration::from_secs(2),
+        SETUP_TRANSPORT_RECOVERY_BARRIER_TIMEOUT,
         runtime.execute_project_environment_setup_request(
             LocalDaemonRequest::GetProjectEnvironmentSetupStatus(
                 GetProjectEnvironmentSetupStatusRequest {
@@ -4181,7 +4190,7 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
         }
     }
 
-    let recovery_deadline = Instant::now() + Duration::from_secs(2);
+    let recovery_deadline = Instant::now() + SETUP_TRANSPORT_RECOVERY_BARRIER_TIMEOUT;
     let recovered = loop {
         let result = tokio::time::timeout(
             recovery_deadline.saturating_duration_since(Instant::now()),
@@ -4567,10 +4576,13 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
         stale_attempt_started_status.phase,
         ProjectEnvironmentSetupPhase::Requested
     );
-    tokio::time::timeout(Duration::from_secs(2), withheld_start_seen)
-        .await
-        .expect("withheld-retry worker should observe the public Start before its first Get")
-        .expect("withheld-retry Start barrier should remain available");
+    tokio::time::timeout(
+        SETUP_TRANSPORT_RECOVERY_BARRIER_TIMEOUT,
+        withheld_start_seen,
+    )
+    .await
+    .expect("withheld-retry worker should observe the public Start before its first Get")
+    .expect("withheld-retry Start barrier should remain available");
     // The earlier open operation keeps polling its missing record and replays
     // its Start to this worker. Wait for that replay so the stale-attempt
     // checks below always run after another operation's Start.
@@ -4616,10 +4628,13 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
     );
     // Public Retry advances the home attempt and starts its watcher. The
     // watcher sends the single worker Retry after observing attempt-one state.
-    tokio::time::timeout(Duration::from_secs(2), withheld_retry_seen)
-        .await
-        .expect("home stale-status recovery should reach the worker Retry request")
-        .expect("withheld Retry barrier should remain available");
+    tokio::time::timeout(
+        SETUP_TRANSPORT_RECOVERY_BARRIER_TIMEOUT,
+        withheld_retry_seen,
+    )
+    .await
+    .expect("home stale-status recovery should reach the worker Retry request")
+    .expect("withheld Retry barrier should remain available");
 
     let concurrent_stale_get = tokio::spawn({
         let runtime = runtime.clone();
@@ -4636,16 +4651,21 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
                 .await
         }
     });
-    tokio::time::timeout(Duration::from_secs(2), withheld_concurrent_get_seen)
-        .await
-        .expect("concurrent stale-attempt Get should reach the worker while Retry is withheld")
-        .expect("concurrent Get barrier should remain available");
-    let concurrent_stale_get_error =
-        tokio::time::timeout(Duration::from_secs(2), concurrent_stale_get)
-            .await
-            .expect("concurrent stale-attempt Get should remain bounded")
-            .expect("concurrent stale-attempt Get should not panic")
-            .expect_err("the concurrent Get must be fenced while recovery Retry is in flight");
+    tokio::time::timeout(
+        SETUP_TRANSPORT_RECOVERY_BARRIER_TIMEOUT,
+        withheld_concurrent_get_seen,
+    )
+    .await
+    .expect("concurrent stale-attempt Get should reach the worker while Retry is withheld")
+    .expect("concurrent Get barrier should remain available");
+    let concurrent_stale_get_error = tokio::time::timeout(
+        SETUP_TRANSPORT_RECOVERY_BARRIER_TIMEOUT,
+        concurrent_stale_get,
+    )
+    .await
+    .expect("concurrent stale-attempt Get should remain bounded")
+    .expect("concurrent stale-attempt Get should not panic")
+    .expect_err("the concurrent Get must be fenced while recovery Retry is in flight");
     assert!(
         concurrent_stale_get_error
             .to_string()
@@ -4654,11 +4674,14 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
     );
 
     let _ = withheld_retry_release_tx.send(());
-    tokio::time::timeout(Duration::from_secs(2), withheld_retry_release_applied)
-        .await
-        .expect("withheld Retry responses should be released after concurrent polling")
-        .expect("withheld Retry release barrier should remain available");
-    let recovery_deadline = Instant::now() + Duration::from_secs(2);
+    tokio::time::timeout(
+        SETUP_TRANSPORT_RECOVERY_BARRIER_TIMEOUT,
+        withheld_retry_release_applied,
+    )
+    .await
+    .expect("withheld Retry responses should be released after concurrent polling")
+    .expect("withheld Retry release barrier should remain available");
+    let recovery_deadline = Instant::now() + SETUP_TRANSPORT_RECOVERY_BARRIER_TIMEOUT;
     let recovered_status = loop {
         let result = tokio::time::timeout(
             recovery_deadline.saturating_duration_since(Instant::now()),
