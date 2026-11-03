@@ -499,50 +499,55 @@ fn batch_forces_queue_and_carries_member_ancestry_union_and_earliest_expiry() {
 
 #[test]
 fn cancelling_a_batch_member_cancels_its_pending_aggregate_and_members() {
-    let mut f = Fixture::new();
-    let due = f.now + 1000;
-    let first = f.accept();
-    let c = f.claim(f.now).unwrap();
-    f.complete(
-        c,
-        gate::Decision::Batch {
-            key: "shared".into(),
-            flush_at_ms: due,
-            payload: json!({}),
-        },
-    );
-    f.admission.dedupe_id = "second".into();
-    f.admission.trigger.occurrence_id = "second".into();
-    let second = f.accept();
-    let c = f.claim(f.now).unwrap();
-    f.complete(
-        c,
-        gate::Decision::Batch {
-            key: "shared".into(),
-            flush_at_ms: due,
-            payload: json!({}),
-        },
-    );
-    let (send, receive) = mpsc::channel();
-    assert!(!execute(
-        &mut f.db,
-        Request {
-            operation: Operation::Cancel {
-                owner: crate::session::DEFAULT_LOCAL_USER_ID.into(),
-                id: first.entry_id.clone(),
-                reason: "creator cancelled".into()
+    for claimed_flush in [false, true] {
+        let mut f = Fixture::new();
+        let due = f.now + 1000;
+        let first = f.accept();
+        let c = f.claim(f.now).unwrap();
+        f.complete(
+            c,
+            gate::Decision::Batch {
+                key: "shared".into(),
+                flush_at_ms: due,
+                payload: json!({}),
             },
-            response: send
+        );
+        f.admission.dedupe_id = "second".into();
+        f.admission.trigger.occurrence_id = "second".into();
+        let second = f.accept();
+        let c = f.claim(f.now).unwrap();
+        f.complete(
+            c,
+            gate::Decision::Batch {
+                key: "shared".into(),
+                flush_at_ms: due,
+                payload: json!({}),
+            },
+        );
+        if claimed_flush {
+            assert!(f.claim(due).is_some());
         }
-    ));
-    let Outcome::Entry(cancelled) = receive.recv().unwrap().unwrap() else {
-        panic!("entry result")
-    };
-    assert_eq!(cancelled.entry_id, first.entry_id);
-    assert_eq!(cancelled.disposition, Disposition::Cancelled);
-    assert_eq!(
-        entry(&f.db, &second.entry_id).unwrap().unwrap().disposition,
-        Disposition::Cancelled
-    );
-    assert!(f.claim(due).is_none());
+        let (send, receive) = mpsc::channel();
+        assert!(!execute(
+            &mut f.db,
+            Request {
+                operation: Operation::Cancel {
+                    owner: crate::session::DEFAULT_LOCAL_USER_ID.into(),
+                    id: first.entry_id.clone(),
+                    reason: "creator cancelled".into()
+                },
+                response: send
+            }
+        ));
+        let Outcome::Entry(cancelled) = receive.recv().unwrap().unwrap() else {
+            panic!("entry result")
+        };
+        assert_eq!(cancelled.entry_id, first.entry_id);
+        assert_eq!(cancelled.disposition, Disposition::Cancelled);
+        assert_eq!(
+            entry(&f.db, &second.entry_id).unwrap().unwrap().disposition,
+            Disposition::Cancelled
+        );
+        assert!(f.claim(due).is_none());
+    }
 }
