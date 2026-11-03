@@ -491,7 +491,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     closeSessionBrowserDialog: () => closeSessionBrowserDialog(),
     attachBinding: (session, createdSession, launch) => attachBinding(session, createdSession, launch),
     rollbackAttachedSession: (sessionId) => rollbackAttachedSession(sessionId),
-    flashFooter: (message, tone) => flashFooter(message, tone),
+    flashFooter: (message, tone, display) => flashFooter(message, tone, display),
     setKernelConnected, setDaemonDisconnected, sessionBrowserOpen, focusedProviderRun,
     focusedAgent, focusedAgentId, providerRunState, sessionState,
     applySessionState: (session) => applySessionState(session),
@@ -587,7 +587,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     syncCommandCenter, clearCommandCenter,
     attachPromptFiles: (files, insertAt) => attachPromptFiles(files, insertAt),
     getCwd: () => process.cwd(),
-    flashFooter: (message, tone) => flashFooter(message, tone),
+    flashFooter: (message, tone, display) => flashFooter(message, tone, display),
   })
   const {
     assignDialogOverlayBox, closeActiveDialogOverlay, closeHotkeys, closeSessionBrowserDialog,
@@ -623,7 +623,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
       }
     },
     options,
-    flashFooter: (message, tone) => flashFooter(message, tone),
+    flashFooter: (message, tone, display) => flashFooter(message, tone, display),
     attachBinding: (session, createNew, launch) => attachBinding(session, createNew, launch),
     applyWaitingRoomSessionLifecycleAction, retainPromptFocus,
   })
@@ -733,8 +733,8 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
       ]
     },
   })
-  const flashFooter = (message: string, tone: "info" | "error") => {
-    footerFlashController.flash(message, tone)
+  const flashFooter = (message: string, tone: "info" | "error", display?: "toast") => {
+    footerFlashController.flash(message, tone, display)
     if (tone === "error") providerAccountRecovery.show(message, blockedAccountTarget)
     blockedAccountTarget = undefined
   }
