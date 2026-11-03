@@ -169,7 +169,7 @@ fn startup_trust_cards_keep_the_selected_workspace_scope() {
             .id()
             .starts_with("claude-selected-workspace-trust-");
         if reusable != expected {
-            failures.push(name);
+            failures.push(name.to_string());
         }
         if name.starts_with("selected") && !name.contains("Git") {
             if name == "selected arrow" {
@@ -220,12 +220,14 @@ fn startup_trust_cards_keep_the_selected_workspace_scope() {
                 None
             })();
             std::thread::sleep(std::time::Duration::from_millis(30));
-            if !result.is_some_and(|message| message.contains("selected workspace"))
+            if !result
+                .as_ref()
+                .is_some_and(|message| message.contains("selected workspace"))
                 || fs::read(native.join("input.log"))
                     .unwrap_or_default()
                     .contains(&b'\n')
             {
-                failures.push("target changed while startup decision was pending");
+                failures.push(format!("{name}: target changed while startup decision was pending: result={result:?}, input={:?}", fs::read(native.join("input.log"))));
             }
         } else {
             bridge.resolve("deny", "deny");

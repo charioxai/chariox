@@ -583,3 +583,24 @@ fn a_running_command_nobody_forced_is_not_handed_over() {
     running.forced = true;
     assert!(HeldCommand::of(std::process::id(), &running).is_some());
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_running_start_now_override_cannot_pass_to_a_reused_pid() {
+    let pid = std::process::id();
+    let mut handed_over = HeldCommand::of(
+        pid,
+        &Entry {
+            forced: true,
+            admitted: true,
+            ..Entry::default()
+        },
+    )
+    .expect("the running Start now policy must be handed over");
+    handed_over.identity.start = handed_over.identity.start.wrapping_add(1);
+    adopt_admission(vec![handed_over]);
+    assert!(
+        take_adopted(pid).is_none(),
+        "a different process birth inherited the Start now override"
+    );
+}

@@ -21,6 +21,7 @@ import { CloudClient } from "./cloud-client.js"
 import { presentCloudSignedOut } from "./cloud-signed-out.js"
 import { mergeRelayCloudProfile, saveRelayCloudProfile } from "./preferences.js"
 import { AppDevLoop } from "./app-dev-loop.js"
+import { isKernelOnThisMachine } from "./local-kernel-presence.js"
 import { AppFileInstaller, formatInstallProgress } from "./app-install-file.js"
 import { AppPublisherEnrollment } from "./app-publisher-file.js"
 import { randomBytes } from "node:crypto"
@@ -983,7 +984,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
   const appPublisherEnrollment = new AppPublisherEnrollment((request) => client.send(request), appendNotice)
   const appDevLoop = new AppDevLoop({
     send: (request) => client.send(request), installer: appFileInstaller, notice: appendNotice,
-    isKernelLocal: () => localKernelConnectionLabel(client, sessionState().host_daemon_id ?? relayStatusState()?.daemon_id) !== null,
+    isKernelLocal: () => isKernelOnThisMachine(sessionState().host_daemon_id ?? relayStatusState()?.daemon_id),
     currentSession: () => isAttached() ? sessionState().id : undefined,
   })
   let recordDaemonActivity: (activityType: string) => void = () => {}

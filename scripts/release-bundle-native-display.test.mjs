@@ -30,7 +30,7 @@ test('the Linux release job executes the bundled kernel on minimal Ubuntu', () =
 // builds the worker, in the same cargo invocation so both get one profile, one feature set and one tokio.
 test('the release build compiles the WASM App worker with the kernel and ships it in bin/', () => {
   const build = workflow.match(/- name: Build the kernel, relay and helpers\n\s+run: \|\n((?:\s{10}.*\n)+)/)?.[1] ?? '';
-  assert.match(build, /bins=\(chariox-kernel chariox-relay chariox-app-package chariox-app-wasm-worker /);
+  assert.match(build, /bins=\(chariox-kernel chariox-relay chariox-app-package chariox-app-wasm-worker\)/);
   assert.match(build, /cargo build --release --locked \$\{\{ matrix\.kernel_features \}\} -p chariox-kernel .*-p chariox-app-wasm-worker /);
   assert.match(build, /cp target\/release\/\{chariox-kernel,chariox-relay,chariox-app-package,chariox-app-wasm-worker\} unsigned\/bin\//);
 });

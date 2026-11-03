@@ -2052,7 +2052,9 @@ fn codex_turn_across_a_hot_reload(finish_in_gap: bool, beside_claude: bool) {
         // The real Codex reconnects to the kernel's tools once the new
         // program has adopted its turn; the browser then focuses the pane
         // again. The tools it already listed must not change in between.
-        let deadline = Instant::now() + Duration::from_secs(60);
+        // The new program starts after the old one is gone; a loaded builder
+        // can need several times the usual half minute.
+        let deadline = Instant::now() + Duration::from_secs(180);
         while !std::fs::read_dir(scratch.join("logs")).unwrap().any(|file| {
             std::fs::read_to_string(file.unwrap().path())
                 .unwrap()

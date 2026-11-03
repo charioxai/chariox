@@ -46,39 +46,23 @@ impl KernelRuntimeOwnedState {
                 if next_prompt.workflow_run_id().is_none() {
                     continue;
                 }
-                let Some(provider_run) = self
+                if !self
                     .provider_store
                     .get_run_for_agent(session.id(), agent.id())
-                    .filter(|run| run.state() == crate::provider::ProviderRunState::Running)
-                else {
+                    .is_some_and(|run| run.state() == crate::provider::ProviderRunState::Running)
+                {
                     continue;
-                };
-                candidates.push((
-                    session.id().to_string(),
-                    agent.id().to_string(),
-                    provider_run.id().to_string(),
-                ));
+                }
+                candidates.push((session.id().to_string(), agent.id().to_string()));
             }
         }
         drop(sessions);
-        let mut dispatches = WorkflowPromptDispatches::default();
-        for (session_id, agent_id, provider_run_id) in candidates {
-            match self.advance_next_queued_prompt_dispatch(&session_id, &agent_id, &provider_run_id)
-            {
-                Ok(Some(dispatch)) => dispatches.local.push(dispatch),
-                Ok(None) => {}
-                Err(error) => self.record_notice(
-                    &session_id,
-                    Some(&provider_run_id),
-                    self.attachment_store
-                        .list_session_attachment_ids(&session_id),
-                    format!(
-                        "Queued workflow prompt remained pending after workspace release: {error}"
-                    ),
-                ),
-            }
+        // A claim retry must prepare the workflow provider before consuming the head,
+        // using the same promotion owner as cancellation and provider readiness.
+        WorkflowPromptDispatches {
+            project_queue_promotions: candidates,
+            ..WorkflowPromptDispatches::default()
         }
-        dispatches
     }
 
     fn collect_blocked_workflow_claim_retries(&self) -> Vec<BlockedWorkflowClaimRetry> {

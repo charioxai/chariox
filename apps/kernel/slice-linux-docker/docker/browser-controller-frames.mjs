@@ -102,6 +102,7 @@ export class BrowserFrameSessions {
     this.registry = registry;
     this.rootTargetForSession = rootTargetForSession;
     this.sessions = new Map();
+    this.workerSessions = new Set();
     this.pending = new Set();
   }
   clear() { this.sessions.clear(); }
@@ -133,14 +134,26 @@ export class BrowserFrameSessions {
     }
     return this.removeWhere((_entry, id) => removed.has(id));
   }
+  // Chromium pauses every dedicated worker a page creates while this session waits for the debugger,
+  // even one the filter leaves out, and then never reports it. Listing "worker" makes the pause visible
+  // so observe() can resume it; without that, pages that start a Worker hang for good.
   start(connection, sessionId) {
     return connection.send("Target.setAutoAttach", {
       autoAttach: true, waitForDebuggerOnStart: true, flatten: true,
-      filter: [{ type: "iframe" }, { exclude: true }],
+      filter: [{ type: "iframe" }, { type: "worker" }, { exclude: true }],
     }, sessionId);
   }
   observe(message, connection) {
     const params = message?.params ?? {};
+    if (message?.method === "Target.attachedToTarget" && params.targetInfo?.type === "worker") {
+      if (typeof params.sessionId !== "string" || !params.sessionId) return true;
+      // Detaching here would leave the worker unattachable ("Target closed") for the writer fence that follows.
+      this.workerSessions.add(params.sessionId);
+      void this.release(connection, params.sessionId, false);
+      return true;
+    }
+    // A worker is not a page: its detach must not retire page-wide state.
+    if (message?.method === "Target.detachedFromTarget" && this.workerSessions.delete(params.sessionId)) return true;
     if (message?.method === "Target.attachedToTarget" && params.targetInfo?.type === "iframe") {
       const targetId = this.sessions.get(message.sessionId)?.targetId ?? this.rootTargetForSession(message.sessionId);
       const childSession = params.sessionId;

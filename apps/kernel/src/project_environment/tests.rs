@@ -2199,8 +2199,10 @@ fn mp08_mp10_mp11_foreign_owned_mounted_config_is_private_and_transactional() {
     if unsafe { libc::geteuid() } != 0 {
         return;
     }
-    // A UID-dropped worker must not depend on a private TMPDIR's ancestors.
-    let fixture = Fixture::new_in(Path::new("/var/tmp"));
+    // A UID-dropped worker must not depend on searchable temporary ancestors.
+    let private_parent = Fixture::new_in(Path::new("/var/tmp"));
+    std::fs::set_permissions(&private_parent.0, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let fixture = Fixture::new_in(&private_parent.0);
     std::fs::set_permissions(&fixture.0, std::fs::Permissions::from_mode(0o775)).unwrap();
     let directory = std::ffi::CString::new(fixture.0.as_os_str().as_encoded_bytes()).unwrap();
     assert_eq!(unsafe { libc::chown(directory.as_ptr(), 0, 31001) }, 0);
@@ -2236,9 +2238,10 @@ fn mp08_mp10_mp11_foreign_owned_mounted_config_is_private_and_transactional() {
         if mode == "fail-later" {
             std::os::unix::fs::symlink(&fixture.0, fixture.0.join("z")).unwrap();
         }
-        let mut command = std::process::Command::new(&executable);
+        let mut command = std::process::Command::new("./worker-test");
+        command.current_dir(&fixture.0);
         command.args(["--exact", "project_environment::tests::mp08_mp10_mp11_foreign_owned_mounted_config_is_private_and_transactional", "--test-threads=1"])
-            .env(CHILD_ROOT, &fixture.0).env("CHARIOX_TEST_FOREIGN_CONFIG_MODE", mode);
+            .env(CHILD_ROOT, ".").env("CHARIOX_TEST_FOREIGN_CONFIG_MODE", mode);
         unsafe {
             command.pre_exec(|| {
                 if libc::setgroups(0, std::ptr::null()) != 0

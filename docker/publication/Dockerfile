@@ -32,6 +32,7 @@ COPY fixtures/protocol-versions.json fixtures/historical-workflow-protocol.json 
 COPY apps/kernel/managed-upgrade-protocol-transitions.json apps/kernel/managed-upgrade-protocol-transitions.json
 COPY apps/kernel/src/local/api/types.rs apps/kernel/src/local/api/types.rs
 COPY apps/kernel/src/transport/relay_peer.rs apps/kernel/src/transport/relay_peer.rs
+COPY apps/kernel/src/local/api/tests/protocol_shapes/session-processes-954.json apps/kernel/src/local/api/tests/protocol_shapes/session-processes-954.json
 COPY docker/publication/Dockerfile docker/publication/Dockerfile
 RUN pnpm --filter @chariox/tool-display run build \
   && pnpm --filter @chariox/server run build

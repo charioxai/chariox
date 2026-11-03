@@ -797,16 +797,35 @@ async fn app_dev_push_build_failure_is_typed_and_the_next_save_reaches_one_share
     let replay = status(f.request("alice", push("good")).await);
     assert_eq!(replay.interaction_id, operation.interaction_id);
     assert_eq!(replay.package_digest, operation.package_digest);
-    f.state
-        .resolve_terminal_runtime_interaction(
-            &f.session,
-            operation.interaction_id.as_deref().unwrap(),
-            "decline",
-            None,
-            Some("alice"),
-        )
-        .await
-        .unwrap();
+    // The status shows the approval before the pump has registered its
+    // interaction; answer it once it is shown.
+    tokio::time::timeout(Duration::from_secs(8), async {
+        loop {
+            match f
+                .state
+                .resolve_terminal_runtime_interaction(
+                    &f.session,
+                    operation.interaction_id.as_deref().unwrap(),
+                    "decline",
+                    None,
+                    Some("alice"),
+                )
+                .await
+            {
+                Ok(_) => break,
+                Err(crate::error::DaemonError::LocalTransport {
+                    operation: "interaction_closed",
+                    ..
+                }) => {
+                    f.control().pump(&f.state).await;
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+                Err(error) => panic!("the approval should be answerable: {error:?}"),
+            }
+        }
+    })
+    .await
+    .expect("the install approval is shown to its owner");
     f.until(|| {
         f.control()
             .0

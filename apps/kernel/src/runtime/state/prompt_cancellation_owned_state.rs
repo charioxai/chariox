@@ -244,7 +244,15 @@ impl KernelRuntimeOwnedState {
                 .prompt_state_owner
                 .active_prompt_for_agent(&self.session_store.get_session(session_id)?, agent_id)
                 .is_none();
-        let started_next = if advance_queue && queue_head_promotable {
+        let _promotion = if advance_queue && queue_head_promotable {
+            self.prompt_state_owner.try_claim_idle_queue_promotion(
+                &self.session_store.get_session(session_id)?,
+                agent_id,
+            )
+        } else {
+            None
+        };
+        let started_next = if _promotion.is_some() {
             let next_prompt = self
                 .prompt_state_owner
                 .peek_next_queued_prompt(&self.session_store.get_session(session_id)?, agent_id);
@@ -252,6 +260,23 @@ impl KernelRuntimeOwnedState {
                 cancellation_provider_run_id.as_deref(),
                 next_prompt.as_ref(),
             ) {
+                // The async caller may have inspected a different head. Defer the
+                // exact workflow turn we would activate until its provider is prepared.
+                if next_prompt.workflow_run_id().is_some()
+                    || crate::scheduler::runtime::is_workflow_prompt_attachment(
+                        next_prompt.source_attachment_id(),
+                    )
+                {
+                    return Ok(OwnedPromptCancellation {
+                        cancellation: crate::session::PromptCancellation {
+                            prompt,
+                            started_next: None,
+                        },
+                        released_claim,
+                        dispatch: None,
+                        queue_head_deferred: true,
+                    });
+                }
                 let provider_run =
                     self.ensure_provider_run_in_session(session_id, provider_run_id)?;
                 if provider_run.state() == crate::provider::ProviderRunState::Running {
@@ -383,6 +408,12 @@ impl KernelRuntimeOwnedState {
             None
         };
         let _ = self.session_snapshot(session_id)?;
+        let queue_head_deferred = started_next.is_none()
+            && queue_head_promotable
+            && self
+                .prompt_state_owner
+                .peek_next_queued_prompt(&self.session_store.get_session(session_id)?, agent_id)
+                .is_some();
         Ok(OwnedPromptCancellation {
             cancellation: crate::session::PromptCancellation {
                 prompt,
@@ -390,12 +421,7 @@ impl KernelRuntimeOwnedState {
             },
             released_claim,
             dispatch,
-            queue_head_deferred: !advance_queue
-                && queue_head_promotable
-                && self
-                    .prompt_state_owner
-                    .peek_next_queued_prompt(&self.session_store.get_session(session_id)?, agent_id)
-                    .is_some(),
+            queue_head_deferred,
         })
     }
 
