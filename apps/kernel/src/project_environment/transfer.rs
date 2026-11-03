@@ -138,6 +138,11 @@ impl FileWriter {
         if let Some(parent) = destination.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|_| "A folder could not be created".to_owned())?;
+            // A folder of the checkout that is a link out of it is not a place to write.
+            let inside = parent.canonicalize().ok().zip(checkout.canonicalize().ok());
+            if !inside.is_some_and(|(parent, checkout)| parent.starts_with(checkout)) {
+                return Err("The file would land outside the project".to_owned());
+            }
         }
         let temporary =
             destination.with_file_name(format!(".chariox-import-{}", rand::random::<u64>()));
