@@ -122,13 +122,13 @@ mod tests {
             PathBuf::from("/chariox/test/a"),
             PathBuf::from("/chariox/test/b"),
         );
-        register_environment_files(&[a.clone()], &["config/secrets.json".into()]);
+        register_environment_files(std::slice::from_ref(&a), &["config/secrets.json".into()]);
         assert_eq!(
             environment_file_rules(&a),
             vec!["!config/secrets.json".to_string()]
         );
         assert!(environment_file_rules(&b).is_empty());
-        register_environment_files(&[a.clone()], &[]);
+        register_environment_files(std::slice::from_ref(&a), &[]);
         assert!(environment_file_rules(&a).is_empty());
     }
 }

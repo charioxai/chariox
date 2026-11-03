@@ -901,7 +901,6 @@ mod tests {
     use std::io::{Read, Write};
     use std::net::{TcpListener, TcpStream};
     use std::process::Command;
-    use std::sync::Arc;
     use std::time::Duration;
 
     use chariox_relay::{RelayAction, RelayAuthVerifier, RelayTokenClaims, ScopedTokenVerifier};
@@ -911,7 +910,6 @@ mod tests {
     use crate::managed_bootstrap::ManagedKernelContextPlan;
     use crate::managed_context::outbound_service::ManagedContextTransferTicket;
     use crate::runtime::command::KernelCommand;
-    use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
 
     #[cfg(target_os = "linux")]
     const RESTART_LOOP_DRIVER_ENV: &str = "CHARIOX_TEST_PATH1_RESTART_LOOP_DRIVER";

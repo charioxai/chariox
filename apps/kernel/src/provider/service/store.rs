@@ -377,10 +377,6 @@ impl ProviderProcessServiceStore {
         self.read().structured_prompt_io_in_flight(provider_run_id)
     }
 
-    pub(crate) fn structured_runtime_state_bound(&self, provider_run_id: &str) -> bool {
-        self.read().structured_runtime_state_bound(provider_run_id)
-    }
-
     pub fn record_run_activity(&self, run_id: &str) -> Result<(), DaemonError> {
         self.write().record_run_activity(run_id)
     }
@@ -404,32 +400,7 @@ impl ProviderProcessServiceStore {
             .update_run_execution_config(run_id, execution_mode, permission_level)
     }
 
-    pub(crate) fn update_run_preparation_environment(
-        &self,
-        run_id: &str,
-        home: impl Into<String>,
-        path: impl Into<String>,
-    ) -> Result<RuntimeProviderRun, DaemonError> {
-        self.write()
-            .update_run_preparation_environment(run_id, home, path)
-    }
-
-    pub(crate) fn update_run_read_only_discovery(
-        &self,
-        run_id: &str,
-        enabled: bool,
-    ) -> Result<RuntimeProviderRun, DaemonError> {
-        self.write().update_run_read_only_discovery(run_id, enabled)
-    }
-
-    pub(crate) fn restore_run_snapshot_after_restart_failure(
-        &self,
-        snapshot: RuntimeProviderRun,
-    ) -> Result<RuntimeProviderRun, DaemonError> {
-        self.write()
-            .restore_run_snapshot_after_restart_failure(snapshot)
-    }
-
+    #[cfg(test)]
     pub(crate) fn mark_run_ended_provider_only(
         &self,
         session_id: &str,
@@ -922,29 +893,5 @@ mod manifest_revision_tests {
             fixture().compare_update_run_remote_extension_manifest("missing", 0, manifest(true),),
             Err(DaemonError::ProviderRunNotFound { .. })
         ));
-    }
-
-    #[test]
-    fn snapshot_restore_cannot_roll_manifest_revision_back() {
-        let store = fixture();
-        let mut snapshot = store.get_run("run").unwrap();
-        snapshot.mark_running();
-        store.write().insert_run_for_test(snapshot.clone());
-        let pushed = store
-            .update_run_remote_extension_manifest("run", manifest(true))
-            .unwrap();
-        let restored = store
-            .restore_run_snapshot_after_restart_failure(snapshot)
-            .unwrap();
-        assert_eq!(restored.remote_extension_manifest_revision(), 2);
-        assert!(store
-            .compare_update_run_remote_extension_manifest(
-                "run",
-                pushed.remote_extension_manifest_revision(),
-                manifest(true),
-            )
-            .unwrap()
-            .is_none());
-        assert_eq!(store.get_run("run").unwrap(), restored);
     }
 }

@@ -22,18 +22,6 @@ use crate::runtime::state::KernelRuntimeState;
 use crate::runtime::workspace_commit_message_utility::workspace_commit_message_utility_prompt_assembly;
 
 pub(crate) const AGENT_UTILITY_TIMEOUT: Duration = Duration::from_secs(120);
-// Project discovery can need the same bounded budget as setup/validation.
-// Lightweight metadata discovery and ordinary utilities retain their limit.
-const PROJECT_ENVIRONMENT_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(300);
-
-fn agent_utility_timeout(policy: ProviderUtilityExecutionPolicy) -> Duration {
-    match policy {
-        ProviderUtilityExecutionPolicy::ReadOnlyDiscovery => PROJECT_ENVIRONMENT_DISCOVERY_TIMEOUT,
-        ProviderUtilityExecutionPolicy::ExistingRun
-        | ProviderUtilityExecutionPolicy::SessionCommand
-        | ProviderUtilityExecutionPolicy::MetadataOnlyDiscovery => AGENT_UTILITY_TIMEOUT,
-    }
-}
 const AGENT_UTILITY_PROVIDER_READY_TIMEOUT: Duration = Duration::from_secs(60);
 
 pub(crate) async fn execute_run_agent_utility_request(
@@ -392,20 +380,6 @@ fn current_unix_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn project_discovery_budget_does_not_extend_metadata_or_existing_run_utilities() {
-        assert_eq!(
-            agent_utility_timeout(ProviderUtilityExecutionPolicy::ReadOnlyDiscovery),
-            Duration::from_secs(300),
-        );
-        for policy in [
-            ProviderUtilityExecutionPolicy::MetadataOnlyDiscovery,
-            ProviderUtilityExecutionPolicy::ExistingRun,
-        ] {
-            assert_eq!(agent_utility_timeout(policy), Duration::from_secs(120));
-        }
-    }
 
     #[test]
     fn utility_operations_name_supported_kinds() {

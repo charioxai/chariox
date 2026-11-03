@@ -427,31 +427,20 @@ impl KernelRuntimeState {
         }
     }
 
-    /// The Project's Variables and Secret values for a terminal the Room opens; a locked Vault
-    /// leaves the Secrets out rather than blocking the terminal.
+    /// The Project's Variables and Secret values for a terminal the Room opens.
     pub(crate) fn project_environment_for_terminal(
         &self,
         session_id: &str,
     ) -> Result<std::collections::BTreeMap<String, String>, DaemonError> {
-        match self.project_environment_for_shell(session_id) {
-            Ok(environment) => Ok(environment
-                .iter()
-                .map(|(name, value)| (name.to_string(), value.to_string()))
-                .collect()),
-            Err(error) if crate::secret::is_chariox_vault_locked_error(&error) => {
-                let session = self.owned.session_store.get_session(session_id)?;
-                let record = self.environment_store().load(session.project_id())?;
-                let variables = record
-                    .map(|record| crate::project_environment::parse_variables(&record.variables))
-                    .transpose()
-                    .map_err(environment_error)?
-                    .unwrap_or_default();
-                Ok(variables.into_iter().collect())
-            }
-            Err(error) => Err(error),
-        }
+        Ok(self
+            .project_environment_for_shell(session_id)?
+            .iter()
+            .map(|(name, value)| (name.to_string(), value.to_string()))
+            .collect())
     }
 
+    /// A locked Vault leaves the Secrets out rather than blocking a shell or a terminal; the
+    /// provider launch is the one place that asks the owner to unlock it.
     pub(crate) fn project_environment_for_shell(
         &self,
         session_id: &str,
@@ -460,11 +449,22 @@ impl KernelRuntimeState {
         let Some(record) = self.environment_store().load(session.project_id())? else {
             return Ok(Default::default());
         };
-        Ok(crate::project_environment::project_launch_environment(
+        match crate::project_environment::project_launch_environment(
             &self.owned.config_projection.snapshot(),
             session.project_id(),
             &record,
-        )?
-        .environment)
+        ) {
+            Ok(launch) => Ok(launch.environment),
+            Err(error) if crate::secret::is_chariox_vault_locked_error(&error) => {
+                let mut environment = crate::provider::ProviderCredentialEnvironment::default();
+                for (name, value) in crate::project_environment::parse_variables(&record.variables)
+                    .map_err(environment_error)?
+                {
+                    environment.insert(name, zeroize::Zeroizing::new(value));
+                }
+                Ok(environment)
+            }
+            Err(error) => Err(error),
+        }
     }
 }

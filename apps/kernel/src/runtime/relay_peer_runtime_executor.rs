@@ -367,10 +367,6 @@ pub(crate) async fn complete_relay_leased_prompt(
         .await
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "Keeps the existing session, worker and lease binding fields explicit without a second protocol representation."
-)]
 pub(crate) async fn observe_relay_leased_git_after(
     runtime_state: &KernelRuntimeState,
     leased_agent_id: &str,
