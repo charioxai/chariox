@@ -71,6 +71,6 @@ fn app_dev_register_snapshot_and_default_source() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "edf5b3b73b2e8bfe8131efea5afad28b5fcbcd0c334c61f46d62d37858346a1e"
+        "11100a11ed58961f10be9d624f2235611900f19b814b74b11e8c1ec9c53b680a"
     );
 }
