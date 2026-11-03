@@ -114,6 +114,18 @@ export const sites = async () => {
 const hcaptcha = () => [
   {
     id: 'hcaptcha-demo', url: 'https://democaptcha.com/demo-form-eng/hcaptcha.html',
+    probe: async ({ host, tab, page }) => {
+      const { connection } = await host.browser.resolvePageTarget(tab.target_id);
+      const { targetInfos } = await connection.send('Target.getTargets');
+      const out = { source: null, mirror: null };
+      for (const target of targetInfos.filter(t => t.type === 'iframe')) {
+        const session = host.browser.frameSession?.(target.targetId, connection); if (!session) continue;
+        const r = await connection.send('Runtime.evaluate', { expression: `(()=>{const h=document.querySelector('.challenge-header');if(!h)return null;const bg=h.querySelector('.prompt-bg');return {html:h.outerHTML.slice(0,2500),bg:bg&&getComputedStyle(bg).cssText.length?{color:getComputedStyle(bg).backgroundColor,opacity:getComputedStyle(bg).opacity,filter:getComputedStyle(bg).filter,mix:getComputedStyle(bg).mixBlendMode,transform:getComputedStyle(bg).transform}:null}})()`, returnByValue: true }, session).catch(() => null);
+        if (r?.result?.value) out.source = r.result.value;
+      }
+      out.mirror = await page.evaluate(`(()=>{const find=d=>{const h=d.querySelector('.challenge-header');if(h)return h;for(const f of d.querySelectorAll('iframe')){try{if(f.contentDocument){const x=find(f.contentDocument);if(x)return x}}catch{}}return null};const h=find(document.querySelector('iframe').contentDocument);if(!h)return null;const bg=h.querySelector('.prompt-bg'),cs=bg&&h.ownerDocument.defaultView.getComputedStyle(bg);const r=h.getBoundingClientRect();const at=h.ownerDocument.elementsFromPoint(r.x+r.width/2,r.y+r.height/2).slice(0,6).map(e=>e.localName+'.'+e.className);return {html:h.outerHTML.slice(0,2500),bg:cs&&{color:cs.backgroundColor,opacity:cs.opacity,filter:cs.filter,mix:cs.mixBlendMode,transform:cs.transform},at}})()`);
+      return out;
+    },
     // The person scrolls the page, then clicks inside the open challenge frame (no solving: the first click only
     // selects or opens something) while the viewer's scroll position is traced for moves against the scroll.
     interact: async ({ page }) => {

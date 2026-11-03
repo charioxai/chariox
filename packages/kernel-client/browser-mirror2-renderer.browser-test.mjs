@@ -137,6 +137,26 @@ test('MP-08/MP-10: a frame document is laid out in the document mode of its sour
   } finally { await page.close(); }
 });
 
+// A canvas region's still keeps its own transparency: the page's content under the transparent part (a CAPTCHA's header banner
+// under a canvas that is drawn only over its grid) stays visible. Before the still arrives the region is an opaque placeholder.
+test('MP-08/MP-10: a tile still with transparent pixels shows the page beneath it, not black', async () => {
+  const page = await viewer();
+  try {
+    const png = await page.evaluate(() => { const c = document.createElement('canvas'); c.width = 100; c.height = 100; const x = c.getContext('2d'); x.fillStyle = '#0a0'; x.fillRect(0, 50, 100, 50); return c.toDataURL('image/png').split(',')[1]; }); // top half transparent
+    await apply(page, snapshot([{ id: 'n1', parent: null, kind: 'document' }, { id: 'n2', parent: 'n1', kind: 'element', tag: 'html' }, { id: 'n3', parent: 'n2', kind: 'element', tag: 'body', attrs: { style: 'margin:0' } },
+      { id: 'n4', parent: 'n3', kind: 'element', tag: 'div', attrs: { style: 'position:absolute;left:0;top:0;width:100px;height:100px;background:rgb(200,0,0)' } },
+      { id: 'n5', parent: 'n3', kind: 'tile', tag: 'canvas', attrs: { style: 'position:absolute;left:0;top:0;width:100px;height:100px' }, size: [100, 100] }]));
+    const color = () => page.evaluate(() => getComputedStyle(window.r.frame.contentDocument.querySelector('canvas')).backgroundColor);
+    assert.equal(await color(), 'rgb(0, 0, 0)', 'MP-08: before its still the region is an opaque placeholder');
+    await apply(page, { ...delta(2), tiles: [{ node_id: 'n5', x: 0, y: 0, width: 100, height: 100, data_base64: png }] });
+    await new Promise(resolve => setTimeout(resolve, 200));
+    assert.equal(await color(), 'rgba(0, 0, 0, 0)', 'MP-08: the painted still does not fill its transparent pixels with black');
+    const shot = await page.screenshot({ clip: { x: 10, y: 10, width: 1, height: 1 } });
+    const pixel = await page.evaluate(async b64 => { const img = new Image(); img.src = 'data:image/png;base64,' + b64; await img.decode(); const c = document.createElement('canvas'); c.width = c.height = 1; const x = c.getContext('2d'); x.drawImage(img, 0, 0); return [...x.getImageData(0, 0, 1, 1).data]; }, shot.toString('base64'));
+    assert.deepEqual(pixel.slice(0, 3), [200, 0, 0], 'MP-08: the page beneath the transparent part shows through');
+  } finally { await page.close(); }
+});
+
 test('MP-10: review #941-2 a multiple select shows every selected option (snapshot, a secondary option changing, replaced options)', async () => {
   const page = await viewer();
   try {

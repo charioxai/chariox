@@ -925,6 +925,8 @@ export class BrowserMirror2Renderer {
     const style = element.style
     style.setProperty('background-image', `url("${url}")`, 'important'); style.setProperty('background-repeat', 'no-repeat', 'important')
     style.setProperty('background-position', `${tile.x}px ${tile.y}px`, 'important'); style.setProperty('background-size', `${tile.width}px ${tile.height}px`, 'important')
+    // The still carries its own transparency (a canvas drawn over part of its box): only the placeholder before it is black.
+    if (this.records.get(id)?.kind === 'tile') style.setProperty('background-color', 'transparent', 'important')
   }
   close(options?:{preserveFrame?:boolean}): void {
     this.disposed = true; this.onEmptyPaint = undefined; this.onTiming = undefined; this.sheetCache.clear(); this.sheets.clear(); this.releasePointer(); this.queue=[]; this.pendingInputs=0; this.wheel.close()
