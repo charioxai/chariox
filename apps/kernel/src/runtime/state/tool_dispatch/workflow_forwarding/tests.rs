@@ -46,6 +46,7 @@ impl Fixture {
                 endpoint.id(),
                 Some("return output".into()),
                 publication.then(|| crate::session::WorkflowPublicationInvocationEnvelope {
+                    http_method: None,
                     publication_id: "release-publication".into(),
                     hook_id: None,
                     invocation_id: "release-invocation".into(),

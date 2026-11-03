@@ -388,6 +388,7 @@ impl SessionService {
                         session_changed = true;
                         continue;
                     }
+                    let scheduled_for_ms = watchdog.next_run_at_ms();
                     let should_run_pending = watchdog.pending_run() && !entry_agent_busy;
                     let due_now = now_ms >= watchdog.next_run_at_ms();
                     if should_run_pending {
@@ -395,6 +396,7 @@ impl SessionService {
                         watchdog.set_last_status(Some("invoking_pending".to_string()));
                         session_changed = true;
                         plans.push(WorkflowWatchdogTickPlan {
+                            scheduled_for_ms,
                             watchdog_id: watchdog.id().to_string(),
                             session_id: session_id.clone(),
                             workflow_id: watchdog.workflow_id().to_string(),
@@ -448,6 +450,7 @@ impl SessionService {
                                     // MP-08/MP-10/MP-11: admission belongs to the
                                     // runtime transaction, including owner provenance.
                                     plans.push(WorkflowWatchdogTickPlan {
+                                        scheduled_for_ms,
                                         watchdog_id: watchdog.id().to_string(),
                                         session_id: session_id.clone(),
                                         workflow_id: watchdog.workflow_id().to_string(),
@@ -470,6 +473,7 @@ impl SessionService {
                     watchdog.set_next_run_at_ms(next_run);
                     session_changed = true;
                     plans.push(WorkflowWatchdogTickPlan {
+                        scheduled_for_ms,
                         watchdog_id: watchdog.id().to_string(),
                         session_id: session_id.clone(),
                         workflow_id: watchdog.workflow_id().to_string(),

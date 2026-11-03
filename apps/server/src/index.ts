@@ -167,7 +167,7 @@ export const buildServer = (config?: WorkflowPublicationConfig, deps: GatewayDep
             return publicationViewerPage(publication)
           }
           const parsed = await parseAndValidateRequest(request as unknown as GatewayRequest, publication).catch((error) => {
-            reply.code(400).headers({ "content-type": "application/json" })
+            reply.code(request.method === "GET" && hasHumanHttpPromptQuery(request.url) ? (error instanceof Error && error.message.startsWith("GET URL exceeds") ? 414 : 422) : 400).headers({ "content-type": "application/json" })
             return { __chariox_parse_error: error instanceof Error ? error.message : String(error) }
           })
           if (isParseErrorPayload(parsed)) {
@@ -175,6 +175,7 @@ export const buildServer = (config?: WorkflowPublicationConfig, deps: GatewayDep
           }
           const caller = publicationCallerForRequest(request)
           const invocation: NormalizedInvocation = {
+            http_method: request.method,
             publication_id: publication.publication_id,
             request_id: publicationInvocationRequestId(caller),
             caller: caller

@@ -22,7 +22,7 @@ const usage = [
   "       app automation add <installation-id> <automation-id> <event> <session-id> <workflow> [--queue <queue>] [--scheduled] [--revision <n>]",
   "       app automation disable <installation-id> <automation-id> <revision>",
   "       app inbox list <installation-id> | remove <installation-id> <route-id>",
-  "       app inbox add <installation-id> <route-id> <event> <source-event-type> [--version <n>] [--connection <generator>/<connection-id>/<scope>]",
+  "       app inbox add <installation-id> <route-id> <event> <source-event-type> [--version <n>] [--connection <generator>/<connection-id>/<scope>] [--filter-json <object>]",
   "       app inbox test <installation-id> <route-id> <occurrence-id> '<json-payload>'",
   "       app connection list <installation-id> | grant <installation-id> <generator>/<connection-id> | revoke <installation-id> <connection-id>",
   "       app file revoke <installation-id> [<operation-id>]",
@@ -261,9 +261,14 @@ export function inboxRequest(args: string[]): Record<string, unknown> | null {
   if (!routeId || !eventName || !sourceEventType) return null
   let version = 1
   let connection: AppInboxConnection | undefined
+  let filter: unknown
   for (let index = 0; index < flags.length; index += 2) {
     const [flag, value = ""] = [flags[index], flags[index + 1]]
     if (flag === "--version" && /^[1-9]\d{0,8}$/.test(value)) version = Number(value)
+    else if (flag === "--filter-json") {
+      try { filter = JSON.parse(value) } catch { return null }
+      if (!filter || typeof filter !== "object" || Array.isArray(filter)) return null
+    }
     else if (flag === "--connection") {
       // generator/connection-id/scope; the scope may itself contain slashes.
       const [generatorId, connectionId, ...scope] = value.split("/")
@@ -271,6 +276,7 @@ export function inboxRequest(args: string[]): Record<string, unknown> | null {
       connection = { generatorId, connectionId, connectionScope: scope.join("/") }
     } else return null
   }
+  if (filter !== undefined) { if (!connection) return null; connection.filter = filter }
   return createAppInboxRouteRequest({
     installationId: installation, routeId, eventName, sourceEventType, sourceEventVersion: version,
     ...(connection ? { connection } : {}),

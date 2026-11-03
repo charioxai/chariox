@@ -516,6 +516,11 @@ fn workflow_code_run_event_payload(
     result: &crate::workflow_code::WorkflowCodeRunResult,
 ) -> serde_json::Value {
     match &result.invocation {
+        crate::workflow_code::WorkflowCodeRunInvocation::EntryAccepted { entry } => {
+            serde_json::json!({
+                "outcome": "entry_accepted", "apply": &result.apply.apply, "entry": entry,
+            })
+        }
         crate::workflow_code::WorkflowCodeRunInvocation::Started {
             workflow_run,
             workflow,

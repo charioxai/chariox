@@ -1929,6 +1929,7 @@ mod tests {
                 )
                 .expect("workflow publication should create");
             let publication_invocation = crate::session::WorkflowPublicationInvocationEnvelope {
+                http_method: None,
                 publication_id: publication.id().to_string(),
                 hook_id: None,
                 invocation_id: "invocation-restart".to_string(),

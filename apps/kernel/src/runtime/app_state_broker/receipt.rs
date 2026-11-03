@@ -6,6 +6,7 @@ use serde_json::{json, Value};
 
 pub(super) fn value(receipt: &Receipt) -> Value {
     let state = match receipt.state {
+        ReceiptState::EntryOwned => "entry_owned",
         ReceiptState::Accepted => "accepted",
         ReceiptState::Queued => "queued",
         ReceiptState::Delivered => "delivered",

@@ -30,6 +30,7 @@ fn workflow_code_definition() -> WorkflowCodeDefinition {
         schema_version: WORKFLOW_CODE_SCHEMA_VERSION,
         parameters_schema: None,
         workflow: WorkflowCodeWorkflow {
+            gate: None,
             alias: Some("coded_flow".to_string()),
             prompt: Some("Run the coded flow.".to_string()),
             flush_agent_context_before_run: Some(false),
@@ -130,6 +131,7 @@ fn workflow_code_definition() -> WorkflowCodeDefinition {
             }),
         }],
         endpoints: vec![WorkflowCodeEndpointDefinition {
+            entry_nodes: vec![],
             handle: "entry".to_string(),
             entry_node: "planner".to_string(),
             alias: Some("entry".to_string()),

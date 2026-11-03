@@ -99,6 +99,7 @@ fn workflow_run_keeps_publication_invocation_metadata_separate_from_prompt() {
     let TestWorkflowEndpoint { workflow, endpoint } =
         workflow_with_endpoint(&mut service, session.id(), "published", "agent-1");
     let publication_invocation = crate::session::WorkflowPublicationInvocationEnvelope {
+        http_method: None,
         publication_id: "publication-1".to_string(),
         hook_id: Some("hook-1".to_string()),
         invocation_id: "req-1".to_string(),

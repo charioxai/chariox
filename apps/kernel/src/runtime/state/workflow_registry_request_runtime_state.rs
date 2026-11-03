@@ -340,6 +340,24 @@ impl KernelRuntimeState {
             )
             .await;
         let result = match invoke_response {
+            Ok(crate::local::LocalDaemonResponse::WorkflowEntryAccepted { entry: gate_entry }) => {
+                match self.owned.session_snapshot(&session_id) {
+                    Ok(session) => Ok(
+                        crate::local::LocalDaemonResponse::WorkflowRegistryEntryRun {
+                            entry,
+                            result: crate::workflow_code::WorkflowCodeRunResult {
+                                apply: apply_result,
+                                invocation:
+                                    crate::workflow_code::WorkflowCodeRunInvocation::EntryAccepted {
+                                        entry: gate_entry,
+                                    },
+                            },
+                            session,
+                        },
+                    ),
+                    Err(error) => Err(error),
+                }
+            }
             Ok(crate::local::LocalDaemonResponse::WorkflowRunInvoked {
                 workflow_run,
                 workflow,

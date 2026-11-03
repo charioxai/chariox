@@ -7,6 +7,7 @@ struct Event {
     version: u32,
     title: Option<String>,
     schema_digest: String,
+    schema: Value,
     validator: jsonschema::JSONSchema,
 }
 
@@ -44,6 +45,7 @@ impl EventCatalog {
                         .get("title")
                         .and_then(|title| title.as_str())
                         .map(str::to_owned),
+                    schema: declaration.payload_schema.clone(),
                     schema_digest: digest(&schema),
                     validator,
                 },
@@ -70,6 +72,9 @@ impl EventCatalog {
         self.events
             .iter()
             .map(|(name, event)| (name.as_str(), event.title.as_deref()))
+    }
+    pub fn payload_schema(&self, name: &str) -> Option<&Value> {
+        self.events.get(name).map(|e| &e.schema)
     }
     pub fn event_version(&self, name: &str) -> Option<u32> {
         self.events.get(name).map(|event| event.version)

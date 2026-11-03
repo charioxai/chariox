@@ -14,7 +14,12 @@ cp "$CARGO_TARGET_DIR/wasm32-unknown-unknown/release/workflow_gate_fixture.wasm"
   "$TMPDIR/gate.core.wasm"
 cargo run -p chariox-app-sdk-tools --bin chariox-gate-component -- \
   "$TMPDIR/gate.core.wasm" "$TMPDIR/gate.wasm"
-CHARIOX_GATE_COMPONENT="$TMPDIR/gate.wasm" cargo test \
+cargo build --manifest-path examples/workflow-gates/advisory/Cargo.toml \
+  --target wasm32-unknown-unknown --release
+cargo run -p chariox-app-sdk-tools --bin chariox-gate-component -- \
+  "$CARGO_TARGET_DIR/wasm32-unknown-unknown/release/advisory_entry_gate.wasm" "$TMPDIR/advisory-gate.wasm"
+CHARIOX_GATE_COMPONENT="$TMPDIR/gate.wasm" \
+CHARIOX_ADVISORY_GATE_COMPONENT="$TMPDIR/advisory-gate.wasm" cargo test \
   -p chariox-app-wasm-worker --features gate-drills --test gate-drill
 ```
 

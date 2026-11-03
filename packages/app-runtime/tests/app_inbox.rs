@@ -128,6 +128,8 @@ fn paused_generator_routes_and_accepted_work_survive_database_reopen() {
             connection_id: "fixture-connection".into(),
             connection_scope: "fixture-scope".into(),
             filter_json: "null".into(),
+            payload_schema_json: None,
+            manifest_digest: None,
         });
         app_inbox::create_route_in(&db, &route, 1).unwrap();
         expected.push(route);
@@ -407,6 +409,8 @@ fn generator_routes_carry_their_connection_and_an_opaque_binding_id() {
             connection_id: "connection-1".into(),
             connection_scope: "workspace:1".into(),
             filter_json: "null".into(),
+            payload_schema_json: None,
+            manifest_digest: None,
         }),
         ..route("fed")
     };
@@ -429,6 +433,8 @@ fn generator_fed_routes_are_capped_across_the_kernel_at_create() {
             connection_id: "connection".into(),
             connection_scope: "default".into(),
             filter_json: "null".into(),
+            payload_schema_json: None,
+            manifest_digest: None,
         }),
         ..route("r")
     };

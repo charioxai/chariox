@@ -211,6 +211,10 @@ pub struct EventGeneratorEventDefinition {
     pub name: String,
     pub description: String,
     pub filter_schema: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payload_schema: Option<Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub examples: Vec<chariox_event_protocol::EventPayloadExample>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub required_scopes: Vec<String>,
 }

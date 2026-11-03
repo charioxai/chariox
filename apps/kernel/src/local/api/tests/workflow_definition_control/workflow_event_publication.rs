@@ -1187,6 +1187,8 @@ fn install_app_route(harness: &LocalRouterTestHarness, channel: &str) {
                         connection_id: "connection-local".into(),
                         connection_scope: "tenant:local".into(),
                         filter_json: serde_json::json!({"channel": channel}).to_string(),
+                        payload_schema_json: None,
+                        manifest_digest: None,
                     }),
                 },
                 now_ms: 1,

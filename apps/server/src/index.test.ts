@@ -10,3 +10,5 @@ import "./index.test/queue_depth.test.js"
 import "./publication-requirements.test.js"
 import "./index.test/parent_pipe.test.js"
 import "./index.test/publication-run-isolation.test.js"
+
+import "./publication-parser.test.js"

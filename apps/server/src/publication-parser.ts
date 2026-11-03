@@ -11,6 +11,33 @@ export async function parseAndValidateRequest(
   request: GatewayRequest,
   publication: WorkflowPublicationConfig,
 ): Promise<unknown> {
+  if (request.method.toUpperCase() === "GET" && new URL(request.url, "http://publication.local").searchParams.has("prompt")) {
+    if (Buffer.byteLength(request.url, "utf8") > 8192) throw new Error("GET URL exceeds 8 KiB; send POST JSON")
+    const params = new URL(request.url, "http://publication.local").searchParams
+    const values: Record<string, string> = Object.create(null)
+    for (const [key, value] of params) {
+      if (Object.hasOwn(values, key)) throw new Error(`GET parameter ${key} must occur once`)
+      values[key] = value
+    }
+    const data: Record<string, unknown> = { ...values }
+    delete data.prompt
+    if (publication.input_schema) {
+      for (const [key, value] of Object.entries(data)) {
+        const type = publication.input_schema.properties?.[key]?.type
+        if (type === "integer") {
+          if (!/^(0|-[1-9][0-9]*|[1-9][0-9]*)$/.test(String(value)) || !Number.isSafeInteger(Number(value))) throw new Error(`GET parameter ${key} must be a safe integer`)
+          data[key] = Number(value)
+        } else if (type === "boolean") {
+          if (value !== "true" && value !== "false") throw new Error(`GET parameter ${key} must be true or false`)
+          data[key] = value === "true"
+        } else if (type && type !== "string") throw new Error("GET schemas support scalar fields; send POST JSON")
+      }
+      validateInput(data, publication.input_schema)
+      if (publication.input_schema.additionalProperties === false && Object.keys(data).some(key => !Object.hasOwn(publication.input_schema!.properties ?? {}, key))) throw new Error("GET contains an undeclared parameter")
+    }
+    // Preserve query lexemes for authoritative kernel coercion.
+    return values
+  }
   const parsed = await parseRequest(request, publication.parser ?? { kind: "json" })
   validateInput(parsed, publication.input_schema)
   return parsed
@@ -112,6 +139,7 @@ async function parseCustomCommand(request: GatewayRequest, config: ParserConfig)
 }
 
 function matchesJsonType(value: unknown, type: string) {
+  if (type === "integer") return typeof value === "number" && Number.isSafeInteger(value)
   if (type === "array") return Array.isArray(value)
   if (type === "object") return value != null && typeof value === "object" && !Array.isArray(value)
   return typeof value === type

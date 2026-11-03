@@ -1,0 +1,114 @@
+{
+  "local": 1000,
+  "peer": 439,
+  "requests": [
+    {
+      "WorkflowGate": {
+        "session_id": "room",
+        "workflow_ref": "advisory",
+        "action": {
+          "kind": "put_module",
+          "sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "wasm_base64": "AGFzbQ0AAQA="
+        }
+      }
+    },
+    {
+      "WorkflowGate": {
+        "session_id": "room",
+        "workflow_ref": "advisory",
+        "action": {
+          "kind": "state",
+          "binding_id": null
+        }
+      }
+    },
+    {
+      "WorkflowGate": {
+        "session_id": "room",
+        "workflow_ref": "advisory",
+        "action": {
+          "kind": "reset_state",
+          "reason": "Owner intentionally cleared policy state"
+        }
+      }
+    },
+    {
+      "WorkflowGate": {
+        "session_id": "room",
+        "workflow_ref": "advisory",
+        "action": {
+          "kind": "entry",
+          "entry_id": "gate_entry"
+        }
+      }
+    },
+    {
+      "WorkflowGate": {
+        "session_id": "room",
+        "workflow_ref": "advisory",
+        "action": {
+          "kind": "cancel",
+          "entry_id": "gate_entry",
+          "reason": "Owner cancelled entry"
+        }
+      }
+    },
+    {
+      "WorkflowGate": {
+        "session_id": "room",
+        "workflow_ref": "advisory",
+        "action": {
+          "kind": "entries",
+          "after": null,
+          "limit": 32
+        }
+      }
+    }
+  ],
+  "responses": [
+    {
+      "WorkflowGateModuleStored": {
+        "sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    {
+      "WorkflowGateState": {
+        "snapshot": {
+          "revision": 0,
+          "state": {
+            "workflow": {},
+            "binding": {}
+          }
+        }
+      }
+    },
+    {
+      "WorkflowEntryAccepted": {
+        "entry": {
+          "entry_id": "gate_entry",
+          "session_id": "room",
+          "workflow_id": "advisory",
+          "workflow_revision": 2,
+          "module_sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "config_sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "binding_id": "http:publication",
+          "disposition": "ready",
+          "accepted_at_ms": 100,
+          "deadline_ms": 1000,
+          "next_due_at_ms": 100,
+          "evaluation_count": 0,
+          "queued_prompt_id": null,
+          "failure": null,
+          "decisions": []
+        }
+      }
+    },
+    {
+      "WorkflowGateEntries": {
+        "entries": [],
+        "next_cursor": null
+      }
+    }
+  ]
+}

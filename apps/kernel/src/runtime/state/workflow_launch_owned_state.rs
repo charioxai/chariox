@@ -25,14 +25,21 @@ impl KernelRuntimeOwnedState {
             .invocation_prompt()
             .map(str::trim)
             .unwrap_or("");
-        let node_run = workflow_run.node_runs().first().ok_or_else(|| {
-            DaemonError::InvalidWorkflowGraphReference {
+        let node_run = workflow_run
+            .node_runs()
+            .iter()
+            .find(|node| {
+                intent.as_ref().map_or_else(
+                    || Some(node.id()) == workflow_run.node_runs().first().map(|n| n.id()),
+                    |intent| intent.node_id == node.id(),
+                )
+            })
+            .ok_or_else(|| DaemonError::InvalidWorkflowGraphReference {
                 session_id: session_id.to_string(),
                 workflow_id: workflow_run.workflow_id().to_string(),
                 reference: workflow_run.id().to_string(),
                 message: "workflow run has no entry node run",
-            }
-        })?;
+            })?;
         // Repeated contention checks must not rewrite the turn or repeat its
         // notice every maintenance pass. Only a newly acquired claim progresses.
         let claim_id =

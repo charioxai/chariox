@@ -536,6 +536,10 @@ impl KernelRuntimeState {
                 let session = result.as_ref().ok().and_then(workflow_response_session);
                 (result, session)
             }
+            LocalDaemonRequest::WorkflowGate(request) => (
+                self.workflow_gate_request(request, &caller_user_id).await,
+                None,
+            ),
             LocalDaemonRequest::InvokeWorkflowEndpoint(request) => {
                 self.execute_workflow_invoke_endpoint_request(
                     request,

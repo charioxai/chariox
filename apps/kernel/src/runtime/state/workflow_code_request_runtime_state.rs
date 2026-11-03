@@ -336,6 +336,21 @@ impl KernelRuntimeState {
             )
             .await;
         let result = match invoke_response {
+            Ok(crate::local::LocalDaemonResponse::WorkflowEntryAccepted { entry }) => {
+                match self.owned.session_snapshot(&session_id) {
+                    Ok(session) => Ok(crate::local::LocalDaemonResponse::WorkflowCodeRun {
+                        result: crate::workflow_code::WorkflowCodeRunResult {
+                            apply: apply_result,
+                            invocation:
+                                crate::workflow_code::WorkflowCodeRunInvocation::EntryAccepted {
+                                    entry,
+                                },
+                        },
+                        session,
+                    }),
+                    Err(error) => Err(error),
+                }
+            }
             Ok(crate::local::LocalDaemonResponse::WorkflowRunInvoked {
                 workflow_run,
                 workflow,
@@ -459,6 +474,21 @@ impl KernelRuntimeState {
             )
             .await;
         let result = match invoke_response {
+            Ok(crate::local::LocalDaemonResponse::WorkflowEntryAccepted { entry }) => {
+                match self.owned.session_snapshot(&session_id) {
+                    Ok(session) => Ok(crate::local::LocalDaemonResponse::WorkflowCodeRun {
+                        result: crate::workflow_code::WorkflowCodeRunResult {
+                            apply: apply_result,
+                            invocation:
+                                crate::workflow_code::WorkflowCodeRunInvocation::EntryAccepted {
+                                    entry,
+                                },
+                        },
+                        session,
+                    }),
+                    Err(error) => Err(error),
+                }
+            }
             Ok(crate::local::LocalDaemonResponse::WorkflowRunInvoked {
                 workflow_run,
                 workflow,
@@ -526,6 +556,15 @@ fn validate_compiled_request(
     ),
     actor: Option<&str>,
 ) -> Result<crate::workflow_code::WorkflowCodeCompileResult, DaemonError> {
+    if let Some(gate) = &compile.definition.workflow.gate {
+        gate.validate()
+            .map_err(|e| crate::durable_state::workflow_gate::error(e.to_string()))?;
+        let session = app.sessions().get_session(session_id)?;
+        state
+            .owned
+            .durable_state_store
+            .gate_module(session.owner_user_id(), &gate.module_sha256)?;
+    }
     let (definition, mut validation) =
         crate::app::KernelSessionService::with_authorization(app, &|| {
             state.authorize_current_external_command()

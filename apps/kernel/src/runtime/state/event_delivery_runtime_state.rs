@@ -235,7 +235,21 @@ impl KernelRuntimeState {
         {
             return refused(&delivery, "the occurrence is not the route's event type");
         }
-        let payload = serde_json::json!({
+        let schema = source
+            .payload_schema_json
+            .as_deref()
+            .map(serde_json::from_str::<serde_json::Value>)
+            .transpose()
+            .map_err(|_| "stored event schema is invalid".to_string())?;
+        if chariox_event_protocol::validate_payload(schema.as_ref(), delivery.data.as_ref())
+            .is_err()
+        {
+            return refused(
+                &delivery,
+                "the occurrence does not match the pinned publisher payload schema",
+            );
+        }
+        let mut payload = serde_json::json!({
             "source": {
                 "generator_id": source.generator_id,
                 "connection_id": source.connection_id,
@@ -248,6 +262,15 @@ impl KernelRuntimeState {
             "artifacts": delivery.artifacts,
             "reply_context": delivery.reply_context,
         });
+        if let Some(data) = &delivery.data {
+            payload["data"] = data.clone();
+            payload["data_schema"] = serde_json::json!({
+                "manifest_digest":source.manifest_digest,
+                "event_type":delivery.event_type,"version":delivery.event_type_version,
+                "sha256":schema.as_ref().map(chariox_event_protocol::payload_schema_digest).transpose()?,
+                "schema":schema,
+            });
+        }
         let accepted =
             tokio::runtime::Handle::current().block_on(self.accept_app_inbox_occurrence(
                 &route.owner_id,
@@ -393,6 +416,8 @@ mod tests {
                 connection_id: "shared-connection".into(),
                 connection_scope: "default".into(),
                 filter_json: "null".into(),
+                payload_schema_json: None,
+                manifest_digest: None,
             }),
         };
         let first = app_route_claim(&route, "owner-1", "kernel-a", "env-a").unwrap();
@@ -431,6 +456,8 @@ mod tests {
                 connection_id: "connection-1".into(),
                 connection_scope: "team:T1".into(),
                 filter_json: "null".into(),
+                payload_schema_json: None,
+                manifest_digest: None,
             }),
         }
     }
@@ -595,6 +622,7 @@ mod tests {
                 occurrence_id: "occurrence-1".into(),
                 occurred_at: "2026-09-26T00:00:00.000Z".into(),
                 prompt: "hello".into(),
+                data: None,
                 artifacts: Vec::new(),
                 metadata: serde_json::Value::Null,
                 reply_context: None,
@@ -701,6 +729,8 @@ mod owner_mapping_tests {
                             connection_id: "connection-1".into(),
                             connection_scope: "scope".into(),
                             filter_json: "null".into(),
+                            payload_schema_json: None,
+                            manifest_digest: None,
                         }),
                     },
                     now_ms: 1,

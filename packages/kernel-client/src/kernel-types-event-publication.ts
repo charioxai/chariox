@@ -28,6 +28,8 @@ export type EventGeneratorEventDefinition = {
   version: number
   name: string
   description: string
+  payload_schema?: Record<string, unknown> | null
+  examples?: { name: string; data: Record<string, unknown> }[]
   filter_schema: unknown
   required_scopes?: string[]
 }

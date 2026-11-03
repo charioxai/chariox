@@ -32,6 +32,34 @@ impl KernelRuntimeState {
                 if catalog.version(&request.event_name).is_none() {
                     return Err(AppRequestErrorCode::InvalidRequest);
                 }
+                let pinned_source = if let Some(connection) = &request.connection {
+                    let detail = crate::runtime::event_catalog_control::event_generator_detail(
+                        &self.owned.config_projection,
+                        &connection.generator_id,
+                        None,
+                    )
+                    .await
+                    .map_err(|_| AppRequestErrorCode::InvalidRequest)?;
+                    let event = detail
+                        .events
+                        .iter()
+                        .find(|event| {
+                            event.event_type == request.source_event_type
+                                && event.version == request.source_event_version
+                        })
+                        .ok_or(AppRequestErrorCode::InvalidRequest)?;
+                    chariox_event_protocol::validate_payload_definition(
+                        event.payload_schema.as_ref(),
+                        &event.examples,
+                    )
+                    .map_err(|_| AppRequestErrorCode::InvalidRequest)?;
+                    Some((
+                        event.payload_schema.as_ref().map(Value::to_string),
+                        detail.summary.manifest_digest,
+                    ))
+                } else {
+                    None
+                };
                 let route = InboxRoute {
                     route_id: request.route_id,
                     owner_id: owner.clone(),
@@ -45,6 +73,10 @@ impl KernelRuntimeState {
                         connection_id: connection.connection_id,
                         connection_scope: connection.connection_scope,
                         filter_json: connection.filter.to_string(),
+                        payload_schema_json: pinned_source
+                            .as_ref()
+                            .and_then(|(schema, _)| schema.clone()),
+                        manifest_digest: pinned_source.as_ref().map(|(_, digest)| digest.clone()),
                     }),
                 };
                 let now_ms = crate::session::unix_epoch_ms();

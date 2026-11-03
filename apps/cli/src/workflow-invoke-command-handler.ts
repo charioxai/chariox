@@ -5,14 +5,15 @@ import type {
   WorkflowQueuedPrompt,
   WorkflowRun,
 } from "./cli-types.js"
+import type { WorkflowGateEntry } from "@chariox/kernel-client/kernel-types"
 
 type FooterTone = "info" | "error"
 
-export type WorkflowRunInvokePayload = {
+export type WorkflowRunInvokePayload = { entry: WorkflowGateEntry } | ({
   workflow: WorkflowDefinition
   endpoint: WorkflowEndpointDefinition
   session: RuntimeSession
-} & ({ workflow_run: WorkflowRun } | { queued_prompt: WorkflowQueuedPrompt })
+} & ({ workflow_run: WorkflowRun } | { queued_prompt: WorkflowQueuedPrompt }))
 
 export type WorkflowInvokeCommandContext = {
   firstWorkflowArgIsExplicit: (workflowRef: string | undefined) => boolean
@@ -58,6 +59,10 @@ export async function handleWorkflowInvokeCommand(
     return
   }
   const payload = await deps.invokeWorkflowEndpoint(workflowRef, endpointRef, prompt || null, queueRef)
+  if ("entry" in payload) {
+    deps.flashFooter(`workflow entry ${payload.entry.entry_id} [${payload.entry.disposition}]`, "info")
+    return
+  }
   deps.applySessionState(payload.session)
   deps.upsertWorkflowDefinition(payload.workflow)
   deps.selectWorkflowCanvas(payload.workflow.id)

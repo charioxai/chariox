@@ -1,3 +1,4 @@
+import type { WorkflowGateEntry } from "@chariox/kernel-client/kernel-types"
 import type {
   RuntimeSession,
   WorkflowDefinition,
@@ -41,6 +42,9 @@ export function createWorkflowRuntimeController(deps: WorkflowRuntimeControllerD
     const response = await deps.sendRequest(
       invokeWorkflowEndpointRequest(deps.sessionId(), workflowRef, endpointRef, prompt, queueRef),
     )
+    if ("WorkflowEntryAccepted" in response) {
+      return expectVariant<{ entry: WorkflowGateEntry }>(response, "WorkflowEntryAccepted")
+    }
     if ("WorkflowRunInvoked" in response) {
       const payload = expectVariant<{
         workflow_run: WorkflowRun

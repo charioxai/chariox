@@ -141,6 +141,8 @@ fn local_daemon_protocol_event_publication_shape_is_versioned() {
         LocalDaemonResponse::EventGeneratorEventsPage {
             page: crate::local::EventGeneratorEventPage {
                 events: vec![crate::local::EventGeneratorEventDefinition {
+                    payload_schema: None,
+                    examples: vec![],
                     event_type: "pull_request.opened".to_string(),
                     version: 1,
                     name: "Pull request opened".to_string(),

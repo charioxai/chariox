@@ -255,6 +255,7 @@ struct PendingWorkflowTurnOutputs {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkflowWatchdogTickPlan {
+    pub scheduled_for_ms: u64,
     pub watchdog_id: String,
     pub session_id: String,
     pub workflow_id: String,

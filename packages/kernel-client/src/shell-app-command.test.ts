@@ -1,7 +1,7 @@
 import { LocalIpcError } from "./local-ipc-error.js"
 import assert from "node:assert/strict"
 import { test } from "node:test"
-import { appCommandArgs, executeAppCommand } from "./shell-app-command.js"
+import { appCommandArgs, executeAppCommand, inboxRequest } from "./shell-app-command.js"
 
 test("App list preserves large generations and pages without unbounded collection", async () => {
   const requests: Record<string, unknown>[] = []
@@ -282,3 +282,10 @@ test("App worker start causes distinguish readiness cancellation from deadline",
   assert.equal(result.ok, false)
   assert.equal(sent, 0)
  })
+
+test("App inbox CLI carries the consumer's coarse source filter", () => {
+  const args=["add","installed","advisories","upstream_fact","advisory.published","--version","2","--connection","dev.chariox.upstream-watch/public-owner/public-upstreams","--filter-json",'{"packages":["npm:signalk-server"]}']
+  const request=inboxRequest(args) as {CreateAppInboxRoute:{connection:{filter:unknown}}}
+  assert.deepEqual(request.CreateAppInboxRoute.connection.filter,{packages:["npm:signalk-server"]})
+  assert.equal(inboxRequest(["add","installed","route","upstream_fact","advisory.published","--filter-json","{}"]),null)
+})

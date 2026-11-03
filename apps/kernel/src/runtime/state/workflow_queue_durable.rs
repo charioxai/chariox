@@ -178,7 +178,11 @@ impl KernelRuntimeOwnedState {
         if run.status() == WorkflowRunStatus::Paused {
             return Ok(None);
         }
-        let node = run.node_runs().first().ok_or_else(entry_conflict)?;
+        let node = run
+            .node_runs()
+            .iter()
+            .find(|node| node.id() == intent.node_id)
+            .ok_or_else(entry_conflict)?;
         if run.status().is_terminal()
             || node.id() != intent.node_id
             || node.agent_id() != intent.agent_id
