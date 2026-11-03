@@ -75,6 +75,25 @@ Supplementary regression checks:
 python3 -B -m unittest discover -s scripts/e2e-stack/vault-autonomy -v
 ```
 
+## AU-01 / AU-02 / AU-11: flagship (`flagship-live.mjs`)
+
+The real built new UI, hosted WSS relay and official Codex agent: owner creates, reveals (hold) and replaces a Vault
+entry, an ordinary GitHub fill, exact-origin refusal, a real Mail.tm token captured by `capture_command` and used by
+`use_env`, rotation and revocation. `VFLAG_BINDING=bound VFLAG_MAIL=1 VFLAG_EXTRA=1`; the stack's generated access key
+enters on fd 3 and `VFLAG_OWNER_EMAIL` names its fixture identity.
+
+## AU-15 / AU-06 / AU-11: Neon (`neon-live.mjs`)
+
+Neon's claimable service (`https://neon.com/auth.md`, anonymous flow, no account) is a public auth.md service that
+needs no human step. Run with the same environment as the flagship driver. Turn 1: the agent calls
+`chariox.agent_auth.register` with `return_fields ["/project/id","/project/expires_at"]` (Neon scopes its API to
+the project the registration created, so the id is needed) and makes one 200 call. Turn 2: it mints a second token with
+`capture_command`, fetches the project's `database_url` with `use_env` into a file, captures that file into the Vault
+with a file binding, writes `.env` from the handle, and a small app queries the real database. The harness repeats
+the query itself with the `.env` value and scans transcripts and artifacts for the URL and password. Last turn:
+the agent records the project in the resource register and revokes it (HTTP 204, then 401). Neon deletes unclaimed
+projects after 72 hours; the drill deletes its own.
+
 ## AU-16: scope of the existing substitute mechanism
 
 At source `68c0f04848`, AU-16 remains a product feature gap. It is not blocked
