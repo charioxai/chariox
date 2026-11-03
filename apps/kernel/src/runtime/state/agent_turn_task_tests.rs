@@ -65,7 +65,10 @@ fn decoded_at_turn_end(finished: usize) -> usize {
             .owned
             .ensure_agent_task(room, agent, current, None)
             .unwrap();
-        let task = store.agent_turn_task(room, agent, "current").unwrap().unwrap();
+        let task = store
+            .agent_turn_task(room, agent, "current")
+            .unwrap()
+            .unwrap();
         assert!(!store
             .agent_has_other_unfinished_task(room, agent, &task.task_id)
             .unwrap());
