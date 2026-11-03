@@ -40,7 +40,7 @@ impl KernelRuntimeState {
         Ok(project)
     }
 
-    /// The Project's own folder or a worktree of one of its sessions: nothing else is a checkout.
+    /// The Project's own folder, a git worktree of it or a worktree of one of its sessions: nothing else is a checkout.
     fn project_checkout(
         &self,
         project: &crate::session::RuntimeProject,
@@ -61,7 +61,11 @@ impl KernelRuntimeState {
                 .read()
                 .sessions_in_project(project.id())?
                 .iter()
-                .any(|session| session.worktree_id() == requested);
+                .any(|session| session.worktree_id() == requested)
+            || project.workspace_ids().iter().any(|id| {
+                crate::runtime::workspace_worktrees::list_workspace_worktrees(id, None)
+                    .is_ok_and(|worktrees| worktrees.iter().any(|worktree| worktree.path == requested))
+            });
         if !known {
             return Err(environment_error(
                 "the folder is not a checkout of this Project",
