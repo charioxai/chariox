@@ -6243,6 +6243,17 @@ minimum for these requests: a kernel older than 966 refuses an unknown variant, 
 stage kernels are re-provisioned. The managed-upgrade list is [629, 636, 966]. Focused checks:
 `cargo test -p chariox-kernel --lib protocol_shapes` and `pnpm protocol:conformance`.
 
+### Agent-requested Apps — local 969 / relay peer 418
+
+An agent exposes an installed App to itself with `chariox.request_extension` (`kind: "app"`); the
+kernel binds it at once, with no person and no prompt. `ExtensionGrant` loses its optional
+kernel-issued `app_grant` (identity, expiry, prompt and delegation attribution): a binding is a plain
+`{kind, name}` row. `GrantAgentExtension` with kind `app` is refused (a person does not assign Apps);
+`RevokeAgentExtension` still unbinds. An agent's calls into an App view need no browser claim. Peer 418
+carries local 969. A kernel older than 969 still has the person-approval flow; development stage kernels
+are re-provisioned. The managed-upgrade list is [629, 636, 969]. Focused checks:
+`cargo test -p chariox-kernel --lib app_binding` and `pnpm protocol:check`.
+
 ### Opaque reimage provider id: local 924 / relay peer 375
 
 The managed-environment reimage preflight carries `desiredRelease.providerId`. It was a

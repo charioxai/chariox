@@ -465,4 +465,6 @@ pub use workspace::*;
 /// Connected service machine requests use the ordinary Chariox access grant.
 /// MP-08/MP-09/MP-10/MP-11: 965 integrates declared Vault uses and enrolled-kernel machine authority (peer414).
 /// MP-08/MP-09/MP-10/MP-11: 966 integrates WASM Apps with Landing965 (peer415).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 966;
+/// MP-08/MP-09/MP-10/MP-11: 969 drops the App binding's kernel-issued `app_grant`: an agent
+/// binds an installed App to itself by asking (peer418).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 969;
