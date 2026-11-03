@@ -5,6 +5,8 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 mod control;
+#[cfg(test)]
+pub(crate) use control::pause_sampling_for_key;
 use control::WatchCommand;
 pub(crate) use control::{
     end_owner, outside_ended_for_key, start_now_for_key, stop_for_key, stop_released,
@@ -413,6 +415,11 @@ impl PreparedDomain {
                     break;
                 }
                 match stopped.recv_timeout(INTERVAL) {
+                    #[cfg(test)]
+                    Ok(WatchCommand::PauseSampling { reply, resume }) => {
+                        let _ = reply.send(Ok(Vec::new()));
+                        let _ = resume.recv();
+                    }
                     Ok(WatchCommand::Release) => released = true,
                     Ok(WatchCommand::MemoryStop {
                         pid,
