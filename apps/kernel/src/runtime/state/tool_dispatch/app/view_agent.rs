@@ -20,7 +20,7 @@ use crate::session::{
 };
 use chariox_app_package::v2::{self as declared_actions, UiActionDeclaration, UiActionEffect};
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 pub(in crate::runtime::state) const CATALOG: &str = "chariox.app_view_catalog";
 const INVOKE: &str = "chariox.app_view_invoke";
@@ -179,7 +179,11 @@ impl KernelRuntimeState {
                 .iter()
                 .any(|grant| grant.kind == ExtensionKind::App)
         });
-        if granted { specs() } else { Vec::new() }
+        if granted {
+            specs()
+        } else {
+            Vec::new()
+        }
     }
 
     pub(in crate::runtime::state) async fn try_app_view_tool(

@@ -4,8 +4,8 @@
 //! `view_unavailable`; that is how these tests tell "refused" from "went on".
 use super::*;
 use crate::{
-    DaemonApp, DaemonConfig, agent::CreateAgentRequest, extension::ExtensionGrant,
-    provider::LaunchProviderRequest, runtime::router::CommandRouter, session::CreateSessionRequest,
+    agent::CreateAgentRequest, extension::ExtensionGrant, provider::LaunchProviderRequest,
+    runtime::router::CommandRouter, session::CreateSessionRequest, DaemonApp, DaemonConfig,
 };
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -638,16 +638,14 @@ async fn an_existing_session_action_approval_skips_the_next_prompt_and_revocatio
         .forget_session(&rig.session);
     assert!(!rig.runtime.app_control().views().keep_pumping(&rig.session));
     let context = rig.context(declared());
-    assert!(
-        tokio::time::timeout(
-            std::time::Duration::from_millis(200),
-            rig.runtime
-                .approve_view_action(rig.run.id(), &rig.agent, &context, &action, &input)
-        )
-        .await
-        .unwrap()
-        .is_ok()
-    );
+    assert!(tokio::time::timeout(
+        std::time::Duration::from_millis(200),
+        rig.runtime
+            .approve_view_action(rig.run.id(), &rig.agent, &context, &action, &input)
+    )
+    .await
+    .unwrap()
+    .is_ok());
 
     rig.runtime
         .revoke_agent_extension(rig.agent.id(), ExtensionKind::App, APP, "alice")
@@ -787,7 +785,7 @@ enum LiveBindingCheck {
 
 async fn check_live_binding(check: LiveBindingCheck) {
     use crate::runtime::browser_controller_process::BrowserControllerProcessStore;
-    use chariox_app_package::{VerificationPolicy, verify};
+    use chariox_app_package::{verify, VerificationPolicy};
     use chariox_app_runtime::release_store::{ReleaseStore, StageBudget};
     let mut rig = rig_for_catalog(true);
     rig.grant().await;
@@ -1052,13 +1050,12 @@ async fn check_live_binding(check: LiveBindingCheck) {
             1
         );
         // The binding grants declared App work in this Room, never another Room's Tab.
-        assert!(
-            rig.runtime
-                .app_control()
-                .views()
-                .bound_views("unrelated-room")
-                .is_empty()
-        );
+        assert!(rig
+            .runtime
+            .app_control()
+            .views()
+            .bound_views("unrelated-room")
+            .is_empty());
         rig.runtime
             .app_control()
             .views()
