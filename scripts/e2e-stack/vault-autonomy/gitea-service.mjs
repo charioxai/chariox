@@ -55,6 +55,7 @@ REQUIRE_SIGNIN_VIEW = false
 MODE = console
 LEVEL = warn
 logger.access.MODE = console
+logger.access.LEVEL = info
 `, { mode: 0o600 })
   execFileSync('chown', ['ubuntu:ubuntu', config])
   const passwordFile = path.join(home, 'password')
@@ -74,7 +75,9 @@ logger.access.MODE = console
   }
   return {
     origin, pid: child.pid, home,
-    accessLog: () => log.split('\n').filter(line => /"(GET|POST) \/(user\/(login|two_factor|logout|settings\/security)|user\/settings\/security\/two_factor)/.test(line)),
+    // Gitea stores the last accepted passcode and refuses to take it twice: a changed value
+    // after each sign-in is the server-side proof that a new period's code was accepted.
+    lastPasscode: () => execFileSync('python3', ['-I', '-c', 'import sqlite3,sys;c=sqlite3.connect("file:"+sys.argv[1]+"?mode=ro",uri=True);r=c.execute("select last_used_passcode from two_factor").fetchall();print(r[0][0] if r else "")', path.join(home, 'work', 'gitea.db')], { encoding: 'utf8' }).trim(),
     twoFactorEnabled: async () => (await fetch(origin + '/api/v1/user', { headers: { authorization: 'Basic ' + Buffer.from(`${user}:${password}`).toString('base64') } })).status === 401,
     async stop() {
       if (child.exitCode === null && Number.isInteger(child.pid) && child.pid > 1) { child.kill('SIGTERM'); await new Promise(resolve => child.once('exit', resolve)) }

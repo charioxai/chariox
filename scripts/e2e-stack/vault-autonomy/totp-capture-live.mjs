@@ -45,7 +45,7 @@ function otpCodes(seed) {
 const marker = `TCAP${mode.toUpperCase()}_${Date.now()}_DPR${dpr}`
 const privateValues = [], checks = [], errors = []
 const serviceSecrets=[]
-let fixture, browser, context, page, agentId, sessionId, observedRunId, gitea, captured
+let fixture, browser, context, page, agentId, sessionId, observedRunId, gitea, captured, lastReplies=[]
 const check = (name, ok) => { checks.push({ name, ok:Boolean(ok) }); assert.ok(ok, name) }
 const safe = value => { let text = String(value); for (const secret of [...privateValues,...serviceSecrets]) if (secret) text = text.split(secret).join('[redacted]'); return text }
 const shot = async name => {
@@ -101,9 +101,11 @@ async function agentTurn(prompt, success, failure) {
  })
  const field=page.locator('[data-prompt-input]');await field.fill(prompt);await field.press('Enter')
  await waitFor(async()=>{const state=(await fixture.send({GetSessionState:{session_id:sessionId}})).SessionState;observedRunId=state.agent_activity[agentId]?.active_turn?.provider_run_id ?? state.session.active_provider_run_id;return Boolean(observedRunId)},'native provider run identity',60000)
- await page.waitForFunction(({success,failure})=>[...document.querySelectorAll('.pane-transcript-reply')].some(e=>e.innerText.includes(success)||e.innerText.includes(failure)),{success,failure},{timeout:600000})
+ await page.waitForFunction(({success,failure})=>[...document.querySelectorAll('.pane-transcript-reply')].some(e=>e.innerText.trim().startsWith(success)||e.innerText.trim().startsWith(failure)),{success,failure},{timeout:600000})
  const replies=await page.locator('.pane-transcript-reply').allInnerTexts()
- check(success,replies.some(text=>text.includes(success))&&!replies.some(text=>text.includes(failure)))
+ // The user's own prompt text is a transcript entry too: only an answer that starts with the marker counts.
+ lastReplies=replies.map(text=>safe(text).slice(0,400))
+ check(success,replies.some(text=>text.trim().startsWith(success))&&!replies.some(text=>text.trim().startsWith(failure)))
  const seen=await page.evaluate(()=>{window.__vgapsProbe.observer.disconnect();return window.__vgapsProbe.seen})
  check('no approval or sudo interaction during ordinary Vault use',seen===0)
  await shot(success)
@@ -207,7 +209,7 @@ try {
   return replies.some(text=>text.includes(ready))
  },'real Codex browser admission',300000)
  await page.waitForFunction(()=>!document.querySelector('section[data-kernel-interaction-id]'))
- const totpName=marker+' Gitea authenticator'
+ const totpName=marker+' Gitea authenticator',accepted=[]
  const common=`The kernel browser is already loaded. Use chariox.kernel_browser_* tools on my displayed browser; take a fresh snapshot before every action (tab_id, generation, document_id and node_ref come from it). Sign in to Gitea at ${gitea.origin} as the user drillagent: type the user name drillagent, and fill the password field with Vault credential ${passwordId} using chariox.kernel_browser_paste_secret with submit=false, then click the Sign In button. On the Gitea two-factor page fill the passcode field with the TOTP Vault credential using chariox.kernel_browser_paste_secret with submit=true (the field belongs to a native form, so no button click is needed; the browser pane is small and buttons can be below the visible area). Never type or print a password, key or code yourself.`
  try {
   await agentTurn(`MP-08 / MP-09 / MP-10 / MP-11 TCAP enrolment ${marker}: ${common} Now enrol an authenticator: sign in (no two-factor yet), open ${gitea.origin}/user/settings/security/two_factor/enroll . ${mode==='qr'
@@ -218,15 +220,15 @@ try {
   checks.push({name:'captured entry shape',injection:captured.injection?.kind??captured.injection,binding:captured.metadata?.use_binding,created_by_kind:captured.metadata?.created_by_kind})
   check('entry is a TOTP seed bound to the one Gitea origin',JSON.stringify(captured.metadata?.use_binding?.target)===JSON.stringify({kind:'totp',origin:gitea.origin}))
   check('Gitea itself now requires two-factor',await gitea.twoFactorEnabled())
+  accepted.push(gitea.lastPasscode())
   const seed=(await fixture.send({OwnerVault:{action:'reveal',id:captured.id}})).OwnerVault.result.value
   serviceSecrets.push(seed,...otpCodes(seed))
   await agentTurn(`MP-08 / MP-09 / MP-10 / MP-11 TCAP login one ${marker}: ${common} The TOTP Vault credential is ${captured.id}. Sign out first (${gitea.origin}/user/logout), then sign in with the password and, on the two-factor page, the code from ${captured.id}. When Gitea shows the signed-in dashboard, sign out again. Finish with ${marker}_LOGIN1_OK, otherwise ${marker}_LOGIN1_FAILED with the first failing tool error.`,marker+'_LOGIN1_OK',marker+'_LOGIN1_FAILED')
+  accepted.push(gitea.lastPasscode())
   await agentTurn(`MP-08 / MP-09 / MP-10 / MP-11 TCAP login two ${marker}: ${common} The TOTP Vault credential is ${captured.id}. Gitea refuses a code twice, so first wait for a different real TOTP period: schedule ONE one-shot chariox.events.timer with delay_ms 45000 and yield on its registration_id with a finite future deadline; end the turn after the yield. On the real wake sign in again with the password and the code from ${captured.id}, check the signed-in dashboard, and sign out. Finish with ${marker}_LOGIN2_OK, otherwise ${marker}_LOGIN2_FAILED with the first failing tool error.`,marker+'_LOGIN2_OK',marker+'_LOGIN2_FAILED')
-  const log=gitea.accessLog()
-  await writeFile(path.join(evidence,'gitea-access-log.txt'),log.join('\n')+'\n')
-  const secondFactor=log.filter(line=>/"POST \/user\/two_factor/.test(line))
-  checks.push({name:'Gitea second-factor submissions',count:secondFactor.length,statuses:secondFactor.map(line=>line.match(/ (\d{3})\b/)?.[1])})
-  check('Gitea accepted two separate second-factor logins',secondFactor.filter(line=>/ 30[0-9] /.test(line)).length>=2)
+  accepted.push(gitea.lastPasscode())
+  check('Gitea accepted a different passcode at each of the two logins (separate periods)',Boolean(accepted[1])&&Boolean(accepted[2])&&accepted[1]!==accepted[2]&&accepted[1]!==accepted[0])
+  checks.push({name:'accepted passcode count',distinct:new Set(accepted).size})
   const vaultWindow=async name=>{
    await page.locator('[data-feature=vault]').click();await page.locator('[data-vault-window]').waitFor();await page.waitForTimeout(800)
    await shot(name)
@@ -259,7 +261,7 @@ try {
 } catch(error) {
  if(page) await shot('failure').catch(()=>{})
  const surfaces=page?await page.locator('[data-paint-mode]').evaluateAll(elements=>elements.map(element=>({mode:element.getAttribute('data-paint-mode'),visible:element.getBoundingClientRect().width>0,frames:element.querySelectorAll('iframe').length}))).catch(()=>[]):[]
- await writeFile(path.join(evidence,'failure.json'),JSON.stringify({error:safe(error.stack ?? error),checks,errors,surfaces},null,2)+'\n')
+ await writeFile(path.join(evidence,'failure.json'),JSON.stringify({error:safe(error.stack ?? error),checks,errors,surfaces,lastReplies},null,2)+'\n')
  if(fixture)await writeFile(path.join(evidence,'kernel.log'),safe(fixture.diagnostics()))
  console.error(safe(error.message ?? error));process.exitCode=1
 } finally {

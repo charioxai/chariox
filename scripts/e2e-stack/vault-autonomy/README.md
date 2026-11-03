@@ -110,3 +110,25 @@ That contract and its real-provider, interrupted/restarted, side-effecting
 drill exceed this signup-harness repair. No automatic refusal-text matching,
 handoff bypass, new mandate or acceptance PASS is introduced here. S9 remains
 FAIL until that separate behavior and live proof exist.
+
+## AU-10: TOTP enrolment by capture (Gitea)
+
+`totp-capture-live.mjs` runs an official Codex agent against a real Gitea
+(`gitea-service.mjs`, downloaded outside the repository and run as the
+unprivileged `ubuntu` user under `/home/ubuntu/vgaps-*`). The owner stores the
+account password in the Vault for the one Gitea origin; the agent signs in with
+it, then enrols two-factor by calling `chariox.vault.capture_browser` with
+`totp: true`, pointing at the setup key text (`TCAP_MODE=key`) or at the QR
+image with `read: "qr"` (`TCAP_MODE=qr`). It fills the passcode field with the
+returned handle, signs out, and signs in twice more, the second time after one
+real timer wake so Gitea sees a different period. The driver checks that the
+captured entry is a TOTP seed bound to the one origin, that Gitea itself now
+requires two-factor and stored a different passcode at each login, that no
+approval interaction appeared, and that no seed or code is in the provider
+transcripts or kernel artifacts. Run it under Bun (the Cloud fixture needs
+`argon2Sync`) through `agents/boundrun.sh`, with absolute `TCAP_*` paths:
+`TCAP_CLOUD_REPO` (a Cloud checkout with `node_modules`), `TCAP_BIN` (a
+directory with `chariox-kernel` and `chariox-relay`), `TCAP_PROFILE_HOME` (a
+product-linked Codex profile copy), `TCAP_GITEA`, `TCAP_ORIGIN` (an owned
+`pr<N>-vgaps*` hosted stack), `TCAP_EVIDENCE`, `TCAP_BUILD_MANIFEST`,
+`TCAP_CLOUD_HEAD`, `TCAP_DPR` and `TCAP_MODE`.
