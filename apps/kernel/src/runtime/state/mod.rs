@@ -1196,14 +1196,6 @@ impl KernelRuntimeState {
     }
 
     #[cfg(test)]
-    pub(crate) fn pending_provider_reload_for_test(&self, agent_id: &str) -> bool {
-        self.owned
-            .pending_provider_reloads
-            .write()
-            .contains_key(agent_id)
-    }
-
-    #[cfg(test)]
     pub(crate) fn observe_app_lock_wait_for_test(&mut self, probe: Arc<tokio::sync::Notify>) {
         self.app_lock_wait_probe = Some(probe);
     }

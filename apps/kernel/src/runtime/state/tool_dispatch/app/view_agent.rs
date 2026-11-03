@@ -114,7 +114,7 @@ enum ViewHost {
         view_id: String,
         browser_target: String,
         browser_generation: u64,
-        retained: (AppViewBinding, crate::local::UserAppView),
+        retained: Box<(AppViewBinding, crate::local::UserAppView)>,
     },
 }
 
@@ -595,7 +595,7 @@ impl KernelRuntimeState {
                         view_id,
                         browser_target,
                         browser_generation,
-                        retained,
+                        retained: Box::new(retained),
                     },
                     binding: context_binding,
                     authority,
@@ -704,13 +704,13 @@ impl KernelRuntimeState {
                 retained,
             } => {
                 let user_views = self.app_control().user_views();
-                if user_views.get(owner, view_id).as_ref() != Some(retained)
+                if user_views.get(owner, view_id).as_ref() != Some(&**retained)
                     || user_views.browser_target(owner, view_id).as_deref()
                         != Some(browser_target.as_str())
                 {
                     return Err(failure("unknown_view", "The App view closed; reopen it"));
                 }
-                let (binding, view) = retained;
+                let (binding, view) = &**retained;
                 let Some(browser) = view.browser.as_ref() else {
                     return Err(failure("unknown_view", "The App view closed; reopen it"));
                 };
