@@ -302,6 +302,28 @@ fn terminal(
 }
 
 impl DurableKernelStateStore {
+    pub(crate) fn gate_task_entry(
+        &self,
+        owner: &str,
+        session: &str,
+        id: &str,
+    ) -> Result<Option<(Entry, Option<String>)>> {
+        let db = self.lock_connection("workflow.gate.task")?;
+        let row:Option<(String,Option<String>)>=db.query_row("SELECT coalesce(summary_json,json_extract(nullif(body_json,''),'$.entry')),json_extract(nullif(body_json,''),'$.admission.template.created_by_agent_id') FROM workflow_gate_entries WHERE owner_id=?1 AND session_id=?2 AND entry_id=?3",params![owner,session,id],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(sql)?;
+        row.map(|(json, creator)| decode(&json).map(|entry| (entry, creator)))
+            .transpose()
+    }
+    pub(crate) fn gate_workflow_run(
+        &self,
+        owner: &str,
+        kernel: &str,
+        session: &str,
+        id: &str,
+    ) -> Result<Option<crate::session::WorkflowRun>> {
+        let db = self.lock_connection("workflow.gate.run")?;
+        let row:Option<String>=db.query_row("SELECT r.payload_json FROM workflow_gate_entries e JOIN durable_workflow_runs r ON r.owner_id=?2 AND r.session_id=e.session_id AND json_extract(r.payload_json,'$.queue_item_id')=json_extract(coalesce(e.summary_json,json_extract(nullif(e.body_json,''),'$.entry')),'$.queued_prompt_id') WHERE e.owner_id=?1 AND e.session_id=?3 AND e.entry_id=?4",params![owner,kernel,session,id],|r|r.get(0)).optional().map_err(sql)?;
+        row.map(|json| decode(&json)).transpose()
+    }
     pub(crate) fn gate_module(&self, owner: &str, digest: &str) -> Result<Vec<u8>> {
         let db = self.lock_connection("workflow.gate.module")?;
         db.query_row(
@@ -479,14 +501,18 @@ pub(super) fn execute(db: &mut Connection, request: Request) -> bool {
                 if entry(&tx, &id)?.is_some_and(|e| e.disposition.is_terminal()) {
                     return Err(error("gate entry already handed or terminal"));
                 }
-                let mut s = load(&tx, &id)?
+                let requested = id.clone();
+                let parent:Option<String>=tx.query_row("SELECT b.entry_id FROM workflow_gate_members m JOIN workflow_gate_batches b ON b.group_id=m.group_id WHERE m.entry_id=?1 AND b.closed=0",[&id],|r|r.get(0)).optional().map_err(sql)?;
+                let mut s = load(&tx, parent.as_deref().unwrap_or(&id))?
                     .filter(|s| s.admission.owner == owner)
                     .ok_or_else(|| error("gate entry not found"))?;
                 if s.entry.disposition.is_terminal() {
                     return Err(error("gate entry already handed or terminal"));
                 }
                 terminal(&tx, &mut s, Disposition::Cancelled, Some(reason))?;
-                Outcome::Entry(s.entry)
+                Outcome::Entry(
+                    entry(&tx, &requested)?.ok_or_else(|| error("cancelled gate entry missing"))?,
+                )
             }
         };
         if let Err(e) = tx.commit() {

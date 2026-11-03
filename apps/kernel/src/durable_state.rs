@@ -2321,6 +2321,8 @@ CREATE INDEX IF NOT EXISTS idx_durable_workflow_runs_workflow_created
 
 CREATE INDEX IF NOT EXISTS idx_durable_workflow_runs_status
     ON durable_workflow_runs(owner_id, status, session_id);
+CREATE INDEX IF NOT EXISTS idx_durable_workflow_runs_queue_item
+    ON durable_workflow_runs(owner_id, session_id, json_extract(payload_json, '$.queue_item_id'));
 
 CREATE INDEX IF NOT EXISTS idx_durable_workflow_runs_active
     ON durable_workflow_runs(owner_id, session_id, created_at_ms, run_id)

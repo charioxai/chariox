@@ -23,18 +23,6 @@ pub(crate) struct WorkflowDispatchIntent {
     pub(crate) queued_prompt: WorkflowQueuedPrompt,
 }
 pub(super) fn initialize(connection: &Connection) -> rusqlite::Result<()> {
-    let old: Option<String> = connection
-        .query_row(
-            "SELECT sql FROM sqlite_schema WHERE name='durable_workflow_dispatch_intents'",
-            [],
-            |r| r.get(0),
-        )
-        .optional()?;
-    if old.is_some_and(|s| !s.contains("PRIMARY KEY(owner_id,session_id,run_id,node_id)")) {
-        connection.execute_batch("SAVEPOINT gate_dispatch_migration; ALTER TABLE durable_workflow_dispatch_intents RENAME TO gate_dispatch_old; DROP INDEX IF EXISTS durable_workflow_dispatch_pending; DROP TRIGGER IF EXISTS durable_workflow_dispatch_run_deleted;")?;
-        initialize(connection)?;
-        connection.execute_batch("INSERT INTO durable_workflow_dispatch_intents SELECT * FROM gate_dispatch_old; DROP TABLE gate_dispatch_old; RELEASE gate_dispatch_migration;")?;
-    }
     connection.execute_batch("CREATE TABLE IF NOT EXISTS durable_workflow_dispatch_intents(
         owner_id TEXT NOT NULL,session_id TEXT NOT NULL,run_id TEXT NOT NULL,node_id TEXT NOT NULL,
         agent_id TEXT NOT NULL,queued_json TEXT NOT NULL,operation_id TEXT NOT NULL UNIQUE,fingerprint TEXT NOT NULL,

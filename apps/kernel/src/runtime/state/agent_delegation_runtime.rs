@@ -88,14 +88,30 @@ impl KernelRuntimeOwnedState {
         };
         // Both references are kernel assigned: the child's prompt context and the
         // parent's accepted receipt name the same invocation, not merely an agent ID.
+        let session = self.session_store.get_session(room)?;
         for parent in self.durable_state_store.agent_tasks(Some(room), None)? {
-            if parent.owner_user_id == child.owner_user_id
-                && parent.obligations.iter().any(|o| {
-                    o.tracks_workflow_run()
-                        && o.dispatch_state == "accepted"
-                        && o.resource_id.as_deref() == Some(workflow_run)
-                })
+            if parent.owner_user_id != child.owner_user_id {
+                continue;
+            }
+            let mut matches = false;
+            for obligation in parent
+                .obligations
+                .iter()
+                .filter(|o| o.tracks_workflow_run() && o.dispatch_state == "accepted")
             {
+                if let Some(resource) = obligation.resource_id.as_deref() {
+                    if resource == workflow_run
+                        || (resource.starts_with("gate_")
+                            && self
+                                .agent_workflow_source(&session, resource)?
+                                .is_some_and(|run| run.id() == workflow_run))
+                    {
+                        matches = true;
+                        break;
+                    }
+                }
+            }
+            if matches {
                 self.durable_state_store
                     .agent_lifecycle(Operation::BindDelegate {
                         parent_task: parent.task_id,
