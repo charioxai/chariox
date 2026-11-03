@@ -110,6 +110,10 @@ impl WorkflowProgression {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Keep each bounded transactional launch result owned until the caller publishes it"
+)]
 pub enum WorkflowLaunchOutcome {
     Entry {
         entry: crate::durable_state::workflow_gate::Entry,

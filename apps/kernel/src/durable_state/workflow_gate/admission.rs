@@ -149,6 +149,10 @@ pub(crate) fn accept_in(tx: &Transaction<'_>, a: Admission) -> Result<Entry> {
 }
 
 impl Admission {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Capture independent trusted source facts at one admission boundary before guest execution"
+    )]
     pub(crate) fn from_prompt(
         session: &RuntimeSession,
         workflow: &crate::session::WorkflowDefinition,

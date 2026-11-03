@@ -5,14 +5,16 @@ use crate::{
     session::{SessionService, WorkflowDefinition, WorkflowPublicationInvocationEnvelope},
 };
 use chariox_app_runtime::workflow_gate as gate;
-use serde_json::{Map, Value};
+use serde_json::Value;
+
+type HttpSource = (String, gate::JsonObject, Option<gate::DataSchema>);
 pub(super) fn http(
     sessions: &SessionService,
     session: &str,
     workflow: &WorkflowDefinition,
     endpoint: &str,
     inv: &WorkflowPublicationInvocationEnvelope,
-) -> Result<(String, Map<String, Value>, Option<gate::DataSchema>), DaemonError> {
+) -> Result<HttpSource, DaemonError> {
     let publication = sessions.resolve_workflow_publication_ref(session, &inv.publication_id)?;
     if !publication.enabled()
         || publication.workflow_id() != workflow.id()
