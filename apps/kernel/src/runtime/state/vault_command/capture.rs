@@ -107,6 +107,7 @@ impl KernelRuntimeState {
         let timeout = command_timeout(args.timeout_seconds)?;
         let turn = &context;
         let handle = captured_handle(turn, &args.request_id);
+        let claim = self.owned.vault_capture_claims.claim(&handle)?;
         let registry = crate::credential::CharioxCredentialRegistry::user()?;
         if let Some(existing) = registry.get(&handle)? {
             return committed(&existing, turn, &host, &args.use_binding);
@@ -129,6 +130,7 @@ impl KernelRuntimeState {
                 stdin: None,
                 timeout,
             },
+            claim.clone(),
         )
         .await?;
         use super::super::agent_process_watch::KernelCommandExit;
