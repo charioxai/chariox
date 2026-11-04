@@ -565,13 +565,70 @@ fn scrub_covers_unpadded_standard_base64() {
         .contains(&unpadded));
 }
 
+// A short password or a mistaken label stays masked in prose but never rewrites a URL, id or longer word.
+#[test]
+fn a_short_value_is_masked_only_as_a_whole_word() {
+    let root = TestRoot::new();
+    let store = RoomSecretObservations::new(root.path().join("observations"), BTreeSet::new());
+    store.register("room", "Token").unwrap();
+    store.register("room", "hunter").unwrap();
+    store
+        .register("room", "vaudit-long-secret-value-12345")
+        .unwrap();
+    let page = serde_json::json!({
+        "url": "https://dynv6.com/keys#key_token_1",
+        "path": "https://en.wikipedia.org/wiki/Token?x=1",
+        "id": "data-Token-field",
+        "longer": "Tokens and tokenizer, hunter2",
+        "prose": "Your Token is ready. The password hunter, then Token: ok",
+        "exact": "hunter",
+        "end": "type hunter.",
+        "long_in_url": "https://x.test/a?k=vaudit-long-secret-value-12345",
+    });
+    let scrubbed = store.scrub("room", page).unwrap();
+    for same in ["url", "path", "id", "longer"] {
+        assert_eq!(
+            scrubbed[same],
+            serde_json::json!({
+                "url": "https://dynv6.com/keys#key_token_1",
+                "path": "https://en.wikipedia.org/wiki/Token?x=1",
+                "id": "data-Token-field",
+                "longer": "Tokens and tokenizer, hunter2",
+            })[same],
+            "{same} must be left alone"
+        );
+    }
+    assert_eq!(
+        scrubbed["prose"],
+        "Your [redacted] is ready. The password [redacted], then [redacted]: ok"
+    );
+    assert_eq!(scrubbed["exact"], "[redacted]");
+    assert_eq!(scrubbed["end"], "type [redacted].");
+    assert_eq!(
+        scrubbed["long_in_url"], "https://x.test/a?k=[redacted]",
+        "a long value keeps today's matching"
+    );
+}
+
+#[test]
+fn a_short_value_split_across_stream_chunks_is_masked_as_a_whole_word() {
+    let variants = secret_spellings("hunter");
+    let mut parts = vec![
+        "say hun".to_string(),
+        "ter now".to_string(),
+        " tokenhunter".to_string(),
+    ];
+    assert!(redact_split_values(&mut parts, &variants));
+    assert_eq!(parts, ["say [redacted]", " now", " tokenhunter"]);
+}
+
 #[test]
 fn vault_echo_scrubs_nested_tool_text_and_simple_transforms_and_room_isolation() {
     let root = TestRoot::new();
     let store = RoomSecretObservations::new(root.path().join("observations"), BTreeSet::new());
     let secret = "vault-page-copy-regression-value";
     store.register("room", secret).unwrap();
-    let variants = secret_variants(secret);
+    let variants = secret_spellings(secret);
     let input = serde_json::json!({"accessibility": variants.iter().map(|s| s.as_str()).collect::<Vec<_>>(), "dom": {secret: secret}, "ocr": secret});
     let scrubbed = store.scrub("room", input.clone()).unwrap();
     assert!(!scrubbed.to_string().contains(secret));

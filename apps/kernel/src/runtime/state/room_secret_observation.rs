@@ -13,8 +13,10 @@ use zeroize::Zeroizing;
 
 mod lifecycle;
 mod revocation;
+mod spelling;
 mod storage;
 
+use self::spelling::{redact_split_values, secret_spellings, Spelling};
 use super::KernelRuntimeState;
 use crate::error::DaemonError;
 use crate::transport::room_browser_controller::{
@@ -195,7 +197,7 @@ impl RoomSecretObservations {
             .iter()
             .chain(&protection.retired_values)
             .chain(&protection.stored_values)
-            .flat_map(|value| secret_variants(value))
+            .flat_map(|value| secret_spellings(value))
             .map(|variant| variant.len().saturating_sub(1))
             .max()
             .unwrap_or(0);
@@ -274,7 +276,7 @@ impl RoomSecretObservations {
         let registered = self.register_value(room, value, live);
         if let Some(store) = &self.public_history {
             // JSON source uses escaped forms; use the same variants as scrub_value.
-            let candidates: Vec<_> = secret_variants(value)
+            let candidates: Vec<_> = secret_spellings(value)
                 .iter()
                 .map(|variant| {
                     let encoded =
@@ -788,7 +790,7 @@ impl RoomSecretObservations {
         }
     }
 
-    fn scrub_variants(&self, room: &str) -> Vec<Zeroizing<String>> {
+    fn scrub_variants(&self, room: &str) -> Vec<Spelling> {
         let room = self.room_key(room);
         // A Room whose registry failed to initialize has no entry; its events are already withheld.
         let Ok(rooms) = self.rooms.lock() else {
@@ -802,7 +804,7 @@ impl RoomSecretObservations {
             .iter()
             .chain(&protection.retired_values)
             .chain(&protection.stored_values)
-            .flat_map(|secret| secret_variants(secret))
+            .flat_map(|secret| secret_spellings(secret))
             .collect::<Vec<_>>();
         variants.sort_by_key(|variant| std::cmp::Reverse(variant.len()));
         variants
@@ -828,11 +830,11 @@ fn scrub_value(value: &mut serde_json::Value, secrets: &[Zeroizing<String>]) {
         serde_json::Value::String(text) => {
             let mut variants = Vec::new();
             for secret in secrets {
-                variants.extend(secret_variants(secret));
+                variants.extend(secret_spellings(secret));
             }
             variants.sort_by_key(|variant| std::cmp::Reverse(variant.len()));
             for variant in variants {
-                *text = text.replace(variant.as_str(), "[redacted]");
+                *text = variant.redact_in(text);
             }
         }
         serde_json::Value::Array(values) => {
@@ -851,92 +853,6 @@ fn scrub_value(value: &mut serde_json::Value, secrets: &[Zeroizing<String>]) {
         }
         _ => {}
     }
-}
-
-/// Replaces every variant occurrence in the parts joined together; a match that
-/// crosses parts becomes one marker in the part where it starts. Returns whether
-/// anything was replaced.
-fn redact_split_values(parts: &mut [String], variants: &[Zeroizing<String>]) -> bool {
-    let joined = parts.concat();
-    let mut spans = Vec::new();
-    let mut at = 0;
-    while at < joined.len() {
-        if let Some(variant) = variants
-            .iter()
-            .find(|variant| joined[at..].starts_with(variant.as_str()))
-        {
-            spans.push((at, at + variant.len()));
-            at += variant.len();
-        } else {
-            at += joined[at..].chars().next().map_or(1, char::len_utf8);
-        }
-    }
-    if spans.is_empty() {
-        return false;
-    }
-    let mut part_start = 0;
-    for part in parts.iter_mut() {
-        let part_end = part_start + part.len();
-        let mut rebuilt = String::new();
-        let mut cursor = part_start;
-        for &(start, end) in &spans {
-            if end <= part_start || start >= part_end {
-                continue;
-            }
-            rebuilt.push_str(&joined[cursor..start.max(part_start)]);
-            if start >= part_start {
-                rebuilt.push_str("[redacted]");
-            }
-            cursor = end.min(part_end);
-        }
-        rebuilt.push_str(&joined[cursor..part_end]);
-        *part = rebuilt;
-        part_start = part_end;
-    }
-    true
-}
-
-fn secret_variants(secret: &str) -> Vec<Zeroizing<String>> {
-    let percent = secret
-        .bytes()
-        .map(|byte| {
-            if byte.is_ascii_alphanumeric() || b"-_.!~*'()".contains(&byte) {
-                (byte as char).to_string()
-            } else {
-                format!("%{byte:02X}")
-            }
-        })
-        .collect::<String>();
-    let hex = secret
-        .bytes()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
-    let json = serde_json::to_string(secret).unwrap_or_default();
-    let html = secret
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&#39;");
-    vec![
-        secret.to_string(),
-        secret.to_lowercase(),
-        secret.to_uppercase(),
-        percent.clone(),
-        percent.to_lowercase(),
-        hex.clone(),
-        hex.to_uppercase(),
-        html,
-        json[1..json.len().saturating_sub(1)].to_string(),
-        base64::engine::general_purpose::STANDARD.encode(secret),
-        base64::engine::general_purpose::STANDARD_NO_PAD.encode(secret),
-        base64::engine::general_purpose::URL_SAFE.encode(secret),
-        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(secret),
-    ]
-    .into_iter()
-    .filter(|value| !value.is_empty())
-    .map(Zeroizing::new)
-    .collect()
 }
 
 fn fenced_observation_error() -> DaemonError {
