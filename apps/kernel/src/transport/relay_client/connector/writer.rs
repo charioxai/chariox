@@ -7,6 +7,26 @@ use tokio_tungstenite::tungstenite::Message;
 
 const RELAY_LARGE_FRAME_LOG_BYTES: usize = 256 * 1024;
 const RELAY_SLOW_WRITE_LOG_MS: u128 = 500;
+const RELAY_WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+async fn send_relay_frame<S>(writer: &mut S, frame: Message) -> bool
+where
+    S: Sink<Message> + Unpin,
+{
+    // MP-08 / MP-09 / MP-10 / MP-11: a queued renewal cannot heal a stuck
+    // writer. Ending it wakes the connector and closes the old socket.
+    match tokio::time::timeout(RELAY_WRITE_TIMEOUT, writer.send(frame)).await {
+        Ok(result) => result.is_ok(),
+        Err(_) => {
+            crate::logging::warn_with_fields(
+                "daemon.relay_client",
+                "relay socket write timed out; reconnecting",
+                serde_json::json!({ "timeout_ms": RELAY_WRITE_TIMEOUT.as_millis() }),
+            );
+            false
+        }
+    }
+}
 
 pub(super) async fn send_relay_envelope_frame<S>(
     writer: &mut S,
@@ -51,7 +71,7 @@ where
     let packet = chariox_relay::transport_timing::envelope_signature(&envelope);
     chariox_relay::transport_timing::record("kernel_write_start", packet);
     let started = Instant::now();
-    let sent = writer.send(frame).await.is_ok();
+    let sent = send_relay_frame(writer, frame).await;
     chariox_relay::transport_timing::record("kernel_write_end", packet);
     if kind == "daemon_event" {
         crate::transport::kernel_browser_display::timing("event_socket_write", started);
@@ -115,10 +135,10 @@ pub(super) async fn run_relay_writer<S>(
         tokio::select! {
             biased;
             Some(receipt) = transport_receipt_rx.recv() => {
-                if writer.send(Message::Text(receipt.into())).await.is_err() { break; }
+                if !send_relay_frame(&mut writer, Message::Text(receipt.into())).await { break; }
             }
             Some(payload) = pong_rx.recv() => {
-                if writer.send(Message::Pong(payload.into())).await.is_err() { break; }
+                if !send_relay_frame(&mut writer, Message::Pong(payload.into())).await { break; }
             }
             envelope = priority_outgoing_rx.recv(), if priority_open => {
                 match envelope {
@@ -140,18 +160,26 @@ pub(super) async fn run_relay_writer<S>(
 mod tests {
     use super::*;
     use std::pin::Pin;
-    use std::task::{Context, Poll};
     use std::sync::Arc;
-    use tokio::sync::mpsc;
+    use std::task::{Context, Poll};
     use std::time::Duration;
+    use tokio::sync::mpsc;
 
     struct StalledSink;
     impl Sink<Message> for StalledSink {
         type Error = std::io::Error;
-        fn poll_ready(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> { Poll::Ready(Ok(())) }
-        fn start_send(self: Pin<&mut Self>, _: Message) -> Result<(), Self::Error> { Ok(()) }
-        fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> { Poll::Pending }
-        fn poll_close(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> { Poll::Pending }
+        fn poll_ready(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+        fn start_send(self: Pin<&mut Self>, _: Message) -> Result<(), Self::Error> {
+            Ok(())
+        }
+        fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            Poll::Pending
+        }
+        fn poll_close(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            Poll::Pending
+        }
     }
 
     #[tokio::test(start_paused = true)]
@@ -164,13 +192,38 @@ mod tests {
             let (pong, pong_rx) = mpsc::channel(2);
             let (receipt, receipt_rx) = mpsc::channel(2);
             match lane {
-                "priority" => priority.send(RelayEnvelope::DaemonHeartbeat { daemon_id: "kernel".into(), registration: None }).await.unwrap(),
-                "event" => event.send(RelayEnvelope::Close { reason: "test".into(), kernel_reload: false }).await.unwrap(),
+                "priority" => priority
+                    .send(RelayEnvelope::DaemonHeartbeat {
+                        daemon_id: "kernel".into(),
+                        registration: None,
+                    })
+                    .await
+                    .unwrap(),
+                "event" => event
+                    .send(RelayEnvelope::Close {
+                        reason: "test".into(),
+                        kernel_reload: false,
+                    })
+                    .await
+                    .unwrap(),
                 "receipt" => receipt.send("receipt".into()).await.unwrap(),
                 _ => pong.send(vec![]).await.unwrap(),
             }
-            let writer = run_relay_writer(StalledSink, priority_rx, event_rx, pong_rx, receipt_rx, false, Arc::new(AtomicBool::new(false)));
-            assert!(tokio::time::timeout(Duration::from_secs(31), writer).await.is_ok(), "stalled {lane} write never releases connector");
+            let writer = run_relay_writer(
+                StalledSink,
+                priority_rx,
+                event_rx,
+                pong_rx,
+                receipt_rx,
+                false,
+                Arc::new(AtomicBool::new(false)),
+            );
+            assert!(
+                tokio::time::timeout(Duration::from_secs(31), writer)
+                    .await
+                    .is_ok(),
+                "stalled {lane} write never releases connector"
+            );
         }
     }
 }

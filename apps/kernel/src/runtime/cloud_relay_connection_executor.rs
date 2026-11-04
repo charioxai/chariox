@@ -17,8 +17,8 @@ use crate::runtime::cloud_api_client::{
 };
 use crate::runtime::cloud_relay_control::{
     cloud_relay_profile_has_runtime_credentials, cloud_relay_runtime_token_is_fresh,
-    cloud_runtime_token_subject, relay_token_payload, CLOUD_RELAY_CLIENT_TOKEN_TTL_MS,
-    CLOUD_RELAY_RUNTIME_TOKEN_TTL_MS,
+    cloud_runtime_token_subject, relay_token_expiry_ms, relay_token_payload,
+    CLOUD_RELAY_CLIENT_TOKEN_TTL_MS,
 };
 use crate::runtime::cloud_relay_profile_store::{
     clear_cloud_profile_if_stale, migrate_legacy_kernel_profile, persist_cloud_profile,
@@ -33,6 +33,13 @@ use crate::runtime::state::KernelRuntimeState;
 use crate::transport::relay_client::{refresh_remote_inventory_projection, RelayClientState};
 
 const KERNEL_CONNECTION_INVENTORY_REFRESH_TIMEOUT: Duration = Duration::from_secs(30);
+
+fn issued_token_expiry_ms(token: &str) -> Result<u64, DaemonError> {
+    relay_token_expiry_ms(token).ok_or_else(|| DaemonError::LocalTransport {
+        operation: "read issued Cloud relay token expiry",
+        message: "Cloud issued a relay token without a valid expiry; retry the connection".into(),
+    })
+}
 
 pub(crate) async fn execute_cloud_relay_status_request(
     config_projection: &DaemonConfigProjectionStore,
@@ -103,7 +110,8 @@ pub(crate) async fn ensure_cloud_relay_connection_replacing(
         }
     };
     let mut updated_profile = profile.clone();
-    updated_profile.token_expires_at_ms = Some(now_ms + CLOUD_RELAY_RUNTIME_TOKEN_TTL_MS);
+    // MP-08 / MP-09 / MP-10 / MP-11: the issuer may shorten the requested TTL.
+    updated_profile.token_expires_at_ms = Some(issued_token_expiry_ms(&issued.token)?);
     runtime_state
         .configure_relay_with_cloud_profile(
             Some(profile.relay_url),
@@ -139,8 +147,7 @@ pub(crate) async fn execute_connect_cloud_relay_request(
         },
     )
     .await?;
-    profile.token_expires_at_ms =
-        Some(crate::session::unix_epoch_ms() + CLOUD_RELAY_RUNTIME_TOKEN_TTL_MS);
+    profile.token_expires_at_ms = Some(issued_token_expiry_ms(&issued.token)?);
     let saved = persist_cloud_profile(runtime_state, profile.clone()).await?;
     runtime_state
         .configure_relay(

@@ -90,6 +90,8 @@ const _: () = assert!(
 );
 const CLOUD_RELAY_PRESENCE_JITTER_SPREAD_MS: u64 = 5_000;
 const RELAY_RECEIPT_STALL_LIMIT: Duration = Duration::from_secs(30);
+// The relay pings every 30 seconds, even while the kernel sends heartbeats.
+const RELAY_READ_IDLE_TIMEOUT: Duration = Duration::from_secs(45);
 const RELAY_RECONNECT_BASE_DELAY_MS: u64 = 500;
 const RELAY_RECONNECT_MAX_DELAY_MS: u64 = 1_000;
 const RELAY_RECONNECT_JITTER_SPREAD_MS: u64 = 500;
@@ -235,7 +237,12 @@ fn cloud_retry_hint(message: &str) -> Option<Duration> {
 /// The relay says this token is no good; the kernel does not present it again.
 fn relay_refused_token(message: &str) -> bool {
     let message = message.to_ascii_lowercase();
-    message.contains("relay token") && (message.contains("expired") || message.contains("revoked"))
+    message.contains("invalid relay token")
+        || (message.contains("relay token")
+            && (message.contains("expired")
+                || message.contains("revoked")
+                || message.contains("does not allow")
+                || message.contains("does not match")))
 }
 
 /// Drops of links that had just come up. Only a link that stayed up for
@@ -969,6 +976,7 @@ async fn run_daemon_relay_connector_inner(
                 let mut token_refresh_task = None;
                 let mut leased_projection_pump_task = None;
                 let mut heartbeat_tick: u64 = 0;
+                let mut last_relay_read_at = Instant::now();
 
                 let reconnect_reason = loop {
                     tokio::select! {
@@ -991,6 +999,7 @@ async fn run_daemon_relay_connector_inner(
                             }
                         }
                         incoming = reader.next() => {
+                            last_relay_read_at = Instant::now();
                             match incoming {
                                 Some(Ok(Message::Text(payload))) => {
                                     let (payload, receipt) = relay_frames.receive(&payload).unwrap_or_else(|_| (
@@ -1051,7 +1060,10 @@ async fn run_daemon_relay_connector_inner(
                                         break "relay payload handling failed";
                                     }
                                 }
-                                Some(Ok(Message::Close(_))) => {
+                                Some(Ok(Message::Close(frame))) => {
+                                    if frame.as_ref().is_some_and(|frame| relay_refused_token(&frame.reason)) {
+                                        refused_token = Some(active_relay_token.clone());
+                                    }
                                     abort_leased_projection_pump_task(
                                         &mut leased_projection_pump_task,
                                     );
@@ -1089,6 +1101,15 @@ async fn run_daemon_relay_connector_inner(
                             clear_remote_inventory_projection(&router);
                             disconnect_relay(&state, "relay writer ended", presence.as_ref()).await;
                             break "relay writer ended";
+                        }
+                        _ = tokio::time::sleep_until((last_relay_read_at + RELAY_READ_IDLE_TIMEOUT).into()) => {
+                            abort_leased_projection_pump_task(&mut leased_projection_pump_task);
+                            abort_inventory_refresh_task(&mut inventory_refresh_task);
+                            abort_subscription_tasks(&router, &subscription_tasks).await;
+                            writer_task.abort();
+                            clear_remote_inventory_projection(&router);
+                            disconnect_relay(&state, "relay stopped sending frames", presence.as_ref()).await;
+                            break "relay stopped sending frames";
                         }
                         _ = token_refresh_interval.tick() => {
                             if static_relay.is_some() {

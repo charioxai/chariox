@@ -116,7 +116,11 @@ async fn invalid_relay_token_is_not_presented_again() {
 
 async fn refused_relay_token_is_not_reused(invalid: bool) {
     let issuer_secret = "refused-token-test-secret-0123456789abcdef".to_string();
-    let token = if invalid { "synthetic-invalid-token".into() } else { expired_kernel_token("refused-token-test", &issuer_secret) };
+    let token = if invalid {
+        "synthetic-invalid-token".into()
+    } else {
+        expired_kernel_token("refused-token-test", &issuer_secret)
+    };
     let relay = chariox_relay::server::RelayServer::with_auth_verifier(
         chariox_relay::config::RelayConfig {
             host: "127.0.0.1".into(),
@@ -178,7 +182,6 @@ async fn connection_the_relay_drops_after_registration_backs_off() {
     );
 }
 
-
 #[tokio::test]
 async fn silent_relay_socket_is_replaced_without_a_kernel_restart() {
     // MP-08 / MP-09 / MP-10 / MP-11: a relay may remove the peer while its
@@ -207,13 +210,21 @@ async fn silent_relay_socket_is_replaced_without_a_kernel_restart() {
     let connector = tokio::spawn(run_daemon_relay_connector_with_static_relay(
         Arc::new(Mutex::new(app)),
         Arc::new(RwLock::new(RelayClientState::default())),
-        stop_rx, relay_url, "synthetic-test-token".into(),
+        stop_rx,
+        relay_url,
+        "synthetic-test-token".into(),
     ));
-    timeout(Duration::from_secs(5), registered_rx.recv()).await.unwrap().unwrap();
+    timeout(Duration::from_secs(5), registered_rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
     let recovered = timeout(Duration::from_secs(48), registered_rx.recv()).await;
     let _ = stop_tx.send(true);
     let _ = timeout(Duration::from_secs(5), connector).await;
     relay.abort();
     let _ = relay.await;
-    assert!(matches!(recovered, Ok(Some(()))), "a silent relay socket was never replaced");
+    assert!(
+        matches!(recovered, Ok(Some(()))),
+        "a silent relay socket was never replaced"
+    );
 }
