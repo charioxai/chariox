@@ -924,7 +924,12 @@ export class KernelBrowserHost {
       return await (command.op === "input" && person
         ? this.busyInputs.submit(command.observed_by ?? "adapter", command, options) : this.requestNow(command, options));
     } finally {
-      if (acting) setTimeout(() => this.noteAgentBusy(acting, -1), SPINNER_LINGER_MS).unref?.();
+      if (acting) {
+        setTimeout(() => this.noteAgentBusy(acting, -1), SPINNER_LINGER_MS).unref?.();
+        // Display and input code switch a hidden page's focus emulation off when they finish: the agent's Tab gets it back at once.
+        const target = this.tabs.get(acting)?.target_id;
+        if (target !== undefined) void this.assertBackground(target).catch(() => {});
+      }
     }
   }
   // The person's typing, click or scroll in a Tab keeps that Tab theirs until they have been idle for PERSON_IDLE_MS.
@@ -956,8 +961,9 @@ export class KernelBrowserHost {
     for (const [target, { connection, sessionId }] of [...this.backgroundHolds]) {
       if (only !== undefined && target !== only) continue;
       if (target === this.activeTarget) continue;
-      try { await connection.send('Emulation.setFocusEmulationEnabled', { enabled: true }, sessionId); }
-      catch { this.backgroundHolds.delete(target); }
+      // A slow answer from a hidden renderer is tried again at the next tick; only a Tab that is gone ends the hold.
+      try { await connection.send('Emulation.setFocusEmulationEnabled', { enabled: true }, sessionId, { timeoutMs: BACKGROUND_KEEP_MS }); }
+      catch (error) { if (/no session|not found|closed|detached|No target/i.test(String(error?.message))) this.backgroundHolds.delete(target); }
     }
   }
   releaseBackground(targetId) { this.backgroundHolds.delete(targetId); }

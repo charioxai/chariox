@@ -3142,3 +3142,16 @@ test('a group whose Tab a card asks the person to act in says so, over the dot a
   await host.syncTabGroups([{ tab_id: opened.tabs[0].tab_id, label: 'Mara', needs_person: false }]);
   assert.deepEqual(sent.at(-1), ['● Mara']);
 }));
+
+test('a hidden renderer that answers late does not end the hold of its Tab', { timeout: 8000 }, () => using(async ({ host, sent, connection }) => {
+  const emulation = () => sent.filter(call => call.method === 'Emulation.setFocusEmulationEnabled' && call.params.enabled === true).length;
+  await host.request({ op: 'open', url: 'https://example.com/shown' });
+  const opened = await host.request({ op: 'open', url: 'https://example.com/agent', focused_agent: true });
+  const tab = opened.tabs.find(t => t.url.endsWith('/agent'));
+  host.activeTarget = host.tabs.get(opened.tabs.find(t => t.url.endsWith('/shown')).tab_id).target_id;
+  let late = 2;
+  connection.beforeSend = async method => { if (method === 'Emulation.setFocusEmulationEnabled' && late-- > 0) throw Object.assign(new Error('browser CDP method Emulation.setFocusEmulationEnabled timed out after 1500ms'), { code: 'browser_cdp_timeout' }); };
+  await host.request({ op: 'input', focused_agent: true, tab_id: tab.tab_id, generation: opened.generation, document_id: tab.document_id, input: { kind: 'key', key: 'Tab' } });
+  await new Promise(resolve => setTimeout(resolve, 4000));
+  assert.ok(emulation() >= 2, `emulation was asserted again after the late answers (${emulation()})`);
+}));
