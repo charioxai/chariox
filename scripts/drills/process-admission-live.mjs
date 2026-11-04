@@ -10,6 +10,8 @@
 //   --login-file F [--agents 5] [--mem 7G] [--disk-gb 12] [--task a.txt:marker,b.txt:marker2] [--tui 1]
 //   [--act-on-notice 1] [--codex-agents 5 --codex-profile-dir DIR] [--work-dir DIR] [--seed-peaks FILE]
 //   [--opencode-agents 3 --opencode-profile-dir DIR --opencode-model M] [--temp-idle-s 20]
+//   --scenario ui --ui-handoff FILE: the kernel, Room and agents are left to a browser drill (it reads FILE, sends the
+//   prompts itself and creates FILE.done when it is finished).
 // Run it under `unshare -m --propagation private` (the loop mount must not leak into other mount namespaces).
 // State and evidence belong outside the checkout. Every process it starts is signalled by exact pid and start time.
 import assert from "node:assert/strict"
@@ -27,7 +29,7 @@ const flags = new Map()
 for (let i = 2; i < process.argv.length; i++) flags.set(process.argv[i], process.argv[++i])
 const need = key => { assert.equal(typeof flags.get(key), "string", `${key} is required`); return flags.get(key) }
 const scenario = need("--scenario")
-assert(["memory", "disk", "temp", "trim", "ask", "runaway"].includes(scenario), "unknown scenario")
+assert(["memory", "disk", "temp", "trim", "ask", "runaway", "ui"].includes(scenario), "unknown scenario")
 const kernelBinary = resolve(need("--kernel-binary")), stateRoot = resolve(need("--state-root")), evidence = resolve(need("--evidence-dir"))
 const loginFile = resolve(need("--login-file"))
 const builds = Number(flags.get("--builds") ?? 5), memoryLimit = flags.get("--mem") ?? "7G"
@@ -143,6 +145,8 @@ while written < cap_mb and not os.path.exists("STOP"):
     written += 4
     time.sleep(4 / rate_mb)
 `
+// The same build under other names: a command's remembered peak belongs to its name, so a copy starts unknown.
+for (const copy of ["buildp1.py", "buildp2.py"]) fixtures[copy] = fixtures["build.py"]
 for (const [name, text] of Object.entries(fixtures)) writeFileSync(join(work, name), text)
 
 // A command's peak is remembered by its argv and folder: a second run on a smaller machine starts from the first one's.
@@ -230,15 +234,17 @@ if (codexNumbers.length) {
   note("codex-linked")
 }
 if (opencodeNumbers.length) {
-  await rpc({ LinkProviderAccountProfile: { provider: "opencode", label: "drill-opencode", path: resolve(need("--opencode-profile-dir")) } })
-  note("opencode-linked")
+  const linked = (await rpc({ LinkProviderAccountProfile: { provider: "opencode", label: "drill-opencode", path: resolve(need("--opencode-profile-dir")) } })).ProviderAccountProfile.profile
+  await rpc({ RefreshProviderAccountProfile: { provider: "opencode", account_profile: linked.profile_id } })
+  note("opencode-linked", { profile: linked.profile_id })
 }
+const opencodeProfile = opencodeNumbers.length ? (await rpc({ ListProviderAccountProfiles: { provider: "opencode" } })).ProviderAccountProfilesListed.profiles.find(p => p.label === "drill-opencode").profile_id : null
 const providerOf = n => codexNumbers.includes(n) ? "codex" : opencodeNumbers.includes(n) ? "opencode" : "claude"
 const agents = []
 for (let n = 1; n <= agentCount; n++) {
   const provider = providerOf(n)
   const choice = provider === "codex" ? { account_profile: "drill-codex", model: "gpt-6-luna", effort: "low" }
-    : provider === "opencode" ? { account_profile: "drill-opencode", model: flags.get("--opencode-model") ?? "opencode-go/deepseek-v4.1-flash" }
+    : provider === "opencode" ? { account_profile: opencodeProfile, model: flags.get("--opencode-model") ?? "opencode-go/deepseek-v4.1-flash" }
     : { model: "claude-haiku-5-5" }
   const spawned = (await rpc({ SpawnAgent: { session_id: sessionId, provider, ...choice, permission_level: "yolo", alias: `builder${n}` } })).AgentSpawned.agent
   note("agent", { n, provider, id: spawned.id, model: choice.model })
@@ -364,16 +370,22 @@ const cleanup = async () => {
   if (tui) { try { writeFileSync(join(tuiScreens, "final.txt"), tmux("capture-pane", "-p", "-t", tmuxName)); tmux("kill-session", "-t", tmuxName) } catch { /* gone */ } }
   stopOwned()
   await delay(1500)
-  removeCgroups(poolCgroup)
+  for (let attempt = 0; attempt < 10 && existsSync(poolCgroup); attempt++) { removeCgroups(poolCgroup); if (existsSync(poolCgroup)) await delay(1000) }
   unmountVolume()
   for (const f of readdirSync(join(dir, "logs"))) appendFileSync(join(evidence, "kernel-logs.txt"), readFileSync(join(dir, "logs", f), "utf8"))
   save()
 }
 
+process.once("unhandledRejection", async error => { report.error = `unhandled: ${String(error)}`; await cleanup(); process.exit(1) })
 for (const signal of ["SIGTERM", "SIGINT"]) process.once(signal, async () => { report.error = `stopped by ${signal}`; await cleanup(); process.exit(2) })
 try {
   await followerLoop
-  if (["temp", "trim", "ask", "runaway"].includes(scenario)) {
+  if (scenario === "ui") {
+    const handoff = resolve(need("--ui-handoff"))
+    writeFileSync(handoff, JSON.stringify({ url: `ws://127.0.0.1:${ports[0]}/kernel`, kernelEnv, sessionId, alias, work, agents: agents.map(a => a.id), attachment_id: att.attachment.id }, null, 1))
+    note("ui-handoff", { handoff })
+    await until(() => existsSync(handoff + ".done"), "the browser drill to finish", Number(flags.get("--ui-wait-s") ?? 3600) * 1000)
+  } else if (["temp", "trim", "ask", "runaway"].includes(scenario)) {
     await runDiskCells({ scenario, agents, ask, note, until, work, dir, sessionId, rpc, report, flags, transcripts, providerOf, execFileSync, osProcesses, latestRows: () => latestRows })
   } else
   // --task a.txt:marker,b.txt:marker2: every agent gets the prompt with {N} = its number; the round ends when each

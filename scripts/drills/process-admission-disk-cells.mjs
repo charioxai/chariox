@@ -30,6 +30,8 @@ export async function runDiskCells(ctx) {
     const prompt = `Run exactly this one shell command in the current directory and nothing else: sh -c 'f=answer-temp-b{N}.txt; echo "TMPDIR=$TMPDIR TMP=$TMP TEMP=$TEMP" > $f; echo "mktemp=$(mktemp)" >> $f; python3 -c "import tempfile;print(\\"python=\\"+tempfile.mkdtemp())" >> $f; node -e "console.log(\\"node=\\"+require(\\"os\\").tmpdir())" >> $f 2>/dev/null; echo DONE >> $f'. Afterwards append one more line to the same file, starting with INSTR= , that quotes word for word the sentence in your own instructions that mentions temporary files (INSTR=NONE if there is none).`
     await say(prompt, "temp")
     await waitAnswers("temp")
+    // The agents append the quoted sentence after the shell command is done.
+    await Promise.all(agents.map((_, i) => until(() => /^INSTR=/m.test(readFileSync(answer("temp", i + 1), "utf8")), `agent ${i + 1} quote`, 120000).catch(() => note("no-quote", { agent: i + 1 }))))
     for (const [i, target] of agents.entries()) {
       const n = i + 1, lines = Object.fromEntries(readFileSync(answer("temp", n), "utf8").split("\n").filter(l => l.includes("=")).map(l => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1)]))
       const expected = tempDir(target)
@@ -47,13 +49,16 @@ export async function runDiskCells(ctx) {
 
   if (scenario === "trim") {
     // OF-39: stale scratch goes; an open file, a busy folder and a freshly written item stay; the ended Room clears.
-    const prompt = `Run exactly this one shell command and nothing else: sh -c 'W=$PWD; cd "$TMPDIR" && echo old > stale.txt && mkdir -p busy && (cd busy && nohup sleep 3000 > /dev/null 2>&1 &) ; (nohup python3 -c "import time; f=open(\\"open.txt\\",\\"w\\"); f.write(\\"x\\"); f.flush(); time.sleep(3000)" > /dev/null 2>&1 &) ; echo DONE > $W/answer-trim-b{N}.txt'`
+    const prompt = `Run exactly this one shell command and nothing else: sh -c 'W=$PWD; cd "$TMPDIR" && echo old > stale.txt && mkdir -p busy && (cd busy && setsid nohup sleep 3000 > /dev/null 2>&1 &) ; (setsid nohup python3 -c "import time; f=open(\\"open.txt\\",\\"w\\"); f.write(\\"x\\"); f.flush(); time.sleep(3000)" > /dev/null 2>&1 &) ; echo DONE > $W/answer-trim-b{N}.txt'`
     await say(prompt, "trim")
     await waitAnswers("trim")
     const idle = Number(flags.get("--temp-idle-s") ?? 20)
     const folders = agents.map(tempDir)
     for (const folder of folders) assert(existsSync(join(folder, "stale.txt")), `${folder} was not prepared`)
-    note("trim-prepared", { idle_s: idle, folders })
+    // What holds the folders at this moment: the checks below mean nothing if the agent's tool ended these processes.
+    const alive = readdirSync("/proc").filter(p => /^\d+$/.test(p)).flatMap(p => { try { const cwd = ctx.execFileSync("readlink", [`/proc/${p}/cwd`], { encoding: "utf8" }).trim(); const open = readdirSync(`/proc/${p}/fd`).map(fd => { try { return ctx.execFileSync("readlink", [`/proc/${p}/fd/${fd}`], { encoding: "utf8" }).trim() } catch { return "" } }); return folders.some(f => cwd.startsWith(f) || open.some(o => o.startsWith(f))) ? [{ pid: Number(p), cwd, cmd: readFileSync(`/proc/${p}/cmdline`, "utf8").split("\0").slice(0, 3).join(" ") }] : [] } catch { return [] } })
+    note("trim-prepared", { idle_s: idle, folders, holders: alive })
+    check("the agents' processes hold the open file and the busy folder", folders.every(folder => alive.some(a => a.cwd.startsWith(join(folder, "busy"))) && existsSync(join(folder, "open.txt"))), { alive: alive.length })
     const started = Date.now()
     let goneAt = null
     while (Date.now() - started < (idle + 150) * 1000) {
@@ -88,14 +93,15 @@ export async function runDiskCells(ctx) {
     // OF-40/OF-37: every agent leaves an orphan writing into a deleted file and a build output; the disk falls below
     // its floor; the kernel asks the biggest holders, naming what they hold; the agents free it and report.
     const prompt = `You work in the current folder. Run these shell commands one after another, then reply DONE_ask_b{N}:
-1. nohup python3 hog.py b{N} 24 500 > hog-b{N}.log 2>&1 &
-2. mkdir -p target-b{N} && (cd target-b{N} && python3 ../write.py b{N} 900 100)
+1. setsid nohup python3 hog.py b{N} 6 1500 > hog-b{N}.log 2>&1 &
+2. mkdir -p target-b{N} && (cd target-b{N} && python3 ../write.py b{N} 900 100)   (target-b{N} is your build output: python3 ../write.py regenerates it whenever you need it)
 3. echo DONE > answer-ask-b{N}.txt
 If the system messages you about disk space later, act on it.`
     const sawRow = new Set()
+    const watching = { stop: false }
     const watch = (async () => {
-      while (!watch.stop) {
-        for (const target of agents) for (const p of rowsOf(target)) if (/hog\.py/.test(p.command) && p.deleted_open_bytes > 0 && !sawRow.has(target.id + Math.floor(p.deleted_open_bytes / 2 ** 27))) {
+      while (!watching.stop) {
+        for (const target of agents) for (const p of rowsOf(target)) if (p.deleted_open_bytes > 0 && !sawRow.has(target.id + Math.floor(p.deleted_open_bytes / 2 ** 27))) {
           sawRow.add(target.id + Math.floor(p.deleted_open_bytes / 2 ** 27))
           note("hog-row", { agent: target.id, pid: p.pid, written_mb: Math.round((p.disk_written_bytes ?? 0) / 2 ** 20), deleted_open_mb: Math.round(p.deleted_open_bytes / 2 ** 20), outlived: p.outlived, state: p.state?.kind })
         }
@@ -113,7 +119,7 @@ If the system messages you about disk space later, act on it.`
     check("the ask named the biggest folders and the process holding deleted files", /deleted files/.test(text) && /target-b\d/.test(text) || providerOf(1) !== "claude", { note: "Claude transcripts" })
     report.volume_after = df()
     for (const target of agents) report[`rows_${target.id}`] = rowsOf(target).map(p => ({ pid: p.pid, command: p.command, written: p.disk_written_bytes, deleted_open: p.deleted_open_bytes, outlived: p.outlived }))
-    watch.stop = true
+    watching.stop = true
     await watch
     for (const n of agents.keys()) check(`agent ${n + 1} (${providerOf(n + 1)}) attributed: an orphan filling a deleted file was shown on its row`, [...sawRow].some(key => key.startsWith(agents[n].id)))
   }
@@ -121,15 +127,16 @@ If the system messages you about disk space later, act on it.`
   if (scenario === "runaway") {
     // OF-42/OF-37: agent 1's orphan writes 32 MB/s into a deleted file while the others build. The kernel finds
     // it, attributes it to its owner and ends it (never pauses); the other owners' builds are never paused.
-    const hogPrompt = `You work in the current folder. Run these shell commands one after another: first nohup python3 hog.py b{N} 32 9000 > hog-b{N}.log 2>&1 &  then sleep 330 (in the foreground, one command), then echo DONE > answer-run-b{N}.txt`
-    const buildPrompt = `You work in the current folder. Run this one shell command and wait for it: for i in 1 2 3 4 5 6 7 8; do rm -rf t-b{N}; mkdir t-b{N}; (cd t-b{N} && python3 ../write.py b{N}-$i 400 40) || exit 1; done; echo DONE > answer-run-b{N}.txt`
-    const paused = new Set(), fullDisk = []
+    const hogPrompt = `You work in the current folder. Run these shell commands one after another: first setsid nohup python3 hog.py b{N} 32 9000 > hog-b{N}.log 2>&1 &  then run python3 -c 'import time; time.sleep(330)' (in the foreground, as one command, with a timeout of 400000 ms), then echo DONE > answer-run-b{N}.txt`
+    const buildPrompt = `You work in the current folder. Start this build in the background: nohup sh -c 'for i in 1 2 3 4 5 6 7 8; do rm -rf t-b{N}; mkdir t-b{N}; (cd t-b{N} && python3 ../write.py b{N}-$i 400 40) || exit 1; done; echo DONE > answer-run-b{N}.txt' > build-b{N}.log 2>&1 &  Then wait for it by running this one shell command: until [ -f answer-run-b{N}.txt ]; do sleep 5; done; echo finished (give that command a timeout of 600000 ms), and reply with the word finished.`
+    const paused = new Set(), held = new Set()
     let least = df().free
+    const watching = { stop: false }
     const watch = (async () => {
-      while (!watch.stop) {
-        for (const p of latestRows()) if (p.state?.kind === "paused" || p.state?.kind === "held") paused.add(`${p.state.kind}:${p.pid}:${(p.state.command_line ?? p.command).slice(0, 40)}`)
+      while (!watching.stop) {
+        for (const p of latestRows()) if (p.state?.kind === "paused" || p.state?.kind === "held") (p.state.kind === "paused" ? paused : held).add(`${p.state.kind}:${p.pid}:${(p.state.command_line ?? p.command).slice(0, 40)}`)
         least = Math.min(least, df().free)
-        for (const target of agents) for (const p of rowsOf(target)) if (/hog\.py/.test(p.command) && p.deleted_open_bytes > 0 && Date.now() % 5 < 1) note("hog-row", { agent: target.id, pid: p.pid, written_mb: Math.round((p.disk_written_bytes ?? 0) / 2 ** 20), deleted_open_mb: Math.round(p.deleted_open_bytes / 2 ** 20), outlived: p.outlived, state: p.state?.kind })
+        for (const target of agents) for (const p of rowsOf(target)) if (p.deleted_open_bytes > 0 && Date.now() % 5 < 1) note("hog-row", { agent: target.id, pid: p.pid, written_mb: Math.round((p.disk_written_bytes ?? 0) / 2 ** 20), deleted_open_mb: Math.round(p.deleted_open_bytes / 2 ** 20), outlived: p.outlived, state: p.state?.kind })
         await delay(500)
       }
     })()
@@ -143,13 +150,15 @@ If the system messages you about disk space later, act on it.`
     const buildsDone = agents.slice(1).map((_, i) => until(() => existsSync(answer("run", i + 2)), `build ${i + 2}`, 600000).then(() => true, () => false))
     const finished = await Promise.all(buildsDone)
     check("the other owners' builds finished", finished.every(Boolean), { finished })
-    check("no other owner's build was paused or held for it", [...paused].filter(k => !/hog\.py/.test(k)).length === 0, { rows: [...paused] })
+    // A build that starts while the disk is below its floor waits in line (held, it has written nothing yet); a running writer is never paused.
+    check("no other owner's running build was paused for it", paused.size === 0, { paused: [...paused], held: [...held] })
     check("free disk never reached zero", least > 256 * 2 ** 20, { least_free_mb: Math.round(least / 2 ** 20) })
     await ask("Read hog-b1.log in the current folder and tell me in one sentence why your background job hog.py ended; write that sentence into answer-why-b1.txt", agents[0])
     await until(() => existsSync(join(work, "answer-why-b1.txt")), "the owner to read why", 600000).then(() => check("the agent read why its job ended", /fill|disk/i.test(readFileSync(join(work, "answer-why-b1.txt"), "utf8")), { answer: readFileSync(join(work, "answer-why-b1.txt"), "utf8").slice(0, 300) }), () => check("the agent read why its job ended", false))
-    watch.stop = true
+    watching.stop = true
     await watch
     report.paused_rows = [...paused]
+    report.held_rows = [...held]
     report.least_free_mb = Math.round(least / 2 ** 20)
   }
   note("scenario-done", { scenario, passed: checks.filter(c => c.ok).length, failed: checks.filter(c => !c.ok).map(c => c.name) })
