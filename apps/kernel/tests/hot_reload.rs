@@ -235,6 +235,29 @@ async fn request(socket: &mut Socket, body: Value) -> Value {
     .expect("the kernel answered in time")
 }
 
+/// Where `/proc/<pid>/<name>` of the kernel points, or `None` when the
+/// reading user may not see it: a kernel that holds a local token is
+/// non-dumpable (`PR_SET_DUMPABLE 0`), so its `/proc` links belong to root and
+/// an ordinary user, as in CI, is refused. Root still gets every check.
+#[cfg(target_os = "linux")]
+fn kernel_link(pid: u32, name: &str) -> Option<PathBuf> {
+    match std::fs::read_link(format!("/proc/{pid}/{name}")) {
+        Ok(target) => Some(target),
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => None,
+        Err(error) => panic!("cannot read /proc/{pid}/{name}: {error}"),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn assert_runs(pid: u32, installed: &Path) {
+    if let Some(program) = kernel_link(pid, "exe") {
+        assert_eq!(
+            program, installed,
+            "the kernel runs the newly installed program"
+        );
+    }
+}
+
 async fn closed_by_the_old_program(mut socket: Socket) {
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
@@ -335,11 +358,7 @@ fn a_hot_reload_keeps_a_running_terminal_command_and_its_output() {
         // keep this one open.
         closed_by_the_old_program(socket).await;
         #[cfg(target_os = "linux")]
-        assert_eq!(
-            std::fs::read_link(format!("/proc/{pid}/exe")).unwrap(),
-            installed,
-            "the kernel runs the newly installed program"
-        );
+        assert_runs(pid as u32, &installed);
         let mut socket = connect(&kernel, Duration::from_secs(60)).await;
         std::fs::write(&go, "").unwrap();
 
@@ -480,10 +499,7 @@ fn a_kernel_whose_token_came_from_a_file_keeps_it_across_a_hot_reload() {
     });
     assert!(!token_file.exists(), "no token is left on disk");
     #[cfg(target_os = "linux")]
-    assert_eq!(
-        std::fs::read_link(format!("/proc/{}/exe", kernel.child.id())).unwrap(),
-        scratch.join("bin/chariox-kernel")
-    );
+    assert_runs(kernel.child.id(), &scratch.join("bin/chariox-kernel"));
 }
 
 /// A client resumes its subscription on the attachment it had: a browser whose
@@ -783,12 +799,9 @@ fn a_hot_reload_keeps_the_managed_slice_broker_connection() {
     }
     #[cfg(target_os = "linux")]
     {
-        let held = std::fs::read_link(format!("/proc/{}/fd/{fd}", kernel.child.id()));
-        assert_eq!(
-            held.ok(),
-            Some(socket_name),
-            "the new program holds the connection"
-        );
+        if let Some(held) = kernel_link(kernel.child.id(), &format!("fd/{fd}")) {
+            assert_eq!(held, socket_name, "the new program holds the connection");
+        }
     }
 }
 
@@ -1680,10 +1693,7 @@ fn claude_turn_across_a_hot_reload(login: Login) {
         assert!(lines(&record.join("starts"))[0].ends_with("token=set"));
     }
     #[cfg(target_os = "linux")]
-    assert_eq!(
-        std::fs::read_link(format!("/proc/{}/exe", kernel.child.id())).unwrap(),
-        scratch.join("bin/chariox-kernel")
-    );
+    assert_runs(kernel.child.id(), &scratch.join("bin/chariox-kernel"));
 }
 
 /// The reviewer's case: an agent's earlier Claude process ended leaving a
@@ -2055,42 +2065,78 @@ fn codex_turn_across_a_hot_reload(finish_in_gap: bool, beside_claude: bool) {
         // The new program starts after the old one is gone; a loaded builder
         // can need several times the usual half minute.
         let deadline = Instant::now() + Duration::from_secs(180);
-        while !std::fs::read_dir(scratch.join("logs")).unwrap().any(|file| {
-            std::fs::read_to_string(file.unwrap().path())
-                .unwrap()
-                .contains("continuing a handed-over Codex turn")
-        }) {
+        let adopted = loop {
+            if std::fs::read_dir(scratch.join("logs")).unwrap().any(|file| {
+                std::fs::read_to_string(file.unwrap().path())
+                    .unwrap()
+                    .contains("continuing a handed-over Codex turn")
+            }) {
+                break true;
+            }
+            // A turn that ended in the gap may have been read to its end by
+            // the old program, which settles it: nothing is left to adopt.
+            if finish_in_gap
+                && lines(&record.join("parts")).last().map(String::as_str) == Some("result 1")
+            {
+                let state = request(
+                    &mut socket,
+                    json!({"GetSessionState": {"session_id": session_id}}),
+                )
+                .await;
+                // A program that has just started shows no active prompt until
+                // it has restored the turn it is about to adopt; only a turn
+                // its history records as completed was settled by the old one.
+                let history = request(
+                    &mut socket,
+                    json!({"GetSessionHistoryOutline": {"session_id": session_id,
+                        "agent_ids": [agent_id], "include_prefetched_content": false}}),
+                )
+                .await;
+                let settled = history["SessionHistoryOutline"]["agents"][0]["turns"]
+                    .as_array()
+                    .is_some_and(|turns| {
+                        turns.last().is_some_and(|turn| turn["lifecycle"] == "completed")
+                    });
+                if settled
+                    && state["SessionState"]["session"]["prompt_states"][&agent_id]["active_prompt"]
+                        .is_null()
+                {
+                    break false;
+                }
+            }
             assert!(Instant::now() < deadline, "the Codex turn was not adopted");
             tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-        let mut tools = tokio::net::TcpStream::connect(("127.0.0.1", mcp_port))
-            .await
-            .unwrap();
-        tokio::io::AsyncWriteExt::write_all(
-            &mut tools,
-            b"GET /mcp HTTP/1.1\r\nhost: 127.0.0.1\r\nconnection: close\r\n\r\n",
-        )
-        .await
-        .unwrap();
-        let mut answer = Vec::new();
-        tokio::io::AsyncReadExt::read_to_end(&mut tools, &mut answer)
-            .await
-            .unwrap();
-        if computer {
-            let listed = codex_tools(
-                &record,
-                "list",
-                json!({"jsonrpc": "2.0", "id": 3, "method": "tools/list", "params": {}}),
+        };
+        if adopted {
+            let mut tools = tokio::net::TcpStream::connect(("127.0.0.1", mcp_port))
+                .await
+                .unwrap();
+            tokio::io::AsyncWriteExt::write_all(
+                &mut tools,
+                b"GET /mcp HTTP/1.1\r\nhost: 127.0.0.1\r\nconnection: close\r\n\r\n",
             )
-            .await;
-            assert!(
-                listed["result"]["tools"]
-                    .as_array()
-                    .is_some_and(|tools| tools
-                        .iter()
-                        .any(|tool| tool["name"] == "chariox.kernel_computer")),
-                "the adopted run lost the Computer tools it loaded: {listed}"
-            );
+            .await
+            .unwrap();
+            let mut answer = Vec::new();
+            tokio::io::AsyncReadExt::read_to_end(&mut tools, &mut answer)
+                .await
+                .unwrap();
+            if computer {
+                let listed = codex_tools(
+                    &record,
+                    "list",
+                    json!({"jsonrpc": "2.0", "id": 3, "method": "tools/list", "params": {}}),
+                )
+                .await;
+                assert!(
+                    listed["result"]["tools"]
+                        .as_array()
+                        .is_some_and(|tools| tools
+                            .iter()
+                            .any(|tool| tool["name"] == "chariox.kernel_computer")),
+                    "the adopted run lost the Computer tools it loaded: {listed}"
+                );
+            }
         }
         request(&mut socket, focus).await;
         let mut live_parts = 0;

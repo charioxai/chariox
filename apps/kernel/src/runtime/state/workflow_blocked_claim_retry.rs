@@ -25,38 +25,53 @@ impl KernelRuntimeOwnedState {
     }
 
     fn workflow_retry_queued_prompts_waiting_for_claims(&self) -> WorkflowPromptDispatches {
-        // Release the session read guard before dispatch can mutate session state.
+        // A provider launch holds the prompt owner's lock while it takes the session store's
+        // write lock, so the owner must never be asked while a read guard is held. Copy the
+        // Rooms with a running agent, release the guard, then ask the owner.
+        let running: Vec<_> = {
+            let sessions = self.session_store.read();
+            sessions
+                .non_ended_session_refs()
+                .filter_map(|session| {
+                    let agents: Vec<String> = self
+                        .agent_store
+                        .get_session_agents(session.id())
+                        .into_iter()
+                        .filter(|agent| {
+                            self.provider_store
+                                .get_run_for_agent(session.id(), agent.id())
+                                .is_some_and(|run| {
+                                    run.state() == crate::provider::ProviderRunState::Running
+                                })
+                        })
+                        .map(|agent| agent.id().to_string())
+                        .collect();
+                    (!agents.is_empty()).then(|| (session.clone(), agents))
+                })
+                .collect()
+        };
         let mut candidates = Vec::new();
-        let sessions = self.session_store.read();
-        for session in sessions.non_ended_session_refs() {
-            for agent in self.agent_store.get_session_agents(session.id()) {
+        for (session, agents) in &running {
+            for agent_id in agents {
                 if self
                     .prompt_state_owner
-                    .active_prompt_for_agent(session, agent.id())
+                    .active_prompt_for_agent(session, agent_id)
                     .is_some()
                 {
                     continue;
                 }
                 let Some(next_prompt) = self
                     .prompt_state_owner
-                    .peek_next_queued_prompt(session, agent.id())
+                    .peek_next_queued_prompt(session, agent_id)
                 else {
                     continue;
                 };
                 if next_prompt.workflow_run_id().is_none() {
                     continue;
                 }
-                if !self
-                    .provider_store
-                    .get_run_for_agent(session.id(), agent.id())
-                    .is_some_and(|run| run.state() == crate::provider::ProviderRunState::Running)
-                {
-                    continue;
-                }
-                candidates.push((session.id().to_string(), agent.id().to_string()));
+                candidates.push((session.id().to_string(), agent_id.clone()));
             }
         }
-        drop(sessions);
         // A claim retry must prepare the workflow provider before consuming the head,
         // using the same promotion owner as cancellation and provider readiness.
         WorkflowPromptDispatches {

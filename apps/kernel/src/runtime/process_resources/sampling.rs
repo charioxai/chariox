@@ -723,6 +723,10 @@ pub(super) enum SamplingError {
     /// The kernel lacks resources to start `ps` or read a process or cgroup.
     /// This says nothing about the tree; the next tick may read it.
     Short(i32),
+    /// A signal ended `ps` before it answered, as a restart of the kernel does
+    /// to the children it leaves behind. The tree is as it was; the next tick
+    /// may read it.
+    Ended,
     /// Nothing will change by trying again: `ps` is missing, refused or
     /// answers with columns the monitor cannot read.
     Unusable(String),
@@ -735,6 +739,7 @@ impl std::fmt::Display for SamplingError {
                 "process resource monitor cannot sample for now: {}",
                 std::io::Error::from_raw_os_error(*errno)
             ),
+            Self::Ended => f.write_str("process resource monitor's ps was ended by a signal"),
             Self::Unusable(message) => f.write_str(message),
         }
     }
@@ -822,6 +827,7 @@ pub(super) fn live_groups(root: u32) -> Vec<u32> {
 pub(super) fn ensure_available() -> std::io::Result<()> {
     process_rows().map(|_| ()).map_err(|error| match error {
         SamplingError::Short(errno) => std::io::Error::from_raw_os_error(errno),
+        SamplingError::Ended => std::io::Error::other(SamplingError::Ended.to_string()),
         SamplingError::Unusable(message) => std::io::Error::other(message),
     })
 }
@@ -853,6 +859,18 @@ pub(super) mod ps_failure {
     }
 }
 
+/// Why `ps` did not answer: a signal ends it for now, an exit status means it
+/// cannot give the columns.
+pub(super) fn ps_refusal(status: std::process::ExitStatus) -> SamplingError {
+    if status.code().is_none() {
+        return SamplingError::Ended;
+    }
+    SamplingError::Unusable(
+        "process resource monitor failed: ps must support pid, ppid, rss, pcpu, etime and comm"
+            .into(),
+    )
+}
+
 fn read_process_rows() -> Result<Vec<Row>, SamplingError> {
     let sampled_at_ms = crate::session::unix_epoch_ms();
     let output = run_ps().map_err(|error| match shortage(&error) {
@@ -862,10 +880,7 @@ fn read_process_rows() -> Result<Vec<Row>, SamplingError> {
         )),
     })?;
     if !output.status.success() {
-        return Err(SamplingError::Unusable(
-            "process resource monitor failed: ps must support pid, ppid, rss, pcpu, etime and comm"
-                .into(),
-        ));
+        return Err(ps_refusal(output.status));
     }
     let rows = String::from_utf8_lossy(&output.stdout)
         .lines()

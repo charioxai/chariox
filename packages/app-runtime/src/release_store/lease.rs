@@ -92,9 +92,6 @@ impl VerifiedReleaseLease {
     pub fn declarations(&self) -> &Declarations {
         &self.declarations
     }
-    pub(crate) fn payload(&self) -> &File {
-        &self.payload.0
-    }
 
     /// Re-read through the held directory and compare the exact signed bytes.
     /// A lease never turns a pathname into continuing executable provenance.

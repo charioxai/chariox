@@ -421,6 +421,13 @@ async fn who_owns(
         screen_has(&service, &id, "READY-42")
     })
     .await;
+    // The output appears before the shell reports the command finished; an
+    // input in between would find the terminal still driven by the person.
+    until("the shell to be back at its prompt", || async {
+        service.pump_once();
+        service.list("room-1")[0].driver == RoomTerminalDriver::Free
+    })
+    .await;
     let sampling = crate::runtime::process_resources::pause_sampling_for_key(&run_id);
     let dir = root.path().display().to_string();
     for (actor, input) in inputs {
