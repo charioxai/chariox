@@ -1369,6 +1369,9 @@ mod document_tests {
         )
         .unwrap_err()
         .to_string();
-        assert!(error.contains("terminal display adapter required"), "{error}");
+        assert!(
+            error.contains("terminal display adapter required"),
+            "{error}"
+        );
     }
 }

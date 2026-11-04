@@ -95,12 +95,16 @@ impl KernelRuntimeState {
             .session_store
             .list_all_sessions()
             .iter()
-            .filter(|session| self.provider_account_authority_owner_user_id(session.owner_user_id()) == user)
+            .filter(|session| {
+                self.provider_account_authority_owner_user_id(session.owner_user_id()) == user
+            })
             .flat_map(|session| {
                 session
                     .active_interactions()
                     .iter()
-                    .filter_map(|interaction| interaction.handoff().map(|h| h.target.tab_id.clone()))
+                    .filter_map(|interaction| {
+                        interaction.handoff().map(|h| h.target.tab_id.clone())
+                    })
                     .collect::<Vec<_>>()
             })
             .collect()

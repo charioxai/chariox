@@ -555,8 +555,13 @@ impl KernelRuntimeState {
                             .await
                     }
                     BrowserTabAction::Close => {
-                        self.manage_browser_environment_tab(session_id, &execution_id, tab_id, action)
-                            .await
+                        self.manage_browser_environment_tab(
+                            session_id,
+                            &execution_id,
+                            tab_id,
+                            action,
+                        )
+                        .await
                     }
                 }
             },
