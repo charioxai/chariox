@@ -5,6 +5,9 @@
 // in evidence. Red on a base kernel without `chariox-reach`: the agent has no tool, so the B-side checks fail.
 // The `tools` scenario runs with a real Claude, Codex or OpenCode agent (`--provider`): the agent calls every
 // `chariox-reach` tool and a room tool given another kernel, and B's audit names it.
+// The `events`, `driver` and `history` scenarios (S3) run with the same real agents on both kernels: X in a room on A
+// follows Y in a room on B and is woken without polling when Y finishes a turn, and when Y raises a decision
+// (AT-40) X reads it and answers it; X reads Y's room history with no approval.
 import assert from "node:assert/strict"
 import { spawn } from "node:child_process"
 import { createHmac, createHash, randomBytes, randomUUID } from "node:crypto"
@@ -40,8 +43,9 @@ const tokenFile = flags.get("--claude-token-file") ?? "/root/.claude-lanes/oauth
 // A Codex scope the product linked for drills, and the OpenCode login to copy into a lane-owned scope.
 const codexScope = flags.get("--codex-scope") ?? "/root/.chariox/dev/worker-k/home/state/provider-accounts/local/codex/kaissandra-ai-reviewer-login-esqv7b7c/codex"
 const opencodeAuth = flags.get("--opencode-auth") ?? "/root/.chariox/dev/provider-runtimes/fleet-accounts/opencode-home/.local/share/opencode/auth.json"
-const scenarios = new Set((flags.get("--scenarios") ?? (provider === "claude" ? "reach,sudo,acquisition,tools,view" : "tools,view")).split(","))
-assert(provider === "claude" || [...scenarios].every(name => name === "tools" || name === "view"), "only the tools and view scenarios run with Codex or OpenCode")
+const scenarios = new Set((flags.get("--scenarios") ?? (provider === "claude" ? "reach,sudo,acquisition,tools,events,driver,history,view" : "tools,events,driver,history,view")).split(","))
+assert(provider === "claude" || [...scenarios].every(name => ["tools", "view", "events", "driver", "history"].includes(name)), "only the tools, view, events, driver and history scenarios run with Codex or OpenCode")
+const agentScenarios = ["events", "driver", "history"].some(name => scenarios.has(name))
 assert(stateRoot.startsWith("/root/.chariox/dev/"), "state must be lane-owned")
 assert(!evidence.startsWith(fileURLToPath(new URL("../../", import.meta.url))), "evidence must be outside the repository")
 mkdirSync(stateRoot, { recursive: true, mode: 0o700 })
@@ -207,11 +211,12 @@ async function main() {
     return "default"
   }
   const accountProfile = await provision(a)
-  // Only the Claude scenarios touch kernel B's agent; for the tools scenario B is a passive target.
-  if (provider === "claude") await provision(b)
+  // The Claude scenarios and the S3 scenarios run an agent on kernel B too; for the tools scenario B is a passive target.
+  const accountProfileB = provider === "claude" || agentScenarios ? await provision(b) : accountProfile
   const agentDefaults = { provider, account_profile: accountProfile, model, effort: providers[provider].variant, permission_level: "yolo" }
+  const agentDefaultsB = { ...agentDefaults, account_profile: accountProfileB }
   // Kernel B: the room another room's agent will message, and the room the agent must not rename without /sudo.
-  const roomB = (await b.rpc({ CreateSession: { workspace_id: join(b.dir, "work"), worktree_id: join(b.dir, "work"), alias: "target-room", agent_defaults: provider === "claude" ? agentDefaults : undefined } })).SessionCreated
+  const roomB = (await b.rpc({ CreateSession: { workspace_id: join(b.dir, "work"), worktree_id: join(b.dir, "work"), alias: "target-room", agent_defaults: provider === "claude" || agentScenarios ? agentDefaultsB : undefined } })).SessionCreated
   const roomA = (await a.rpc({ CreateSession: { workspace_id: join(a.dir, "work"), worktree_id: join(a.dir, "work"), alias: "home-room", agent_defaults: agentDefaults } })).SessionCreated
   const siblingA = (await a.rpc({ CreateSession: { workspace_id: join(a.dir, "work"), worktree_id: join(a.dir, "work"), alias: "sibling-room", agent_defaults: agentDefaults } })).SessionCreated
   const attached = (await a.rpc({ AttachToSession: { session_id: roomA.session.id, client_id: "reach-owner", capability_level: "FullTerminal" } })).SessionAttached.attachment.id
@@ -270,6 +275,24 @@ async function main() {
   const bState = () => state(b, roomB.session.id)
   const call = (kernelArg, request) => JSON.stringify(kernelArg ? { kernel: kernelArg, request } : { request })
 
+  // The agent's latest turn from the kernel's own history, the same for every provider: its tool calls (keyed, in order) with their answers, and its last words.
+  const turnOf = async (r, session, agent) => {
+    const outline = (await r.rpc({ GetSessionHistoryOutline: { session_id: session, agent_ids: [agent], latest_prompt_count: 1, include_prefetched_content: true } })).SessionHistoryOutline
+    const history = outline.agents.find(x => x.agent_id === agent)
+    const turn = history?.turns?.at(-1)
+    const calls = new Map()
+    for (const blob of history?.prefetched_blobs ?? []) for (const { entry } of blob.entries) {
+      if (entry.kind !== "provider_tool") continue
+      let call
+      try { call = JSON.parse(entry.text) } catch { continue }
+      calls.set(entry.merge_key, call)
+    }
+    if (process.env.REACH_DRILL_RAW) writeFileSync(join(evidence, "outline-raw.json"), JSON.stringify(outline, null, 1))
+    return { id: turn?.turn_id, done: turn?.lifecycle === "completed", answer: turn?.summary?.entry?.text ?? "", calls: [...calls.values()], keyed: [...calls.entries()] }
+  }
+  // Claude and OpenCode put the server in the tool name; Codex names the server in the call's title.
+  const reachName = call => /chariox[-_]reach/.test(call.tool) ? call.tool.replace(/^.*chariox[-_]reach[._-]*/, "") : /chariox[-_]reach/.test(call.title ?? "") ? call.tool : null
+
   if (scenarios.has("reach")) {
     note("scenario", { which: "reach" })
     await sendPrompt([
@@ -304,23 +327,7 @@ async function main() {
 
   if (scenarios.has("tools")) {
     note("scenario", { which: "tools", provider, model })
-    // The agent's latest turn from the kernel's own history, the same for every provider: its tool calls with their answers, and its last words.
-    const latestTurn = async () => {
-      const outline = (await a.rpc({ GetSessionHistoryOutline: { session_id: roomA.session.id, agent_ids: [agentA], latest_prompt_count: 1, include_prefetched_content: true } })).SessionHistoryOutline
-      const history = outline.agents.find(x => x.agent_id === agentA)
-      const turn = history?.turns?.at(-1)
-      const calls = new Map()
-      for (const blob of history?.prefetched_blobs ?? []) for (const { entry } of blob.entries) {
-        if (entry.kind !== "provider_tool") continue
-        let call
-        try { call = JSON.parse(entry.text) } catch { continue }
-        calls.set(entry.merge_key, call)
-      }
-      if (process.env.REACH_DRILL_RAW) writeFileSync(join(evidence, "outline-raw.json"), JSON.stringify(outline, null, 1))
-      return { id: turn?.turn_id, done: turn?.lifecycle === "completed", answer: turn?.summary?.entry?.text ?? "", calls: [...calls.values()] }
-    }
-    // Claude and OpenCode put the server in the tool name; Codex names the server in the call's title.
-    const reachName = call => /chariox[-_]reach/.test(call.tool) ? call.tool.replace(/^.*chariox[-_]reach[._-]*/, "") : /chariox[-_]reach/.test(call.title ?? "") ? call.tool : null
+    const latestTurn = () => turnOf(a, roomA.session.id, agentA)
     async function toolsTurn(prompt, marker) {
       const before = (await latestTurn()).id
       await a.rpc(submitPromptRequest(roomA.session.id, attached, agentA, prompt, []))
@@ -364,10 +371,176 @@ async function main() {
       '3. Call `events_ack` with exactly: {"cursor":0}',
       "Then reply with the words EVENTS and DONE joined by an underscore, nothing else.",
     ].join("\n"), "EVENTS_DONE")
-    // Following events from a Room agent arrives with slice S3: today each call is a tool result with a typed refusal.
     const events = ["events_subscribe", "events_wait", "events_ack"].map(name => second.reach.find(call => call.tool === name))
     note("events-tools", { calls: events.map(call => call && { tool: call.tool, status: call.status, output: call.output.slice(0, 200) }) })
-    check("the agent calls the three events tools and each answers with a typed code", events.every(call => call && /code\W+[a-z_]{4,}/.test(call.output)))
+    check("the agent calls the three events tools and each is answered (S3: following is reach-level)", events[0]?.output.includes("EventSubscription") && events[1]?.output.includes("EventsListed") && events[2]?.output.includes("EventsAcknowledged"), { outputs: events.map(call => call?.output.slice(0, 120)) })
+    if (flags.has("--hold")) await delay(Number(flags.get("--hold")) * 1000)
+  }
+
+
+  if (agentScenarios) {
+    // Agent X (room 1 on A) follows agent Y (room 2 on B). Rooms Z1 (on A) and Z2 (on B) are never followed.
+    const attachB = (await b.rpc({ AttachToSession: { session_id: roomB.session.id, client_id: "reach-owner-b", capability_level: "FullTerminal" } })).SessionAttached.attachment.id
+    const roomZ2 = (await b.rpc({ CreateSession: { workspace_id: join(b.dir, "work"), worktree_id: join(b.dir, "work"), alias: "unfollowed-room-b", agent_defaults: agentDefaultsB } })).SessionCreated
+    const attachZ2 = (await b.rpc({ AttachToSession: { session_id: roomZ2.session.id, client_id: "reach-owner-z2", capability_level: "FullTerminal" } })).SessionAttached.attachment.id
+    const attachZ1 = (await a.rpc({ AttachToSession: { session_id: siblingA.session.id, client_id: "reach-owner-z1", capability_level: "FullTerminal" } })).SessionAttached.attachment.id
+    const pumped = [[a, roomA.session.id, attached], [b, roomB.session.id, attachB], [b, roomZ2.session.id, attachZ2], [a, siblingA.session.id, attachZ1]]
+    const keepAlive = setInterval(() => { for (const [r, session, attachment] of pumped) r.rpc({ PumpTerminalOutput: { session_id: session, attachment_id: attachment } }).catch(() => {}) }, 2000).unref()
+    const nonce = randomBytes(3).toString("hex")
+    const yAgent = roomB.agent.id
+    const sleepMs = 150
+    // One real turn of another agent, to its end.
+    async function agentTurn(r, session, attachment, agent, prompt, marker) {
+      const before = (await turnOf(r, session, agent)).id
+      await r.rpc(submitPromptRequest(session, attachment, agent, prompt, []))
+      let turn
+      await until(async () => { turn = await turnOf(r, session, agent); return turn.id !== before && turn.done && turn.answer.includes(marker) }, `turn of ${agent} (${marker})`, 240000)
+      return turn
+    }
+    // X's turn: the prompt is submitted, `during` runs beside it (the drill's triggers), and every reach call is stamped the first time it is seen completed.
+    async function xTurn(prompt, marker, during) {
+      const before = (await turnOf(a, roomA.session.id, agentA)).id
+      await a.rpc(submitPromptRequest(roomA.session.id, attached, agentA, prompt, []))
+      const seen = new Map(), running = new Map()
+      let turn, side
+      const poll = async () => {
+        turn = await turnOf(a, roomA.session.id, agentA)
+        if (turn.id === before) return false
+        for (const [key, call] of turn.keyed) {
+          const name = reachName(call)
+          if (name === null) continue
+          if (call.status === "completed") { running.delete(key); if (!seen.has(key)) seen.set(key, { at: Date.now(), name }) }
+          else running.set(key, { name, input: call.input })
+        }
+        return turn.done && turn.answer.includes(marker)
+      }
+      const sideRun = during({ seen, running, waitFor: async (check, what, timeout = 120000) => { const end = Date.now() + timeout; while (Date.now() < end) { await poll(); if (await check()) return; await delay(sleepMs) } throw new Error(`timeout: ${what}`) } }).then(value => { side = { value } }, error => { side = { error } })
+      const end = Date.now() + 360000
+      while (Date.now() < end) { if (await poll()) break; await delay(sleepMs) }
+      await sideRun
+      if (side?.error) note("trigger-error", { message: String(side.error.message ?? side.error).slice(0, 300) })
+      const reach = turn.keyed.filter(([, call]) => reachName(call) !== null).map(([key, call]) => ({ key, tool: reachName(call), input: call.input, status: call.status, output: String(call.output ?? call.error ?? ""), seenAt: seen.get(key)?.at }))
+      writeFileSync(join(evidence, `agent-${marker}.json`), JSON.stringify({ provider, model, answer: turn.answer.slice(0, 600), calls: turn.keyed.map(([, call]) => ({ tool: call.tool, server: call.title, input: call.input, status: call.status, output: String(call.output ?? call.error ?? "").slice(0, 2500) })) }, null, 1), { mode: 0o600 })
+      return { turn, reach, side }
+    }
+    // X has subscribed, passed its two short steps and sits in the long wait (seen running, or the history shows tool calls only when they end).
+    const inLongWait = ({ seen, running }) => () => {
+      const acks = [...seen.values()].filter(x => x.name === "events_ack")
+      return [...seen.values()].some(x => x.name === "events_subscribe") && ([...running.values()].some(x => x.name === "events_wait" && Number(x.input?.timeout_seconds) >= 100) || (acks.length > 0 && Date.now() - acks[0].at > 5000))
+    }
+    // A tool answer is the payload itself (Claude, OpenCode) or an MCP result wrapping it as text (Codex).
+    const json = text => {
+      const from = text.indexOf("{"), to = text.lastIndexOf("}")
+      let value
+      try { value = JSON.parse(text.slice(from, to + 1)) } catch { return null }
+      const wrapped = value?.content?.[0]?.text
+      if (typeof wrapped !== "string") return value
+      try { return JSON.parse(wrapped) } catch { return null }
+    }
+    // The records a wait call returned, with the call's own timing.
+    const waited = reach => reach.filter(call => call.tool === "events_wait" && call.status === "completed").map(call => ({ ...call, batch: json(call.output)?.EventsListed ?? null }))
+    const cardsAnywhere = async () => {
+      const rooms = [[a, roomA.session.id], [a, siblingA.session.id], [b, roomB.session.id], [b, roomZ2.session.id]]
+      return (await Promise.all(rooms.map(async ([r, session]) => ((await state(r, session)).active_interactions ?? []).map(x => ({ room: session, id: x.id, title: x.title }))))).flat()
+    }
+
+    if (scenarios.has("events")) {
+      note("scenario", { which: "events", provider, model })
+      const yWord = `PONG${nonce}`, z1Word = `ZONE${nonce}`, z2Word = `ZTWO${nonce}`
+      let events = { z: null, yDone: null }
+      const first = await xTurn([
+        "This is a drill. Use only the chariox-reach MCP tools. No shell, no files. A call may be refused: do not retry it, except the waits below.",
+        `1. Call events_subscribe with exactly: {"kernel":"${target}","session_id":"${roomB.session.id}"}`,
+        '2. Call events_wait with exactly {"timeout_seconds":3}, then events_ack with its next_cursor (those records are old).',
+        '3. Call events_wait with {"timeout_seconds":120}, then events_ack with its next_cursor. Repeat step 3 (at most 8 times) until a returned record has a value.outcome field.',
+        "Then reply with the words EVENTS and DONE joined by an underscore, nothing else.",
+      ].join("\n"), "EVENTS_DONE", async ({ running, seen, waitFor }) => {
+        await waitFor(inLongWait({ seen, running }), "X waits")
+        await delay(1500)
+        // Rooms X does not follow finish real turns: a room on its own kernel and a room on the followed kernel.
+        const outsideStart = Date.now()
+        await Promise.all([
+          agentTurn(a, siblingA.session.id, attachZ1, siblingA.agent.id, `Reply with exactly ${z1Word} and nothing else.`, z1Word),
+          agentTurn(b, roomZ2.session.id, attachZ2, roomZ2.agent.id, `Reply with exactly ${z2Word} and nothing else.`, z2Word),
+        ])
+        events.z = { start: outsideStart, done: Date.now() }
+        await delay(3500)
+        events.zQuiet = ![...seen.values()].some(x => x.name === "events_wait" && x.at >= outsideStart)
+        events.yStart = Date.now()
+        await agentTurn(b, roomB.session.id, attachB, yAgent, `Reply with exactly ${yWord} and nothing else.`, yWord)
+        events.yDone = Date.now()
+      })
+      const waits = waited(first.reach)
+      note("events-waits", { count: waits.length, calls: waits.map(w => ({ at: w.seenAt, n: w.batch?.events?.length, types: w.batch?.events?.map(e => `${e.type}:${e.value?.run_state ?? e.value?.state ?? ""}${e.value?.outcome ? ":" + e.value.outcome.kind : ""}`) })) })
+      const finalWait = waits.find(w => w.batch?.events?.some(e => e.value?.outcome))
+      const finalEvent = finalWait?.batch?.events?.findLast(e => e.value?.outcome)
+      const sessionsSeen = new Set(waits.flatMap(w => w.batch?.events ?? []).map(e => e.session_id))
+      check("X follows a room of another kernel: subscribe is answered", !!first.reach.find(c => c.tool === "events_subscribe" && c.output.includes("EventSubscription")), { out: first.reach.find(c => c.tool === "events_subscribe")?.output.slice(0, 200) })
+      check("nothing from the rooms X does not follow wakes it (two other rooms finished real turns while it waited)", !!events.z && events.zQuiet === true && [...sessionsSeen].every(id => id === roomB.session.id), { sessions: [...sessionsSeen], z_turns_ms: events.z && events.z.done - events.z.start })
+      const latency = finalWait && finalEvent ? finalWait.seenAt - finalEvent.at_ms : null
+      note("events-latency", { event_at_ms: finalEvent?.at_ms, wait_returned_seen_ms: finalWait?.seenAt, y_done_ms: events.yDone, latency_ms: latency, polling_ms: sleepMs })
+      check("X's events_wait returns Y's finished turn within 2 s (outcome record names kernel, session, agent)", latency !== null && latency <= 2000 && finalEvent.session_id === roomB.session.id && finalEvent.agent_id === yAgent && !!finalEvent.kernel && finalEvent.value.outcome !== "error" && latency >= -sleepMs, { latency_ms: latency, record: finalEvent && { kernel: finalEvent.kernel, session_id: finalEvent.session_id, agent_id: finalEvent.agent_id, value: finalEvent.value } })
+      check("X was woken by the wait, not polling (few waits, each one reported)", waits.length >= 2 && waits.length <= 10, { waits: waits.length })
+      check("X's turn ended with the words it was asked for", first.turn.answer.includes("EVENTS_DONE"))
+    }
+
+    if (scenarios.has("driver")) {
+      note("scenario", { which: "driver (AT-40)", provider, model })
+      const ask = `Ship the drill build ${nonce}?`
+      let raised = null
+      const driver = await xTurn([
+        "This is a drill. Use only the chariox-reach MCP tools. No shell, no files. A call may be refused: do not retry it, except the waits below.",
+        `1. Call events_subscribe with exactly: {"kernel":"${target}","session_id":"${roomB.session.id}","agent_id":"${yAgent}"}`,
+        '2. Call events_wait with exactly {"timeout_seconds":3}, then events_ack with its next_cursor (those records are old).',
+        '3. Call events_wait with {"timeout_seconds":120}. Repeat it (at most 8 times) until a returned record has a value.question field; call events_ack with the cursor after each wait.',
+        `4. That record is a decision the person asked you to settle: choose the choice whose id is "ship". Call request with {"kernel":"<the record's kernel field>","request":{"RespondToInteraction":{"session_id":"<the record's session_id>","interaction_id":"<the record's refs.interaction_id>","choice_id":"ship"}}}.`,
+        "Then reply with the words DRIVER and DONE joined by an underscore, nothing else.",
+      ].join("\n"), "DRIVER_DONE", async ({ running, seen, waitFor }) => {
+        await waitFor(inLongWait({ seen, running }), "driver waits")
+        await delay(1500)
+        raised = { start: Date.now() }
+        // The driven agent itself raises the decision through its own chariox tool and waits for the answer.
+        const turn = await agentTurn(b, roomB.session.id, attachB, yAgent, [`Use the chariox tool request_popup exactly once, with wait true: message "${ask}", choices [{"id":"ship","label":"Ship","reply":"ship"},{"id":"hold","label":"Hold","reply":"hold"}].`, "When it returns, reply with exactly ANSWER_ followed by the choice id you received, nothing else."].join(" "), "ANSWER_")
+        raised.done = Date.now()
+        raised.answer = turn.answer
+      })
+      const waits = waited(driver.reach)
+      const cardWait = waits.find(w => w.batch?.events?.some(e => e.value?.question))
+      const card = cardWait?.batch?.events?.find(e => e.value?.question)
+      note("driver-card", { record: card && { kernel: card.kernel, session_id: card.session_id, agent_id: card.agent_id, refs: card.refs, message: card.value.question.message, choices: card.value.question.choices.map(c => c.id) } })
+      const latency = cardWait && card ? cardWait.seenAt - card.at_ms : null
+      check("X is woken by the decision Y raised (record names kernel, session, agent and interaction)", !!card && card.kernel === b.status.daemon_id && card.session_id === roomB.session.id && card.agent_id === yAgent && !!card.refs?.interaction_id && card.value.question.message.includes(ask), { latency_ms: latency })
+      check("the wake comes within 2 s of the decision being raised, without polling", latency !== null && latency <= 2000 && latency >= -sleepMs && waits.length <= 6, { latency_ms: latency, waits: waits.length })
+      const answer = driver.reach.find(c => c.tool === "request" && /RespondToInteraction/.test(JSON.stringify(c.input)))
+      check("X answers the card through reach on kernel B", !!answer && answer.status === "completed" && answer.output.includes("InteractionResponded") && answer.input?.request?.RespondToInteraction?.interaction_id === card?.refs?.interaction_id, { input: answer?.input, out: answer?.output.slice(0, 200) })
+      check("Y continues with the answer X gave (no person answered)", !!raised?.answer?.includes("ANSWER_ship"), { answer: raised?.answer?.slice(0, 100) })
+      check("no card is left open in any room", (await cardsAnywhere()).length === 0, { cards: await cardsAnywhere() })
+      const rows = audit().filter(row => String(row.harness ?? "").startsWith("home-room/") && String(row.harness).includes("(Chariox agent)"))
+      check("B's audit names the room and agent that answered", rows.some(row => row.request === "RespondToInteraction"), { requests: rows.map(row => row.request) })
+    }
+
+    if (scenarios.has("history")) {
+      note("scenario", { which: "history", provider, model })
+      // Y has answered something in its own room by now; make sure of it for a run of this scenario alone.
+      const hasHistory = (await turnOf(b, roomB.session.id, yAgent)).answer
+      const yWord = hasHistory.trim() ? hasHistory.trim().split(/\s+/).at(-1) : null
+      const word = yWord ?? `HIST${nonce}`
+      if (!yWord) await agentTurn(b, roomB.session.id, attachB, yAgent, `Reply with exactly ${word} and nothing else.`, word)
+      const secret = (await turnOf(b, roomB.session.id, yAgent)).answer
+      const read = await xTurn([
+        "This is a drill. Use the tools of the servers chariox and chariox-reach. No shell, no files. A call may be refused: do not retry it.",
+        `1. Call the chariox tool whose name ends in history.search (or history_search) with {"session_id":"${roomB.session.id}","query":"${word}"}.`,
+        `2. Call the chariox-reach tool request with exactly: ${call(target, { GetSessionHistoryOutline: { session_id: roomB.session.id, agent_ids: [yAgent], latest_prompt_count: 4, include_prefetched_content: true } })}`,
+        "Then reply with the words HISTORY and DONE joined by an underscore, a space, and REFUSED or ALLOWED for how the call in step 1 ended; nothing else.",
+      ].join("\n"), "HISTORY_DONE", async () => {})
+      const roomHistory = read.turn.calls.find(c => /history[._]search/.test(c.tool) && reachName(c) === null)
+      note("history-room-tool", { called: !!roomHistory, status: roomHistory?.status, output: String(roomHistory?.output ?? roomHistory?.error ?? "").slice(0, 300) })
+      const outline = read.reach.find(c => c.tool === "request" && /GetSessionHistoryOutline/.test(JSON.stringify(c.input)))
+      check("X reads room 2's history on kernel B through reach with no prompt", !!outline && outline.status === "completed" && outline.output.includes("SessionHistoryOutline") && outline.output.includes(secret.trim().split(/\s+/).at(-1)), { out: outline?.output.slice(0, 200) })
+      check("no card, approval or /sudo window appeared anywhere", (await cardsAnywhere()).length === 0, { cards: await cardsAnywhere() })
+      check("the room history tool stays confined to X's own room (the agent reports the call refused)", /REFUSED/.test(read.turn.answer), { answer: read.turn.answer.slice(0, 200), logged: !!roomHistory })
+    }
+    clearInterval(keepAlive)
     if (flags.has("--hold")) await delay(Number(flags.get("--hold")) * 1000)
   }
 

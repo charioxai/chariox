@@ -74,6 +74,28 @@ impl CommandRouter {
         tool_name: &str,
         arguments: serde_json::Value,
     ) -> Result<RuntimeToolResult, DaemonError> {
+        let started = std::time::Instant::now();
+        let result = self
+            .dispatch_reach_tool(auth_token, tool_name, arguments)
+            .await;
+        crate::logging::info_with_fields(
+            "agent.reach",
+            "reach tool call finished",
+            serde_json::json!({
+                "tool": tool_name,
+                "ok": result.as_ref().is_ok_and(|result| result.ok),
+                "elapsed_ms": u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+            }),
+        );
+        result
+    }
+
+    async fn dispatch_reach_tool(
+        &self,
+        auth_token: &str,
+        tool_name: &str,
+        arguments: serde_json::Value,
+    ) -> Result<RuntimeToolResult, DaemonError> {
         let caller = match self.runtime_state.reach_for_auth_token(auth_token) {
             Ok(caller) => caller,
             Err(error) => return Ok(refused("reach_not_available", error.to_string())),
