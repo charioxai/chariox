@@ -1,6 +1,7 @@
 use chariox_kernel::{DaemonApp, DaemonConfig};
 use std::time::Instant;
 
+mod allocator;
 mod kernel_arguments;
 
 #[cfg(all(not(test), not(debug_assertions)))]
@@ -16,6 +17,7 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 // Tokio is the M1 async runtime baseline for the daemon because upcoming PTY,
 // process, and signal-handling work all need a shared async execution model.
 fn main() -> Result<(), chariox_kernel::DaemonError> {
+    allocator::configure();
     #[cfg(all(feature = "native-display", target_os = "linux"))]
     if let Some(arg) = std::env::args_os().nth(1).filter(|arg| {
         arg == "--display-native-worker"
