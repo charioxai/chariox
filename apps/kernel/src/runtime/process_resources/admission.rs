@@ -387,7 +387,15 @@ impl Ledger {
                 changed.push(owner);
             }
         }
-        let full = |entry: &Entry| entry.disk(room).is_some_and(|disk| disk.free < disk.floor);
+        // The oldest writer keeps writing into the margin above half the
+        // floor, so one build finishes and frees what it wrote; below that
+        // nothing may write.
+        let full = |entry: &Entry| {
+            entry.disk(room).is_some_and(|disk| {
+                disk.free < disk.floor
+                    && (Some(entry.arrived) != state.oldest_writer || disk.free < disk.floor / 2)
+            })
+        };
         if let Some(owner) = self.pause(members, WaitReason::Disk, |entry, command| {
             (command.write_growth >= GROWING && full(entry)).then_some(command.write_growth)
         }) {
@@ -537,8 +545,14 @@ impl Ledger {
             WaitReason::Disk => (entry.memory_ahead(room), need(entry, reason, room)),
         };
         let volume = entry.disk(room);
+        // A paused build that nothing else is writing for continues while its
+        // volume still has half the floor: waiting longer frees no disk.
+        let paused = matches!(entry.wait, Some(Wait::Paused(_)));
         let fits = (memory <= *available || !state.heavy_running)
-            && volume.is_none_or(|volume| disk <= state.spare(volume));
+            && volume.is_none_or(|volume| {
+                disk <= state.spare(volume)
+                    || paused && !state.writer_running && volume.free >= volume.floor / 2
+            });
         if !fits {
             return None;
         }
@@ -569,6 +583,11 @@ struct State {
     oldest: Option<u64>,
     /// Something heavy runs, so waiting can make room.
     heavy_running: bool,
+    /// The oldest running heavy writer: never paused while its volume has
+    /// room for it, so a full disk does not stop every build.
+    oldest_writer: Option<u64>,
+    /// A heavy writer runs, so waiting can free disk.
+    writer_running: bool,
     /// Writes admitted commands still have ahead, by volume.
     disk: BTreeMap<u64, u64>,
 }
@@ -598,6 +617,15 @@ impl State {
                     .map_or(entry.arrived, |oldest| oldest.min(entry.arrived)),
             );
         }
+        let writer = entry.writes >= room.light
+            || entry.admitted && entry.expected.is_some_and(|peak| peak.writes >= room.light);
+        if writer {
+            self.writer_running = true;
+            self.oldest_writer = Some(
+                self.oldest_writer
+                    .map_or(entry.arrived, |oldest| oldest.min(entry.arrived)),
+            );
+        }
     }
 
     fn read(members: &[Arc<Mutex<Observation>>], room: &Room) -> Self {
@@ -605,6 +633,8 @@ impl State {
             reserved: 0,
             oldest: None,
             heavy_running: false,
+            oldest_writer: None,
+            writer_running: false,
             disk: BTreeMap::new(),
         };
         for member in members {

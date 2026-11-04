@@ -128,7 +128,7 @@ const GIB: u64 = 1024 * MIB;
 #[cfg(target_os = "linux")]
 fn paused_writer() -> (Workload, Arc<std::sync::atomic::AtomicU64>, Arc<pool::Pool>) {
     use std::sync::atomic::{AtomicU64, Ordering};
-    let free = Arc::new(AtomicU64::new(5 * GIB));
+    let free = Arc::new(AtomicU64::new(4 * GIB));
     let reported = free.clone();
     let pool = Arc::new(pool::Pool::with_volume(
         1 << 40,
@@ -394,7 +394,7 @@ fn paused_after_a_hot_reload(launch: Launch) -> bool {
     let handed_over: Submissions =
         serde_json::from_slice(&serde_json::to_vec(&writer.domain.submissions()).unwrap()).unwrap();
     let _next =
-        writer.watched_again(domain(&volume(5 * GIB), "writer", false).launched_by(handed_over));
+        writer.watched_again(domain(&volume(4 * GIB), "writer", false).launched_by(handed_over));
     settle(4);
     writer.domain.unbind_key(&key);
     writer.waiting("write")

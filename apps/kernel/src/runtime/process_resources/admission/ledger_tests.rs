@@ -703,3 +703,124 @@ fn a_paused_and_a_held_command_are_one_row_apart_from_the_kind() {
         other => panic!("rows read {other:?}"),
     }
 }
+
+/// Five builds write onto a volume that cannot hold all of them; a build that
+/// ends deletes its scratch. Each tick every owner's sample runs one pass.
+#[test]
+fn writing_builds_finish_one_after_another_on_a_nearly_full_disk() {
+    const BUILDS: u32 = 5;
+    const PEAK: u64 = 10 * GIB;
+    const START_FREE: u64 = 46 * GIB;
+    let written = Arc::new(Mutex::new(BTreeMap::<u32, u64>::new()));
+    let free = {
+        let written = written.clone();
+        Box::new(move |_: &Path| {
+            let used = written.lock().unwrap().values().sum::<u64>();
+            Some(Space {
+                id: 1,
+                free: START_FREE.saturating_sub(used),
+                total: 100 * GIB,
+            })
+        }) as Box<Volume>
+    };
+    let mut ledger = Ledger::new(None);
+    let owners = (1..=BUILDS)
+        .map(|pid| {
+            let mut build = entry(pid as u64, Peak::default());
+            build.expected = None;
+            owner(
+                &format!("build-{pid}"),
+                true,
+                vec![writer(pid, 0, 0)],
+                vec![(pid, build)],
+            )
+        })
+        .collect::<Vec<_>>();
+    let mut finished = Vec::new();
+    for _tick in 0..400 {
+        for (pid, member) in (1..=BUILDS).zip(&owners) {
+            if finished.contains(&pid) {
+                continue;
+            }
+            let paused = member.lock().unwrap().admission[&pid].wait.is_some();
+            let grown = if paused { 0 } else { 2 * GIB };
+            let total = {
+                let mut written = written.lock().unwrap();
+                let total = written.entry(pid).or_default();
+                *total += grown;
+                *total
+            };
+            if total >= PEAK {
+                written.lock().unwrap().remove(&pid);
+                member.lock().unwrap().commands.clear();
+                finished.push(pid);
+            } else {
+                member.lock().unwrap().commands = vec![writer(pid, total, grown)];
+            }
+        }
+        for member in &owners {
+            ledger.register(member, 512 * MIB);
+            unsettle(&mut ledger);
+            ledger.pass(&owners, member, &room(GIB, false, &*free));
+        }
+        if finished.len() == BUILDS as usize {
+            return;
+        }
+    }
+    let waiting = (1..=BUILDS)
+        .filter(|pid| !finished.contains(pid))
+        .collect::<Vec<_>>();
+    panic!("builds {waiting:?} never finished: every writer is paused on the full disk");
+}
+
+fn writer(pid: u32, writes: u64, write_growth: u64) -> pool::CommandUse {
+    pool::CommandUse {
+        pid,
+        group: None,
+        resident: 100 * MIB,
+        growth: 0,
+        writes,
+        write_growth,
+        effective: pid,
+        root: false,
+    }
+}
+
+#[test]
+fn the_oldest_writer_keeps_writing_down_to_half_the_floor_and_stops_below() {
+    // A 100 GiB volume has a 10 GiB floor.
+    let free = Arc::new(AtomicU64::new(7 * GIB));
+    let volume = volume(&free);
+    let mut build = entry(1, Peak::default());
+    build.expected = None;
+    build.admitted = true;
+    build.writes = GIB;
+    let current = owner(
+        "agent",
+        true,
+        vec![writer(1, GIB, 8 * MIB)],
+        vec![(1, build)],
+    );
+    let mut ledger = Ledger::new(None);
+    ledger.pass(
+        std::slice::from_ref(&current),
+        &current,
+        &room(GIB, false, &*volume),
+    );
+    assert_eq!(
+        wait(&current, 1),
+        None,
+        "the only writer was stopped above half the floor"
+    );
+    free.store(4 * GIB, Ordering::SeqCst);
+    ledger.pass(
+        std::slice::from_ref(&current),
+        &current,
+        &room(GIB, false, &*volume),
+    );
+    assert_eq!(
+        wait(&current, 1),
+        Some(Wait::Paused(WaitReason::Disk)),
+        "the only writer kept writing below half the floor"
+    );
+}
