@@ -1520,5 +1520,7 @@ mod leased_worker_stop_obligation;
 mod room_dispatch_obligation;
 mod terminal_wake;
 mod terminal_wake_worker;
+#[cfg(test)]
+mod workflow_blocked_claim_retry_tests;
 // MD-3: typed internal seam for display integration; public protocol remains coordinator-owned.
 pub(crate) use kernel_browser_runtime::{KernelBrowserDisplayRequest, KernelBrowserPushCredit};
