@@ -1,5 +1,22 @@
 # Managed Path-1 parity inventory (MP-11)
 
+## MP-08 / MP-09 / MP-10 / MP-11 relay renewal recovery (2026-11-04)
+
+Ordinary and managed kernels use the issuer's signed runtime-token expiry for
+renewal rather than assuming the requested lifetime was granted. Token
+rejections invalidate the refused token, and bounded socket writes release the
+connector for its existing retry/backoff path. Reauthentication queued on a
+socket is not evidence that the relay received it. These changes add no runtime
+authority to Cloud or the relay and change no serialized protocol shape.
+
+Web briefly retains events that precede subscription binding, preserves ingress
+order across binding, and quietly expires unknown or retired subscriptions.
+The shared directory bounds simultaneous registration waits. Real Web/TUI Room
+traffic across renewals, forced expiry/rejection and stalled-write recovery are
+separate acceptance cells in the end-to-end plan; focused regressions alone do
+not close the broader MP-10 matrix or the MP-11 security-anchor review.
+
+
 ## MP-08 / MP-09 / MP-10 / MP-11 process disk telemetry (2026-11-02)
 
 Local954 / peer403 adds nullable `disk_io_bytes` to the existing session process

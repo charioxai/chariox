@@ -135,3 +135,42 @@ pub(super) async fn run_relay_writer<S>(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+    use std::sync::Arc;
+    use tokio::sync::mpsc;
+    use std::time::Duration;
+
+    struct StalledSink;
+    impl Sink<Message> for StalledSink {
+        type Error = std::io::Error;
+        fn poll_ready(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> { Poll::Ready(Ok(())) }
+        fn start_send(self: Pin<&mut Self>, _: Message) -> Result<(), Self::Error> { Ok(()) }
+        fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> { Poll::Pending }
+        fn poll_close(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> { Poll::Pending }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stalled_writes_end_the_writer_so_the_connector_can_reconnect() {
+        // MP-08 / MP-09 / MP-10 / MP-11: token renewal queued behind a stuck
+        // socket must not leave the connector believing it is still online.
+        for lane in ["priority", "event", "receipt", "pong"] {
+            let (priority, priority_rx) = mpsc::channel(2);
+            let (event, event_rx) = mpsc::channel(2);
+            let (pong, pong_rx) = mpsc::channel(2);
+            let (receipt, receipt_rx) = mpsc::channel(2);
+            match lane {
+                "priority" => priority.send(RelayEnvelope::DaemonHeartbeat { daemon_id: "kernel".into(), registration: None }).await.unwrap(),
+                "event" => event.send(RelayEnvelope::Close { reason: "test".into(), kernel_reload: false }).await.unwrap(),
+                "receipt" => receipt.send("receipt".into()).await.unwrap(),
+                _ => pong.send(vec![]).await.unwrap(),
+            }
+            let writer = run_relay_writer(StalledSink, priority_rx, event_rx, pong_rx, receipt_rx, false, Arc::new(AtomicBool::new(false)));
+            assert!(tokio::time::timeout(Duration::from_secs(31), writer).await.is_ok(), "stalled {lane} write never releases connector");
+        }
+    }
+}

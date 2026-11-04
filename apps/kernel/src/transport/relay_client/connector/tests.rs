@@ -890,6 +890,9 @@ fn relay_wording_for_a_refused_token_is_recognised() {
         "relay payload handling failed: relay token is expired",
         "relay token expired",
         "relay token has been revoked",
+        "invalid relay token",
+        "relay token does not allow requested action",
+        "relay token does not allow requested target",
     ] {
         assert!(relay_refused_token(message), "{message}");
     }

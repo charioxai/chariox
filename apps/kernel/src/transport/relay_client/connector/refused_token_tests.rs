@@ -106,8 +106,17 @@ async fn drill_expired_kernel_token_against_relay_binary() {
 
 #[tokio::test]
 async fn expired_relay_token_is_not_presented_again() {
+    refused_relay_token_is_not_reused(false).await;
+}
+
+#[tokio::test]
+async fn invalid_relay_token_is_not_presented_again() {
+    refused_relay_token_is_not_reused(true).await;
+}
+
+async fn refused_relay_token_is_not_reused(invalid: bool) {
     let issuer_secret = "refused-token-test-secret-0123456789abcdef".to_string();
-    let token = expired_kernel_token("refused-token-test", &issuer_secret);
+    let token = if invalid { "synthetic-invalid-token".into() } else { expired_kernel_token("refused-token-test", &issuer_secret) };
     let relay = chariox_relay::server::RelayServer::with_auth_verifier(
         chariox_relay::config::RelayConfig {
             host: "127.0.0.1".into(),
@@ -137,7 +146,7 @@ async fn expired_relay_token_is_not_presented_again() {
     let _ = relay_task.await;
     assert!(
         connections <= 1,
-        "an expired token was presented {connections} times in {OBSERVATION_WINDOW:?}"
+        "a refused token was presented {connections} times in {OBSERVATION_WINDOW:?}"
     );
 }
 
@@ -167,4 +176,44 @@ async fn connection_the_relay_drops_after_registration_backs_off() {
         connections <= 4,
         "a relay that drops every registration saw {connections} reconnects in {OBSERVATION_WINDOW:?}"
     );
+}
+
+
+#[tokio::test]
+async fn silent_relay_socket_is_replaced_without_a_kernel_restart() {
+    // MP-08 / MP-09 / MP-10 / MP-11: a relay may remove the peer while its
+    // wedged writer keeps TCP open. Successful queued heartbeats prove nothing.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let relay_url = format!("ws://{}", listener.local_addr().unwrap());
+    let (registered_tx, mut registered_rx) = mpsc::unbounded_channel();
+    let relay = tokio::spawn(async move {
+        let mut peers = tokio::task::JoinSet::new();
+        loop {
+            let (stream, _) = listener.accept().await.unwrap();
+            let registered = registered_tx.clone();
+            peers.spawn(async move {
+                use futures_util::StreamExt;
+                let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+                let _ = socket.next().await;
+                let _ = registered.send(());
+                // Retain both halves without reading or replying, like a half-open link.
+                std::future::pending::<()>().await;
+                drop(socket);
+            });
+        }
+    });
+    let app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    let (stop_tx, stop_rx) = watch::channel(false);
+    let connector = tokio::spawn(run_daemon_relay_connector_with_static_relay(
+        Arc::new(Mutex::new(app)),
+        Arc::new(RwLock::new(RelayClientState::default())),
+        stop_rx, relay_url, "synthetic-test-token".into(),
+    ));
+    timeout(Duration::from_secs(5), registered_rx.recv()).await.unwrap().unwrap();
+    let recovered = timeout(Duration::from_secs(48), registered_rx.recv()).await;
+    let _ = stop_tx.send(true);
+    let _ = timeout(Duration::from_secs(5), connector).await;
+    relay.abort();
+    let _ = relay.await;
+    assert!(matches!(recovered, Ok(Some(()))), "a silent relay socket was never replaced");
 }

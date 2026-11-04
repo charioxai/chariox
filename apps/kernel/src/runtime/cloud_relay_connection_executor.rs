@@ -889,3 +889,7 @@ mod tests {
             .contains("remote kernel selection is empty"));
     }
 }
+
+#[cfg(test)]
+#[path = "cloud_relay_connection_executor/renewal_tests.rs"]
+mod renewal_tests;
