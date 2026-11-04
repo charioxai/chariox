@@ -201,6 +201,7 @@ impl KernelRuntimeState {
                 format!("Wake '{}' fired (due {})", wake.label, iso(due))
             };
             self.wake_notice(&wake, text);
+            self.close_cards_following(&wake);
             recipients.insert((wake.room_id, wake.agent_id));
         }
         for (room, agent) in recipients {

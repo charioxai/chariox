@@ -901,3 +901,57 @@ async fn async_popup_refuses_a_condition_it_cannot_follow() {
         .active_interactions()
         .is_empty());
 }
+
+// PCD-03: the kernel clock is a wake source too; its firing closes the card.
+#[tokio::test]
+async fn async_popup_follows_a_timer_the_scheduler_fires() {
+    let f = fixture("async-popup-until-timer", true).await;
+    let task = f.begin(&f.prompt_id);
+    let token = f
+        .runtime
+        .owned
+        .provider_store
+        .get_run(&f.run)
+        .unwrap()
+        .runtime_mcp_auth_token()
+        .unwrap()
+        .to_owned();
+    let timer = call(
+        &f,
+        &token,
+        "chariox.events.timer",
+        &task,
+        serde_json::json!({"label":"card timer","delay_ms":1_000}),
+    )
+    .await
+    .unwrap()
+    .payload;
+    let wake_id = timer["wake_id"].as_str().unwrap().to_owned();
+    let result = ask(&f, serde_json::json!({"until":{"wake_id":wake_id}})).await;
+    let id = result["interaction_id"].as_str().unwrap();
+    let scheduler = {
+        let runtime = f.runtime.clone();
+        tokio::spawn(async move { runtime.run_agent_wake_scheduler().await })
+    };
+    let closed = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if f.runtime
+                .owned
+                .session_store
+                .get_session(&f.room)
+                .unwrap()
+                .active_interactions()
+                .is_empty()
+            {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+    scheduler.abort();
+    assert!(closed.is_ok(), "the card closes when its timer fires");
+    let told = answers(&f, id);
+    assert_eq!(told.len(), 1);
+    assert_eq!(told[0]["choice_id"], "condition_met");
+}
