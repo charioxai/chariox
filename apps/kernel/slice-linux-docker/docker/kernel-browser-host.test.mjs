@@ -3217,3 +3217,12 @@ test('a background renderer has its own tiny acknowledged capture until the pers
   assert.ok(sent.some(c=>c.method==='Target.detachFromTarget'&&c.params.sessionId==='background-capture'));
   assert.ok(!sent.some(c=>c.method==='Target.activateTarget'));
 }));
+
+test('kernel-admitted agent input does not repeat the idle wait while Rust holds its mutation reservation', { timeout: 5000 }, () => using(async ({ host }) => {
+  const opened = await host.request({ op: 'open', url: 'https://example.com/' });
+  const tab = opened.tabs[0], base = { tab_id: tab.tab_id, generation: opened.generation, document_id: tab.document_id };
+  await host.request({ op: 'input', ...base, input: { kind: 'key', key: 'a' } });
+  const startedAt = Date.now();
+  await host.request({ op: 'input', focused_agent: true, _person_idle_checked: true, ...base, input: { kind: 'key', key: 'b' } });
+  assert.ok(Date.now() - startedAt < 100, 'the kernel already waited outside its mutation reservation');
+}, { personIdleMs: 150 }));

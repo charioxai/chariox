@@ -1850,7 +1850,10 @@ done
             )
         });
         std::thread::sleep(Duration::from_millis(150));
-        assert!(!takeover.is_finished(), "takeover was reported while the host could still run the previous owner's parked input");
+        assert!(
+            !takeover.is_finished(),
+            "takeover was reported while the host could still run the previous owner's parked input"
+        );
         drop(held);
         takeover.join().unwrap().unwrap();
         let sent = std::fs::read_to_string(&retired).unwrap();
@@ -1860,4 +1863,75 @@ done
         );
     });
     host.shutdown().unwrap();
+}
+
+#[test]
+fn a_person_key_reaches_the_host_while_an_agent_waits_for_person_idle() {
+    let root = std::env::temp_dir().join(format!(
+        "chariox-person-idle-{:032x}",
+        rand::random::<u128>()
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let script = root.join("controller.sh");
+    std::fs::write(&script, r#"set -eu
+root=$1
+while IFS= read -r request; do
+ id=${request#*:}; id=${id%%,*}
+ case "$request" in
+ *'"method":"health"'*) printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s,"diagnostic_code":null}}\n' "$id" "$$" ;;
+ *'"method":"host.protect"'*) printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
+ *'"text":"agent"'*)
+  printf started > "$root/started"
+  (while [ ! -f "$root/release" ]; do sleep 0.01; done
+   printf '{"id":%s,"ok":true,"result":{}}\n' "$id") & ;;
+ *'"method":"host.browser"'*) printf '{"id":%s,"ok":true,"result":{"generation":1,"tabs":[{"tab_id":"host-tab-a","document_id":"d"}]}}\n' "$id" ;;
+ *'"method":"shutdown"'*) printf '{"id":%s,"ok":true,"result":{"state":"stopped","process_id":null,"diagnostic_code":null}}\n' "$id"; exit 0 ;;
+ esac
+done
+"#).unwrap();
+    let host = KernelBrowserHost::new(root.clone());
+    host.install_fixture_backend("alice", &script, &root);
+    host.set_focus("alice", Some("agent"));
+    host.load("alice", "agent").unwrap();
+    host.backend("alice")
+        .unwrap()
+        .lock()
+        .unwrap()
+        .start()
+        .unwrap();
+    let policy = json!({"values":[],"targets":[],"unknown":false});
+    host.protected_request(
+        "alice",
+        None,
+        "host.browser",
+        json!({"op":"state"}),
+        policy.clone(),
+    )
+    .unwrap();
+    host.protected_request("alice", None, "host.browser", json!({"op":"input","tab_id":"host-tab-a","generation":1,"document_id":"d","input":{"kind":"text","text":"first person key"}}), policy.clone()).unwrap();
+    let (entered, result) = std::thread::scope(|scope| {
+        let agent = scope.spawn(|| {
+            let admission = host.admit("alice", "agent").unwrap();
+            host.protected_request_admitted("alice", Some(&admission), "host.browser", json!({"op":"input","tab_id":"host-tab-a","generation":1,"document_id":"d","input":{"kind":"text","text":"agent"}}), policy.clone())
+        });
+        std::thread::sleep(Duration::from_millis(100));
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let person_host = &host;
+        let person_policy = policy.clone();
+        let person = scope.spawn(move || {
+            sender.send(person_host.protected_request("alice", None, "host.browser", json!({"op":"input","tab_id":"host-tab-a","generation":1,"document_id":"d","input":{"kind":"text","text":"person"}}), person_policy)).unwrap();
+        });
+        let result = receiver.recv_timeout(Duration::from_millis(250));
+        std::fs::write(root.join("release"), "release").unwrap();
+        person.join().unwrap();
+        agent.join().unwrap().unwrap();
+        (root.join("started").exists(), result)
+    });
+    host.shutdown().unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+    assert!(entered, "agent input must reach its host idle wait");
+    assert!(
+        result.is_ok_and(|r| r.is_ok()),
+        "person input must reach the host before the waiting agent settles"
+    );
 }

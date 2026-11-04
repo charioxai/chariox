@@ -29,6 +29,7 @@ pub(crate) struct KernelBrowserHost {
     authority_epoch: Arc<AtomicU64>,
     web_bot_auth_revision: Arc<AtomicU64>,
     terminal_leases: terminal_lease::TerminalLeases,
+    person_inputs: Arc<person_input::PersonInputs>,
 }
 #[derive(Default)]
 struct HostState {
@@ -150,6 +151,7 @@ impl KernelBrowserHost {
             authority_epoch: Arc::default(),
             web_bot_auth_revision: Arc::default(),
             terminal_leases: Arc::default(),
+            person_inputs: Arc::default(),
         })
     }
     // MD-DISPLAY-04: queued credits wait asynchronously, away from the
@@ -500,6 +502,17 @@ impl KernelBrowserHost {
         }
         self.check_admission(admission)?;
         let browser = self.backend(user)?;
+        let input = method == "host.browser" && params["op"] == "input";
+        let agent_tab = (input && admission.is_some_and(|a| a.agent.is_some()))
+            .then(|| params["tab_id"].as_str().map(str::to_owned))
+            .flatten();
+        let _person_input = if input && admission.is_none_or(|a| a.agent.is_none()) {
+            params["tab_id"]
+                .as_str()
+                .map(|tab| self.person_inputs.begin(user, tab))
+        } else {
+            None
+        };
         // MP-08/MP-10/MP-11: mutations keep their existing serial admission,
         // but never hold the shared controller lock during input/CDP waits.
         // Takeover/cancellation use the actor model and remain independent.
@@ -524,7 +537,6 @@ impl KernelBrowserHost {
         } else {
             None
         };
-        let input = method == "host.browser" && params["op"] == "input";
         let op_label = params["op"]
             .as_str()
             .filter(|op| op.len() <= 32 && op.bytes().all(|b| b.is_ascii_lowercase() || b == b'_'))
@@ -532,11 +544,26 @@ impl KernelBrowserHost {
             .to_string();
         let requested = std::time::Instant::now();
         let queued = std::time::Instant::now();
-        let _mutation_guard = mutation_lane
-            .as_ref()
-            .map(|lane| lane.lock())
-            .transpose()
-            .map_err(|_| "MD-3: browser mutation lane poisoned")?;
+        // The host's idle wait must not own this lane or an actor reservation:
+        // otherwise the newer person keys it is waiting for cannot reach it.
+        let _mutation_guard = loop {
+            if let Some(tab) = agent_tab.as_deref() {
+                self.person_inputs
+                    .wait(user, tab, || self.check_admission(admission))?;
+            }
+            let guard = mutation_lane
+                .as_ref()
+                .map(|lane| lane.lock())
+                .transpose()
+                .map_err(|_| "MD-3: browser mutation lane poisoned")?;
+            if let Some(tab) = agent_tab.as_deref() {
+                if !self.person_inputs.quiet(user, tab)? {
+                    drop(guard);
+                    continue;
+                }
+            }
+            break guard;
+        };
         if input {
             crate::transport::kernel_browser_display::timing("input_mutation_queue", queued);
         }
@@ -637,6 +664,9 @@ impl KernelBrowserHost {
             self.check_admission(admission)?;
         }
         let mut params = params;
+        if input {
+            params["_person_idle_checked"] = agent_tab.is_some().into();
+        }
         if let Some(admission) = admission.filter(|admission| admission.agent.is_some()) {
             let agent = admission.agent.as_deref().unwrap();
             params["_agent_input"] = true.into();
@@ -1402,8 +1432,10 @@ mod tests {
             crate::runtime::browser_controller_action::BrowserLocatorAction::Click,
             "https://www.hetzner.com/firewalls",
         );
-        assert!(model.begin(browser_actor(None, &params), &params).is_ok(),
-            "MP-08/MP-10/MP-11 A07: a scoped owner action uses the authenticated takeover actor, never the shared kernel-adapter identity");
+        assert!(
+            model.begin(browser_actor(None, &params), &params).is_ok(),
+            "MP-08/MP-10/MP-11 A07: a scoped owner action uses the authenticated takeover actor, never the shared kernel-adapter identity"
+        );
     }
 
     #[test]
@@ -1662,6 +1694,7 @@ mod dialog_tests;
 mod native_input_tests;
 
 mod access;
+mod person_input;
 mod terminal_lease;
 pub(crate) use terminal_lease::TerminalLease;
 #[cfg(test)]

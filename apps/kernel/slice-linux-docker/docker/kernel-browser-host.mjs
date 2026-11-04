@@ -1120,7 +1120,7 @@ export class KernelBrowserHost {
     if (agentRequest && ["input", "navigate"].includes(command.op) && extensionManagementUrl(tab.url)) throw new Error(EXTENSIONS_REFUSED);
     // An agent's Tab runs at full speed behind the shown one; the person's own input to it goes first.
     if (agentRequest) await this.holdBackground(tab).catch(() => {});
-    if (agentRequest && command.op === "input") await this.personQuiet(tab.tab_id, signal);
+    if (agentRequest && command.op === "input" && !command._person_idle_checked) await this.personQuiet(tab.tab_id, signal);
     const app = this.appForInput(tab, command, ["input", "navigate", "close", "resize"].includes(command.op));
     // The page stays on its origin.
     if (app && command.op === "navigate" && new URL(navigationUrl(command.url)).origin !== app.origin) {
