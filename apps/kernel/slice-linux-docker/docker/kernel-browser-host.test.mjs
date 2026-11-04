@@ -76,7 +76,7 @@ function fixture(root, { realCdp = false } = {}) {
     reconcile: async viewport => { connection.density=viewport.device_scale_factor; return { tabs: [...pages].map(([target_id, tab]) => ({ target_id, document_id: `doc-${target_id}`, title: "fixture", ...tab })) }; },
     manageTab: async ({ target_id }) => pages.delete(target_id),
     navigate: async ({ target_id, url }) => { pages.set(target_id, { url }); },
-    snapshot: async () => ({ text: "fixture" }),
+    snapshot: async () => ({ text: "fixture", accessibility_nodes: [], dom_nodes: [] }),
     resolvePageTarget: async target => ({ connection, sessionId: `session-${target}` }),
     clearViewport: async target => connection.send('Emulation.clearDeviceMetricsOverride', {}, `session-${target}`),
     inputCapture: { hold: async()=>async()=>{}, run: async (_connection, _session, operation) => operation() },
@@ -3046,4 +3046,22 @@ test('MP-08/MP-11 a same-size window resize retires an in-flight native fit', {t
   assert.equal(host.layoutRevision(tab.tab_id),revision,'same CSS size retains its page revision');
   assert.equal(source.allowed(host.protection),false,'the resize owns the shared window even without a CSS-size change');
  }finally{await host.closeCompositors();LinuxCapture.prototype.start=start;LinuxCapture.prototype.close=close;await display.close()}
+}));
+
+
+test("MP-08/MP-10/MP-11 the host snapshot boundary preserves schema words and identifiers", () => using(async ({host}) => {
+  const tab = await host.request({op: "open", url: "https://example.com"});
+  await host.protect({unknown: false, values: ["name", "backend:7", "textbox"], targets: []});
+  host.browser.snapshot = async () => ({browser_generation: 1, target_id: "name", document_id: "backend:7", snapshot_revision: 1,
+    accessibility_nodes: [{node_ref: "backend:7", role: "textbox", name: "Account name", description: "name", value: "name"}],
+    dom_nodes: [{node_ref: "backend:7", node_name: "INPUT", text: "name", attributes: {"aria-label": "name"}}]});
+  const reply = await host.handle({id: 1, method: "host.browser", params: {op: "snapshot", tab_id: tab.tab_id, generation: host.generation}});
+  assert.equal(reply.ok, true);
+  const snapshot = reply.result.snapshot;
+  assert.equal(snapshot.target_id, "name");
+  assert.equal(snapshot.document_id, "backend:7");
+  assert.equal(snapshot.accessibility_nodes[0].node_ref, "backend:7");
+  assert.equal(snapshot.accessibility_nodes[0].role, "textbox");
+  assert.equal(snapshot.accessibility_nodes[0].name, "Account [redacted]");
+  assert.equal(snapshot.dom_nodes[0].attributes["aria-label"], "[redacted]");
 }));

@@ -141,3 +141,25 @@ test("a value under 8 characters is redacted only as a whole word", () => {
   assert.equal(result.end, "type [redacted].");
   assert.equal(result.longInUrl, "https://x.test/a?k=[redacted]", "a long value keeps today's matching");
 });
+
+// MP-08 / MP-10 / MP-11: an accidental capture of a schema word must not break the next read.
+test("capturing a schema label preserves snapshot fields and CDP identities", async () => {
+  for (const secret of ["name", "value", "nodeId", "root", "page-1", "textbox"]) {
+    const base = fixture();
+    const connection = {async send(method, params) {
+      const reply = await base.send(method, params);
+      if (method === "Accessibility.getFullAXTree") {
+        reply.nodes[0].name.value = `Account ${secret}`;
+        reply.nodes[0].value = {value: secret};
+      }
+      return reply;
+    }};
+    const snapshot = await captureBrowserSnapshot({connection, sessionId: "page", targetId: "target",
+      documentId: "page-1", browserGeneration: 1, snapshotRevision: 1, protectedValues: [secret]});
+    assert.equal(snapshot.document_id, "page-1");
+    assert.equal(snapshot.accessibility_nodes[0].name, "Account [redacted]", secret);
+    assert.equal(snapshot.accessibility_nodes[0].value, "[redacted]", secret);
+    assert.equal(snapshot.accessibility_nodes[0].role, "textbox", secret);
+    assert.equal(snapshot.accessibility_nodes[0].node_ref, "backend:100", secret);
+  }
+});

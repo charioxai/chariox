@@ -1435,6 +1435,32 @@ async fn vflag_capture_of_an_already_protected_value_stores_the_value() {
     assert_eq!(stored(f, &second).as_str(), CAPTURED);
 }
 
+// The outer runtime-tool scrub must preserve the snapshot schema as well as the browser boundary.
+#[tokio::test]
+async fn vflag_capture_schema_label_preserves_the_next_snapshot_through_mcp() {
+    crate::test_support::isolated_env_test!();
+    let login = login_room().await;
+    let f = &login.f;
+    unlock(f);
+    std::fs::write(login.root.path().join("value"), "text").unwrap();
+    call(f, CAPTURE, capture_args("schema-label"))
+        .await
+        .unwrap();
+    std::fs::write(login.root.path().join("echo"), "text").unwrap();
+    let observed = call(
+        f,
+        "chariox.kernel_browser",
+        json!({"command":{
+        "op":"snapshot","tab_id":"host-tab-new","generation":1}}),
+    )
+    .await
+    .unwrap();
+    let snapshot: crate::runtime::browser_controller_snapshot::BrowserControllerStructuredSnapshot =
+        serde_json::from_value(observed["snapshot"].clone()).expect("next snapshot remains usable");
+    assert_eq!(snapshot.dom_nodes[0].text, "echo [redacted]");
+    assert_eq!(snapshot.dom_nodes[0].node_ref, "backend:7");
+}
+
 #[tokio::test]
 async fn vflag_remove_capture_preserves_a_slot_referenced_by_an_alias() {
     crate::test_support::isolated_env_test!();

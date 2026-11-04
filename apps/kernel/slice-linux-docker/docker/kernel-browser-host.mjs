@@ -30,7 +30,7 @@ import { ChromeTabGroups, writeTabGroupsExtension } from "./kernel-browser-tab-g
 import {nativeWindowInventory} from './kernel-browser-native-windows.mjs';
 import { ChromeWindows, InputArbiter } from "./kernel-browser-chrome-window.mjs";
 import { StateSignal, stateChangingEvent } from "./kernel-browser-state-signal.mjs";
-import { redactObservation } from "./browser-controller-snapshot.mjs";
+import { redactObservation, redactSnapshot } from "./browser-controller-snapshot.mjs";
 import {resizeBrowserPage} from './kernel-browser-resize.mjs';
 import { TextInsertionRefused, inputHostTab } from "./kernel-browser-input.mjs";
 import { publicUploadFailure } from "./kernel-browser-upload.mjs";
@@ -1360,6 +1360,9 @@ export class KernelBrowserHost {
         else if (timestamp() - at > SLOW_OP_MS && /^[a-z_]{1,32}$/.test(request.params.op)) this.timing(`host_op_slow ${request.params.op}`, at);
         // Structured controller observations scrub before compaction; metadata
         // and other host replies receive the same protection at this boundary.
+        if (request.params?.op === "snapshot") {
+          return { id: request.id, ok: true, result: { ...result, snapshot: redactSnapshot(result.snapshot, this.protection.values) } };
+        }
         if (!["screenshot", "mirror_next", "display_subscribe", "display_input_target"].includes(request.params?.op)) {
           return { id: request.id, ok: true, result: redactObservation(result, this.protection.values) };
         }

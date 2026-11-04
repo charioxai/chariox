@@ -25,7 +25,7 @@ export async function captureBrowserSnapshot({
   // truncate an echoed value and make exact-value redaction impossible.
   const rawConnection = connection;
   connection = {
-    send: async (...args) => redactObservation(await rawConnection.send(...args), protectedValues),
+    send: async (method, ...args) => redactSnapshotReply(method, await rawConnection.send(method, ...args), protectedValues),
   };
   const options = snapshotLimits(limits);
   const { frames, truncated: framesTruncated } = snapshotFrames(
@@ -133,6 +133,10 @@ function redactText(input, spellings) {
 }
 
 export function redactObservation(value, protectedValues) {
+  return observationScrubber(protectedValues)(value);
+}
+
+function observationScrubber(protectedValues) {
   const ordered = observationSpellings(protectedValues);
   const scrub = (input) => {
     if (typeof input === "string") return redactText(input, ordered);
@@ -142,7 +146,57 @@ export function redactObservation(value, protectedValues) {
     );
     return input;
   };
-  return scrub(value);
+  return scrub;
+}
+
+// CDP keys, IDs, roles and enums are the transport contract. Only strings that
+// compaction exposes as page text pass through known-value redaction.
+function redactSnapshotReply(method, reply, protectedValues) {
+  if (method === "Page.getFrameTree") return reply;
+  const spellings = observationSpellings(protectedValues);
+  if (spellings.length === 0) return reply;
+  const text = value => redactText(value, spellings);
+  const result = structuredClone(reply);
+  if (method === "Accessibility.getFullAXTree") {
+    for (const node of result.nodes ?? []) {
+      for (const field of ["name", "description", "value"]) {
+        if (typeof node[field]?.value === "string") node[field].value = text(node[field].value);
+      }
+    }
+  } else if (method === "DOMSnapshot.captureSnapshot") {
+    // A CDP string can be shared by a protocol tag and page text. Give each
+    // observed text slot its own redacted index instead of rewriting the pool.
+    const strings = result.strings ?? [];
+    const sourceLength = strings.length;
+    const textIndex = index => {
+      if (!Number.isSafeInteger(index) || index < 0 || index >= sourceLength) return index;
+      const redacted = text(strings[index]);
+      if (redacted === strings[index]) return index;
+      strings.push(redacted);
+      return strings.length - 1;
+    };
+    for (const document of result.documents ?? []) {
+      document.documentURL = textIndex(document.documentURL);
+      const nodes = document.nodes ?? {};
+      nodes.nodeValue = (nodes.nodeValue ?? []).map(textIndex);
+      nodes.attributes = (nodes.attributes ?? []).map(indexes => indexes.map(textIndex));
+    }
+  }
+  return result;
+}
+
+// The compact snapshot is a fixed schema too. Attribute maps alone carry
+// page-owned keys; identifiers and announced control states remain intact.
+export function redactSnapshot(snapshot, protectedValues) {
+  if (observationSpellings(protectedValues).length === 0) return snapshot;
+  const text = observationScrubber(protectedValues);
+  return {
+    ...snapshot,
+    accessibility_nodes: snapshot.accessibility_nodes.map(node => ({...node,
+      name: text(node.name), description: text(node.description), value: text(node.value)})),
+    dom_documents: (snapshot.dom_documents ?? []).map(document => ({...document, url: text(document.url)})),
+    dom_nodes: snapshot.dom_nodes.map(node => ({...node, text: text(node.text), attributes: text(node.attributes)})),
+  };
 }
 
 function snapshotLimits(rawLimits) {

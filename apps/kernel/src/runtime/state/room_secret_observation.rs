@@ -13,6 +13,7 @@ use zeroize::Zeroizing;
 
 mod lifecycle;
 mod revocation;
+mod snapshot;
 mod spelling;
 mod storage;
 
@@ -754,6 +755,14 @@ impl RoomSecretObservations {
     ) -> Result<Response, DaemonError> {
         let room = self.room_key(room);
         match &mut response {
+            Response::Snapshot { snapshot } => {
+                if let Some(value) = snapshot.take() {
+                    *snapshot = Some(self.scrub_snapshot(room, value)?);
+                } else {
+                    self.require(room, false)?;
+                }
+                Ok(response)
+            }
             Response::ComputerInputApplied { .. }
             | Response::ComputerSecretTarget { .. }
             | Response::SecretObservationCleared
