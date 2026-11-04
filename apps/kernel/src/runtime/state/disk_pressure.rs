@@ -234,6 +234,13 @@ impl KernelRuntimeState {
                 workspace,
             ));
         }
+        let mut pace = PACE.lock().unwrap_or_else(|e| e.into_inner());
+        found.retain(|(_, _, agent, ..)| {
+            pace.asked
+                .get(agent)
+                .is_none_or(|at| at.elapsed() >= ASK_AGAIN_AFTER)
+        });
+        // Sizes first, for everyone on a full volume; the folder listings only for those asked.
         let mut holdings: Vec<_> = found
             .into_iter()
             .map(
@@ -242,14 +249,6 @@ impl KernelRuntimeState {
                     let temp_bytes = temp
                         .as_deref()
                         .map_or(0, |dir| crate::disk_scan::size_of(dir, &mut budget));
-                    let temp_biggest = temp
-                        .as_deref()
-                        .map(|dir| crate::disk_scan::biggest_children(dir, FOLDERS_NAMED))
-                        .unwrap_or_default();
-                    let workspace_biggest = workspace
-                        .as_deref()
-                        .map(|dir| crate::disk_scan::biggest_children(dir, FOLDERS_NAMED))
-                        .unwrap_or_default();
                     (
                         volume,
                         Holding {
@@ -258,30 +257,32 @@ impl KernelRuntimeState {
                             processes,
                             temp,
                             temp_bytes,
-                            temp_biggest,
+                            temp_biggest: Vec::new(),
                             workspace,
-                            workspace_biggest,
+                            workspace_biggest: Vec::new(),
                         },
                     )
                 },
             )
+            .filter(|(_, holding)| holding.used() >= WORTH_ASKING)
             .collect();
         holdings.sort_by_key(|(_, holding)| std::cmp::Reverse(holding.used()));
-        let mut pace = PACE.lock().unwrap_or_else(|e| e.into_inner());
-        let mut asked = Vec::new();
-        for (volume, holding) in holdings {
-            let lately = pace
-                .asked
-                .get(&holding.agent_id)
-                .is_some_and(|at| at.elapsed() < ASK_AGAIN_AFTER);
-            if holding.used() < WORTH_ASKING || lately || asked.len() == ASKED_AT_ONCE {
-                continue;
-            }
-            pace.asked.insert(holding.agent_id.clone(), Instant::now());
-            let (free, floor) = volumes[&volume];
-            asked.push((holding, free, floor));
-        }
-        asked
+        holdings.truncate(ASKED_AT_ONCE);
+        holdings
+            .into_iter()
+            .map(|(volume, mut holding)| {
+                let biggest = |dir: &Option<PathBuf>| {
+                    dir.as_deref()
+                        .map(|dir| crate::disk_scan::biggest_children(dir, FOLDERS_NAMED))
+                        .unwrap_or_default()
+                };
+                holding.temp_biggest = biggest(&holding.temp);
+                holding.workspace_biggest = biggest(&holding.workspace);
+                pace.asked.insert(holding.agent_id.clone(), Instant::now());
+                let (free, floor) = volumes[&volume];
+                (holding, free, floor)
+            })
+            .collect()
     }
 
     /// Puts `text` to the agent as a turn of its own: it starts now when the

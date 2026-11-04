@@ -128,7 +128,7 @@ If the system messages you about disk space later, act on it.`
     // OF-42/OF-37: agent 1's orphan writes 32 MB/s into a deleted file while the others build. The kernel finds
     // it, attributes it to its owner and ends it (never pauses); the other owners' builds are never paused.
     const hogPrompt = `You work in the current folder. Run these shell commands one after another: first setsid nohup python3 hog.py b{N} 32 9000 > hog-b{N}.log 2>&1 &  then run python3 -c 'import time; time.sleep(330)' (in the foreground, as one command, with a timeout of 400000 ms), then echo DONE > answer-run-b{N}.txt`
-    const buildPrompt = `You work in the current folder. Start this build in the background: nohup sh -c 'for i in 1 2 3 4 5 6 7 8; do rm -rf t-b{N}; mkdir t-b{N}; (cd t-b{N} && python3 ../write.py b{N}-$i 400 40) || exit 1; done; echo DONE > answer-run-b{N}.txt' > build-b{N}.log 2>&1 &  Then wait for it by running this one shell command: until [ -f answer-run-b{N}.txt ]; do sleep 5; done; echo finished (give that command a timeout of 600000 ms), and reply with the word finished.`
+    const buildPrompt = `You work in the current folder. Start this build in the background: setsid nohup sh -c 'for i in 1 2 3 4 5 6 7 8; do rm -rf t-b{N}; mkdir t-b{N}; (cd t-b{N} && python3 ../write.py b{N}-$i 400 40) || exit 1; done; echo DONE > answer-run-b{N}.txt' > build-b{N}.log 2>&1 &  Then wait for it by running this one shell command: until [ -f answer-run-b{N}.txt ]; do sleep 5; done; echo finished (give that command a timeout of 600000 ms), and reply with the word finished.`
     const paused = new Set(), held = new Set()
     let least = df().free
     const watching = { stop: false }
