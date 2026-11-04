@@ -2,9 +2,24 @@
 //! the session store's write lock, so the claim retry must not ask the owner while it holds the
 //! store's read guard. Before, the two waited for each other for ever at kernel start.
 use super::*;
-use crate::test_support::allocation::runtime_with_rooms;
 use std::sync::mpsc;
 use std::time::Duration;
+
+fn runtime_with_a_room() -> KernelRuntimeState {
+    let mut app = crate::DaemonApp::bootstrap(crate::DaemonConfig::for_tests())
+        .expect("the kernel should boot");
+    crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "workspace",
+            "worktree",
+        ))
+        .expect("the Room should be created");
+    crate::runtime::router::CommandRouter::with_interactive_capacity(
+        std::sync::Arc::new(tokio::sync::Mutex::new(app)),
+        1,
+    )
+    .runtime_state()
+}
 
 fn finished<T>(receiver: &mpsc::Receiver<T>) -> Option<T> {
     receiver.recv_timeout(Duration::from_secs(10)).ok()
@@ -12,7 +27,7 @@ fn finished<T>(receiver: &mpsc::Receiver<T>) -> Option<T> {
 
 #[test]
 fn a_claim_retry_does_not_wait_on_the_prompt_owner_under_the_session_read_guard() {
-    let runtime = runtime_with_rooms(1);
+    let runtime = runtime_with_a_room();
     let owned = runtime.owned.clone();
     let session = owned
         .session_store
