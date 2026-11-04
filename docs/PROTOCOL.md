@@ -6361,3 +6361,31 @@ only. The native worker ships beside the kernel, enters containment before its
 identity handshake, and exposes only the versioned App WIT world through the
 kernel capability broker. The replaced engine's launch, runtime enrollment and
 privileged storage-helper paths are removed. Reinstall unsupported stored Apps.
+
+### Disk held by a process and the disk-full stop — local 985 / relay peer 424
+
+`SessionProcess` (the `ProcessSample` it carries) gains `disk_written_bytes` (bytes the process
+wrote to storage, `null` when the OS cannot say), `deleted_open_bytes` (the size of deleted files it
+still holds open; they take space until it lets go, and only a process that wrote 64 MiB or more is
+looked at) and `outlived` (it kept running after the command that started it ended). The relay peer
+is unchanged.
+
+A writer is never paused for a full disk, because a paused writer keeps its space. Below half the
+disk floor the kernel ends the agent's command that wrote the most among those still writing there
+(a person's own command is never chosen) and writes the reason to that command's error stream:
+how much was free, the floor, its write rate, what it wrote and what it held in deleted files. The
+`process` outside event carries the same reason as `ended`. A command that is held before it starts
+still waits for room in the one queue shared with memory.
+
+Below the floor the kernel first trims idle scratch, then puts one turn to each of the three
+agents holding the most (`PromptOrigin::Notification`): what is free, their writing processes with
+the bytes they wrote and the deleted files they keep open, their `$TMPDIR` and its biggest entries,
+and the biggest folders of their workspace. The agents decide what to free; the kernel deletes
+nothing but its own scratch.
+
+Every agent's processes get `TMPDIR`, `TMP` and `TEMP` set to `<home>/t/<room>/<agent>` (eight
+characters of each id, private, created at launch). An entry in it that nothing wrote for
+`CHARIOX_TEMP_IDLE_SECONDS` (one hour) is removed once a minute, unless a process has it open, works
+in it or maps it; a Room that ends clears its folder at once. Focused checks:
+`cargo test -p chariox-kernel --lib -- agent_temp disk_scan disk_pressure disk_use process_resources`
+and `node scripts/drills/process-admission-live.mjs --scenario temp|trim|ask|runaway`.
