@@ -86,7 +86,7 @@ while IFS= read -r request; do
   *'"state_wait":true'*) printf '{"id":%s,"ok":true,"result":{"generation":1,"tabs":[{"tab_id":"host-tab-fixture","document_id":"document","title":"%s"}],"_state_signal":%s}}\n' "$id" "$(cat "$1/title" 2>/dev/null || echo first)" "$(cat "$1/signal" 2>/dev/null || echo 0)" ;;
   *'"op":"state"'*|*'"op":"start"'*) printf '{"id":%s,"ok":true,"result":{"generation":1,"tabs":[{"tab_id":"host-tab-fixture","document_id":"document"}]}}\n' "$id" ;;
   *'"op":"open"'*) printf '{"id":%s,"ok":true,"result":{"generation":1,"tab_id":"host-tab-new","tabs":[{"tab_id":"host-tab-fixture","document_id":"document"},{"tab_id":"host-tab-new","document_id":"new-document"}]}}\n' "$id" ;;
-  *'"op":"snapshot"'*) printf '{"id":%s,"ok":true,"result":{"snapshot":{"text":"MD5-sensitive-fixture"}}}\n' "$id" ;;
+  *'"op":"snapshot"'*) printf '{"id":%s,"ok":true,"result":{"snapshot":{"browser_generation":1,"target_id":"target","document_id":"document","snapshot_revision":1,"accessibility_nodes":[],"dom_nodes":[{"node_ref":"backend:1","parent_ref":null,"document_index":0,"node_type":3,"node_name":"#text","text":"MD5-sensitive-fixture","attributes":{},"bounds":null}]}}}\n' "$id" ;;
   *'"op":"screenshot"'*) printf '{"id":%s,"ok":true,"result":{"data_base64":"cGl4ZWxzLWZpeHR1cmU="}}\n' "$id" ;;
   *'"op":"input"'*) printf 'input\n' > "$1/input"; printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
   *'"method":"shutdown"'*) printf '{"id":%s,"ok":true,"result":{"state":"stopped","process_id":null,"diagnostic_code":null}}\n' "$id"; exit 0 ;;
