@@ -108,3 +108,23 @@ fn an_admission_reads_only_its_own_task() {
         "an admission decoded {few} tasks after 2 earlier turns and {many} after 30"
     );
 }
+
+/// Tasks decoded by the legacy goal offer that every lifecycle sweep makes, after `finished` earlier turns.
+fn decoded_at_legacy_goal_offer(finished: usize) -> usize {
+    decoded_during(finished, |runtime, _room, _agent, _current| {
+        runtime.offer_legacy_goal_adoption().unwrap();
+    })
+}
+
+#[test]
+fn a_room_without_legacy_runs_reads_no_tasks_for_the_goal_offer() {
+    let (few, many) = (
+        decoded_at_legacy_goal_offer(2),
+        decoded_at_legacy_goal_offer(30),
+    );
+    assert_eq!(
+        (few, many),
+        (0, 0),
+        "the goal offer decoded {few} tasks after 2 earlier turns and {many} after 30"
+    );
+}

@@ -10,10 +10,7 @@ impl KernelRuntimeOwnedState {
         &self,
         session: &'a crate::session::RuntimeSession,
     ) -> Result<Vec<&'a crate::session::WorkflowRun>, DaemonError> {
-        let tasks = self
-            .durable_state_store
-            .agent_tasks(Some(session.id()), None)?;
-        Ok(session
+        let legacy: Vec<_> = session
             .workflow_runs()
             .iter()
             .filter(|r| !r.status().is_terminal())
@@ -27,6 +24,16 @@ impl KernelRuntimeOwnedState {
                         a == "planner-worker-reviewer" || a.starts_with("planner-worker-reviewer-")
                     })
             })
+            .collect();
+        // Every lifecycle sweep asks this of every Room; only a Room with a legacy run reads its tasks.
+        if legacy.is_empty() {
+            return Ok(legacy);
+        }
+        let tasks = self
+            .durable_state_store
+            .agent_tasks(Some(session.id()), None)?;
+        Ok(legacy
+            .into_iter()
             .filter(|r| {
                 !tasks.iter().any(|t| {
                     t.goal
