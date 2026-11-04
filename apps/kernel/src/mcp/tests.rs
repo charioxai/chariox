@@ -418,3 +418,80 @@ fn rejects_invalid_mcp_names() {
     let config = CharioxMcpServerConfig::stdio("../bad", "npx", Vec::new());
     assert!(config.validate().is_err());
 }
+
+#[test]
+fn http_mcp_does_not_redirect_credentials_to_an_unchecked_destination() {
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    fn read_request(stream: &mut std::net::TcpStream) -> String {
+        let mut reader = BufReader::new(stream);
+        let mut headers = String::new();
+        loop {
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            if line == "\r\n" || line.is_empty() {
+                break;
+            }
+            headers.push_str(&line);
+        }
+        let size = headers
+            .lines()
+            .find_map(|line| {
+                line.to_ascii_lowercase()
+                    .strip_prefix("content-length: ")
+                    .and_then(|value| value.parse::<usize>().ok())
+            })
+            .unwrap_or(0);
+        reader.read_exact(&mut vec![0; size]).unwrap();
+        headers
+    }
+    let source = TcpListener::bind("127.0.0.1:0").unwrap();
+    let destination = TcpListener::bind("127.0.0.1:0").unwrap();
+    let source_url = format!("http://{}/mcp", source.local_addr().unwrap());
+    let destination_url = format!("http://{}/other", destination.local_addr().unwrap());
+    let source_server = thread::spawn(move || {
+        let (mut stream, _) = source.accept().unwrap();
+        read_request(&mut stream);
+        write!(stream, "HTTP/1.1 302 Found\r\nLocation: {destination_url}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+    });
+    destination.set_nonblocking(true).unwrap();
+    let destination_server = thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline {
+            match destination.accept() {
+                Ok((mut stream, _)) => {
+                    let headers = read_request(&mut stream);
+                    let body = r#"{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}"#;
+                    write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+                    return headers.to_ascii_lowercase().contains("x-project-key:");
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(10))
+                }
+                Err(error) => panic!("destination listener failed: {error}"),
+            }
+        }
+        false
+    });
+    let config: CharioxMcpServerConfig = serde_json::from_value(serde_json::json!({
+        "name": "redirect-test", "transport": {"type": "streamable_http", "url": source_url,
+            "env_http_headers": {"X-Project-Key": "MCP_KEY"}}
+    }))
+    .unwrap();
+    let result = crate::provider::dispatch_provider_mcp_proxy_request_with_environment(
+        "redirect-run",
+        "redirect-session",
+        &config,
+        serde_json::json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}),
+        &std::collections::BTreeMap::from([("MCP_KEY".into(), "test-mcp-key".into())]),
+    );
+    source_server.join().unwrap();
+    assert!(
+        !destination_server.join().unwrap(),
+        "MCP credentials reached an unchecked redirect destination"
+    );
+    assert!(result.is_err(), "the endpoint must be registered directly");
+}

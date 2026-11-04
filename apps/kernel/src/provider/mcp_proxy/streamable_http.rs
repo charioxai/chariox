@@ -70,6 +70,15 @@ pub(super) fn forward_streamable_http_mcp_request(
             });
         }
     };
+    if (300..400).contains(&response.status()) {
+        return Err(DaemonError::LocalTransport {
+            operation: "mcp.proxy.http.redirect",
+            message: format!(
+                "MCP endpoint returned HTTP {}; register the destination URL directly",
+                response.status()
+            ),
+        });
+    }
     let content_type = response
         .header("Content-Type")
         .unwrap_or_default()
@@ -151,7 +160,10 @@ fn read_sse_json_rpc_response(
 }
 
 fn streamable_http_agent(url: &str, timeout: Duration) -> Result<ureq::Agent, DaemonError> {
-    let mut builder = crate::outbound_dial::agent_builder().timeout(timeout);
+    // Credential bindings authorize this endpoint, so redirects need a new registration.
+    let mut builder = crate::outbound_dial::agent_builder()
+        .timeout(timeout)
+        .redirects(0);
     if let Some(proxy) = configured_proxy_for_url(url)? {
         builder = builder.proxy(proxy);
     }
