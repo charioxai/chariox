@@ -6383,8 +6383,7 @@ its own Vault under the Project scope, so presence differs per machine and is co
   Setup never starts by itself.
 - Variables and the present Secrets are environment variables of every provider run, shell capability and
   Room terminal the kernel starts for the Project. Files outside Git are copied into new worktrees of the
-  Project and travel with moves and slices through the ignore rules. A managed-machine launch leaves the secret-looking ones (`.env`, keys) to
-  `ImportProjectEnvironmentEntries`, because the new machine has no Vault yet.
+  Project and travel with moves and slices through the ignore rules.
 - `ImportProjectEnvironmentEntries { projectId, operationId, sourceKernelId, entries?, checkoutPath? }`
   (Import here and Update) asks another kernel of the same authenticated owner for the record (adopted when
   its revision is newer), then for each Secret value and File this kernel lacks, one peer request each

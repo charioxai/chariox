@@ -46,8 +46,13 @@ impl SourceSnapshot {
                         + before.origin_url.as_ref().map_or(0, String::len)
                         + 256,
                 )?;
-                let (entries, _) =
-                    overlay::verify_overlay(worktree, "snapshot", worktree, budget, vault)?;
+                let (entries, _) = overlay::verify_overlay(
+                    worktree,
+                    "snapshot",
+                    worktree,
+                    budget,
+                    vault.is_some(),
+                )?;
                 if before != export::repository_source_state(worktree)? {
                     return Err(source_changed());
                 }

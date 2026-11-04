@@ -44,8 +44,6 @@ pub(crate) struct ExportVault<'a> {
     pub target_kernel_id: &'a str,
     pub target_public_key: &'a str,
     pub project_id: &'a str,
-    /// A launch carries the non-secret Project; secret-looking Files of its Environment arrive by Import once the target has a Vault.
-    pub skip_secret_environment_files: bool,
     artifacts: RefCell<BTreeMap<String, VaultArtifact>>,
 }
 
@@ -63,14 +61,8 @@ impl<'a> ExportVault<'a> {
             target_kernel_id,
             target_public_key,
             project_id,
-            skip_secret_environment_files: false,
             artifacts: RefCell::new(BTreeMap::new()),
         }
-    }
-
-    pub fn without_secret_environment_files(mut self) -> Self {
-        self.skip_secret_environment_files = true;
-        self
     }
 
     pub fn artifacts(&self) -> Vec<VaultArtifact> {
@@ -440,109 +432,6 @@ mod tests {
             .unwrap();
         crate::secret::lock_chariox_encrypted_vault(&target.user_config.credential_vault.path)
             .unwrap();
-    }
-
-    /// A launch carries the non-secret Project: a secret-looking File of the Environment is left to Import
-    /// (the new machine has no Vault yet), the other listed files and the Project itself still travel.
-    fn export_with_listed_files(
-        root: &Path,
-        git: bool,
-        skip_secret_environment_files: bool,
-    ) -> (Vec<String>, usize) {
-        let source = config(root, "source");
-        let target = config(root, "target");
-        let workspace = root.join("workspace");
-        fs::create_dir_all(&workspace).unwrap();
-        fs::write(workspace.join("app.txt"), b"hello\n").unwrap();
-        fs::write(workspace.join(".env"), b"S4_DATABASE=synthetic\n").unwrap();
-        fs::write(workspace.join("local.json"), b"{\"mode\":\"drill\"}\n").unwrap();
-        if git {
-            fs::write(workspace.join(".gitignore"), b".env\nlocal.json\n").unwrap();
-            let run = |args: &[&str]| {
-                assert!(std::process::Command::new("git")
-                    .args(["-c", "user.name=t", "-c", "user.email=t@example.invalid"])
-                    .args(args)
-                    .current_dir(&workspace)
-                    .output()
-                    .unwrap()
-                    .status
-                    .success());
-            };
-            run(&["init", "-q", "-b", "main"]);
-            run(&["add", "app.txt", ".gitignore"]);
-            run(&["commit", "-q", "-m", "first"]);
-        }
-        crate::project_environment::register_environment_files(
-            &[fs::canonicalize(&workspace).unwrap()],
-            &[".env".to_string(), "local.json".to_string()],
-        );
-        let mut vault = ExportVault::new(
-            &source,
-            "context",
-            &target.daemon_id,
-            &target.relay_public_key,
-            "project",
-        );
-        if skip_secret_environment_files {
-            vault = vault.without_secret_environment_files();
-        }
-        let exported = super::super::export::export_development_context_with_vault(
-            DevelopmentContextExportRequest {
-                project_id: "project".into(),
-                repositories: vec![DevelopmentRepositorySelection {
-                    workspace_id: "workspace".into(),
-                    worktree_id: None,
-                    worktree_path: workspace.clone(),
-                    role: DevelopmentRepositoryRole::Primary,
-                }],
-                archive_path: root.join("copy.tar.gz"),
-            },
-            Some(&vault),
-        )
-        .unwrap();
-        let carried = exported
-            .manifest
-            .repositories
-            .iter()
-            .flat_map(|repository| repository.overlay.iter().map(|entry| entry.path.clone()))
-            .collect();
-        crate::project_environment::register_environment_files(
-            &[fs::canonicalize(&workspace).unwrap()],
-            &[],
-        );
-        let sealed = exported.manifest.vault_artifacts.len();
-        crate::secret::lock_chariox_encrypted_vault(&source.user_config.credential_vault.path)
-            .unwrap();
-        crate::secret::lock_chariox_encrypted_vault(&target.user_config.credential_vault.path)
-            .unwrap();
-        (carried, sealed)
-    }
-
-    #[test]
-    fn a_launch_leaves_secret_looking_environment_files_to_import() {
-        for git in [false, true] {
-            let root = std::env::temp_dir()
-                .join(format!("mp08-launch-files-{:032x}", rand::random::<u128>()));
-            fs::create_dir_all(&root).unwrap();
-            let _cleanup = Cleanup(root.clone());
-            let (carried, sealed) = export_with_listed_files(&root, git, true);
-            assert!(
-                !carried.iter().any(|path| path == ".env"),
-                "git={git}: the secret-looking file is not packaged: {carried:?}"
-            );
-            assert_eq!(sealed, 0, "git={git}: nothing is sealed through the Vault");
-            assert!(
-                carried.iter().any(|path| path == "local.json"),
-                "git={git}: other listed files still travel: {carried:?}"
-            );
-        }
-        // Without the launch's policy the same Project seals the file through the Vault.
-        let root =
-            std::env::temp_dir().join(format!("mp08-launch-files-{:032x}", rand::random::<u128>()));
-        fs::create_dir_all(&root).unwrap();
-        let _cleanup = Cleanup(root.clone());
-        let (_, sealed) = export_with_listed_files(&root, true, false);
-        assert_eq!(sealed, 1);
     }
 
     #[test]
