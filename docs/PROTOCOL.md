@@ -6284,6 +6284,38 @@ field (additive; old clients ignore it):
 
 Focused checks: `cargo test -p chariox-kernel --lib async_popup card_action person_card`.
 
+### Live browser person cards — local 988 / relay peer 427
+
+MP-08 / MP-09 / MP-10 / MP-11: `request_popup` accepts
+`view: { browser_region: { tab_id, ref } }`, where `ref` is a `node_ref` from a browser
+snapshot observed by this agent for this Tab. This requires the agent's existing browser
+grant; a card never grants browser access. Unknown, foreign and stale references refuse
+registration. `action` and `view` are mutually exclusive.
+
+The kernel projects `RuntimeInteraction.view.browser_region` with `tab_id`, `ref`,
+`generation`, `document_id`, `origin`, `rect: { x, y, width, height }`, `viewport_width`,
+and `viewport_height`. Coordinates are integer CSS pixels in the existing Tab display.
+The element's viewport box has a 16 CSS pixel margin, clipped to the viewport; offscreen
+content can produce an empty rectangle. `origin` is the browser-owned site origin and
+never includes URL userinfo, path, query or fragment. The card attaches another viewer
+to the existing protected Tab display, without a second image or video capture path.
+
+A renderer geometry wait follows root element scroll, resize and movement, returning
+only when geometry changes or its one-second idle timeout expires. Child-frame boxes
+use the shared frame ownership walk and frame-owner affine transforms; their geometry
+refresh is bounded to 100 ms. Only changed metadata publishes a new card projection.
+The existing wake scheduler reattaches card watchers after recovery. A removed element,
+replaced document or retired browser reference resolves the ordinary question once with
+`choice_id: "condition_met"` and a kernel-written reason. The same condition reaches the
+durable inbox for `wait:false` and the blocked tool for `wait:true`.
+Revoked browser access instead resolves `status: "unavailable"`, no choice id, and
+a kernel-written reason. Continuous observation failures retry with the last-known crop
+for up to 15 seconds, then resolve the same definitive unavailable outcome. A successful
+observation resets that failure budget; an offscreen box remains a live, empty crop.
+
+Focused regression checks: `cargo test -p chariox-kernel --lib async_popup_browser_region`
+and `node --test apps/kernel/slice-linux-docker/docker/kernel-browser-card-region.test.mjs`.
+
 ### Agent reach — local 974
 
 A Room agent of the kernel owner reaches other rooms and kernels through a second runtime MCP server,
@@ -6298,7 +6330,7 @@ The wire changes are small:
 - User config gains `agents.ask_before_acquiring_machines` (`GetUserConfigSchema` lists it; `SetUserConfigValue`
   takes `"true"`/`"false"`; owner-only, so a gateway or sudo caller is refused). It is on unless the owner turns it
   off: each `ControlPlane` acquire, start or start-from-saved-state by an agent raises one decision ("Let
-  `<room>/<agent> (Chariox agent)` acquire a machine?", choices `accept`/`decline`) in the agent's room, shown on
+  `<room>/<agent> (Chariox agent)` acquire a machine?", choices `accept`/`cancel`) in the agent's room, shown on
   every client; declining answers `acquisition_declined`.
 - `on_behalf_of.harness` names `<room>/<agent> (Chariox agent)` in the target's audit and paired-clients list.
 - The kernel sends the same name to the connected service with an agent's `acquire` (`requested_by`; the kernel
@@ -6445,3 +6477,15 @@ only. The native worker ships beside the kernel, enters containment before its
 identity handshake, and exposes only the versioned App WIT world through the
 kernel capability broker. The replaced engine's launch, runtime enrollment and
 privileged storage-helper paths are removed. Reinstall unsupported stored Apps.
+
+
+### Acquisition offer descriptor — local 988 / relay peer 427
+
+MP-08 / MP-09 / MP-10 / MP-11: `ControlPlane` capabilities include the current
+`machine_allocation.offer`: `machine_type`, `vcpu`, `ram_gb`, `disk_gb`, `location`,
+and `price: { amount, currency, period }` (`hour` or `month`). Cloud supplies these
+provider-neutral values from its placement provider's catalogue at offer time.
+The capability revision covers the descriptor. Before asking an agent to confirm
+Acquire, the kernel verifies that revision and writes every offer fact in the
+existing Accept/Cancel interaction. Cancel acquires nothing; Accept remains
+subject to the same Cloud admission and revision checks.

@@ -50,9 +50,13 @@ fn fixture() -> Reach {
 
 /// `owner_running` false leaves the owner's run parked, as a provider's run is while it starts.
 fn fixture_with(owner_running: bool) -> Reach {
+    fixture_with_config(owner_running, DaemonConfig::for_tests())
+}
+
+fn fixture_with_config(owner_running: bool, config: DaemonConfig) -> Reach {
     let worktree = crate::test_support::TestWorktree::new("reach-worktree");
     let other = crate::test_support::TestWorktree::new("reach-other-worktree");
-    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(worktree.session_request())
         .expect("session should be created");
@@ -120,6 +124,59 @@ fn fixture_with(owner_running: bool) -> Reach {
         guest_token,
         other_session_id: other_session.id().to_string(),
     }
+}
+
+/// A connected service fixture: only Cloud supplies the offered machine and price.
+async fn offered_reach() -> (
+    Reach,
+    tokio::task::JoinHandle<()>,
+    Arc<std::sync::atomic::AtomicUsize>,
+) {
+    use http_body_util::{BodyExt, Full};
+    use hyper::{body::Bytes, server::conn::http1, service::service_fn, Response};
+    use hyper_util::rt::TokioIo;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut config = DaemonConfig::for_tests();
+    config.relay_url = None;
+    config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+        api_url: format!("http://{}", listener.local_addr().unwrap()),
+        account_id: "fixture-owner".into(),
+        kernel_credential: Some("synthetic-enrollment".into()),
+        ..Default::default()
+    });
+    let acquisitions = Arc::new(AtomicUsize::new(0));
+    let count = acquisitions.clone();
+    let server = tokio::spawn(async move {
+        loop {
+            let (stream, _) = listener.accept().await.unwrap();
+            let count = count.clone();
+            http1::Builder::new().serve_connection(TokioIo::new(stream), service_fn(move |request: hyper::Request<hyper::body::Incoming>| {
+                let count = count.clone();
+                async move {
+                    assert_eq!(request.uri().path(), "/control-plane");
+                    let body = request.into_body().collect().await.unwrap().to_bytes();
+                    let value: Value = serde_json::from_slice(&body).unwrap();
+                    let result = match value["request"]["action"].as_str().unwrap() {
+                        "capabilities" => serde_json::json!({"kind": "capabilities", "machine_allocation": {
+                            "revision": "r1", "actions": ["acquire"], "offer": {
+                                "machine_type": "Standard", "vcpu": 2, "ram_gb": 4, "disk_gb": 40,
+                                "location": "Europe", "price": {"amount": "0.01", "currency": "EUR", "period": "hour"}
+                            }}}),
+                        "acquire" => {
+                            count.fetch_add(1, Ordering::SeqCst);
+                            serde_json::json!({"kind": "machine", "revision": 1, "available_actions": [],
+                                "allocation_ref": "fixture-machine", "state": "requested", "kernel_target": null,
+                                "access_state": "pending", "access_reason": null})
+                        },
+                        action => panic!("unexpected fixture action: {action}"),
+                    };
+                    Ok::<_, std::convert::Infallible>(Response::new(Full::new(Bytes::from(serde_json::to_vec(&result).unwrap()))))
+                }
+            })).await.unwrap();
+        }
+    });
+    (fixture_with_config(true, config), server, acquisitions)
 }
 
 async fn call(reach: &Reach, token: &str, kernel: Option<&str>, request: Value) -> (bool, Value) {
@@ -429,7 +486,7 @@ async fn an_agent_creates_a_room_without_sudo_and_a_guests_agent_does_not() {
 
 #[tokio::test]
 async fn acquiring_a_machine_asks_unless_the_owner_turned_the_setting_off() {
-    let reach = fixture();
+    let (reach, server, acquisitions) = offered_reach().await;
     let asked = {
         let router = reach.router.clone();
         let token = reach.owner_token.clone();
@@ -444,13 +501,24 @@ async fn acquiring_a_machine_asks_unless_the_owner_turned_the_setting_off() {
                 .await
         })
     };
-    let interaction = loop {
-        if let Some(interaction) = active_questions(&reach).into_iter().next() {
-            break interaction;
+    let interaction = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            if let Some(interaction) = active_questions(&reach).into_iter().next() {
+                break interaction;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    };
+    })
+    .await
+    .expect("the offered machine raises a decision");
     assert!(interaction.message().starts_with("Let "));
+    assert!(
+        interaction
+            .message()
+            .contains("Standard · 2 vCPU · 4 GB RAM · 40 GB disk · Europe · EUR 0.01/hour"),
+        "the kernel writes the Cloud offer in the card: {}",
+        interaction.message()
+    );
     let ids = interaction
         .choices()
         .iter()
@@ -482,12 +550,35 @@ async fn acquiring_a_machine_asks_unless_the_owner_turned_the_setting_off() {
         .expect("the owner turns the setting off");
     let acquire = serde_json::json!({"ControlPlane": {
         "action": "acquire", "capability_revision": "r1", "request_id": "one"}});
-    // Off: the call reaches the control plane (a bare test kernel has none) with no question.
+    assert_eq!(
+        acquisitions.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "Cancel did not acquire anything"
+    );
+    // Off: the call reaches the connected service with no question.
     let (ok, payload) = call(&reach, &reach.owner_token, None, acquire).await;
-    assert!(!ok);
-    assert_eq!(code(&payload), "request_failed", "{payload}");
-    assert!(payload.to_string().contains("no connected machine service"));
+    assert!(ok, "{payload}");
+    assert_eq!(acquisitions.load(std::sync::atomic::Ordering::SeqCst), 1);
     assert!(active_questions(&reach).is_empty());
+    server.abort();
+}
+
+#[tokio::test]
+async fn mp08_mp11_stale_acquisition_offer_is_refused_before_asking_or_spending() {
+    let (reach, server, acquisitions) = offered_reach().await;
+    let (ok, payload) = call(
+        &reach,
+        &reach.owner_token,
+        None,
+        serde_json::json!({"ControlPlane": {
+        "action": "acquire", "capability_revision": "old-price", "request_id": "stale"}}),
+    )
+    .await;
+    assert!(!ok);
+    assert_eq!(code(&payload), "acquisition_offer_changed", "{payload}");
+    assert!(active_questions(&reach).is_empty());
+    assert_eq!(acquisitions.load(std::sync::atomic::Ordering::SeqCst), 0);
+    server.abort();
 }
 
 #[test]
@@ -746,7 +837,7 @@ async fn the_reach_tools_are_listed_before_the_run_is_running_and_called_only_wh
 /// the decision that agent raises, reads it and answers it; nothing from other rooms arrives.
 #[tokio::test]
 async fn a_driver_is_woken_by_the_decision_a_driven_agent_raises_and_answers_it() {
-    let reach = fixture();
+    let (reach, server, _) = offered_reach().await;
     let (ok, subscription) = tool(
         &reach,
         "events_subscribe",
@@ -818,6 +909,7 @@ async fn a_driver_is_woken_by_the_decision_a_driven_agent_raises_and_answers_it(
         .expect("cursor");
     let (ok, _) = tool(&reach, "events_ack", serde_json::json!({"cursor": cursor})).await;
     assert!(ok);
+    server.abort();
 }
 
 #[tokio::test]

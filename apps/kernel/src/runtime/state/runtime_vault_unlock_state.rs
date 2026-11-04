@@ -921,16 +921,18 @@ fn vault_unlock_answer(
         None => None,
     };
     match (resolution.status, duration, resolution.reply) {
-        ("timed_out", ..) => Err(DaemonError::LocalTransport {
-            operation,
+        ("timed_out", ..) => Err(DaemonError::VaultUnlock {
+            code: "vault_unlock_timed_out",
             message: "Chariox vault unlock timed out. Retry to unlock the vault.".into(),
+            retryable: false,
         }),
         ("answered", Some(duration), Some(passphrase)) => {
             Ok((zeroize::Zeroizing::new(passphrase), duration))
         }
-        (_, None, _) => Err(DaemonError::LocalTransport {
-            operation,
+        (_, None, _) => Err(DaemonError::VaultUnlock {
+            code: "vault_unlock_declined",
             message: "Chariox vault unlock was cancelled. Retry to unlock the vault.".into(),
+            retryable: false,
         }),
         _ => Err(DaemonError::LocalTransport {
             operation,

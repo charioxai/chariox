@@ -184,7 +184,7 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// Peer 414 carries local965 integrated Vault and machine contracts.
 /// Peer415 carries local966 WASM Apps plus Landing965 contracts.
 /// Peer425 carries local984 Vault unlock durations.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 425;
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 427;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;

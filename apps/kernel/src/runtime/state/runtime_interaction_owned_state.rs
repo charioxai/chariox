@@ -679,6 +679,20 @@ impl KernelRuntimeOwnedState {
         )
     }
 
+    pub(super) fn settle_card_unavailable(
+        &self,
+        session_id: &str,
+        interaction_id: &str,
+        reason: String,
+    ) -> Result<(), DaemonError> {
+        self.settle_runtime_interaction_if_current(
+            session_id,
+            interaction_id,
+            None,
+            Settlement::Unavailable(reason),
+        )
+    }
+
     fn timeout_runtime_interaction_if_current(
         &self,
         session_id: &str,
@@ -864,6 +878,7 @@ enum Settlement {
     VaultUnlocked(crate::local::VaultUnlockSurface),
     /// The wake source the card follows occurred; the text is kernel-written.
     ConditionMet(String),
+    Unavailable(String),
 }
 
 impl Settlement {
@@ -883,13 +898,18 @@ impl Settlement {
                 choice_id: Some("condition_met".into()),
                 reply: Some(how.clone()),
             },
+            Self::Unavailable(reason) => super::PendingInteractionResolution {
+                status: "unavailable",
+                choice_id: None,
+                reply: Some(reason.clone()),
+            },
         }
     }
 
     fn via(&self) -> crate::local::EventResolutionVia {
         match self {
             Self::TimedOut => crate::local::EventResolutionVia::Timeout,
-            Self::VaultUnlocked(_) | Self::ConditionMet(_) => {
+            Self::VaultUnlocked(_) | Self::ConditionMet(_) | Self::Unavailable(_) => {
                 crate::local::EventResolutionVia::Terminal
             }
         }

@@ -36,7 +36,7 @@ fn async_popup_returns_protocol_954_403_snapshot_and_hash() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "5cabc7a3af705fe5b17b29115be26b23d3ff6c2314bd8c3a9c13944b7ffe05ca"
+        "0ea82c8932515403d0f9585611527da799f698557c27a935089edcea3aa8ec69"
     );
     // An old client ignores the additive ownership field; its answer uses
     // exactly the pre-existing request shape.
@@ -50,10 +50,33 @@ fn async_popup_returns_protocol_954_403_snapshot_and_hash() {
 #[test]
 fn person_card_arguments_and_interaction_keep_their_shape() {
     let arguments = serde_json::json!({
-        "wait": false, "message": "Approve the deploy key", "title": "Deploy key",
-        "choices": [{"id": "done", "label": "Done", "reply": "done"}],
-        "until": {"wake_id": "wake-1"},
-        "action": {"request": {"AliasSession": {"session_id": "s-1", "alias": "nightly"}}}
+        "wait": false,
+        "message": "Approve the deploy key",
+        "title": "Deploy key",
+        "choices": [
+            {
+                "id": "done",
+                "label": "Done",
+                "reply": "done"
+            }
+        ],
+        "until": {
+            "wake_id": "wake-1"
+        },
+        "action": {
+            "request": {
+                "AliasSession": {
+                    "session_id": "s-1",
+                    "alias": "nightly"
+                }
+            }
+        },
+        "view": {
+            "browser_region": {
+                "tab_id": "tab-1",
+                "ref": "backend:7"
+            }
+        }
     });
     let args: crate::transport::runtime_tools::RequestPopupArgs =
         serde_json::from_value(arguments.clone()).unwrap();
@@ -64,9 +87,37 @@ fn person_card_arguments_and_interaction_keep_their_shape() {
             .is_err()
     );
     let interaction = serde_json::json!({
-        "closes_with_wake": "wake-1", "id": "interaction-1", "agent_id": "agent-1",
-        "kind": "choice", "level": "info", "message": "Finish the sign-in",
-        "choices": [{"id": "done", "label": "Done", "reply": "done"}], "requested_at_ms": 1
+        "closes_with_wake": "wake-1",
+        "id": "interaction-1",
+        "agent_id": "agent-1",
+        "kind": "choice",
+        "level": "info",
+        "message": "Finish the sign-in",
+        "choices": [
+            {
+                "id": "done",
+                "label": "Done",
+                "reply": "done"
+            }
+        ],
+        "requested_at_ms": 1,
+        "view": {
+            "browser_region": {
+                "tab_id": "tab-1",
+                "ref": "backend:7",
+                "generation": 1,
+                "document_id": "document-1",
+                "origin": "https://www.wikipedia.org",
+                "rect": {
+                    "x": 16,
+                    "y": 24,
+                    "width": 320,
+                    "height": 80
+                },
+                "viewport_width": 1280,
+                "viewport_height": 800
+            }
+        }
     });
     let card: crate::session::RuntimeInteraction =
         serde_json::from_value(interaction.clone()).unwrap();
@@ -79,6 +130,6 @@ fn person_card_arguments_and_interaction_keep_their_shape() {
                 serde_json::to_vec(&serde_json::json!([arguments, interaction])).unwrap()
             )
         ),
-        "825474c60dfef601cb171296e260b7375fb32b8a5728949addd1ec8585f81779"
+        "cb56dc70bbfc839aace0d66435a827cdc080b1b64cc30756c7d091724c32196d"
     );
 }

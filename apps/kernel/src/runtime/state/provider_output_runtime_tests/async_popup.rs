@@ -1,6 +1,135 @@
 //! MP-08 / MP-09 / MP-10 / MP-11 AM-ASK: authenticated non-blocking questions.
 use super::*;
 
+fn browser_region() -> crate::session::RuntimeInteractionBrowserRegion {
+    crate::session::RuntimeInteractionBrowserRegion {
+        tab_id: "tab-one".into(),
+        reference: "backend:42".into(),
+        generation: 1,
+        document_id: "doc-one".into(),
+        origin: "https://en.wikipedia.org".into(),
+        rect: crate::session::RuntimeInteractionBrowserRect {
+            x: 10,
+            y: 20,
+            width: 200,
+            height: 100,
+        },
+        viewport_width: 1280,
+        viewport_height: 800,
+    }
+}
+
+#[tokio::test]
+async fn async_popup_browser_region_refuses_without_browser_authority_before_registering() {
+    let f = fixture("async-popup-region-admission", true).await;
+    f.begin(&f.prompt_id);
+    let result = try_ask(
+        &f,
+        serde_json::json!({"view":{"browser_region":{"tab_id":"foreign-tab","ref":"backend:42"}}}),
+    )
+    .await;
+    assert!(result.is_err(), "a popup cannot grant browser access");
+    assert!(f
+        .runtime
+        .owned
+        .session_store
+        .get_session(&f.room)
+        .unwrap()
+        .active_interactions()
+        .is_empty());
+    assert!(f
+        .store()
+        .agent_wakes(Some(&f.room), Some(&f.agent))
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn async_popup_browser_region_source_failure_is_unavailable_without_claiming_condition_met() {
+    let f = fixture("async-popup-region-source-unavailable", true).await;
+    f.begin(&f.prompt_id);
+    let result = ask(&f, serde_json::json!({})).await;
+    let id = result["interaction_id"].as_str().unwrap();
+    f.runtime
+        .close_unavailable_browser_region_card(&f.room, id, "Browser access was revoked".into())
+        .unwrap();
+    assert!(f
+        .runtime
+        .owned
+        .session_store
+        .get_session(&f.room)
+        .unwrap()
+        .active_interactions()
+        .is_empty());
+    let told = answers(&f, id);
+    assert_eq!(told.len(), 1);
+    assert_eq!(told[0]["status"], "unavailable");
+    assert!(told[0]["choice_id"].is_null());
+    assert_eq!(told[0]["reply"], "Browser access was revoked");
+}
+
+#[tokio::test]
+async fn async_popup_browser_region_projects_movement_and_closes_exactly_once_on_condition_met() {
+    let f = fixture("async-popup-region-projection", true).await;
+    f.begin(&f.prompt_id);
+    let result = ask(&f, serde_json::json!({})).await;
+    let id = result["interaction_id"].as_str().unwrap();
+    let initial = browser_region();
+    // Browser resolution is covered through the production controller entry
+    // separately; this seeds its result to exercise the real card projection,
+    // durable question settlement and attributed answer inbox.
+    {
+        let mut sessions = f.runtime.owned.session_store.write();
+        let mut session = sessions.get_session(&f.room).unwrap();
+        let card = session.remove_active_interaction(id).unwrap();
+        session.add_active_interaction(card.with_view(crate::session::RuntimeInteractionView {
+            browser_region: initial.clone(),
+        }));
+        sessions.restore_session(session);
+    }
+    let mut moved = initial.clone();
+    moved.rect.y = 4;
+    moved.rect.height = 60;
+    moved.viewport_height = 600;
+    f.runtime
+        .owned
+        .update_browser_region_card(&f.room, id, &initial, moved.clone())
+        .unwrap();
+    let session = f.runtime.owned.session_store.get_session(&f.room).unwrap();
+    assert_eq!(session.active_interactions().len(), 1);
+    let card = &session.active_interactions()[0];
+    assert_eq!(card.view().unwrap().browser_region, moved);
+    assert!(card.choice("continue").is_some());
+    assert!(card.choice("cancel").is_some());
+    let mut replacement = moved.clone();
+    replacement.document_id = "replacement-document".into();
+    assert!(
+        f.runtime
+            .owned
+            .update_browser_region_card(&f.room, id, &moved, replacement)
+            .is_err(),
+        "a browser read must not rebind the card to a new document"
+    );
+    f.runtime
+        .close_browser_region_card(&f.room, id, "Browser document changed".into())
+        .unwrap();
+    f.runtime
+        .close_browser_region_card(&f.room, id, "Browser document changed".into())
+        .unwrap();
+    assert!(f
+        .runtime
+        .owned
+        .session_store
+        .get_session(&f.room)
+        .unwrap()
+        .active_interactions()
+        .is_empty());
+    let told = answers(&f, id);
+    assert_eq!(told.len(), 1);
+    assert_eq!(told[0]["choice_id"], "condition_met");
+    assert_eq!(told[0]["reply"], "Browser document changed");
+}
+
 async fn ask(f: &Fixture, extra: serde_json::Value) -> serde_json::Value {
     try_ask(f, extra).await.unwrap().payload
 }

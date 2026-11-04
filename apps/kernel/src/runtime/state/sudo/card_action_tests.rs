@@ -77,6 +77,25 @@ fn rename(f: &Fixture) -> serde_json::Value {
 }
 
 #[tokio::test]
+async fn action_card_refuses_a_browser_view_instead_of_ignoring_it() {
+    let f = fixture_with_options(None, true);
+    let result = f
+        .router
+        .dispatch_authenticated_runtime_tool_call(
+            TOKEN,
+            "chariox.request_popup",
+            serde_json::json!({
+                "message":"Approve", "choices":[{"id":"ok","label":"OK","reply":"ok"}],
+                "action":{"request":rename(&f)},
+                "view":{"browser_region":{"tab_id":"foreign","ref":"backend:42"}}
+            }),
+        )
+        .await;
+    assert!(result.is_err());
+    assert!(f.state.passkey_prompts_for("local").is_empty());
+}
+
+#[tokio::test]
 async fn an_action_card_describes_the_request_in_the_kernels_words_and_cancel_runs_nothing() {
     let f = fixture_with_options(None, true);
     let before = alias(&f);

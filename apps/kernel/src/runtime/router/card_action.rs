@@ -18,6 +18,12 @@ impl CommandRouter {
                 operation: "runtime_tool_request_popup",
                 message: format!("invalid tool arguments: {error}"),
             })?;
+        if args.view.is_some() {
+            return Err(DaemonError::LocalTransport {
+                operation: "runtime_tool_request_popup",
+                message: "an action card cannot also carry a browser view".into(),
+            });
+        }
         let action = args.action.ok_or_else(|| DaemonError::LocalTransport {
             operation: "runtime_tool_request_popup",
             message: "no action on this card".into(),

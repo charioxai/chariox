@@ -1267,6 +1267,7 @@ impl KernelRuntimeState {
                     .prompt_state_owner
                     .active_prompt_for_agent(&session, &agent)
                     .is_some()
+                    || self.agent_inbox_waits_for_vault(&room, &agent)
                 {
                     busy_recipients.push((room, agent));
                 }

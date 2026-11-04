@@ -61,7 +61,11 @@ impl KernelRuntimeState {
             }
             Ok(_) => unreachable!(),
         };
-        let result = if resume {
+        let result = if resume
+            && next.state == crate::durable_state::agent_lifecycle::ExecutionState::Waiting
+        {
+            Box::pin(self.deliver_agent_inbox(&next.room_id, &next.agent_id)).await
+        } else if resume {
             async {
                 let agent = self.owned.agent_store.get_agent(&next.agent_id)?;
                 let attachment = self.ensure_agent_message_attachment(&next.room_id, &agent)?;

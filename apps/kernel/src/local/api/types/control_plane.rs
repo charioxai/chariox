@@ -48,7 +48,7 @@ pub enum ControlPlaneRequest {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ControlPlaneResponse {
     Capabilities {
@@ -68,11 +68,40 @@ pub enum ControlPlaneResponse {
         access_reason: Option<String>,
     },
 }
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MachineAllocationCapability {
     pub revision: String,
     pub actions: Vec<String>,
+    pub offer: MachineAcquisitionOffer,
+}
+
+/// Display facts supplied by the connected service for this capability revision.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MachineAcquisitionOffer {
+    pub machine_type: String,
+    pub vcpu: u32,
+    pub ram_gb: f64,
+    pub disk_gb: u32,
+    pub location: String,
+    /// Includes currency and billing interval; the kernel never calculates prices.
+    pub price: MachineAcquisitionPrice,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MachineAcquisitionPrice {
+    pub amount: String,
+    pub currency: String,
+    pub period: MachineAcquisitionPricePeriod,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MachineAcquisitionPricePeriod {
+    Hour,
+    Month,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

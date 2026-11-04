@@ -368,6 +368,7 @@ struct KernelRuntimeOwnedState {
     connector_adapter_processes: crate::connector::ConnectorAdapterProcessPool,
     pending_provider_reloads: PendingProviderReloadStore,
     pending_interactions: PendingInteractionStore,
+    browser_region_cards: Arc<std::sync::Mutex<BTreeSet<String>>>,
     handoff_claims: Arc<std::sync::Mutex<BTreeSet<String>>>,
     git_turn_snapshots: crate::git_observer::GitTurnSnapshotStore,
     completed_git_turn_snapshots: crate::git_observer::CompletedGitTurnSnapshotStore,
@@ -583,6 +584,7 @@ mod claude_token_first_use;
 mod provider_login_workflow;
 mod runtime_interaction_owned_state;
 pub(crate) use runtime_interaction_owned_state::interaction_waits;
+mod browser_region_card;
 mod owner_vault;
 mod runtime_interaction_state;
 mod runtime_notice_owned_state;
@@ -1155,6 +1157,7 @@ impl KernelRuntimeState {
                 ),
                 pending_provider_reloads: PendingProviderReloadStore::default(),
                 pending_interactions: PendingInteractionStore::shared(),
+                browser_region_cards: Arc::default(),
                 handoff_claims: Arc::default(),
                 git_turn_snapshots: crate::git_observer::GitTurnSnapshotStore::default(),
                 completed_git_turn_snapshots,

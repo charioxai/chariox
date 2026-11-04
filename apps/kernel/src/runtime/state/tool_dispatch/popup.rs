@@ -120,6 +120,17 @@ impl KernelRuntimeState {
                 "an action card must be raised by a local agent's own provider run",
             ));
         }
+        let view = if let Some(view) = args.view.as_ref() {
+            if let Some(run) = provider_run {
+                self.user_domain_agent_authority(run)?;
+            }
+            Some(
+                self.resolve_popup_view(session_id, agent_id, &view.browser_region)
+                    .await?,
+            )
+        } else {
+            None
+        };
         if args.choices.is_empty() {
             return Err(DaemonError::LocalTransport {
                 operation: "runtime_tool_request_popup",
@@ -219,8 +230,13 @@ impl KernelRuntimeState {
         if let Some(wake_id) = closing_wake {
             interaction = interaction.closing_with_wake(wake_id);
         }
+        if let Some(view) = view {
+            interaction = interaction.with_view(view);
+        }
         if args.wait == Some(false) {
-            return self.arm_interaction_wake(session_id, agent_id, interaction);
+            let result = self.arm_interaction_wake(session_id, agent_id, interaction)?;
+            self.resume_browser_region_cards();
+            return Ok(result);
         }
         let provider_run =
             provider_run.ok_or_else(|| popup_error("forwarded popup must use wait:false"))?;
@@ -278,6 +294,7 @@ impl KernelRuntimeState {
         let resolution_rx = self
             .create_runtime_interaction(&session_id, interaction)
             .await?;
+        self.resume_browser_region_cards();
         if let Some(timeout_sec) = timeout_sec {
             let state = self.clone();
             let timeout_session_id = session_id.clone();

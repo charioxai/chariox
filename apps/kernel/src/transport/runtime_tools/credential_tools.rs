@@ -133,6 +133,8 @@ pub struct RequestPopupCustomChoiceArgs {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RequestPopupArgs {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub view: Option<RequestPopupViewArgs>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wait: Option<bool>,
     pub message: String,
     pub choices: Vec<RequestPopupChoiceArgs>,
@@ -152,6 +154,20 @@ pub struct RequestPopupArgs {
     /// Person cards: one kernel request the kernel runs the moment the person approves.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub action: Option<RequestPopupActionArgs>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RequestPopupViewArgs {
+    pub browser_region: RequestPopupBrowserRegionArgs,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RequestPopupBrowserRegionArgs {
+    pub tab_id: String,
+    #[serde(rename = "ref")]
+    pub reference: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -558,6 +574,14 @@ pub fn credential_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                     },
                     "timeout_sec": {"type": "integer", "minimum": 1},
                     "default_on_timeout": {"type": "string"},
+                    "view": {
+                        "type": "object", "required": ["browser_region"], "additionalProperties": false,
+                        "properties": {"browser_region": {
+                            "type": "object", "required": ["tab_id", "ref"], "additionalProperties": false,
+                            "properties": {"tab_id": {"type": "string", "minLength": 1}, "ref": {"type": "string", "minLength": 1}}
+                        }},
+                        "description": "Show a live browser element from your observed snapshot (tab_id and node_ref as ref). The kernel follows its position with a margin and closes the card with condition_met when the element disappears or its document changes. Uses the existing protected Tab display."
+                    },
                     "until": {
                         "type": "object",
                         "required": ["wake_id"],
