@@ -605,3 +605,168 @@ async fn owner_cancellation_rejects_foreign_room_and_attachment() {
         "scheduled"
     );
 }
+
+#[tokio::test]
+async fn owner_timer_cancellation_after_unsubscribe_reaches_next_turn_once() {
+    let f = fixture_with_options(None, true);
+    let room = &f.request.session_id;
+    let agent = f.request.target_agent_id.as_deref().unwrap();
+    let store = &f.state.owned.durable_state_store;
+    let session = f.state.owned.session_store.get_session(room).unwrap();
+    let original_prompt = "unsubscribed-timer-turn";
+    f.state
+        .owned
+        .prompt_state_owner
+        .sync_external_active_prompt(
+            &session,
+            agent,
+            Some(PromptQueueItem::new(
+                original_prompt,
+                &f.request.attachment_id,
+                agent,
+                "Start a timer and withdraw its subscription",
+                PromptStatus::Running,
+            )),
+        );
+    store
+        .agent_lifecycle(Operation::Begin {
+            owner: "local".into(),
+            room: room.clone(),
+            agent: agent.into(),
+            prompt: original_prompt.into(),
+            run: Some(f.run.id().into()),
+            now: crate::session::unix_epoch_ms(),
+        })
+        .unwrap();
+    let timer = f
+        .router
+        .dispatch_authenticated_runtime_tool_call(
+            "sudo-fixture-bearer",
+            "chariox.events.timer",
+            serde_json::json!({
+                "task_id":original_prompt, "origin_prompt_id":original_prompt,
+                "label":"Unsubscribed review timer", "delay_ms":3_600_000,
+            }),
+        )
+        .await
+        .unwrap()
+        .payload;
+    let wake_id = timer["wake_id"].as_str().unwrap();
+    f.router
+        .dispatch_authenticated_runtime_tool_call(
+            "sudo-fixture-bearer",
+            "chariox.events.unsubscribe",
+            serde_json::json!({
+                "task_id":original_prompt, "origin_prompt_id":original_prompt,
+                "registration_id":timer["registration_id"],
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        store.agent_wake(wake_id).unwrap().unwrap().state,
+        "scheduled"
+    );
+    assert!(!store.agent_registrations(original_prompt).unwrap()[0].live);
+    let request = serde_json::json!({"CancelAgentWake":{
+        "session_id":room, "attachment_id":f.request.attachment_id, "wake_id":wake_id,
+    }});
+    let response = cancel_request(&f, request.clone()).await.unwrap();
+    let LocalDaemonResponse::AgentTaskUpdated { task, .. } = response else {
+        panic!("expected timer cancellation")
+    };
+    assert_eq!(task.task_id, original_prompt);
+    assert_eq!(
+        task.state,
+        ExecutionState::Working,
+        "timer cancellation preserves the task"
+    );
+    assert_eq!(
+        store.agent_wake(wake_id).unwrap().unwrap().state,
+        "cancelled"
+    );
+    store
+        .agent_lifecycle(Operation::Settle {
+            room: room.clone(),
+            agent: agent.into(),
+            prompt: original_prompt.into(),
+            run: f.run.id().into(),
+            has_answer: true,
+            cancelled: false,
+            now: crate::session::unix_epoch_ms(),
+        })
+        .unwrap();
+    let next_prompt = "after-unsubscribed-timer-cancellation";
+    assert_eq!(
+        f.state
+            .owned
+            .prompt_state_owner
+            .complete_active_prompt_if_matches(&session, agent, Some(original_prompt))
+            .unwrap()
+            .id(),
+        original_prompt
+    );
+    f.state
+        .owned
+        .prompt_state_owner
+        .submit_prepared_prompt_with_queue_policy(
+            &session,
+            PromptQueueItem::new(
+                next_prompt,
+                &f.request.attachment_id,
+                agent,
+                "Read the timer cancellation outcome",
+                PromptStatus::Queued,
+            ),
+            false,
+            false,
+        )
+        .unwrap();
+    assert_eq!(
+        f.state
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, agent)
+            .unwrap()
+            .id(),
+        next_prompt
+    );
+    store
+        .agent_lifecycle(Operation::Begin {
+            owner: "local".into(),
+            room: room.clone(),
+            agent: agent.into(),
+            prompt: next_prompt.into(),
+            run: Some(f.run.id().into()),
+            now: crate::session::unix_epoch_ms(),
+        })
+        .unwrap();
+    for _ in 0..2 {
+        let inbox = f
+            .router
+            .dispatch_authenticated_runtime_tool_call(
+                "sudo-fixture-bearer",
+                "chariox.events.inbox",
+                serde_json::json!({
+                    "task_id":next_prompt, "origin_prompt_id":next_prompt, "after":0,
+                }),
+            )
+            .await
+            .unwrap()
+            .payload;
+        let receipts = inbox
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|event| event["source_id"] == wake_id && event["kind"] == "source_lost")
+            .collect::<Vec<_>>();
+        assert_eq!(
+            receipts.len(),
+            1,
+            "next turn must receive exactly one cancellation receipt"
+        );
+        assert_eq!(receipts[0]["payload"]["task_id"], original_prompt);
+        assert_eq!(receipts[0]["payload"]["public_answer"]["cancelled"], true);
+        cancel_request(&f, request.clone()).await.unwrap();
+    }
+}

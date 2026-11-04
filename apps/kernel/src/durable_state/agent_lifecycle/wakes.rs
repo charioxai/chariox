@@ -721,15 +721,16 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 )));
             }
             if !terminal(&wake) {
+                // Settle while the obligation is open: its source receipt must
+                // survive even when the agent unsubscribed from the timer.
+                cancel_settle(tx, &mut wake, crate::session::unix_epoch_ms())?;
+                task = load(tx, &wake.task_id)?;
                 if let Some(obligation) = task.obligations.iter_mut().find(|o| o.id == id) {
                     obligation.status = "cancelled".into();
                     obligation.dispatch_state = "cancelled".into();
                 }
                 task.revision += 1;
                 save(tx, &task)?;
-                // The existing source receipt wakes the retained task and tells
-                // its agent why the timer ended, including after a restart.
-                cancel_settle(tx, &mut wake, crate::session::unix_epoch_ms())?;
             }
             Ok(Outcome::Wakes(vec![wake]))
         }
