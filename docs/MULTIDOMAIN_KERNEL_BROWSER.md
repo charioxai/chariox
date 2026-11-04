@@ -211,7 +211,12 @@ A scope input/capture barrier surrounds requests; private controller policy is
 seeded before every operation. Shared CDP redaction runs before snapshot
 compaction, then the kernel scrubs reply/error metadata. URLs echoing protected
 values are scrubbed in observations and persisted as about:blank for restart,
-never saved as plaintext secret-bearing restore URLs. No secret-reading MCP
+never saved as plaintext secret-bearing restore URLs. A value under 8 characters
+(a short password, a PIN) is masked only as a whole word of visible text, so it
+never rewrites a URL, id, selector or longer word; the kernel binds a capture or
+fill to the redacted URL it observed and the controller resolves it to the real
+page URL. An agent undoes a capture of its own with `chariox.vault.remove_capture`.
+No secret-reading MCP
 endpoint exists. The obsolete unprotected host request/App methods are removed;
 appviews must use the unchanged async `kernel_browser_app_view` seam.
 
