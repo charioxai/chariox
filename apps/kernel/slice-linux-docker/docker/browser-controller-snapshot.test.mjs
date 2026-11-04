@@ -163,3 +163,16 @@ test("capturing a schema label preserves snapshot fields and CDP identities", as
     assert.equal(snapshot.accessibility_nodes[0].node_ref, "backend:100", secret);
   }
 });
+
+// Element names can be page-owned custom tags, unlike transport keys and AX enums.
+test("MP-08/MP-11 a captured value echoed in a custom tag remains protected", async () => {
+  const secret = "PRIVATE-SECRET-ELEMENT";
+  const connection = { async send(method) {
+    if (method === "Page.getFrameTree") return {frameTree:{frame:{id:"root",loaderId:"page-1"}}};
+    if (method === "Accessibility.getFullAXTree") return {nodes:[]};
+    return {strings:[secret],documents:[{nodes:{backendNodeId:[1],nodeType:[1],nodeName:[0],nodeValue:[-1],parentIndex:[-1],attributes:[[]]}}]};
+  }};
+  const snapshot = await captureBrowserSnapshot({connection,sessionId:"page",targetId:"target",documentId:"page-1",browserGeneration:1,snapshotRevision:1,protectedValues:[secret]});
+  assert.equal(snapshot.dom_nodes[0].node_name,"[redacted]");
+  assert.equal(observations.redactSnapshot({...snapshot,dom_nodes:[{...snapshot.dom_nodes[0],node_name:secret}]},[secret]).dom_nodes[0].node_name,"[redacted]");
+});

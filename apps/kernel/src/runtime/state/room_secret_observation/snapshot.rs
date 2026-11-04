@@ -24,7 +24,13 @@ impl RoomSecretObservations {
         let dom: Vec<_> = snapshot
             .dom_nodes
             .iter()
-            .map(|node| (node.text.clone(), node.attributes.clone()))
+            .map(|node| {
+                (
+                    node.node_name.clone(),
+                    node.text.clone(),
+                    node.attributes.clone(),
+                )
+            })
             .collect();
         let urls: Vec<_> = snapshot
             .dom_documents
@@ -39,7 +45,8 @@ impl RoomSecretObservations {
             node.description = description;
             node.value = value;
         }
-        for (node, (text, attributes)) in snapshot.dom_nodes.iter_mut().zip(dom) {
+        for (node, (node_name, text, attributes)) in snapshot.dom_nodes.iter_mut().zip(dom) {
+            node.node_name = node_name;
             node.text = text;
             node.attributes = attributes;
         }

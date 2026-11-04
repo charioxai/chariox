@@ -164,7 +164,7 @@ function redactSnapshotReply(method, reply, protectedValues) {
       }
     }
   } else if (method === "DOMSnapshot.captureSnapshot") {
-    // A CDP string can be shared by a protocol tag and page text. Give each
+    // A CDP string can be shared by page text slots. Give each
     // observed text slot its own redacted index instead of rewriting the pool.
     const strings = result.strings ?? [];
     const sourceLength = strings.length;
@@ -178,6 +178,7 @@ function redactSnapshotReply(method, reply, protectedValues) {
     for (const document of result.documents ?? []) {
       document.documentURL = textIndex(document.documentURL);
       const nodes = document.nodes ?? {};
+      nodes.nodeName = (nodes.nodeName ?? []).map(textIndex);
       nodes.nodeValue = (nodes.nodeValue ?? []).map(textIndex);
       nodes.attributes = (nodes.attributes ?? []).map(indexes => indexes.map(textIndex));
     }
@@ -195,7 +196,7 @@ export function redactSnapshot(snapshot, protectedValues) {
     accessibility_nodes: snapshot.accessibility_nodes.map(node => ({...node,
       name: text(node.name), description: text(node.description), value: text(node.value)})),
     dom_documents: (snapshot.dom_documents ?? []).map(document => ({...document, url: text(document.url)})),
-    dom_nodes: snapshot.dom_nodes.map(node => ({...node, text: text(node.text), attributes: text(node.attributes)})),
+    dom_nodes: snapshot.dom_nodes.map(node => ({...node, node_name: text(node.node_name), text: text(node.text), attributes: text(node.attributes)})),
   };
 }
 

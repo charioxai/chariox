@@ -740,6 +740,7 @@ mod tests {
             "textbox",
             "snapshot",
             "generation",
+            "PRIVATE-SECRET-ELEMENT",
         ] {
             store.register("snapshot", secret).unwrap();
         }
@@ -750,7 +751,9 @@ mod tests {
                 "ignored":false,"disabled":false,"focused":false}],
             "dom_documents":[{"document_index":0,"url":"https://example.com/","owner_node_ref":null}],
             "dom_nodes":[{"node_ref":"backend:7","parent_ref":null,"document_index":0,"node_type":1,
-                "node_name":"INPUT","text":"name","attributes":{"aria-label":"Account name"},"bounds":null}]}});
+                "node_name":"INPUT","text":"name","attributes":{"aria-label":"Account name"},"bounds":null},
+                {"node_ref":"backend:8","parent_ref":null,"document_index":0,"node_type":1,
+                "node_name":"PRIVATE-SECRET-ELEMENT","text":"","attributes":{},"bounds":null}]}});
         let worker_snapshot = serde_json::from_value(result["snapshot"].clone()).unwrap();
         let worker = store
             .scrub_response(
@@ -782,6 +785,7 @@ mod tests {
         assert_eq!(snapshot.accessibility_nodes[0].name, "Account [redacted]");
         assert_eq!(snapshot.accessibility_nodes[0].value, "[redacted]");
         assert_eq!(snapshot.dom_nodes[0].text, "[redacted]");
+        assert_eq!(snapshot.dom_nodes[1].node_name, "[redacted]");
         assert_eq!(
             snapshot.dom_nodes[0].attributes["aria-label"],
             "Account [redacted]"
