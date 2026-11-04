@@ -50,6 +50,10 @@ pub struct RuntimeInteractionChoice {
     /// decisions may set it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     requires_passkey: bool,
+    /// A Vault unlock answer: this choice unlocks for this long, with the
+    /// passphrase as the custom reply.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    vault_unlock: Option<crate::local::VaultUnlockDuration>,
 }
 
 impl RuntimeInteractionChoice {
@@ -65,7 +69,17 @@ impl RuntimeInteractionChoice {
             reply: reply.into(),
             style,
             requires_passkey: false,
+            vault_unlock: None,
         }
+    }
+
+    pub(crate) fn unlocking_vault(mut self, duration: crate::local::VaultUnlockDuration) -> Self {
+        self.vault_unlock = Some(duration);
+        self
+    }
+
+    pub fn vault_unlock(&self) -> Option<crate::local::VaultUnlockDuration> {
+        self.vault_unlock
     }
 
     /// Marks a critical approval: the kernel accepts it only with a verified

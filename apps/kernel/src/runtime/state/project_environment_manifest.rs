@@ -578,7 +578,7 @@ mod tests {
             .answer_terminal_runtime_interaction(
                 session.id(),
                 unlock.id(),
-                "passphrase",
+                "unlock_kernel",
                 Some("synthetic-envlayer4-passphrase"),
                 Some(session.owner_user_id()),
                 None,

@@ -2,7 +2,9 @@
 //! no session or agent, inside the budget every passphrase check shares.
 use super::*;
 use crate::config::{CredentialVaultBackend, CredentialVaultUnlockPolicy};
-use crate::local::{KernelConnectionClass, UnlockCredentialVaultRequest, VaultPassphrase};
+use crate::local::{
+    KernelConnectionClass, UnlockCredentialVaultRequest, VaultPassphrase, VaultUnlockDuration,
+};
 use crate::session::{RuntimeSession, DEFAULT_LOCAL_USER_ID};
 
 const PASSPHRASE: &str = "correct horse battery";
@@ -101,12 +103,16 @@ impl Fixture {
     }
 
     async fn unlock(&self, passphrase: &str) -> Result<LocalDaemonResponse, DaemonError> {
-        self.send(LocalDaemonRequest::UnlockCredentialVault(
-            UnlockCredentialVaultRequest {
-                passphrase: VaultPassphrase::new(passphrase),
-            },
-        ))
-        .await
+        self.unlock_for(passphrase, VaultUnlockDuration::Minutes { minutes: 30 })
+            .await
+    }
+
+    async fn unlock_for(
+        &self,
+        passphrase: &str,
+        duration: VaultUnlockDuration,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.send(unlock_request(passphrase, duration)).await
     }
 
     async fn status(&self) -> crate::secret::CharioxVaultUnlockStatus {
@@ -117,7 +123,7 @@ impl Fixture {
             .await
             .unwrap()
         {
-            LocalDaemonResponse::CredentialVaultStatus { status } => status,
+            LocalDaemonResponse::CredentialVaultStatus { status, .. } => status,
             other => panic!("unexpected {other:?}"),
         }
     }
@@ -158,7 +164,7 @@ impl Fixture {
             LocalDaemonRequest::RespondToInteraction(crate::local::RespondToInteractionRequest {
                 session_id: self.session.clone(),
                 interaction_id: prompt,
-                choice_id: "passphrase".into(),
+                choice_id: "unlock_kernel".into(),
                 custom_reply: Some(passphrase.to_owned()),
                 passkey: None,
                 passkey_remember_minutes: None,
@@ -323,9 +329,7 @@ async fn a_plain_backend_needs_no_unlock() {
 #[tokio::test]
 async fn the_passphrase_is_in_no_record_debug_or_reply() {
     let f = Fixture::locked();
-    let request = LocalDaemonRequest::UnlockCredentialVault(UnlockCredentialVaultRequest {
-        passphrase: VaultPassphrase::new(SENTINEL),
-    });
+    let request = unlock_request(SENTINEL, VaultUnlockDuration::Once);
     assert!(format!("{request:?}").contains("[REDACTED]"));
     assert!(!format!("{request:?}").contains(SENTINEL));
     let command = KernelCommand::from_local_request_with_caller(
@@ -360,40 +364,75 @@ async fn an_operation_without_a_session_asks_the_client_to_unlock_first() {
 }
 
 #[tokio::test]
-async fn the_lease_follows_the_unlock_policy() {
+async fn the_lease_follows_the_chosen_duration_and_the_policy_only_preselects() {
     let now_ms = crate::session::unix_epoch_ms();
-    let kernel_init = Fixture::new(CredentialVaultUnlockPolicy::KernelInit, true);
-    kernel_init.unlock(PASSPHRASE).await.unwrap();
-    assert_eq!(kernel_init.status().await.expires_at_ms, None);
+    for policy in [
+        CredentialVaultUnlockPolicy::KernelInit,
+        CredentialVaultUnlockPolicy::Ttl,
+        CredentialVaultUnlockPolicy::Always,
+    ] {
+        let kernel = Fixture::new(policy, true);
+        kernel
+            .unlock_for(PASSPHRASE, VaultUnlockDuration::UntilKernelStops)
+            .await
+            .unwrap();
+        assert_eq!(kernel.status().await.expires_at_ms, None, "{policy:?}");
+    }
 
-    let ttl = Fixture::new(CredentialVaultUnlockPolicy::Ttl, true);
-    ttl.unlock(PASSPHRASE).await.unwrap();
-    let config = ttl
-        .router
-        .runtime_state
-        .config_snapshot()
+    let timed = Fixture::new(CredentialVaultUnlockPolicy::KernelInit, true);
+    timed
+        .unlock_for(PASSPHRASE, VaultUnlockDuration::Minutes { minutes: 45 })
         .await
-        .user_config
-        .credential_vault;
-    let minutes = config
-        .default_ttl_minutes
-        .min(config.max_ttl_minutes)
-        .max(1);
-    let expires = ttl.status().await.expires_at_ms.unwrap();
-    assert!(expires.abs_diff(now_ms + minutes * 60_000) < 5_000);
+        .unwrap();
+    let expires = timed.status().await.expires_at_ms.unwrap();
+    assert!(expires.abs_diff(now_ms + 45 * 60_000) < 5_000);
 
-    let always = Fixture::new(CredentialVaultUnlockPolicy::Always, true);
-    always.unlock(PASSPHRASE).await.unwrap();
-    let expires = always.status().await.expires_at_ms.unwrap();
+    let once = Fixture::new(CredentialVaultUnlockPolicy::Ttl, true);
+    once.unlock_for(PASSPHRASE, VaultUnlockDuration::Once)
+        .await
+        .unwrap();
+    let expires = once.status().await.expires_at_ms.unwrap();
     assert!(
         expires.abs_diff(now_ms + 60_000) < 5_000,
         "single use lasts a minute"
     );
 }
 
-fn unlock_request(passphrase: &str) -> LocalDaemonRequest {
+#[tokio::test]
+async fn the_status_offers_the_durations_and_preselects_the_policys_own() {
+    for (policy, preselected) in [
+        (
+            CredentialVaultUnlockPolicy::KernelInit,
+            VaultUnlockDuration::UntilKernelStops,
+        ),
+        (
+            CredentialVaultUnlockPolicy::Always,
+            VaultUnlockDuration::Once,
+        ),
+    ] {
+        let f = Fixture::new(policy, true);
+        let LocalDaemonResponse::CredentialVaultStatus { unlock, .. } = f
+            .send(LocalDaemonRequest::GetCredentialVaultStatus(
+                crate::local::GetCredentialVaultStatusRequest,
+            ))
+            .await
+            .unwrap()
+        else {
+            panic!("expected CredentialVaultStatus");
+        };
+        assert_eq!(unlock.default, preselected, "{policy:?}");
+        assert_eq!(unlock.durations.first(), Some(&VaultUnlockDuration::Once));
+        assert_eq!(
+            unlock.durations.last(),
+            Some(&VaultUnlockDuration::UntilKernelStops)
+        );
+    }
+}
+
+fn unlock_request(passphrase: &str, duration: VaultUnlockDuration) -> LocalDaemonRequest {
     LocalDaemonRequest::UnlockCredentialVault(UnlockCredentialVaultRequest {
         passphrase: VaultPassphrase::new(passphrase),
+        duration,
     })
 }
 
@@ -411,7 +450,13 @@ async fn only_the_owners_own_client_may_unlock() {
         .with_connection_class(KernelConnectionClass::Terminal);
     metaagent.metaagent_id = Some("metaagent".into());
     for caller in [member, agent, metaagent] {
-        let (code, message) = code_of(f.send_as(caller, unlock_request(PASSPHRASE)).await);
+        let (code, message) = code_of(
+            f.send_as(
+                caller,
+                unlock_request(PASSPHRASE, VaultUnlockDuration::Once),
+            )
+            .await,
+        );
         assert_eq!(code, "vault_unlock_owner_only");
         assert_eq!(
             message,
@@ -427,7 +472,9 @@ async fn only_the_owners_own_client_may_unlock() {
         let mut member = KernelCaller::for_source(&KernelCommandSource::RelayClient)
             .with_connection_class(KernelConnectionClass::Terminal);
         member.user_id = Some("session-member".into());
-        f.send_as(member, unlock_request(WRONG)).await.unwrap_err();
+        f.send_as(member, unlock_request(WRONG, VaultUnlockDuration::Once))
+            .await
+            .unwrap_err();
     }
     f.unlock(PASSPHRASE).await.unwrap();
     assert!(f.status().await.unlocked);
@@ -808,15 +855,19 @@ fn set_secret(value: &str) -> LocalDaemonRequest {
 }
 
 #[tokio::test]
-async fn under_ask_every_time_the_client_unlock_covers_the_next_write_only() {
-    let f = Fixture::new(CredentialVaultUnlockPolicy::Always, true);
-    f.unlock(PASSPHRASE).await.unwrap();
+async fn a_once_unlock_covers_the_next_write_only() {
+    let f = Fixture::locked();
+    f.unlock_for(PASSPHRASE, VaultUnlockDuration::Once)
+        .await
+        .unwrap();
     f.send(set_secret("first")).await.unwrap();
     assert!(!f.status().await.unlocked, "the write used the unlock up");
     let (code, _) = code_of(f.send(set_secret("second")).await);
     assert_eq!(code, "vault_locked");
 
-    f.unlock(PASSPHRASE).await.unwrap();
+    f.unlock_for(PASSPHRASE, VaultUnlockDuration::Once)
+        .await
+        .unwrap();
     f.send(LocalDaemonRequest::DeleteCredentialSecret(
         crate::local::DeleteCredentialSecretRequest {
             session_id: None,

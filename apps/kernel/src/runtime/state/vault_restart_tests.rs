@@ -105,6 +105,7 @@ async fn mp08_vault_restart_or_abandoned_wait_can_retry_before_the_pump() {
                 room: None,
             },
             agent,
+            &crate::config::UserCredentialVaultConfig::default(),
         );
         let mut snapshot = state.owned.session_store.get_session(session).unwrap();
         snapshot.add_active_interaction(orphan.clone());
@@ -198,7 +199,7 @@ async fn mp08_vault_unlock_resumes_other_sessions_and_keeps_one_prompt_per_sessi
         .resolve_terminal_runtime_interaction(
             &sessions[1].0,
             card.id(),
-            "passphrase",
+            "unlock_kernel",
             Some("restart passphrase"),
             Some(crate::session::DEFAULT_LOCAL_USER_ID),
         )
@@ -222,6 +223,7 @@ async fn mp11_vault_retry_cannot_replace_another_live_decision() {
             room: None,
         },
         agent,
+        &crate::config::UserCredentialVaultConfig::default(),
     );
     let _receiver = state
         .create_terminal_credential_interaction(session, card.clone())

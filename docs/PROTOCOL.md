@@ -6215,8 +6215,7 @@ owner's user id. A session member, an agent and a Metaagent get `vault_unlock_ow
 kernel-access grant holders and sudo agents are refused too, and no agent tool carries it. The passphrase
 is a redacted, zeroed value: command records show `[redacted]`, and it is never logged. The
 request unlocks an existing Vault only; a missing Vault file is refused and never created.
-The Vault stays open per its policy (`ttl` the default TTL, `kernel_init` until shutdown); under
-`always` the unlock is single use: it lasts 60 seconds and ends after the next account copy.
+How long the Vault stays open is the owner's choice on every unlock (local 984, below).
 
 Refusals carry a code and a plain sentence: `vault_passphrase_wrong`,
 `vault_unlock_rate_limited` (the sentence names the wait in seconds), `vault_missing`,
@@ -6228,6 +6227,30 @@ time), shared by this request, the passkey check and the unlock prompt an agent'
 Clients need kernel protocol >=923 (`credentialVaultUnlockMinimumProtocolVersion` in the
 web). The managed-upgrade list is [629, 636, 923]. Focused checks:
 `cargo test -p chariox-kernel --lib vault_unlock` and `node --test scripts/protocol-versions.test.mjs`.
+
+### Vault unlock duration — local 984 / relay peer 425
+
+Every Vault unlock names how long the Vault stays open. `UnlockCredentialVault { passphrase, duration }`
+takes a required `duration`: `{"kind":"once"}` (the next operation, then the Vault closes; for the
+owner's own client that is the 60 second single-use unlock), `{"kind":"minutes","minutes":N}`
+(capped by `credential_vault.max_ttl_minutes`) or `{"kind":"until_kernel_stops"}`
+(`VaultUnlockLease::KernelShutdown`). `GetCredentialVaultStatus` answers
+`CredentialVaultStatus { status, unlock }` with `unlock = { durations, default }`: the durations a
+client offers and the one it preselects. `credential_vault.unlock_policy` no longer decides a lease
+or forces a prompt; it only picks `default` (`always` once, `ttl` its default minutes, `kernel_init`
+until the kernel stops).
+
+The Unlock card an agent's Vault use raises (`Unlock Chariox Vault`) carries the same list as
+choices: each duration is a choice with `vault_unlock` set to that duration, next to `cancel`. The
+person answers with one duration choice and the passphrase as `custom_reply`; a duration choice
+without a passphrase is refused, and the passphrase is never part of the recorded answer. Clients need
+kernel protocol >=984 (`credentialVaultUnlockMinimumProtocolVersion` in the web). The managed-upgrade
+list is [629, 636, 984]. Focused checks: `cargo test -p chariox-kernel --lib vault_unlock`.
+
+`chariox.request_popup` cards always carry a `cancel` choice next to the agent's own (an agent's own
+choice with id `cancel` is kept as it is). Answering it resolves the question with `status:
+"cancelled"` and `choice_id: "cancel"` in the tool result and in the wake payload, so the agent never
+reads a cancel as a timeout. No serialized shape changes: the card is an ordinary choice list.
 
 ### Apps v2 — local 966 / relay peer 415
 

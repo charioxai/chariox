@@ -445,10 +445,7 @@ impl KernelRuntimeState {
             return Ok(None);
         }
         let vault_path = expand_vault_path(&user_config.credential_vault.path);
-        if user_config.credential_vault.unlock_policy
-            != crate::config::CredentialVaultUnlockPolicy::Always
-            && crate::secret::chariox_encrypted_vault_status(&vault_path)?.unlocked
-        {
+        if crate::secret::chariox_encrypted_vault_status(&vault_path)?.unlocked {
             return Ok(None);
         }
         if self.client_single_use_unlock_path()?.is_some() {
@@ -515,54 +512,41 @@ impl KernelRuntimeState {
             return Ok(VaultUnlockGuard::not_required());
         }
         let vault_path = expand_vault_path(&vault_config.path);
-        let force_prompt = matches!(
-            vault_config.unlock_policy,
-            crate::config::CredentialVaultUnlockPolicy::Always
-        );
-        if !force_prompt && crate::secret::chariox_encrypted_vault_status(&vault_path)?.unlocked {
+        if crate::secret::chariox_encrypted_vault_status(&vault_path)?.unlocked {
             return Ok(VaultUnlockGuard::unlocked_until_expiry(vault_path));
         }
         let session_request_lock = vault_unlock_session_request_lock(&vault_path, session_id);
         let _dedupe_guard = session_request_lock.lock().await;
         let mut unlocks = vault_unlock_notifications(&vault_path);
-        if !force_prompt && crate::secret::chariox_encrypted_vault_status(&vault_path)?.unlocked {
+        if crate::secret::chariox_encrypted_vault_status(&vault_path)?.unlocked {
             return Ok(VaultUnlockGuard::unlocked_until_expiry(vault_path));
         }
 
+        let interaction = vault_passphrase_interaction(
+            &self.vault_requester(session_id, agent_id),
+            agent_id,
+            &vault_config,
+        );
         let Some(resolution) = self
             .await_vault_unlock_interaction(
                 session_id,
-                vault_passphrase_interaction(&self.vault_requester(session_id, agent_id), agent_id),
+                interaction.clone(),
                 operation,
                 &vault_path,
                 &mut unlocks,
-                !force_prompt,
+                true,
             )
             .await?
         else {
             return Ok(VaultUnlockGuard::unlocked_until_expiry(vault_path.clone()));
         };
-        let passphrase = vault_passphrase_from_resolution(resolution, operation)?;
-        // The passphrase sheet is the only question: a TTL unlock takes the default lease.
-        let choice_id = if matches!(
-            vault_config.unlock_policy,
-            crate::config::CredentialVaultUnlockPolicy::Ttl
-        ) {
-            "unlock_default_ttl".to_string()
-        } else if matches!(
-            vault_config.unlock_policy,
-            crate::config::CredentialVaultUnlockPolicy::KernelInit
-        ) {
-            "unlock_kernel".to_string()
-        } else {
-            "unlock_operation".to_string()
-        };
-        let (lease, lock_after_operation) =
-            unlock_lease_for_choice(&choice_id, &vault_config, force_prompt);
+        let (passphrase, duration) = vault_unlock_answer(&interaction, resolution, operation)?;
+        let lease = duration.lease(&vault_config, true);
+        let lock_after_operation = lease == crate::secret::VaultUnlockLease::Operation;
         // Human input must never hold the mutation lock across sessions.
         let unlock_request_lock = vault_unlock_request_lock(&vault_path);
         let _mutation = unlock_request_lock.lock().await;
-        if !force_prompt && crate::secret::chariox_encrypted_vault_status(&vault_path)?.unlocked {
+        if crate::secret::chariox_encrypted_vault_status(&vault_path)?.unlocked {
             return Ok(VaultUnlockGuard::unlocked_until_expiry(vault_path.clone()));
         }
         let owner = self
@@ -704,7 +688,7 @@ impl KernelRuntimeState {
                 "vault passphrase change",
             )
             .await?;
-        vault_secret_from_resolution(resolution, VAULT_PASSPHRASE_CHANGE, "passphrase change")
+        vault_secret_from_resolution(resolution, VAULT_PASSPHRASE_CHANGE)
     }
 }
 
@@ -810,16 +794,59 @@ fn vault_passphrase_change_interaction(
     )
 }
 
+fn vault_unlock_choice_label(duration: crate::local::VaultUnlockDuration) -> String {
+    use crate::local::VaultUnlockDuration;
+    match duration {
+        VaultUnlockDuration::Once => "Just this once".to_string(),
+        VaultUnlockDuration::Minutes { minutes } if minutes % 60 == 0 && minutes > 60 => {
+            format!("{} hours", minutes / 60)
+        }
+        VaultUnlockDuration::Minutes { minutes: 60 } => "1 hour".to_string(),
+        VaultUnlockDuration::Minutes { minutes: 1 } => "1 minute".to_string(),
+        VaultUnlockDuration::Minutes { minutes } => format!("{minutes} minutes"),
+        VaultUnlockDuration::UntilKernelStops => "Until the kernel stops".to_string(),
+    }
+}
+
+fn vault_unlock_choice_id(duration: crate::local::VaultUnlockDuration) -> String {
+    use crate::local::VaultUnlockDuration;
+    match duration {
+        VaultUnlockDuration::Once => "unlock_once".to_string(),
+        VaultUnlockDuration::Minutes { minutes } => format!("unlock_{minutes}m"),
+        VaultUnlockDuration::UntilKernelStops => "unlock_kernel".to_string(),
+    }
+}
+
 fn vault_passphrase_interaction(
     requester: &VaultRequester,
     agent_id: &str,
+    config: &crate::config::UserCredentialVaultConfig,
 ) -> crate::session::RuntimeInteraction {
-    let choices = vec![crate::session::RuntimeInteractionChoice::new(
+    let options = crate::local::VaultUnlockOptions::for_config(config);
+    let mut choices = options
+        .durations
+        .iter()
+        .map(|&duration| {
+            let label = vault_unlock_choice_label(duration);
+            crate::session::RuntimeInteractionChoice::new(
+                vault_unlock_choice_id(duration),
+                label.clone(),
+                label,
+                Some(if duration == options.default {
+                    crate::session::RuntimeInteractionChoiceStyle::Primary
+                } else {
+                    crate::session::RuntimeInteractionChoiceStyle::Secondary
+                }),
+            )
+            .unlocking_vault(duration)
+        })
+        .collect::<Vec<_>>();
+    choices.push(crate::session::RuntimeInteractionChoice::new(
         "cancel",
         "Cancel",
         "cancel",
         Some(crate::session::RuntimeInteractionChoiceStyle::Danger),
-    )];
+    ));
     crate::session::RuntimeInteraction::new(
         format!("vault-unlock-{}-{}", agent_id, rand::random::<u64>()),
         agent_id,
@@ -843,88 +870,81 @@ fn vault_passphrase_interaction(
     )
 }
 
-fn vault_passphrase_from_resolution(
+/// The passphrase and duration the owner answered a Vault unlock question with.
+fn vault_unlock_answer(
+    interaction: &crate::session::RuntimeInteraction,
     resolution: super::PendingInteractionResolution,
     operation: &'static str,
-) -> Result<zeroize::Zeroizing<String>, DaemonError> {
-    vault_secret_from_resolution(resolution, operation, "unlock")
+) -> Result<
+    (
+        zeroize::Zeroizing<String>,
+        crate::local::VaultUnlockDuration,
+    ),
+    DaemonError,
+> {
+    // A client without a duration control (the terminal) answers with the typed
+    // passphrase alone and gets the duration the card preselects.
+    let preselected = || {
+        interaction
+            .choices()
+            .iter()
+            .find(|choice| {
+                choice.style() == Some(crate::session::RuntimeInteractionChoiceStyle::Primary)
+            })
+            .and_then(crate::session::RuntimeInteractionChoice::vault_unlock)
+    };
+    let duration = match resolution.choice_id.as_deref() {
+        Some("passphrase") => preselected(),
+        Some(id) => interaction
+            .choice(id)
+            .and_then(crate::session::RuntimeInteractionChoice::vault_unlock),
+        None => None,
+    };
+    match (resolution.status, duration, resolution.reply) {
+        ("timed_out", ..) => Err(DaemonError::LocalTransport {
+            operation,
+            message: "Chariox vault unlock timed out. Retry to unlock the vault.".into(),
+        }),
+        ("answered", Some(duration), Some(passphrase)) => {
+            Ok((zeroize::Zeroizing::new(passphrase), duration))
+        }
+        (_, None, _) => Err(DaemonError::LocalTransport {
+            operation,
+            message: "Chariox vault unlock was cancelled. Retry to unlock the vault.".into(),
+        }),
+        _ => Err(DaemonError::LocalTransport {
+            operation,
+            message: "Chariox vault unlock resolved without a passphrase".into(),
+        }),
+    }
 }
 
 fn vault_secret_from_resolution(
     resolution: super::PendingInteractionResolution,
     operation: &'static str,
-    action: &str,
 ) -> Result<zeroize::Zeroizing<String>, DaemonError> {
     if resolution.status == "timed_out" {
         return Err(DaemonError::LocalTransport {
             operation,
-            message: format!(
-                "Chariox vault {action} timed out{}",
-                if action == "unlock" {
-                    ". Retry to unlock the vault."
-                } else {
-                    ""
-                }
-            ),
+            message: "Chariox vault passphrase change timed out".into(),
         });
     }
     match resolution.choice_id.as_deref() {
         None | Some("cancel") => Err(DaemonError::LocalTransport {
             operation,
-            message: format!(
-                "Chariox vault {action} was cancelled{}",
-                if action == "unlock" {
-                    ". Retry to unlock the vault."
-                } else {
-                    ""
-                }
-            ),
+            message: "Chariox vault passphrase change was cancelled".into(),
         }),
         Some("passphrase") => resolution
             .reply
             .map(zeroize::Zeroizing::new)
             .ok_or_else(|| DaemonError::LocalTransport {
                 operation,
-                message: format!("Chariox vault {action} resolved without a passphrase"),
+                message: "Chariox vault passphrase change resolved without a passphrase".into(),
             }),
         Some(_) => Err(DaemonError::LocalTransport {
             operation,
-            message: format!("Chariox vault {action} resolved without a passphrase"),
+            message: "Chariox vault passphrase change resolved without a passphrase".into(),
         }),
-    }
-}
-
-fn unlock_lease_for_choice(
-    choice_id: &str,
-    config: &crate::config::UserCredentialVaultConfig,
-    force_operation: bool,
-) -> (crate::secret::VaultUnlockLease, bool) {
-    if force_operation {
-        return (crate::secret::VaultUnlockLease::Operation, true);
-    }
-    if matches!(
-        config.unlock_policy,
-        crate::config::CredentialVaultUnlockPolicy::KernelInit
-    ) {
-        return (crate::secret::VaultUnlockLease::KernelShutdown, false);
-    }
-    match choice_id {
-        "unlock_operation" => (crate::secret::VaultUnlockLease::Operation, true),
-        "unlock_60m" => (
-            crate::secret::VaultUnlockLease::TtlMinutes(60.min(config.max_ttl_minutes)),
-            false,
-        ),
-        "unlock_kernel" => (crate::secret::VaultUnlockLease::KernelShutdown, false),
-        "passphrase" | "unlock_default_ttl" => (
-            crate::secret::VaultUnlockLease::TtlMinutes(
-                config
-                    .default_ttl_minutes
-                    .min(config.max_ttl_minutes)
-                    .max(1),
-            ),
-            false,
-        ),
-        _ => (crate::secret::VaultUnlockLease::Operation, true),
     }
 }
 
@@ -1179,17 +1199,33 @@ mod tests {
         std::fs::remove_file(&path).unwrap();
     }
 
-    #[test]
-    fn vault_passphrase_prompt_cannot_encode_an_unlock_lease_as_the_secret() {
-        let interaction = vault_passphrase_interaction(&requester(None, None), "agent-1");
+    fn unlock_card(
+        policy: crate::config::CredentialVaultUnlockPolicy,
+    ) -> crate::session::RuntimeInteraction {
+        let mut config = crate::config::UserCredentialVaultConfig::default();
+        config.unlock_policy = policy;
+        vault_passphrase_interaction(&requester(None, None), "agent-1", &config)
+    }
 
+    #[test]
+    fn vault_unlock_card_offers_every_duration_with_the_passphrase_inline() {
+        let interaction = unlock_card(crate::config::CredentialVaultUnlockPolicy::Ttl);
+        let ids = interaction
+            .choices()
+            .iter()
+            .map(|choice| choice.id())
+            .collect::<Vec<_>>();
+        assert_eq!(ids.first(), Some(&"unlock_once"));
+        assert!(ids.contains(&"unlock_kernel"), "{ids:?}");
+        assert_eq!(ids.last(), Some(&"cancel"));
+        assert!(interaction
+            .choice("cancel")
+            .unwrap()
+            .vault_unlock()
+            .is_none());
         assert_eq!(
-            interaction
-                .choices()
-                .iter()
-                .map(|choice| choice.id())
-                .collect::<Vec<_>>(),
-            vec!["cancel"]
+            interaction.choice("unlock_kernel").unwrap().vault_unlock(),
+            Some(crate::local::VaultUnlockDuration::UntilKernelStops)
         );
         let custom_choice = interaction
             .custom_choice()
@@ -1199,28 +1235,72 @@ mod tests {
             custom_choice.input_kind(),
             crate::session::RuntimeInteractionInputKind::Secret
         );
-
-        let error = vault_passphrase_from_resolution(
-            resolution(Some("unlock_60m"), Some("ttl_60")),
-            "test",
-        )
-        .expect_err("a lease choice must never become a vault passphrase");
-        assert!(matches!(
-            error,
-            DaemonError::LocalTransport { message, .. }
-                if message == "Chariox vault unlock resolved without a passphrase"
-        ));
     }
 
     #[test]
-    fn vault_passphrase_prompt_accepts_only_the_secret_custom_choice() {
-        let passphrase = vault_passphrase_from_resolution(
-            resolution(Some("passphrase"), Some("correct horse battery staple")),
+    fn the_unlock_policy_only_preselects_a_duration() {
+        use crate::config::CredentialVaultUnlockPolicy::{Always, KernelInit, Ttl};
+        for (policy, preselected) in [
+            (Always, "unlock_once"),
+            (KernelInit, "unlock_kernel"),
+            (Ttl, "unlock_30m"),
+        ] {
+            let interaction = unlock_card(policy);
+            let primary = interaction
+                .choices()
+                .iter()
+                .filter(|choice| {
+                    choice.style() == Some(crate::session::RuntimeInteractionChoiceStyle::Primary)
+                })
+                .map(|choice| choice.id())
+                .collect::<Vec<_>>();
+            assert_eq!(primary, vec![preselected], "{policy:?}");
+            assert_eq!(
+                interaction.choices().len(),
+                unlock_card(Ttl).choices().len(),
+                "the policy must not change what is offered"
+            );
+        }
+    }
+
+    #[test]
+    fn vault_unlock_answer_takes_the_passphrase_and_the_chosen_duration() {
+        let interaction = unlock_card(crate::config::CredentialVaultUnlockPolicy::Ttl);
+        let (passphrase, duration) = vault_unlock_answer(
+            &interaction,
+            resolution(Some("unlock_kernel"), Some("correct horse battery staple")),
             "test",
         )
-        .expect("secret custom choice should resolve the vault passphrase");
-
+        .expect("a duration choice with the passphrase unlocks");
         assert_eq!(passphrase.as_str(), "correct horse battery staple");
+        assert_eq!(
+            duration,
+            crate::local::VaultUnlockDuration::UntilKernelStops
+        );
+
+        // The terminal answers with the typed passphrase alone: the preselected duration.
+        let (_, duration) = vault_unlock_answer(
+            &interaction,
+            resolution(Some("passphrase"), Some("typed")),
+            "test",
+        )
+        .expect("a typed passphrase unlocks for the preselected duration");
+        assert_eq!(
+            duration,
+            crate::local::VaultUnlockDuration::Minutes { minutes: 30 }
+        );
+
+        for (choice, reply) in [
+            (Some("cancel"), Some("cancel")),
+            (Some("passphrase"), None),
+            (Some("unlock_kernel"), None),
+            (None, None),
+        ] {
+            assert!(
+                vault_unlock_answer(&interaction, resolution(choice, reply), "test").is_err(),
+                "{choice:?} must not unlock"
+            );
+        }
     }
 
     #[test]
@@ -1255,12 +1335,9 @@ mod tests {
                 crate::session::RuntimeInteractionInputKind::Secret
             );
         }
-        let error = vault_secret_from_resolution(
-            resolution(Some("cancel"), Some("cancel")),
-            "test",
-            "passphrase change",
-        )
-        .expect_err("cancel should stop the change");
+        let error =
+            vault_secret_from_resolution(resolution(Some("cancel"), Some("cancel")), "test")
+                .expect_err("cancel should stop the change");
         assert!(matches!(
             error,
             DaemonError::LocalTransport { message, .. }
@@ -1286,7 +1363,11 @@ mod tests {
         ] {
             let requester = requester(agent, room);
             let mut interactions = vec![
-                vault_passphrase_interaction(&requester, agent_id),
+                vault_passphrase_interaction(
+                    &requester,
+                    agent_id,
+                    &crate::config::UserCredentialVaultConfig::default(),
+                ),
                 vault_manage_interaction(&requester, agent_id),
             ];
             for step in [
@@ -1324,16 +1405,24 @@ mod tests {
     }
 
     #[test]
-    fn ttl_unlock_takes_the_default_lease_without_a_second_question() {
+    fn the_chosen_duration_decides_the_lease() {
+        use crate::local::VaultUnlockDuration::{Minutes, Once, UntilKernelStops};
+        use crate::secret::VaultUnlockLease;
         let config = crate::config::UserCredentialVaultConfig::default();
-        let (lease, lock_after_operation) =
-            unlock_lease_for_choice("unlock_default_ttl", &config, false);
-        assert!(matches!(
-            lease,
-            crate::secret::VaultUnlockLease::TtlMinutes(minutes)
-                if minutes == config.default_ttl_minutes.min(config.max_ttl_minutes).max(1)
-        ));
-        assert!(!lock_after_operation);
+        assert_eq!(Once.lease(&config, true), VaultUnlockLease::Operation);
+        assert_eq!(Once.lease(&config, false), VaultUnlockLease::SingleUse);
+        assert_eq!(
+            UntilKernelStops.lease(&config, true),
+            VaultUnlockLease::KernelShutdown
+        );
+        assert_eq!(
+            Minutes { minutes: 30 }.lease(&config, true),
+            VaultUnlockLease::TtlMinutes(30)
+        );
+        assert_eq!(
+            Minutes { minutes: u64::MAX }.lease(&config, true),
+            VaultUnlockLease::TtlMinutes(config.max_ttl_minutes)
+        );
     }
 
     #[tokio::test]
@@ -1396,202 +1485,6 @@ mod tests {
                 if message.contains("requires an agent in the session")
         ));
         let _ = std::fs::remove_dir_all(root);
-    }
-}
-
-#[cfg(test)]
-mod mp11_always_tests {
-    use super::*;
-    use crate::DaemonApp;
-    use std::sync::Arc;
-    use tokio::sync::Mutex;
-    async fn runtime(config: crate::config::DaemonConfig) -> KernelRuntimeState {
-        let app = Arc::new(Mutex::new(
-            DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed"),
-        ));
-        let (
-            config_projection,
-            session_store,
-            agent_store,
-            attachment_store,
-            provider_store,
-            provider_process_tracking,
-            slice_store,
-            session_projection,
-            provider_run_projection,
-            operational_history_store,
-            durable_state_store,
-            prompt_state_owner,
-            active_turns,
-            prompt_activity,
-            prompt_workspace_claims,
-            structured_output_records,
-            terminal_stream,
-            workflow_design_events,
-            metaagent_events,
-            workspace_coordinator,
-        ) = {
-            let app_locked = app.lock().await;
-            (
-                app_locked.config_projection_store(),
-                app_locked.session_state_store(),
-                app_locked.agents().clone(),
-                app_locked.attachments().clone(),
-                app_locked.providers().clone(),
-                app_locked.provider_process_tracking_store(),
-                app_locked.slices(),
-                app_locked.session_state_projection_store(),
-                app_locked.provider_run_projection_store(),
-                app_locked.operational_history_store(),
-                app_locked.durable_state_store(),
-                app_locked.prompt_state_owner(),
-                app_locked.active_turn_store(),
-                app_locked.prompt_activity_store(),
-                app_locked.prompt_workspace_claim_store(),
-                app_locked.structured_output_record_store(),
-                app_locked.terminal_stream_store(),
-                app_locked.workflow_design_event_store(),
-                app_locked.metaagent_event_store(),
-                app_locked.workspace_coordinator(),
-            )
-        };
-        KernelRuntimeState::new_with_owned_state(
-            Arc::clone(&app),
-            config_projection,
-            session_store,
-            agent_store,
-            attachment_store,
-            provider_store,
-            provider_process_tracking,
-            slice_store,
-            session_projection,
-            provider_run_projection,
-            operational_history_store,
-            durable_state_store,
-            prompt_state_owner,
-            active_turns,
-            prompt_activity,
-            prompt_workspace_claims,
-            structured_output_records,
-            terminal_stream,
-            workflow_design_events,
-            metaagent_events,
-            workspace_coordinator,
-        )
-    }
-    #[tokio::test]
-    async fn mp11_always_policy_cannot_use_a_live_lease_in_any_credential_command() {
-        crate::test_support::isolated_env_test!();
-        let _environment = crate::env_lock::lock();
-        for initial_policy in [
-            crate::config::CredentialVaultUnlockPolicy::Ttl,
-            crate::config::CredentialVaultUnlockPolicy::KernelInit,
-            crate::config::CredentialVaultUnlockPolicy::Always,
-        ] {
-            let root =
-                std::env::temp_dir().join(format!("mp11-always-{:016x}", rand::random::<u64>()));
-            std::fs::create_dir_all(&root).unwrap();
-            let vault = root.join("vault.json");
-            crate::secret::create_chariox_encrypted_vault_for_test(&vault, "synthetic-passphrase")
-                .unwrap();
-            crate::secret::unlock_chariox_encrypted_vault(
-                &vault,
-                "synthetic-passphrase",
-                if initial_policy == crate::config::CredentialVaultUnlockPolicy::Always {
-                    crate::secret::VaultUnlockLease::Operation
-                } else {
-                    crate::secret::VaultUnlockLease::KernelShutdown
-                },
-            )
-            .unwrap();
-            let mut config = crate::config::DaemonConfig::for_tests();
-            config.user_config_path = root.join("config.toml");
-            config = config.with_session_history_root(root.join("history"));
-            config.user_config.history.operational.path =
-                Some(root.join("operational.db").display().to_string());
-            config.user_config.artifacts.operational.root =
-                Some(root.join("artifacts").display().to_string());
-            config.user_config.artifacts.operational.index_path =
-                Some(root.join("artifacts.db").display().to_string());
-            config.user_config.state.path = Some(root.join("state.db").display().to_string());
-            config.user_config.credential_vault.backend =
-                crate::config::CredentialVaultBackend::CharioxEncrypted;
-            config.user_config.credential_vault.path = vault.display().to_string();
-            config.user_config.credential_vault.unlock_policy = initial_policy;
-            let state = runtime(config).await;
-            let command = crate::runtime::command::KernelCommand::from_local_request(
-                "synthetic",
-                None,
-                None,
-                &crate::local::LocalDaemonRequest::GetCredentialVaultStatus(
-                    crate::local::GetCredentialVaultStatusRequest,
-                ),
-            );
-            let owner = state.provider_account_authority_owner_user_id(
-                &crate::runtime::command::command_caller_user_id(&command),
-            );
-            let profile = state
-                .provider_account_profile_registry()
-                .create_managed(&owner, "claude", "Synthetic")
-                .unwrap();
-            state
-                .set_user_config_value("credential_vault.unlock_policy".into(), "always".into())
-                .await
-                .unwrap();
-            let projection = &state.owned.config_projection;
-            let set = crate::runtime::user_config_executor::execute_set_credential_secret_request(
-                projection,
-                &state,
-                &command,
-                crate::local::SetCredentialSecretRequest {
-                    session_id: None,
-                    agent_id: None,
-                    key: "synthetic-key".into(),
-                    value: "synthetic".into(),
-                },
-            )
-            .await;
-            let delete =
-                crate::runtime::user_config_executor::execute_delete_credential_secret_request(
-                    projection,
-                    &state,
-                    &command,
-                    crate::local::DeleteCredentialSecretRequest {
-                        session_id: None,
-                        agent_id: None,
-                        key: "synthetic-key".into(),
-                    },
-                )
-                .await;
-            // MP-11: this refusal must precede any provider invocation. A
-            // regression must fail locally, never call an installed real CLI.
-            let previous_claude_bin = std::env::var_os("CHARIOX_CLAUDE_BIN");
-            std::env::set_var("CHARIOX_CLAUDE_BIN", root.join("must-not-execute-claude"));
-            let provider = crate::runtime::user_config_executor::execute_set_provider_account_credential_request(projection, &state, &command,
-                crate::local::SetProviderAccountCredentialRequest { session_id: None, agent_id: None, provider: "claude".into(), account_profile: profile.profile_id,
-                    value: "synthetic-value".into(), run: false, overwrite: true }).await;
-            if let Some(previous) = previous_claude_bin {
-                std::env::set_var("CHARIOX_CLAUDE_BIN", previous);
-            } else {
-                std::env::remove_var("CHARIOX_CLAUDE_BIN");
-            }
-            let refusals: Vec<_> = [("set", set), ("delete", delete), ("provider", provider)]
-                .into_iter()
-                .map(|(operation, result)| (operation, result.map_err(|error| error.to_string())))
-                .collect();
-            let refused = refusals.iter().all(|(_, result)| {
-                result
-                    .as_ref()
-                    .is_err_and(|error| error == "The Vault is locked. Unlock it, then try again.")
-            });
-            crate::secret::lock_chariox_encrypted_vault(&vault).unwrap();
-            drop(state);
-            std::fs::remove_dir_all(root).unwrap();
-            assert!(
-                refused,
-                "MP-11: Always operation must refuse before credential verification: {refusals:?}"
-            );
-        }
     }
 }
 

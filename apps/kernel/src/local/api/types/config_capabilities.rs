@@ -95,10 +95,81 @@ impl Drop for VaultPassphrase {
 
 /// Unlocks the kernel's existing Vault from the owner's own client, with no
 /// session or agent. It never creates a Vault.
+/// How long an unlocked Vault stays open. The owner picks one on every unlock;
+/// `credential_vault.unlock_policy` only decides which one is preselected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum VaultUnlockDuration {
+    /// The next operation, then the Vault closes again.
+    Once,
+    Minutes {
+        minutes: u64,
+    },
+    UntilKernelStops,
+}
+
+/// The durations a client offers when it asks for the Vault passphrase, and
+/// the one it preselects.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VaultUnlockOptions {
+    pub durations: Vec<VaultUnlockDuration>,
+    pub default: VaultUnlockDuration,
+}
+
+impl VaultUnlockDuration {
+    /// The lease behind the owner's choice. "Once" ends with the agent's
+    /// operation when an agent asked, and with the owner client's next
+    /// operation otherwise.
+    pub(crate) fn lease(
+        self,
+        config: &crate::config::UserCredentialVaultConfig,
+        for_agent_operation: bool,
+    ) -> crate::secret::VaultUnlockLease {
+        use crate::secret::VaultUnlockLease;
+        match self {
+            Self::Once if for_agent_operation => VaultUnlockLease::Operation,
+            Self::Once => VaultUnlockLease::SingleUse,
+            Self::Minutes { minutes } => {
+                VaultUnlockLease::TtlMinutes(minutes.clamp(1, config.max_ttl_minutes.max(1)))
+            }
+            Self::UntilKernelStops => VaultUnlockLease::KernelShutdown,
+        }
+    }
+}
+
+impl VaultUnlockOptions {
+    /// What every unlock question offers; the configured policy only
+    /// preselects one of the durations.
+    pub(crate) fn for_config(config: &crate::config::UserCredentialVaultConfig) -> Self {
+        use crate::config::CredentialVaultUnlockPolicy;
+        let longest = config.max_ttl_minutes.max(1);
+        let default_minutes = config.default_ttl_minutes.clamp(1, longest);
+        let mut minutes = vec![30.min(longest), 60.min(longest), default_minutes];
+        minutes.sort_unstable();
+        minutes.dedup();
+        let mut durations = vec![VaultUnlockDuration::Once];
+        durations.extend(
+            minutes
+                .into_iter()
+                .map(|minutes| VaultUnlockDuration::Minutes { minutes }),
+        );
+        durations.push(VaultUnlockDuration::UntilKernelStops);
+        let default = match config.unlock_policy {
+            CredentialVaultUnlockPolicy::Always => VaultUnlockDuration::Once,
+            CredentialVaultUnlockPolicy::KernelInit => VaultUnlockDuration::UntilKernelStops,
+            CredentialVaultUnlockPolicy::Ttl => VaultUnlockDuration::Minutes {
+                minutes: default_minutes,
+            },
+        };
+        Self { durations, default }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct UnlockCredentialVaultRequest {
     pub passphrase: VaultPassphrase,
+    pub duration: VaultUnlockDuration,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

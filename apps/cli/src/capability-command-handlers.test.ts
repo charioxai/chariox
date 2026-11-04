@@ -142,13 +142,17 @@ test("credential vault unlock reads the passphrase hidden and sends it with no s
   const command = parseSlashCommand("/credential vault unlock") as Extract<ReturnType<typeof parseSlashCommand>, { kind: "credential" }>
   const harness = capabilityHarness(agent())
   const prompts: string[] = []
-  const sent: string[] = []
+  const sent: unknown[] = []
   harness.deps.readSecret = async (prompt) => { prompts.push(prompt); return "correct horse" }
-  harness.deps.unlockCredentialVault = async (passphrase) => { sent.push(passphrase); return { action: "unlocked", status: { unlocked: true } } }
+  harness.deps.unlockCredentialVault = async (passphrase, duration) => { sent.push([passphrase, duration]); return { action: "unlocked", status: { unlocked: true } } }
   await handleCredentialSlashCommand(harness.deps, command)
   assert.deepEqual(prompts, ["Vault passphrase: "])
-  assert.deepEqual(sent, ["correct horse"])
-  assert.deepEqual(harness.footers, ["info:vault unlocked"])
+  assert.deepEqual(sent, [["correct horse", undefined]], "no length given: the kernel preselects")
+  await handleCredentialSlashCommand(harness.deps, parseSlashCommand("/credential vault unlock 2h") as Extract<ReturnType<typeof parseSlashCommand>, { kind: "credential" }>)
+  assert.deepEqual(sent[1], ["correct horse", { kind: "minutes", minutes: 120 }])
+  await handleCredentialSlashCommand(harness.deps, parseSlashCommand("/credential vault unlock forever") as Extract<ReturnType<typeof parseSlashCommand>, { kind: "credential" }>)
+  assert.equal(sent.length, 2, "a length that is not understood sends nothing")
+  assert.deepEqual(harness.footers, ["info:vault unlocked", "info:vault unlocked", 'error:unknown unlock length "forever". Use once, kernel, or a length such as 30m or 2h.'])
   assert.deepEqual(harness.notices, [])
 
   const empty = capabilityHarness(agent())

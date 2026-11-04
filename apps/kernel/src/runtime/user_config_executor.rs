@@ -340,7 +340,10 @@ pub(crate) async fn execute_get_credential_vault_status_request(
     _request: GetCredentialVaultStatusRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let status = credential_vault_status(config_projection)?;
-    Ok(LocalDaemonResponse::CredentialVaultStatus { status })
+    let unlock = crate::local::VaultUnlockOptions::for_config(
+        &config_projection.snapshot().user_config.credential_vault,
+    );
+    Ok(LocalDaemonResponse::CredentialVaultStatus { status, unlock })
 }
 
 pub(crate) async fn execute_lock_credential_vault_request(

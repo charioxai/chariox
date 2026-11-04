@@ -1,3 +1,5 @@
+import type { VaultUnlockDuration } from "./vault-unlock-duration.js"
+export * from "./vault-unlock-duration.js"
 export function updateSessionConfigRequest(
   sessionId: string,
   attachmentId: string,
@@ -74,8 +76,8 @@ export function lockCredentialVaultRequest() {
 }
 
 /** The owner's own client unlocks the kernel's existing Vault; no session, no agent. */
-export function unlockCredentialVaultRequest(passphrase: string) {
-  return { UnlockCredentialVault: { passphrase } }
+export function unlockCredentialVaultRequest(passphrase: string, duration: VaultUnlockDuration) {
+  return { UnlockCredentialVault: { passphrase, duration } }
 }
 
 export function manageCredentialVaultRequest(sessionId: string, agentId?: string | null) {

@@ -3,7 +3,7 @@
 use super::runtime_vault_unlock_state::{expand_vault_path, vault_unlock_request_lock};
 use super::vault_unlock_requests::notify_vault_unlocked;
 use super::*;
-use crate::config::{CredentialVaultBackend, CredentialVaultUnlockPolicy};
+use crate::config::CredentialVaultBackend;
 
 // Everything the owner reads about an unlock that did not happen lives here.
 mod wording {
@@ -40,23 +40,6 @@ pub(super) fn refusal(
 /// client unlocks it, then repeats the same operation.
 pub(crate) fn vault_locked_error() -> DaemonError {
     refusal(LOCKED, wording::LOCKED, true)
-}
-
-/// Where the owner's own client leaves the Vault open afterwards: the policy's
-/// lease, and under "ask every time" just the next operation.
-fn owner_client_lease(
-    config: &crate::config::UserCredentialVaultConfig,
-) -> crate::secret::VaultUnlockLease {
-    match config.unlock_policy {
-        CredentialVaultUnlockPolicy::Always => crate::secret::VaultUnlockLease::SingleUse,
-        CredentialVaultUnlockPolicy::KernelInit => crate::secret::VaultUnlockLease::KernelShutdown,
-        CredentialVaultUnlockPolicy::Ttl => crate::secret::VaultUnlockLease::TtlMinutes(
-            config
-                .default_ttl_minutes
-                .min(config.max_ttl_minutes)
-                .max(1),
-        ),
-    }
 }
 
 impl KernelRuntimeState {
@@ -119,7 +102,7 @@ impl KernelRuntimeState {
         if status.unlocked {
             return Ok((status, "already_unlocked"));
         }
-        let lease = owner_client_lease(&config);
+        let lease = request.duration.lease(&config, false);
         let status = self
             .unlock_vault_counted(
                 owner,

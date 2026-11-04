@@ -381,6 +381,7 @@ mod registry_tests {
             &LocalDaemonRequest::UnlockCredentialVault(
                 crate::local::UnlockCredentialVaultRequest {
                     passphrase: crate::local::VaultPassphrase::new("passphrase"),
+                    duration: crate::local::VaultUnlockDuration::Once,
                 }
             )
         ));

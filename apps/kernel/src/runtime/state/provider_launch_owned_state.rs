@@ -2047,6 +2047,8 @@ mod tests {
             false,
         )
         .expect("provider credential should store");
+        crate::secret::lock_chariox_encrypted_vault(&vault_path).expect("vault should lock");
+        crate::secret::clear_vault_secret_process_cache().expect("secret cache should clear");
 
         let app = Arc::new(Mutex::new(app));
         let runtime = owned_runtime_state(&app).await;
@@ -2295,7 +2297,7 @@ mod tests {
             .resolve_terminal_runtime_interaction(
                 session_id,
                 passphrase_interaction.id(),
-                "passphrase",
+                "unlock_once",
                 Some("correct horse battery staple"),
                 Some(crate::session::DEFAULT_LOCAL_USER_ID),
             )
