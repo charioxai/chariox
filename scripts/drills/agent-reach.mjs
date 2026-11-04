@@ -511,7 +511,7 @@ async function main() {
       const multi = await xTurn([
         "This is a drill. Use only the chariox-reach MCP tools. No shell, no files. A call may be refused: do not retry it, except the waits below.",
         `1. Call events_subscribe with exactly: {"kernel":"${target}","session_id":"${roomB.session.id}"}`,
-        `2. Call events_subscribe with exactly: {"session_id":"${siblingA.session.id}"} (no kernel: your own).`,
+        `2. Call events_subscribe with exactly: {"kernel":"${a.status.daemon_id}","session_id":"${siblingA.session.id}"} (your own kernel).`,
         '3. Call events_wait with exactly {"timeout_seconds":3}, then events_ack with its next_cursor (those records are old).',
         '4. Call events_wait with {"timeout_seconds":120}, then events_ack with its next_cursor. Repeat step 4 (at most 12 times) until you have seen a record with a value.outcome field from each of the two rooms (their kernel fields differ). A record without it, such as run_state working, is not the end: wait again. Do not reply before that.',
         "Then reply with the words MULTI and DONE joined by an underscore, nothing else.",
