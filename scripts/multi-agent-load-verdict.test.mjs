@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { laneChecks, verdictOf } from './drills/kernel-responsiveness/multi-agent-verdict.mjs'
+import { laneChecks, rssSlopeAfterWarmup, verdictOf } from './drills/kernel-responsiveness/multi-agent-verdict.mjs'
 
 // The other KR-06 checks are healthy, as in a run whose generators all work.
 const healthy = { plain_call_p99_under_load_ms: { value: 3, limit: 100 }, load_errors: { value: 0, limit: 0 } }
@@ -41,4 +41,13 @@ test('RED when completed turns leave their tasks working, GREEN with one turn in
   const piling = verdict([settled, { ...working, unsettled_tasks: 40 }])
   assert.ok(piling.verdict === 'RED')
   assert.deepEqual(piling.red, ['lanes_with_unsettled_tasks'])
+})
+
+test('the RSS slope ignores the start-up ramp before the warm-up', () => {
+  // 100 MB/min for the first 10 minutes, then flat at 1 MB/min.
+  const samples = []
+  for (let t = 0; t <= 1800; t += 5) samples.push({ t_s: t, rss_kb: t <= 600 ? 1024 * (100 * t / 60) : 1024 * (1000 + (t - 600) / 60) })
+  assert.ok(rssSlopeAfterWarmup(samples, 600) === 1)
+  assert.ok(rssSlopeAfterWarmup(samples, 0) > 10)
+  assert.ok(rssSlopeAfterWarmup(samples, 1800) === null)
 })

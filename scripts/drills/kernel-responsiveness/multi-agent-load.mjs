@@ -13,7 +13,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
-import { laneChecks, verdictOf } from './multi-agent-verdict.mjs'
+import { laneChecks, rssSlopeAfterWarmup, verdictOf } from './multi-agent-verdict.mjs'
 
 const CLOCK_TICKS_PER_SECOND = 100
 
@@ -201,6 +201,7 @@ export async function measureMultiAgentLoad({ rpc, connect, root, mcpUrl, pid, s
       }
     }
     let n = 0
+    const rssSamples = []
     const end = performance.now() + seconds * 1000
     while (performance.now() < end) {
       const next = performance.now() + 250
@@ -215,6 +216,7 @@ export async function measureMultiAgentLoad({ rpc, connect, root, mcpUrl, pid, s
           if ((await response.json()).result?.serverInfo?.name !== 'chariox-runtime') throw new Error('MCP initialize failed')
         }))
       }
+      if (load && n % 20 === 0) rssSamples.push({ t_s: +((performance.now() - before.at) / 1000).toFixed(1), rss_kb: rssKb(p) })
       n++
       await delay(Math.max(0, next - performance.now()))
     }
@@ -228,6 +230,7 @@ export async function measureMultiAgentLoad({ rpc, connect, root, mcpUrl, pid, s
       writer_cpu_percent: +(100 * (after.writer - before.writer) / CLOCK_TICKS_PER_SECOND / elapsed).toFixed(1),
       process_cpu_percent: +(100 * (after.process - before.process) / CLOCK_TICKS_PER_SECOND / elapsed).toFixed(1),
       rss_kb_start: before.rss_kb, rss_kb_end: after.rss_kb, rss_slope_mb_per_min: +((after.rss_kb - before.rss_kb) / 1024 / (elapsed / 60)).toFixed(2),
+      rss_slope_after_warmup_mb_per_min: load ? rssSlopeAfterWarmup(rssSamples, o.rssWarmupSeconds) : null, rss_samples: load ? rssSamples : undefined,
       log_bytes_per_s: Math.round((after.log_bytes - before.log_bytes) / elapsed), db_bytes_per_s: Math.round((after.db_bytes - before.db_bytes) / elapsed),
       durable_events_per_s: +((after.events - before.events) / elapsed).toFixed(2),
       durable_writer: projection.durable_writer,
@@ -255,7 +258,10 @@ export async function measureMultiAgentLoad({ rpc, connect, root, mcpUrl, pid, s
     prompt_submit_p99_ms: { value: p99(load, 'SubmitPrompt'), limit: 500 },
     create_session_cycle_p99_ms: { value: p99(load, 'churn_cycle'), limit: 2000 },
     writer_cpu_percent_under_load: { value: load.writer_cpu_percent, limit: 40 },
-    rss_slope_mb_per_min_under_load: { value: load.rss_slope_mb_per_min, limit: 5 },
+    // A run longer than the warm-up plus five minutes is judged on the slope after the warm-up (2 MB/min, coordinator 11-04); a shorter run keeps the whole-load 5 MB/min.
+    ...(load.rss_slope_after_warmup_mb_per_min !== null && load.seconds >= o.rssWarmupSeconds + 300
+      ? { rss_slope_after_warmup_mb_per_min: { value: load.rss_slope_after_warmup_mb_per_min, limit: 2 } }
+      : { rss_slope_mb_per_min_under_load: { value: load.rss_slope_mb_per_min, limit: 5 } }),
     // The kernel reports its durable writer queue and commits in GetDaemonHealth.
     durable_writer_unreported: { value: load.durable_writer?.committed_batches > 0 ? 0 : 1, limit: 0 },
     load_errors: { value: Object.entries(load.errors).filter(([k]) => !k.endsWith('_last')).reduce((n, [, v]) => n + v, 0), limit: 0 },
