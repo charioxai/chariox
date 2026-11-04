@@ -201,7 +201,7 @@ async function createFixture(options = {}) {
     const [name, path, , mode] = DATA_VOLUME_ARTIFACTS[0]
     await writeInstalledFile(draftRoot, path, Buffer.from(name + "\n"), mode)
   }
-  const releaseArtifacts = [...RELEASE_ARTIFACTS.slice(0, 2), ...appArtifacts, ...RELEASE_ARTIFACTS.slice(2, 6), ...dataVolumeArtifacts, ...RELEASE_ARTIFACTS.slice(6)]
+  const releaseArtifacts = [...RELEASE_ARTIFACTS.slice(0, 2), ...appArtifacts, ...RELEASE_ARTIFACTS.slice(2, 5), ...dataVolumeArtifacts, ...RELEASE_ARTIFACTS.slice(5)]
   const artifactDigests = new Map()
   for (const [name, path, kind] of releaseArtifacts) {
     if (kind === "tree") {
@@ -295,7 +295,7 @@ test("captures the exact installed schema-v2 release format with independently t
     assert.equal(evidence.artifactBindings.length, 10)
     assert.equal(evidence.artifactBindings[3].name, "chariox-path1-managed-bootstrap.service")
     assert.equal(evidence.artifactBindings[3].sha256, evidence.artifactBindings[3].actualSha256)
-    assert.equal(evidence.artifactBindings[7].name, "chariox-slice-build-context")
+    assert.equal(evidence.artifactBindings[6].name, "chariox-slice-build-context")
     assert.ok(evidence.releaseManifestBase64)
     assert.ok(evidence.releaseManifestSignatureBase64)
     assert.ok(evidence.builderAttestationBase64)

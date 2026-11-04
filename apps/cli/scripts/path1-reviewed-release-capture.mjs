@@ -586,7 +586,7 @@ async function verifyAtRoot(options, root) {
     }
   }
   const releaseArtifacts = [...ARTIFACTS.slice(0, 2), ...appArtifacts,
-    ...ARTIFACTS.slice(2, 6), ...(hasDataVolumeAdmission ? DATA_VOLUME_ARTIFACTS : []), ...ARTIFACTS.slice(6)]
+    ...ARTIFACTS.slice(2, 5), ...(hasDataVolumeAdmission ? DATA_VOLUME_ARTIFACTS : []), ...ARTIFACTS.slice(5)]
   if (manifest.artifacts.length !== releaseArtifacts.length) {
     fail("release manifest does not contain the exact installed artifacts")
   }
