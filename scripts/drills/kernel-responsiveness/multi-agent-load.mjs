@@ -202,11 +202,13 @@ export async function measureMultiAgentLoad({ rpc, connect, root, mcpUrl, pid, s
     }
     let n = 0
     const rssSamples = []
+    // How big the probed Room's state reads, once per five seconds: a Room that keeps its finished turns grows it.
+    const stateBytes = []
     const end = performance.now() + seconds * 1000
     while (performance.now() < end) {
       const next = performance.now() + 250
       await guarded('probe', () => timed(timings, 'RelayStatus')(() => probe.send({ RelayStatus: null })))
-      await guarded('probe', () => timed(timings, 'GetSessionState')(() => probe.send({ GetSessionState: { session_id: probeSession } })))
+      await guarded('probe', () => timed(timings, 'GetSessionState')(async () => { const state = await probe.send({ GetSessionState: { session_id: probeSession } }); if (n % 20 === 0) stateBytes.push([performance.now(), JSON.stringify(state).length]); return state }))
       await guarded('probe', () => timed(timings, 'ListSessions')(() => probe.send({ ListSessions: {} })))
       if (n % 4 === 0) {
         await guarded('probe', () => timed(timings, 'GetDaemonHealth')(() => probe.send({ GetDaemonHealth: null })))
@@ -230,6 +232,7 @@ export async function measureMultiAgentLoad({ rpc, connect, root, mcpUrl, pid, s
       writer_cpu_percent: +(100 * (after.writer - before.writer) / CLOCK_TICKS_PER_SECOND / elapsed).toFixed(1),
       process_cpu_percent: +(100 * (after.process - before.process) / CLOCK_TICKS_PER_SECOND / elapsed).toFixed(1),
       rss_kb_start: before.rss_kb, rss_kb_end: after.rss_kb, rss_slope_mb_per_min: +((after.rss_kb - before.rss_kb) / 1024 / (elapsed / 60)).toFixed(2),
+      state_bytes_per_minute: load ? perMinute(stateBytes.map(([at, bytes]) => [at, bytes]), before.at).map(v => v && v.p99_ms) : undefined,
       rss_slope_after_warmup_mb_per_min: load ? rssSlopeAfterWarmup(rssSamples, o.rssWarmupSeconds) : null, rss_samples: load ? rssSamples : undefined,
       log_bytes_per_s: Math.round((after.log_bytes - before.log_bytes) / elapsed), db_bytes_per_s: Math.round((after.db_bytes - before.db_bytes) / elapsed),
       durable_events_per_s: +((after.events - before.events) / elapsed).toFixed(2),

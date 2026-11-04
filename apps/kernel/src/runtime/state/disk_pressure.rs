@@ -158,20 +158,30 @@ impl KernelRuntimeState {
             )
         };
         if trim {
-            Self::trim_temp(agent_temp_idle());
+            // Reading every process's open files is blocking work.
+            tokio::task::spawn_blocking(|| Self::trim_temp(agent_temp_idle()));
         }
         if !check {
             return;
         }
-        let pressured = self.pressured_agents();
+        let state = self.clone();
+        let Ok(pressured) = tokio::task::spawn_blocking(move || state.pressured_agents()).await
+        else {
+            return;
+        };
         if pressured.is_empty() {
             return;
         }
         // Idle scratch goes before anyone is asked.
-        if Self::trim_temp(PRESSURE_IDLE).bytes > 0 {
+        let trimmed = tokio::task::spawn_blocking(|| Self::trim_temp(PRESSURE_IDLE)).await;
+        if trimmed.is_ok_and(|trimmed| trimmed.bytes > 0) {
             return;
         }
         for (holding, free, floor) in pressured {
+            PACE.lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .asked
+                .insert(holding.agent_id.clone(), Instant::now());
             let text = ask_text(&holding, free, floor);
             if let Err(error) = self
                 .ask_agent(&holding.session_id, &holding.agent_id, text)
@@ -234,7 +244,7 @@ impl KernelRuntimeState {
                 workspace,
             ));
         }
-        let mut pace = PACE.lock().unwrap_or_else(|e| e.into_inner());
+        let pace = PACE.lock().unwrap_or_else(|e| e.into_inner());
         found.retain(|(_, _, agent, ..)| {
             pace.asked
                 .get(agent)
@@ -278,7 +288,6 @@ impl KernelRuntimeState {
                 };
                 holding.temp_biggest = biggest(&holding.temp);
                 holding.workspace_biggest = biggest(&holding.workspace);
-                pace.asked.insert(holding.agent_id.clone(), Instant::now());
                 let (free, floor) = volumes[&volume];
                 (holding, free, floor)
             })
