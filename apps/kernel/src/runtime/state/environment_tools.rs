@@ -40,7 +40,7 @@ pub(crate) fn environment_tool_specs() -> Vec<RuntimeToolSpec> {
     [
         (ENVIRONMENT_READ, "Read this Project's Environment on this machine: Setup state, Variable names, Secrets (name and whether the Vault holds it), Files outside Git, MCPs and Skills (declared by project files, or registered with Chariox), and the other machines of the user. Pass operationId to read the state of an operation you started (names and states only, never a value).",
             object(serde_json::json!({"operationId":{"type":"string"}}))),
-        (ENVIRONMENT_UPDATE, "Bring the entries this machine lacks (Secrets, Files outside Git, registered MCPs and Skills) from another machine of the user. `from` names the machine (see `machines` in the read result; optional when there is one other machine), `entries` limits it to some entries (default: everything missing). Returns the operation id at once; read it for the result of each entry.",
+        (ENVIRONMENT_UPDATE, "Bring the entries this machine lacks (Secrets, Files outside Git, registered MCPs and Skills) from another machine of the user. A machine with no Environment yet (`exists` false in the read result) gets the Environment itself first, then what it lacks. `from` is the id or name of the machine (see `machines` in the read result; optional when there is one other machine), `entries` limits it to some entries (default: everything missing). Returns the operation id at once; read it for the result of each entry.",
             object(serde_json::json!({"from":{"type":"string"},"entries":{"type":"array","items":entry}}))),
         (ENVIRONMENT_SETUP, "Run the Project's saved Setup script in this room's checkout. Returns the operation id at once; read it, or read the Environment again, for the Setup state when it ends.",
             object(serde_json::json!({}))),
@@ -103,7 +103,7 @@ impl KernelRuntimeState {
                     "exists": view.exists,
                     "revision": view.revision,
                     "machine": view.machine_label,
-                    "machines": self.other_machine_names().into_iter().map(|(_, name)| name).collect::<Vec<_>>(),
+                    "machines": self.other_machine_names().into_iter().map(|(id, name)| serde_json::json!({"id": id, "name": name})).collect::<Vec<_>>(),
                     "setup": view.setup_state,
                     "variables": variables,
                     "secrets": view.secrets,
@@ -261,8 +261,8 @@ impl KernelRuntimeState {
             .filter(|kernel| kernel.kernel_id != own)
             .map(|kernel| {
                 let name = kernel
-                    .machine_alias
-                    .or(kernel.kernel_alias)
+                    .kernel_alias
+                    .or(kernel.machine_alias)
                     .unwrap_or_else(|| kernel.kernel_id.clone());
                 (kernel.kernel_id, name)
             })
