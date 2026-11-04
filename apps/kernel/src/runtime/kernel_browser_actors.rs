@@ -572,7 +572,7 @@ impl KernelBrowserActors {
         self.ledger
             .release(&holder, &target)
             .map_err(|_| "MD-3: only the input owner may release takeover")?;
-        if self.orphaned_takeovers.contains_key(&holder) {
+        if self.orphaned_takeovers.contains_key(&holder) && !self.ledger.owns_tab(&holder) {
             self.forget_orphan(&holder);
         }
         Ok(())
@@ -935,6 +935,39 @@ mod tests {
             let (action, _) = model.begin(person.clone(), &input("host-tab-a")).unwrap();
             model.finish(&action, EnvironmentActionTerminal::Completed);
             model.release(&person.actor_id, "host-tab-a", 1).unwrap();
+        }
+    }
+    #[test]
+    fn mp10_returning_one_orphaned_tab_preserves_the_other_tabs_deadline() {
+        for resume_input in [false, true] {
+            let mut model = ready();
+            let person = human("terminal:old");
+            model.takeover(person.clone(), "host-tab-a", 1).unwrap();
+            model.takeover(person.clone(), "host-tab-b", 1).unwrap();
+            model.disconnect(&person.actor_id);
+            let deadline = model.orphaned_takeovers[&person.actor_id];
+            model.release("terminal:reloaded", "host-tab-a", 1).unwrap();
+            assert_eq!(
+                model.orphaned_takeovers.get(&person.actor_id),
+                Some(&deadline),
+                "returning one Tab must leave the remaining Tab recoverable"
+            );
+            let (action, _) = model.begin(agent(), &input("host-tab-a")).unwrap();
+            model.finish(&action, EnvironmentActionTerminal::Completed);
+            assert!(model.begin(agent(), &input("host-tab-b")).is_err());
+            if resume_input {
+                let (action, _) = model
+                    .begin(human("terminal:reloaded"), &input("host-tab-b"))
+                    .unwrap();
+                model.finish(&action, EnvironmentActionTerminal::Completed);
+                model.reclaim_lapsed_takeovers(deadline + Duration::from_secs(1));
+                assert!(model.begin(agent(), &input("host-tab-b")).is_err());
+                model.release("terminal:reloaded", "host-tab-b", 1).unwrap();
+            } else {
+                model.reclaim_lapsed_takeovers(deadline + Duration::from_secs(1));
+            }
+            let (action, _) = model.begin(agent(), &input("host-tab-b")).unwrap();
+            model.finish(&action, EnvironmentActionTerminal::Completed);
         }
     }
     #[test]
