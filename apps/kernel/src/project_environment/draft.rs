@@ -170,9 +170,20 @@ pub(crate) fn parse_draft(output: &str) -> Result<ProjectEnvironmentRecord, Stri
             })
             .unwrap_or_default()
     };
-    let mut secrets = names("secrets");
+    // What a kernel never carries is left out rather than failing the draft: reserved or malformed names and paths.
+    let mut secrets: Vec<String> = names("secrets")
+        .into_iter()
+        .filter(|name| {
+            super::environment_variable_name(name)
+                && !super::project_environment_protected_name(name)
+        })
+        .collect();
     secrets.dedup();
-    let variables = text("variables");
+    let variables = text("variables")
+        .lines()
+        .filter(|line| super::parse_variables(line).is_ok())
+        .collect::<Vec<_>>()
+        .join("\n");
     // A name the agent put in both places is a Secret: its value stays out of the record.
     let variable_names: Vec<String> = super::parse_variables(&variables)
         .map_err(|reason| reason.to_owned())?
@@ -180,12 +191,17 @@ pub(crate) fn parse_draft(output: &str) -> Result<ProjectEnvironmentRecord, Stri
         .map(|(name, _)| name)
         .collect();
     secrets.retain(|name| !variable_names.contains(name));
+    let mut files: Vec<String> = names("files")
+        .into_iter()
+        .filter(|path| super::relative_project_path(path).is_ok())
+        .collect();
+    files.dedup();
     let record = ProjectEnvironmentRecord {
         schema: super::PROJECT_ENVIRONMENT_SCHEMA,
         setup_script: text("setup"),
         variables,
         secrets,
-        files: names("files"),
+        files,
         ..Default::default()
     };
     record.validate().map_err(str::to_owned)?;
@@ -239,7 +255,19 @@ mod tests {
         assert_eq!(record.secrets, vec!["NOTION_TOKEN".to_string()]);
         assert_eq!(record.files, vec![".env".to_string()]);
         assert!(parse_draft("no json").is_err());
-        assert!(parse_draft("{\"files\":[\"../escape\"]}").is_err());
-        assert!(parse_draft("{\"variables\":\"PATH=/x\"}").is_err());
+    }
+
+    #[test]
+    fn what_a_kernel_never_carries_is_left_out_of_a_draft_instead_of_failing_it() {
+        let record = parse_draft(
+            "{\"setup\":\"make\",\"variables\":\"# dev\\nPATH=/x\\n1BAD=y\\nLOG=debug\\nCHARIOX_HOME=/h\",\"secrets\":[\"TOKEN\",\"HOME\",\"not a name\"],\"files\":[\".env\",\"../escape\",\"/etc/passwd\",\"config/a.json\"]}",
+        )
+        .unwrap();
+        assert_eq!(record.variables, "# dev\nLOG=debug");
+        assert_eq!(record.secrets, vec!["TOKEN".to_string()]);
+        assert_eq!(
+            record.files,
+            vec![".env".to_string(), "config/a.json".to_string()]
+        );
     }
 }
