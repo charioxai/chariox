@@ -12,12 +12,15 @@ use crate::local::{
     EnvironmentOperationEntryState, EnvironmentOperationState,
 };
 use crate::secret::CredentialVaultStore;
+use futures_util::StreamExt;
 use std::future::Future;
 use std::path::Path;
 use zeroize::Zeroizing;
 
 /// A File travels in slices of this size: one peer message is encoded twice on the way and must stay under the relay's bound.
 pub(crate) const IMPORT_CHUNK_BYTES: u64 = 4 * 1024 * 1024;
+/// Slices requested ahead of the one being written.
+const SLICES_IN_FLIGHT: usize = 3;
 pub(crate) const MAX_IMPORT_FILE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_IMPORT_TOTAL_BYTES: u64 = 128 * 1024 * 1024;
 pub(crate) const SOURCE_OFFLINE: &str = "Source offline";
@@ -415,50 +418,62 @@ async fn import_entry<S: EnvironmentSource>(
             if file_here(target, &entry.name) {
                 return Err(ImportFailure::Entry("Already present here".into()));
             }
-            let mut writer: Option<FileWriter> = None;
-            let mut written = 0_u64;
-            loop {
-                let slice = source
-                    .pull_file(target.project_id, &entry.name, written)
-                    .await
-                    .map_err(ImportFailure::from)?
-                    .ok_or_else(missing_at_source)?;
-                if slice.size_bytes > MAX_IMPORT_FILE_BYTES
-                    || landed_bytes.saturating_add(slice.size_bytes) > MAX_IMPORT_TOTAL_BYTES
-                {
-                    return Err(ImportFailure::Entry("Too large to import".into()));
+            let first = pull_slice(source, target, &entry.name, 0, missing_at_source).await?;
+            let size = first.size_bytes;
+            if size > MAX_IMPORT_FILE_BYTES
+                || landed_bytes.saturating_add(size) > MAX_IMPORT_TOTAL_BYTES
+            {
+                return Err(ImportFailure::Entry("Too large to import".into()));
+            }
+            let step = first.bytes.len() as u64;
+            let mut writer =
+                FileWriter::create(target.checkout, &entry.name).map_err(ImportFailure::Entry)?;
+            writer.append(&first.bytes).map_err(ImportFailure::Entry)?;
+            let mut written = step;
+            if written < size && step == 0 {
+                return Err(changed());
+            }
+            // The first slice sets the step; the rest are requested ahead so the link never waits for a round trip.
+            let mut slices = futures_util::stream::iter((step..size).step_by(step.max(1) as usize))
+                .map(|offset| async move {
+                    (
+                        offset,
+                        pull_slice(source, target, &entry.name, offset, missing_at_source).await,
+                    )
+                })
+                .buffered(SLICES_IN_FLIGHT);
+            while let Some((offset, slice)) = slices.next().await {
+                let slice = slice?;
+                if slice.size_bytes != size || slice.bytes.len() as u64 != step.min(size - offset) {
+                    return Err(changed());
                 }
-                let writer = match &mut writer {
-                    Some(writer) => writer,
-                    empty => empty.insert(
-                        FileWriter::create(target.checkout, &entry.name)
-                            .map_err(ImportFailure::Entry)?,
-                    ),
-                };
                 writer.append(&slice.bytes).map_err(ImportFailure::Entry)?;
                 written += slice.bytes.len() as u64;
-                if written >= slice.size_bytes {
-                    if written != slice.size_bytes {
-                        return Err(ImportFailure::Entry(
-                            "The file changed while it was imported".into(),
-                        ));
-                    }
-                    break;
-                }
-                if slice.bytes.is_empty() {
-                    return Err(ImportFailure::Entry(
-                        "The file changed while it was imported".into(),
-                    ));
-                }
             }
-            writer
-                .expect("a file with at least one slice")
-                .finish()
-                .map_err(ImportFailure::Entry)?;
+            drop(slices);
+            writer.finish().map_err(ImportFailure::Entry)?;
             *landed_bytes += written;
             Ok(())
         }
     }
+}
+
+async fn pull_slice<S: EnvironmentSource>(
+    source: &S,
+    target: &ImportTarget<'_>,
+    path: &str,
+    offset: u64,
+    missing_at_source: impl FnOnce() -> ImportFailure,
+) -> Result<FileSlice, ImportFailure> {
+    source
+        .pull_file(target.project_id, path, offset)
+        .await
+        .map_err(ImportFailure::from)?
+        .ok_or_else(missing_at_source)
+}
+
+fn changed() -> ImportFailure {
+    ImportFailure::Entry("The file changed while it was imported".into())
 }
 
 fn vault_failure(error: DaemonError) -> ImportFailure {
@@ -521,7 +536,9 @@ mod tests {
     use super::*;
     use crate::local::{EnvironmentOperationKind, EnvironmentOperationView};
     use std::collections::HashMap;
+    use std::sync::atomic::Ordering;
     use std::sync::{Arc, Mutex};
+    use std::time::Duration;
 
     #[derive(Debug, Default)]
     struct MemoryVault(Mutex<HashMap<(String, String), String>>);
@@ -559,6 +576,10 @@ mod tests {
         offline_after_read: bool,
         gate: Option<Arc<tokio::sync::Notify>>,
         slice_bytes: usize,
+        /// A pull holds this long, so slices requested ahead overlap.
+        pull_delay: Duration,
+        in_flight: std::sync::atomic::AtomicUsize,
+        most_in_flight: std::sync::atomic::AtomicUsize,
     }
 
     impl EnvironmentSource for FakeSource {
@@ -586,6 +607,10 @@ mod tests {
             if let Some(gate) = &self.gate {
                 gate.notified().await;
             }
+            let flying = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+            self.most_in_flight.fetch_max(flying, Ordering::SeqCst);
+            tokio::time::sleep(self.pull_delay).await;
+            self.in_flight.fetch_sub(1, Ordering::SeqCst);
             let content = format!("content of {path}").into_bytes();
             let end = content.len().min(offset as usize + self.slice_bytes);
             Ok(Some(FileSlice {
@@ -611,6 +636,9 @@ mod tests {
             offline_after_read: false,
             gate: None,
             slice_bytes: usize::MAX / 2,
+            pull_delay: Duration::ZERO,
+            in_flight: Default::default(),
+            most_in_flight: Default::default(),
         }
     }
 
@@ -807,6 +835,25 @@ mod tests {
             })
             .count();
         assert_eq!(leftovers, 0);
+    }
+
+    #[tokio::test]
+    async fn slices_are_requested_ahead_and_land_in_order() {
+        let rig = Rig::new();
+        let mut from = source(Some(record(1, &[], &["big.bin"])), &[], &["big.bin"]);
+        from.slice_bytes = 3;
+        from.pull_delay = Duration::from_millis(20);
+        let view = rig.import("ahead", &from, None).await;
+        assert_eq!(view.state, EnvironmentOperationState::Succeeded);
+        assert_eq!(
+            std::fs::read(rig.checkout.join("big.bin")).unwrap(),
+            b"content of big.bin"
+        );
+        let most = from.most_in_flight.load(Ordering::SeqCst);
+        assert!(
+            (2..=SLICES_IN_FLIGHT).contains(&most),
+            "slices in flight at once: {most}"
+        );
     }
 
     #[tokio::test]
