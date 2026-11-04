@@ -4,7 +4,8 @@ use futures_util::{stream::FuturesUnordered, StreamExt};
 use std::collections::BTreeSet;
 
 const MAX_PROVIDER_OUTPUT_PUMPS: usize = 64;
-const PROVIDER_OUTPUT_POLLS_STOP_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
+// A poll lasts milliseconds; this bounds a starved host, not a normal stop.
+const PROVIDER_OUTPUT_POLLS_STOP_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 
 impl KernelRuntimeState {
     pub(super) fn take_ready_provider_output_run_ids(&self, now_ms: u64) -> BTreeSet<String> {
