@@ -467,4 +467,5 @@ pub use workspace::*;
 /// MP-08/MP-09/MP-10/MP-11: 974 adds the agent reach identity and "ask before agents acquire machines"; 966 integrated WASM Apps with Landing965 (peer415).
 /// Vault unlock 984 makes the owner pick a duration on every unlock (`UnlockCredentialVault.duration`,
 /// the unlock options in `CredentialVaultStatus`, a duration on Vault-unlock choices; peer425).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 988;
+/// MP-08/MP-09/MP-10/MP-11: 992 adds positive browser-card verification conditions and non-secret receipts (peer431).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 992;

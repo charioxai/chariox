@@ -71,6 +71,10 @@ impl KernelRuntimeState {
         }
         let user = self.provider_account_authority_owner_user_id(agent.owner_user_id());
         let mut params = serde_json::json!({"op":"popup_region", "card_id":card_id, "tab_id": target.tab_id, "ref":target.reference});
+        if let Some(verification) = &target.verification {
+            params["verification"] = serde_json::to_value(verification)
+                .map_err(|_| region_error("invalid verification condition"))?;
+        }
         if let Some(previous) = previous {
             params["generation"] = previous.generation.into();
             params["document_id"] = previous.document_id.clone().into();
@@ -181,6 +185,7 @@ impl KernelRuntimeState {
             let target = RequestPopupBrowserRegionArgs {
                 tab_id: previous.tab_id.clone(),
                 reference: previous.reference.clone(),
+                verification: previous.verification.clone(),
             };
             let result = self
                 .observe_card_region(room, agent, id, &target, Some(previous))
@@ -215,7 +220,7 @@ impl KernelRuntimeState {
                     reason: crate::error::UserDomainRefusalReason::StaleReference,
                 }) => {
                     if self
-                        .close_browser_region_card(
+                        .close_unavailable_browser_region_card(
                             room,
                             id,
                             "Browser element or its document is no longer available".into(),
@@ -252,6 +257,39 @@ impl KernelRuntimeState {
         id: &str,
         reason: String,
     ) -> Result<(), DaemonError> {
+        let session = self.owned.session_store.get_session(room)?;
+        if let Some(region) = session
+            .active_interactions()
+            .iter()
+            .find(|card| card.id() == id)
+            .and_then(|card| card.view())
+            .map(|view| &view.browser_region)
+        {
+            if let Some(condition) = &region.verification {
+                let proof: serde_json::Value = serde_json::from_str(&reason)
+                    .map_err(|_| region_error("Verification has no positive response"))?;
+                let receipt: crate::session::RuntimeInteractionBrowserVerificationResult =
+                    serde_json::from_value(proof["verification_result"].clone())
+                        .map_err(|_| region_error("Verification response is invalid"))?;
+                if proof["card_id"] != id
+                    || proof["tab_id"] != region.tab_id
+                    || proof["document_id"] != region.document_id
+                    || proof["generation"] != region.generation
+                    || receipt.challenge_id != condition.challenge_id
+                    || receipt.request_id.is_empty()
+                    || !receipt.input_delivered
+                    || !receipt
+                        .http_status
+                        .is_some_and(|status| (200..300).contains(&status))
+                    || receipt.result
+                        != crate::session::RuntimeInteractionBrowserVerificationOutcome::Accepted
+                {
+                    return Err(region_error(
+                        "Verification has not positively completed for this card",
+                    ));
+                }
+            }
+        }
         self.owned.settle_card_condition_met(room, id, reason)?;
         self.schedule_question_answer_delivery(id)
     }
@@ -303,6 +341,7 @@ impl KernelRuntimeOwnedState {
             || region.reference != expected.reference
             || region.generation != expected.generation
             || region.document_id != expected.document_id
+            || region.verification != expected.verification
         {
             return Err(region_error(
                 "browser card observation changed its document binding",

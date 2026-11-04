@@ -1,5 +1,5 @@
 {
-  "local_protocol": 988,
+  "local_protocol": 992,
   "requests": [
     {
       "BeginAppDevPush": {

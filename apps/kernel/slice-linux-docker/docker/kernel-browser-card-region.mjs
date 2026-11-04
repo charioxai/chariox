@@ -4,13 +4,19 @@ import { UserDomainRefusal } from './kernel-browser-refusal.mjs';
 import { withBrowserFrames, assertBrowserFramesUnchanged } from './browser-controller-frames.mjs';
 import { setTimeout as delay } from 'node:timers/promises';
 import { BrowserSnapshotError } from './browser-controller-snapshot.mjs';
+import { BrowserCardVerification, validateCardVerification } from './kernel-browser-card-verification.mjs';
 
 const validReference = ref => typeof ref === 'string' && /^(?:frame:.+:)?backend:[1-9][0-9]{0,15}$/.test(ref);
 const anchorLifetimeMs = 15_000;
 const maxAnchors = 1_024;
 
+export function forgetCardAnchor(host, id) {
+  host.cardAnchors.get(id)?.verification?.close();
+  host.cardAnchors.delete(id);
+}
+
 export function pruneCardAnchors(host, now = Date.now()) {
-  for (const [id, anchor] of host.cardAnchors) if (anchor.expires <= now) host.cardAnchors.delete(id);
+  for (const [id, anchor] of host.cardAnchors) if (anchor.expires <= now) forgetCardAnchor(host, id);
 }
 
 export function rememberCardReferences(host, scope, tab, snapshot) {
@@ -127,12 +133,23 @@ export async function resolveCardRegion(host, command, scope, signal) {
   const key = typeof command.card_id === 'string' ? `${scope}\0${command.card_id}` : null;
   let anchor = key ? host.cardAnchors.get(key) : null;
   if (command.release === true) {
-    if (anchor?.tab_id === command.tab_id) host.cardAnchors.delete(key);
+    if (anchor?.tab_id === command.tab_id) forgetCardAnchor(host, key);
     return { released: true };
   }
   if (anchor && (anchor.tab_id !== command.tab_id || anchor.ref !== command.ref)) throw new UserDomainRefusal('stale_reference');
   const remembered = anchor?.binding ?? host.cardReferences.get(scope)?.get(command.tab_id);
-  const gone = reason => ({ state: 'condition_met', reason });
+  const completion = () => ({state:'condition_met',reason:JSON.stringify({reason:'Verification accepted',card_id:command.card_id,tab_id:command.tab_id,generation:anchor.binding.generation,document_id:anchor.binding.document_id,verification_result:anchor.verification.receipt})});
+  const gone = async reason => {
+    if (!anchor?.verification) return {state:'condition_met',reason};
+    if (anchor.verification.receipt?.result === 'accepted') return completion();
+    if (reason === 'Browser element disappeared' && anchor.region) {
+      // A framework can replace the crop anchor after rejection. Keep this
+      // document's last crop; disappearance never supplies acceptance.
+      await delay(250);
+      return {state:'present',region:{...anchor.region,...(anchor.verification.receipt ? {verification_result:anchor.verification.receipt} : {})}};
+    }
+    return {state:'unavailable',reason};
+  };
   if ((!remembered || !remembered.refs.has(command.ref)) && command.document_id !== undefined) {
     const tab = await host.displayTarget({ tab_id: command.tab_id, generation: command.generation });
     if (tab.document_id !== command.document_id) return gone('Browser document changed');
@@ -143,6 +160,9 @@ export async function resolveCardRegion(host, command, scope, signal) {
   if (command.document_id !== undefined && command.document_id !== remembered.document_id) return gone('Browser document changed');
   const tab = await host.displayTarget({ tab_id: command.tab_id, generation: remembered.generation });
   if (tab.document_id !== remembered.document_id) return gone('Browser document changed');
+  const config = command.verification ? validateCardVerification(command.verification, new URL(tab.url).origin) : null;
+  if (config && !key) throw new Error('Browser verification requires a card identity');
+  if (anchor && JSON.stringify(anchor.verification?.config ?? null) !== JSON.stringify(config)) throw new UserDomainRefusal('stale_reference');
   const browser = host.browser, connection = await browser.ensureConnection();
   const sessionId = await browser.ensureTargetSession(connection, tab.target_id);
   const current = async () => (await connection.send('Page.getFrameTree', {}, sessionId)).frameTree?.frame;
@@ -154,10 +174,12 @@ export async function resolveCardRegion(host, command, scope, signal) {
       // Pin only this card's binding. Snapshot cache eviction must not retire
       // a live element. Failed registration expires without a watcher renewal.
       anchor = { scope, tab_id: command.tab_id, ref: command.ref, binding: { generation: remembered.generation, document_id: remembered.document_id, refs: new Set([command.ref]), children: new Set(remembered.children.has(command.ref) ? [command.ref] : []) } };
+      if (config) anchor.verification = await BrowserCardVerification.create(connection, sessionId, frame, config);
       host.cardAnchors.set(key, anchor);
     }
     anchor.expires = Date.now() + anchorLifetimeMs;
   }
+  if (anchor?.verification?.receipt?.result === 'accepted') return completion();
   const world = await browser.ensureFocusWorld(connection, sessionId, tab.target_id, frame);
   let objectId;
   try {
@@ -179,7 +201,10 @@ export async function resolveCardRegion(host, command, scope, signal) {
     // Only the site origin is projected: URLs can contain userinfo and secret query parameters.
     let origin;
     try { origin = new URL(tab.url).origin; } catch { throw new Error('Invalid browser card site address'); }
-    return { state: 'present', region: { tab_id: tab.tab_id, ref: command.ref, generation: host.generation, document_id: tab.document_id, origin, ...box } };
+    const region = { tab_id: tab.tab_id, ref: command.ref, generation: host.generation, document_id: tab.document_id, origin, ...box,
+      ...(config ? {verification:config} : {}), ...(anchor?.verification?.receipt ? {verification_result:anchor.verification.receipt} : {}) };
+    if (anchor) anchor.region = region;
+    return {state:'present',region};
   } catch (error) {
     if (/No node with given id|Could not find node with given id|Could not find object with given id/.test(error?.message ?? '')) return gone('Browser element disappeared');
     if (/Execution context was destroyed|Cannot find context with specified id/.test(error?.message ?? '')) return gone('Browser document changed');

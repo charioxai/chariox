@@ -130,6 +130,21 @@ impl KernelRuntimeState {
                 message: "popup interactions require at least one choice".to_string(),
             });
         }
+        if args
+            .view
+            .as_ref()
+            .is_some_and(|view| view.browser_region.verification.is_some())
+            && (args.wait != Some(false)
+                || args.until.is_some()
+                || args.custom_choice.is_some()
+                || args.default_on_timeout.is_some()
+                || args
+                    .choices
+                    .iter()
+                    .any(|choice| choice.id != CANCEL_CHOICE_ID))
+        {
+            return Err(popup_error("verification cards require wait:false and only Cancel; no until, custom reply or default"));
+        }
         let mut choices = args
             .choices
             .into_iter()

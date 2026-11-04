@@ -168,6 +168,8 @@ pub struct RequestPopupBrowserRegionArgs {
     pub tab_id: String,
     #[serde(rename = "ref")]
     pub reference: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification: Option<crate::session::RuntimeInteractionBrowserVerification>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -578,7 +580,10 @@ pub fn credential_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                         "type": "object", "required": ["browser_region"], "additionalProperties": false,
                         "properties": {"browser_region": {
                             "type": "object", "required": ["tab_id", "ref"], "additionalProperties": false,
-                            "properties": {"tab_id": {"type": "string", "minLength": 1}, "ref": {"type": "string", "minLength": 1}}
+                            "properties": {"tab_id": {"type": "string", "minLength": 1}, "ref": {"type": "string", "minLength": 1},
+                                "verification": {"type":"object", "required":["challenge_id","url","accepted_json_pointer"], "additionalProperties":false,
+                                    "properties":{"challenge_id":{"type":"string","minLength":1,"maxLength":128},"url":{"type":"string"},"accepted_json_pointer":{"type":"string","minLength":2,"maxLength":128}},
+                                    "description":"For an actual site verification: one unique challenge id, exact same-origin POST URL without query/credentials, and JSON pointer to a boolean true on acceptance. Use wait:false and only Cancel, with no until or custom reply. The card remains on rejection, records only delivery/HTTP status/classification, and closes only on a positive response from this document. Show the card before requesting a fresh code; the person types inside its live region while you wait. Never infer acceptance from disappearance."}}
                         }},
                         "description": "Show a live browser element from your observed snapshot (tab_id and node_ref as ref). The kernel follows its position with a margin and closes the card with condition_met when the element disappears or its document changes. Uses the existing protected Tab display."
                     },

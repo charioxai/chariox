@@ -160,3 +160,48 @@ test('MP-08/MP-11 abandoned card anchors expire and capacity refuses without evi
   await assert.rejects(region({ card_id: 'one-too-many' }), /Browser card limit reached/);
   assert.equal(host.cardAnchors.size, 1_024, 'existing active anchors are never evicted to admit another');
 }));
+
+test('MP-08/MP-09/MP-10/MP-11 verification requires a positive response and retains rejection after a site rerender', () => withHost(async ({host, snapshot, region, node}) => {
+  const connection=await host.browser.ensureConnection(), listeners=new Set();
+  connection.subscribe=listener=>{listeners.add(listener);return()=>listeners.delete(listener)};
+  const original=connection.send.bind(connection);
+  let accepted=false;
+  connection.send=async(method,params,session)=>method==='Network.getResponseBody'?{body:JSON.stringify({accepted,token:'must-never-appear-in-receipt'})}:original(method,params,session);
+  const verification={challenge_id:'challenge-one',url:'https://example.com/verify',accepted_json_pointer:'/accepted'};
+  await snapshot();
+  const initial=await region({card_id:'verification',verification});
+  const emit=(method,params)=>{for(const listener of listeners)listener({sessionId:'session',method,params})};
+  const attempt=async(id,status)=>{
+    emit('Network.requestWillBeSent',{requestId:id,frameId:'frame',loaderId:'doc',request:{method:'POST',url:verification.url,postData:'never-record-this-code'}});
+    emit('Network.responseReceived',{requestId:id,response:{status,url:verification.url}});
+    emit('Network.loadingFinished',{requestId:id,encodedDataLength:128});
+    await delay(0);
+  };
+  await attempt('rejected',422);
+  node.isConnected=false;
+  const rejected=await region({card_id:'verification',verification,generation:1,document_id:'doc',after:initial.region});
+  assert.equal(rejected.state,'present','a rejected response and replaced anchor must keep the card');
+  assert.deepEqual(rejected.region.verification_result,{challenge_id:'challenge-one',request_id:'rejected',input_delivered:true,http_status:422,result:'rejected'});
+  accepted=true;await attempt('accepted',200);
+  const result=await region({card_id:'verification',verification,generation:1,document_id:'doc'});
+  assert.equal(result.state,'condition_met');
+  assert.equal(JSON.parse(result.reason).verification_result.result,'accepted');
+  assert.ok(!JSON.stringify(result).includes('must-never-appear'));
+  assert.ok(!JSON.stringify(result).includes('never-record-this-code'));
+}));
+
+test('MP-08/MP-11 verification cannot be rebound or completed by another document, target or endpoint', () => withHost(async({host,snapshot,region})=>{
+  const connection=await host.browser.ensureConnection(),listeners=new Set();
+  connection.subscribe=listener=>{listeners.add(listener);return()=>listeners.delete(listener)};
+  await snapshot();
+  const verification={challenge_id:'challenge-one',url:'https://example.com/verify',accepted_json_pointer:'/accepted'};
+  await assert.rejects(region({card_id:'foreign-origin',verification:{...verification,url:'https://other.example/verify'}}));
+  await region({card_id:'bound',verification});
+  await assert.rejects(region({card_id:'bound',verification:{...verification,challenge_id:'different'}}));
+  for(const [sessionId,frameId,loaderId,url] of [['foreign','frame','doc',verification.url],['session','other','doc',verification.url],['session','frame','old-doc',verification.url],['session','frame','doc',verification.url+'?code=private']]) {
+    for(const listener of listeners)listener({sessionId,method:'Network.requestWillBeSent',params:{requestId:'foreign',frameId,loaderId,request:{method:'POST',url}}});
+  }
+  const result=await region({card_id:'bound',verification});
+  assert.equal(result.state,'present');assert.equal(result.region.verification_result,undefined);
+  await region({card_id:'bound',release:true});assert.equal(listeners.size,0);
+}));

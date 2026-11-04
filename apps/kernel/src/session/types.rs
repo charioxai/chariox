@@ -10,9 +10,11 @@ pub use super::queued_metaagent_task::QueuedMetaagentTask;
 pub use super::runtime_interactions::{
     HandoffChangeLine, HandoffChangeOp, HandoffKind, HandoffReason, HandoffTarget, RuntimeHandoff,
     RuntimeInteraction, RuntimeInteractionBrowserRect, RuntimeInteractionBrowserRegion,
-    RuntimeInteractionChoice, RuntimeInteractionChoiceStyle, RuntimeInteractionCustomChoice,
-    RuntimeInteractionInputKind, RuntimeInteractionKind, RuntimeInteractionLevel,
-    RuntimeInteractionSubject, RuntimeInteractionView, RuntimeProviderLogin,
+    RuntimeInteractionBrowserVerification, RuntimeInteractionBrowserVerificationOutcome,
+    RuntimeInteractionBrowserVerificationResult, RuntimeInteractionChoice,
+    RuntimeInteractionChoiceStyle, RuntimeInteractionCustomChoice, RuntimeInteractionInputKind,
+    RuntimeInteractionKind, RuntimeInteractionLevel, RuntimeInteractionSubject,
+    RuntimeInteractionView, RuntimeProviderLogin,
 };
 pub use super::runtime_session::{RuntimeSession, SessionCollaborationAgentCounts};
 pub use super::runtime_worktrees::{RuntimeWorktreeAssignment, WorktreeIsolationMode};

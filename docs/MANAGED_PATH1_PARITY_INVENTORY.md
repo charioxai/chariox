@@ -2164,3 +2164,27 @@ for attempts that reached the provider, change browser observation protection,
 or alter managed shutdown activity/policy (MP-09). Focused regressions and hosted
 provider drills cover these seams; they do not close the entire MP-10 matrix or
 replace MP-11 security-anchor review.
+
+
+## MP-08 / MP-09 / MP-10 / MP-11: positive browser-card verification (992/431)
+
+A verification card binds one challenge to its asking task, card, agent observer,
+Tab, browser generation and document. Its optional generic `verification`
+condition names an exact same-origin POST URL and a JSON pointer whose value
+must be boolean true in a successful HTTP response. Only requests started while
+that card watches the same frame and document count. Responses from a different
+endpoint, document or older overlapping attempt cannot complete the card.
+
+The kernel projects only request delivery, HTTP status and fixed result labels.
+No request body, response body, headers, code or token enters the receipt. The
+person sees and types in the existing live popup region; verification cards have
+only Cancel and use a durable nonblocking question. A rejection stays visible in
+the same card, including when a page framework replaces the crop anchor. A
+missing element or navigation is never positive verification. Capture the new
+credential through Vault and prove its declared authenticated use separately.
+
+The no-email owned-service rehearsal lives in
+`scripts/e2e-stack/vault-autonomy/challenge-hosted-live.mjs`. It covers request
+ordering, rejection and acceptance, page rerender, Vault capture and an
+authenticated API call at desktop DPR1/DPR2 and390x844. It is supplementary;
+it does not establish real Vercel acceptance or close the full MP matrix.

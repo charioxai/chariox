@@ -300,6 +300,39 @@ pub struct RuntimeInteractionBrowserRegion {
     pub rect: RuntimeInteractionBrowserRect,
     pub viewport_width: u32,
     pub viewport_height: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification: Option<RuntimeInteractionBrowserVerification>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_result: Option<RuntimeInteractionBrowserVerificationResult>,
+}
+
+/// A positive HTTP result for this card's exact document and challenge.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeInteractionBrowserVerification {
+    pub challenge_id: String,
+    pub url: String,
+    pub accepted_json_pointer: String,
+}
+
+/// Fixed labels and transport metadata only; no request or response values.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeInteractionBrowserVerificationResult {
+    pub challenge_id: String,
+    pub request_id: String,
+    pub input_delivered: bool,
+    pub http_status: Option<u16>,
+    pub result: RuntimeInteractionBrowserVerificationOutcome,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeInteractionBrowserVerificationOutcome {
+    Delivered,
+    Rejected,
+    Accepted,
+    Failed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

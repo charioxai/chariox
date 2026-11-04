@@ -2,7 +2,7 @@ import { AppTabs } from './browser-controller-apps.mjs';
 import { HostDownloads } from "./kernel-browser-downloads.mjs";
 import { BrowserHeaderState } from "./kernel-browser-header.mjs";
 import {resolveDisplayTarget,nativeStateObservationOptions} from './kernel-browser-display-document.mjs';
-import { rememberCardReferences, resolveCardRegion } from './kernel-browser-card-region.mjs';
+import { rememberCardReferences, resolveCardRegion, forgetCardAnchor } from './kernel-browser-card-region.mjs';
 import {capturePageScreenshot} from './kernel-browser-screenshot.mjs';
 import { mirror2ObserverExpression } from './kernel-browser-mirror2-observer.mjs';
 import {captureVisiblePage,pngFallbackCommand,subscribeVisiblePage,visiblePageInputSource,viewerPageInputActive,nativeInputDocumentTarget} from './kernel-browser-page-display.mjs';
@@ -265,7 +265,7 @@ export class KernelBrowserHost {
     this.observed = ++this.observations;
     this.observedDocuments.clear();
     this.cardReferences.clear();
-    this.cardAnchors.clear();
+    for (const id of this.cardAnchors.keys()) forgetCardAnchor(this, id);
     this.displayDocuments.clear();
     await mkdir(this.root, { recursive: true, mode: 0o700 });
     let saved = { generation: 0, tabs: [] };
@@ -1051,7 +1051,7 @@ export class KernelBrowserHost {
       this.webBotAuthRestoreUrls.delete(tab.tab_id);
       for (const observed of this.observedDocuments.values()) observed.delete(tab.tab_id);
       for (const references of this.cardReferences.values()) references.delete(tab.tab_id);
-      for (const [id, anchor] of this.cardAnchors) if (anchor.tab_id === tab.tab_id) this.cardAnchors.delete(id);
+      for (const [id, anchor] of this.cardAnchors) if (anchor.tab_id === tab.tab_id) forgetCardAnchor(this, id);
       const state = await this.reconcile();
       await this.rebindWindows();
       return state;
@@ -1326,7 +1326,7 @@ export class KernelBrowserHost {
       if (request.method === 'host.browser.retire_observer') {
         this.busyInputs.retire(key => key === request.params.observer);
         this.cardReferences.delete(request.params.observer);
-        for (const [id, anchor] of this.cardAnchors) if (anchor.scope === request.params.observer) this.cardAnchors.delete(id);
+        for (const [id, anchor] of this.cardAnchors) if (anchor.scope === request.params.observer) forgetCardAnchor(this, id);
         return {id:request.id,ok:true,result:{retired:true}};
       }
       if (request.method === 'host.computer.retire') {

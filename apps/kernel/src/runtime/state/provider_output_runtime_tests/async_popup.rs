@@ -16,6 +16,8 @@ fn browser_region() -> crate::session::RuntimeInteractionBrowserRegion {
         },
         viewport_width: 1280,
         viewport_height: 800,
+        verification: None,
+        verification_result: None,
     }
 }
 
@@ -1365,4 +1367,97 @@ async fn answering_a_card_on_a_managed_kernel_does_not_wait_for_itself() {
         "answering the card never finished"
     );
     assert_eq!(receiver.await.unwrap().reply.as_deref(), Some("continue"));
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11: a page disappearing is not a verification result.
+#[tokio::test]
+async fn async_popup_browser_verification_requires_this_cards_positive_receipt() {
+    let f = fixture("async-popup-verification-receipt", true).await;
+    f.begin(&f.prompt_id);
+    let result = ask(&f, serde_json::json!({})).await;
+    let id = result["interaction_id"].as_str().unwrap();
+    let mut region = browser_region();
+    region.verification = Some(crate::session::RuntimeInteractionBrowserVerification {
+        challenge_id: "challenge-one".into(),
+        url: "https://en.wikipedia.org/verify".into(),
+        accepted_json_pointer: "/accepted".into(),
+    });
+    {
+        let mut sessions = f.runtime.owned.session_store.write();
+        let mut session = sessions.get_session(&f.room).unwrap();
+        let card = session.remove_active_interaction(id).unwrap();
+        session.add_active_interaction(card.with_view(crate::session::RuntimeInteractionView {
+            browser_region: region.clone(),
+        }));
+        sessions.restore_session(session);
+    }
+    assert!(f
+        .runtime
+        .close_browser_region_card(&f.room, id, "Browser element disappeared".into())
+        .is_err());
+    let proof = serde_json::json!({
+        "card_id":id,"tab_id":region.tab_id,"document_id":region.document_id,"generation":region.generation,
+        "verification_result":{"challenge_id":"challenge-one","request_id":"request-one","input_delivered":true,"http_status":200,"result":"accepted"}
+    });
+    for pointer in [
+        "/card_id",
+        "/tab_id",
+        "/document_id",
+        "/verification_result/challenge_id",
+    ] {
+        let mut foreign = proof.clone();
+        *foreign.pointer_mut(pointer).unwrap() = "foreign".into();
+        assert!(f
+            .runtime
+            .close_browser_region_card(&f.room, id, foreign.to_string())
+            .is_err());
+    }
+    for replacement in [
+        serde_json::json!({"challenge_id":"challenge-one","request_id":"request-one","input_delivered":true,"http_status":422,"result":"rejected"}),
+        serde_json::json!({"challenge_id":"challenge-one","request_id":"request-one","input_delivered":false,"http_status":200,"result":"accepted"}),
+    ] {
+        let mut rejected = proof.clone();
+        rejected["verification_result"] = replacement;
+        assert!(f
+            .runtime
+            .close_browser_region_card(&f.room, id, rejected.to_string())
+            .is_err());
+    }
+    assert!(answers(&f, id).is_empty());
+    assert_eq!(
+        f.runtime
+            .owned
+            .session_store
+            .get_session(&f.room)
+            .unwrap()
+            .active_interactions()
+            .len(),
+        1
+    );
+    f.runtime
+        .close_browser_region_card(&f.room, id, proof.to_string())
+        .unwrap();
+    f.runtime
+        .close_browser_region_card(&f.room, id, proof.to_string())
+        .unwrap();
+    let told = answers(&f, id);
+    assert_eq!(told.len(), 1);
+    assert_eq!(told[0]["choice_id"], "condition_met");
+}
+
+#[tokio::test]
+async fn async_popup_browser_verification_refuses_confirm_and_blocking_calls() {
+    let f = fixture("async-popup-verification-shape", true).await;
+    f.begin(&f.prompt_id);
+    let view = serde_json::json!({"browser_region":{"tab_id":"tab","ref":"backend:42","verification":{"challenge_id":"one","url":"https://example.com/verify","accepted_json_pointer":"/accepted"}}});
+    for extra in [
+        serde_json::json!({"view":view}),
+        serde_json::json!({"view":view,"wait":true,"choices":[{"id":"cancel","label":"Cancel","reply":"cancel"}]}),
+    ] {
+        let error = try_ask(&f, extra).await.unwrap_err().to_string();
+        assert!(
+            error.contains("verification cards require wait:false and only Cancel"),
+            "{error}"
+        );
+    }
 }

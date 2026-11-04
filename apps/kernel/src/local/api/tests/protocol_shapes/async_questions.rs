@@ -36,7 +36,7 @@ fn async_popup_returns_protocol_954_403_snapshot_and_hash() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "0ea82c8932515403d0f9585611527da799f698557c27a935089edcea3aa8ec69"
+        "41deea8ae9f232399d5b1de753e23b6f42a8ccc13acb6c5651fe3214bab21c6c"
     );
     // An old client ignores the additive ownership field; its answer uses
     // exactly the pre-existing request shape.
@@ -131,5 +131,30 @@ fn person_card_arguments_and_interaction_keep_their_shape() {
             )
         ),
         "cb56dc70bbfc839aace0d66435a827cdc080b1b64cc30756c7d091724c32196d"
+    );
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11: verification metadata never carries page values.
+#[test]
+fn browser_verification_protocol_992_431_snapshot_and_hash() {
+    let snapshot: serde_json::Value =
+        serde_json::from_str(include_str!("browser-verification-992.json")).unwrap();
+    assert_eq!(snapshot["local"], LOCAL_DAEMON_PROTOCOL_VERSION);
+    assert_eq!(
+        snapshot["peer"],
+        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION
+    );
+    let args: crate::transport::runtime_tools::RequestPopupArgs =
+        serde_json::from_value(snapshot["arguments"].clone()).unwrap();
+    assert_eq!(serde_json::to_value(args).unwrap(), snapshot["arguments"]);
+    let region: crate::session::RuntimeInteractionBrowserRegion =
+        serde_json::from_value(snapshot["region"].clone()).unwrap();
+    assert_eq!(serde_json::to_value(region).unwrap(), snapshot["region"]);
+    assert_eq!(
+        format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
+        ),
+        "b38a173a5e11bb6ebaa7f75b280e64a7e9a674d785c168b38da170ce7a3d51ea"
     );
 }
