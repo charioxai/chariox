@@ -189,7 +189,23 @@ function prompt(provider, service, node, workspace) {
   ].join('\n')
 }
 
+// MCP errors must come from the tool record; model narration cannot prove overlap.
+function captureInProgress(transcriptText) {
+  const visit = (value) => {
+    if (typeof value === 'string') {
+      try { return visit(JSON.parse(value)) } catch { return false }
+    }
+    if (!value || typeof value !== 'object') return false
+    if (typeof value.tool === 'string' && /(?:chariox\.vault\.capture_command|chariox_vault_capture_command)$/.test(value.tool) &&
+      JSON.stringify({ error: value.error, output: value.output }).includes('already running')) return true
+    return Object.values(value).some(visit)
+  }
+  return transcriptText.split('\n').some(visit)
+}
+
 // MP-08 / MP-09 / MP-10 / MP-11 F1/F2: real provider MCP calls on a private kernel.
+// Codex needs a drill-only CHARIOX_CODEX_BIN wrapper appending the official CLI
+// override -c 'mcp_servers.chariox.supports_parallel_tool_calls=true'.
 async function commandLifecycle({ client, requests, session, attachment, agentId, provider, workspace, url, env, options }) {
   const runs = path.join(workspace, `capture-runs-${provider}`)
   const started = path.join(workspace, `use-started-${provider}`)
@@ -217,7 +233,7 @@ async function commandLifecycle({ client, requests, session, attachment, agentId
   const captured = credentials.filter(c => c.metadata?.created_by_id === agentId && c.metadata?.created_by_kind === 'vault_capture')
   const count = (await readFile(runs, 'utf8').catch(() => '')).trim().split('\n').filter(Boolean).length
   const row = { provider, model: MODELS[provider], capture_runs: count, captured_credentials: captured.length,
-    overlap_refused: seen.includes('already running'), capture_seen: CAPTURE.test(seen) }
+    overlap_refused: captureInProgress(seen), capture_seen: CAPTURE.test(seen) }
   await writeFile(path.join(options.evidence, `lifecycle-capture-${provider}.json`), seen)
   if (count !== 1 || captured.length !== 1 || !row.overlap_refused || !row.capture_seen)
     throw Error(`F2 did not prove overlapping admission: ${JSON.stringify(row)}`)
