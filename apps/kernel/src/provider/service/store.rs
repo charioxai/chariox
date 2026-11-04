@@ -373,6 +373,10 @@ impl ProviderProcessServiceStore {
         self.read().get_runs_by_runtime_mcp_auth_token(auth_token)
     }
 
+    pub(crate) fn any_output_poll_in_flight(&self) -> bool {
+        self.read().any_output_poll_in_flight()
+    }
+
     pub(crate) fn structured_prompt_io_in_flight(&self, provider_run_id: &str) -> bool {
         self.read().structured_prompt_io_in_flight(provider_run_id)
     }
