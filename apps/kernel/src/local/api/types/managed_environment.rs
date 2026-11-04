@@ -231,8 +231,10 @@ pub struct ManagedEnvironmentSummary {
     pub auto_stop_policy: ManagedEnvironmentAutoStopPolicy,
     #[serde(default)]
     pub runtime_started_at: Option<String>,
+    /// Agents running a turn or still woken by something they registered; the
+    /// auto-stop rule keeps a managed machine up while this is above zero.
     #[serde(default)]
-    pub running_agent_count: Option<u8>,
+    pub working_agent_count: Option<u8>,
     #[serde(default)]
     pub last_activity_reported_at: Option<String>,
     #[serde(default)]

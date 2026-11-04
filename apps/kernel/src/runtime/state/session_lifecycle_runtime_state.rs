@@ -1743,7 +1743,7 @@ mod tests {
         let (_, busy) = runtime
             .managed_activity_report_snapshot()
             .expect("busy activity should be durable");
-        assert_eq!(busy.running_agent_count, 1);
+        assert_eq!(busy.working_agent_count, 1);
         runtime
             .owned
             .session_snapshot(&session_id)
@@ -1768,7 +1768,7 @@ mod tests {
         let (_, idle) = runtime
             .managed_activity_report_snapshot()
             .expect("final idle activity should be durable");
-        assert_eq!(idle.running_agent_count, 0);
+        assert_eq!(idle.working_agent_count, 0);
         assert!(idle.changed_at_ms >= busy.changed_at_ms);
         assert!(runtime.owned.session_projection.change_sequence() > projection_sequence);
         // An ended session is retired from the live projection; its end is durable above.
@@ -1802,7 +1802,7 @@ mod tests {
         let (_, busy) = runtime
             .managed_activity_report_snapshot()
             .expect("busy activity should be durable");
-        assert_eq!(busy.running_agent_count, 1);
+        assert_eq!(busy.working_agent_count, 1);
         runtime
             .owned
             .session_snapshot(&session_id)
@@ -1853,7 +1853,7 @@ mod tests {
         let (_, still_busy) = runtime
             .managed_activity_report_snapshot()
             .expect("an unrelated activity hook must retain the durable busy state");
-        assert_eq!(still_busy.running_agent_count, 1);
+        assert_eq!(still_busy.working_agent_count, 1);
         assert!(runtime
             .owned
             .durable_state_store
@@ -1869,7 +1869,7 @@ mod tests {
         let (_, idle) = runtime
             .managed_activity_report_snapshot()
             .expect("successful retry should persist idle activity");
-        assert_eq!(idle.running_agent_count, 0);
+        assert_eq!(idle.working_agent_count, 0);
         assert_eq!(
             runtime
                 .owned
@@ -1905,7 +1905,7 @@ mod tests {
         let (_, busy) = runtime
             .managed_activity_report_snapshot()
             .expect("busy activity should be durable");
-        assert_eq!(busy.running_agent_count, 1);
+        assert_eq!(busy.working_agent_count, 1);
         runtime
             .owned
             .session_snapshot(&session_id)
@@ -1940,7 +1940,7 @@ mod tests {
         let (_, still_busy) = runtime
             .managed_activity_report_snapshot()
             .expect("an unrelated activity hook must retain the durable busy state");
-        assert_eq!(still_busy.running_agent_count, 1);
+        assert_eq!(still_busy.working_agent_count, 1);
         assert!(runtime
             .owned
             .durable_state_store
@@ -1962,7 +1962,7 @@ mod tests {
         let (_, idle) = runtime
             .managed_activity_report_snapshot()
             .expect("deleting the final busy session should persist idle activity");
-        assert_eq!(idle.running_agent_count, 0);
+        assert_eq!(idle.working_agent_count, 0);
         assert_eq!(
             runtime
                 .owned

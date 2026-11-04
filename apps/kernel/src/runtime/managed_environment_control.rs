@@ -804,7 +804,7 @@ mod tests {
     #[test]
     fn managed_environment_details_project_activity_and_exact_operation_history() {
         let mut environment = environment_json();
-        environment["runningAgentCount"] = serde_json::json!(0);
+        environment["workingAgentCount"] = serde_json::json!(0);
         environment["lastActivityReportedAt"] = serde_json::json!("2026-09-26T05:00:02.000Z");
         environment["lastActivityChangedAt"] = serde_json::json!("2026-09-26T04:59:00.000Z");
         environment["autoStopWarningAt"] = serde_json::Value::Null;
@@ -820,7 +820,7 @@ mod tests {
         .expect("owner-authorized Cloud details response");
 
         let summary: crate::local::ManagedEnvironmentSummary = details.environment.into();
-        assert_eq!(summary.running_agent_count, Some(0));
+        assert_eq!(summary.working_agent_count, Some(0));
         assert_eq!(
             summary.last_activity_reported_at.as_deref(),
             Some("2026-09-26T05:00:02.000Z")
@@ -857,7 +857,7 @@ mod tests {
     fn managed_environment_details_legacy_null_and_invalid_activity_are_distinguished() {
         let mut legacy_environment = environment_json();
         for field in [
-            "runningAgentCount",
+            "workingAgentCount",
             "lastActivityReportedAt",
             "lastActivityChangedAt",
             "autoStopWarningAt",
@@ -872,13 +872,13 @@ mod tests {
             serde_json::from_value(serde_json::json!({ "environment": legacy_environment }))
                 .expect("legacy Cloud details response");
         let summary: crate::local::ManagedEnvironmentSummary = legacy.environment.into();
-        assert_eq!(summary.running_agent_count, None);
+        assert_eq!(summary.working_agent_count, None);
         assert_eq!(summary.last_activity_changed_at, None);
         assert!(legacy.operations.is_empty());
 
         let mut nullable = environment_json();
         for field in [
-            "runningAgentCount",
+            "workingAgentCount",
             "lastActivityReportedAt",
             "lastActivityChangedAt",
             "autoStopWarningAt",
@@ -889,14 +889,20 @@ mod tests {
         let decoded: cloud_contract::EnvironmentSummary =
             serde_json::from_value(nullable).expect("explicit null is unknown");
         let summary: crate::local::ManagedEnvironmentSummary = decoded.into();
-        assert_eq!(summary.running_agent_count, None);
+        assert_eq!(summary.working_agent_count, None);
         assert_eq!(summary.last_activity_reported_at, None);
         assert_eq!(summary.last_activity_changed_at, None);
         assert_eq!(summary.auto_stop_warning_at, None);
         assert_eq!(summary.auto_stop_deadline_at, None);
 
+        let mut several = environment_json();
+        several["workingAgentCount"] = serde_json::json!(3);
+        let decoded: cloud_contract::EnvironmentSummary =
+            serde_json::from_value(several).expect("any count of working agents is valid");
+        let summary: crate::local::ManagedEnvironmentSummary = decoded.into();
+        assert_eq!(summary.working_agent_count, Some(3));
         let mut invalid_count = environment_json();
-        invalid_count["runningAgentCount"] = serde_json::json!(2);
+        invalid_count["workingAgentCount"] = serde_json::json!(256);
         assert!(
             serde_json::from_value::<cloud_contract::EnvironmentSummary>(invalid_count).is_err()
         );
@@ -1424,7 +1430,7 @@ mod tests {
         else {
             panic!("unexpected managed environment response");
         };
-        assert_eq!(environment.running_agent_count, Some(0));
+        assert_eq!(environment.working_agent_count, Some(0));
         assert_eq!(
             environment.last_activity_changed_at.as_deref(),
             Some("2026-08-21T00:00:00.000Z")
@@ -1880,7 +1886,7 @@ mod tests {
             },
             "contextManifestDigest": "sha256:manifest",
             "autoStopPolicy": { "minimumRuntimeSeconds": 0, "idleDelaySeconds": 900 },
-            "runningAgentCount": 0,
+            "workingAgentCount": 0,
             "lastActivityReportedAt": "2026-08-21T00:00:00.000Z",
             "lastActivityChangedAt": "2026-08-21T00:00:00.000Z",
             "autoStopWarningAt": null,
