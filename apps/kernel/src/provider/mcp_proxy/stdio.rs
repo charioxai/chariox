@@ -4,6 +4,8 @@ use std::process::{Child, ChildStdin, ChildStdout, Stdio};
 use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+use sha2::{Digest, Sha256};
+
 use crate::error::DaemonError;
 use crate::mcp::{CharioxMcpServerConfig, CharioxMcpTransportConfig};
 
@@ -14,9 +16,16 @@ pub(super) fn stdio_mcp_supervisor() -> &'static Mutex<StdioMcpSupervisor> {
 
 #[derive(Default)]
 pub(super) struct StdioMcpSupervisor {
-    processes: HashMap<String, StdioMcpEntry>,
+    processes: HashMap<StdioMcpProcessKey, StdioMcpEntry>,
     closed_provider_run_ids: HashSet<String>,
     closed_session_ids: HashSet<String>,
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct StdioMcpProcessKey {
+    definition_hash: String,
+    owner_session_id: String,
+    environment_digest: [u8; 32],
 }
 
 struct StdioMcpEntry {
@@ -44,10 +53,21 @@ impl StdioMcpSupervisor {
                 ),
             });
         }
-        if !self.processes.contains_key(key) {
-            let process = StdioMcpProcess::spawn(backing, project_environment)?;
+        let environment = resolve_stdio_environment(backing, project_environment)?;
+        // A session owns its Project's authenticated process. Rotating a value must
+        // start a replacement even while an older run still owns the old process.
+        let key = StdioMcpProcessKey {
+            definition_hash: key.to_string(),
+            owner_session_id: owner_session_id.to_string(),
+            environment_digest: Sha256::digest(
+                serde_json::to_vec(&environment).expect("stdio environment string map serializes"),
+            )
+            .into(),
+        };
+        if !self.processes.contains_key(&key) {
+            let process = StdioMcpProcess::spawn(backing, &environment)?;
             self.processes.insert(
-                key.to_string(),
+                key.clone(),
                 StdioMcpEntry {
                     process: Arc::new(Mutex::new(process)),
                     owner_sessions_by_provider_run_id: HashMap::new(),
@@ -56,7 +76,7 @@ impl StdioMcpSupervisor {
         }
         let entry = self
             .processes
-            .get_mut(key)
+            .get_mut(&key)
             .ok_or_else(|| DaemonError::LocalTransport {
                 operation: "mcp.proxy.stdio.supervisor",
                 message: format!("failed to start stdio MCP `{}`", backing.name),
@@ -119,6 +139,29 @@ impl StdioMcpSupervisor {
     }
 }
 
+fn resolve_stdio_environment(
+    backing: &CharioxMcpServerConfig,
+    project_environment: &BTreeMap<String, String>,
+) -> Result<BTreeMap<String, String>, DaemonError> {
+    let CharioxMcpTransportConfig::Stdio { env, env_vars, .. } = &backing.transport else {
+        return Err(DaemonError::LocalTransport {
+            operation: "mcp.proxy.stdio.spawn",
+            message: format!("MCP `{}` is not a stdio MCP", backing.name),
+        });
+    };
+    let mut environment = env.clone();
+    for key in env_vars {
+        if let Some(value) = project_environment
+            .get(key)
+            .cloned()
+            .or_else(|| std::env::var(key).ok())
+        {
+            environment.insert(key.clone(), value);
+        }
+    }
+    Ok(environment)
+}
+
 pub(super) struct StdioMcpProcess {
     name: String,
     child: Child,
@@ -126,8 +169,8 @@ pub(super) struct StdioMcpProcess {
     frames: mpsc::Receiver<Result<serde_json::Value, String>>,
     request_timeout: Duration,
     backing: CharioxMcpServerConfig,
-    /// The Project's Secret values the process was started with, kept to start its replacement the same way.
-    project_environment: BTreeMap<String, String>,
+    /// Keep replacements on the same resolved credentials as their original process.
+    environment: BTreeMap<String, String>,
     initialize_request: Option<serde_json::Value>,
     initialize_response: Option<serde_json::Value>,
     restart_required: bool,
@@ -137,15 +180,10 @@ pub(super) struct StdioMcpProcess {
 impl StdioMcpProcess {
     fn spawn(
         backing: &CharioxMcpServerConfig,
-        project_environment: &BTreeMap<String, String>,
+        environment: &BTreeMap<String, String>,
     ) -> Result<Self, DaemonError> {
         let CharioxMcpTransportConfig::Stdio {
-            command,
-            args,
-            env,
-            credential_env: _,
-            env_vars,
-            cwd,
+            command, args, cwd, ..
         } = &backing.transport
         else {
             return Err(DaemonError::LocalTransport {
@@ -153,19 +191,10 @@ impl StdioMcpProcess {
                 message: format!("MCP `{}` is not a stdio MCP", backing.name),
             });
         };
-        let mut environment = env.clone();
-        // The Project's Secrets come first: they are the keys the user gave this Project.
-        for key in env_vars {
-            if let Some(value) = project_environment.get(key) {
-                environment.insert(key.clone(), value.clone());
-            } else if let Ok(value) = std::env::var(key) {
-                environment.insert(key.clone(), value);
-            }
-        }
         let mut command_builder = crate::provider::managed_isolated_utility_command(
             command.clone(),
             args.clone(),
-            environment,
+            environment.clone(),
             cwd.as_deref().map(std::path::PathBuf::from),
             &format!("mcp:{}", backing.name),
         )?;
@@ -218,7 +247,7 @@ impl StdioMcpProcess {
             frames: frame_rx,
             request_timeout: Duration::from_secs(backing.tool_timeout_sec.unwrap_or(30).max(1)),
             backing: backing.clone(),
-            project_environment: project_environment.clone(),
+            environment: environment.clone(),
             initialize_request: None,
             initialize_response: None,
             restart_required: false,
@@ -248,8 +277,8 @@ impl StdioMcpProcess {
             let initialize = self.initialize_request.clone();
             let notified = self.initialized_notified;
             let backing = self.backing.clone();
-            let project_environment = self.project_environment.clone();
-            *self = Self::spawn(&backing, &project_environment)?;
+            let environment = self.environment.clone();
+            *self = Self::spawn(&backing, &environment)?;
             if method != Some("initialize") {
                 if let Some(initialize) = initialize {
                     self.dispatch(initialize)?;

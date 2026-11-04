@@ -374,3 +374,84 @@ process.stdin.on('data', (chunk) => {
         .expect("response");
     assert_eq!(response["result"]["key"], json!("synthetic-project-key"));
 }
+
+#[test]
+fn project_mcp_processes_are_scoped_to_owner_and_resolved_environment() {
+    crate::test_support::isolated_env_test!();
+    let Some(mut config) = node_stdio_config(
+        r#"
+import readline from 'node:readline'
+readline.createInterface({ input: process.stdin }).on('line', (line) => {
+  const request = JSON.parse(line)
+  process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result: {
+    account: process.env.ENVIMPL_PROJECT_KEY === 'synthetic-project-a' ? 'a' : 'b'
+  } }) + '\n')
+})
+"#,
+    ) else {
+        return;
+    };
+    if let CharioxMcpTransportConfig::Stdio { env_vars, .. } = &mut config.transport {
+        env_vars.push("ENVIMPL_PROJECT_KEY".into());
+    }
+    let key = config.definition_hash().unwrap();
+    let mut supervisor = StdioMcpSupervisor::default();
+    let values = |value: &str| BTreeMap::from([("ENVIMPL_PROJECT_KEY".into(), value.into())]);
+    let a = supervisor
+        .process(
+            &key,
+            "run-a",
+            "project-a-session",
+            &config,
+            &values("synthetic-project-a"),
+        )
+        .unwrap();
+    let b = supervisor
+        .process(
+            &key,
+            "run-b",
+            "project-b-session",
+            &config,
+            &values("synthetic-project-b"),
+        )
+        .unwrap();
+    let same_values_other_owner = supervisor
+        .process(
+            &key,
+            "run-c",
+            "project-c-session",
+            &config,
+            &values("synthetic-project-a"),
+        )
+        .unwrap();
+    let reused = supervisor
+        .process(
+            &key,
+            "run-a-2",
+            "project-a-session",
+            &config,
+            &values("synthetic-project-a"),
+        )
+        .unwrap();
+    let rotated = supervisor
+        .process(
+            &key,
+            "run-a-2",
+            "project-a-session",
+            &config,
+            &values("synthetic-project-b"),
+        )
+        .unwrap();
+    for (process, account) in [(&a, "a"), (&b, "b"), (&rotated, "b")] {
+        let response = process
+            .lock()
+            .unwrap()
+            .dispatch(json!({"jsonrpc":"2.0", "id":1, "method":"tools/call"}))
+            .unwrap();
+        assert_eq!(response["result"]["account"], json!(account));
+    }
+    assert!(Arc::ptr_eq(&a, &reused));
+    assert!(!Arc::ptr_eq(&a, &same_values_other_owner));
+    assert!(!Arc::ptr_eq(&a, &rotated));
+    assert_eq!(supervisor.process_count(), 4);
+}

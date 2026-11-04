@@ -772,7 +772,7 @@ mod tests {
     }
 
     #[test]
-    fn stdio_proxy_reuses_backing_process_and_caches_initialize() {
+    fn stdio_proxy_reuses_backing_process_within_session_and_caches_initialize() {
         crate::test_support::isolated_env_test!();
         if crate::process_spawn::command("node")
             .arg("--version")
@@ -889,7 +889,7 @@ function handle(message) {
         .expect("tools/list should forward");
         let cached_initialize = dispatch_provider_mcp_proxy_request(
             "provider-run-b",
-            "session-b",
+            "session-a",
             &config,
             json!({"jsonrpc": "2.0", "id": 3, "method": "initialize"}),
         )
@@ -912,7 +912,7 @@ function handle(message) {
         );
         #[cfg(unix)]
         assert!(crate::runtime::process_health::process_running(_child_pid));
-        shutdown_provider_mcp_proxy_session("session-b");
+        shutdown_provider_mcp_proxy_session("session-a");
         assert_eq!(
             stdio_mcp_supervisor()
                 .lock()
