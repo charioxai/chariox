@@ -156,6 +156,17 @@ impl KernelRuntimeOwnedState {
             "<chariox-task-context>For chariox.events tools use task_id `{}` and origin_prompt_id `{prompt}`. Final answers are done candidates; finish tracked obligations or yield on live sources with a future deadline. If owner action is required call chariox.events.blocked. Message events request no courtesy reply unless explicitly opted in.</chariox-task-context>",
             task.task_id
         );
+        // Unrelated inbox receipts remain deferred during task-bound sudo work.
+        if self.sudo_work_task(room, agent).is_none() {
+            let cancellations = self
+                .durable_state_store
+                .agent_task_cancellation_notices(room, agent)?;
+            if !cancellations.is_empty() {
+                let notices = serde_json::to_string(&cancellations)
+                    .map_err(|_| ledger::error("task cancellation context encoding failed"))?;
+                context.push_str(&format!("\n<chariox-owner-cancellations>The owner cancelled the tasks below. Keep their work cancelled. After handling each notice, use chariox.events.ack with its sequence and handled:true; do not restart that work or send a courtesy reply.\n{notices}\n</chariox-owner-cancellations>"));
+            }
+        }
         if let Some(goal_context) = self.goal_continuation_context(&task)? {
             context = format!("{context}\n{goal_context}");
         }

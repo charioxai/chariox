@@ -12,6 +12,53 @@ use crate::session::CreateSessionRequest;
 use crate::{DaemonApp, DaemonConfig};
 
 use super::handle_json_rpc_value;
+use super::runtime_tool_content_for_test;
+use super::tool_content::runtime_tool_content;
+
+#[test]
+fn mcp_tool_content_bounds_large_results_and_preserves_small_images() {
+    let payload = serde_json::json!({
+        "snapshot": {"dom": "x".repeat(2 * 1024 * 1024)},
+        "mime_type": "image/png",
+        "image_base64": "aGVsbG8=",
+    });
+    let (content, structured) = runtime_tool_content_for_test(payload);
+
+    assert_eq!(content[0]["type"], "image");
+    assert_eq!(content[0]["data"], "aGVsbG8=");
+    assert!(content[1]["text"].as_str().unwrap().len() <= 64 * 1024);
+    assert!(content[1]["text"].as_str().unwrap().contains("truncated"));
+    assert_eq!(structured["chariox_truncated"], true);
+}
+
+#[test]
+fn mcp_tool_content_truncates_at_utf8_boundaries() {
+    let payload = serde_json::json!({"text": "🙂".repeat(100_000)});
+    let (content, structured) = runtime_tool_content_for_test(payload);
+    let text = content[0]["text"].as_str().unwrap();
+
+    assert!(text.len() <= 64 * 1024);
+    assert!(text.is_char_boundary(text.len()));
+    assert_eq!(structured["chariox_truncated"], true);
+}
+
+#[test]
+fn mcp_tool_content_omits_only_images_over_the_image_limit() {
+    let payload = serde_json::json!({
+        "mime_type": "image/png",
+        "image_base64": "a".repeat(8 * 1024 * 1024 + 1),
+        "tab_id": "tab-1",
+    });
+    let (content, structured) = runtime_tool_content_for_test(payload);
+
+    assert_eq!(content.len(), 1);
+    assert_eq!(structured["tab_id"], "tab-1");
+    assert_eq!(structured["chariox_image_omitted"], true);
+    assert!(structured["chariox_image_omission_reason"]
+        .as_str()
+        .unwrap()
+        .contains("8 MiB"));
+}
 
 fn run_mcp_server_large_stack_test<Fut>(name: &str, test: fn() -> Fut)
 where
@@ -376,6 +423,8 @@ async fn mcp_http_tools_call_reads_and_edits_workspace_live_sync_artifact_inner(
     ));
     std::fs::create_dir_all(&root).expect("test root should be created");
     std::fs::write(root.join("notes.txt"), "alpha\nbeta\n").expect("file should be written");
+    std::fs::write(root.join("large.txt"), "snapshot-node\n".repeat(200_000))
+        .expect("large test artifact should be written");
 
     let mut config = DaemonConfig::for_tests();
     config.user_config.providers.workspace_live_sync.mode =
@@ -471,6 +520,48 @@ async fn mcp_http_tools_call_reads_and_edits_workspace_live_sync_artifact_inner(
     assert_eq!(
         read_value["result"]["structuredContent"]["workspace"]["identity_changed"],
         false
+    );
+    let large_read_response = handle_json_rpc_value(
+        router.clone(),
+        &auth_token,
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 9,
+            "method": "tools/call",
+            "params": {
+                "name": "chariox.read_artifact",
+                "arguments": {"path": "large.txt"}
+            }
+        }),
+    )
+    .await
+    .expect("large read request should succeed");
+    assert_eq!(large_read_response.status(), StatusCode::OK);
+    let large_read_body = large_read_response
+        .into_body()
+        .collect()
+        .await
+        .expect("large read body should collect")
+        .to_bytes();
+    let large_read_value: Value =
+        serde_json::from_slice(&large_read_body).expect("large read body should be json");
+    assert_eq!(large_read_value["result"]["isError"], false);
+    assert!(
+        large_read_value["result"]["content"][0]["text"]
+            .as_str()
+            .expect("large read should return text content")
+            .len()
+            <= 64 * 1024
+    );
+    assert_eq!(
+        large_read_value["result"]["structuredContent"]["chariox_truncated"],
+        true
+    );
+    assert!(
+        serde_json::to_vec(&large_read_value["result"]["structuredContent"])
+            .expect("bounded structured content should serialize")
+            .len()
+            <= 64 * 1024
     );
     let snapshot_id = read_value["result"]["structuredContent"]["snapshot_id"]
         .as_str()
@@ -1003,7 +1094,7 @@ fn runtime_tool_content_wraps_non_objects_as_structured_results() {
         serde_json::json!(true),
         serde_json::Value::Null,
     ] {
-        let (content, structured) = super::runtime_tool_content(payload.clone());
+        let (content, structured) = runtime_tool_content(payload.clone());
         assert!(
             structured.is_object(),
             "MCP structuredContent must be an object"
@@ -1016,10 +1107,10 @@ fn runtime_tool_content_wraps_non_objects_as_structured_results() {
 #[test]
 fn runtime_tool_content_preserves_objects_and_extracts_images() {
     let payload = serde_json::json!({"result": "crm result"});
-    let (content, structured) = super::runtime_tool_content(payload.clone());
+    let (content, structured) = runtime_tool_content(payload.clone());
     assert_eq!(structured, payload.clone());
     assert_eq!(content[0]["text"], payload.to_string());
-    let (content, structured) = super::runtime_tool_content(serde_json::json!({
+    let (content, structured) = runtime_tool_content(serde_json::json!({
         "mime_type": "image/png", "image_base64": "aW1hZ2U=", "width": 1
     }));
     assert_eq!(content[0]["type"], "image");
@@ -1043,7 +1134,7 @@ fn mp08_browser_snapshot_remains_readable_after_provider_line_truncation() {
         "document_id":"document-a", "dom_nodes":nodes,
         "accessibility_nodes":[{"node_ref":80,"value":""}]
     }});
-    let (content, structured) = super::runtime_tool_content(payload.clone());
+    let (content, structured) = runtime_tool_content(payload.clone());
     let text = content[0]["text"].as_str().unwrap();
     assert_eq!(serde_json::from_str::<Value>(text).unwrap(), payload);
     assert_eq!(structured, payload);
@@ -1069,7 +1160,7 @@ fn primitive_mcp_result_shape_is_versioned_and_hashed() {
         crate::local::LOCAL_DAEMON_PROTOCOL_VERSION,
         crate::test_support::expected_local_protocol_version()
     );
-    let (content, structured) = super::runtime_tool_content(serde_json::json!("crm result"));
+    let (content, structured) = runtime_tool_content(serde_json::json!("crm result"));
     let response = serde_json::json!({"jsonrpc": "2.0", "id": 7, "result": {
         "content": content, "structuredContent": structured, "isError": false
     }});
@@ -1177,7 +1268,7 @@ fn mp08_mp10_mp11_browser_artifact_native_image_attachment() {
     // These are synthetic converter inputs, not Chromium/perception proof.
     for bytes in [small, large] {
         let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
-        let (content, metadata) = super::runtime_tool_content(serde_json::json!({
+        let (content, metadata) = runtime_tool_content(serde_json::json!({
             "source":"browser_controller","artifact_id":"art-1","mime_type":"image/png","image_base64":data,
             "identity":{"tab_id":"tab-1","document_id":"document-1","browser_generation":1,"runtime_generation":2}
         }));

@@ -1495,6 +1495,7 @@ mod agent_leased_process_home;
 mod agent_leased_process_receipts;
 mod agent_leased_process_worker;
 mod agent_lifecycle_runtime;
+mod agent_owner_cancellation;
 mod agent_process_group;
 mod agent_process_output;
 mod agent_process_watch;

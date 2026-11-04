@@ -92,6 +92,12 @@ pub(crate) fn initialize_opencode_runtime(
                 );
                 (previous_session_id, snapshot.messages)
             }
+            Err(
+                error @ DaemonError::ProviderProtocol {
+                    operation: "http_response_limit",
+                    ..
+                },
+            ) => return Err(error),
             Err(_) => {
                 crate::logging::warn_with_fields(
                     "daemon.provider.opencode",
@@ -377,7 +383,7 @@ pub(super) fn sync_opencode_run_selection_for_session(
 ) -> Result<OpenCodeRunSelection, DaemonError> {
     let client = OpenCodeClient::new(provider_run_id, base_url)?;
     let defaults = client.configured_defaults()?;
-    let messages = client.messages(session_id)?;
+    let messages = client.recent_messages(session_id)?;
 
     Ok(resolve_sync_selection(
         &messages,
@@ -515,7 +521,7 @@ fn submit_opencode_prompt_with_policy(
             client
         }
     };
-    if let Ok(messages) = client.messages(state.session_id()) {
+    if let Ok(messages) = client.recent_messages(state.session_id()) {
         state.baseline_existing_messages(&messages);
     }
     let message_id = next_opencode_message_id();

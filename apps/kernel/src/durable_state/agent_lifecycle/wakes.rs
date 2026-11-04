@@ -701,6 +701,38 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             )?;
             Ok(Outcome::Wakes(vec![wake]))
         }
+        Operation::CancelOwnerTimer { id, room, owner } => {
+            let mut wake = load_wake(tx, &id)?;
+            let mut task = load(tx, &wake.task_id)?;
+            if wake.room_id != room
+                || task.room_id != room
+                || task.owner_user_id != owner
+                || owner.is_empty()
+            {
+                return Err(error("stale or foreign owner timer cancellation"));
+            }
+            if wake.kind != "timer" {
+                return Err(error("this owner control cancels timers; cancel the owning task to stop another wake source"));
+            }
+            if terminal(&wake) && wake.state != "cancelled" {
+                return Err(error(format!(
+                    "timer already ended as {}; reload its current state",
+                    wake.state
+                )));
+            }
+            if !terminal(&wake) {
+                if let Some(obligation) = task.obligations.iter_mut().find(|o| o.id == id) {
+                    obligation.status = "cancelled".into();
+                    obligation.dispatch_state = "cancelled".into();
+                }
+                task.revision += 1;
+                save(tx, &task)?;
+                // The existing source receipt wakes the retained task and tells
+                // its agent why the timer ended, including after a restart.
+                cancel_settle(tx, &mut wake, crate::session::unix_epoch_ms())?;
+            }
+            Ok(Outcome::Wakes(vec![wake]))
+        }
         Operation::CancelWake {
             id,
             task,

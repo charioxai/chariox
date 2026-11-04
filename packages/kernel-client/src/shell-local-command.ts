@@ -26,7 +26,7 @@ export function executeShellLocalCommand(parsed: ParsedShellCommand, context: Sh
           "recall search|semantic-search",
           "prompt [agent-ref] <prompt> [--wait] [--show-reply|--show-summary]",
           "provider status|login|setup-token|logout|reauth|processes [provider]|processes teardown <provider>",
-          "stop",
+          "stop [task <task-id> <revision> | timer <wake-id>]",
           "context",
           "pwd",
           "set provider|model|effort <value>",

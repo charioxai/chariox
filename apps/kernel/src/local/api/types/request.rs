@@ -378,6 +378,8 @@ pub enum LocalDaemonRequest {
     ResendTriggerDelivery(ResendTriggerDeliveryRequest),
     CompletePrompt(CompletePromptRequest),
     CancelActivePrompt(CancelActivePromptRequest),
+    CancelAgentTask(CancelAgentTaskRequest),
+    CancelAgentWake(CancelAgentWakeRequest),
     SteerQueuedPrompt(SteerQueuedPromptRequest),
     SteerActivePrompt(SteerActivePromptRequest),
     CancelQueuedPrompt(CancelQueuedPromptRequest),

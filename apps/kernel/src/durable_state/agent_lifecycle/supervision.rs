@@ -257,6 +257,9 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 }
             }
             for mut e in events {
+                if e.state == "pending" && e.kind == "task_cancelled" {
+                    continue;
+                }
                 let mut clock_quarantined = false;
                 let deadline_start = if e.state == "pending" {
                     // Busy refusals are normal queueing, not missing receipts.
@@ -393,7 +396,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
         } => {
             let mut t = load(tx, &task)?;
             if t.owner_user_id.is_empty() || t.owner_user_id != owner || t.revision != revision {
-                return Err(error("stale or foreign owner cancellation"));
+                return Err(error("stale or foreign owner cancellation; reload the task in its owning room and retry"));
             }
             if !matches!(t.state, ExecutionState::Done | ExecutionState::Cancelled) {
                 cancel_intent(tx, &mut t)?;
@@ -410,7 +413,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             let mut t = load(tx, &task)?;
             // Admission must not abandon a goal, owned work, or an uncertain receipt.
             let unresolved: bool = tx.query_row(
-                "SELECT EXISTS(SELECT 1 FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND CASE WHEN json_valid(payload) THEN json_extract(payload,'$.state') IN ('pending','blocked','submitting','uncertain') ELSE 1 END)",
+                "SELECT EXISTS(SELECT 1 FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND CASE WHEN json_valid(payload) THEN json_extract(payload,'$.state') IN ('blocked','submitting','uncertain') OR (json_extract(payload,'$.state')='pending' AND json_extract(payload,'$.kind') IS NOT 'task_cancelled') ELSE 1 END)",
                 params![t.room_id, t.agent_id], |r| r.get(0),
             ).map_err(sql)?;
             if t.state != ExecutionState::Blocked
@@ -565,6 +568,21 @@ pub(super) fn cancel_intent(
         )
         .map_err(sql)?;
     }
+    let notice = occurrence(
+        &task.room_id,
+        &task.agent_id,
+        &task.task_id,
+        "owner-cancelled",
+        "task_cancelled",
+        serde_json::json!({
+            "cancelled_task_id": task.task_id,
+            "reason": task.reason,
+            "message": "The owner cancelled this task and its retained work. Keep it cancelled unless the owner starts new work.",
+        }),
+    );
+    // A cancellation is context for the next turn, never a new turn that
+    // revives stopped work. It remains in the inbox until the agent handles it.
+    event(tx, notice)?;
     Ok(())
 }
 

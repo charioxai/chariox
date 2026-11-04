@@ -25,6 +25,7 @@ mod catalog;
 mod catalog_stream;
 #[cfg(test)]
 mod catalog_stream_tests;
+mod tool_content;
 
 pub(crate) fn catalog_changed() {
     catalog::changed();
@@ -487,7 +488,8 @@ async fn handle_json_rpc_value(
                     ))
                 }
                 Ok(result) => {
-                    let (content, structured_content) = runtime_tool_content(result.payload);
+                    let (content, structured_content) =
+                        tool_content::runtime_tool_content(result.payload);
                     Ok(catalog::tool_response(
                         previous_catalog != catalog::snapshot(&router, auth_token),
                         serde_json::json!({
@@ -515,48 +517,7 @@ async fn handle_json_rpc_value(
 // MP-08 / MP-10 / MP-11: exercise both real MCP encodings without widening production visibility.
 #[cfg(test)]
 pub(crate) fn runtime_tool_content_for_test(payload: Value) -> (Vec<Value>, Value) {
-    runtime_tool_content(payload)
-}
-
-fn runtime_tool_content(mut payload: Value) -> (Vec<Value>, Value) {
-    // MCP structuredContent is an object, while script results may be any JSON value.
-    if !payload.is_object() {
-        payload = serde_json::json!({ "result": payload });
-    }
-    let image = payload.as_object_mut().and_then(|object| {
-        let mime_type = object
-            .get("mime_type")
-            .and_then(Value::as_str)
-            .filter(|value| value.starts_with("image/"))?
-            .to_string();
-        let data = object
-            .get("image_base64")
-            .and_then(Value::as_str)
-            .filter(|value| !value.is_empty())?
-            .to_string();
-        object.remove("image_base64");
-        Some(serde_json::json!({
-            "type": "image",
-            "data": data,
-            "mimeType": mime_type,
-        }))
-    });
-    // MP-08/MP-10: native providers may save large results, then read them
-    // with a per-line limit. Keep later snapshot nodes readable in that path.
-    let text_payload = if payload.get("snapshot").is_some_and(Value::is_object) {
-        serde_json::to_string_pretty(&payload).expect("JSON value serialization")
-    } else {
-        payload.to_string()
-    };
-    let text = serde_json::json!({
-        "type": "text",
-        "text": text_payload,
-    });
-    let content = match image {
-        Some(image) => vec![image, text],
-        None => vec![text],
-    };
-    (content, payload)
+    tool_content::runtime_tool_content(payload)
 }
 
 fn parse_bearer_token(headers: &hyper::HeaderMap) -> Option<String> {

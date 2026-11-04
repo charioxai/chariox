@@ -207,9 +207,8 @@ fn ea2_75_thread_preparation_errors_keep_their_provider_code() {
             1,
         );
         let envelope = PromptEnvelope::new("prompt", "", Vec::new(), PromptManifest::current());
-        submit_codex_prompt(&run(), &mut state, &envelope).unwrap();
-        let drained = drain_codex_events(&run(), &mut state, None).unwrap();
-        let failure = TurnOutcome::classify("codex", drained.terminal_failure.as_deref().unwrap());
+        let error = submit_codex_prompt(&run(), &mut state, &envelope).unwrap_err();
+        let failure = TurnOutcome::classify("codex", &error.to_string());
         drop(state);
         server.join().unwrap();
         assert_eq!(
@@ -218,4 +217,36 @@ fn ea2_75_thread_preparation_errors_keep_their_provider_code() {
             "{method}"
         );
     }
+}
+
+#[test]
+fn resume_transport_failure_is_returned_before_polling_a_broken_socket() {
+    let (endpoint, server) = codex_server("thread/resume", None);
+    let (socket, _) = connect(&endpoint).unwrap();
+    let mut state = CodexRuntimeState::pending(endpoint, Some("thread".into()), socket, 1);
+    let envelope = PromptEnvelope::new("prompt", "", Vec::new(), PromptManifest::current());
+    let result = submit_codex_prompt(&run(), &mut state, &envelope);
+    drop(state);
+    server.join().unwrap();
+    assert!(result.is_err(), "failed resume must settle dispatch without depending on another read from the broken connection");
+}
+
+#[test]
+fn resume_context_failure_is_returned_before_polling_a_broken_socket() {
+    let (endpoint, server) = codex_server("thread/inject_items", None);
+    let (socket, _) = connect(&endpoint).unwrap();
+    let mut state = CodexRuntimeState::new(endpoint, "thread".into(), socket, 1);
+    let envelope = PromptEnvelope::new(
+        "prompt",
+        "updated context",
+        Vec::new(),
+        PromptManifest::current(),
+    );
+    let result = submit_codex_prompt(&run(), &mut state, &envelope);
+    drop(state);
+    server.join().unwrap();
+    assert!(
+        result.is_err(),
+        "failed resume context must settle dispatch without another socket poll"
+    );
 }

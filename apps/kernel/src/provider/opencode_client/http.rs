@@ -10,6 +10,10 @@ use crate::error::DaemonError;
 
 use super::OpenCodeClient;
 
+const MAX_RESPONSE_BODY_BYTES: usize = 32 * 1024 * 1024;
+const RESPONSE_LIMIT_MESSAGE: &str =
+    "OpenCode response exceeds the 32 MiB limit; narrow the requested output and retry";
+
 impl OpenCodeClient {
     const REQUEST_RETRY_ATTEMPTS: usize = 5;
     const REQUEST_RETRY_DELAY: Duration = Duration::from_millis(100);
@@ -205,7 +209,11 @@ impl OpenCodeHttpFailure {
         method: &'static str,
         path: &str,
     ) -> DaemonError {
-        let operation = method_to_operation(method, path);
+        let operation = if self.message == RESPONSE_LIMIT_MESSAGE {
+            "http_response_limit"
+        } else {
+            method_to_operation(method, path)
+        };
         if matches!(
             path,
             "/config" | "/agent" | "/provider" | "/config/providers"
@@ -349,7 +357,9 @@ fn method_to_operation(method: &str, path: &str) -> &'static str {
         _ if method == "POST" && path.ends_with("/message") => "session_prompt",
         _ if method == "POST" && path.ends_with("/abort") => "session_abort",
         _ if method == "POST" && is_mcp_connect_path(path) => "mcp_connect",
-        _ if method == "GET" && path.ends_with("/message") => "session_messages",
+        _ if method == "GET" && path.split('?').next().unwrap_or(path).ends_with("/message") => {
+            "session_messages"
+        }
         _ if method == "PATCH" && path.starts_with("/session/") => "session_permissions",
         _ => "opencode_http",
     }
@@ -463,15 +473,25 @@ pub(super) fn read_http_response(
         }
     }
 
+    let initial_body = &buffer[header_end..];
+    if content_length.is_some_and(|length| length > MAX_RESPONSE_BODY_BYTES) {
+        return Err(response_too_large());
+    }
     let body = if is_chunked {
-        read_chunked_http_body(buffer[header_end..].to_vec(), stream)?
+        read_chunked_http_body(initial_body.to_vec(), stream)?
     } else {
-        let mut body = buffer[header_end..].to_vec();
+        let mut body = initial_body.to_vec();
+        if body.len() > MAX_RESPONSE_BODY_BYTES {
+            return Err(response_too_large());
+        }
         let content_length = content_length.unwrap_or(0);
         while body.len() < content_length {
             let size = stream.read(&mut chunk).map_err(HttpResponseReadError::io)?;
             if size == 0 {
                 break;
+            }
+            if body.len().saturating_add(size) > MAX_RESPONSE_BODY_BYTES {
+                return Err(response_too_large());
             }
             body.extend_from_slice(&chunk[..size]);
         }
@@ -516,6 +536,10 @@ fn read_chunked_http_body(
             .map_err(|error| HttpResponseReadError::protocol(error.to_string()))?;
         buffered.drain(..header_end + 2);
 
+        if decoded.len().saturating_add(size) > MAX_RESPONSE_BODY_BYTES {
+            return Err(response_too_large());
+        }
+
         if size == 0 {
             loop {
                 if buffered.len() >= 2 && &buffered[..2] == b"\r\n" {
@@ -547,6 +571,10 @@ fn read_chunked_http_body(
     Ok(decoded)
 }
 
+fn response_too_large() -> HttpResponseReadError {
+    HttpResponseReadError::protocol(RESPONSE_LIMIT_MESSAGE.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use std::io::ErrorKind;
@@ -555,7 +583,8 @@ mod tests {
 
     use super::{
         is_retryable_opencode_http_error, method_to_operation, read_timeout_for_request,
-        retry_attempts_for_request, OpenCodeHttpFailure,
+        retry_attempts_for_request, DaemonError, OpenCodeClient, OpenCodeHttpFailure,
+        MAX_RESPONSE_BODY_BYTES,
     };
 
     // MP-08/MP-10/MP-11: health can pass before an official catalog read is ready.
@@ -633,6 +662,98 @@ mod tests {
                 Duration::from_secs(2)
             );
         }
+    }
+
+    #[test]
+    fn real_http_entrypoint_rejects_oversized_declared_and_chunked_bodies() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        for response_headers in [
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                MAX_RESPONSE_BODY_BYTES + 1
+            ),
+            format!(
+                "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n{:X}\r\n",
+                MAX_RESPONSE_BODY_BYTES + 1
+            ),
+        ] {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = [0; 1024];
+                let count = stream.read(&mut request).unwrap();
+                assert!(String::from_utf8_lossy(&request[..count]).starts_with("GET /large "));
+                stream.write_all(response_headers.as_bytes()).unwrap();
+            });
+
+            let client = OpenCodeClient::new("large-response", format!("http://{address}")).unwrap();
+            let error = client
+                .send_json_request::<serde_json::Value>("GET", "/large", None)
+                .unwrap_err();
+            server.join().unwrap();
+            assert!(matches!(
+                &error,
+                DaemonError::ProviderProtocol { operation, .. }
+                    if *operation == "http_response_limit"
+            ));
+            let message = error.to_string();
+            assert!(message.contains("exceeds the 32 MiB limit"), "{message}");
+            assert!(message.contains("narrow the requested output"), "{message}");
+        }
+    }
+
+    #[test]
+    fn real_http_entrypoint_caps_aggregate_chunked_body_size() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0; 1024];
+            let count = stream.read(&mut request).unwrap();
+            assert!(String::from_utf8_lossy(&request[..count]).starts_with("GET /aggregate "));
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n",
+                )
+                .unwrap();
+
+            let block = vec![b'x'; 1024 * 1024];
+            for _ in 0..2 {
+                if stream.write_all(b"1000000\r\n").is_err() {
+                    return;
+                }
+                for _ in 0..16 {
+                    if stream.write_all(&block).is_err() {
+                        return;
+                    }
+                }
+                if stream.write_all(b"\r\n").is_err() {
+                    return;
+                }
+            }
+            // The cumulative decoded body is already at the 32 MiB cap. The
+            // parser must reject this next chunk from its size line alone.
+            let _ = stream.write_all(b"1\r\n");
+        });
+
+        let client =
+            OpenCodeClient::new("aggregate-response", format!("http://{address}")).unwrap();
+        let error = client
+            .send_json_request::<serde_json::Value>("GET", "/aggregate", None)
+            .unwrap_err();
+        server.join().unwrap();
+        assert!(matches!(
+            &error,
+            DaemonError::ProviderProtocol { operation, .. }
+                if *operation == "http_response_limit"
+        ));
+        assert!(error.to_string().contains("exceeds the 32 MiB limit"));
     }
 
     #[test]

@@ -128,6 +128,32 @@ impl KernelRuntimeOwnedState {
     }
 }
 impl KernelRuntimeState {
+    pub(super) fn agent_cancellation_response(
+        &self,
+        room: &str,
+        task_id: &str,
+    ) -> Result<crate::local::LocalDaemonResponse, DaemonError> {
+        self.owned.session_snapshot(room)?;
+        self.owned
+            .terminal_stream
+            .notify_terminal_projection_change(room);
+        let task = self
+            .owned
+            .durable_state_store
+            .agent_tasks(Some(room), None)?
+            .into_iter()
+            .find(|task| task.task_id == task_id)
+            .ok_or_else(|| {
+                crate::durable_state::agent_lifecycle::error(
+                    "cancelled task projection unavailable",
+                )
+            })?;
+        Ok(crate::local::LocalDaemonResponse::AgentTaskUpdated {
+            session_id: room.into(),
+            task: Box::new(task),
+        })
+    }
+
     /// Stop still owns parked work when its provider turn has already ended.
     pub(crate) async fn cancel_parked_agent_task(
         &self,
@@ -181,24 +207,8 @@ impl KernelRuntimeState {
         self.retract_stale_task_owner_interactions(session.id(), std::slice::from_ref(&cancelled))
             .await;
         Box::pin(self.cancel_agent_task_resources(&cancelled)).await?;
-        let snapshot = self.owned.session_snapshot(session.id())?;
-        self.owned
-            .terminal_stream
-            .notify_terminal_projection_change(session.id());
-        let task = snapshot
-            .agent_tasks()
-            .iter()
-            .find(|task| task.task_id == cancelled.task_id)
-            .cloned()
-            .ok_or_else(|| {
-                crate::durable_state::agent_lifecycle::error(
-                    "cancelled task projection unavailable",
-                )
-            })?;
-        Ok(Some(crate::local::LocalDaemonResponse::AgentTaskUpdated {
-            session_id: session.id().into(),
-            task: Box::new(task),
-        }))
+        self.agent_cancellation_response(session.id(), &cancelled.task_id)
+            .map(Some)
     }
 
     pub(super) async fn cancel_agent_task_resources(

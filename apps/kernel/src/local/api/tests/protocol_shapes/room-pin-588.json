@@ -1,5 +1,5 @@
 {
-  "local_protocol": 966,
+  "local_protocol": 987,
   "peer_protocol": 415,
   "pin": {
     "SetRoomPinned": {

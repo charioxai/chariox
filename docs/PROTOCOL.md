@@ -6361,3 +6361,28 @@ only. The native worker ships beside the kernel, enters containment before its
 identity handshake, and exposes only the versioned App WIT world through the
 kernel capability broker. The replaced engine's launch, runtime enrollment and
 privileged storage-helper paths are removed. Reinstall unsupported stored Apps.
+
+
+### Owner cancellation of retained work — local 987
+
+`CancelAgentTask { session_id, attachment_id, task_id, revision }` lets the room
+owner cancel one exact task at the displayed revision, including when the agent
+has no active provider turn or another task is running. The kernel cancels only
+that task's retained resources and returns `AgentTaskUpdated`. Stale revisions
+and foreign room or attachment ownership are refused. A completed task cannot
+be cancelled.
+
+`CancelAgentWake { session_id, attachment_id, wake_id }` independently cancels a
+retained timer and returns `AgentTaskUpdated` for its owning task. It preserves
+the task and uses the normal source cancellation receipt to inform the agent.
+Other wake sources stop with their owning task. The shared shell exposes these
+controls as `stop task <task-id> <revision>` and `stop timer <wake-id>`; bare
+`stop` keeps its active-turn or focused-task behavior.
+
+An unconditional, targetless `CancelActivePrompt` still stops an active turn;
+when no turn is active it resolves the focused agent's parked task. A request
+with `expected_prompt_id` remains an exact active-prompt cancellation and never
+falls through to parked work. Owner task cancellation records a durable inbox
+notice, included in the agent's next ordinary task context until it is handled.
+It does not create a provider turn that revives stopped work. Relay frame shapes
+are unchanged.

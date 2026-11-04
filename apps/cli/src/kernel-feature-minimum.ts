@@ -24,6 +24,8 @@ const features: Record<string, FeatureMinimum> = {
   RequestKernelAccess: { feature: "Local-kernel access", minimum: 470 },
   CoverKernelAccessProcess: { feature: "Covering a background process", minimum: 641 },
   ControlRoomWorkflowRuns: { feature: "Room workflow run controls", minimum: 491 },
+  CancelAgentTask: { feature: "Owner task cancellation", minimum: requests.agentCancellationMinimumProtocolVersion },
+  CancelAgentWake: { feature: "Owner timer cancellation", minimum: requests.agentCancellationMinimumProtocolVersion },
   SteerActivePrompt: { feature: "Active prompt steering", minimum: requests.activePromptSteeringMinimumProtocolVersion },
   GetProjectEnvironment: { feature: "Project Environment", minimum: requests.projectEnvironmentMinimumProtocolVersion },
   ...Object.fromEntries(["OpenUserAppView", "ListUserAppViews", "CloseUserAppView", "GetUserAppViewFrontend", "CallUserAppView", "SubscribeUserAppViews", "AnswerUserDomainInteraction"].map(name => [name, { feature: "User-domain App views", minimum: requests.userAppViewsMinimumProtocolVersion }])),

@@ -1,5 +1,30 @@
 # Managed Path-1 parity inventory (MP-11)
 
+## MP-08 / MP-09 / MP-10 / MP-11 agent resume and parked work (2026-11-04)
+
+The shared Codex adapter resumes with the official app-server `excludeTurns`
+option. Native conversation history stays in Codex; recovery reads bounded
+summary pages instead of falling back to an unbounded `thread/read`. Failure
+to prepare a resumed thread settles prompt dispatch directly, including when
+the failed connection cannot carry another output poll.
+
+The runtime MCP response boundary bounds large tool output before Codex, Claude
+or OpenCode can retain it in native history. Truncated output is identified in
+both text and structured content; ordinary screenshots retain their image
+blocks. Claude resumes through its official CLI event stream. OpenCode baseline
+and reconciliation requests explicitly select the latest 100 messages through
+its native session API. Its HTTP reader rejects bodies over 32 MiB, including
+aggregate chunked bodies, without retrying or replacing the saved session.
+
+Local987 adds owner cancellation of an exact retained task or timer. The
+ordinary Stop route also resolves parked work when no prompt is active. Task
+cancellation retains its reason, settles owned sources and informs the agent
+on its next wake; cancelling one timer preserves its task. These operations
+use the same durable authority on ordinary and managed kernels. Peer framing,
+relay authority and managed automatic shutdown policy are unchanged (MP-09).
+Focused regressions and the live resume drill cover this seam; they do not
+close the wider MP-10 matrix or MP-11 security-anchor review.
+
 ## MP-08 / MP-09 / MP-10 / MP-11 process disk telemetry (2026-11-02)
 
 Local954 / peer403 adds nullable `disk_io_bytes` to the existing session process

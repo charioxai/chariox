@@ -142,7 +142,7 @@ pub(in crate::provider) fn drain_opencode_events(
                 }
                 if opencode_message_completes_active_prompt(state, &info) {
                     let client = OpenCodeClient::new(provider_run_id, &state.base_url)?;
-                    if let Ok(messages) = client.messages(&state.session_id) {
+                    if let Ok(messages) = client.recent_messages(&state.session_id) {
                         if let Some(total_tokens) = latest_assistant_usage_tokens(&messages) {
                             resolved_usage_tokens_total = Some(total_tokens);
                         }
@@ -200,17 +200,16 @@ pub(in crate::provider) fn drain_opencode_events(
                     // must establish a stalled follow-up before closing the turn.
                     let message = if state.session_errors_require_prompt_match {
                         let client = OpenCodeClient::new(provider_run_id, &state.base_url)?;
-                        let Some(current_error) =
-                            client
-                                .messages(&state.session_id)
-                                .ok()
-                                .and_then(|messages| {
-                                    opencode_messages_active_prompt_failure(
-                                        state,
-                                        &messages,
-                                        drain_active_user_message_id.as_deref(),
-                                    )
-                                })
+                        let Some(current_error) = client
+                            .recent_messages(&state.session_id)
+                            .ok()
+                            .and_then(|messages| {
+                                opencode_messages_active_prompt_failure(
+                                    state,
+                                    &messages,
+                                    drain_active_user_message_id.as_deref(),
+                                )
+                            })
                         else {
                             state.note_unmatched_session_error(message);
                             continue;
@@ -254,7 +253,7 @@ pub(in crate::provider) fn drain_opencode_events(
                     // status. Reconcile history at idle, after ready SSE text.
                     if kind == "idle" && state.active_user_message_id.is_some() {
                         let client = OpenCodeClient::new(provider_run_id, &state.base_url)?;
-                        if let Ok(messages) = client.messages(&state.session_id) {
+                        if let Ok(messages) = client.recent_messages(&state.session_id) {
                             if let Some(total_tokens) = latest_assistant_usage_tokens(&messages) {
                                 resolved_usage_tokens_total = Some(total_tokens);
                             }
@@ -452,7 +451,7 @@ pub(in crate::provider) fn drain_opencode_events(
         } else {
             let mut completion_confirmed = state.active_terminal_assistant_message_id.is_some();
             let mut empty_active_assistant = false;
-            if let Ok(messages) = client.messages(&state.session_id) {
+            if let Ok(messages) = client.recent_messages(&state.session_id) {
                 empty_active_assistant =
                     opencode_messages_have_empty_active_assistant(state, &messages);
                 completion_confirmed |= opencode_messages_complete_active_prompt(state, &messages);

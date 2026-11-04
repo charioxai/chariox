@@ -272,6 +272,31 @@ impl DurableKernelStateStore {
         )
         .map_err(sql)
     }
+    /// Passive owner notices are delivered with the next ordinary task context,
+    /// without creating a provider turn or displacing pending source receipts.
+    pub(crate) fn agent_task_cancellation_notices(
+        &self,
+        room: &str,
+        agent: &str,
+    ) -> Result<Vec<InboxEvent>, DaemonError> {
+        let db = self.lock_connection("agent.lifecycle.cancellation_notices")?;
+        let mut q = db.prepare("SELECT sequence,source_id,occurrence_id,payload FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND json_extract(payload,'$.kind')='task_cancelled' AND json_extract(payload,'$.state') IN ('pending','acknowledged') ORDER BY sequence LIMIT 128").map_err(sql)?;
+        let rows = q
+            .query_map(params![room, agent], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                ))
+            })
+            .map_err(sql)?;
+        rows.map(|row| {
+            let (sequence, source, occurrence, payload) = row.map_err(sql)?;
+            decode_inbox(sequence, room, agent, &source, &occurrence, &payload)
+        })
+        .collect()
+    }
     pub(crate) fn agent_registrations(&self, task: &str) -> Result<Vec<Registration>, DaemonError> {
         let db = self.lock_connection("agent.lifecycle.subscriptions")?;
         registrations(&db, task)
@@ -292,7 +317,7 @@ impl DurableKernelStateStore {
         work: Option<&str>,
     ) -> Result<Option<InboxEvent>, DaemonError> {
         let db = self.lock_connection("agent.lifecycle.front")?;
-        let row:Option<(i64,String,String,String)>=db.query_row(&format!("SELECT sequence,source_id,occurrence_id,payload FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND CASE WHEN json_valid(payload) THEN json_extract(payload,'$.state') IN ('submitting','uncertain','blocked') OR (json_extract(payload,'$.state')='pending' AND (?3 IS NULL OR {WORK_CORRELATED})) ELSE 1 END ORDER BY sequence LIMIT 1"),params![room,agent,work],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional().map_err(sql)?;
+        let row:Option<(i64,String,String,String)>=db.query_row(&format!("SELECT sequence,source_id,occurrence_id,payload FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND CASE WHEN json_valid(payload) THEN json_extract(payload,'$.state') IN ('submitting','uncertain','blocked') OR (json_extract(payload,'$.state')='pending' AND json_extract(payload,'$.kind') IS NOT 'task_cancelled' AND (?3 IS NULL OR {WORK_CORRELATED})) ELSE 1 END ORDER BY sequence LIMIT 1"),params![room,agent,work],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional().map_err(sql)?;
         row.map(|(seq, source, id, payload)| decode_inbox(seq, room, agent, &source, &id, &payload))
             .transpose()
     }
@@ -304,7 +329,7 @@ impl DurableKernelStateStore {
         agent: &str,
     ) -> Result<Option<InboxEvent>, DaemonError> {
         let db = self.lock_connection("agent.lifecycle.urgent")?;
-        let row:Option<(i64,String,String,String)>=db.query_row("SELECT sequence,source_id,occurrence_id,payload FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND CASE WHEN json_valid(payload) THEN json_extract(payload,'$.state') IN ('submitting','uncertain','blocked') OR (json_extract(payload,'$.state')='pending' AND json_extract(payload,'$.urgent')=1 AND json_extract(payload,'$.attempted_at_ms') IS NULL) ELSE 1 END ORDER BY CASE WHEN json_valid(payload) AND json_extract(payload,'$.state')='pending' THEN 1 ELSE 0 END,sequence LIMIT 1",params![room,agent],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional().map_err(sql)?;
+        let row:Option<(i64,String,String,String)>=db.query_row("SELECT sequence,source_id,occurrence_id,payload FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND CASE WHEN json_valid(payload) THEN json_extract(payload,'$.state') IN ('submitting','uncertain','blocked') OR (json_extract(payload,'$.state')='pending' AND json_extract(payload,'$.kind') IS NOT 'task_cancelled' AND json_extract(payload,'$.urgent')=1 AND json_extract(payload,'$.attempted_at_ms') IS NULL) ELSE 1 END ORDER BY CASE WHEN json_valid(payload) AND json_extract(payload,'$.state')='pending' THEN 1 ELSE 0 END,sequence LIMIT 1",params![room,agent],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional().map_err(sql)?;
         row.map(|(seq, source, id, payload)| decode_inbox(seq, room, agent, &source, &id, &payload))
             .transpose()
     }
@@ -325,7 +350,7 @@ impl DurableKernelStateStore {
         &self,
     ) -> Result<Vec<(String, String)>, DaemonError> {
         let db = self.lock_connection("agent.lifecycle.pending_recipients")?;
-        let mut q = db.prepare("SELECT DISTINCT room_id,agent_id FROM agent_inbox WHERE room_id>'' AND json_valid(payload) AND json_extract(payload,'$.state')='pending' ORDER BY room_id,agent_id").map_err(sql)?;
+        let mut q = db.prepare("SELECT DISTINCT room_id,agent_id FROM agent_inbox WHERE room_id>'' AND json_valid(payload) AND json_extract(payload,'$.state')='pending' AND json_extract(payload,'$.kind') IS NOT 'task_cancelled' ORDER BY room_id,agent_id").map_err(sql)?;
         let rows = q
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
             .map_err(sql)?;
