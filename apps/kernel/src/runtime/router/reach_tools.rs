@@ -161,6 +161,13 @@ impl CommandRouter {
         // may do in its own room; the window adds what /sudo adds at home.
         let sudo =
             match reach_need(&request) {
+                ReachNeed::Room if acquires_machine(&request) => {
+                    state.reach_sudo_turn(caller).filter(|turn| {
+                        state
+                            .authorize_sudo_request(&turn.entry_id, &request)
+                            .is_ok()
+                    })
+                }
                 ReachNeed::Room => None,
                 ReachNeed::HumanOnly => {
                     return Ok(refused(
@@ -198,7 +205,7 @@ impl CommandRouter {
                 "an agent does not answer the decisions of its own room; answer the room you drive",
             ));
         }
-        if acquires_machine(&request) {
+        if acquires_machine(&request) && sudo.is_none() {
             let offer = if let LocalDaemonRequest::ControlPlane(
                 crate::local::ControlPlaneRequest::Acquire {
                     capability_revision,
