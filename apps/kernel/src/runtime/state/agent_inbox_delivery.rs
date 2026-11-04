@@ -3,6 +3,14 @@ use super::*;
 use crate::durable_state::agent_lifecycle::{self as ledger, ExecutionState, Operation, Outcome};
 impl KernelRuntimeState {
     pub(super) fn agent_inbox_waits_for_vault(&self, room: &str, agent: &str) -> bool {
+        if !self
+            .owned
+            .agent_store
+            .get_agent(agent)
+            .is_ok_and(|agent| agent.remote_execution().is_none())
+        {
+            return false;
+        }
         self.owned
             .session_store
             .get_session(room)

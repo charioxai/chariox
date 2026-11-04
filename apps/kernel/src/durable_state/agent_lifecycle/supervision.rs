@@ -133,6 +133,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
         Operation::Sweep {
             now,
             busy_recipients,
+            vault_wait_recipients,
             held_work,
         } => {
             let mut changed = vec![];
@@ -259,7 +260,9 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             for mut e in events {
                 if e.state == "submitting"
                     && e.submit_epoch.is_none()
-                    && busy_recipients
+                    && e.provider_run_id.is_none()
+                    && e.target_prompt_id.is_none()
+                    && vault_wait_recipients
                         .iter()
                         .any(|(room, agent)| room == &e.room_id && agent == &e.agent_id)
                 {

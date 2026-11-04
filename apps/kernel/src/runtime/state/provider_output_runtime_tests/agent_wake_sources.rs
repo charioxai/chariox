@@ -324,6 +324,236 @@ async fn ev13_driver_occurrence_wakes_the_waiting_task_once() {
     assert_eq!(f.wake_state("wake-a"), "exited");
 }
 
+// MP-08 / MP-09 / MP-10 / MP-11: a worker can write a steer before its ACK reaches home.
+#[tokio::test]
+async fn delayed_leased_steer_ack_keeps_the_original_receipt_deadline_while_the_agent_is_busy() {
+    let home = fixture("pcd11-delayed-leased-steer-ack", true).await;
+    home.begin(&home.prompt_id);
+    let mut worker_config = crate::config::DaemonConfig::for_tests();
+    worker_config.accept_remote_leases = true;
+    let mut worker = DaemonApp::bootstrap(worker_config.clone()).unwrap();
+    let home_config = home.runtime.owned.config_projection.snapshot();
+    let owner = home
+        .runtime
+        .owned
+        .session_store
+        .get_session(&home.room)
+        .unwrap()
+        .owner_user_id()
+        .to_owned();
+    let lease = crate::app::RemoteLeaseRuntime::new(&mut worker)
+        .create_execution_lease(
+            &home_config.daemon_id,
+            &home.room,
+            &home.agent,
+            false,
+            &owner,
+        )
+        .unwrap();
+    let leased = crate::app::RemoteLeaseRuntime::new(&mut worker)
+        .create_leased_agent(
+            &lease.id,
+            "managed-dev-stub",
+            "default",
+            Some("default".into()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+    let context = crate::transport::relay_peer::RemoteGitTurnContext {
+        home_session_id: home.room.clone(),
+        home_agent_id: home.agent.clone(),
+        home_prompt_id: home.prompt_id.clone(),
+        home_turn_id: home.prompt_id.clone(),
+        source_attachment_id: None,
+        workspace_live_sync_mode: None,
+        prompt_origin: Some(crate::session::PromptOrigin::Chariox),
+        external_provider: None,
+        external_provider_session_id: None,
+        external_provider_turn_id: None,
+        prompt_summary: "active leased turn".into(),
+    };
+    let (worker_run, _) = crate::app::RemoteLeaseRuntime::new(&mut worker)
+        .submit_leased_prompt_with_workflow_context(
+            &leased.id,
+            "active leased turn",
+            Vec::new(),
+            None,
+            Some(context),
+            Vec::new(),
+            None,
+            crate::extension::RemoteExtensionManifest::default(),
+        )
+        .unwrap();
+    spawn_inert_pty_for_run(&mut worker, &worker_run);
+    let worker = Arc::new(Mutex::new(worker));
+    let _worker_pty = InertPtyCleanup {
+        app: worker.clone(),
+        provider_run_id: worker_run.clone(),
+    };
+    let worker_router =
+        crate::runtime::router::CommandRouter::with_interactive_capacity(worker.clone(), 1);
+    home.runtime
+        .owned
+        .agent_store
+        .bind_remote_execution(
+            &home.agent,
+            crate::agent::RemoteAgentBinding {
+                worker_kernel_id: worker_config.daemon_id,
+                worker_machine_id: worker_config.host_machine_id,
+                execution_lease_id: lease.id,
+                leased_agent_id: leased.id.clone(),
+                active_worker_provider_run_id: Some(worker_run.clone()),
+                relay_url: None,
+                relay_token: None,
+                relay_peer_protocol_version: Some(
+                    crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+                ),
+            },
+        )
+        .unwrap();
+    let mut event = crate::durable_state::agent_lifecycle::occurrence(
+        &home.room,
+        &home.agent,
+        "source",
+        "late-ack",
+        "message",
+        serde_json::json!({"text":"PCD11_STEER_WRITTEN_ONCE"}),
+    );
+    event.urgent = true;
+    let Outcome::Event(event) = home
+        .store()
+        .agent_lifecycle(Operation::Occur(event))
+        .unwrap()
+    else {
+        panic!("event");
+    };
+    let steer_id = format!("agent-event-{}-{}", home.agent, event.sequence);
+    let at = crate::session::unix_epoch_ms();
+    home.store()
+        .agent_lifecycle(Operation::Attempt {
+            room: home.room.clone(),
+            agent: home.agent.clone(),
+            sequence: event.sequence,
+            prompt: steer_id.clone(),
+            target: Some(home.prompt_id.clone()),
+            run: Some(crate::provider::projected_leased_provider_run_id(
+                &leased.id,
+                &worker_run,
+            )),
+            now: at,
+            work: None,
+        })
+        .unwrap();
+    // Drive the real worker entry and retain its ACK before recording it at home.
+    let ack = worker_router
+        .relay_steer_leased_prompt(
+            &leased.id,
+            &steer_id,
+            &home.prompt_id,
+            "PCD11_STEER_WRITTEN_ONCE",
+            "",
+            Vec::new(),
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(!ack.1);
+    let writes = || {
+        worker
+            .try_lock()
+            .unwrap()
+            .terminal()
+            .input_records()
+            .into_iter()
+            .filter(|record| {
+                String::from_utf8_lossy(&record.bytes).contains("PCD11_STEER_WRITTEN_ONCE")
+            })
+            .count()
+    };
+    assert_eq!(
+        writes(),
+        1,
+        "worker provider I/O happened before the home receipt"
+    );
+    let before = home
+        .store()
+        .agent_inbox(&home.room, &home.agent, 0)
+        .unwrap()
+        .remove(0);
+    assert!(
+        before.submit_epoch.is_none(),
+        "leased I/O is not yet represented by a home epoch"
+    );
+    assert!(home
+        .runtime
+        .owned
+        .prompt_state_owner
+        .active_prompt_for_agent(
+            &home
+                .runtime
+                .owned
+                .session_store
+                .get_session(&home.room)
+                .unwrap(),
+            &home.agent
+        )
+        .is_some());
+    assert!(!home
+        .runtime
+        .agent_inbox_waits_for_vault(&home.room, &home.agent));
+    home.store()
+        .agent_lifecycle(Operation::Sweep {
+            now: at + crate::durable_state::agent_lifecycle::DELIVERY_TIMEOUT_MS + 1,
+            vault_wait_recipients: Vec::new(),
+            busy_recipients: vec![(home.room.clone(), home.agent.clone())],
+            held_work: Vec::new(),
+        })
+        .unwrap();
+    let timed_out = home
+        .store()
+        .agent_inbox(&home.room, &home.agent, 0)
+        .unwrap()
+        .remove(0);
+    assert_eq!(
+        timed_out.state, "blocked",
+        "an active leased turn must not renew an already-sent receipt window"
+    );
+    assert_eq!(timed_out.attempted_at_ms, Some(at));
+    home.runtime
+        .record_agent_delivery_receipt(&home.room, &home.agent, event.sequence, "accepted")
+        .unwrap();
+    let replay = worker_router
+        .relay_steer_leased_prompt(
+            &leased.id,
+            &steer_id,
+            &home.prompt_id,
+            "PCD11_STEER_WRITTEN_ONCE",
+            "",
+            Vec::new(),
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(replay.1);
+    assert_eq!(
+        writes(),
+        1,
+        "late acceptance reconciliation never repeats provider I/O"
+    );
+    let after = home
+        .store()
+        .agent_inbox(&home.room, &home.agent, 0)
+        .unwrap();
+    assert_eq!(after.len(), 1);
+    assert_eq!(after[0].sequence, event.sequence);
+    assert_eq!(after[0].state, "accepted");
+}
+
 // MP-08 / MP-09 / MP-10 / MP-11 PCD-11: a cold provider cannot consume an answer before Vault approval.
 #[tokio::test]
 async fn declined_vault_start_blocks_the_wake_with_its_reason_and_resume_retries_the_answer_once() {
@@ -488,7 +718,8 @@ async fn refused_vault_wake_start(timed_out: bool) {
             now: pending.attempted_at_ms.unwrap()
                 + crate::durable_state::agent_lifecycle::DELIVERY_TIMEOUT_MS
                 + 1,
-            busy_recipients: busy,
+            vault_wait_recipients: busy,
+            busy_recipients: Vec::new(),
             held_work: Vec::new(),
         })
         .unwrap();
@@ -543,6 +774,7 @@ async fn refused_vault_wake_start(timed_out: bool) {
         .agent_lifecycle(Operation::Sweep {
             now: crate::session::unix_epoch_ms()
                 + 2 * crate::durable_state::agent_lifecycle::DELIVERY_TIMEOUT_MS,
+            vault_wait_recipients: Vec::new(),
             busy_recipients: Vec::new(),
             held_work: Vec::new(),
         })
@@ -1524,6 +1756,7 @@ async fn a_stalled_sweep_does_not_wake_a_live_wait_early() {
     f.store()
         .agent_lifecycle(Operation::Sweep {
             now: crate::session::unix_epoch_ms(),
+            vault_wait_recipients: Vec::new(),
             busy_recipients: Vec::new(),
             held_work: Vec::new(),
         })

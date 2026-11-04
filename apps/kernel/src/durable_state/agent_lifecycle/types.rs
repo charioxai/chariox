@@ -420,6 +420,8 @@ pub(crate) enum Operation {
     Sweep {
         now: u64,
         busy_recipients: Vec<(String, String)>,
+        /// A local cold start paused at a typed Vault unlock, before any provider I/O.
+        vault_wait_recipients: Vec<(String, String)>,
         /// A04: (room, agent, task) of sudo-held recipients; their unrelated
         /// events wait for the window to end like busy refusals.
         held_work: Vec<(String, String, String)>,
