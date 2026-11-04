@@ -65,6 +65,7 @@ test('a Linux bundle is assembled, signed and verified, and any change is refuse
   assert.ok(manifest.files.some(file => file.path === 'bin/chariox-app-wasm-worker'));
   assert.ok(!manifest.files.some(file => /^(runtime|libexec)\//.test(file.path)));
   const mode = path => manifest.files.find(file => file.path === path).mode;
+  assert.equal(mode('bin/chariox-app-wasm-worker'), '0555');
   assert.deepEqual(['bin/chariox', 'install.sh', 'LICENSE',
     'share/chariox/slice-build-context/apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh'].map(mode),
     ['0755', '0755', '0644', '0755']);
@@ -144,6 +145,7 @@ test('a macOS bundle carries only executables the signing receipt codesigned and
   assert.deepEqual(manifest.macosSigning, { identity: receipt.identity, teamId: 'TEAM123456', notarySubmissionId: 'submission-1',
     receiptSha256: sha256(await readFile(receiptPath)) });
   assert.ok(!manifest.files.some(file => file.path.startsWith('deploy/') || file.path === 'install.sh' || file.path.includes('chariox-app-storage')));
+  assert.equal(manifest.files.find(file => file.path === 'bin/chariox-app-wasm-worker').mode, '0555');
   await signBundle(options.output, releaseKeyPath);
   assert.equal((await verifyBundle(options.output, releasePublic)).platform, 'darwin-arm64');
 });

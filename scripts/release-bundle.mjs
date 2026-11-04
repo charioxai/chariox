@@ -148,6 +148,9 @@ function verifyMacosReceipt(receipt, digests) {
 }
 
 function modeOf(path, sourceMode) {
+  // Setup preserves signed modes; a user-owned WASM worker must be immutable
+  // to the kernel user before WasmRuntime::open will execute it.
+  if (path === 'bin/chariox-app-wasm-worker') return 0o555;
   if (path.startsWith('bin/') || path.startsWith('libexec/') || path === 'install.sh') return 0o755;
   return sourceMode & 0o111 ? 0o755 : 0o644;
 }
