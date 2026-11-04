@@ -1150,8 +1150,9 @@ export class KernelBrowserHost {
         // Late CDP acknowledgements and definitive text refusals leave nothing held; neither needs a browser reset.
         if ((dispatched && !lateInputAck(error) && !(error instanceof TextInsertionRefused) || ["browser_action_cancelled", "stale_document_reference"].includes(error?.code)) && this.isBrowserLive(browserAtStart)) {
           // Clear any dispatched key/button state before another actor can use
-          // the browser. Recovery rotates generation; cancelled input never replays.
-          await this.stop();
+          // the browser. Recovery rotates generation; cancelled input never replays. A reset is a loss the
+          // browser recovers from with its Tabs: only the owner's stop keeps it down.
+          await this.stop({ recovering: true });
         }
         throw error;
       }
@@ -1399,7 +1400,7 @@ export class KernelBrowserHost {
       // A cancelled request that may have dispatched input stops the browser (no held keys/buttons). A
       // cancelled read-only observation (a viewer's credit on a huge page) must not stop every Tab (MP-08/MP-10).
       if (error?.code === "browser_action_cancelled" && request.method !== "host.computer" && !request.params?.display_subscription_id
-        && this.browser === browserAtEntry && !(request.method === "host.browser" && OBSERVATION_OPS.has(request.params?.op))) await this.stop();
+        && this.browser === browserAtEntry && !(request.method === "host.browser" && OBSERVATION_OPS.has(request.params?.op))) await this.stop({ recovering: true });
       if (["browser_unavailable"].includes(error?.code)) {
         return { id: request.id, ok: false, error: { code: error.code, message: error.message } };
       }
