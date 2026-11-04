@@ -7,7 +7,7 @@ import { queuedJobsForAgent } from "./queued-jobs.js"
 const GIB = 2 ** 30
 const row = (pid: number, agent: string, state: SessionProcessState): SessionProcess => ({
   process_id: `process-${pid}`, owner: { kind: "agent", id: agent }, pid, command: "sh",
-  resident_set_bytes: 1, cpu_millis: 0, disk_io_bytes: null, age_ms: 0, sampled_at_ms: 0, state,
+  resident_set_bytes: 1, cpu_millis: 0, disk_io_bytes: null, disk_written_bytes: null, deleted_open_bytes: 0, outlived: false, age_ms: 0, sampled_at_ms: 0, state,
 })
 
 test("an agent's waiting commands read as queued-job rows in line order", () => {

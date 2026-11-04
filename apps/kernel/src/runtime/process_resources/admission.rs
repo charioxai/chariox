@@ -22,6 +22,9 @@ const GROWING: u64 = MIB;
 const SETTLE: Duration = Duration::from_secs(1);
 /// A paused command continues with room for this long at its last rate.
 const AHEAD: u64 = 2;
+/// A stopped filler needs a moment to give its space back before the next
+/// one is judged.
+const FILLER_SETTLE: Duration = Duration::from_secs(2);
 const REMEMBERED: usize = 4096;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -73,10 +76,6 @@ pub(super) struct Entry {
     admitted: bool,
     /// The user started it now: it never waits again.
     forced: bool,
-    /// It waited and its turn came: a writer then keeps writing, like the
-    /// oldest one, down to half the disk floor instead of waiting again a
-    /// moment later.
-    resumed: bool,
     /// It may wait for room: set when it starts, by who started it, and
     /// never changed after (a person's own terminal command never waits).
     holdable: bool,
@@ -98,6 +97,17 @@ pub(super) struct Entry {
     pub long_noticed: bool,
     /// Its known peak is larger than the whole pool: it is ended, not held.
     refused: Option<u64>,
+    /// It is the process filling a nearly full disk: it is ended, not held.
+    filling: Option<Filling>,
+}
+
+/// What a disk-full stop tells the stopped command and its agent.
+pub(super) struct Filling {
+    pub free: u64,
+    pub floor: u64,
+    pub rate: u64,
+    pub written: u64,
+    pub deleted_open: u64,
 }
 impl Entry {
     /// It waits from now on, for the reason `wait` names.
@@ -240,6 +250,8 @@ fn take_adopted(pid: u32) -> Option<HeldCommand> {
 pub(super) struct Ledger {
     arrivals: u64,
     resumed_at: BTreeMap<u8, Instant>,
+    /// When a command was last stopped for filling the disk.
+    filler_at: Option<Instant>,
     /// The owner whose command started last for each reason: the next one in
     /// line is the following owner's.
     served: BTreeMap<u8, String>,
@@ -273,6 +285,7 @@ impl Ledger {
         Self {
             arrivals: 0,
             resumed_at: BTreeMap::new(),
+            filler_at: None,
             served: BTreeMap::new(),
             peaks: Peaks::load(file),
         }
@@ -395,19 +408,10 @@ impl Ledger {
                 changed.push(owner);
             }
         }
-        // The oldest writer, and a writer whose turn in line came, keep
-        // writing into the margin above half the floor, so a build finishes
-        // and frees what it wrote; below that nothing may write.
-        let full = |entry: &Entry| {
-            entry.disk(room).is_some_and(|disk| {
-                disk.free < disk.floor
-                    && ((Some(entry.arrived) != state.oldest_writer && !entry.resumed)
-                        || disk.free < disk.floor / 2)
-            })
-        };
-        if let Some(owner) = self.pause(members, WaitReason::Disk, |entry, command| {
-            (command.write_growth >= GROWING && full(entry)).then_some(command.write_growth)
-        }) {
+        // A paused writer keeps its space, so nothing pauses for a full disk:
+        // below half the floor the process filling it is stopped, with its
+        // reason, and the others carry on.
+        if let Some(owner) = self.stop_filler(members, room) {
             changed.push(owner);
         }
         if let Some(owner) =
@@ -436,6 +440,73 @@ impl Ledger {
             }
         }
         may_stop
+    }
+
+    /// Marks the command filling a nearly full volume: the agent's writer
+    /// that wrote the most among those still writing there. A person's own
+    /// command is never chosen.
+    fn stop_filler(
+        &mut self,
+        members: &[Arc<Mutex<Observation>>],
+        room: &Room,
+    ) -> Option<Arc<Mutex<Observation>>> {
+        if self
+            .filler_at
+            .is_some_and(|at| at.elapsed() < FILLER_SETTLE)
+        {
+            return None;
+        }
+        let mut largest: Option<(u64, u32, Filling, &Arc<Mutex<Observation>>)> = None;
+        for member in members {
+            let observation = member.lock().unwrap_or_else(|e| e.into_inner());
+            for command in &observation.commands {
+                let Some(entry) = observation.admission.get(&command.pid) else {
+                    continue;
+                };
+                let Some(disk) = entry.disk(room).filter(|disk| disk.free < disk.floor / 2) else {
+                    continue;
+                };
+                if !entry.holdable
+                    || command.write_growth < GROWING
+                    || largest
+                        .as_ref()
+                        .is_some_and(|(written, ..)| command.writes <= *written)
+                {
+                    continue;
+                }
+                largest = Some((
+                    command.writes,
+                    command.pid,
+                    Filling {
+                        free: disk.free,
+                        floor: disk.floor,
+                        rate: command.write_growth,
+                        written: command.writes,
+                        deleted_open: command.deleted_open,
+                    },
+                    member,
+                ));
+            }
+        }
+        let (_, pid, filling, member) = largest?;
+        let mut observation = member.lock().unwrap_or_else(|e| e.into_inner());
+        observation.admission.get_mut(&pid)?.filling = Some(filling);
+        self.filler_at = Some(Instant::now());
+        Some(member.clone())
+    }
+
+    /// The commands of `current` marked as filling the disk; each is reported
+    /// once.
+    pub(super) fn take_fillers(
+        &mut self,
+        current: &Arc<Mutex<Observation>>,
+    ) -> Vec<(u32, Filling)> {
+        let mut observation = current.lock().unwrap_or_else(|e| e.into_inner());
+        observation
+            .admission
+            .iter_mut()
+            .filter_map(|(pid, entry)| Some((*pid, entry.filling.take()?)))
+            .collect()
     }
 
     /// The commands of `current` that can never fit the pool, with the peak
@@ -570,14 +641,8 @@ impl Ledger {
             WaitReason::Disk => (entry.memory_ahead(room), need(entry, reason, room)),
         };
         let volume = entry.disk(room);
-        // A paused build that nothing else is writing for continues while its
-        // volume still has half the floor: waiting longer frees no disk.
-        let paused = matches!(entry.wait, Some(Wait::Paused(_)));
         let fits = (memory <= *available || !state.heavy_running)
-            && volume.is_none_or(|volume| {
-                disk <= state.spare(volume)
-                    || paused && !state.writer_running && volume.free >= volume.floor / 2
-            });
+            && volume.is_none_or(|volume| disk <= state.spare(volume));
         if !fits {
             return None;
         }
@@ -591,7 +656,6 @@ impl Ledger {
         }
         entry.stop_waiting();
         entry.admitted = true;
-        entry.resumed = true;
         state.running(entry, room);
         let unit = observation.unit.clone();
         drop(observation);
@@ -650,11 +714,6 @@ struct State {
     oldest: Option<u64>,
     /// Something heavy runs, so waiting can make room.
     heavy_running: bool,
-    /// The oldest running heavy writer: never paused while its volume has
-    /// room for it, so a full disk does not stop every build.
-    oldest_writer: Option<u64>,
-    /// A heavy writer runs, so waiting can free disk.
-    writer_running: bool,
     /// Writes admitted commands still have ahead, by volume.
     disk: BTreeMap<u64, u64>,
 }
@@ -684,15 +743,6 @@ impl State {
                     .map_or(entry.arrived, |oldest| oldest.min(entry.arrived)),
             );
         }
-        let writer = entry.writes >= room.light
-            || entry.admitted && entry.expected.is_some_and(|peak| peak.writes >= room.light);
-        if writer {
-            self.writer_running = true;
-            self.oldest_writer = Some(
-                self.oldest_writer
-                    .map_or(entry.arrived, |oldest| oldest.min(entry.arrived)),
-            );
-        }
     }
 
     fn read(members: &[Arc<Mutex<Observation>>], room: &Room) -> Self {
@@ -700,8 +750,6 @@ impl State {
             reserved: 0,
             oldest: None,
             heavy_running: false,
-            oldest_writer: None,
-            writer_running: false,
             disk: BTreeMap::new(),
         };
         for member in members {
@@ -849,6 +897,12 @@ fn disk_room(volume: &Volume, path: &Path) -> Option<Disk> {
         free: space.free,
         floor: (space.total / 20).max(DISK_FLOOR),
     })
+}
+
+/// The volume holding `path`: its id, free bytes and floor.
+pub(crate) fn volume_floor(path: &Path) -> Option<(u64, u64, u64)> {
+    let disk = disk_room(&statvfs, path)?;
+    Some((disk.id, disk.free, disk.floor))
 }
 
 #[cfg(unix)]

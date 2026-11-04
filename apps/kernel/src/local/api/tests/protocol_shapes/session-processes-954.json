@@ -1,5 +1,5 @@
 {
-  "protocol_version": 983,
+  "protocol_version": 985,
   "relay_peer_protocol_version": 424,
   "shapes": [
     {
@@ -9,7 +9,10 @@
           "age_ms": 3000,
           "command": "python3",
           "cpu_millis": 250,
+          "deleted_open_bytes": 0,
           "disk_io_bytes": 4096,
+          "disk_written_bytes": 4096,
+          "outlived": false,
           "owner": {
             "id": "agent-1",
             "kind": "agent"
@@ -26,7 +29,10 @@
           "age_ms": 1000,
           "command": "cargo",
           "cpu_millis": 0,
+          "deleted_open_bytes": 0,
           "disk_io_bytes": 4096,
+          "disk_written_bytes": 4096,
+          "outlived": false,
           "owner": {
             "id": "agent-1",
             "kind": "agent"
@@ -50,7 +56,10 @@
           "age_ms": 1000,
           "command": "pnpm",
           "cpu_millis": 0,
+          "deleted_open_bytes": 0,
           "disk_io_bytes": 4096,
+          "disk_written_bytes": 4096,
+          "outlived": false,
           "owner": {
             "id": "agent-2",
             "kind": "agent"

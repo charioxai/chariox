@@ -34,6 +34,11 @@ pub(super) enum WatchCommand {
         limit_bytes: u64,
         notice: String,
     },
+    /// The command fills a nearly full disk: it ends with this reason.
+    DiskStop {
+        pid: u32,
+        notice: String,
+    },
     Stop {
         process_id: Option<String>,
         reply: mpsc::SyncSender<Result<Vec<String>, String>>,

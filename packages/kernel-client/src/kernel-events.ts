@@ -223,6 +223,12 @@ export type SessionProcess = {
   cpu_millis: number
   /** Cumulative storage reads and writes; null when the OS cannot report it. */
   disk_io_bytes: number | null
+  /** Bytes this process wrote to storage; null when the OS cannot report it. */
+  disk_written_bytes: number | null
+  /** Bytes of deleted files it still holds open (they take space until it lets go). */
+  deleted_open_bytes: number
+  /** It kept running after the command that started it ended. */
+  outlived: boolean
   age_ms: number
   sampled_at_ms: number
   state: SessionProcessState

@@ -33,6 +33,8 @@ pub(super) struct Pool {
 #[derive(Clone, Copy)]
 pub(super) struct CommandUse {
     pub pid: u32,
+    /// Bytes of deleted files its processes still hold open.
+    pub deleted_open: u64,
     /// Its process group: the shell's job it belongs to.
     pub group: Option<u32>,
     pub resident: u64,
@@ -178,12 +180,42 @@ impl Pool {
         };
         let may_stop = ledger.pass(&members, current, &room);
         let refused = ledger.take_refused(current);
+        let fillers = ledger.take_fillers(current);
         drop(ledger);
         self.end_oversized(current, refused, room.capacity);
+        self.end_fillers(current, fillers);
         // Paused and held commands do not grow: with nothing growing the
         // pool waits rather than stops.
         if may_stop && growing > 0 && self.pressed(&members) {
             self.stop_one(&members, None, Cause::Pressure);
+        }
+    }
+
+    /// A command filling a nearly full disk ends now, with the reason in its
+    /// own error stream.
+    fn end_fillers(
+        &self,
+        current: &Arc<Mutex<Observation>>,
+        fillers: Vec<(u32, admission::Filling)>,
+    ) {
+        let control = current
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .control
+            .clone();
+        let Some(control) = control else {
+            return;
+        };
+        for (pid, filling) in fillers {
+            let notice = super::waits::filling_line(&filling);
+            crate::logging::warn_with_fields(
+                "process_resources.disk_stop",
+                notice.trim_end(),
+                serde_json::json!({"pid": pid, "free_bytes": filling.free, "floor_bytes": filling.floor,
+                    "written_bytes": filling.written, "deleted_open_bytes": filling.deleted_open,
+                    "rate_bytes_per_second": filling.rate}),
+            );
+            let _ = control.send(WatchCommand::DiskStop { pid, notice });
         }
     }
 
@@ -205,9 +237,9 @@ impl Pool {
         };
         for (pid, needs) in refused {
             let notice = format!(
-                "chariox: stopped this command: it needs about {} GB and this machine's memory pool is {} GB, so it can never fit here. Run it on a larger machine or lower its memory use.\n",
-                needs.div_ceil(1024 * MIB),
-                capacity / (1024 * MIB),
+                "chariox: stopped this command: it needs about {} and this machine's memory pool is {}, so it can never fit here. Run it on a larger machine or lower its memory use.\n",
+                super::waits::size(needs),
+                super::waits::size(capacity),
             );
             crate::logging::warn_with_fields(
                 "process_resources.memory_stop",

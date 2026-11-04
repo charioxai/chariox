@@ -5,6 +5,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 mod control;
+mod disk_use;
 #[cfg(test)]
 pub(crate) use control::pause_sampling_for_key;
 use control::WatchCommand;
@@ -29,7 +30,7 @@ mod submissions;
 mod waits;
 #[cfg(test)]
 pub(crate) use admission::WaitReason;
-pub(crate) use admission::{adopt_admission, HeldCommand};
+pub(crate) use admission::{adopt_admission, volume_floor, HeldCommand};
 #[cfg(test)]
 pub(crate) use projection::released_keys_for_session;
 pub(crate) use projection::SessionProcessState;
@@ -41,7 +42,7 @@ pub(crate) use session_sweep::SessionSweep;
 pub(crate) use submissions::Submissions;
 #[cfg(test)]
 pub(crate) use waits::push_for_tests as push_wait_event;
-pub(crate) use waits::{long_wait_notice, take_wait_events, WaitChange, WaitEvent};
+pub(crate) use waits::{long_wait_notice, size, take_wait_events, WaitChange, WaitEvent};
 #[cfg(test)]
 mod admission_tests;
 #[cfg(target_os = "linux")]
@@ -330,6 +331,10 @@ impl PreparedDomain {
                 // Rates use the process table's own time: watches share a
                 // cached table, so a tick can see the same table again.
                 let sampled_at = samples.iter().map(|p| p.sampled_at_ms).max().unwrap_or(0);
+                let deleted = samples
+                    .iter()
+                    .map(|sample| (sample.pid, sample.deleted_open_bytes))
+                    .collect::<std::collections::BTreeMap<_, _>>();
                 let commands = tree
                     .commands(&samples)
                     .into_iter()
@@ -351,6 +356,10 @@ impl PreparedDomain {
                         };
                         pool::CommandUse {
                             pid,
+                            deleted_open: pids
+                                .iter()
+                                .filter_map(|pid| deleted.get(pid))
+                                .sum(),
                             group: process_group(pid),
                             resident,
                             growth,
@@ -449,6 +458,11 @@ impl PreparedDomain {
                             announce(pid, &notice);
                             tell_stopped(&watched, pid, notice);
                         }
+                        tree.kill(pid);
+                    }
+                    Ok(WatchCommand::DiskStop { pid, notice }) => {
+                        announce(pid, &notice);
+                        tell_stopped(&watched, pid, notice);
                         tree.kill(pid);
                     }
                     Ok(WatchCommand::Stop { process_id, reply }) => {

@@ -1049,6 +1049,9 @@ fn local_daemon_protocol_session_process_memory_outcomes_are_versioned() {
                     command: "python3".into(),
                     resident_set_bytes: 1048576,
                     disk_io_bytes: Some(4096),
+                    disk_written_bytes: Some(4096),
+                    deleted_open_bytes: 0,
+                    outlived: false,
                     cpu_millis: 250,
                     sampled_at_ms: 10000,
                     age_ms: 3000,
@@ -1062,6 +1065,9 @@ fn local_daemon_protocol_session_process_memory_outcomes_are_versioned() {
                     command: "cargo".into(),
                     resident_set_bytes: 1048576,
                     disk_io_bytes: Some(4096),
+                    disk_written_bytes: Some(4096),
+                    deleted_open_bytes: 0,
+                    outlived: false,
                     cpu_millis: 0,
                     sampled_at_ms: 10000,
                     age_ms: 1000,
@@ -1083,6 +1089,9 @@ fn local_daemon_protocol_session_process_memory_outcomes_are_versioned() {
                     command: "pnpm".into(),
                     resident_set_bytes: 1048576,
                     disk_io_bytes: Some(4096),
+                    disk_written_bytes: Some(4096),
+                    deleted_open_bytes: 0,
+                    outlived: false,
                     cpu_millis: 0,
                     sampled_at_ms: 10000,
                     age_ms: 1000,
@@ -1170,6 +1179,6 @@ fn local_daemon_protocol_session_process_memory_outcomes_are_versioned() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "14d9486f73b1aed677170c1323b5c8d02263fa2f00afc43bda09ade5e3376d32"
+        "8790130047762b010f9cf489b1bd72d0936c38893ad65c41ce76a872998a752b"
     );
 }

@@ -468,4 +468,7 @@ pub use workspace::*;
 /// Allocated 983 gives a waiting command one row: `SessionProcessState` `held` and `paused` carry the
 /// same fields (reason, place in line, need, free, command line, folder, waiting since), and an
 /// outside `process` event carries that row (peer424).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 983;
+/// Allocated 985 adds what a process holds on disk to its row: `disk_written_bytes`,
+/// `deleted_open_bytes` (deleted files it keeps open) and `outlived` (it kept running after the
+/// command that started it ended). The peer protocol is unchanged (424).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 985;

@@ -7,7 +7,7 @@ fn usage_snapshot_770_contract_roundtrips_without_private_profiles() {
     let bytes = include_bytes!("usage-snapshot-770.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "d790eec257da33ecb8499538c786d398873ddc3afac7610d386be3a5ec76501c"
+        "49773a65bb8b6f57ad6d93af12f87c1d7530a4c2f14f2ddaf06e17fdae89ff6e"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     for request in fixture["requests"].as_array().unwrap() {

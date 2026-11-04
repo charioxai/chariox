@@ -78,8 +78,18 @@ fn ordinal(n: u32) -> String {
     format!("{n}{suffix}")
 }
 
-fn gigabytes(bytes: u64) -> String {
-    format!("{} GB", (bytes / (1024 * MIB)).max(1))
+/// Sizes in the lines a command, an agent and a person read: gigabytes with
+/// one decimal from one gigabyte up (and for none), megabytes below. 3.37 and
+/// 2.4 do not both round to a misleading whole number, and 0 reads "0 GB".
+pub(crate) fn size(bytes: u64) -> String {
+    if bytes != 0 && bytes < 1024 * MIB {
+        return format!("{} MB", (bytes + MIB / 2) / MIB);
+    }
+    let tenths = (bytes * 10 + 512 * MIB) / (1024 * MIB);
+    match tenths % 10 {
+        0 => format!("{} GB", tenths / 10),
+        decimal => format!("{}.{decimal} GB", tenths / 10),
+    }
 }
 
 fn duration(ms: u64) -> String {
@@ -105,9 +115,28 @@ pub(super) fn began_line(state: &SessionProcessState) -> Option<String> {
         "chariox: this command {what} for {} ({} in line, about {} needed, {} free). It continues by itself when there is room; Start now in Machines runs it at once, Cancel ends it.{stays}\n",
         resource(row.reason),
         ordinal(row.position.max(1)),
-        gigabytes(row.need_bytes),
-        gigabytes(row.free_bytes),
+        size(row.need_bytes),
+        size(row.free_bytes),
     ))
+}
+
+/// Why a command filling the disk was ended, on its own error stream.
+pub(super) fn filling_line(filling: &super::admission::Filling) -> String {
+    let deleted = if filling.deleted_open > 0 {
+        format!(
+            " It also held {} in deleted files it kept open; they are freed with it.",
+            size(filling.deleted_open)
+        )
+    } else {
+        String::new()
+    };
+    format!(
+        "chariox: stopped this command: the disk has {} free (the floor is {}) and this command was filling it, writing {}/s ({} written so far).{deleted} Free space or move its output elsewhere, then run it again.\n",
+        size(filling.free),
+        size(filling.floor),
+        size(filling.rate),
+        size(filling.written),
+    )
 }
 
 pub(super) fn resumed_line(waited_ms: u64) -> String {
@@ -125,4 +154,18 @@ pub(crate) fn long_wait_notice(row: &Waiting, now_ms: u64) -> String {
         duration(now_ms.saturating_sub(row.since_ms)),
         resource(row.reason),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sizes_read_in_gigabytes_with_a_decimal_megabytes_below_and_zero_stays_zero() {
+        assert_eq!(size(0), "0 GB");
+        assert_eq!(size(8 * MIB), "8 MB");
+        assert_eq!(size(2 * 1024 * MIB), "2 GB");
+        assert_eq!(size(3 * 1024 * MIB + 380 * MIB), "3.4 GB");
+        assert_eq!(size(2 * 1024 * MIB + 410 * MIB), "2.4 GB");
+    }
 }

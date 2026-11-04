@@ -32,6 +32,7 @@ fn room<'a>(memory: u64, tight: bool, volume: &'a Volume) -> Room<'a> {
 fn command(pid: u32, resident: u64, growth: u64) -> pool::CommandUse {
     pool::CommandUse {
         pid,
+        deleted_open: 0,
         group: None,
         resident,
         growth,
@@ -83,6 +84,7 @@ fn scratch(writes: u64) -> Peak {
 /// Lets the next resume of any reason happen at once.
 fn unsettle(ledger: &mut Ledger) {
     ledger.resumed_at.clear();
+    ledger.filler_at = None;
 }
 
 #[test]
@@ -706,20 +708,25 @@ fn a_paused_and_a_held_command_are_one_row_apart_from_the_kind() {
 }
 
 /// Five builds write onto a volume that cannot hold all of them; a build that
-/// ends deletes its scratch. Each tick every owner's sample runs one pass.
+/// ends, or is stopped for filling the disk, deletes its scratch. Each tick
+/// every owner's sample runs one pass.
 #[test]
-fn writing_builds_finish_one_after_another_on_a_nearly_full_disk() {
+fn the_disk_never_fills_up_while_five_builds_write_and_the_filler_goes() {
     const BUILDS: u32 = 5;
     const PEAK: u64 = 10 * GIB;
     const START_FREE: u64 = 46 * GIB;
+    const STEP: u64 = GIB / 2;
     let written = Arc::new(Mutex::new(BTreeMap::<u32, u64>::new()));
+    let least_free = Arc::new(AtomicU64::new(u64::MAX));
     let free = {
-        let written = written.clone();
+        let (written, least_free) = (written.clone(), least_free.clone());
         Box::new(move |_: &Path| {
             let used = written.lock().unwrap().values().sum::<u64>();
+            let free = START_FREE.saturating_sub(used);
+            least_free.fetch_min(free, Ordering::SeqCst);
             Some(Space {
                 id: 1,
-                free: START_FREE.saturating_sub(used),
+                free,
                 total: 100 * GIB,
             })
         }) as Box<Volume>
@@ -737,18 +744,16 @@ fn writing_builds_finish_one_after_another_on_a_nearly_full_disk() {
             )
         })
         .collect::<Vec<_>>();
-    let mut finished = Vec::new();
+    let (mut finished, mut stopped) = (Vec::new(), Vec::new());
     for _tick in 0..400 {
         for (pid, member) in (1..=BUILDS).zip(&owners) {
-            if finished.contains(&pid) {
+            if finished.contains(&pid) || stopped.contains(&pid) {
                 continue;
             }
-            let paused = member.lock().unwrap().admission[&pid].wait.is_some();
-            let grown = if paused { 0 } else { 2 * GIB };
             let total = {
                 let mut written = written.lock().unwrap();
                 let total = written.entry(pid).or_default();
-                *total += grown;
+                *total += STEP;
                 *total
             };
             if total >= PEAK {
@@ -756,27 +761,46 @@ fn writing_builds_finish_one_after_another_on_a_nearly_full_disk() {
                 member.lock().unwrap().commands.clear();
                 finished.push(pid);
             } else {
-                member.lock().unwrap().commands = vec![writer(pid, total, grown)];
+                member.lock().unwrap().commands = vec![writer(pid, total, STEP)];
             }
         }
         for member in &owners {
             ledger.register(member, 512 * MIB);
             unsettle(&mut ledger);
             ledger.pass(&owners, member, &room(GIB, false, &*free));
+            for (pid, _) in ledger.take_fillers(member) {
+                written.lock().unwrap().remove(&pid);
+                member.lock().unwrap().commands.clear();
+                stopped.push(pid);
+            }
         }
-        if finished.len() == BUILDS as usize {
-            return;
+        if finished.len() + stopped.len() == BUILDS as usize {
+            break;
         }
     }
-    let waiting = (1..=BUILDS)
-        .filter(|pid| !finished.contains(pid))
-        .collect::<Vec<_>>();
-    panic!("builds {waiting:?} never finished: every writer is paused on the full disk");
+    assert_eq!(
+        finished.len() + stopped.len(),
+        BUILDS as usize,
+        "builds are still running: finished {finished:?}, stopped {stopped:?}"
+    );
+    assert!(
+        !stopped.is_empty(),
+        "nothing was stopped on a disk too small for five builds"
+    );
+    assert!(
+        !finished.is_empty(),
+        "every build was stopped: the others should finish once the filler is gone"
+    );
+    assert!(
+        least_free.load(Ordering::SeqCst) > 0,
+        "the disk filled up completely"
+    );
 }
 
 fn writer(pid: u32, writes: u64, write_growth: u64) -> pool::CommandUse {
     pool::CommandUse {
         pid,
+        deleted_open: 0,
         group: None,
         resident: 100 * MIB,
         growth: 0,
@@ -787,60 +811,26 @@ fn writer(pid: u32, writes: u64, write_growth: u64) -> pool::CommandUse {
     }
 }
 
-#[test]
-fn the_oldest_writer_keeps_writing_down_to_half_the_floor_and_stops_below() {
-    // A 100 GiB volume has a 10 GiB floor.
-    let free = Arc::new(AtomicU64::new(7 * GIB));
-    let volume = volume(&free);
-    let mut build = entry(1, Peak::default());
+fn writing(pid: u32, writes: u64, write_growth: u64) -> (u32, Entry, pool::CommandUse) {
+    let mut build = entry(pid as u64, Peak::default());
     build.expected = None;
     build.admitted = true;
-    build.writes = GIB;
-    let current = owner(
-        "agent",
-        true,
-        vec![writer(1, GIB, 8 * MIB)],
-        vec![(1, build)],
-    );
-    let mut ledger = Ledger::new(None);
-    ledger.pass(
-        std::slice::from_ref(&current),
-        &current,
-        &room(GIB, false, &*volume),
-    );
-    assert_eq!(
-        wait(&current, 1),
-        None,
-        "the only writer was stopped above half the floor"
-    );
-    free.store(4 * GIB, Ordering::SeqCst);
-    ledger.pass(
-        std::slice::from_ref(&current),
-        &current,
-        &room(GIB, false, &*volume),
-    );
-    assert_eq!(
-        wait(&current, 1),
-        Some(Wait::Paused(WaitReason::Disk)),
-        "the only writer kept writing below half the floor"
-    );
+    build.writes = writes;
+    (pid, build, writer(pid, writes, write_growth))
 }
 
 #[test]
-fn a_writer_whose_turn_came_keeps_writing_down_to_half_the_floor() {
-    // A 100 GiB volume has a 10 GiB floor: 9 GiB is below it, above its half.
-    let free = Arc::new(AtomicU64::new(9 * GIB));
+fn the_writer_filling_a_nearly_full_disk_is_stopped_never_paused() {
+    // A 100 GiB volume has a 10 GiB floor: 4 GiB is below its half.
+    let free = Arc::new(AtomicU64::new(4 * GIB));
     let volume = volume(&free);
-    let mut build = entry(1, Peak::default());
-    build.expected = None;
-    build.wait = Some(Wait::Paused(WaitReason::Disk));
-    build.stopped = true;
-    build.writes = 100 * MIB;
+    let (_, orphan, orphan_use) = writing(1, 6 * GIB, 8 * MIB);
+    let (_, build, build_use) = writing(2, 100 * MIB, 50 * MIB);
     let current = owner(
         "agent",
         true,
-        vec![writer(1, 100 * MIB, 50 * MIB)],
-        vec![(1, build)],
+        vec![orphan_use, build_use],
+        vec![(1, orphan), (2, build)],
     );
     let mut ledger = Ledger::new(None);
     let pass = |ledger: &mut Ledger| {
@@ -851,23 +841,56 @@ fn a_writer_whose_turn_came_keeps_writing_down_to_half_the_floor() {
         );
     };
     pass(&mut ledger);
+    let fillers = ledger.take_fillers(&current);
     assert_eq!(
-        wait(&current, 1),
-        None,
-        "the waiting writer did not continue"
+        fillers.iter().map(|(pid, _)| *pid).collect::<Vec<_>>(),
+        vec![1],
+        "the writer that wrote the most is the filler, not the fastest or the newest"
     );
-    pass(&mut ledger);
+    assert_eq!(fillers[0].1.written, 6 * GIB);
+    assert_eq!(wait(&current, 1), None, "the filler was paused");
     assert_eq!(
-        wait(&current, 1),
+        wait(&current, 2),
         None,
-        "the writer that just continued was paused again"
+        "another owner's build was paused for it"
     );
-    free.store(4 * GIB, Ordering::SeqCst);
+    assert!(ledger.take_fillers(&current).is_empty(), "reported twice");
+    // The next one is judged only after the first gave its space back.
     pass(&mut ledger);
-    assert_eq!(
-        wait(&current, 1),
-        Some(Wait::Paused(WaitReason::Disk)),
-        "a writer kept writing below half the floor"
+    assert!(
+        ledger.take_fillers(&current).is_empty(),
+        "stopped a second at once"
+    );
+}
+
+#[test]
+fn writers_above_half_the_floor_and_a_persons_command_are_left_alone() {
+    let free = Arc::new(AtomicU64::new(9 * GIB));
+    let volume = volume(&free);
+    let (_, build, build_use) = writing(1, 6 * GIB, 50 * MIB);
+    let current = owner("agent", true, vec![build_use], vec![(1, build)]);
+    let mut ledger = Ledger::new(None);
+    ledger.pass(
+        std::slice::from_ref(&current),
+        &current,
+        &room(GIB, false, &*volume),
+    );
+    assert!(
+        ledger.take_fillers(&current).is_empty(),
+        "stopped a writer above half the floor"
+    );
+    free.store(2 * GIB, Ordering::SeqCst);
+    let (_, mut own, own_use) = writing(2, 6 * GIB, 50 * MIB);
+    own.holdable = false;
+    let person = owner("person", false, vec![own_use], vec![(2, own)]);
+    ledger.pass(
+        std::slice::from_ref(&person),
+        &person,
+        &room(GIB, false, &*volume),
+    );
+    assert!(
+        ledger.take_fillers(&person).is_empty(),
+        "stopped a person's own command"
     );
 }
 
