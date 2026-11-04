@@ -118,9 +118,8 @@ impl RegistrationHost for UserRegistrations {
     }
 }
 
-fn token_variable(name: &str) -> String {
-    let upper: String = name
-        .chars()
+fn variable_name(name: &str) -> String {
+    name.chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() {
                 c.to_ascii_uppercase()
@@ -128,14 +127,14 @@ fn token_variable(name: &str) -> String {
                 '_'
             }
         })
-        .collect();
-    format!("{upper}_TOKEN")
+        .collect()
 }
 
 /// A registration whose keys come from the environment of the process that runs it, which on every kernel carries the
 /// Project's Secrets: a credential handle exists on one kernel only, an environment variable name travels.
 pub(crate) fn portable_mcp(mut config: CharioxMcpServerConfig) -> CharioxMcpServerConfig {
-    let token = token_variable(&config.name);
+    let prefix = variable_name(&config.name);
+    let token = format!("{prefix}_TOKEN");
     match &mut config.transport {
         CharioxMcpTransportConfig::Stdio {
             credential_env,
@@ -151,10 +150,31 @@ pub(crate) fn portable_mcp(mut config: CharioxMcpServerConfig) -> CharioxMcpServ
         CharioxMcpTransportConfig::StreamableHttp {
             bearer_token_env_var,
             bearer_token_credential,
+            credential_http_headers,
+            env_http_headers,
             ..
         } => {
             if bearer_token_credential.take().is_some() && bearer_token_env_var.is_none() {
                 *bearer_token_env_var = Some(token);
+            }
+            let mut names: std::collections::BTreeSet<_> = bearer_token_env_var
+                .iter()
+                .chain(env_http_headers.values())
+                .cloned()
+                .collect();
+            for (header, _) in std::mem::take(credential_http_headers) {
+                // An explicit environment header already takes precedence over a credential header at launch.
+                if env_http_headers.contains_key(&header) {
+                    continue;
+                }
+                let base = format!("{prefix}_HEADER_{}", variable_name(&header));
+                let mut variable = base.clone();
+                let mut suffix = 2;
+                while !names.insert(variable.clone()) {
+                    variable = format!("{base}_{suffix}");
+                    suffix += 1;
+                }
+                env_http_headers.insert(header, variable);
             }
         }
     }
@@ -213,5 +233,41 @@ mod tests {
             *bearer_token_credential = Some("cred-2".into());
         }
         assert_eq!(mcp_key_names(&http), vec!["MY_API_TOKEN".to_string()]);
+    }
+    #[test]
+    fn credential_headers_get_distinct_portable_names_and_keep_explicit_environment_bindings() {
+        let mut config =
+            CharioxMcpServerConfig::streamable_http("api", "https://example.invalid/mcp");
+        if let CharioxMcpTransportConfig::StreamableHttp {
+            credential_http_headers,
+            env_http_headers,
+            ..
+        } = &mut config.transport
+        {
+            for header in ["X-Api-Key", "X_Api_Key", "X-Explicit"] {
+                credential_http_headers.insert(
+                    header.into(),
+                    CharioxMcpCredentialBinding {
+                        credential: "source-only-handle".into(),
+                    },
+                );
+            }
+            env_http_headers.insert("X-Explicit".into(), "EXPLICIT_KEY".into());
+        }
+        let portable = portable_mcp(config);
+        if let CharioxMcpTransportConfig::StreamableHttp {
+            credential_http_headers,
+            env_http_headers,
+            ..
+        } = &portable.transport
+        {
+            assert!(credential_http_headers.is_empty());
+            assert_eq!(env_http_headers["X-Api-Key"], "API_HEADER_X_API_KEY");
+            assert_eq!(env_http_headers["X_Api_Key"], "API_HEADER_X_API_KEY_2");
+            assert_eq!(env_http_headers["X-Explicit"], "EXPLICIT_KEY");
+        } else {
+            panic!("HTTP registration");
+        }
+        assert_eq!(mcp_key_names(&portable).len(), 3);
     }
 }

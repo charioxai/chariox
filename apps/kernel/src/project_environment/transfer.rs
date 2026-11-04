@@ -995,15 +995,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn imported_http_mcp_uses_imported_project_secrets_for_authentication() {
-        use crate::mcp::{CharioxMcpServerConfig, CharioxMcpTransportConfig};
+    async fn imported_http_mcp_credential_headers_use_portable_project_secrets() {
+        use crate::mcp::{
+            CharioxMcpCredentialBinding, CharioxMcpServerConfig, CharioxMcpTransportConfig,
+        };
         use std::collections::BTreeMap;
         use std::io::{BufRead, BufReader, Read, Write};
         use std::net::TcpListener;
 
         crate::test_support::isolated_env_test!();
         std::env::set_var("HTTP_TEST_TOKEN", "unrelated-ambient-account");
-        std::env::set_var("HTTP_TEST_HEADER", "unrelated-ambient-header");
+        std::env::set_var("HTTP_TEST_HEADER_X_API_KEY", "unrelated-ambient-header");
         std::env::set_var("HTTP_TEST_FALLBACK", "ambient-fallback");
         let rig = Rig::new();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -1014,17 +1016,32 @@ mod tests {
         if let CharioxMcpTransportConfig::StreamableHttp {
             bearer_token_credential,
             env_http_headers,
+            credential_http_headers,
             ..
         } = &mut config.transport
         {
             *bearer_token_credential = Some("source-vault-handle".into());
-            env_http_headers.insert("X-Account".into(), "HTTP_TEST_HEADER".into());
+            credential_http_headers.insert(
+                "X-Api-Key".into(),
+                CharioxMcpCredentialBinding {
+                    credential: "source-header-handle".into(),
+                },
+            );
             env_http_headers.insert("X-Fallback".into(), "HTTP_TEST_FALLBACK".into());
         }
+        let keys = super::super::registrations::mcp_key_names(&config);
+        assert!(
+            keys.contains(&"HTTP_TEST_HEADER_X_API_KEY".to_string()),
+            "credential header needs a Project Secret"
+        );
         let portable = super::super::registrations::portable_mcp(config);
-        let mut saved = record(1, &["HTTP_TEST_TOKEN", "HTTP_TEST_HEADER"], &[]);
+        let mut saved = record(1, &["HTTP_TEST_TOKEN", "HTTP_TEST_HEADER_X_API_KEY"], &[]);
         saved.mcps.push(ExtensionEntry::registration("http-test"));
-        let mut from = source(Some(saved), &["HTTP_TEST_TOKEN", "HTTP_TEST_HEADER"], &[]);
+        let mut from = source(
+            Some(saved),
+            &["HTTP_TEST_TOKEN", "HTTP_TEST_HEADER_X_API_KEY"],
+            &[],
+        );
         if let Ok(snapshot) = &mut from.snapshot {
             snapshot.mcps.push("http-test".into());
         }
@@ -1042,7 +1059,7 @@ mod tests {
             panic!("imported MCP")
         };
         let service = project_environment_vault_service("p");
-        let values = ["HTTP_TEST_TOKEN", "HTTP_TEST_HEADER"]
+        let values = ["HTTP_TEST_TOKEN", "HTTP_TEST_HEADER_X_API_KEY"]
             .into_iter()
             .map(|name| (name.into(), rig.vault.get_secret(&service, name).unwrap()))
             .collect::<BTreeMap<_, _>>();
@@ -1085,7 +1102,7 @@ mod tests {
             "imported Project bearer was not used"
         );
         assert!(
-            headers.contains("X-Account: synthetic-HTTP_TEST_HEADER\r\n"),
+            headers.contains("X-Api-Key: synthetic-HTTP_TEST_HEADER_X_API_KEY\r\n"),
             "imported Project header was not used"
         );
         assert!(headers.contains("X-Fallback: ambient-fallback\r\n"));
