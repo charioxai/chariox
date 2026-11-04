@@ -60,9 +60,16 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
   let generation = 0
   let projectId = ""
   let loading = false
-  let environment: ProjectEnvironmentView | null = null
-  // Text the user typed and has not saved; a field absent here shows the saved record.
-  let typed: { script?: string; variables?: string } = {}
+  // Completed edits and their saves belong to the Project, even while its dialog is closed.
+  type Editor = {
+    projectId: string
+    environment: ProjectEnvironmentView | null
+    typed: { script?: string; variables?: string }
+    busy: boolean
+    saveTextPending: boolean
+  }
+  const editors = new Map<string, Editor>()
+  let editor: Editor = { projectId: "", environment: null, typed: {}, busy: false, saveTextPending: false }
   let focus: EnvironmentFocus = { kind: "run" }
   let input: Input | null = null
   let operation: EnvironmentOperationView | null = null
@@ -71,12 +78,10 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
   let sources: readonly EnvironmentSourceKernel[] = []
   let sourceIndex = 0
   let message: string | null = null
-  let busy = false
-  let saveTextPending = false
   const pollingOperations = new Map<string, object>()
 
-  const script = () => typed.script ?? environment?.setup.script ?? ""
-  const variables = () => typed.variables ?? environment?.variables ?? ""
+  const script = (target = editor) => target.typed.script ?? target.environment?.setup.script ?? ""
+  const variables = (target = editor) => target.typed.variables ?? target.environment?.variables ?? ""
 
   const inputView = (): EnvironmentInputView | null => {
     if (!input) return null
@@ -88,10 +93,10 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
   }
 
   const model = (): EnvironmentDialogModel => ({
-    loading, environment, sources, sourceIndex, transfer, draft, script: script(), variables: variables(), focus, input: inputView(), operation, message, nowMs: deps.now(),
+    loading, environment: editor.environment, sources, sourceIndex, transfer, draft, script: script(), variables: variables(), focus, input: inputView(), operation, message, nowMs: deps.now(),
   })
 
-  const focusables = () => environmentFocusables(environment, sources.length > 0)
+  const focusables = () => environmentFocusables(editor.environment, sources.length > 0)
 
   // Each kind of operation keeps its own slot, so a Draft's answer never replaces the Setup output.
   const setOperation = (next: EnvironmentOperationView) => {
@@ -101,7 +106,7 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
   }
 
   const setEnvironment = (next: ProjectEnvironmentView) => {
-    environment = next
+    editor.environment = next
     const keys = focusables().map(focusKey)
     if (!keys.includes(focusKey(focus))) focus = focusables().at(-1) ?? { kind: "run" }
   }
@@ -109,7 +114,8 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
   /** Runs one request for the current dialog; a closed or reopened dialog drops the result. */
   const guarded = async <T>(work: () => Promise<T>, apply: (result: T) => void): Promise<void> => {
     const mine = generation
-    busy = true
+    const target = editor
+    target.busy = true
     try {
       const result = await work()
       if (mine !== generation) return
@@ -119,13 +125,11 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
       if (mine !== generation) return
       message = failureText(error)
     } finally {
-      if (mine === generation) {
-        busy = false
-        deps.render()
-        if (saveTextPending) {
-          saveTextPending = false
-          void saveTypedText()
-        }
+      target.busy = false
+      if (mine === generation) deps.render()
+      if (target.saveTextPending) {
+        target.saveTextPending = false
+        void saveTypedText(target)
       }
     }
   }
@@ -190,37 +194,48 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
     void follow(known)
   }
 
-  const save = async (patch: { secretNames?: string[]; filePaths?: string[]; mcps?: EnvironmentExtension[]; skills?: EnvironmentExtension[] }) => {
-    const current = environment
-    if (!current || busy) return
-    const submitted = { script: script(), variables: variables() }
-    await guarded(
-      async () => projectEnvironmentSaveOutcomeFromResponse(await deps.send(saveProjectEnvironmentRequest({
-        projectId,
+  const save = async (patch: { secretNames?: string[]; filePaths?: string[]; mcps?: EnvironmentExtension[]; skills?: EnvironmentExtension[] }, target = editor) => {
+    const current = target.environment
+    if (!current || target.busy) return
+    const submitted = { script: script(target), variables: variables(target) }
+    target.busy = true
+    try {
+      const outcome = projectEnvironmentSaveOutcomeFromResponse(await deps.send(saveProjectEnvironmentRequest({
+        projectId: target.projectId,
         expectedRevision: current.revision,
         ...submitted,
         secretNames: patch.secretNames ?? current.secrets.map((secret) => secret.name),
         filePaths: patch.filePaths ?? current.files.map((file) => file.path),
         mcps: patch.mcps ?? current.mcps.map(({ name, source }) => ({ name, source })),
         skills: patch.skills ?? current.skills.map(({ name, source }) => ({ name, source })),
-      }))),
-      (outcome) => {
+      })))
+      target.environment = outcome.environment
+      if (outcome.kind === "saved") {
+        if (target.typed.script === submitted.script) delete target.typed.script
+        if (target.typed.variables === submitted.variables) delete target.typed.variables
+      }
+      if (target === editor) {
         setEnvironment(outcome.environment)
-        if (outcome.kind === "saved") {
-          if (typed.script === submitted.script) delete typed.script
-          if (typed.variables === submitted.variables) delete typed.variables
-        }
-        else message = "Changed elsewhere"
-      },
-    )
+        message = outcome.kind === "saved" ? null : "Changed elsewhere"
+      }
+    } catch (error) {
+      if (target === editor) message = failureText(error)
+    } finally {
+      target.busy = false
+      if (target === editor && open) deps.render()
+      if (target.saveTextPending) {
+        target.saveTextPending = false
+        void saveTypedText(target)
+      }
+    }
   }
 
-  const hasUnsavedText = () => environment !== null && (script() !== environment.setup.script || variables() !== environment.variables)
+  const hasUnsavedText = (target = editor) => target.environment !== null && (script(target) !== target.environment.setup.script || variables(target) !== target.environment.variables)
 
-  const saveTypedText = async () => {
-    if (busy) { saveTextPending = true; return }
-    if (!hasUnsavedText()) return
-    await save({})
+  const saveTypedText = async (target = editor) => {
+    if (target.busy) { target.saveTextPending = true; return }
+    if (!hasUnsavedText(target)) return
+    await save({}, target)
   }
 
   const sendSecret = async (name: string, value: string) => {
@@ -231,8 +246,8 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
   }
 
   const toggleSetup = async () => {
-    const current = environment
-    if (!current || busy) return
+    const current = editor.environment
+    if (!current || editor.busy) return
     if (current.setupState.state === "running") {
       const operationId = current.setupState.operationId
       await guarded(
@@ -257,7 +272,7 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
   /** Brings entries this machine lacks from the chosen kernel; no `entries` brings every missing one (Update). */
   const importFromSource = async (entries?: readonly EnvironmentEntryRef[]) => {
     const from = source()
-    if (!from || busy || transfer?.state === "running") return
+    if (!from || editor.busy || transfer?.state === "running") return
     await guarded(
       async () => environmentOperationFromResponse(await deps.send(importProjectEnvironmentEntriesRequest({ projectId, operationId: deps.newOperationId(), sourceKernelId: from.id, ...(entries ? { entries } : {}) }))),
       (next) => { setOperation(next); if (next.state === "running") poll(next.operationId, next.updates) },
@@ -266,7 +281,7 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
 
   /** Stop ends the running Import, Draft or Check. */
   const stopOperation = async (running: EnvironmentOperationView | null) => {
-    if (!running || running.state !== "running" || busy) return
+    if (!running || running.state !== "running" || editor.busy) return
     await guarded(
       async () => environmentOperationFromResponse(await deps.send(cancelEnvironmentOperationRequest(running.operationId))),
       (next) => { setOperation(next); pollingOperations.delete(running.operationId); void refresh() },
@@ -277,7 +292,7 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
 
   /** Draft needs an agent; Check compares the project's files itself and adds an agent's judgement when `withAgent`. */
   const runAgent = async (kind: "draft" | "check", withAgent = true) => {
-    if (busy) return
+    if (editor.busy) return
     if (draft?.state === "running") { await stopOperation(draft); return }
     await guarded(
       async () => environmentOperationFromResponse(await deps.send(kind === "draft" ? draftProjectEnvironmentRequest(projectId, deps.newOperationId()) : checkProjectEnvironmentRequest(projectId, deps.newOperationId(), withAgent))),
@@ -286,8 +301,8 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
   }
 
   const resolveProposal = async (index: number, accept: boolean) => {
-    const proposal = environment?.proposals[index]
-    if (!proposal || busy) return
+    const proposal = editor.environment?.proposals[index]
+    if (!proposal || editor.busy) return
     await guarded(
       async () => projectEnvironmentSavedFromResponse(await deps.send(resolveEnvironmentProposalRequest(projectId, proposal.id, accept))),
       (next) => setEnvironment(next),
@@ -296,7 +311,7 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
 
   /** Import here: the focused row, when this machine lacks it. */
   const importFocused = () => {
-    const current = environment
+    const current = editor.environment
     if (!current) return
     if (focus.kind === "secret" && current.secrets[focus.index]?.presence === "missing") void importFromSource([{ kind: "secret", name: current.secrets[focus.index]!.name }])
     else if (focus.kind === "file" && current.files[focus.index]?.presence === "missing") void importFromSource([{ kind: "file", name: current.files[focus.index]!.path }])
@@ -314,27 +329,27 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
     if (input?.kind !== "text") return
     const { field, buffer } = input
     input = null
-    typed = field === "script" ? { ...typed, script: buffer.text } : { ...typed, variables: buffer.text }
+    editor.typed = field === "script" ? { ...editor.typed, script: buffer.text } : { ...editor.typed, variables: buffer.text }
     void saveTypedText()
   }
 
   const submitLine = () => {
-    if (input?.kind !== "line" || !environment) return
+    if (input?.kind !== "line" || !editor.environment) return
     const { target, buffer } = input
     const value = buffer.text.trim()
     input = null
     if (!value) return
     if (target === "secretName") {
-      const existing = environment.secrets.find((secret) => secret.name === value)
+      const existing = editor.environment.secrets.find((secret) => secret.name === value)
       if (existing) { input = { kind: "secretValue", name: value, buffer: bufferAtEnd("") }; return }
-      void save({ secretNames: [...environment.secrets.map((secret) => secret.name), value] }).then(() => {
-        if (open && environment?.secrets.some((secret) => secret.name === value) && !input) {
+      void save({ secretNames: [...editor.environment.secrets.map((secret) => secret.name), value] }).then(() => {
+        if (open && editor.environment?.secrets.some((secret) => secret.name === value) && !input) {
           input = { kind: "secretValue", name: value, buffer: bufferAtEnd("") }
           deps.render()
         }
       })
-    } else if (!environment.files.some((file) => file.path === value)) {
-      void save({ filePaths: [...environment.files.map((file) => file.path), value] })
+    } else if (!editor.environment.files.some((file) => file.path === value)) {
+      void save({ filePaths: [...editor.environment.files.map((file) => file.path), value] })
     }
   }
 
@@ -346,7 +361,7 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
   }
 
   const removeFocused = () => {
-    const current = environment
+    const current = editor.environment
     if (!current) return
     if (focus.kind === "secret") {
       const index = focus.index
@@ -364,7 +379,7 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
   }
 
   const activateFocused = () => {
-    const current = environment
+    const current = editor.environment
     if (!current) return
     switch (focus.kind) {
       case "run": void toggleSetup(); return
@@ -412,8 +427,8 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
       open = true
       projectId = project
       loading = true
-      environment = null
-      typed = {}
+      editor = editors.get(project) ?? { projectId: project, environment: null, typed: {}, busy: false, saveTextPending: false }
+      editors.set(project, editor)
       focus = { kind: "run" }
       input = null
       operation = null
@@ -422,8 +437,6 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
       sources = []
       sourceIndex = 0
       message = null
-      busy = false
-      saveTextPending = false
       pollingOperations.clear()
       deps.render()
       void deps.otherKernels().then((found) => { if (mine === generation) { sources = found; deps.render() } }, () => {})
@@ -431,7 +444,7 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
         const next = projectEnvironmentFromResponse(await deps.send(getProjectEnvironmentRequest(project)))
         if (mine !== generation) return
         if (next.projectId !== project) throw new Error("Environment unavailable for this Project")
-        setEnvironment(next)
+        if (!editor.environment || next.revision >= editor.environment.revision) setEnvironment(next)
         if (next.setupState.state === "running") poll(next.setupState.operationId)
         else await showLastRun(next.setupState, mine)
       } catch (error) {
@@ -463,7 +476,7 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
       else if (event.name === "return" || event.name === "enter") activateFocused()
       else if (["x", "delete", "backspace"].includes(event.name) && !event.ctrl && !event.meta) removeFocused()
       else if (event.name === "i" && !event.ctrl && !event.meta) importFocused()
-      else if (event.name === "c" && !event.ctrl && !event.meta && environment?.exists) void runAgent("check", false)
+      else if (event.name === "c" && !event.ctrl && !event.meta && editor.environment?.exists) void runAgent("check", false)
       else if (event.name === "m" && !event.ctrl && !event.meta && sources.length > 1) sourceIndex = (sourceIndex + 1) % sources.length
       deps.render()
       return true
