@@ -12,7 +12,7 @@ pub(super) fn export_overlay(
         repository_id,
         staging_root,
         manifest_budget,
-        vault.is_some(),
+        vault,
     )?;
     stage_objects(staging_root, &entries, pending, vault)?;
     Ok((entries, size))
@@ -24,14 +24,14 @@ pub(super) fn verify_overlay(
     repository_id: &str,
     staging_root: &Path,
     manifest_budget: &mut ManifestMemoryBudget,
-    vault_enabled: bool,
+    vault: Option<&vault_artifacts::ExportVault<'_>>,
 ) -> Result<(Vec<DevelopmentOverlayEntry>, u64), DaemonError> {
     let (entries, size, _) = collect_overlay(
         worktree,
         repository_id,
         staging_root,
         manifest_budget,
-        vault_enabled,
+        vault,
     )?;
     Ok((entries, size))
 }
@@ -47,8 +47,9 @@ pub(super) fn collect_overlay(
     repository_id: &str,
     staging_root: &Path,
     manifest_budget: &mut ManifestMemoryBudget,
-    vault_enabled: bool,
+    vault: Option<&vault_artifacts::ExportVault<'_>>,
 ) -> Result<CollectedOverlay, DaemonError> {
+    let vault_enabled = vault.is_some();
     let mut paths = BTreeSet::new();
     for args in [
         &[
@@ -70,6 +71,7 @@ pub(super) fn collect_overlay(
         })?;
     }
     let ignore_patterns = read_context_ignore_patterns(worktree)?;
+    let left_for_import = left_to_import(worktree, vault);
     // The root policy belongs to the snapshot, not to descendant inclusion rules.
     if worktree.join(".charioxignore").is_file() && paths.insert(".charioxignore".into()) {
         manifest_budget.consume(".charioxignore".len() + 256)?;
@@ -107,6 +109,7 @@ pub(super) fn collect_overlay(
         validate_relative_path(&path)?;
         if excluded_for_export(&path, vault_enabled)
             || user_rules_exclude_path(&path, &ignore_patterns)
+            || left_for_import.contains(&path)
         {
             continue;
         }
@@ -473,6 +476,21 @@ pub(super) fn read_context_ignore_patterns(worktree: &Path) -> Result<Vec<String
     // Keep strict validation of the optional expert file at the import/export boundary.
     read_expert_context_ignore_patterns(worktree)?;
     Ok(crate::workspace_live_sync_ignore::workspace_live_sync_user_ignore_patterns(worktree))
+}
+
+/// The secret-looking Files of the Project's Environment that an export leaves to Import, because the target may have no Vault yet.
+pub(super) fn left_to_import(
+    worktree: &Path,
+    vault: Option<&vault_artifacts::ExportVault<'_>>,
+) -> BTreeSet<String> {
+    if !vault.is_some_and(|vault| vault.skip_secret_environment_files) {
+        return BTreeSet::new();
+    }
+    crate::project_environment::environment_file_rules(worktree)
+        .into_iter()
+        .map(|rule| rule.trim_start_matches('!').to_string())
+        .filter(|path| plain_context_force_excluded_path(path))
+        .collect()
 }
 
 pub(super) fn user_rules_exclude_path(path: &str, patterns: &[String]) -> bool {

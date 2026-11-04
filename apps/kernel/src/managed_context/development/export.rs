@@ -353,7 +353,7 @@ fn export_repository(
         &repository_id,
         &repository_root,
         &mut ManifestMemoryBudget::new(),
-        vault.is_some(),
+        vault,
     )?;
     let verified_estimate = charge_overlay_materialization(
         inspect_export_repository(worktree)?,

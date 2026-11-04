@@ -929,7 +929,8 @@ fn prepare_managed_context_package_for_ticket(
                 &ticket.target.kernel_id,
                 &ticket.target.relay_public_key,
                 project_id,
-            );
+            )
+            .without_secret_environment_files();
             let exported = super::development::export_development_context_with_vault(
                 DevelopmentContextExportRequest {
                     project_id: project_id.clone(),

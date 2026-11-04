@@ -102,6 +102,7 @@ pub(super) fn snapshot(
     vault: Option<&vault_artifacts::ExportVault<'_>>,
 ) -> Result<SnapshotOverlay, DaemonError> {
     let patterns = overlay::read_context_ignore_patterns(worktree)?;
+    let left_for_import = overlay::left_to_import(worktree, vault);
     let mut pending = vec![PathBuf::new()];
     let mut directories = BTreeSet::new();
     let mut files = BTreeSet::new();
@@ -123,6 +124,9 @@ pub(super) fn snapshot(
                 .ok_or_else(|| context_error("directory workspace entry is not UTF-8"))?
                 .to_string();
             validate_relative_path(&path_text)?;
+            if left_for_import.contains(&path_text) {
+                continue;
+            }
             if overlay::context_force_excluded_path(&path_text)
                 || (vault.is_none() && overlay::plain_context_force_excluded_path(&path_text))
             {
