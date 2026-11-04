@@ -444,8 +444,10 @@ mod tests {
                 Some("thread/resume")
             );
 
-            let turns_excluded =
-                resume.pointer("/params/excludeTurns").and_then(Value::as_bool) == Some(true);
+            let turns_excluded = resume
+                .pointer("/params/excludeTurns")
+                .and_then(Value::as_bool)
+                == Some(true);
             if codex_honours_exclude_turns && turns_excluded {
                 let response = json!({
                     "jsonrpc": "2.0",
