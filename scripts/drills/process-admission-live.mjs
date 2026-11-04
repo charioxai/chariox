@@ -2,9 +2,14 @@
 // for memory or disk on a real kernel whose pool is a small memory cgroup and whose disk is a small loop-mounted
 // filesystem. The drill samples the one waiting row, an outside follower's `process` events (the real `chariox`
 // command), the agents' own transcripts and, with --tui, the terminal client's screen.
-// Usage: node process-admission-live.mjs --scenario memory|disk --kernel-binary K --state-root DIR --evidence-dir DIR
+// Disk cells (OF-37..OF-42): --scenario temp (every agent's TMPDIR is its own short folder inside the kernel's home),
+// trim (idle scratch goes, what is open or busy stays, an ended Room clears at once), ask (agents under disk pressure
+// are asked, naming what they hold, and free it), runaway (the orphaned writer filling the disk is attributed and
+// stopped, other owners' builds are never paused).
+// Usage: node process-admission-live.mjs --scenario memory|disk|temp|trim|ask|runaway --kernel-binary K --state-root DIR --evidence-dir DIR
 //   --login-file F [--agents 5] [--mem 7G] [--disk-gb 12] [--task a.txt:marker,b.txt:marker2] [--tui 1]
 //   [--act-on-notice 1] [--codex-agents 5 --codex-profile-dir DIR] [--work-dir DIR] [--seed-peaks FILE]
+//   [--opencode-agents 3 --opencode-profile-dir DIR --opencode-model M] [--temp-idle-s 20]
 // Run it under `unshare -m --propagation private` (the loop mount must not leak into other mount namespaces).
 // State and evidence belong outside the checkout. Every process it starts is signalled by exact pid and start time.
 import assert from "node:assert/strict"
@@ -16,12 +21,13 @@ import { dirname, join, resolve } from "node:path"
 import { setTimeout as delay } from "node:timers/promises"
 import { fileURLToPath } from "node:url"
 import { LocalIpcClient } from "../../packages/kernel-client/dist/ipc.js"
+import { runDiskCells } from "./process-admission-disk-cells.mjs"
 
 const flags = new Map()
 for (let i = 2; i < process.argv.length; i++) flags.set(process.argv[i], process.argv[++i])
 const need = key => { assert.equal(typeof flags.get(key), "string", `${key} is required`); return flags.get(key) }
 const scenario = need("--scenario")
-assert(["memory", "disk"].includes(scenario), "unknown scenario")
+assert(["memory", "disk", "temp", "trim", "ask", "runaway"].includes(scenario), "unknown scenario")
 const kernelBinary = resolve(need("--kernel-binary")), stateRoot = resolve(need("--state-root")), evidence = resolve(need("--evidence-dir"))
 const loginFile = resolve(need("--login-file"))
 const builds = Number(flags.get("--builds") ?? 5), memoryLimit = flags.get("--mem") ?? "7G"
@@ -93,6 +99,7 @@ const kernelEnv = { PATH: `${join(dir, "bin")}:${process.env.PATH}`, LANG: "C.UT
   HOME: join(dir, "home"), TMPDIR: join(dir, "tmp"), XDG_CONFIG_HOME: join(dir, "config"), XDG_CACHE_HOME: join(dir, "cache"), XDG_STATE_HOME: join(dir, "state"),
   CHARIOX_HOME: join(dir, "chariox"), CHARIOX_LOG_DIR: join(dir, "logs"), CHARIOX_SESSION_HISTORY_DIR: join(dir, "history"),
   CHARIOX_DAEMON_SOCKET: join(dir, "daemon.sock"), CHARIOX_DAEMON_ALIAS: alias, CHARIOX_MACHINE_ALIAS: alias,
+  ...(flags.has("--temp-idle-s") ? { CHARIOX_TEMP_IDLE_SECONDS: flags.get("--temp-idle-s") } : {}),
   CHARIOX_KERNEL_PORT: String(ports[0]), CHARIOX_MCP_PORT: String(ports[1]), CHARIOX_OPENCODE_PORT: String(ports[2]), CHARIOX_CODEX_PORT: String(ports[3]),
 }
 const report = { scenario, binary_sha256: createHash("sha256").update(readFileSync(kernelBinary)).digest("hex"), memory_limit: memoryLimit, builds, started_at: new Date().toISOString() }
@@ -122,6 +129,20 @@ with open("out-" + name, "wb") as out:
 open("done-" + name, "w").write("ok")
 `,
 }
+// The orphan: it opens its file, deletes it and keeps writing, so no directory listing shows what it takes. It is
+// capped (`cap_mb`) and stops at once when STOP appears: a leaked one cannot fill anything but the loop filesystem.
+fixtures["hog.py"] = `import os, sys, time
+name, rate_mb, cap_mb = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+path = "hogfile-" + name
+out = open(path, "wb")
+os.unlink(path)
+chunk = os.urandom(4 << 20)
+written = 0
+while written < cap_mb and not os.path.exists("STOP"):
+    out.write(chunk); out.flush(); os.fsync(out.fileno())
+    written += 4
+    time.sleep(4 / rate_mb)
+`
 for (const [name, text] of Object.entries(fixtures)) writeFileSync(join(work, name), text)
 
 // A command's peak is remembered by its argv and folder: a second run on a smaller machine starts from the first one's.
@@ -200,16 +221,28 @@ const pump = setInterval(() => { rpc({ PumpTerminalOutput: { session_id: session
 await rpc({ SetProviderAccountCredential: { provider: "claude", account_profile: "default", value: readFileSync(loginFile, "utf8").trim(), overwrite: true } })
 note("login-stored")
 const agentCount = Number(flags.get("--agents") ?? 1)
-// --codex-agents 5,4: those agent numbers run Codex (a linked profile, --codex-profile-dir) instead of Claude.
+// --codex-agents 5,4: those agent numbers run Codex (a linked profile, --codex-profile-dir) instead of Claude;
+// --opencode-agents 3 the same for OpenCode (--opencode-profile-dir, --opencode-model).
 const codexNumbers = (flags.get("--codex-agents") ?? "").split(",").filter(Boolean).map(Number)
+const opencodeNumbers = (flags.get("--opencode-agents") ?? "").split(",").filter(Boolean).map(Number)
 if (codexNumbers.length) {
   await rpc({ LinkProviderAccountProfile: { provider: "codex", label: "drill-codex", path: resolve(need("--codex-profile-dir")) } })
   note("codex-linked")
 }
+if (opencodeNumbers.length) {
+  await rpc({ LinkProviderAccountProfile: { provider: "opencode", label: "drill-opencode", path: resolve(need("--opencode-profile-dir")) } })
+  note("opencode-linked")
+}
+const providerOf = n => codexNumbers.includes(n) ? "codex" : opencodeNumbers.includes(n) ? "opencode" : "claude"
 const agents = []
 for (let n = 1; n <= agentCount; n++) {
-  const codex = codexNumbers.includes(n)
-  agents.push((await rpc({ SpawnAgent: { session_id: sessionId, provider: codex ? "codex" : "claude", ...(codex ? { account_profile: "drill-codex", model: "gpt-6-luna", effort: "low" } : { model: "claude-haiku-5-5" }), permission_level: "yolo", alias: `builder${n}` } })).AgentSpawned.agent)
+  const provider = providerOf(n)
+  const choice = provider === "codex" ? { account_profile: "drill-codex", model: "gpt-6-luna", effort: "low" }
+    : provider === "opencode" ? { account_profile: "drill-opencode", model: flags.get("--opencode-model") ?? "opencode-go/deepseek-v4.1-flash" }
+    : { model: "claude-haiku-5-5" }
+  const spawned = (await rpc({ SpawnAgent: { session_id: sessionId, provider, ...choice, permission_level: "yolo", alias: `builder${n}` } })).AgentSpawned.agent
+  note("agent", { n, provider, id: spawned.id, model: choice.model })
+  agents.push(spawned)
 }
 const agent = agents[0]
 report.agent_ids = agents.map(a => a.id)
@@ -300,6 +333,13 @@ const osState = () => {
   return out
 }
 const readlinkSafe = p => { try { return execFileSync("readlink", [p], { encoding: "utf8" }).trim() } catch { return null } }
+// Processes of this drill's folder whose command line names `name` (the fixtures; used to find and end leftovers).
+const osProcesses = name => readdirSync("/proc").filter(p => /^\d+$/.test(p)).flatMap(p => {
+  try {
+    const cmd = readFileSync(`/proc/${p}/cmdline`, "utf8").split("\0")
+    return cmd.includes(name) && readlinkSafe(`/proc/${p}/cwd`) === work ? [{ pid: Number(p), cmd }] : []
+  } catch { return [] }
+})
 const osTrace = []
 const osLoop = (async () => { while (sampling) { osTrace.push({ t: (Date.now() - t0) / 1000, procs: osState() }); await delay(1000) } })()
 
@@ -313,6 +353,10 @@ const transcripts = () => {
 
 const cleanup = async () => {
   sampling = false; following = false; clearInterval(pump)
+  // A fixture that outlived its agent (the orphan writers) is asked to stop, then ended by exact pid.
+  try { writeFileSync(join(work, "STOP"), "") } catch { /* the folder is gone */ }
+  await delay(1500)
+  for (const name of ["hog.py", "write.py", "build.py"]) for (const { pid } of osProcesses(name)) if (pid > 1) { try { process.kill(pid, "SIGKILL") } catch { /* gone */ } }
   writeFileSync(join(evidence, "os-trace.json"), JSON.stringify(osTrace))
   writeFileSync(join(evidence, "followed.json"), JSON.stringify(readFollowed(), null, 1))
   for (const f of ["grant.err", "subscribe.err", "wait.err", "loop.log"]) if (existsSync(join(holderDir, f))) appendFileSync(join(evidence, "holder-logs.txt"), `== ${f}\n${readFileSync(join(holderDir, f), "utf8")}`)
@@ -329,6 +373,9 @@ const cleanup = async () => {
 for (const signal of ["SIGTERM", "SIGINT"]) process.once(signal, async () => { report.error = `stopped by ${signal}`; await cleanup(); process.exit(2) })
 try {
   await followerLoop
+  if (["temp", "trim", "ask", "runaway"].includes(scenario)) {
+    await runDiskCells({ scenario, agents, ask, note, until, work, dir, sessionId, rpc, report, flags, transcripts, providerOf, execFileSync, osProcesses, latestRows: () => latestRows })
+  } else
   // --task a.txt:marker,b.txt:marker2: every agent gets the prompt with {N} = its number; the round ends when each
   // agent's transcript shows `<marker>_bN` (two words the prompt never spells joined by an underscore).
   for (const spec of (flags.get("--task") ?? "").split(",").filter(Boolean)) {
