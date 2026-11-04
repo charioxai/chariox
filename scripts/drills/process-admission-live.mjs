@@ -1,4 +1,4 @@
-// MP-08/09/10/11 (offload OF-30..OF-35): real Claude (and Codex) agents in a Room run commands that really wait
+// MP-08/09/10/11 (offload OF-30/31/32/34/35): real Claude (and Codex) agents in a Room run commands that really wait
 // for memory or disk on a real kernel whose pool is a small memory cgroup and whose disk is a small loop-mounted
 // filesystem. The drill samples the one waiting row, an outside follower's `process` events (the real `chariox`
 // command), the agents' own transcripts and, with --tui, the terminal client's screen.
@@ -8,7 +8,7 @@
 // stopped, other owners' builds are never paused).
 // Usage: node process-admission-live.mjs --scenario memory|disk|temp|trim|ask|runaway --kernel-binary K --state-root DIR --evidence-dir DIR
 //   --login-file F [--agents 5] [--mem 7G] [--disk-gb 12] [--task a.txt:marker,b.txt:marker2] [--tui 1]
-//   [--act-on-notice 1] [--codex-agents 5 --codex-profile-dir DIR] [--work-dir DIR] [--seed-peaks FILE]
+//   [--codex-agents 5 --codex-profile-dir DIR] [--work-dir DIR] [--seed-peaks FILE]
 //   [--opencode-agents 3 --opencode-profile-dir DIR --opencode-model M] [--temp-idle-s 20]
 //   --scenario ui --ui-handoff FILE: the kernel, Room and agents are left to a browser drill (it reads FILE, sends the
 //   prompts itself and creates FILE.done when it is finished).
@@ -195,19 +195,6 @@ await rpc({ RespondToInteraction: { session_id: sessionId, interaction_id: vault
 await unlock
 note("vault-unlocked")
 const kernelEvents = []
-// Start now on the first command in line, Cancel on the last: the two actions the waiting row offers.
-async function actOnWaiting() {
-  const waiting = latestRows.filter(p => p.state?.kind === "paused" || p.state?.kind === "held").sort((a, b) => a.state.position - b.state.position)
-  note("act-begin", { waiting: waiting.map(p => ({ id: p.process_id, kind: p.state.kind, position: p.state.position, cmd: p.state.command_line })) })
-  if (waiting.length < 2) return
-  const first = waiting[0], last = waiting[waiting.length - 1]
-  const started = await rpc({ StartSessionProcessNow: { session_id: sessionId, process_id: first.process_id } })
-  note("start-now", { process_id: first.process_id, reply: started })
-  const cancelled = await rpc({ StopSessionProcesses: { session_id: sessionId, target: { kind: "process", process_id: last.process_id } } })
-  note("cancel", { process_id: last.process_id, reply: cancelled })
-  await delay(3000)
-  note("act-after", { first: latestRows.find(p => p.process_id === first.process_id)?.state?.kind ?? "gone", last: latestRows.find(p => p.process_id === last.process_id)?.state?.kind ?? "gone" })
-}
 client.onKernelEvent(async event => {
   if (event.event === "passkey_prompts_changed") {
     for (const p of event.prompts || []) if (p.kind === "access_grant") {
@@ -217,7 +204,6 @@ client.onKernelEvent(async event => {
   }
   if (event.event === "runtime_notices") for (const n of event.notices || []) {
     kernelEvents.push(n); note("runtime-notice", { message: n.message, level: n.level })
-    if (flags.has("--act-on-notice") && !acted && /has waited/.test(n.message)) { acted = true; actOnWaiting().catch(e => note("act-failed", { error: String(e) })) }
   }
 })
 // An attachment that stays quiet is reaped: keep it alive.
@@ -306,7 +292,6 @@ const watchTui = async () => {
 // The one waiting row, sampled twice a second, and the same processes as the OS sees them.
 const rows = new Map()
 let latestRows = []
-let acted = false
 let sampling = true
 const sample = async () => {
   while (sampling) {

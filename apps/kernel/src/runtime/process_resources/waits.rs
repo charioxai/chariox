@@ -1,14 +1,12 @@
 //! What a command's wait tells the outside. The `Waiting` row is the one
 //! description: the line the command's own error stream gets, the event the
-//! room's followers get and the person's notice after a long wait all say what
+//! room's followers get all say what
 //! the row says.
-use super::projection::{SessionProcessState, Waiting};
+use super::projection::SessionProcessState;
 use super::{admission::WaitReason, MIB};
 use std::collections::VecDeque;
 use std::sync::Mutex;
 
-/// A command that has waited this long also reaches the person.
-pub(super) const LONG_WAIT_MS: u64 = 120_000;
 /// Events kept until the runtime takes them; the oldest go first.
 const KEPT: usize = 256;
 
@@ -18,8 +16,6 @@ pub(crate) enum WaitChange {
     Resumed {
         waited_ms: u64,
     },
-    /// Still waiting after `LONG_WAIT_MS`.
-    Long,
     /// The pool ended the command, for this reason.
     Stopped {
         reason: String,
@@ -51,7 +47,7 @@ pub(super) fn push(event: WaitEvent) {
     events.push_back(event);
 }
 
-/// The waits that began, ended or grew long since the last call, oldest first.
+/// The waits that began or ended since the last call, oldest first.
 pub(crate) fn take_wait_events() -> Vec<WaitEvent> {
     EVENTS
         .lock()
@@ -143,16 +139,6 @@ pub(super) fn resumed_line(waited_ms: u64) -> String {
     format!(
         "chariox: this command continues after waiting {}.\n",
         duration(waited_ms)
-    )
-}
-
-/// What the person is told when a wait grows long.
-pub(crate) fn long_wait_notice(row: &Waiting, now_ms: u64) -> String {
-    format!(
-        "{} has waited {} for {}. It continues by itself; Start now in Machines runs it at once, Cancel ends it.",
-        row.command_line,
-        duration(now_ms.saturating_sub(row.since_ms)),
-        resource(row.reason),
     )
 }
 

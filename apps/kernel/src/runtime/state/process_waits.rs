@@ -1,14 +1,13 @@
 //! A command that waits for room is told to the room: its followers get the
-//! row as an outside event, and the person is told once a wait grows long.
+//! row as an outside event.
 use super::*;
 use crate::local::{EventRefs, OutsideEventValue};
 use crate::runtime::process_resources::{
-    long_wait_notice, take_wait_events, SessionProcessOwner, SessionProcessState, WaitChange,
-    WaitEvent,
+    take_wait_events, SessionProcessOwner, SessionProcessState, WaitChange, WaitEvent,
 };
 
 impl KernelRuntimeState {
-    /// Delivers the waits that began, ended or grew long since the last call.
+    /// Delivers the waits that began or ended since the last call.
     pub(super) fn deliver_process_waits(&self) {
         for event in take_wait_events() {
             let Some((session_id, owner)) = self.process_wait_owner(&event) else {
@@ -18,55 +17,37 @@ impl KernelRuntimeState {
                 SessionProcessOwner::Agent(agent) => (Some(agent), None),
                 SessionProcessOwner::Terminal(terminal) => (None, Some(terminal)),
             };
-            let now = crate::session::unix_epoch_ms();
-            match (&event.change, &event.state) {
-                (
-                    WaitChange::Long,
-                    SessionProcessState::Held(row) | SessionProcessState::Paused(row),
-                ) => {
-                    self.owned.record_notice_for_agent(
-                        &session_id,
-                        None,
-                        agent.as_deref(),
-                        self.owned
-                            .attachment_store
-                            .list_session_attachment_ids(&session_id),
-                        long_wait_notice(row, now),
-                    );
+            let (change, state) = (&event.change, &event.state);
+            let (summary, waited_ms, ended) = match (change, state) {
+                (WaitChange::Stopped { reason }, _) => {
+                    ("stopped".to_string(), None, Some(reason.clone()))
                 }
-                (change, state) => {
-                    let (summary, waited_ms, ended) = match (change, state) {
-                        (WaitChange::Stopped { reason }, _) => {
-                            ("stopped".to_string(), None, Some(reason.clone()))
-                        }
-                        (WaitChange::Resumed { waited_ms }, _) => {
-                            ("running again".to_string(), Some(*waited_ms), None)
-                        }
-                        (_, SessionProcessState::Held(row) | SessionProcessState::Paused(row)) => (
-                            format!("waiting for room: {}", row.command_line),
-                            None,
-                            None,
-                        ),
-                        _ => continue,
-                    };
-                    if let Err(error) = self.owned.durable_state_store.outside_publish(
-                        &session_id,
-                        agent.as_deref(),
-                        OutsideEventValue::Process {
-                            process_id: event.process_id.clone(),
-                            state: event.state.clone(),
-                            waited_ms,
-                            ended,
-                        },
-                        &summary,
-                        EventRefs {
-                            terminal_id: terminal,
-                            ..Default::default()
-                        },
-                    ) {
-                        tracing::warn!(%error, "process wait event was not published");
-                    }
+                (WaitChange::Resumed { waited_ms }, _) => {
+                    ("running again".to_string(), Some(*waited_ms), None)
                 }
+                (_, SessionProcessState::Held(row) | SessionProcessState::Paused(row)) => (
+                    format!("waiting for room: {}", row.command_line),
+                    None,
+                    None,
+                ),
+                _ => continue,
+            };
+            if let Err(error) = self.owned.durable_state_store.outside_publish(
+                &session_id,
+                agent.as_deref(),
+                OutsideEventValue::Process {
+                    process_id: event.process_id.clone(),
+                    state: event.state.clone(),
+                    waited_ms,
+                    ended,
+                },
+                &summary,
+                EventRefs {
+                    terminal_id: terminal,
+                    ..Default::default()
+                },
+            ) {
+                tracing::warn!(%error, "process wait event was not published");
             }
         }
     }

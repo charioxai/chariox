@@ -42,7 +42,7 @@ pub(crate) use session_sweep::SessionSweep;
 pub(crate) use submissions::Submissions;
 #[cfg(test)]
 pub(crate) use waits::push_for_tests as push_wait_event;
-pub(crate) use waits::{long_wait_notice, size, take_wait_events, WaitChange, WaitEvent};
+pub(crate) use waits::{size, take_wait_events, WaitChange, WaitEvent};
 #[cfg(test)]
 mod admission_tests;
 #[cfg(target_os = "linux")]
@@ -553,13 +553,6 @@ fn admit(tree: &sampling::ProcessTree, watched: &Arc<Mutex<Observation>>) {
                 (false, true) => Some(waits::WaitChange::Resumed {
                     waited_ms: now.saturating_sub(entry.since_ms),
                 }),
-                (true, true)
-                    if !entry.long_noticed
-                        && now.saturating_sub(entry.since_ms) >= waits::LONG_WAIT_MS =>
-                {
-                    entry.long_noticed = true;
-                    Some(waits::WaitChange::Long)
-                }
                 _ => None,
             };
             entry.stopped = waiting;
@@ -591,7 +584,7 @@ fn admit(tree: &sampling::ProcessTree, watched: &Arc<Mutex<Observation>>) {
         let line = match change {
             waits::WaitChange::Began => waits::began_line(&state),
             waits::WaitChange::Resumed { waited_ms } => Some(waits::resumed_line(waited_ms)),
-            waits::WaitChange::Long | waits::WaitChange::Stopped { .. } => None,
+            waits::WaitChange::Stopped { .. } => None,
         };
         if let Some(line) = line {
             announce(command, &line);

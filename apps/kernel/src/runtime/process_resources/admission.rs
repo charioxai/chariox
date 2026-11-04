@@ -100,8 +100,6 @@ pub(super) struct Entry {
     pub free: u64,
     /// When it began to wait (Unix ms), for the row clients show.
     pub since_ms: u64,
-    /// The person was told this wait has grown long.
-    pub long_noticed: bool,
     /// Its known peak is larger than the whole pool: it is ended, not held.
     refused: Option<u64>,
     /// It is the process filling a nearly full disk: it is ended, not held.
@@ -121,7 +119,6 @@ impl Entry {
     fn wait_for(&mut self, wait: Wait) {
         if self.wait.is_none() {
             self.since_ms = crate::session::unix_epoch_ms();
-            self.long_noticed = false;
         }
         self.wait = Some(wait);
     }

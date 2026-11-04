@@ -407,7 +407,7 @@ fn a_launcher_chain_is_the_harness_and_only_its_later_commands_wait() {
 
 #[cfg(target_os = "linux")]
 #[test]
-fn a_wait_longer_than_two_minutes_is_told_to_the_room_once() {
+fn a_wait_longer_than_two_minutes_does_not_emit_a_notice() {
     let (_a, writer, _pool) = held();
     take_wait_events();
     {
@@ -417,24 +417,12 @@ fn a_wait_longer_than_two_minutes_is_told_to_the_room_once() {
         }
     }
     settle(2);
-    let long = take_wait_events()
-        .into_iter()
-        .filter(|event| event.change == WaitChange::Long)
-        .collect::<Vec<_>>();
-    assert_eq!(long.len(), 1, "a long wait was told {} times", long.len());
-    match &long[0].state {
-        SessionProcessState::Held(row) => {
-            let notice = long_wait_notice(row, crate::session::unix_epoch_ms());
-            assert!(notice.contains("has waited 2 min"), "{notice}");
-            assert!(notice.contains("memory"), "{notice}");
-        }
-        other => panic!("a long wait reads {other:?}"),
-    }
-    settle(2);
     assert!(
-        take_wait_events()
-            .iter()
-            .all(|event| event.change != WaitChange::Long),
-        "the same long wait was told again"
+        take_wait_events().is_empty(),
+        "an unchanged wait must not emit the retired long-wait notice"
+    );
+    assert!(
+        writer.waiting("job"),
+        "the waiting row must remain available"
     );
 }
