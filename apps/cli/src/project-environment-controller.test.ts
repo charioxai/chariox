@@ -17,6 +17,7 @@ function environment(patch: Partial<ProjectEnvironmentView> = {}): ProjectEnviro
     variables: "PORT=3000",
     secrets: [{ name: "API_KEY", presence: "present" }, { name: "DB_URL", presence: "missing" }],
     files: [{ path: ".env.local", presence: "missing", sizeBytes: null }, { path: "certs/dev.pem", presence: "present", sizeBytes: 2048 }],
+    mcps: [], skills: [],
     changedAtMs: NOW,
     machineLabel: "Miguel's Mac",
     checkoutPath: "/work/project",
@@ -127,7 +128,7 @@ test("editing the script saves with the loaded revision when Esc leaves the fiel
   await h.settle()
   assert.deepEqual(h.requests.at(-1), { SaveProjectEnvironment: {
     projectId: "project-1", expectedRevision: 2, setup: { script: "make setup && make test" }, variables: "PORT=3000",
-    secrets: [{ name: "API_KEY" }, { name: "DB_URL" }], files: [{ path: ".env.local" }, { path: "certs/dev.pem" }],
+    secrets: [{ name: "API_KEY" }, { name: "DB_URL" }], files: [{ path: ".env.local" }, { path: "certs/dev.pem" }], mcps: [], skills: [],
   } })
   assert(!h.text().includes("Unsaved"))
   assert(h.text().includes("make setup && make test"))
@@ -495,7 +496,7 @@ test("Check with agent leaves proposals; Enter accepts one as a Save and X dismi
   h.replies.push({ EnvironmentOperation: { operation: operation({ operationId: "op-1", kind: "check", outputTail: "" }) } })
   h.key("return")
   await h.settle()
-  assert.deepEqual(h.requests.find((request) => request.CheckProjectEnvironment), { CheckProjectEnvironment: { projectId: "project-1", operationId: "op-1" } })
+  assert.deepEqual(h.requests.find((request) => request.CheckProjectEnvironment), { CheckProjectEnvironment: { projectId: "project-1", operationId: "op-1", withAgent: true } })
   assert.match(h.text(), /Checking with agent\s+Stop/)
   h.replies.push({ ProjectEnvironment: { environment: environment({ proposals }) } })
   await h.release({ EnvironmentOperation: { operation: operation({ operationId: "op-1", kind: "check", state: "succeeded", updates: 2, endedAtMs: NOW + 1, outputTail: "" }) } })
@@ -515,4 +516,35 @@ test("Check with agent leaves proposals; Enter accepts one as a Save and X dismi
   await h.settle()
   assert.deepEqual(h.requests.filter((request) => request.ResolveEnvironmentProposal).at(-1), { ResolveEnvironmentProposal: { projectId: "project-1", proposalId: "b", accept: false } })
   assert.doesNotMatch(h.text(), /Proposed/)
+})
+
+test("MCPs and Skills that project files declare are listed; a missing declaration is a warning and X removes the row", async () => {
+  const h = harness(environment({
+    mcps: [{ name: "github", source: ".mcp.json", presence: "present" }, { name: "notion", source: ".mcp.json", presence: "missing" }],
+    skills: [{ name: "dataviz", source: ".claude/skills/dataviz/SKILL.md", presence: "present" }],
+  }))
+  await h.open()
+  assert.match(h.text(), /MCPs\n {2}github\s+In project files\n {2}notion\s+Missing here\nSkills\n {2}dataviz\s+In project files/)
+  assert.equal(h.controller.view().rows.find((row) => row.text.includes("notion"))?.tone, "warning")
+  h.focusOn("notion")
+  h.replies.push({ ProjectEnvironmentSaved: { environment: environment({ revision: 3, mcps: [{ name: "github", source: ".mcp.json", presence: "present" }] }) } })
+  h.key("x")
+  await h.settle()
+  const save = h.requests.find((request) => request.SaveProjectEnvironment)!.SaveProjectEnvironment
+  assert.deepEqual(save.mcps, [{ name: "github", source: ".mcp.json" }])
+  assert.deepEqual(save.skills, [{ name: "dataviz", source: ".claude/skills/dataviz/SKILL.md" }], "the skills are saved as they were")
+})
+
+test("C checks the Project against its own files without an agent, and proposals for an MCP read like the others", async () => {
+  const h = harness()
+  await h.open()
+  assert.match(h.controller.view().hint, /C check/)
+  h.replies.push({ EnvironmentOperation: { operation: operation({ operationId: "op-1", kind: "check", outputTail: "" }) } })
+  h.key("c")
+  await h.settle()
+  assert.deepEqual(h.requests.find((request) => request.CheckProjectEnvironment), { CheckProjectEnvironment: { projectId: "project-1", operationId: "op-1", withAgent: false } })
+  const proposals = [{ id: "m", field: "mcp", change: "remove", text: "github", evidence: { path: ".mcp.json", excerpt: "file missing" } }] as const
+  h.replies.push({ ProjectEnvironment: { environment: environment({ proposals }) } })
+  await h.release({ EnvironmentOperation: { operation: operation({ operationId: "op-1", kind: "check", state: "succeeded", updates: 2, endedAtMs: NOW + 1, outputTail: "" }) } })
+  assert.match(h.text(), /− github\s+Proposed · \.mcp\.json/)
 })

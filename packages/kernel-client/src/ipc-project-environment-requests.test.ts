@@ -30,6 +30,8 @@ const view = {
   variables: "PORT=3000\n",
   secrets: [{ name: "API_KEY", presence: "locked" }, { name: "DB_URL", presence: "present" }],
   files: [{ path: ".env.local", presence: "missing", sizeBytes: null }, { path: "certs/dev.pem", presence: "present", sizeBytes: 1200 }],
+  mcps: [{ name: "github", source: ".mcp.json", presence: "present" }, { name: "notion", source: ".mcp.json", presence: "missing" }],
+  skills: [{ name: "dataviz", source: ".claude/skills/dataviz/SKILL.md", presence: "present" }],
   changedAtMs: 1_700_000_000_000,
   machineLabel: "Miguel's Mac",
   checkoutPath: "/work/project",
@@ -81,10 +83,11 @@ test("Setup on another kernel names the target; its operation is read or stopped
 })
 
 test("Check names only the Project and a proposal is accepted or dismissed by its id; proposals read with their evidence", () => {
-  assert.deepEqual(checkProjectEnvironmentRequest("p", "op"), { CheckProjectEnvironment: { projectId: "p", operationId: "op" } })
+  assert.deepEqual(checkProjectEnvironmentRequest("p", "op", true), { CheckProjectEnvironment: { projectId: "p", operationId: "op", withAgent: true } })
+  assert.deepEqual(checkProjectEnvironmentRequest("p", "op", false), { CheckProjectEnvironment: { projectId: "p", operationId: "op", withAgent: false } })
   assert.deepEqual(resolveEnvironmentProposalRequest("p", "p1", true), { ResolveEnvironmentProposal: { projectId: "p", proposalId: "p1", accept: true } })
   assert.deepEqual(projectEnvironmentFromResponse({ ProjectEnvironment: { environment: view } }).proposals, view.proposals)
-  assert.throws(() => projectEnvironmentFromResponse({ ProjectEnvironment: { environment: { ...view, proposals: [{ ...view.proposals[0], field: "mcp" }] } } }), /field/)
+  assert.throws(() => projectEnvironmentFromResponse({ ProjectEnvironment: { environment: { ...view, proposals: [{ ...view.proposals[0], field: "tool" }] } } }), /field/)
 })
 
 test("an Import operation reads with its entries and source", () => {
@@ -98,10 +101,11 @@ test("an Import operation reads with its entries and source", () => {
 test("SaveProjectEnvironment carries the revision and wraps names and paths as rows", () => {
   assert.deepEqual(saveProjectEnvironmentRequest({
     projectId: "p", expectedRevision: 4, script: "make", variables: "A=1", secretNames: ["TOKEN"], filePaths: [".env"],
+    mcps: [{ name: "github", source: ".mcp.json" }], skills: [],
   }), {
     SaveProjectEnvironment: {
       projectId: "p", expectedRevision: 4, setup: { script: "make" }, variables: "A=1",
-      secrets: [{ name: "TOKEN" }], files: [{ path: ".env" }],
+      secrets: [{ name: "TOKEN" }], files: [{ path: ".env" }], mcps: [{ name: "github", source: ".mcp.json" }], skills: [],
     },
   })
 })

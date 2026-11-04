@@ -1386,6 +1386,8 @@ fn envp01_project_environment_follows_the_project_owner_and_is_removed_with_the_
             variables: "LOG_LEVEL=debug".into(),
             secrets: vec![],
             files: vec![],
+            mcps: vec![],
+            skills: vec![],
         })
     };
     match harness.dispatch_as_user("local", save(0, "make")).unwrap() {

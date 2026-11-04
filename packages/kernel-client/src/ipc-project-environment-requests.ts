@@ -1,6 +1,8 @@
 import type {
   EnvironmentEntryRef,
+  EnvironmentExtension,
   EnvironmentOperationView,
+  ProjectEnvironmentExtension,
   ProjectEnvironmentView,
   SetupState,
 } from "./kernel-types-project-environment.js"
@@ -15,6 +17,9 @@ export type SaveProjectEnvironmentInput = {
   readonly variables: string
   readonly secretNames: readonly string[]
   readonly filePaths: readonly string[]
+  /** MCP servers and skills that project files declare, each with the file that does. */
+  readonly mcps: readonly EnvironmentExtension[]
+  readonly skills: readonly EnvironmentExtension[]
 }
 
 export function getProjectEnvironmentRequest(projectId: string, checkoutPath?: string) {
@@ -30,6 +35,8 @@ export function saveProjectEnvironmentRequest(input: SaveProjectEnvironmentInput
       variables: input.variables,
       secrets: input.secretNames.map((name) => ({ name })),
       files: input.filePaths.map((path) => ({ path })),
+      mcps: input.mcps.map(({ name, source }) => ({ name, source })),
+      skills: input.skills.map(({ name, source }) => ({ name, source })),
     },
   } as const
 }
@@ -66,9 +73,9 @@ export function draftProjectEnvironmentRequest(projectId: string, operationId: s
   return { DraftProjectEnvironment: { projectId, operationId } } as const
 }
 
-/** An idle agent of the Project on this kernel compares its files with the saved Environment and proposes changes. */
-export function checkProjectEnvironmentRequest(projectId: string, operationId: string) {
-  return { CheckProjectEnvironment: { projectId, operationId } } as const
+/** The kernel compares what the Project's files declare with the saved Environment and proposes changes; with `withAgent` an idle agent of the Project adds its own. */
+export function checkProjectEnvironmentRequest(projectId: string, operationId: string, withAgent: boolean) {
+  return { CheckProjectEnvironment: { projectId, operationId, withAgent } } as const
 }
 
 /** Accept applies the proposal as a Save; dismissing keeps it from being proposed again. */
@@ -182,6 +189,14 @@ function nullableInteger(source: Json, key: string, what: string): number | null
   return value
 }
 
+function extensionView(row: Json): ProjectEnvironmentExtension {
+  return {
+    name: text(row, "name", "Environment extension"),
+    source: text(row, "source", "Environment extension"),
+    presence: oneOf(row, "presence", ["present", "missing"], "Environment extension"),
+  }
+}
+
 export function parseProjectEnvironmentView(value: unknown): ProjectEnvironmentView {
   const what = "Project Environment"
   if (!isRecord(value)) throw new Error(`${what} must be an object`)
@@ -202,6 +217,8 @@ export function parseProjectEnvironmentView(value: unknown): ProjectEnvironmentV
       presence: oneOf(row, "presence", ["present", "missing"], "Environment file"),
       sizeBytes: nullableCount(row, "sizeBytes", "Environment file"),
     })),
+    mcps: list(value, "mcps", what).map(extensionView),
+    skills: list(value, "skills", what).map(extensionView),
     changedAtMs: count(value, "changedAtMs", what),
     machineLabel: text(value, "machineLabel", what),
     checkoutPath: text(value, "checkoutPath", what),
@@ -210,7 +227,7 @@ export function parseProjectEnvironmentView(value: unknown): ProjectEnvironmentV
       const evidence = object(row, "evidence", "Environment proposal")
       return {
         id: text(row, "id", "Environment proposal"),
-        field: oneOf(row, "field", ["setup", "variables", "secret", "file"], "Environment proposal"),
+        field: oneOf(row, "field", ["setup", "variables", "secret", "file", "mcp", "skill"], "Environment proposal"),
         change: oneOf(row, "change", ["add", "remove"], "Environment proposal"),
         text: text(row, "text", "Environment proposal"),
         evidence: { path: text(evidence, "path", "Environment proposal evidence"), excerpt: text(evidence, "excerpt", "Environment proposal evidence") },

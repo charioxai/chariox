@@ -2,17 +2,44 @@
 use super::*;
 use crate::local::{
     EnvironmentOperationRequest, EnvironmentOperationState, EnvironmentOperationView,
-    GetEnvironmentOperationRequest, GetProjectEnvironmentRequest, ProjectEnvironmentFileView,
+    ExtensionPresence, GetEnvironmentOperationRequest, GetProjectEnvironmentRequest,
+    ProjectEnvironmentExtension, ProjectEnvironmentExtensionView, ProjectEnvironmentFileView,
     ProjectEnvironmentSecretView, ProjectEnvironmentSetupField, ProjectEnvironmentSetupState,
     ProjectEnvironmentView, RunProjectEnvironmentSetupRequest, SaveProjectEnvironmentRequest,
     SetProjectEnvironmentSecretRequest,
 };
 use crate::project_environment::{
-    environment_error, file_presence, project_environment_vault_service, secret_presence,
-    ProjectEnvironmentRecord, ProjectEnvironmentStore, SaveOutcome, SetupSpec,
-    PROJECT_ENVIRONMENT_SCHEMA,
+    declared_in, environment_error, file_presence, project_environment_vault_service,
+    secret_presence, ExtensionEntry, ProjectEnvironmentRecord, ProjectEnvironmentStore,
+    SaveOutcome, SetupSpec, PROJECT_ENVIRONMENT_SCHEMA,
 };
 use std::path::{Path, PathBuf};
+
+fn extension_entry(extension: ProjectEnvironmentExtension) -> ExtensionEntry {
+    ExtensionEntry {
+        name: extension.name,
+        source: extension.source,
+    }
+}
+
+/// Present while the declaring file still declares the entry in this checkout; Git carries the file, so a clone has it.
+fn extension_views(
+    checkout: &Path,
+    entries: &[ExtensionEntry],
+) -> Vec<ProjectEnvironmentExtensionView> {
+    entries
+        .iter()
+        .map(|entry| ProjectEnvironmentExtensionView {
+            name: entry.name.clone(),
+            source: entry.source.clone(),
+            presence: if declared_in(checkout, &entry.source).contains(&entry.name) {
+                ExtensionPresence::Present
+            } else {
+                ExtensionPresence::Missing
+            },
+        })
+        .collect()
+}
 
 const OPERATION_WAIT: std::time::Duration = std::time::Duration::from_secs(20);
 const MAX_SECRET_VALUE_BYTES: usize = 64 * 1024;
@@ -131,6 +158,8 @@ impl KernelRuntimeState {
                     ProjectEnvironmentFileView::new(path.clone(), file_presence(&checkout, path))
                 })
                 .collect(),
+            mcps: extension_views(&checkout, &record.mcps),
+            skills: extension_views(&checkout, &record.skills),
             changed_at_ms: record.changed_at_ms,
             machine_label: Self::machine_label(&config),
             checkout_path: checkout.to_string_lossy().into_owned(),
@@ -169,6 +198,8 @@ impl KernelRuntimeState {
                 .map(|secret| secret.name)
                 .collect(),
             files: request.files.into_iter().map(|file| file.path).collect(),
+            mcps: request.mcps.into_iter().map(extension_entry).collect(),
+            skills: request.skills.into_iter().map(extension_entry).collect(),
             ..Default::default()
         };
         fields.validate().map_err(environment_error)?;

@@ -180,7 +180,7 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
     void follow(known)
   }
 
-  const save = async (patch: { secretNames?: string[]; filePaths?: string[] }) => {
+  const save = async (patch: { secretNames?: string[]; filePaths?: string[]; mcps?: { name: string; source: string }[]; skills?: { name: string; source: string }[] }) => {
     const current = environment
     if (!current || busy) return
     await guarded(
@@ -191,6 +191,8 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
         variables: variables(),
         secretNames: patch.secretNames ?? current.secrets.map((secret) => secret.name),
         filePaths: patch.filePaths ?? current.files.map((file) => file.path),
+        mcps: patch.mcps ?? current.mcps.map(({ name, source }) => ({ name, source })),
+        skills: patch.skills ?? current.skills.map(({ name, source }) => ({ name, source })),
       }))),
       (outcome) => {
         setEnvironment(outcome.environment)
@@ -258,11 +260,12 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
 
   const toggleUpdate = async () => { if (transfer?.state === "running") await stopOperation(transfer); else await importFromSource() }
 
-  const runAgent = async (kind: "draft" | "check") => {
+  /** Draft needs an agent; Check compares the project's files itself and adds an agent's judgement when `withAgent`. */
+  const runAgent = async (kind: "draft" | "check", withAgent = true) => {
     if (busy) return
     if (draft?.state === "running") { await stopOperation(draft); return }
     await guarded(
-      async () => environmentOperationFromResponse(await deps.send(kind === "draft" ? draftProjectEnvironmentRequest(projectId, deps.newOperationId()) : checkProjectEnvironmentRequest(projectId, deps.newOperationId()))),
+      async () => environmentOperationFromResponse(await deps.send(kind === "draft" ? draftProjectEnvironmentRequest(projectId, deps.newOperationId()) : checkProjectEnvironmentRequest(projectId, deps.newOperationId(), withAgent))),
       (next) => { setOperation(next); if (next.state === "running") poll(next.operationId, next.updates) },
     )
   }
@@ -332,6 +335,12 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
     } else if (focus.kind === "file") {
       const index = focus.index
       void save({ filePaths: current.files.filter((_, at) => at !== index).map((file) => file.path) })
+    } else if (focus.kind === "mcp") {
+      const index = focus.index
+      void save({ mcps: current.mcps.filter((_, at) => at !== index).map(({ name, source }) => ({ name, source })) })
+    } else if (focus.kind === "skill") {
+      const index = focus.index
+      void save({ skills: current.skills.filter((_, at) => at !== index).map(({ name, source }) => ({ name, source })) })
     } else if (focus.kind === "proposal") void resolveProposal(focus.index, false)
   }
 
@@ -344,6 +353,7 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
       case "draft": void runAgent("draft"); return
       case "check": void runAgent("check"); return
       case "proposal": void resolveProposal(focus.index, true); return
+      case "mcp": case "skill": return
       case "script": startText("script"); return
       case "variables": startText("variables"); return
       case "secret": input = { kind: "secretValue", name: current.secrets[focus.index]!.name, buffer: bufferAtEnd("") }; return
@@ -433,6 +443,7 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
       else if (event.name === "return" || event.name === "enter") activateFocused()
       else if (["x", "delete", "backspace"].includes(event.name) && !event.ctrl && !event.meta) removeFocused()
       else if (event.name === "i" && !event.ctrl && !event.meta) importFocused()
+      else if (event.name === "c" && !event.ctrl && !event.meta && environment?.exists) void runAgent("check", false)
       else if (event.name === "m" && !event.ctrl && !event.meta && sources.length > 1) sourceIndex = (sourceIndex + 1) % sources.length
       deps.render()
       return true

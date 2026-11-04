@@ -31,6 +31,23 @@ fn view() -> ProjectEnvironmentView {
                 crate::project_environment::FilePresence::Missing,
             ),
         ],
+        mcps: vec![
+            ProjectEnvironmentExtensionView {
+                name: "github".into(),
+                source: ".mcp.json".into(),
+                presence: ExtensionPresence::Present,
+            },
+            ProjectEnvironmentExtensionView {
+                name: "notion".into(),
+                source: ".mcp.json".into(),
+                presence: ExtensionPresence::Missing,
+            },
+        ],
+        skills: vec![ProjectEnvironmentExtensionView {
+            name: "dataviz".into(),
+            source: ".claude/skills/dataviz/SKILL.md".into(),
+            presence: ExtensionPresence::Present,
+        }],
         changed_at_ms: 7,
         machine_label: "b3 builder".into(),
         checkout_path: "/work/p".into(),
@@ -75,10 +92,16 @@ fn environment_requests_have_the_camel_case_wire_of_protocol_972() {
                 files: vec![ProjectEnvironmentFilePath {
                     path: ".env".into(),
                 }],
+                mcps: vec![ProjectEnvironmentExtension {
+                    name: "github".into(),
+                    source: ".mcp.json".into(),
+                }],
+                skills: vec![],
             }),
             json!({"SaveProjectEnvironment": {"projectId": "p", "expectedRevision": 1,
                 "setup": {"script": "make"}, "variables": "A=1",
-                "secrets": [{"name": "T"}], "files": [{"path": ".env"}]}}),
+                "secrets": [{"name": "T"}], "files": [{"path": ".env"}],
+                "mcps": [{"name": "github", "source": ".mcp.json"}], "skills": []}}),
         ),
         (
             LocalDaemonRequest::SetProjectEnvironmentSecret(SetProjectEnvironmentSecretRequest {
@@ -165,8 +188,9 @@ fn environment_requests_have_the_camel_case_wire_of_protocol_972() {
             LocalDaemonRequest::CheckProjectEnvironment(CheckProjectEnvironmentRequest {
                 project_id: "p".into(),
                 operation_id: "op".into(),
+                with_agent: false,
             }),
-            json!({"CheckProjectEnvironment": {"projectId": "p", "operationId": "op"}}),
+            json!({"CheckProjectEnvironment": {"projectId": "p", "operationId": "op", "withAgent": false}}),
         ),
         (
             LocalDaemonRequest::ResolveEnvironmentProposal(ResolveEnvironmentProposalRequest {
@@ -221,6 +245,9 @@ fn environment_views_carry_names_and_presence_never_a_value() {
                         {"name": "DATABASE_URL", "presence": "locked"}],
             "files": [{"path": "config/secrets.json", "presence": "present", "sizeBytes": 2800},
                       {"path": ".env", "presence": "missing", "sizeBytes": null}],
+            "mcps": [{"name": "github", "source": ".mcp.json", "presence": "present"},
+                     {"name": "notion", "source": ".mcp.json", "presence": "missing"}],
+            "skills": [{"name": "dataviz", "source": ".claude/skills/dataviz/SKILL.md", "presence": "present"}],
             "changedAtMs": 7, "machineLabel": "b3 builder", "checkoutPath": "/work/p",
             "setupState": {"state": "failed", "operationId": "op", "endedAtMs": 9, "exitCode": 1, "reason": null},
             "proposals": [{"id": "0123456789abcdef", "field": "secret", "change": "add", "text": "STRIPE_SECRET_KEY",

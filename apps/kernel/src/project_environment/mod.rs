@@ -1,5 +1,6 @@
 //! One Environment per Project (schema 2): a Setup script, Variables, Secret names and Files outside
 //! Git. Values live in each kernel's Vault; presence is computed on every read.
+mod detect;
 mod draft;
 mod files;
 mod launch;
@@ -11,6 +12,7 @@ mod setup;
 mod store;
 mod transfer;
 
+pub(crate) use detect::{declared_in, detect};
 pub(crate) use draft::{draft_facts, draft_prompt, parse_draft};
 pub(crate) use files::{
     copy_environment_files, environment_file_rules, register_environment_files,
@@ -19,10 +21,12 @@ pub(crate) use launch::{attach_project_provider_environment, project_launch_envi
 pub(crate) use operations::{Begun, EnvironmentOperations, OperationChanges, OperationHandle};
 pub(crate) use presence::{file_presence, secret_presence};
 pub use presence::{FilePresence, SecretPresence};
-pub(crate) use proposals::{apply as apply_proposal, check_prompt, parse_proposals, ProposalStore};
+pub(crate) use proposals::{
+    apply as apply_proposal, check_prompt, deterministic_proposals, parse_proposals, ProposalStore,
+};
 pub use record::{
-    environment_variable_name, parse_variables, project_environment_protected_name,
-    relative_project_path, ProjectEnvironmentRecord, PROJECT_ENVIRONMENT_SCHEMA,
+    environment_variable_name, extension_name, parse_variables, project_environment_protected_name,
+    relative_project_path, ExtensionEntry, ProjectEnvironmentRecord, PROJECT_ENVIRONMENT_SCHEMA,
 };
 pub(crate) use setup::{SetupRuns, SetupSpec};
 pub(crate) use store::{remove_schema_1_state, ProjectEnvironmentStore, SaveOutcome};

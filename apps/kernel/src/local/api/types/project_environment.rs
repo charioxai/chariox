@@ -39,6 +39,32 @@ pub struct SaveProjectEnvironmentRequest {
     pub variables: String,
     pub secrets: Vec<ProjectEnvironmentSecretName>,
     pub files: Vec<ProjectEnvironmentFilePath>,
+    pub mcps: Vec<ProjectEnvironmentExtension>,
+    pub skills: Vec<ProjectEnvironmentExtension>,
+}
+
+/// An MCP server or skill that a file of the Project declares.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProjectEnvironmentExtension {
+    pub name: String,
+    pub source: String,
+}
+
+/// Whether the declaring file still declares the entry on this kernel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExtensionPresence {
+    Present,
+    Missing,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProjectEnvironmentExtensionView {
+    pub name: String,
+    pub source: String,
+    pub presence: ExtensionPresence,
 }
 
 /// The owner puts a Secret's value into this kernel's Vault under the Project scope.
@@ -120,12 +146,14 @@ pub struct RemoteEnvironmentOperationRequest {
     pub stop: bool,
 }
 
-/// An idle agent of the Project on this kernel reads the Project and the saved Environment and proposes changes; nothing is applied.
+/// Reads the Project's files and the saved Environment and proposes changes; nothing is applied.
+/// The kernel always compares what the files declare (no model); with `with_agent` an idle agent of the Project adds its own proposals.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CheckProjectEnvironmentRequest {
     pub project_id: String,
     pub operation_id: String,
+    pub with_agent: bool,
 }
 
 /// Accept applies one proposal as a Save; dismissing it keeps the agent from proposing it again.
@@ -144,6 +172,8 @@ pub enum EnvironmentProposalField {
     Variables,
     Secret,
     File,
+    Mcp,
+    Skill,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -268,6 +298,8 @@ pub struct ProjectEnvironmentView {
     pub variables: String,
     pub secrets: Vec<ProjectEnvironmentSecretView>,
     pub files: Vec<ProjectEnvironmentFileView>,
+    pub mcps: Vec<ProjectEnvironmentExtensionView>,
+    pub skills: Vec<ProjectEnvironmentExtensionView>,
     pub changed_at_ms: u64,
     pub machine_label: String,
     pub checkout_path: String,

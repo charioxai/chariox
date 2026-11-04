@@ -7,6 +7,15 @@ pub const PROJECT_ENVIRONMENT_SCHEMA: u32 = 2;
 const MAX_TEXT_BYTES: usize = 64 * 1024;
 const MAX_ENTRIES: usize = 256;
 
+/// An MCP server or skill the Project's own files declare: Git carries it, so only its name and the file that declares it are saved.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExtensionEntry {
+    pub name: String,
+    /// The project file (relative path) that declares it, for example `.mcp.json`.
+    pub source: String,
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProjectEnvironmentRecord {
@@ -18,7 +27,22 @@ pub struct ProjectEnvironmentRecord {
     pub variables: String,
     pub secrets: Vec<String>,
     pub files: Vec<String>,
+    #[serde(default)]
+    pub mcps: Vec<ExtensionEntry>,
+    #[serde(default)]
+    pub skills: Vec<ExtensionEntry>,
     pub changed_at_ms: u64,
+}
+
+/// MCP servers and skills are named like directories and JSON keys: letters, digits, `_`, `-` and `.`.
+pub fn extension_name(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value != "."
+        && value != ".."
+        && value
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-' | b'.'))
 }
 
 pub fn environment_variable_name(value: &str) -> bool {
@@ -145,6 +169,18 @@ impl ProjectEnvironmentRecord {
                 return Err("Files outside Git list each path once");
             }
         }
+        for entries in [&self.mcps, &self.skills] {
+            if entries.len() > MAX_ENTRIES {
+                return Err("an Environment holds at most 256 MCPs and 256 Skills");
+            }
+            let mut names = BTreeSet::new();
+            for entry in entries {
+                relative_project_path(&entry.source)?;
+                if !extension_name(&entry.name) || !names.insert(entry.name.as_str()) {
+                    return Err("MCPs and Skills take unique names of letters, digits, _, - and .");
+                }
+            }
+        }
         Ok(())
     }
 
@@ -197,6 +233,35 @@ mod tests {
             assert!(relative_project_path(bad).is_err(), "{bad}");
         }
         assert!(relative_project_path("config/secrets.json").is_ok());
+    }
+
+    #[test]
+    fn mcps_and_skills_take_unique_names_and_a_project_file() {
+        let mut value = record();
+        value.mcps = vec![ExtensionEntry {
+            name: "github".into(),
+            source: ".mcp.json".into(),
+        }];
+        value.skills = vec![ExtensionEntry {
+            name: "dataviz".into(),
+            source: ".claude/skills/dataviz/SKILL.md".into(),
+        }];
+        assert!(value.validate().is_ok());
+        value.mcps.push(value.mcps[0].clone());
+        assert!(value.validate().is_err(), "a name is listed once");
+        value.mcps = vec![ExtensionEntry {
+            name: "git hub".into(),
+            source: ".mcp.json".into(),
+        }];
+        assert!(value.validate().is_err());
+        value.mcps = vec![ExtensionEntry {
+            name: "github".into(),
+            source: "../.mcp.json".into(),
+        }];
+        assert!(
+            value.validate().is_err(),
+            "the source stays inside the project"
+        );
     }
 
     #[test]

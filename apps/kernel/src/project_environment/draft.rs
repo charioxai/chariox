@@ -119,9 +119,10 @@ pub(crate) fn draft_facts(checkout: &Path) -> String {
     }
     let ignored = ignored_files(checkout);
     format!(
-        "Project folder entries:\n{}\n\nFiles that Git ignores (names only, contents are private):\n{}\n\nManifest files:\n{}",
+        "Project folder entries:\n{}\n\nFiles that Git ignores (names only, contents are private):\n{}\n\nDeclared in project files:\n{}\n\nManifest files:\n{}",
         top_level_names(checkout).join("\n"),
         ignored.join("\n"),
+        super::detect::facts_text(&super::detect::detect(checkout)),
         facts,
     )
 }

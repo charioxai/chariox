@@ -22,7 +22,7 @@ export type SetupState =
   | { readonly state: "cancelled"; readonly operationId: string; readonly endedAtMs: number }
   | { readonly state: "running"; readonly operationId: string; readonly startedAtMs: number }
 
-export type EnvironmentProposalField = "setup" | "variables" | "secret" | "file"
+export type EnvironmentProposalField = "setup" | "variables" | "secret" | "file" | "mcp" | "skill"
 
 /** One change an agent proposed: a line of Setup or Variables, a Secret name or a File path, with the line that shows why. */
 export type EnvironmentProposal = {
@@ -33,6 +33,10 @@ export type EnvironmentProposal = {
   readonly evidence: { readonly path: string; readonly excerpt: string }
 }
 
+/** An MCP server or skill that a project file declares; `presence` says whether that file still declares it here. */
+export type ProjectEnvironmentExtension = { readonly name: string; readonly source: string; readonly presence: "present" | "missing" }
+export type EnvironmentExtension = { readonly name: string; readonly source: string }
+
 export type ProjectEnvironmentView = {
   readonly projectId: string
   readonly exists: boolean
@@ -41,6 +45,8 @@ export type ProjectEnvironmentView = {
   readonly variables: string
   readonly secrets: readonly ProjectEnvironmentSecret[]
   readonly files: readonly ProjectEnvironmentFile[]
+  readonly mcps: readonly ProjectEnvironmentExtension[]
+  readonly skills: readonly ProjectEnvironmentExtension[]
   readonly changedAtMs: number
   readonly machineLabel: string
   readonly checkoutPath: string

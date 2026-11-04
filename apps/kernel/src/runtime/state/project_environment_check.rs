@@ -7,8 +7,8 @@ use crate::local::{
     EnvironmentOperationView, ResolveEnvironmentProposalRequest,
 };
 use crate::project_environment::{
-    apply_proposal, check_prompt, draft_facts, environment_error, parse_proposals,
-    register_environment_files, Begun, ProposalStore, SaveOutcome,
+    apply_proposal, check_prompt, deterministic_proposals, draft_facts, environment_error,
+    parse_proposals, register_environment_files, Begun, ProposalStore, SaveOutcome,
 };
 use std::path::PathBuf;
 
@@ -34,7 +34,10 @@ impl KernelRuntimeState {
             .environment_store()
             .load(project.id())?
             .ok_or_else(|| environment_error("this Project has no Environment to check yet"))?;
-        let (session_id, agent_id) = self.idle_project_agent(&project)?;
+        let agent = request
+            .with_agent
+            .then(|| self.idle_project_agent(&project))
+            .transpose()?;
         let view = EnvironmentOperationView {
             operation_id: request.operation_id,
             project_id: project.id().into(),
@@ -60,17 +63,33 @@ impl KernelRuntimeState {
         let project_id = project.id().to_string();
         tokio::spawn(async move {
             let work = async {
-                let facts = tokio::task::spawn_blocking(move || draft_facts(&checkout))
-                    .await
-                    .map_err(|_| environment_error("reading the Project failed"))?;
-                let answer = runtime
-                    .environment_utility_answer(
-                        &session_id,
-                        &agent_id,
-                        check_prompt(&facts, &record),
-                    )
-                    .await?;
-                let proposals = parse_proposals(&answer, &record).map_err(environment_error)?;
+                // What the files declare is compared by the kernel itself; the agent adds its own judgement.
+                let with_agent = agent.is_some();
+                let (own, facts) = tokio::task::spawn_blocking({
+                    let (checkout, record) = (checkout.clone(), record.clone());
+                    move || {
+                        let own = deterministic_proposals(&checkout, &record);
+                        let facts = with_agent.then(|| draft_facts(&checkout));
+                        (own, facts)
+                    }
+                })
+                .await
+                .map_err(|_| environment_error("reading the Project failed"))?;
+                let mut proposals = own;
+                if let (Some((session_id, agent_id)), Some(facts)) = (agent, facts) {
+                    let answer = runtime
+                        .environment_utility_answer(
+                            &session_id,
+                            &agent_id,
+                            check_prompt(&facts, &record),
+                        )
+                        .await?;
+                    for proposal in parse_proposals(&answer, &record).map_err(environment_error)? {
+                        if !proposals.iter().any(|known| known.id == proposal.id) {
+                            proposals.push(proposal);
+                        }
+                    }
+                }
                 runtime.proposal_store().replace(&project_id, proposals)
             };
             let outcome = tokio::select! {

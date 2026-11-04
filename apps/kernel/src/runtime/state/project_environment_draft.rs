@@ -7,7 +7,7 @@ use crate::local::{
     EnvironmentOperationView,
 };
 use crate::project_environment::{
-    draft_prompt, environment_error, parse_draft, register_environment_files, Begun,
+    detect, draft_prompt, environment_error, parse_draft, register_environment_files, Begun,
     OperationHandle, ProjectEnvironmentRecord, SaveOutcome,
 };
 use crate::provider::{ProviderRunState, ProviderUtilityExecutionPolicy};
@@ -118,13 +118,19 @@ impl KernelRuntimeState {
         agent_id: &str,
         checkout: PathBuf,
     ) -> Result<ProjectEnvironmentRecord, DaemonError> {
-        let prompt = tokio::task::spawn_blocking(move || draft_prompt(&checkout))
-            .await
-            .map_err(|_| environment_error("reading the Project failed"))?;
+        let (prompt, declared) =
+            tokio::task::spawn_blocking(move || (draft_prompt(&checkout), detect(&checkout)))
+                .await
+                .map_err(|_| environment_error("reading the Project failed"))?;
         let output = self
             .environment_utility_answer(session_id, agent_id, prompt)
             .await?;
-        parse_draft(&output).map_err(environment_error)
+        let mut record = parse_draft(&output).map_err(environment_error)?;
+        // The files name their MCPs and skills; the kernel reads them, so the agent cannot get one wrong.
+        record.mcps = declared.mcps;
+        record.skills = declared.skills;
+        record.validate().map_err(environment_error)?;
+        Ok(record)
     }
 
     /// The agent's answer to `visible_user_prompt`, run on its provider with no tools in a neutral directory.

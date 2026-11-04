@@ -12,6 +12,8 @@ export type EnvironmentFocus =
   | { readonly kind: "update" }
   | { readonly kind: "draft" }
   | { readonly kind: "check" }
+  | { readonly kind: "mcp"; readonly index: number }
+  | { readonly kind: "skill"; readonly index: number }
   | { readonly kind: "proposal"; readonly index: number }
   | { readonly kind: "script" }
   | { readonly kind: "variables" }
@@ -87,6 +89,8 @@ export function environmentFocusables(environment: ProjectEnvironmentView | null
     { kind: "addSecret" },
     ...environment.files.map((_, index): EnvironmentFocus => ({ kind: "file", index })),
     { kind: "addFile" },
+    ...environment.mcps.map((_, index): EnvironmentFocus => ({ kind: "mcp", index })),
+    ...environment.skills.map((_, index): EnvironmentFocus => ({ kind: "skill", index })),
     ...environment.proposals.map((_, index): EnvironmentFocus => ({ kind: "proposal", index })),
   ]
 }
@@ -210,7 +214,7 @@ function hint(model: EnvironmentDialogModel): string {
   const imports = model.sources.length > 0 && environment.exists
   const focus = model.focus
   const importable = imports && ((focus.kind === "secret" && environment.secrets[focus.index]?.presence === "missing") || (focus.kind === "file" && environment.files[focus.index]?.presence === "missing"))
-  const parts = ["↑/↓", "Enter edit", ...(importable ? ["I import here"] : []), ...(imports && model.sources.length > 1 ? ["M machine"] : []), "X remove", "Esc close"]
+  const parts = ["↑/↓", "Enter edit", ...(importable ? ["I import here"] : []), ...(imports && model.sources.length > 1 ? ["M machine"] : []), ...(environment.exists ? ["C check"] : []), "X remove", "Esc close"]
   return parts.join(" • ")
 }
 
@@ -301,6 +305,14 @@ export function environmentDialogView(model: EnvironmentDialogModel, width: numb
   })
   const addingFile = input?.kind === "line" && input.target === "filePath"
   rows.push(row(addingFile ? `  Path ${input.text}${CURSOR}` : "  + Add file", addingFile ? "text" : "muted", focused("addFile")))
+
+  for (const [title, kind, entries] of [["MCPs", "mcp", environment.mcps], ["Skills", "skill", environment.skills]] as const) {
+    if (entries.length === 0) continue
+    rows.push(row(title, "text", false, true))
+    entries.forEach((entry, index) => {
+      rows.push(row(`  ${twoColumns(entry.name, entry.presence === "present" ? "In project files" : "Missing here", width - 2)}`, entry.presence === "present" ? "text" : "warning", focused(kind, index)))
+    })
+  }
 
   if (environment.proposals.length > 0) {
     rows.push(row("Proposed", "text", false, true))
