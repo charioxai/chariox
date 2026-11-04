@@ -59,6 +59,14 @@ impl KernelRuntimeState {
             .await?;
         self.recheck_vault_command_context(&context)?;
         let _mutation = self.vault_observation_mutation_guard().await;
+        if registry
+            .other_handle_using_vault_key(key, &entry.id)?
+            .is_some()
+        {
+            return Err(error(
+                "Another entry uses this value. Remove that entry first.",
+            ));
+        }
         let service = self.home_runtime_secret_service()?;
         let value = service
             .vault_secret_for_dictation(key)?

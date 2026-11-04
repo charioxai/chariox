@@ -1435,6 +1435,36 @@ async fn vflag_capture_of_an_already_protected_value_stores_the_value() {
     assert_eq!(stored(f, &second).as_str(), CAPTURED);
 }
 
+#[tokio::test]
+async fn vflag_remove_capture_preserves_a_slot_referenced_by_an_alias() {
+    crate::test_support::isolated_env_test!();
+    let login = login_room().await;
+    let f = &login.f;
+    unlock(f);
+    let captured = call(f, CAPTURE, capture_args("shared-slot")).await.unwrap();
+    let id = captured["credential_id"].as_str().unwrap();
+    let registry = crate::credential::CharioxCredentialRegistry::user().unwrap();
+    let mut alias = registry.get(id).unwrap().unwrap();
+    alias.id = "same-binding-alias".into();
+    registry.upsert(alias).unwrap();
+
+    let result = call(f, REMOVE, json!({"credential_id": id})).await;
+    assert_eq!(stored(f, "same-binding-alias").as_str(), CAPTURED);
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("Another entry uses this value"));
+    assert!(registry.get(id).unwrap().is_some());
+    let scope = crate::runtime::kernel_browser_host::KernelBrowserHost::profile_key("local");
+    assert_eq!(
+        f.state
+            .owned
+            .kernel_browser_secret_observations
+            .scrub_text_or_withhold(&scope, CAPTURED),
+        "[redacted]"
+    );
+}
+
 // A label captured by mistake ("Token") is undone by the agent that made the capture: the entry goes,
 // and the word is no longer masked in what the agent observes.
 #[tokio::test]
