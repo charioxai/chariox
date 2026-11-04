@@ -254,13 +254,13 @@ async function main() {
     "This is a drill. Use only the chariox-reach MCP tools. Do not retry a failed call.",
     `The machine's kernel id is ${kernelId}. With the \`kernel\` argument set to it:`,
     "1. request CreateSession {\"workspace_id\":\"/home/chariox\",\"worktree_id\":\"/home/chariox\",\"alias\":null,\"slice_ref\":null}; take SessionCreated.session.id.",
-    "2. request AttachToSession {\"session_id\":\"SESSION_ID\",\"client_id\":\"reach-agent\",\"capability_level\":\"FullTerminal\"}; take SessionAttached.attachment.id.",
-    "3. request RunShellCommand {\"session_id\":\"SESSION_ID\",\"attachment_id\":\"ATTACHMENT_ID\",\"command\":\"uname\",\"args\":[\"-a\"],\"working_directory\":\"/home/chariox\",\"timeout_ms\":60000}.",
-    "Then reply with the words RANCOMMAND and DONE joined by an underscore and the stdout of the command.",
+    "2. request RoomTerminal {\"session_id\":\"SESSION_ID\",\"operation\":{\"operation\":\"exec_open\",\"command\":[\"uname\",\"-a\"]}}; take exec_opened.exec_id.",
+    "3. request RoomTerminal {\"session_id\":\"SESSION_ID\",\"operation\":{\"operation\":\"exec_read\",\"exec_id\":\"EXEC_ID\",\"after_cursor\":0,\"wait_ms\":10000}} until the answer has an outcome; then request RoomTerminal exec_close for the exec_id.",
+    "Then reply with the words RANCOMMAND and DONE joined by an underscore and the decoded stdout of the command.",
   ].join("\n"), "RANCOMMAND_DONE")
   saveToolLog()
   const log2 = JSON.stringify(toolLog(text2))
-  check("the agent created a Room on the machine and ran the command there without /sudo", /SessionCreated/.test(log2) && /exit_code\\?":0/.test(log2) && /Linux/.test(log2), {})
+  check("the agent created a Room on the machine and ran the command there without /sudo", /SessionCreated/.test(log2) && /exited/.test(log2) && (/TGludXg/.test(log2) || /Linux/.test(log2)), {})
 
   // 3. Stop, then release.
   const text3 = await turn([

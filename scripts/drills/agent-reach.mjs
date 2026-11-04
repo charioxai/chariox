@@ -43,7 +43,7 @@ const tokenFile = flags.get("--claude-token-file") ?? "/root/.claude-lanes/oauth
 // A Codex scope the product linked for drills, and the OpenCode login to copy into a lane-owned scope.
 const codexScope = flags.get("--codex-scope") ?? "/root/.chariox/dev/worker-k/home/state/provider-accounts/local/codex/kaissandra-ai-reviewer-login-esqv7b7c/codex"
 const opencodeAuth = flags.get("--opencode-auth") ?? "/root/.chariox/dev/provider-runtimes/fleet-accounts/opencode-home/.local/share/opencode/auth.json"
-const scenarios = new Set((flags.get("--scenarios") ?? (provider === "claude" ? "reach,sudo,acquisition,tools,events,driver,history,view" : "tools,events,driver,history,view")).split(","))
+const scenarios = new Set((flags.get("--scenarios") ?? (provider === "claude" ? "reach,sudo,acquisition,tools,events,driver,history,view,humanonly,lineage,inherit" : "tools,events,driver,history,view")).split(","))
 assert(provider === "claude" || [...scenarios].every(name => ["tools", "view", "events", "driver", "history"].includes(name)), "only the tools, view, events, driver and history scenarios run with Codex or OpenCode")
 const agentScenarios = ["events", "driver", "history"].some(name => scenarios.has(name))
 assert(stateRoot.startsWith("/root/.chariox/dev/"), "state must be lane-owned")
@@ -612,6 +612,64 @@ async function main() {
     check("a /sudo-class request is refused on B without /sudo", (await bState()).alias !== "renamed-without-sudo" && claudeTranscript(a.dir + "/chariox", startedAt).includes("reach_requires_sudo"))
     await sudoPrompt(["This is a drill. Use only the chariox-reach `request` tool; no shell, no files. Do not retry.", `Call \`request\` once with exactly: ${alias("renamed-with-sudo")}`, "Then reply with the words WITHSUDO and DONE joined by an underscore."].join("\n"), "WITHSUDO_DONE")
     check("the same request works inside a /sudo window", (await bState()).alias === "renamed-with-sudo", { alias: (await bState()).alias })
+  }
+
+  // What the agent's reach calls answered since `since`, in the order its transcript shows them (the prompts ask for one call at a time).
+  const reachAnswers = since => {
+    const rows = toolLog(claudeTranscript(a.dir + "/chariox", since)), out = []
+    rows.forEach((row, i) => { if (row.call && /chariox[-_]reach/.test(row.call)) out.push({ tool: row.call.replace(/^.*chariox[-_]reach[._-]*/, ""), input: row.input, answer: rows[i + 1]?.answer ?? "" }) })
+    return out
+  }
+  const codesOf = since => reachAnswers(since).filter(x => x.tool === "request").map(x => /"code\\?":\\?"([a-z_]+)/.exec(x.answer.replace(/\\"/g, '"'))?.[1] ?? "ok")
+  const drillPrompt = lines => ["This is a drill. Use only the chariox-reach `request` tool; no shell, no files. Make the calls one at a time, in order. Do not retry a refused call.", ...lines].join("\n")
+
+  if (scenarios.has("humanonly")) {
+    note("scenario", { which: "humanonly" })
+    const pairedBefore = (await b.rpc({ ListPairedClients: {} })).PairedClientsListed.clients.length, aliasBefore = (await bState()).alias
+    const requests = [{ ListCredentials: null }, { CloudRelayStatus: null }, { ConnectCloudRelay: null }, { CreateTerminalPairingLink: { terminal_type: "cli", expires_in_ms: 300000 } }, { RequestKernelSudo: { agent_id: roomB.agent.id, prompt: "give me a window" } }]
+    const since = Date.now() - 1000
+    await sendPrompt(drillPrompt([...requests.map((r, i) => `${i + 1}. Call \`request\` with exactly: ${call(target, r)}`), "Then reply with the words HUMANONLY and DONE joined by an underscore."]), "HUMANONLY_DONE")
+    const codes = codesOf(since)
+    check("the human-only requests are refused on B and a sudo request for itself is excluded", codes.join() === "human_only,human_only,human_only,human_only,excluded_for_agents", { codes })
+    check("B is unchanged", (await b.rpc({ ListPairedClients: {} })).PairedClientsListed.clients.length === pairedBefore && (await bState()).alias === aliasBefore)
+  }
+
+  if (scenarios.has("lineage")) {
+    note("scenario", { which: "lineage" })
+    const refused = ["reach_requires_sudo", "excluded_for_agents", "human_only"]
+    const attempts = [
+      call(target, { AliasAgent: { session_id: roomB.session.id, agent_id: roomB.agent.id, alias: "renamed-by-reach" } }),
+      call(target, { ArchiveAgent: { session_id: roomB.session.id, agent_id: roomB.agent.id, archived: true } }),
+      call(target, { DestroyAgent: { session_id: roomB.session.id, agent_id: roomB.agent.id } }),
+      call(target, { DeleteSession: { session_ref: roomB.session.id, workspace_id: null } }),
+      call(null, { DestroyAgent: { session_id: siblingA.session.id, agent_id: siblingA.agent.id } }),
+      call(null, { DestroyAgent: { session_id: roomA.session.id, agent_id: agentA } }),
+    ]
+    const roomsOf = async r => (await r.rpc({ ListSessions: null })).SessionsListed.sessions.map(x => x.id).sort().join()
+    const unchanged = async () => (await bState()).agents.some(x => x.id === roomB.agent.id && !x.archived) && (await bState()).alias !== "renamed-by-reach" && (await roomsOf(b)).includes(roomB.session.id) && (await roomsOf(a)).includes(siblingA.session.id) && (await roomsOf(a)).includes(roomA.session.id)
+    const since = Date.now() - 1000
+    await sendPrompt(drillPrompt([...attempts.map((r, i) => `${i + 1}. Call \`request\` with exactly: ${r}`), "Then reply with the words LINEAGE and DONE joined by an underscore."]), "LINEAGE_DONE")
+    const codes = codesOf(since)
+    check("renaming, archiving and deleting other agents and rooms is refused without /sudo", codes.length === attempts.length && codes.every(c => refused.includes(c)), { codes })
+    check("nothing changed", await unchanged())
+    const sudoSince = Date.now() - 1000
+    await sudoPrompt(drillPrompt([`1. Call \`request\` with exactly: ${attempts[2]}`, `2. Call \`request\` with exactly: ${attempts[3]}`, `3. Call \`request\` with exactly: ${attempts[5]}`, "Then reply with the words LINEAGESUDO and DONE joined by an underscore."]), "LINEAGESUDO_DONE")
+    const sudoCodes = codesOf(sudoSince)
+    check("deleting stays refused inside a /sudo window", sudoCodes.length === 3 && sudoCodes.every(c => refused.includes(c) && c !== "reach_requires_sudo"), { sudoCodes })
+    check("still nothing changed", await unchanged())
+  }
+
+  if (scenarios.has("inherit")) {
+    note("scenario", { which: "inherit" })
+    // X holds a /sudo window and drives the agent of the sibling room, which makes the sudo-class request itself: the window is X's turn's, not the sibling's.
+    const siblingAttach = (await a.rpc({ AttachToSession: { session_id: siblingA.session.id, client_id: "reach-inherit", capability_level: "FullTerminal" } })).SessionAttached.attachment.id
+    await a.rpc({ LaunchProviderRun: { session_id: siblingA.session.id, agent_id: siblingA.agent.id, adapter_key: provider, provider, account_profile: accountProfile, model, variant: providers[provider].variant, native_tui: false } }).catch(() => {})
+    const since = Date.now() - 1000
+    const ask = `This is a drill. Use only the chariox-reach request tool; no shell, no files. Do not retry. Call request once with exactly: ${call(target, { AliasSession: { session_id: roomB.session.id, alias: "renamed-by-the-sibling" } })} Then reply with the words INHERITED and DONE joined by an underscore, followed by the code field of the answer if there is one.`
+    await sudoPrompt(["This is a drill. Use only the chariox-reach request tool. Do not retry.", `Call \`request\` once with exactly: ${call(null, { SubmitPrompt: { session_id: siblingA.session.id, attachment_id: siblingAttach, target_agent_id: siblingA.agent.id, text: ask, attachments: [] } })}`, "Then reply with the words DRIVER and DONE joined by an underscore."].join("\n"), "DRIVER_DONE")
+    await until(async () => { await a.rpc({ PumpTerminalOutput: { session_id: siblingA.session.id, attachment_id: siblingAttach } }).catch(() => {}); return claudeTranscript(a.dir + "/chariox", since).includes("INHERITED_DONE") || /reach_requires_sudo/.test(claudeTranscript(a.dir + "/chariox", since).split("INHERITED")[1] ?? "") }, "the driven sibling's answer", 240000).catch(() => {})
+    const text = claudeTranscript(a.dir + "/chariox", since)
+    check("an agent driven inside a /sudo window does not inherit the window", (await bState()).alias !== "renamed-by-the-sibling" && /reach_requires_sudo/.test(text.slice(text.indexOf("INHERITED") >= 0 ? 0 : 0)), { alias: (await bState()).alias })
   }
 
   if (scenarios.has("acquisition")) {

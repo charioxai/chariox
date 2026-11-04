@@ -64,7 +64,7 @@ export const REACH_TOOLS: readonly Tool[] = [
 ]
 
 /** Requests an agent may send; the rest of the CLI's examples are the user's alone or end a room. */
-const REACH_EXAMPLES = ["ListSessions", "ListProjects", "SearchWorkspaceDirectories", "CreateSession", "AttachToSession", "GetSessionState", "SpawnAgent", "SubmitPrompt", "CancelActivePrompt", "RunShellCommand", "RespondToInteraction"]
+const REACH_EXAMPLES = ["ListSessions", "ListProjects", "SearchWorkspaceDirectories", "CreateSession", "AttachToSession", "GetSessionState", "SpawnAgent", "SubmitPrompt", "CancelActivePrompt", "RespondToInteraction"]
 
 const requestName = (body: object): string => Object.keys(body)[0]!
 
@@ -100,7 +100,8 @@ export function reachGuideText(): string {
     "Refusals are results with a code: reach_requires_sudo (needs your user's /sudo window, as it would in your own room), excluded_for_agents and human_only (never yours), not_allowed, reach_not_available (your run cannot reach), acquisition_declined (the user declined a machine), and the kernel_* codes of an unreachable or slow kernel: retry once with the same request on kernel_request_timeout or kernel_connection_lost, read the state first on kernel_outcome_unknown.",
     "Machines of your user's connected service: request {\"ControlPlane\":{\"action\":\"capabilities\"}} gives machine_allocation.revision, then {\"ControlPlane\":{\"action\":\"acquire\",\"capability_revision\":\"REVISION\",\"request_id\":\"ANY_NEW_ID\"}} (the user is usually asked to accept first; the call waits for the answer, and acquisition_declined means no).",
     "Then {\"ControlPlane\":{\"action\":\"get\",\"allocation_ref\":\"REF\"}} every ten seconds or so until state is ready and access_state is available; kernel_target.kernel_id is the machine's kernel for the kernel argument. stop, start and release take allocation_ref, capability_revision, a new request_id and expected_revision (the revision of the latest answer). Release the machine when you are done.",
-    "A new machine has no room. Create one on it with CreateSession (workspace_id and worktree_id are a directory on the machine, such as /home/chariox; no /sudo needed), then AttachToSession and RunShellCommand and the other room requests there.",
+    "A new machine has no room. Create one on it with CreateSession (workspace_id and worktree_id are a directory on the machine, such as /home/chariox; no /sudo needed), then the other room requests there.",
+    "Run a command in a room with RoomTerminal: request {\"RoomTerminal\":{\"session_id\":\"SESSION_ID\",\"operation\":{\"operation\":\"exec_open\",\"command\":[\"uname\",\"-a\"]}}} answers exec_opened.exec_id; then {\"RoomTerminal\":{\"session_id\":\"SESSION_ID\",\"operation\":{\"operation\":\"exec_read\",\"exec_id\":\"EXEC_ID\",\"after_cursor\":0,\"wait_ms\":10000}}} until exec_output has an outcome (chunks hold base64 stdout and stderr; pass next_cursor as the next after_cursor), and exec_close releases it. An attachment you make is automation-only, so RunShellCommand and the other requests that need a terminal attachment are refused for you.",
     "Human-only, never attempted by you: passkey approvals, grants, sudo approvals, secrets and credentials, relay and pairing configuration.",
   ].join("\n")
 }
