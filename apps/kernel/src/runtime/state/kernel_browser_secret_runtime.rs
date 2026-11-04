@@ -105,6 +105,7 @@ impl KernelRuntimeState {
                                 | "display_input"
                         )
                     )));
+        let capture = method == "host.secret" && params["op"] == "capture";
         let tab = params["tab_id"].as_str().map(str::to_owned);
         if model_mutation && self.handoff_model_write_blocked(user, tab.as_deref()) {
             return Err(host_error("owner_step_pending: wait for the owner's hand-off completion before changing this tab".into()));
@@ -150,7 +151,9 @@ impl KernelRuntimeState {
         .map_err(|_| host_error("MD-5: browser task failed".into()))?
         .map_err(|message| protection.scrub_error(&scope, message.into_daemon("kernel_browser")))?;
         crate::transport::kernel_browser_display::timing("protected_host_ipc", at);
-        if !protect {
+        // The capture reply is the value itself, headed for the Vault and never for the model:
+        // scrubbing it would store the redaction marker when the value is already protected.
+        if !protect || capture {
             return Ok(result);
         }
         scrub_browser_result(protection, &scope, result, pixels, display, mirror)

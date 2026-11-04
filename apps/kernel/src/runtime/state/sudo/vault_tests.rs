@@ -1415,6 +1415,25 @@ async fn vaudit_s3_capture_browser_stores_and_protects_a_page_value() {
     assert!(!login.root.path().join("capture").exists());
 }
 
+// A value already in the Vault is protected in observations; capturing it again for another use
+// must still store the page's value, not the redaction marker.
+#[tokio::test]
+async fn vflag_capture_of_an_already_protected_value_stores_the_value() {
+    crate::test_support::isolated_env_test!();
+    let login = login_room().await;
+    let f = &login.f;
+    unlock(f);
+    let first = call(f, CAPTURE, capture_args("first")).await.unwrap();
+    let second = call(f, CAPTURE, capture_args("second")).await.unwrap();
+    let (first, second) = (
+        first["credential_id"].as_str().unwrap().to_string(),
+        second["credential_id"].as_str().unwrap().to_string(),
+    );
+    assert_ne!(first, second);
+    assert_eq!(stored(f, &first).as_str(), CAPTURED);
+    assert_eq!(stored(f, &second).as_str(), CAPTURED);
+}
+
 // A page's manual setup key or QR code becomes a TOTP seed bound to the one site.
 #[tokio::test]
 async fn capture_browser_stores_a_page_totp_key_or_qr_as_a_site_bound_seed() {
