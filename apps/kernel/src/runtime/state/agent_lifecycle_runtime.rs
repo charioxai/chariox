@@ -821,11 +821,19 @@ impl KernelRuntimeState {
         // Output settlement may hold one or every provider lane. Dispatch
         // completion wakes after it returns so a recipient cannot reacquire
         // a lane held by this same call stack.
+        let Some(mut run) = self.lifecycle_sweeps.ask() else {
+            return;
+        };
         let state = self.clone();
         tokio::spawn(async move {
-            if let Err(error) = state.sweep_agent_lifecycle().await {
-                tracing::warn!(error=%crate::secret_redaction::redact_secrets(&error.to_string()),
-                    "MP-08/MP-09/MP-10/MP-11 A02: completion sweep retained for periodic reconciliation");
+            loop {
+                if let Err(error) = state.sweep_agent_lifecycle().await {
+                    tracing::warn!(error=%crate::secret_redaction::redact_secrets(&error.to_string()),
+                        "MP-08/MP-09/MP-10/MP-11 A02: completion sweep retained for periodic reconciliation");
+                }
+                if !run.asked_again() {
+                    break;
+                }
             }
         });
     }
@@ -956,6 +964,8 @@ impl KernelRuntimeState {
         Ok(())
     }
     pub(super) async fn sweep_agent_lifecycle(&self) -> Result<(), DaemonError> {
+        #[cfg(test)]
+        self.lifecycle_sweeps.record_run();
         self.sweep_agent_lifecycle_at(crate::session::unix_epoch_ms())
             .await
     }

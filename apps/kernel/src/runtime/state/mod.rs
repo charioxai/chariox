@@ -217,6 +217,7 @@ pub(crate) struct KernelRuntimeState {
     /// Recovery operations this kernel life dispatched. One from an earlier life has no provider
     /// behind it any more, so restart recovery may supersede it instead of waiting for it.
     restart_recovery_dispatched: Arc<std::sync::Mutex<BTreeSet<String>>>,
+    lifecycle_sweeps: lifecycle_sweep_flight::SweepFlight,
     /// What the person granted with "Allow for this session" on Claude permission prompts, per
     /// agent, so a restarted Claude process starts with it again.
     claude_session_grants: claude_permission_rules::StandingGrants,
@@ -1026,6 +1027,7 @@ impl KernelRuntimeState {
             leased_agent_operations: leased_agent_operations::LeasedAgentOperations::default(),
             detached_workflow_provider_launches: Arc::new(std::sync::Mutex::new(BTreeSet::new())),
             restart_recovery_dispatched: Arc::new(std::sync::Mutex::new(BTreeSet::new())),
+            lifecycle_sweeps: Default::default(),
             claude_session_grants: claude_permission_rules::StandingGrants::default(),
             terminal_wake_driver: None,
             interaction_wake_driver: None,
@@ -1517,6 +1519,7 @@ mod agent_workspace_loss;
 mod interaction_wake;
 mod leased_task_connectivity;
 mod leased_worker_stop_obligation;
+mod lifecycle_sweep_flight;
 #[cfg(test)]
 mod resident_room_scan_tests;
 mod room_dispatch_obligation;
