@@ -1,7 +1,7 @@
 // MP-08 / MP-09 / MP-10 / MP-11 agent reach, machines: a real Claude Room agent on an enrolled home kernel acquires the
 // smallest managed machine through its `chariox-reach` `request` tool, the owner accepts the question the default
 // setting raises, the machine enrolls and shows up in `kernels`, the agent runs one command on it (the step that creates a
-// Room there is room-level, no /sudo), then stops and releases it. The hosted stack is a disposable validation stack
+// Room there is room-level, no /sudo), then stops and releases it. `--provider claude|codex|opencode` picks the agent. The hosted stack is a disposable validation stack
 // whose Cloud manager rents the real machine; this script never sees a provider key. Credentials are read inside the
 // script and never printed. After each phase it can run a photo command (the hosted web's Machines view).
 import assert from "node:assert/strict"
@@ -22,6 +22,15 @@ const required = key => { const value = flags.get(key); assert.equal(typeof valu
 const binary = resolve(required("--kernel-binary")), stack = required("--stack")
 const stateRoot = resolve(required("--state-root")), evidence = resolve(required("--evidence-dir"))
 const tokenFile = flags.get("--claude-token-file") ?? "/root/.claude-lanes/oauth-token.chariox"
+const provider = flags.get("--provider") ?? "claude"
+const providers = {
+  claude: { model: "claude-haiku-5-5", variant: "low" },
+  codex: { model: "gpt-6-luna", variant: "low" },
+  opencode: { model: "opencode-go/deepseek-v4.1-flash", variant: null },
+}
+assert(providers[provider], `--provider is one of ${Object.keys(providers)}`)
+const codexScope = flags.get("--codex-scope") ?? "/root/.chariox/dev/worker-k/home/state/provider-accounts/local/codex/kaissandra-ai-reviewer-login-esqv7b7c/codex"
+const opencodeAuth = flags.get("--opencode-auth") ?? "/root/.chariox/dev/provider-runtimes/fleet-accounts/opencode-home/.local/share/opencode/auth.json"
 const photoCommand = flags.get("--photo-command") // run as `<command> <phase>`; failures are checks, not crashes
 const label = flags.get("--label") ?? "run"
 // The service answers a repeated request id with the machine of the first one, so every run uses its own.
@@ -104,57 +113,62 @@ async function homeKernel() {
 }
 
 const stripped = text => text.replace(/sk-ant-[A-Za-z0-9_-]+/g, "<redacted>")
-function claudeTranscript(r, sinceMs) {
-  const out = []
-  const walk = dir => {
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      const full = join(dir, entry.name)
-      if (entry.isDirectory()) walk(full)
-      else if (entry.name.endsWith(".jsonl") && statSync(full).mtimeMs >= sinceMs) out.push(readFileSync(full, "utf8"))
-    }
-  }
-  try { walk(join(r.dir, "home/.claude/projects")) } catch {}
-  return out.join("\n")
-}
-function toolLog(text) {
-  const rows = []
-  for (const line of text.split("\n")) {
-    let entry
-    try { entry = JSON.parse(line) } catch { continue }
-    const content = entry.message?.content
-    if (!Array.isArray(content)) continue
-    for (const part of content) {
-      if (part.type === "tool_use") rows.push({ call: part.name, input: part.input })
-      else if (part.type === "tool_result") rows.push({ answer: String(typeof part.content === "string" ? part.content : JSON.stringify(part.content)).slice(0, 900) })
-      else if (part.type === "text" && entry.message.role === "assistant") rows.push({ said: part.text.slice(0, 400) })
-    }
-  }
-  return rows
-}
 
 let saveToolLog = () => {}
 async function main() {
   const home = await homeKernel()
   const state = async session => (await home.rpc({ GetSessionState: { session_id: session } })).SessionState.session
-  // The kernel's vault and the Claude login the agent runs on.
-  const made = (await home.rpc({ CreateSession: { workspace_id: join(home.dir, "work"), worktree_id: join(home.dir, "work"), alias: "vault-room" } })).SessionCreated
-  const att = (await home.rpc({ AttachToSession: { session_id: made.session.id, client_id: "reach-setup", capability_level: "FullTerminal" } })).SessionAttached
-  await home.client.subscribeToKernelEvents(made.session.id, att.attachment.id)
-  const pending = home.rpc({ ManageCredentialVault: { session_id: made.session.id, agent_id: made.agent.id } })
-  pending.catch(() => {})
-  let prompt
-  await until(async () => (prompt = (await state(made.session.id)).active_interactions?.find(x => x.id.startsWith("vault-unlock-"))), "disposable vault prompt")
-  await home.rpc({ RespondToInteraction: { session_id: made.session.id, interaction_id: prompt.id, choice_id: "passphrase", custom_reply: home.passkey } })
-  await pending
-  await home.rpc({ SetProviderAccountCredential: { provider: "claude", account_profile: "default", value: readFileSync(tokenFile, "utf8").trim(), overwrite: true } })
-  const defaults = { provider: "claude", account_profile: "default", model: "claude-haiku-5-5", effort: "low", permission_level: "yolo" }
+  // The provider login the agent runs on: Claude through a disposable vault, Codex and OpenCode through a linked product scope.
+  let accountProfile = "default"
+  if (provider === "claude") {
+    const made = (await home.rpc({ CreateSession: { workspace_id: join(home.dir, "work"), worktree_id: join(home.dir, "work"), alias: "vault-room" } })).SessionCreated
+    const att = (await home.rpc({ AttachToSession: { session_id: made.session.id, client_id: "reach-setup", capability_level: "FullTerminal" } })).SessionAttached
+    await home.client.subscribeToKernelEvents(made.session.id, att.attachment.id)
+    const pending = home.rpc({ ManageCredentialVault: { session_id: made.session.id, agent_id: made.agent.id } })
+    pending.catch(() => {})
+    let prompt
+    await until(async () => (prompt = (await state(made.session.id)).active_interactions?.find(x => x.id.startsWith("vault-unlock-"))), "disposable vault prompt")
+    await home.rpc({ RespondToInteraction: { session_id: made.session.id, interaction_id: prompt.id, choice_id: "passphrase", custom_reply: home.passkey } })
+    await pending
+    await home.rpc({ SetProviderAccountCredential: { provider: "claude", account_profile: "default", value: readFileSync(tokenFile, "utf8").trim(), overwrite: true } })
+  } else if (provider === "codex") {
+    accountProfile = (await home.rpc({ LinkProviderAccountProfile: { provider, label: "reach drill", path: codexScope } })).ProviderAccountProfile.profile.profile_id
+    await home.rpc({ GetProviderAuthStatus: { provider, account_profile: accountProfile } })
+  } else {
+    const scope = join(home.dir, "opencode-scope"), data = join(scope, "data/opencode")
+    mkdirSync(data, { recursive: true, mode: 0o700 })
+    writeFileSync(join(data, "auth.json"), readFileSync(opencodeAuth), { mode: 0o600 })
+    accountProfile = (await home.rpc({ LinkProviderAccountProfile: { provider, label: "reach drill", path: scope } })).ProviderAccountProfile.profile.profile_id
+  }
+  const { model, variant } = providers[provider]
+  const defaults = { provider, account_profile: accountProfile, model, effort: variant, permission_level: "yolo" }
   const room = (await home.rpc({ CreateSession: { workspace_id: join(home.dir, "work"), worktree_id: join(home.dir, "work"), alias: "home-room", agent_defaults: defaults } })).SessionCreated
   const attached = (await home.rpc({ AttachToSession: { session_id: room.session.id, client_id: "reach-owner", capability_level: "FullTerminal" } })).SessionAttached.attachment.id
   const agent = room.agent.id
-  await home.rpc({ LaunchProviderRun: { session_id: room.session.id, agent_id: agent, adapter_key: "claude", provider: "claude", account_profile: "default", model: defaults.model, variant: "low", native_tui: false } })
+  await home.rpc({ LaunchProviderRun: { session_id: room.session.id, agent_id: agent, adapter_key: provider, provider, account_profile: accountProfile, model, variant, native_tui: false } })
+  // The agent's latest turn from the kernel's own history, the same for every provider: its tool calls in order with their answers, and its last words.
+  const reachName = call => /chariox[-_]reach/.test(call.tool) ? call.tool.replace(/^.*chariox[-_]reach[._-]*/, "") : /chariox[-_]reach/.test(call.title ?? "") ? call.tool : call.tool
+  const turnOf = async () => {
+    const outline = (await home.rpc({ GetSessionHistoryOutline: { session_id: room.session.id, agent_ids: [agent], latest_prompt_count: 1, include_prefetched_content: true } })).SessionHistoryOutline
+    const history = outline.agents.find(x => x.agent_id === agent)
+    const last = history?.turns?.at(-1)
+    const calls = new Map()
+    for (const blob of history?.prefetched_blobs ?? []) for (const { entry } of blob.entries) {
+      if (entry.kind !== "provider_tool") continue
+      try { calls.set(entry.merge_key, JSON.parse(entry.text)) } catch {}
+    }
+    const rows = []
+    for (const call of calls.values()) {
+      rows.push({ call: reachName(call), input: call.input })
+      rows.push({ answer: String(call.output ?? call.error ?? "").slice(0, 1500) })
+    }
+    rows.push({ said: (last?.summary?.entry?.text ?? "").slice(0, 600) })
+    return { id: last?.turn_id, done: last?.lifecycle === "completed", rows }
+  }
+  const allRows = []
   const startedAt = Date.now()
-  saveToolLog = () => writeFileSync(join(evidence, "agent-tool-log.json"), stripped(JSON.stringify(toolLog(claudeTranscript(home, startedAt)), null, 1)), { mode: 0o600 })
-  note("agent-ready", { room: room.session.id, agent, model: defaults.model })
+  saveToolLog = () => writeFileSync(join(evidence, "agent-tool-log.json"), stripped(JSON.stringify(allRows, null, 1)), { mode: 0o600 })
+  note("agent-ready", { room: room.session.id, agent, provider, model })
 
   const pump = () => home.rpc({ PumpTerminalOutput: { session_id: room.session.id, attachment_id: attached } }).catch(() => {})
   async function idle(timeout = 300000) {
@@ -184,13 +198,16 @@ async function main() {
     }, 1000)
   }
   async function turn(text, marker, timeout = 900000) {
-    const since = Date.now() - 1000
+    const before = (await turnOf()).id
     const submitted = home.rpc(submitPromptRequest(room.session.id, attached, agent, text, []))
     submitted.catch(error => note("submit-error", { message: String(error.message).slice(0, 300) }))
-    await until(async () => { await pump(); return claudeTranscript(home, since).includes(marker) }, `agent turn (${marker})`, timeout, 2000).catch(error => note("turn-timeout", { message: error.message }))
+    await until(async () => { await pump(); const t = await turnOf(); return t.id !== before && t.done }, `agent turn (${marker})`, timeout, 2000).catch(error => note("turn-timeout", { message: error.message }))
     await submitted.catch(() => {})
     await idle()
-    return claudeTranscript(home, since)
+    const rows = (await turnOf()).rows
+    allRows.push(...rows)
+    note("turn-done", { marker, markerSeen: JSON.stringify(rows.at(-1)).includes(marker) })
+    return rows
   }
   const photograph = phase => {
     if (!photoCommand) return
@@ -203,21 +220,25 @@ async function main() {
 
   if (flags.get("--rehearse") === "yes") {
     // No machine: the question and the tools are exercised with a revision the service refuses before it creates anything.
+    // `--ask off` turns the setting off first: the same request then raises no question.
+    const askOff = flags.get("--ask") === "off"
+    if (askOff) await home.rpc({ SetUserConfigValue: { path: "agents.ask_before_acquiring_machines", value: "false" } })
     const gate = ownerAnswers("accept")
-    let text
+    let rows
     try {
-      text = await turn([
+      rows = await turn([
         "This is a drill. Use only the chariox-reach MCP tools. Do not retry a failed call.",
         `1. Call \`request\` with exactly: ${request({ ControlPlane: { action: "capabilities" } })}.`,
-        `2. Call \`request\` with exactly: ${request({ ControlPlane: { action: "acquire", capability_revision: "forged", request_id: `reach-rehearsal-${runId}` } })}. The owner is asked first.`,
+        `2. Call \`request\` with exactly: ${request({ ControlPlane: { action: "acquire", capability_revision: "stale-revision", request_id: `reach-rehearsal-${runId}` } })}. The revision is deliberately stale, so the service refuses it before it creates anything; that refusal is what this drill expects. ${askOff ? "" : "The owner is asked first."}`,
         "3. Call `kernels` once.",
         "Then reply with the words REHEARSED and DONE joined by an underscore and the code of the step 2 answer.",
       ].join("\n"), "REHEARSED_DONE")
     } finally { clearInterval(gate) }
     saveToolLog()
-    const answered = JSON.stringify(toolLog(text))
-    check("the owner was asked before the acquisition", cards.length === 1 && /^Let home-room\/\S+ \(Chariox agent\) acquire a machine\?$/.test(cards[0].message), { card: cards[0] })
-    check("the service refused the forged revision and created nothing", /authorization_denied|Refresh the connected service/.test(answered))
+    const answered = JSON.stringify(rows)
+    if (askOff) check("with the setting off the acquisition raised no question", cards.length === 0, { cards: cards.length })
+    else check("the owner was asked before the acquisition", cards.length === 1 && /^Let home-room\/\S+ \(Chariox agent\) acquire a machine\?$/.test(cards[0].message), { card: cards[0] })
+    check("the service refused the stale revision and created nothing", /authorization_denied|Refresh the connected service/.test(answered))
     return
   }
 
@@ -236,14 +257,14 @@ async function main() {
     ].join("\n"), "ACQUIRED_DONE")
   } finally { clearInterval(gate) }
   saveToolLog()
-  const log1 = toolLog(text1)
+  const log1 = text1
   const answered = JSON.stringify(log1)
   const harness = /^Let (home-room\/\S+ \(Chariox agent\)) acquire a machine\?$/.exec(cards[0]?.message ?? "")?.[1]
   check("the owner was asked before the acquisition (default setting), naming the room and agent", cards.length === 1 && !!harness && cards[0].choices.join() === "accept,decline", { card: cards[0] })
   const ref = /"allocation_ref\\?":\\?"([^"\\]+)/.exec(answered)?.[1]
   const kernelId = /"kernel_id\\?":\\?"([^"\\]+)/.exec(answered.slice(answered.indexOf("kernel_target")))?.[1]
   check("the machine became ready and its access is available", /access_state\\?":\\?"available/.test(answered), { ref, kernelId })
-  const listed = log1.findIndex(row => /chariox[-_]reach.*kernels$/.test(row.call ?? ""))
+  const listed = log1.findIndex(row => row.call === "kernels")
   check("kernels lists the machine", !!kernelId && listed >= 0 && String(log1[listed + 1]?.answer ?? "").includes(kernelId), { kernelId })
   check("the new machine has no room yet", /SessionsListed[^}]*\[\]/.test(answered.replace(/\\"/g, '"')), {})
   writeFileSync(join(evidence, "machine.json"), JSON.stringify({ ref, kernelId, harness }, null, 2))
@@ -259,7 +280,7 @@ async function main() {
     "Start your reply with the exact token CMDRAN_DONE, then give the decoded stdout of the command.",
   ].join("\n"), "CMDRAN_DONE")
   saveToolLog()
-  const log2 = JSON.stringify(toolLog(text2))
+  const log2 = JSON.stringify(text2)
   check("the agent created a Room on the machine and ran the command there without /sudo", /SessionCreated/.test(log2) && /exited/.test(log2) && (/TGludXg/.test(log2) || /Linux/.test(log2)), {})
 
   // 3. Stop it and photograph the stopped machine, then release it.
@@ -271,7 +292,7 @@ async function main() {
     "Start your reply with the exact token STOPPED_DONE and the last state you saw.",
   ].join("\n"), "STOPPED_DONE")
   saveToolLog()
-  check("the agent stopped the machine", /"state\\?":\\?"stopped/.test(JSON.stringify(toolLog(text3))))
+  check("the agent stopped the machine", /"state\\?":\\?"stopped/.test(JSON.stringify(text3)))
   photograph("stopped")
   const text4 = await turn([
     "This is a drill. Use only the chariox-reach MCP tools, and your shell for `sleep` only. Do not retry a failed call unless told to.",
@@ -281,7 +302,7 @@ async function main() {
     "Start your reply with the exact token RELEASED_DONE and the last state you saw.",
   ].join("\n"), "RELEASED_DONE")
   saveToolLog()
-  check("the agent released the machine", /release/.test(JSON.stringify(toolLog(text4))) && /(deleting|deleted|not_found|gone)/.test(JSON.stringify(toolLog(text4))))
+  check("the agent released the machine", /release/.test(JSON.stringify(text4)) && /(deleting|deleted|not_found|gone)/.test(JSON.stringify(text4)))
   photograph("released")
 }
 try {
