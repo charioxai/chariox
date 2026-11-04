@@ -43,7 +43,7 @@ const tokenFile = flags.get("--claude-token-file") ?? "/root/.claude-lanes/oauth
 // A Codex scope the product linked for drills, and the OpenCode login to copy into a lane-owned scope.
 const codexScope = flags.get("--codex-scope") ?? "/root/.chariox/dev/worker-k/home/state/provider-accounts/local/codex/kaissandra-ai-reviewer-login-esqv7b7c/codex"
 const opencodeAuth = flags.get("--opencode-auth") ?? "/root/.chariox/dev/provider-runtimes/fleet-accounts/opencode-home/.local/share/opencode/auth.json"
-const scenarios = new Set((flags.get("--scenarios") ?? (provider === "claude" ? "reach,sudo,acquisition,tools,events,driver,history,view,humanonly,lineage,newrooms,inherit,workday,recall" : "tools,events,driver,history,view")).split(","))
+const scenarios = new Set((flags.get("--scenarios") ?? (provider === "claude" ? "reach,sudo,acquisition,tools,events,multiwait,driver,history,view,humanonly,lineage,newrooms,inherit,workday,recall" : "tools,events,multiwait,driver,history,view")).split(","))
 assert(provider === "claude" || [...scenarios].every(name => ["tools", "view", "events", "multiwait", "driver", "history"].includes(name)), "only the tools, view, events, multiwait, driver and history scenarios run with Codex or OpenCode")
 const agentScenarios = ["events", "multiwait", "driver", "history"].some(name => scenarios.has(name))
 assert(stateRoot.startsWith("/root/.chariox/dev/"), "state must be lane-owned")
