@@ -12,6 +12,7 @@ use crate::local::{
     EnvironmentOperationEntryState, EnvironmentOperationState,
 };
 use crate::secret::CredentialVaultStore;
+use sha2::{Digest, Sha256};
 use std::future::Future;
 use std::path::Path;
 use zeroize::Zeroizing;
@@ -36,6 +37,7 @@ pub(crate) struct SourceSnapshot {
 /// One slice of a source file and the size of the whole file.
 pub(crate) struct FileSlice {
     pub size_bytes: u64,
+    pub sha256: String,
     pub bytes: Zeroizing<Vec<u8>>,
 }
 
@@ -422,6 +424,8 @@ async fn import_entry<S: EnvironmentSource>(
             }
             let mut writer: Option<FileWriter> = None;
             let mut written = 0_u64;
+            let mut expected: Option<(u64, String)> = None;
+            let mut digest = Sha256::new();
             loop {
                 let slice = source
                     .pull_file(target.project_id, &entry.name, written)
@@ -433,6 +437,15 @@ async fn import_entry<S: EnvironmentSource>(
                 {
                     return Err(ImportFailure::Entry("Too large to import".into()));
                 }
+                if let Some((size, sha256)) = &expected {
+                    if slice.size_bytes != *size || slice.sha256 != *sha256 {
+                        return Err(ImportFailure::Entry(
+                            "The file changed while it was imported".into(),
+                        ));
+                    }
+                } else {
+                    expected = Some((slice.size_bytes, slice.sha256));
+                }
                 let writer = match &mut writer {
                     Some(writer) => writer,
                     empty => empty.insert(
@@ -441,6 +454,7 @@ async fn import_entry<S: EnvironmentSource>(
                     ),
                 };
                 writer.append(&slice.bytes).map_err(ImportFailure::Entry)?;
+                digest.update(&slice.bytes);
                 written += slice.bytes.len() as u64;
                 if written >= slice.size_bytes {
                     if written != slice.size_bytes {
@@ -455,6 +469,11 @@ async fn import_entry<S: EnvironmentSource>(
                         "The file changed while it was imported".into(),
                     ));
                 }
+            }
+            if format!("{:x}", digest.finalize()) != expected.expect("at least one slice").1 {
+                return Err(ImportFailure::Entry(
+                    "The file changed while it was imported".into(),
+                ));
             }
             writer
                 .expect("a file with at least one slice")
@@ -580,6 +599,8 @@ mod tests {
         gate: Option<Arc<tokio::sync::Notify>>,
         secret_gate: Option<Arc<tokio::sync::Notify>>,
         slice_bytes: usize,
+        rewrite_after_first_slice: bool,
+        corrupt_bytes: bool,
     }
 
     impl EnvironmentSource for FakeSource {
@@ -610,11 +631,19 @@ mod tests {
             if let Some(gate) = &self.gate {
                 gate.notified().await;
             }
-            let content = format!("content of {path}").into_bytes();
+            let mut content = format!("content of {path}").into_bytes();
+            if self.rewrite_after_first_slice && offset > 0 {
+                content.fill(b'x');
+            }
             let end = content.len().min(offset as usize + self.slice_bytes);
+            let mut bytes = content[offset as usize..end].to_vec();
+            if self.corrupt_bytes && !bytes.is_empty() {
+                bytes[0] ^= 1;
+            }
             Ok(Some(FileSlice {
                 size_bytes: content.len() as u64,
-                bytes: Zeroizing::new(content[offset as usize..end].to_vec()),
+                sha256: format!("{:x}", Sha256::digest(&content)),
+                bytes: Zeroizing::new(bytes),
             }))
         }
     }
@@ -636,6 +665,8 @@ mod tests {
             gate: None,
             secret_gate: None,
             slice_bytes: usize::MAX / 2,
+            rewrite_after_first_slice: false,
+            corrupt_bytes: false,
         }
     }
 
@@ -892,6 +923,42 @@ mod tests {
             })
             .count();
         assert_eq!(leftovers, 0);
+    }
+
+    #[tokio::test]
+    async fn same_length_source_rewrite_between_chunks_is_not_published() {
+        let rig = Rig::new();
+        let mut from = source(Some(record(1, &[], &[".env"])), &[], &[".env"]);
+        from.slice_bytes = 5;
+        from.rewrite_after_first_slice = true;
+        let view = rig.import("rewritten", &from, None).await;
+        assert_eq!(view.state, EnvironmentOperationState::Failed);
+        assert_eq!(
+            view.entries[0].reason.as_deref(),
+            Some("The file changed while it was imported")
+        );
+        assert!(!rig.checkout.join(".env").exists());
+        assert_eq!(
+            std::fs::read_dir(&rig.checkout).unwrap().count(),
+            0,
+            "partial bytes removed"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_consistent_source_digest_must_match_the_assembled_file() {
+        let rig = Rig::new();
+        let mut from = source(Some(record(1, &[], &[".env"])), &[], &[".env"]);
+        from.slice_bytes = 5;
+        from.corrupt_bytes = true;
+        let view = rig.import("damaged", &from, None).await;
+        assert_eq!(view.state, EnvironmentOperationState::Failed);
+        assert_eq!(
+            view.entries[0].reason.as_deref(),
+            Some("The file changed while it was imported")
+        );
+        assert!(!rig.checkout.join(".env").exists());
+        assert_eq!(std::fs::read_dir(&rig.checkout).unwrap().count(), 0);
     }
 
     #[tokio::test]

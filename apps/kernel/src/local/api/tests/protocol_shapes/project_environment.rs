@@ -1,4 +1,4 @@
-//! The Project Environment wire (local protocol 973): requests, views and the deleted requests.
+//! The Project Environment wire (local protocol 990): requests, views and the deleted requests.
 use crate::local::*;
 use serde_json::json;
 
@@ -321,7 +321,7 @@ fn environment_views_carry_names_and_presence_never_a_value() {
     );
 }
 
-/// The kernel-to-kernel requests that carry an Environment (relay peer 422): the wire, and that no
+/// The kernel-to-kernel requests that carry an Environment (relay peer 429): the wire, and that no
 /// Debug output of a response can show a Secret value or a file's bytes.
 #[test]
 fn project_environment_peer_wire_and_redaction() {
@@ -383,6 +383,7 @@ fn project_environment_peer_wire_and_redaction() {
     };
     let file = RelayPeerResponse::ProjectEnvironmentFilePulled {
         size_bytes: 14,
+        sha256: Some("2a3a895e6ffa476f024217471fd61316ab73ef74d8b2ede64aa3a44d5186af15".into()),
         content: Some(RemoteEnvironmentFileBytes::encode(b"synthetic-file")),
     };
     assert_eq!(
@@ -391,7 +392,14 @@ fn project_environment_peer_wire_and_redaction() {
     );
     assert_eq!(
         serde_json::to_value(&file).unwrap(),
-        json!({"kind": "project_environment_file_pulled", "size_bytes": 14, "content": "c3ludGhldGljLWZpbGU="})
+        json!({"kind": "project_environment_file_pulled", "size_bytes": 14, "sha256": "2a3a895e6ffa476f024217471fd61316ab73ef74d8b2ede64aa3a44d5186af15", "content": "c3ludGhldGljLWZpbGU="})
+    );
+    let snapshot = serde_json::to_value(&file).unwrap();
+    let encoded = serde_json::to_vec(&snapshot).unwrap();
+    use sha2::{Digest, Sha256};
+    assert_eq!(
+        format!("{:x}", Sha256::digest(encoded)),
+        "93204c30f7b9cc11a85ad55e4b495b9276f72646f3d04f1693a9484b91ee5a4e"
     );
     assert_eq!(
         serde_json::to_value(RelayPeerResponse::ProjectEnvironmentRefused {

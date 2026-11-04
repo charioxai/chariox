@@ -104,12 +104,18 @@ impl EnvironmentSource for PeerSource {
         {
             RelayPeerResponse::ProjectEnvironmentFilePulled {
                 size_bytes,
+                sha256,
                 content,
             } => content
                 .map(|content| {
                     content
                         .decode()
-                        .map(|bytes| FileSlice { size_bytes, bytes })
+                        .zip(sha256)
+                        .map(|(bytes, sha256)| FileSlice {
+                            size_bytes,
+                            sha256,
+                            bytes,
+                        })
                         .ok_or_else(|| SourceError::Refused("The file arrived damaged".into()))
                 })
                 .transpose(),
@@ -289,6 +295,7 @@ impl KernelRuntimeState {
             let absent = || {
                 Ok(RelayPeerResponse::ProjectEnvironmentFilePulled {
                     size_bytes: 0,
+                    sha256: None,
                     content: None,
                 })
             };
@@ -301,12 +308,13 @@ impl KernelRuntimeState {
             if metadata.len() > MAX_IMPORT_FILE_BYTES {
                 return refuse("The file is too large to import");
             }
-            let Ok(bytes) = read_slice(&full, offset).map(Zeroizing::new) else {
+            let Ok(slice) = read_slice(&full, offset) else {
                 return refuse(&format!("{path} could not be read on {label}"));
             };
             return Ok(RelayPeerResponse::ProjectEnvironmentFilePulled {
-                size_bytes: metadata.len(),
-                content: Some(RemoteEnvironmentFileBytes::encode(&bytes)),
+                size_bytes: slice.size_bytes,
+                sha256: Some(slice.sha256),
+                content: Some(RemoteEnvironmentFileBytes::encode(&slice.bytes)),
             });
         }
         let held = source_holdings(&store, project.id(), vault.as_ref(), &checkout, label)?;
@@ -319,12 +327,82 @@ impl KernelRuntimeState {
     }
 }
 
-/// Up to one slice of the file starting at `offset`.
-fn read_slice(path: &std::path::Path, offset: u64) -> std::io::Result<Vec<u8>> {
-    use std::io::{Read, Seek, SeekFrom};
+/// Hash the same byte stream the slice comes from. The receiver checks every reply and its final
+/// assembled digest, so neither an in-place rewrite nor a replacement can publish mixed contents.
+fn read_slice(path: &std::path::Path, offset: u64) -> std::io::Result<FileSlice> {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
     let mut file = std::fs::File::open(path)?;
-    file.seek(SeekFrom::Start(offset))?;
-    let mut bytes = Vec::new();
-    file.take(IMPORT_CHUNK_BYTES).read_to_end(&mut bytes)?;
-    Ok(bytes)
+    let mut digest = Sha256::new();
+    let mut size_bytes = 0_u64;
+    let mut bytes = Zeroizing::new(Vec::new());
+    let mut buffer = Zeroizing::new([0_u8; 64 * 1024]);
+    loop {
+        let count = file.read(buffer.as_mut())?;
+        if count == 0 {
+            break;
+        }
+        let end = size_bytes + count as u64;
+        if end > MAX_IMPORT_FILE_BYTES {
+            return Err(std::io::Error::other("The file is too large to import"));
+        }
+        digest.update(&buffer[..count]);
+        let start_in_buffer = offset.saturating_sub(size_bytes).min(count as u64) as usize;
+        let end_in_buffer = offset
+            .saturating_add(IMPORT_CHUNK_BYTES)
+            .saturating_sub(size_bytes)
+            .min(count as u64) as usize;
+        if end_in_buffer > start_in_buffer {
+            bytes.extend_from_slice(&buffer[start_in_buffer..end_in_buffer]);
+        }
+        size_bytes = end;
+    }
+    Ok(FileSlice {
+        size_bytes,
+        sha256: format!("{:x}", digest.finalize()),
+        bytes,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sha2::{Digest, Sha256};
+
+    #[test]
+    fn file_chunks_bind_same_length_replacements_to_their_content() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-file-snapshot-{:032x}",
+            rand::random::<u128>()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join(".env");
+        let old = vec![b'a'; (IMPORT_CHUNK_BYTES * 2) as usize];
+        std::fs::write(&path, &old).unwrap();
+        let first = read_slice(&path, 0).unwrap();
+        let unchanged = read_slice(&path, IMPORT_CHUNK_BYTES).unwrap();
+        assert_eq!(first.sha256, unchanged.sha256);
+        assert_eq!(first.sha256, format!("{:x}", Sha256::digest(&old)));
+        assert_eq!(first.bytes.as_slice(), &old[..IMPORT_CHUNK_BYTES as usize]);
+        assert_eq!(
+            unchanged.bytes.as_slice(),
+            &old[IMPORT_CHUNK_BYTES as usize..]
+        );
+        let replacement = root.join("replacement");
+        std::fs::write(&replacement, vec![b'b'; old.len()]).unwrap();
+        std::fs::rename(&replacement, &path).unwrap();
+        let second = read_slice(&path, IMPORT_CHUNK_BYTES).unwrap();
+        assert_eq!(first.size_bytes, second.size_bytes);
+        assert_ne!(first.sha256, second.sha256);
+        assert_eq!(
+            second.bytes.as_slice(),
+            vec![b'b'; IMPORT_CHUNK_BYTES as usize]
+        );
+        std::fs::write(&path, []).unwrap();
+        let empty = read_slice(&path, 0).unwrap();
+        assert_eq!(empty.size_bytes, 0);
+        assert!(empty.bytes.is_empty());
+        assert_eq!(empty.sha256, format!("{:x}", Sha256::digest([])));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 }

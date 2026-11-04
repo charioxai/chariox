@@ -464,4 +464,5 @@ pub use workspace::*;
 /// Environments 972 replace the Project Environment requests with one saved record per Project,
 /// its presence on this kernel and Setup runs (peer421 drops the leased Project environment requests).
 /// Environments 973 add Import from another kernel of the same user and Draft with agent (peer422).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 973;
+/// Protocol 990 binds Environment file chunks to their complete content digest (peer 429).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 990;

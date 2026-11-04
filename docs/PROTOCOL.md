@@ -6380,7 +6380,7 @@ identity handshake, and exposes only the versioned App WIT world through the
 kernel capability broker. The replaced engine's launch, runtime enrollment and
 privileged storage-helper paths are removed. Reinstall unsupported stored Apps.
 
-### Environments — local 973 / relay peer 422
+### Environments — local 990 / relay peer 429
 
 A Project has one Environment: a saved record (schema 2) with a Setup script, Variables (`.env` text),
 Secret names and Files outside Git. Values never enter the record. Each kernel keeps a Secret's value in
@@ -6412,7 +6412,11 @@ its own Vault under the Project scope, so presence differs per machine and is co
   the peer channel's end-to-end encryption, are never logged and never appear in a view. A File is at most
   64 MiB (128 MiB per operation), travels in 4 MiB slices (`PullProjectEnvironmentFile` carries the offset;
   a message is encoded twice on the way and must stay under the relay's bound) into a private temporary file
-  that appears under its name only when complete, and lands with mode 0600.
+  that appears under its name only when complete, and lands with mode 0600. Every response
+  includes the SHA-256 of its complete source byte stream; Import requires identical sizes and digests
+  across chunks and checks the assembled digest before publication. A source change fails that row
+  without publishing partial contents. Secret imports use an atomic insert-if-absent in the target
+  Vault, preserving a value entered while a fetch was pending.
 - `DraftProjectEnvironment { projectId, operationId }` runs an idle agent of the Project on this kernel
   on its own provider with no tools: the kernel sends the Project's manifest files and the names of the
   files Git ignores (never their contents), and the answer becomes revision 1 of a Project that has no
