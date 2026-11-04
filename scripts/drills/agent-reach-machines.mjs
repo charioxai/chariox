@@ -232,7 +232,7 @@ async function main() {
       "3. Remember allocation_ref from the answer. Then, up to 60 times: run the shell command `sleep 10`, then call `request` with " + request({ ControlPlane: { action: "get", allocation_ref: "REF" } }) + " until state is ready and access_state is available. If the answer says access_state is pending although the state is ready, keep asking.",
       "4. Call `kernels` once.",
       "5. Take kernel_target.kernel_id from the last get answer and call `request` with {\"kernel\":\"KERNEL_ID\",\"request\":{\"ListSessions\":null}}.",
-      "Then reply with the words ACQUIRED and DONE joined by an underscore, then the allocation_ref and the kernel id.",
+      "Start your reply with the exact token ACQUIRED_DONE, then the allocation_ref and the kernel id.",
     ].join("\n"), "ACQUIRED_DONE")
   } finally { clearInterval(gate) }
   saveToolLog()
@@ -256,26 +256,32 @@ async function main() {
     "1. request CreateSession {\"workspace_id\":\"/home/chariox\",\"worktree_id\":\"/home/chariox\",\"alias\":null,\"slice_ref\":null}; take SessionCreated.session.id.",
     "2. request RoomTerminal {\"session_id\":\"SESSION_ID\",\"operation\":{\"operation\":\"exec_open\",\"command\":[\"uname\",\"-a\"]}}; take exec_opened.exec_id.",
     "3. request RoomTerminal {\"session_id\":\"SESSION_ID\",\"operation\":{\"operation\":\"exec_read\",\"exec_id\":\"EXEC_ID\",\"after_cursor\":0,\"wait_ms\":10000}} until the answer has an outcome; then request RoomTerminal exec_close for the exec_id.",
-    "Then reply with the words RANCOMMAND and DONE joined by an underscore and the decoded stdout of the command.",
-  ].join("\n"), "RANCOMMAND_DONE")
+    "Start your reply with the exact token CMDRAN_DONE, then give the decoded stdout of the command.",
+  ].join("\n"), "CMDRAN_DONE")
   saveToolLog()
   const log2 = JSON.stringify(toolLog(text2))
   check("the agent created a Room on the machine and ran the command there without /sudo", /SessionCreated/.test(log2) && /exited/.test(log2) && (/TGludXg/.test(log2) || /Linux/.test(log2)), {})
 
-  // 3. Stop, then release.
+  // 3. Stop it and photograph the stopped machine, then release it.
   const text3 = await turn([
     "This is a drill. Use only the chariox-reach MCP tools, and your shell for `sleep` only. Do not retry a failed call unless told to.",
     `The machine is allocation_ref ${ref}.`,
     `1. Call \`request\` with ${request({ ControlPlane: { action: "capabilities" } })} for the revision, and ${request({ ControlPlane: { action: "get", allocation_ref: ref } })} for its current revision. If available_actions does not contain "stop" yet, run \`sleep 10\` and ask again, up to 12 times.`,
     `2. Stop it: ${request({ ControlPlane: { action: "stop", allocation_ref: ref, capability_revision: "REVISION", request_id: `reach-drill-stop-${runId}`, expected_revision: "REV" } })} (REV is the number revision of the latest get answer). Then up to 40 times: run \`sleep 10\` and call get until state is stopped.`,
-    `3. Release it: ${request({ ControlPlane: { action: "release", allocation_ref: ref, capability_revision: "REVISION", request_id: `reach-drill-release-${runId}`, expected_revision: "REV" } })} with the revision of the latest get answer, then call get up to 30 times (with \`sleep 10\`) until it answers a state of deleting or deleted or refuses because the machine is gone.`,
-    "Then reply with the words RELEASED and DONE joined by an underscore and the last state you saw.",
+    "Start your reply with the exact token STOPPED_DONE and the last state you saw.",
+  ].join("\n"), "STOPPED_DONE")
+  saveToolLog()
+  check("the agent stopped the machine", /"state\\?":\\?"stopped/.test(JSON.stringify(toolLog(text3))))
+  photograph("stopped")
+  const text4 = await turn([
+    "This is a drill. Use only the chariox-reach MCP tools, and your shell for `sleep` only. Do not retry a failed call unless told to.",
+    `The machine is allocation_ref ${ref}, stopped.`,
+    `1. Call \`request\` with ${request({ ControlPlane: { action: "capabilities" } })} for the revision, and ${request({ ControlPlane: { action: "get", allocation_ref: ref } })} for its current revision.`,
+    `2. Release it: ${request({ ControlPlane: { action: "release", allocation_ref: ref, capability_revision: "REVISION", request_id: `reach-drill-release-${runId}`, expected_revision: "REV" } })} with the revision of the latest get answer, then call get up to 30 times (with \`sleep 10\`) until it answers a state of deleting or deleted or refuses because the machine is gone.`,
+    "Start your reply with the exact token RELEASED_DONE and the last state you saw.",
   ].join("\n"), "RELEASED_DONE")
   saveToolLog()
-  const log3 = JSON.stringify(toolLog(text3))
-  check("the agent stopped the machine", /"state\\?":\\?"stopped/.test(log3))
-  photograph("stopped")
-  check("the agent released the machine", /release/.test(log3) && /(deleting|deleted|not_found|gone)/.test(log3))
+  check("the agent released the machine", /release/.test(JSON.stringify(toolLog(text4))) && /(deleting|deleted|not_found|gone)/.test(JSON.stringify(toolLog(text4))))
   photograph("released")
 }
 try {
