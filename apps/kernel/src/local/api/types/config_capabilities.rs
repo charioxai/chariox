@@ -108,6 +108,34 @@ pub enum VaultUnlockDuration {
     UntilKernelStops,
 }
 
+/// Where a Vault unlock was typed. An unlock from any of them answers the open unlock
+/// cards of agents as "unlocked", and the card's answer names the surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VaultUnlockSurface {
+    /// An agent's unlock card in a Room.
+    Card,
+    VaultWindow,
+    /// A Settings popup that needs the Vault open.
+    Settings,
+    /// The classic Vault sidebar panel.
+    Sidebar,
+    /// The command line or shell.
+    Terminal,
+}
+
+impl VaultUnlockSurface {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Card => "card",
+            Self::VaultWindow => "vault_window",
+            Self::Settings => "settings",
+            Self::Sidebar => "sidebar",
+            Self::Terminal => "terminal",
+        }
+    }
+}
+
 /// The durations a client offers when it asks for the Vault passphrase, and
 /// the one it preselects.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -170,6 +198,8 @@ impl VaultUnlockOptions {
 pub struct UnlockCredentialVaultRequest {
     pub passphrase: VaultPassphrase,
     pub duration: VaultUnlockDuration,
+    /// Where the owner typed it; never `card`, which is answered through its interaction.
+    pub surface: VaultUnlockSurface,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

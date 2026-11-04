@@ -5,7 +5,7 @@ import { unlockCredentialVaultRequest } from "./ipc-config-requests.js"
 import { parseVaultUnlockDurationArgument, vaultUnlockDefaultFromStatus } from "./vault-unlock-duration.js"
 
 test("the Vault unlock request carries the passphrase and the chosen duration", () => {
-  assert.deepEqual(unlockCredentialVaultRequest("typed by the owner", { kind: "until_kernel_stops" }), { UnlockCredentialVault: { passphrase: "typed by the owner", duration: { kind: "until_kernel_stops" } } })
+  assert.deepEqual(unlockCredentialVaultRequest("typed by the owner", { kind: "until_kernel_stops" }, "terminal"), { UnlockCredentialVault: { passphrase: "typed by the owner", duration: { kind: "until_kernel_stops" }, surface: "terminal" } })
 })
 
 test("an unlock length is once, kernel, or minutes and hours", () => {

@@ -90,7 +90,7 @@ export async function unlockCredentialVault(
   duration?: VaultUnlockDuration,
 ): Promise<{ action: string; status: Record<string, unknown> }> {
   const chosen = duration ?? vaultUnlockDefaultFromStatus(await client.send<Record<string, unknown>>(getCredentialVaultStatusRequest()))
-  const response = await client.send<Record<string, unknown>>(unlockCredentialVaultRequest(passphrase, chosen))
+  const response = await client.send<Record<string, unknown>>(unlockCredentialVaultRequest(passphrase, chosen, "terminal"))
   return expectVariant<{ action: string; status: Record<string, unknown> }>(response, "CredentialVaultUnlocked")
 }
 

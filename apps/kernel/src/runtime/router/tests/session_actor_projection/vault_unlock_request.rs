@@ -4,6 +4,7 @@ use super::*;
 use crate::config::{CredentialVaultBackend, CredentialVaultUnlockPolicy};
 use crate::local::{
     KernelConnectionClass, UnlockCredentialVaultRequest, VaultPassphrase, VaultUnlockDuration,
+    VaultUnlockSurface,
 };
 use crate::session::{RuntimeSession, DEFAULT_LOCAL_USER_ID};
 
@@ -142,9 +143,9 @@ impl Fixture {
         operation.await.unwrap().map(|_| ())
     }
 
-    /// The person answers the unlock prompt that appeared in the agent's terminal.
-    async fn answer_the_unlock_prompt(&self, passphrase: &str) {
-        let prompt = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+    /// The id of the unlock prompt that appears in the agent's terminal.
+    async fn the_open_unlock_prompt(&self) -> String {
+        tokio::time::timeout(std::time::Duration::from_secs(30), async {
             loop {
                 let snapshot = self
                     .router
@@ -159,7 +160,22 @@ impl Fixture {
             }
         })
         .await
-        .expect("the unlock prompt should appear");
+        .expect("the unlock prompt should appear")
+    }
+
+    async fn no_prompt_is_open(&self) -> bool {
+        self.router
+            .runtime_state
+            .session_snapshot(&self.session)
+            .await
+            .unwrap()
+            .active_interaction_for_agent(&self.agent)
+            .is_none()
+    }
+
+    /// The person answers the unlock prompt that appeared in the agent's terminal.
+    async fn answer_the_unlock_prompt(&self, passphrase: &str) {
+        let prompt = self.the_open_unlock_prompt().await;
         let answer =
             LocalDaemonRequest::RespondToInteraction(crate::local::RespondToInteractionRequest {
                 session_id: self.session.clone(),
@@ -171,6 +187,55 @@ impl Fixture {
             });
         self.send(answer).await.unwrap();
     }
+}
+
+// VUI-2: whatever window the owner unlocks from, the open unlock card closes and the agent's operation goes on.
+#[tokio::test]
+async fn an_unlock_from_the_vault_window_closes_the_open_card_and_the_agent_goes_on() {
+    for duration in [
+        VaultUnlockDuration::Once,
+        VaultUnlockDuration::Minutes { minutes: 30 },
+        VaultUnlockDuration::UntilKernelStops,
+    ] {
+        let f = Fixture::locked();
+        let runtime = f.router.runtime_state.clone();
+        let (session, agent) = (f.session.clone(), f.agent.clone());
+        let operation = tokio::spawn(async move {
+            runtime
+                .manage_credential_vault_unlock(&session, &agent)
+                .await
+        });
+        f.the_open_unlock_prompt().await;
+        f.unlock_for(PASSPHRASE, duration).await.unwrap();
+        let (status, action) = tokio::time::timeout(std::time::Duration::from_secs(30), operation)
+            .await
+            .expect("the agent's operation is woken by the unlock")
+            .unwrap()
+            .expect("the operation succeeds");
+        assert_eq!(action, "unlocked", "{duration:?}");
+        assert!(status.unlocked);
+        assert!(
+            f.no_prompt_is_open().await,
+            "{duration:?}: the card closed by itself"
+        );
+    }
+}
+
+#[tokio::test]
+async fn an_unlock_request_cannot_claim_to_come_from_a_card() {
+    let f = Fixture::locked();
+    let (code, _) = code_of(
+        f.send(LocalDaemonRequest::UnlockCredentialVault(
+            UnlockCredentialVaultRequest {
+                passphrase: VaultPassphrase::new(PASSPHRASE),
+                duration: VaultUnlockDuration::Once,
+                surface: VaultUnlockSurface::Card,
+            },
+        ))
+        .await,
+    );
+    assert_eq!(code, "vault_unlock_card_surface");
+    assert!(!f.status().await.unlocked);
 }
 
 fn code_of(result: Result<LocalDaemonResponse, DaemonError>) -> (String, String) {
@@ -433,6 +498,7 @@ fn unlock_request(passphrase: &str, duration: VaultUnlockDuration) -> LocalDaemo
     LocalDaemonRequest::UnlockCredentialVault(UnlockCredentialVaultRequest {
         passphrase: VaultPassphrase::new(passphrase),
         duration,
+        surface: VaultUnlockSurface::VaultWindow,
     })
 }
 

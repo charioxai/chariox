@@ -571,7 +571,7 @@ impl KernelRuntimeState {
             }),
         );
         if !lock_after_operation {
-            notify_vault_unlocked(&vault_path);
+            notify_vault_unlocked(&vault_path, crate::local::VaultUnlockSurface::Card);
         }
         if lock_after_operation {
             Ok(VaultUnlockGuard::unlocked_for_operation(vault_path))
@@ -1139,6 +1139,60 @@ mod tests {
     // A session created before this kernel was enrolled is owned by `local`;
     // after a restart its Vault decision must still be answered by the person
     // the kernel is enrolled for, and by nobody else.
+    // VUI-2: an unlock somewhere else answers the open card "unlocked" and names where.
+    #[tokio::test]
+    async fn an_unlock_elsewhere_answers_the_open_card_as_unlocked_naming_where() {
+        let workspace = crate::test_support::TestWorktree::new("vault-unlocked-elsewhere");
+        let private_state =
+            crate::test_support::TestWorktree::new("vault-unlocked-elsewhere-state");
+        let path = private_state.path().join("vault.json");
+        crate::secret::create_chariox_encrypted_vault_for_test(&path, "test passphrase").unwrap();
+        crate::secret::lock_chariox_encrypted_vault(&path).unwrap();
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.user_config.credential_vault.backend =
+            crate::config::CredentialVaultBackend::CharioxEncrypted;
+        config.user_config.credential_vault.path = path.display().to_string();
+        let mut app = crate::app::DaemonApp::bootstrap(config.clone()).unwrap();
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(workspace.session_request())
+            .unwrap();
+        let state =
+            super::super::workflow_prompt_queue_owned_state::tests::runtime_state_from_app(app);
+        let card = vault_passphrase_interaction(
+            &requester(None, None),
+            agent.id(),
+            &config.user_config.credential_vault,
+        );
+        let answer = state
+            .create_terminal_credential_interaction(session.id(), card.clone())
+            .unwrap();
+        state
+            .owned
+            .settle_vault_unlocked(
+                session.id(),
+                card.id(),
+                crate::local::VaultUnlockSurface::VaultWindow,
+            )
+            .unwrap();
+        let resolution = answer.await.unwrap();
+        assert_eq!(
+            (
+                resolution.status,
+                resolution.choice_id.as_deref(),
+                resolution.reply.as_deref()
+            ),
+            ("answered", Some("unlocked"), Some("vault_window"))
+        );
+        assert!(state
+            .owned
+            .session_store
+            .get_session(session.id())
+            .unwrap()
+            .active_interaction_for_agent(agent.id())
+            .is_none());
+        std::fs::remove_file(&path).unwrap();
+    }
+
     #[tokio::test]
     async fn vault_decision_of_a_pre_enrollment_session_is_answered_by_the_enrolled_owner() {
         let workspace = crate::test_support::TestWorktree::new("vault-legacy-owner");

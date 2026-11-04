@@ -9,16 +9,18 @@ fn unlock_credential_vault_912_363_shapes_are_pinned() {
         LocalDaemonRequest::UnlockCredentialVault(crate::local::UnlockCredentialVaultRequest {
             passphrase: crate::local::VaultPassphrase::new("typed by the owner"),
             duration: crate::local::VaultUnlockDuration::Minutes { minutes: 30 },
+            surface: crate::local::VaultUnlockSurface::VaultWindow,
         });
     assert_eq!(
         serde_json::to_value(&request).unwrap(),
         serde_json::json!({"UnlockCredentialVault": {
             "passphrase": "typed by the owner",
-            "duration": {"kind": "minutes", "minutes": 30}
+            "duration": {"kind": "minutes", "minutes": 30},
+            "surface": "vault_window"
         }})
     );
     assert!(serde_json::from_value::<LocalDaemonRequest>(
-        serde_json::json!({"UnlockCredentialVault": {"passphrase": "x", "duration": {"kind": "once"}, "session_id": "s"}})
+        serde_json::json!({"UnlockCredentialVault": {"passphrase": "x", "duration": {"kind": "once"}, "surface": "terminal", "session_id": "s"}})
     )
     .is_err());
     assert!(serde_json::from_value::<LocalDaemonRequest>(
@@ -27,7 +29,12 @@ fn unlock_credential_vault_912_363_shapes_are_pinned() {
     .is_err());
     // The owner always picks a duration; a request without one is refused.
     assert!(serde_json::from_value::<LocalDaemonRequest>(
-        serde_json::json!({"UnlockCredentialVault": {"passphrase": "x"}})
+        serde_json::json!({"UnlockCredentialVault": {"passphrase": "x", "surface": "terminal"}})
+    )
+    .is_err());
+    // The owner's client says where it asked from; a request without it is refused.
+    assert!(serde_json::from_value::<LocalDaemonRequest>(
+        serde_json::json!({"UnlockCredentialVault": {"passphrase": "x", "duration": {"kind": "once"}}})
     )
     .is_err());
     for (duration, wire) in [

@@ -6240,6 +6240,13 @@ client offers and the one it preselects. `credential_vault.unlock_policy` no lon
 or forces a prompt; it only picks `default` (`always` once, `ttl` its default minutes, `kernel_init`
 until the kernel stops).
 
+`UnlockCredentialVault` also names the `surface` the owner typed the passphrase in: `vault_window`,
+`settings`, `sidebar` or `terminal` (`card` is the card's own answer and is refused on this request with
+`vault_unlock_card_surface`). Whatever surface unlocks the Vault, with any duration, every open unlock card
+of every Room is answered by the kernel as `answered` with `choice_id: "unlocked"` and the surface as
+`reply`, which closes it at once on every client; the agent's blocked operation continues. The card offers
+only the passphrase, the duration and Unlock, and Cancel.
+
 The Unlock card an agent's Vault use raises (`Unlock Chariox Vault`) carries the same list as
 choices: each duration is a choice with `vault_unlock` set to that duration, next to `cancel`. The
 person answers with one duration choice and the passphrase as `custom_reply`; a duration choice

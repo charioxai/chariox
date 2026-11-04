@@ -382,6 +382,7 @@ mod registry_tests {
                 crate::local::UnlockCredentialVaultRequest {
                     passphrase: crate::local::VaultPassphrase::new("passphrase"),
                     duration: crate::local::VaultUnlockDuration::Once,
+                    surface: crate::local::VaultUnlockSurface::VaultWindow,
                 }
             )
         ));

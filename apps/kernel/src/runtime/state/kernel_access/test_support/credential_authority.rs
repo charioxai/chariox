@@ -121,6 +121,7 @@ async fn kernel_access_cannot_unlock_the_vault() {
         LocalDaemonRequest::UnlockCredentialVault(crate::local::UnlockCredentialVaultRequest {
             passphrase: crate::local::VaultPassphrase::new("passphrase"),
             duration: crate::local::VaultUnlockDuration::Once,
+            surface: crate::local::VaultUnlockSurface::VaultWindow,
         });
     assert!(state.authorize_external_request(&grant, &request).is_err());
 }

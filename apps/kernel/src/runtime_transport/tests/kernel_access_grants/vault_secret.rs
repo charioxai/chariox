@@ -19,7 +19,7 @@ fn request_for(id: &str, overwrite: bool, hosts: &[&str]) -> Value {
 /// The owner's own client opens the Vault, as it does before an agent can use it.
 async fn unlock(kernel: &mut Kernel) {
     let unlocked = kernel
-        .request(serde_json::json!({"UnlockCredentialVault":{"passphrase":PASSKEY,"duration":{"kind":"until_kernel_stops"}}}))
+        .request(serde_json::json!({"UnlockCredentialVault":{"passphrase":PASSKEY,"duration":{"kind":"until_kernel_stops"},"surface":"terminal"}}))
         .await;
     assert!(unlocked["error"].is_null(), "{unlocked}");
 }

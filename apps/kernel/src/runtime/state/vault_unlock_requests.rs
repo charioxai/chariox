@@ -1,6 +1,7 @@
 //! MP-08 / MP-10 / MP-11: a human wait must be visible in the requesting
 //! session. Only the short Vault mutation is serialized across sessions.
 use super::*;
+use crate::local::VaultUnlockSurface;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
@@ -9,7 +10,7 @@ use tokio::sync::{watch, Mutex as AsyncMutex};
 struct VaultRequests {
     mutation: Arc<AsyncMutex<()>>,
     sessions: Mutex<BTreeMap<String, Weak<AsyncMutex<()>>>>,
-    unlocked: watch::Sender<()>,
+    unlocked: watch::Sender<Option<VaultUnlockSurface>>,
 }
 
 fn requests(path: &Path) -> Arc<VaultRequests> {
@@ -24,7 +25,7 @@ fn requests(path: &Path) -> Arc<VaultRequests> {
             Arc::new(VaultRequests {
                 mutation: Arc::new(AsyncMutex::new(())),
                 sessions: Mutex::new(BTreeMap::new()),
-                unlocked: watch::channel(()).0,
+                unlocked: watch::channel(None).0,
             })
         })
         .clone()
@@ -49,12 +50,14 @@ pub(super) fn vault_unlock_session_request_lock(path: &Path, session: &str) -> A
     lock
 }
 
-pub(super) fn vault_unlock_notifications(path: &Path) -> watch::Receiver<()> {
+pub(super) fn vault_unlock_notifications(
+    path: &Path,
+) -> watch::Receiver<Option<VaultUnlockSurface>> {
     requests(path).unlocked.subscribe()
 }
 
-pub(super) fn notify_vault_unlocked(path: &Path) {
-    requests(path).unlocked.send_replace(());
+pub(super) fn notify_vault_unlocked(path: &Path, surface: VaultUnlockSurface) {
+    requests(path).unlocked.send_replace(Some(surface));
 }
 
 impl KernelRuntimeState {
@@ -66,7 +69,7 @@ impl KernelRuntimeState {
         interaction: crate::session::RuntimeInteraction,
         operation: &'static str,
         vault_path: &Path,
-        unlocks: &mut watch::Receiver<()>,
+        unlocks: &mut watch::Receiver<Option<VaultUnlockSurface>>,
         accept_shared_unlock: bool,
     ) -> Result<Option<PendingInteractionResolution>, DaemonError> {
         let id = interaction.id().to_owned();
@@ -81,11 +84,12 @@ impl KernelRuntimeState {
             tokio::select! {
                 result = &mut wait => break result.map(Some),
                 Ok(()) = unlocks.changed(), if accept_shared_unlock => {
+                    let surface = (*unlocks.borrow_and_update()).unwrap_or(VaultUnlockSurface::Card);
                     match crate::secret::chariox_encrypted_vault_status(vault_path) {
                         Ok(status) if status.unlocked => {
                             break self
-                                .timeout_runtime_interaction(session_id, &id)
-                                .await
+                                .owned
+                                .settle_vault_unlocked(session_id, &id, surface)
                                 .map(|()| None);
                         }
                         Ok(_) => {}

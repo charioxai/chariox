@@ -280,11 +280,11 @@ test("executeShellCommand unlocks the Vault with a hidden passphrase and no sess
   assert.equal(unlocked.ok, true)
   assert.equal(unlocked.message, "vault unlocked")
   assert.deepEqual(prompts, ["Vault passphrase: "])
-  assert.deepEqual(requests, [{ GetCredentialVaultStatus: null }, { UnlockCredentialVault: { passphrase: "correct horse", duration: { kind: "minutes", minutes: 60 } } }], "no length given: the kernel's preselected one")
+  assert.deepEqual(requests, [{ GetCredentialVaultStatus: null }, { UnlockCredentialVault: { passphrase: "correct horse", duration: { kind: "minutes", minutes: 60 }, surface: "terminal" } }], "no length given: the kernel's preselected one")
   assert.equal(JSON.stringify(unlocked).includes("correct horse"), false)
   requests.length = 0
   await executeShellCommand(parseShellCommand("credential vault unlock once"), context, { client, readSecret })
-  assert.deepEqual(requests, [{ UnlockCredentialVault: { passphrase: "correct horse", duration: { kind: "once" } } }])
+  assert.deepEqual(requests, [{ UnlockCredentialVault: { passphrase: "correct horse", duration: { kind: "once" }, surface: "terminal" } }])
   requests.length = 0
   const unknown = await executeShellCommand(parseShellCommand("credential vault unlock forever"), context, { client, readSecret })
   assert.equal(unknown.ok, false)

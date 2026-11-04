@@ -152,7 +152,7 @@ export async function executeCredentialCommand(
       const passphrase = await deps.readSecret("Vault passphrase: ")
       if (!passphrase) return { ok: false, message: "the Vault passphrase must not be empty" }
       const duration = chosen ?? vaultUnlockDefaultFromStatus(await deps.client.send(getCredentialVaultStatusRequest()))
-      const response = await deps.client.send(unlockCredentialVaultRequest(passphrase, duration))
+      const response = await deps.client.send(unlockCredentialVaultRequest(passphrase, duration, "terminal"))
       const payload = expectVariant<{ action: string; status: Record<string, unknown> }>(response, "CredentialVaultUnlocked")
       return { ok: true, message: `vault ${payload.action}`, data: payload, format: "json" }
     }

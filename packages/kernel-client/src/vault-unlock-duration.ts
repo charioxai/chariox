@@ -4,6 +4,9 @@ export type VaultUnlockDuration =
   | { readonly kind: "minutes"; readonly minutes: number }
   | { readonly kind: "until_kernel_stops" }
 
+/** Where the owner typed the passphrase; the kernel answers the agents' open unlock cards with it. */
+export type VaultUnlockSurface = "vault_window" | "settings" | "sidebar" | "terminal"
+
 export const vaultUnlockDurationUsage = "Use once, kernel, or a length such as 30m or 2h."
 
 /** `once`, `kernel`, `45` or `45m` (minutes), `2h` (hours); null for anything else. */
