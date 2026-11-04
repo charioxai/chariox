@@ -595,6 +595,47 @@ impl Ledger {
     }
 }
 
+/// A command waiting on memory that already started: it holds memory and
+/// makes no progress.
+pub(super) struct PausedCommand {
+    pub pid: u32,
+    pub resident: u64,
+    pub control: std::sync::mpsc::Sender<WatchCommand>,
+}
+
+/// The newest command paused on memory. When the pool is full and nothing
+/// else can pause, it yields before a running command does: it has made the
+/// least progress, and the oldest running command can then finish.
+pub(super) fn youngest_paused(members: &[Arc<Mutex<Observation>>]) -> Option<PausedCommand> {
+    let mut newest: Option<(u64, PausedCommand)> = None;
+    for member in members {
+        let observation = member.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(control) = observation.control.clone() else {
+            continue;
+        };
+        for command in &observation.commands {
+            let Some(entry) = observation.admission.get(&command.pid) else {
+                continue;
+            };
+            if matches!(entry.wait, Some(Wait::Paused(WaitReason::Memory)))
+                && newest
+                    .as_ref()
+                    .is_none_or(|(arrived, _)| entry.arrived > *arrived)
+            {
+                newest = Some((
+                    entry.arrived,
+                    PausedCommand {
+                        pid: command.pid,
+                        resident: command.resident,
+                        control: control.clone(),
+                    },
+                ));
+            }
+        }
+    }
+    newest.map(|(_, command)| command)
+}
+
 /// Machine-wide facts one pass decides on.
 struct State {
     /// Growth admitted commands still have ahead toward their expected peak.

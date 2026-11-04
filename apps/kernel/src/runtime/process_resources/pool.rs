@@ -302,6 +302,38 @@ impl Pool {
         if stopped_at.get(&key).is_some_and(|at| at.elapsed() < SETTLE) {
             return;
         }
+        // A paused command holds memory and makes no progress: it yields
+        // before a running command does, the newest first.
+        if matches!(cause, Cause::Pressure) {
+            if let Some(waiting) = admission::youngest_paused(members) {
+                let notice = format!(
+                    "chariox: stopped this waiting command under memory pressure: the pool is full, so the newest waiting command ends first ({} MiB resident) and the oldest running one can finish. Run it again; it starts when there is room.\n",
+                    waiting.resident / MIB
+                );
+                crate::logging::warn_with_fields(
+                    "process_resources.memory_stop",
+                    notice.trim_end(),
+                    serde_json::json!({
+                        "pid": waiting.pid,
+                        "resident_bytes": waiting.resident,
+                        "ceiling_bytes": self.ceiling,
+                        "waiting": true,
+                    }),
+                );
+                if waiting
+                    .control
+                    .send(WatchCommand::MemoryStop {
+                        pid: waiting.pid,
+                        limit_bytes: self.ceiling,
+                        notice,
+                    })
+                    .is_ok()
+                {
+                    stopped_at.insert(key, Instant::now());
+                }
+                return;
+            }
+        }
         let snapshot = members
             .iter()
             .map(|member| {
