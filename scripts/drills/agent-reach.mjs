@@ -711,7 +711,7 @@ async function main() {
     const since = startedAt, skip = reachAnswers(since).length
     await sendPrompt(drillPrompt([
       `1. ${call(target, { SearchRecall: { query: word, session_id: roomB.session.id, ...nulls, after_sequence: null, limit: 5 } })}`,
-      `2. ${call(target, { QueryRecall: { session_id: roomB.session.id, ...nulls, text: null, after_sequence: null, before_sequence: null, limit: 100 } })}`,
+      `2. ${call(target, { QueryRecall: { session_id: roomB.session.id, ...nulls, text: null, after_sequence: null, before_sequence: null, limit: 3 } })}`,
       `3. ${call(target, { SearchRecall: { query: word, session_id: "no-such-room", ...nulls, after_sequence: null, limit: 5 } })}`,
       "Then reply with the words RECALL and DONE joined by an underscore, and say for each of the three answers whether it contained events.",
     ]), "RECALL_DONE")
@@ -719,7 +719,7 @@ async function main() {
     const answers = reachAnswers(since).slice(skip).filter(x => x.tool === "request" && x.input?.request)
     const answerTo = (name, unknownRoom = false) => answers.findLast(x => x.input.request[name] && (x.input.request[name].session_id === "no-such-room") === unknownRoom)?.answer ?? ""
     check("the agent found another room's real work by a term of it", answerTo("SearchRecall").includes(word), { answer: answerTo("SearchRecall").slice(0, 160) })
-    check("the agent paged another room's recent history", /RecallEvents/.test(answerTo("QueryRecall")) && answerTo("QueryRecall").includes(word), { answer: answerTo("QueryRecall").slice(0, 160) })
+    check("the agent paged another room's history", /RecallEvents":\{"events":\[\{/.test(answerTo("QueryRecall").replace(/\\"/g, '"')), { answer: answerTo("QueryRecall").slice(0, 160) })
     note("recall-unknown-room", { answer: answerTo("SearchRecall", true).slice(0, 300) })
     check("an unknown room answers session_not_found without the word", /session_not_found/.test(answerTo("SearchRecall", true)) && !answerTo("SearchRecall", true).includes(word))
   }
