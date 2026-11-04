@@ -44,8 +44,8 @@ const tokenFile = flags.get("--claude-token-file") ?? "/root/.claude-lanes/oauth
 const codexScope = flags.get("--codex-scope") ?? "/root/.chariox/dev/worker-k/home/state/provider-accounts/local/codex/kaissandra-ai-reviewer-login-esqv7b7c/codex"
 const opencodeAuth = flags.get("--opencode-auth") ?? "/root/.chariox/dev/provider-runtimes/fleet-accounts/opencode-home/.local/share/opencode/auth.json"
 const scenarios = new Set((flags.get("--scenarios") ?? (provider === "claude" ? "reach,sudo,acquisition,tools,events,driver,history,view,humanonly,lineage,newrooms,inherit,workday,recall" : "tools,events,driver,history,view")).split(","))
-assert(provider === "claude" || [...scenarios].every(name => ["tools", "view", "events", "driver", "history"].includes(name)), "only the tools, view, events, driver and history scenarios run with Codex or OpenCode")
-const agentScenarios = ["events", "driver", "history"].some(name => scenarios.has(name))
+assert(provider === "claude" || [...scenarios].every(name => ["tools", "view", "events", "multiwait", "driver", "history"].includes(name)), "only the tools, view, events, multiwait, driver and history scenarios run with Codex or OpenCode")
+const agentScenarios = ["events", "multiwait", "driver", "history"].some(name => scenarios.has(name))
 assert(stateRoot.startsWith("/root/.chariox/dev/"), "state must be lane-owned")
 assert(!evidence.startsWith(fileURLToPath(new URL("../../", import.meta.url))), "evidence must be outside the repository")
 mkdirSync(stateRoot, { recursive: true, mode: 0o700 })
@@ -502,6 +502,32 @@ async function main() {
       check("X's events_wait returns Y's finished turn within 2 s (outcome record names kernel, session, agent)", latency !== null && latency <= 2000 && finalEvent.session_id === roomB.session.id && finalEvent.agent_id === yAgent && !!finalEvent.kernel && finalEvent.value.outcome !== "error" && latency >= -250, { kernel_latency_ms: latency, provider_shows_result_after_ms: seenLag, record: finalEvent && { kernel: finalEvent.kernel, session_id: finalEvent.session_id, agent_id: finalEvent.agent_id, value: finalEvent.value } })
       check("X was woken by the wait, not polling (few waits, each one reported)", waits.length >= 2 && waits.length <= 10, { waits: waits.length })
       check("X's turn ended with the words it was asked for", first.turn.answer.includes("EVENTS_DONE"))
+    }
+
+    if (scenarios.has("multiwait")) {
+      note("scenario", { which: "multiwait", provider, model })
+      // One inbox, two kernels: X follows a room on B and a room on its own kernel A, and its wait loop returns the outcome of each.
+      const bWord = `MULTIB${nonce}`, aWord = `MULTIA${nonce}`
+      const multi = await xTurn([
+        "This is a drill. Use only the chariox-reach MCP tools. No shell, no files. A call may be refused: do not retry it, except the waits below.",
+        `1. Call events_subscribe with exactly: {"kernel":"${target}","session_id":"${roomB.session.id}"}`,
+        `2. Call events_subscribe with exactly: {"session_id":"${siblingA.session.id}"} (no kernel: your own).`,
+        '3. Call events_wait with exactly {"timeout_seconds":3}, then events_ack with its next_cursor (those records are old).',
+        '4. Call events_wait with {"timeout_seconds":120}, then events_ack with its next_cursor. Repeat step 4 (at most 12 times) until you have seen a record with a value.outcome field from each of the two rooms (their kernel fields differ). A record without it, such as run_state working, is not the end: wait again. Do not reply before that.',
+        "Then reply with the words MULTI and DONE joined by an underscore, nothing else.",
+      ].join("\n"), "MULTI_DONE", async ({ running, seen, waitFor }) => {
+        await waitFor(inLongWait({ seen, running }), "X waits")
+        await delay(1500)
+        await Promise.all([
+          agentTurn(a, siblingA.session.id, attachZ1, siblingA.agent.id, `Run the shell command "sleep 4" first. Then reply with exactly ${aWord} and nothing else.`, aWord),
+          agentTurn(b, roomB.session.id, attachB, yAgent, `Run the shell command "sleep 6" first. Then reply with exactly ${bWord} and nothing else.`, bWord),
+        ])
+      })
+      const records = waited(multi.reach).flatMap(w => w.batch?.events ?? []).filter(e => e.value?.outcome)
+      const byKernel = new Map(records.map(e => [e.kernel, e]))
+      note("multiwait-records", { kernels: [...byKernel.keys()], sessions: [...byKernel.values()].map(e => e.session_id) })
+      check("one wait loop returned the finished turn of a room on each of two kernels", byKernel.size === 2 && [...byKernel.values()].some(e => e.session_id === roomB.session.id) && [...byKernel.values()].some(e => e.session_id === siblingA.session.id), { kernels: [...byKernel.keys()] })
+      check("X's multi-kernel turn ended with the words it was asked for", multi.turn.answer.includes("MULTI_DONE"))
     }
 
     if (scenarios.has("driver")) {
