@@ -321,7 +321,7 @@ test("managed environment details preserve observed activity and operation histo
     contextManifestDigest: null,
     autoStopPolicy: { minimumRuntimeSeconds: 10_800, idleDelaySeconds: 900 },
     runtimeStartedAt: "2026-09-26T00:00:00.000Z",
-    workingAgentCount: 0,
+    workingAgentCount: 3,
     lastActivityReportedAt: "2026-09-26T05:00:02.000Z",
     lastActivityChangedAt: "2026-09-26T04:59:00.000Z",
     autoStopWarningAt: null,
@@ -353,6 +353,7 @@ test("managed environment details preserve observed activity and operation histo
   assert.deepEqual(parsed, details)
   assert.equal(parsed.operations?.[0]?.operationId, "operation-stop-7")
   assert.equal(parsed.operations?.[0]?.desiredRevision, 7)
+  assert.equal(parsed.environment.workingAgentCount, 3)
   assert.equal(parsed.environment.runtimeStartedAt, "2026-09-26T00:00:00.000Z")
   assert.equal(parsed.environment.lastActivityChangedAt, "2026-09-26T04:59:00.000Z")
   assert.equal("operations" in parsed.environment, false)
