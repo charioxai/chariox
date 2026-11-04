@@ -415,8 +415,14 @@ async fn an_agent_creates_a_room_without_sudo_and_a_guests_agent_does_not() {
     let create = serde_json::json!({"CreateSession": {
         "workspace_id": path, "worktree_id": path, "alias": "made-by-reach", "slice_ref": null}});
     let (ok, payload) = call(&reach, &reach.owner_token, None, create.clone()).await;
-    assert!(ok, "the owner's agent creates a room without /sudo: {payload}");
-    assert!(payload["SessionCreated"]["session"]["id"].is_string(), "{payload}");
+    assert!(
+        ok,
+        "the owner's agent creates a room without /sudo: {payload}"
+    );
+    assert!(
+        payload["SessionCreated"]["session"]["id"].is_string(),
+        "{payload}"
+    );
     let (ok, payload) = call(&reach, &reach.guest_token, None, create).await;
     assert!(!ok, "a guest's agent never reaches: {payload}");
 }
@@ -464,7 +470,10 @@ async fn acquiring_a_machine_asks_unless_the_owner_turned_the_setting_off() {
     reach
         .router
         .runtime_state()
-        .set_user_config_value("agents.ask_before_acquiring_machines".into(), "false".into())
+        .set_user_config_value(
+            "agents.ask_before_acquiring_machines".into(),
+            "false".into(),
+        )
         .await
         .expect("the owner turns the setting off");
     let acquire = serde_json::json!({"ControlPlane": {
@@ -501,9 +510,20 @@ fn the_service_names_a_machine_after_the_agent_that_acquired_it() {
     command.caller.caller_id = caller.id.clone();
     let sent = crate::runtime::control_plane::service_request(&state, &command, &acquire);
     assert_eq!(sent["requested_by"], caller.harness);
-    assert!(caller.harness.ends_with(" (Chariox agent)"), "{}", caller.harness);
-    let list = crate::runtime::control_plane::service_request(&state, &command, &crate::local::ControlPlaneRequest::List {});
-    assert!(list.get("requested_by").is_none(), "only an acquisition carries a name");
+    assert!(
+        caller.harness.ends_with(" (Chariox agent)"),
+        "{}",
+        caller.harness
+    );
+    let list = crate::runtime::control_plane::service_request(
+        &state,
+        &command,
+        &crate::local::ControlPlaneRequest::List {},
+    );
+    assert!(
+        list.get("requested_by").is_none(),
+        "only an acquisition carries a name"
+    );
     let own = crate::runtime::command::KernelCommand::from_local_request(
         "d",
         None,
@@ -511,7 +531,10 @@ fn the_service_names_a_machine_after_the_agent_that_acquired_it() {
         &crate::local::LocalDaemonRequest::ControlPlane(acquire.clone()),
     );
     let sent = crate::runtime::control_plane::service_request(&state, &own, &acquire);
-    assert!(sent.get("requested_by").is_none(), "the owner's own client sends no name");
+    assert!(
+        sent.get("requested_by").is_none(),
+        "the owner's own client sends no name"
+    );
 }
 
 fn active_questions(reach: &Reach) -> Vec<crate::session::RuntimeInteraction> {
