@@ -199,7 +199,7 @@ impl TurnOutcome {
         )
     }
 
-    /// Provider text belongs in the log, never in the public explanation.
+    /// Provider diagnostics stay in logs except for Claude's bounded usage-limit detail.
     pub(crate) fn provider_failure(kind: TurnOutcomeKind, retryable: bool) -> Self {
         let reason = match kind {
             TurnOutcomeKind::Completed | TurnOutcomeKind::Cancelled => "",
@@ -233,7 +233,7 @@ impl TurnOutcome {
             super::prompt_signals::split_coded_failure(text)
         {
             let mut failure = if let Some((cause, retryable)) = failure_for_code(code, message) {
-                Self::provider_failure(cause, retryable)
+                Self::provider_failure_for_message(adapter_key, cause, retryable, message)
             } else {
                 Self::classify_words(adapter_key, message)
             };
@@ -302,7 +302,26 @@ impl TurnOutcome {
         } else {
             (TurnOutcomeKind::Other, false)
         };
-        Self::provider_failure(cause, retryable)
+        Self::provider_failure_for_message(adapter_key, cause, retryable, message)
+    }
+
+    fn provider_failure_for_message(
+        adapter_key: &str,
+        cause: TurnOutcomeKind,
+        retryable: bool,
+        message: &str,
+    ) -> Self {
+        let mut failure = Self::provider_failure(cause, retryable);
+        if adapter_key != "claude" || cause != TurnOutcomeKind::UsageLimit {
+            return failure;
+        }
+        if let Some(line) = message.lines().map(str::trim).find(|line| !line.is_empty()) {
+            failure.reason = crate::secret_redaction::redact_secrets(line)
+                .chars()
+                .take(512)
+                .collect();
+        }
+        failure
     }
 }
 
@@ -431,7 +450,7 @@ mod tests {
     }
 
     #[test]
-    fn native_diagnostics_never_become_person_facing_reasons_or_notices() {
+    fn provider_failure_outcomes_do_not_echo_full_diagnostics() {
         for (adapter, text, kind, retryable) in [
             ("codex", "Codex error [server_overloaded]: Selected model is at capacity. Please try a different model.", TurnOutcomeKind::Overloaded, true),
             ("claude", "Claude StopFailure [rate_limit]: You've hit your weekly limit · resets Oct 28, 9pm (UTC)", TurnOutcomeKind::UsageLimit, false),
@@ -480,5 +499,33 @@ mod tests {
             outcome.notice(),
             "The provider is at capacity. Try again in a moment or choose another model."
         );
+    }
+
+    #[test]
+    fn claude_usage_limit_preserves_redacted_reset_detail_for_people() {
+        let outcome = TurnOutcome::classify(
+            "claude",
+            "Claude StopFailure [rate_limit]: You've hit your weekly limit · resets Oct 28, 9pm (UTC)",
+        );
+        assert_eq!(outcome.kind, TurnOutcomeKind::UsageLimit);
+        assert!(!outcome.retryable);
+        assert_eq!(
+            outcome.reason,
+            "You've hit your weekly limit · resets Oct 28, 9pm (UTC)"
+        );
+
+        let secret = TurnOutcome::classify(
+            "claude",
+            "Claude StopFailure [rate_limit]: weekly limit · resets sk-ant-abcdefghijklmnop0123456789",
+        );
+        assert!(secret.reason.contains("weekly limit"));
+        assert!(!secret.notice().contains("sk-ant-"));
+
+        let long = format!(
+            "Claude StopFailure [rate_limit]: weekly limit · resets {}",
+            "漢字".repeat(600)
+        );
+        let bounded = TurnOutcome::classify("claude", &long);
+        assert_eq!(bounded.reason.chars().count(), 512);
     }
 }
