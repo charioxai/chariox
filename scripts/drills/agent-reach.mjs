@@ -704,11 +704,13 @@ async function main() {
       `3. ${call(target, { SearchRecall: { query: word, session_id: "no-such-room", ...nulls, after_sequence: null, limit: 5 } })}`,
       "Then reply with the words RECALL and DONE joined by an underscore, and say for each of the three answers whether it contained events.",
     ]), "RECALL_DONE")
-    const answers = reachAnswers(since).slice(skip).filter(x => x.tool === "request")
-    check("the agent found another room's real work by a term of it", answers[0]?.answer.includes(word), { answer: answers[0]?.answer.slice(0, 160) })
-    check("the agent paged another room's recent history", answers[1] !== undefined && !/"code"/.test(answers[1].answer), { answer: answers[1]?.answer.slice(0, 160) })
-    note("recall-unknown-room", { answer: answers[2]?.answer.slice(0, 300) })
-    check("an unknown room answers session_not_found without the word", /session_not_found/.test(answers[2]?.answer ?? "") && !answers[2].answer.includes(word))
+    // A call the provider rejected before the kernel saw it (malformed JSON) has no request; only answered calls count.
+    const answers = reachAnswers(since).slice(skip).filter(x => x.tool === "request" && x.input?.request)
+    const answerTo = (name, unknownRoom = false) => answers.findLast(x => x.input.request[name] && (x.input.request[name].session_id === "no-such-room") === unknownRoom)?.answer ?? ""
+    check("the agent found another room's real work by a term of it", answerTo("SearchRecall").includes(word), { answer: answerTo("SearchRecall").slice(0, 160) })
+    check("the agent paged another room's recent history", /RecallEvents/.test(answerTo("QueryRecall")) && answerTo("QueryRecall").includes(word), { answer: answerTo("QueryRecall").slice(0, 160) })
+    note("recall-unknown-room", { answer: answerTo("SearchRecall", true).slice(0, 300) })
+    check("an unknown room answers session_not_found without the word", /session_not_found/.test(answerTo("SearchRecall", true)) && !answerTo("SearchRecall", true).includes(word))
   }
 
   if (scenarios.has("inherit")) {
@@ -720,7 +722,8 @@ async function main() {
     const since = Date.now() - 1000
     const submitted = a.client.send(submitPromptRequest(roomA.session.id, attached, agentA, "/sudo This is a drill. Run the shell command `sleep 75`, then reply with the words INHERITX and DONE joined by an underscore.", []))
     submitted.catch(error => note("sudo-submit-error", { message: String(error.message).slice(0, 300) }))
-    const popup = await until(async () => { await a.rpc({ PumpTerminalOutput: { session_id: roomA.session.id, attachment_id: attached } }).catch(() => {}); return (await state(a, roomA.session.id)).active_interactions?.find(x => String(x.id).startsWith("sudo:")) }, "sudo popup", 60000)
+    let popup
+    await until(async () => { await a.rpc({ PumpTerminalOutput: { session_id: roomA.session.id, attachment_id: attached } }).catch(() => {}); return (popup = (await state(a, roomA.session.id)).active_interactions?.find(x => String(x.id).startsWith("sudo:"))) }, "sudo popup", 60000)
     await a.rpc({ RespondToInteraction: { session_id: roomA.session.id, interaction_id: popup.id, choice_id: "approve", custom_reply: "60", passkey: a.passkey } })
     await delay(8000)
     const rename = call(target, { AliasSession: { session_id: roomB.session.id, alias: "renamed-by-the-sibling" } })
