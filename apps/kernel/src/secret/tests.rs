@@ -1351,3 +1351,65 @@ fn totp_inputs_compute_codes_instead_of_returning_the_seed() {
 }
 
 mod factors;
+
+#[test]
+fn http_mcp_resolves_site_bound_vault_credentials_only_for_the_registered_origin() {
+    use crate::mcp::CharioxMcpServerConfig;
+    let credential: UserCredentialConfig = serde_json::from_value(serde_json::json!({
+        "id": "hosted-mcp", "source": {"type": "vault", "key": "hosted-mcp"},
+        "allowed_hosts": ["mcp.example.com"], "allowed_uses": ["mcp"],
+        "injection": {"kind": "env", "name": "MCP_KEY"},
+        "metadata": {"use_binding": {"target": {"kind": "site", "origin": "https://mcp.example.com"}}}
+    })).unwrap();
+    let vault = Arc::new(MemoryVaultStore::default());
+    vault
+        .set_secret("mcp-test", "hosted-mcp", "test-mcp-secret")
+        .unwrap();
+    let service =
+        RuntimeSecretService::with_vault_store(vec![credential.clone()], "mcp-test", vault.clone());
+    let config = |url: &str| {
+        serde_json::from_value::<CharioxMcpServerConfig>(serde_json::json!({
+            "name": "hosted-mcp", "transport": {"type": "streamable_http", "url": url,
+                "bearer_token_credential": "hosted-mcp",
+                "credential_http_headers": {"X-Project-Key": {"credential": "hosted-mcp"}}}
+        }))
+        .unwrap()
+    };
+    let resolved = config("https://mcp.example.com/mcp")
+        .resolve_credential_bindings(&service)
+        .expect("the registered endpoint matches the Vault destination");
+    let crate::mcp::CharioxMcpTransportConfig::StreamableHttp { http_headers, .. } =
+        resolved.transport
+    else {
+        panic!("HTTP transport")
+    };
+    assert!(http_headers
+        .get("Authorization")
+        .is_some_and(|value| value == "Bearer test-mcp-secret"));
+    assert!(http_headers
+        .get("X-Project-Key")
+        .is_some_and(|value| value == "test-mcp-secret"));
+    for url in [
+        "https://other.example.com/mcp",
+        "https://mcp.example.com:8443/mcp",
+        "http://mcp.example.com/mcp",
+    ] {
+        assert!(
+            config(url).resolve_credential_bindings(&service).is_err(),
+            "{url}"
+        );
+    }
+    assert!(
+        service.resolve_mcp_secret("hosted-mcp").is_err(),
+        "stdio has no observed site destination"
+    );
+    let mut restricted = credential;
+    restricted.allowed_uses = vec![UserCredentialUse::Http];
+    let restricted = RuntimeSecretService::with_vault_store(vec![restricted], "mcp-test", vault);
+    assert!(
+        config("https://mcp.example.com/mcp")
+            .resolve_credential_bindings(&restricted)
+            .is_err(),
+        "the entry must also permit MCP use"
+    );
+}

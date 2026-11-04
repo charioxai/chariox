@@ -177,19 +177,20 @@ impl CharioxMcpServerConfig {
                 }
             }
             CharioxMcpTransportConfig::StreamableHttp {
+                url,
                 bearer_token_credential,
                 http_headers,
                 credential_http_headers,
                 ..
             } => {
                 if let Some(credential_id) = bearer_token_credential.take() {
-                    let secret = secret_service.resolve_mcp_secret(&credential_id)?;
+                    let secret = secret_service.resolve_http_mcp_secret(&credential_id, url)?;
                     http_headers.insert("Authorization".to_string(), format!("Bearer {secret}"));
                 }
                 for (name, binding) in std::mem::take(credential_http_headers) {
                     http_headers.insert(
                         name,
-                        secret_service.resolve_mcp_secret(&binding.credential)?,
+                        secret_service.resolve_http_mcp_secret(&binding.credential, url)?,
                     );
                 }
             }
