@@ -163,6 +163,9 @@ impl CodexClient {
             "sandbox": policy.sandbox,
             "personality": "pragmatic",
             "persistExtendedHistory": true,
+            // The kernel keeps its own history; a long thread's turns would
+            // otherwise come back in one message above the websocket bound.
+            "excludeTurns": true,
         });
         let config_overrides = self.thread_config_overrides(&policy)?;
         if !config_overrides.is_empty() {
