@@ -20,7 +20,7 @@ fn web_bot_auth_project_opt_in_protocol_shape_and_hash() {
     );
     assert_eq!(
         hash,
-        "86e931e9a50c3c7e9812ea508f9409425c116377283ab6ff985186438676b52f"
+        "86dcb16c72e4f14fc6e6e527204086a5f28c107075a098d348f9aa57531a6a84"
     );
     let specs = crate::transport::runtime_tools::credential_runtime_tool_specs();
     let plain = specs

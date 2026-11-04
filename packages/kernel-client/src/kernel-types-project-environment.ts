@@ -1,4 +1,4 @@
-// Environment v2 wire (local daemon protocol 974). Values of Variables travel in the record;
+// Environment v2 wire (local daemon protocol 982). Values of Variables travel in the record;
 // the value of a Secret never leaves the Vault, so no shape here can carry one.
 
 export type EnvironmentSecretPresence = "present" | "missing" | "locked"

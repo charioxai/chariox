@@ -6362,7 +6362,7 @@ identity handshake, and exposes only the versioned App WIT world through the
 kernel capability broker. The replaced engine's launch, runtime enrollment and
 privileged storage-helper paths are removed. Reinstall unsupported stored Apps.
 
-### Environments — local 974 / relay peer 423
+### Environments — local 982 / relay peer 423
 
 A Project has one Environment: a saved record (schema 2) with a Setup script, Variables (`.env` text),
 Secret names and Files outside Git. Values never enter the record. Each kernel keeps a Secret's value in

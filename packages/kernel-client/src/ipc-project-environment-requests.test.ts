@@ -56,7 +56,7 @@ const operation = {
 }
 
 test("Environment v2 requests use the wire names and drop absent checkoutPath", () => {
-  assert.equal(projectEnvironmentMinimumProtocolVersion, 974)
+  assert.equal(projectEnvironmentMinimumProtocolVersion, 982)
   assert.deepEqual(getProjectEnvironmentRequest("p"), { GetProjectEnvironment: { projectId: "p" } })
   assert.deepEqual(getProjectEnvironmentRequest("p", "/work/p"), { GetProjectEnvironment: { projectId: "p", checkoutPath: "/work/p" } })
   assert.deepEqual(runProjectEnvironmentSetupRequest("p", "op"), { RunProjectEnvironmentSetup: { projectId: "p", operationId: "op" } })

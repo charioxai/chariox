@@ -7,8 +7,8 @@ import type {
   SetupState,
 } from "./kernel-types-project-environment.js"
 
-// Protocol 974 carries the Environment requests including Import, Draft, held operation reads and MCPs and Skills; older kernels answer an unknown-variant error.
-export const projectEnvironmentMinimumProtocolVersion = 974
+// Protocol 982 carries the Environment requests including Import, Draft, held operation reads and MCPs and Skills; older kernels answer an unknown-variant error.
+export const projectEnvironmentMinimumProtocolVersion = 982
 
 export type SaveProjectEnvironmentInput = {
   readonly projectId: string
