@@ -18,6 +18,8 @@ import { pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { displayTiming, slowMark, timestamp, timedHostRequests } from './kernel-browser-timing.mjs';
 import { hostErrorLabel, hostFailureMessage } from './kernel-browser-error-label.mjs';
+// The kernel's daemon log carries the lines of the controller's stderr that start with this prefix (fixed labels only).
+const lifecycleLog = text => process.stderr.write(`CHARIOX-LOG ${text}\n`);
 import { BrowserCdpClient, isTrustedStaleReferenceError } from "./browser-controller-cdp.mjs";
 import { BrowserControllerStdioServer, handleBrowserControllerRequest } from "./browser-controller.mjs";
 import { NativeAccessibility } from './native-accessibility.mjs';
@@ -512,6 +514,7 @@ export class KernelBrowserHost {
     return await entry.ready;
   }
   async stop({ recovering = false, preserveDesktop = false } = {}) {
+    lifecycleLog(recovering ? 'browser_stop recovering' : 'browser_stop');
     if (!recovering) {
       this.recovery?.stop();
       await this.starting?.catch(() => {});
@@ -1152,6 +1155,7 @@ export class KernelBrowserHost {
           // Clear any dispatched key/button state before another actor can use
           // the browser. Recovery rotates generation; cancelled input never replays. A reset is a loss the
           // browser recovers from with its Tabs: only the owner's stop keeps it down.
+          lifecycleLog(`browser_reset after ${hostErrorLabel(error)}`);
           await this.stop({ recovering: true });
         }
         throw error;
@@ -1400,7 +1404,7 @@ export class KernelBrowserHost {
       // A cancelled request that may have dispatched input stops the browser (no held keys/buttons). A
       // cancelled read-only observation (a viewer's credit on a huge page) must not stop every Tab (MP-08/MP-10).
       if (error?.code === "browser_action_cancelled" && request.method !== "host.computer" && !request.params?.display_subscription_id
-        && this.browser === browserAtEntry && !(request.method === "host.browser" && OBSERVATION_OPS.has(request.params?.op))) await this.stop({ recovering: true });
+        && this.browser === browserAtEntry && !(request.method === "host.browser" && OBSERVATION_OPS.has(request.params?.op))) { lifecycleLog('browser_reset after cancelled request'); await this.stop({ recovering: true }); }
       if (["browser_unavailable"].includes(error?.code)) {
         return { id: request.id, ok: false, error: { code: error.code, message: error.message } };
       }

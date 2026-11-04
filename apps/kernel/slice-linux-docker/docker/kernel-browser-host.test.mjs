@@ -2313,8 +2313,10 @@ test('MP-08/MP-10/MP-11 a busy renderer that is late to acknowledge a click neve
 test('MP-08/MP-10/MP-11 a dispatched input that fails resets the browser through recovery, keeping its Tabs',()=>using(async({host,connection})=>{
  const opened=await host.request({op:'open',url:'https://www.wikipedia.org/'}),tab=opened.tabs[0];
  connection.beforeSend=async(method,params)=>{if(method==='Input.dispatchMouseEvent'&&params.type==='mousePressed')throw Object.assign(Error('browser target is gone'),{code:'browser_target_not_found'})};
- await assert.rejects(host.request({op:'input',tab_id:tab.tab_id,generation:opened.generation,document_id:tab.document_id,input:{kind:'click',x:10,y:10}}),error=>error.code==='browser_target_not_found');
+ const logged=[],write=process.stderr.write;process.stderr.write=(chunk,...rest)=>{logged.push(String(chunk));return true};
+ try{await assert.rejects(host.request({op:'input',tab_id:tab.tab_id,generation:opened.generation,document_id:tab.document_id,input:{kind:'click',x:10,y:10}}),error=>error.code==='browser_target_not_found')}finally{process.stderr.write=write}
  connection.beforeSend=null;
+ assert.ok(logged.some(line=>/^CHARIOX-LOG browser_reset after /.test(line)),`the reset names its reason in the controller log: ${logged}`);
  assert.equal(host.recovery.enabled,true,'the reset is a loss the browser recovers from, not a stop');
  await new Promise(r=>setTimeout(r,300));
  const state=await host.request({op:'state'});

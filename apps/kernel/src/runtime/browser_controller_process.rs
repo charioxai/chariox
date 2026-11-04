@@ -39,6 +39,7 @@ pub(crate) use retire_lane::RetireLane;
 mod room_computer;
 pub(crate) use cancellation::CancellationSignal as BrowserCancellation;
 mod configuration_cancellation;
+mod controller_log;
 mod display_frames;
 mod display_packets;
 pub(crate) use display_frames::{DirectFrames, Next as DirectFrame};
@@ -428,13 +429,7 @@ impl BrowserControllerProcessStdioBackend {
         }
         let _ = std::thread::Builder::new()
             .name("chariox-browser-controller-stderr".to_string())
-            .spawn(move || {
-                for line in BufReader::new(stderr).lines() {
-                    if line.is_err() {
-                        break;
-                    }
-                }
-            });
+            .spawn(move || controller_log::forward(stderr));
         let stdin = Arc::new(Mutex::new(stdin));
         self.retire_lane.attach(&stdin);
         self.process = Some(BrowserControllerChild {
