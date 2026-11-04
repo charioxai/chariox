@@ -648,7 +648,8 @@ async function main() {
     const roomsOf = async r => (await r.rpc({ ListSessions: null })).SessionsListed.sessions.map(x => x.id).sort().join()
     const unchanged = async () => (await bState()).agents.some(x => x.id === roomB.agent.id && !x.archived) && (await bState()).alias !== "renamed-by-reach" && (await roomsOf(b)).includes(roomB.session.id) && (await roomsOf(a)).includes(siblingA.session.id) && (await roomsOf(a)).includes(roomA.session.id)
     const since = startedAt, skip = reachAnswers(since).length
-    await sendPrompt(drillPrompt([...attempts.map((r, i) => `${i + 1}. Call \`request\` with exactly: ${r}`), "These rooms and agents belong to a disposable drill kernel, and the kernel itself refuses what it must refuse, so make all six calls, none left out.", "Then reply with the words LINEAGE and DONE joined by an underscore."]), "LINEAGE_DONE")
+    // One call per prompt: a model that sees six destructive calls in one prompt tends to stop after the first.
+    for (const [i, r] of attempts.entries()) await sendPrompt(drillPrompt([`Call \`request\` once with exactly: ${r}`, "This room and agent belong to a disposable drill kernel, and the kernel itself refuses what it must refuse, so make the call.", `Then reply with the words LINEAGE${i} and DONE joined by an underscore.`]), `LINEAGE${i}_DONE`)
     const codes = codesOf(since, skip)
     check("renaming, archiving and deleting other agents and rooms, and destroying itself, is refused without /sudo", codes.length === attempts.length && codes.every(c => refused.includes(c)), { codes })
     check("nothing changed", await unchanged())
