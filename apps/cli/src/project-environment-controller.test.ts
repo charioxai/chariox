@@ -171,6 +171,29 @@ test("an edit completed during a pending save is saved at the next revision", as
   assert(!h.text().includes("Unsaved"))
 })
 
+test("restoring the original text while a save is pending queues the restoration", async () => {
+  const h = harness()
+  await h.open()
+  let finishSave!: (value: unknown) => void
+  h.replies.push(() => new Promise((resolve) => { finishSave = resolve }))
+  h.focusOn("make setup")
+  h.key("return")
+  h.type("!")
+  h.controller.dismiss()
+  await h.settle()
+  h.focusOn("make setup!")
+  h.key("return")
+  h.key("backspace")
+  h.controller.dismiss()
+  h.replies.push({ ProjectEnvironmentSaved: { environment: environment({ revision: 4 }) } })
+  finishSave({ ProjectEnvironmentSaved: { environment: environment({ revision: 3, setup: { script: "make setup!" } }) } })
+  await h.settle()
+  const saves = h.requests.filter((request) => request.SaveProjectEnvironment)
+  assert.equal(saves.length, 2)
+  assert.equal(saves[1]!.SaveProjectEnvironment.setup.script, "make setup")
+  assert(!h.text().includes("Unsaved"))
+})
+
 test("a stale revision reloads the record and keeps the typed text for another save", async () => {
   const h = harness()
   await h.open()

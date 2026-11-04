@@ -218,8 +218,8 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
   const hasUnsavedText = () => environment !== null && (script() !== environment.setup.script || variables() !== environment.variables)
 
   const saveTypedText = async () => {
-    if (!hasUnsavedText()) return
     if (busy) { saveTextPending = true; return }
+    if (!hasUnsavedText()) return
     await save({})
   }
 
