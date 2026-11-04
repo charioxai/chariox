@@ -6229,6 +6229,24 @@ Clients need kernel protocol >=923 (`credentialVaultUnlockMinimumProtocolVersion
 web). The managed-upgrade list is [629, 636, 923]. Focused checks:
 `cargo test -p chariox-kernel --lib vault_unlock` and `node --test scripts/protocol-versions.test.mjs`.
 
+### A new machine's own Vault — local 973
+
+`CreateCredentialVault { origin }` gives this kernel a Vault from the owner's own client, with no session or
+agent (the same callers and refusals as `UnlockCredentialVault`). `origin` is
+`{ kind: "passphrase", passphrase }` (typed for this kernel) or `{ kind: "seed", seed }`, a `VaultKeySeed` that
+another kernel sealed for this one with `SealCredentialVaultKey { targetKernelId, targetPublicKey }`
+(`CredentialVaultKeySealed { seed }`, refused with `vault_locked` while that Vault is locked). The seed holds the
+unlocked Vault key sealed to the target's relay key (the transferred-Vault sealing, bound to both kernel ids and
+to the KDF parameters and salt of the Vault file) and those parameters; the target writes its own, empty Vault
+under that key. The same passphrase therefore opens both Vaults, each kernel keeps its own file, and neither the
+passphrase nor the key is sent in the clear. Both answer `CredentialVaultUnlocked { status, action: "created" }`
+with the Vault open for the owner's lease and the critical-approval verifier pinned like an unlock. An existing
+Vault is never replaced (`vault_exists`); a kernel that keeps its secrets outside a Chariox Vault refuses with
+`vault_not_chariox_encrypted`. A seed sealed for another kernel creates nothing. A managed-machine launch sends
+the seal to the kernel the Project is on and the create to the new kernel before the Project is sent, so the
+Environment's Secrets and secret-looking Files are written into the new Vault. Focused checks:
+`cargo test -p chariox-kernel --lib vault_creation` and `credential_vault_creation_973_shapes_are_pinned`.
+
 ### Apps v2 — local 966 / relay peer 415
 
 One allocation carries the whole Apps v2 Stage 1 line. Local requests: `BeginAppInstall` and

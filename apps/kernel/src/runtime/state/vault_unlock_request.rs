@@ -6,12 +6,16 @@ use super::*;
 use crate::config::{CredentialVaultBackend, CredentialVaultUnlockPolicy};
 
 // Everything the owner reads about an unlock that did not happen lives here.
-mod wording {
+pub(crate) mod wording {
     pub(super) const WRONG_PASSPHRASE: &str = "That is not the Vault passphrase. Try again.";
     pub(super) const MISSING: &str =
         "This kernel has no Vault yet. Create it on that machine first.";
     pub(super) const LOCKED: &str = "The Vault is locked. Unlock it, then try again.";
     pub(super) const OWNER_ONLY: &str = "Only the owner of this kernel can unlock its Vault.";
+    pub(crate) const EXISTS: &str =
+        "This kernel already has a Vault. Unlock it with its own passphrase.";
+    pub(crate) const NOT_CHARIOX_ENCRYPTED: &str =
+        "This kernel keeps its secrets outside a Chariox Vault.";
 
     pub(super) fn rate_limited(seconds: u64) -> String {
         format!("Too many wrong passphrases. Try again in {seconds} seconds.")
@@ -23,6 +27,8 @@ const RATE_LIMITED: &str = "vault_unlock_rate_limited";
 const MISSING: &str = "vault_missing";
 const LOCKED: &str = "vault_locked";
 const OWNER_ONLY: &str = "vault_unlock_owner_only";
+pub(crate) const EXISTS: &str = "vault_exists";
+pub(crate) const NOT_CHARIOX_ENCRYPTED: &str = "vault_not_chariox_encrypted";
 
 pub(super) fn refusal(
     code: &'static str,
@@ -44,7 +50,7 @@ pub(crate) fn vault_locked_error() -> DaemonError {
 
 /// Where the owner's own client leaves the Vault open afterwards: the policy's
 /// lease, and under "ask every time" just the next operation.
-fn owner_client_lease(
+pub(super) fn owner_client_lease(
     config: &crate::config::UserCredentialVaultConfig,
 ) -> crate::secret::VaultUnlockLease {
     match config.unlock_policy {

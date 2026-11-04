@@ -591,6 +591,7 @@ mod slice_runtime_state;
 mod vault_owner_gate;
 mod vault_secret_request;
 pub(crate) use vault_secret_request::{SecretRequest, VAULT_SECRET_OPERATION};
+mod vault_creation;
 mod vault_unlock_request;
 mod vault_unlock_requests;
 pub(crate) use slice_runtime_state::SliceAgentRelaunchManifest;

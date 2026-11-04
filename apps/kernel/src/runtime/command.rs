@@ -178,6 +178,12 @@ fn local_request_payload(request: &LocalDaemonRequest) -> Value {
         LocalDaemonRequest::UnlockCredentialVault(_) => serde_json::json!({
             "UnlockCredentialVault": { "passphrase": "[redacted]" }
         }),
+        LocalDaemonRequest::CreateCredentialVault(_) => serde_json::json!({
+            "CreateCredentialVault": { "origin": "[redacted]" }
+        }),
+        LocalDaemonRequest::SealCredentialVaultKey(request) => serde_json::json!({
+            "SealCredentialVaultKey": { "targetKernelId": request.target_kernel_id }
+        }),
         LocalDaemonRequest::SetProviderAccountCredential(request) => serde_json::json!({
             "SetProviderAccountCredential": {
                 "session_id": request.session_id,

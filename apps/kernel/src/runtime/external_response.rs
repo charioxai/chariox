@@ -126,6 +126,7 @@ response_policies! {
     ],
     Withhold => [
         OwnerVault,
+        CredentialVaultKeySealed,
         SessionViewAttached,
         SessionInviteCreated,
         // MP-11: prototype user App views carry App frontends and channel data.

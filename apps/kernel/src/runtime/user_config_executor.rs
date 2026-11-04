@@ -85,6 +85,22 @@ pub(crate) async fn execute_user_config_request(
                 action: action.to_string(),
             })
         }
+        LocalDaemonRequest::CreateCredentialVault(request) => {
+            let owner = runtime_state.owner_client_user_id(command)?;
+            let status = runtime_state
+                .create_credential_vault_for_owner(&owner, request)
+                .await?;
+            Ok(LocalDaemonResponse::CredentialVaultUnlocked {
+                status,
+                action: "created".to_string(),
+            })
+        }
+        LocalDaemonRequest::SealCredentialVaultKey(request) => {
+            runtime_state.owner_client_user_id(command)?;
+            Ok(LocalDaemonResponse::CredentialVaultKeySealed {
+                seed: runtime_state.seal_credential_vault_key(request)?,
+            })
+        }
         LocalDaemonRequest::ManageCredentialVault(request) => {
             execute_manage_credential_vault_request(runtime_state, request).await
         }

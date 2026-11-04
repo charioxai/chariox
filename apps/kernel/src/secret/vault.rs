@@ -18,6 +18,9 @@ use crate::error::DaemonError;
 use crate::runtime::terminal_pairings::public_key_thumbprint;
 use crate::transport::relay_crypto;
 
+mod key_seed;
+pub use key_seed::{create_vault_from_key_seed, export_vault_key_seed, VaultKeySeed};
+
 const VAULT_FILE_VERSION: u32 = 1;
 const VAULT_CIPHER: &str = "aes-256-gcm";
 const VAULT_KDF: &str = "argon2id";

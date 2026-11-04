@@ -811,6 +811,8 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::GetCredentialVaultStatus(_)
         | LocalDaemonRequest::LockCredentialVault(_)
         | LocalDaemonRequest::UnlockCredentialVault(_)
+        | LocalDaemonRequest::CreateCredentialVault(_)
+        | LocalDaemonRequest::SealCredentialVaultKey(_)
         | LocalDaemonRequest::ManageCredentialVault(_)
         | LocalDaemonRequest::PreflightProviderAccountPortability(_)
         | LocalDaemonRequest::ListManagedEnvironmentCatalog(_)

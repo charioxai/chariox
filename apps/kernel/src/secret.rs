@@ -30,13 +30,14 @@ pub(crate) use vault::vault_store_for_config as web_bot_auth_vault_store;
 pub use vault::{
     change_chariox_encrypted_vault_passphrase, chariox_encrypted_vault_status,
     chariox_vault_single_use_unlocked, clear_all_chariox_encrypted_vault_unlocks,
-    export_transferred_vault_snapshot, extend_chariox_encrypted_vault,
-    install_transferred_vault_snapshot, is_chariox_vault_locked_error,
-    lock_chariox_encrypted_vault, restore_transferred_vault_unlock, sync_chariox_encrypted_vault,
-    unlock_chariox_encrypted_vault, unlock_existing_chariox_encrypted_vault,
-    validate_installed_transferred_vault, validate_transferred_vault_snapshot_for_export,
-    CharioxVaultUnlockStatus, CredentialVaultStore, TransferredVaultSnapshot,
-    TransferredVaultSourceBinding, VaultPasskeyVerifier, VaultUnlockLease,
+    create_vault_from_key_seed, export_transferred_vault_snapshot, export_vault_key_seed,
+    extend_chariox_encrypted_vault, install_transferred_vault_snapshot,
+    is_chariox_vault_locked_error, lock_chariox_encrypted_vault, restore_transferred_vault_unlock,
+    sync_chariox_encrypted_vault, unlock_chariox_encrypted_vault,
+    unlock_existing_chariox_encrypted_vault, validate_installed_transferred_vault,
+    validate_transferred_vault_snapshot_for_export, CharioxVaultUnlockStatus, CredentialVaultStore,
+    TransferredVaultSnapshot, TransferredVaultSourceBinding, VaultKeySeed, VaultPasskeyVerifier,
+    VaultUnlockLease,
 };
 #[cfg(test)]
 pub(crate) use vault::{

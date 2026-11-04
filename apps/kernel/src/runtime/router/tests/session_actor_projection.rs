@@ -9,6 +9,7 @@ mod prompt_lifecycle;
 mod prompt_routing;
 mod runtime_interactions;
 mod session_commands;
+mod vault_creation;
 mod vault_unlock_request;
 
 mod room_pin;

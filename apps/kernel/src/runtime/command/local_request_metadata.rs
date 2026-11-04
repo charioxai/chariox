@@ -243,6 +243,12 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
         LocalDaemonRequest::UnlockCredentialVault(_) => {
             LocalRequestMetadata::new("credential_vault.unlock", Interactive)
         }
+        LocalDaemonRequest::CreateCredentialVault(_) => {
+            LocalRequestMetadata::new("credential_vault.create", Interactive)
+        }
+        LocalDaemonRequest::SealCredentialVaultKey(_) => {
+            LocalRequestMetadata::new("credential_vault.seal_key", Interactive)
+        }
         LocalDaemonRequest::ManageCredentialVault(request) => {
             LocalRequestMetadata::new("credential_vault.manage", Interactive)
                 .session(&request.session_id)
@@ -900,6 +906,8 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::GetCredentialVaultStatus(_) => "credential_vault.status",
         LocalDaemonRequest::LockCredentialVault(_) => "credential_vault.lock",
         LocalDaemonRequest::UnlockCredentialVault(_) => "credential_vault.unlock",
+        LocalDaemonRequest::CreateCredentialVault(_) => "credential_vault.create",
+        LocalDaemonRequest::SealCredentialVaultKey(_) => "credential_vault.seal_key",
         LocalDaemonRequest::ManageCredentialVault(_) => "credential_vault.manage",
         LocalDaemonRequest::RegisterCredential(_) => "credential.register",
         LocalDaemonRequest::UpsertCredential(_) => "credential.upsert",
