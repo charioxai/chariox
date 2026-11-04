@@ -1072,6 +1072,197 @@ async fn async_popup_refuses_a_condition_it_cannot_follow() {
 
 // PCD-03: the kernel clock is a wake source too; its firing closes the card.
 #[tokio::test]
+async fn async_popup_reconciles_cancelled_timer_condition_once() {
+    let f = fixture("async-popup-cancelled-until-timer", true).await;
+    let task = f.begin(&f.prompt_id);
+    let token = f
+        .runtime
+        .owned
+        .provider_store
+        .get_run(&f.run)
+        .unwrap()
+        .runtime_mcp_auth_token()
+        .unwrap()
+        .to_owned();
+    let timer = call(
+        &f,
+        &token,
+        "chariox.events.timer",
+        &task,
+        serde_json::json!({"label":"completion timer","delay_ms":60_000}),
+    )
+    .await
+    .unwrap()
+    .payload;
+    let source = timer["wake_id"].as_str().unwrap();
+    let result = ask(&f, serde_json::json!({"until":{"wake_id":source}})).await;
+    let id = result["interaction_id"].as_str().unwrap();
+    let cancelled = call(
+        &f,
+        &token,
+        "chariox.events.cancel_wake",
+        &task,
+        serde_json::json!({"wake_id":source}),
+    )
+    .await
+    .unwrap()
+    .payload;
+    assert_eq!(cancelled["settled"], true);
+    assert!(
+        !f.runtime
+            .owned
+            .session_store
+            .get_session(&f.room)
+            .unwrap()
+            .active_interactions()
+            .iter()
+            .any(|card| card.id() == id),
+        "cancelling a source must close its dependent card without ending the asking task"
+    );
+    for _ in 0..2 {
+        f.runtime
+            .tick_interaction_wakes(crate::session::unix_epoch_ms())
+            .unwrap();
+    }
+    let told = answers(&f, id);
+    assert_eq!(told.len(), 1);
+    assert_eq!(told[0]["choice_id"], "condition_met");
+    assert!(told[0]["reply"].as_str().unwrap().contains("cancelled"));
+}
+
+#[tokio::test]
+async fn async_popup_reconciles_source_lost_before_first_occurrence_from_current_ledger() {
+    let f = fixture("async-popup-lost-before-first-until", true).await;
+    let task = f.begin(&f.prompt_id);
+    let source = f.arm(&task, "wake-lost-before-first").unwrap();
+    assert!(source.last_sequence.is_none());
+    let result = ask(&f, serde_json::json!({"until":{"wake_id":source.id}})).await;
+    let id = result["interaction_id"].as_str().unwrap();
+    f.runtime
+        .report_lost_wake(
+            &source,
+            crate::session::unix_epoch_ms(),
+            "source disappeared before its first occurrence",
+        )
+        .unwrap();
+    // Lost-source and restart paths can queue delivery with their pre-transition
+    // snapshot. The completion condition must read the authoritative ledger.
+    f.runtime.close_cards_following(&source);
+    assert!(!f
+        .runtime
+        .owned
+        .session_store
+        .get_session(&f.room)
+        .unwrap()
+        .active_interactions()
+        .iter()
+        .any(|card| card.id() == id));
+    for _ in 0..2 {
+        f.runtime
+            .tick_interaction_wakes(crate::session::unix_epoch_ms())
+            .unwrap();
+        f.runtime.close_cards_following(&source);
+    }
+    let told = answers(&f, id);
+    assert_eq!(told.len(), 1);
+    assert_eq!(told[0]["choice_id"], "condition_met");
+    assert!(told[0]["reply"].as_str().unwrap().contains("lost"));
+}
+
+#[tokio::test]
+async fn async_popup_reconciles_source_ended_during_card_registration() {
+    let f = fixture("async-popup-until-registration-race", true).await;
+    let task = f.begin(&f.prompt_id);
+    let source = f.arm(&task, "wake-ended-before-register").unwrap();
+    // Model the source ending after request_popup's initial live-source check,
+    // but before the durable question is registered.
+    f.runtime
+        .cancel_wake_source(&source, &task.task_id, Some(&task.prompt_id))
+        .unwrap();
+    let card = crate::session::RuntimeInteraction::new(
+        "registration-race-card",
+        &f.agent,
+        crate::session::RuntimeInteractionKind::Choice,
+        crate::session::RuntimeInteractionLevel::Info,
+        None,
+        "Wait for completion",
+        vec![crate::session::RuntimeInteractionChoice::new(
+            "cancel", "Cancel", "cancel", None,
+        )],
+        None,
+        None,
+        None,
+    )
+    .closing_with_wake(source.id);
+    f.runtime
+        .arm_interaction_wake(&f.room, &f.agent, card)
+        .unwrap();
+    assert!(!f
+        .runtime
+        .owned
+        .session_store
+        .get_session(&f.room)
+        .unwrap()
+        .active_interactions()
+        .iter()
+        .any(|card| card.id() == "registration-race-card"));
+    for _ in 0..2 {
+        f.runtime
+            .tick_interaction_wakes(crate::session::unix_epoch_ms())
+            .unwrap();
+    }
+    let told = answers(&f, "registration-race-card");
+    assert_eq!(told.len(), 1);
+    assert_eq!(told[0]["choice_id"], "condition_met");
+}
+
+#[tokio::test]
+async fn async_popup_reconciles_recovered_card_with_already_cancelled_source() {
+    let f = fixture("async-popup-until-recovered-cancel", true).await;
+    let task = f.begin(&f.prompt_id);
+    let source = f.arm(&task, "wake-cancelled-offline").unwrap();
+    let result = ask(&f, serde_json::json!({"until":{"wake_id":source.id}})).await;
+    let id = result["interaction_id"].as_str().unwrap();
+    let question = f.store().agent_wake(id).unwrap().unwrap();
+    f.runtime.owned.pending_interactions.write().remove(id);
+    // A durable cancellation while no process-local question source is attached.
+    f.store()
+        .agent_lifecycle(Operation::CancelWake {
+            id: source.id,
+            task: task.task_id,
+            prompt: Some(task.prompt_id),
+            pending: false,
+        })
+        .unwrap();
+    let driver = f
+        .runtime
+        .owned
+        .agent_wakes
+        .drivers
+        .get("interaction")
+        .unwrap();
+    assert_eq!(driver.recover(&question), Recovery::Reattached);
+    for _ in 0..2 {
+        f.runtime
+            .tick_interaction_wakes(crate::session::unix_epoch_ms())
+            .unwrap();
+    }
+    assert!(!f
+        .runtime
+        .owned
+        .session_store
+        .get_session(&f.room)
+        .unwrap()
+        .active_interactions()
+        .iter()
+        .any(|card| card.id() == id));
+    let told = answers(&f, id);
+    assert_eq!(told.len(), 1);
+    assert_eq!(told[0]["choice_id"], "condition_met");
+}
+
+// PCD-03: the kernel clock is a wake source too; its firing closes the card.
+#[tokio::test]
 async fn async_popup_follows_a_timer_the_scheduler_fires() {
     let f = fixture("async-popup-until-timer", true).await;
     let task = f.begin(&f.prompt_id);

@@ -174,6 +174,12 @@ impl KernelRuntimeState {
         wake.detail = serde_json::to_value(interaction)
             .map_err(|_| ledger::error("question encoding failed"))?;
         self.arm_wake_source(&task, &wake)?;
+        // The source can finish after popup validation but before registration.
+        // Once the question exists, its condition is the current durable source.
+        if let Err(error) = self.reconcile_question_condition(&wake) {
+            tracing::warn!(wake_id=%wake.id, error=%crate::secret_redaction::redact_secrets(&error.to_string()),
+                "person card condition retained for scheduler reconciliation");
+        }
         self.refresh_wake_projection(room);
         Ok(crate::transport::runtime_tools::RuntimeToolResult {
             ok: true,
@@ -186,6 +192,17 @@ impl KernelRuntimeState {
     /// Person cards: a card that follows `wake` closes on every client when the source
     /// occurs or ends, and its asking agent is told so through the card's own answer.
     pub(super) fn close_cards_following(&self, wake: &AgentWake) {
+        // Driver loss and process recovery may dispatch with a pre-transition
+        // snapshot. Only the ledger can say whether the source has ended now.
+        let wake = match self.owned.durable_state_store.agent_wake(&wake.id) {
+            Ok(Some(current)) => current,
+            Ok(None) => return,
+            Err(error) => {
+                tracing::warn!(wake_id=%wake.id, error=%crate::secret_redaction::redact_secrets(&error.to_string()),
+                    "person card source retained for scheduler reconciliation");
+                return;
+            }
+        };
         let ended = matches!(
             wake.state.as_str(),
             "fired" | "exited" | "lost" | "cancelled"
@@ -202,6 +219,11 @@ impl KernelRuntimeState {
                     "Wake source '{}' ended ({}) without occurring: {}",
                     wake.label, wake.state, wake.summary
                 )
+            } else if wake.state == "lost" {
+                format!(
+                    "Wake source '{}' ended (lost): {}",
+                    wake.label, wake.summary
+                )
             } else {
                 format!("Wake source '{}' occurred: {}", wake.label, wake.summary)
             })
@@ -211,15 +233,26 @@ impl KernelRuntimeState {
             .iter()
             .filter(|card| card.closes_with_wake() == Some(wake.id.as_str()))
         {
-            if let Err(error) =
-                self.owned
-                    .settle_card_condition_met(&wake.room_id, card.id(), how.clone())
+            if let Err(error) = self
+                .owned
+                .settle_card_condition_met(&wake.room_id, card.id(), how.clone())
+                .and_then(|()| self.schedule_question_answer_delivery(card.id()))
             {
                 tracing::warn!(interaction_id=%card.id(), wake_id=%wake.id,
                     error=%crate::secret_redaction::redact_secrets(&error.to_string()),
                     "person card could not close on its condition");
             }
         }
+    }
+
+    fn reconcile_question_condition(&self, wake: &AgentWake) -> Result<(), DaemonError> {
+        let card = question(wake)?;
+        if let Some(source) = card.closes_with_wake() {
+            if let Some(source) = self.owned.durable_state_store.agent_wake(source)? {
+                self.close_cards_following(&source);
+            }
+        }
+        Ok(())
     }
 
     /// Runs on the existing scheduler. Both answered and cancelled cards can
@@ -268,12 +301,15 @@ impl KernelRuntimeState {
             {
                 self.schedule_wake_delivery(wake);
             }
-        } else if matches!(wake.state.as_str(), "starting" | "running")
-            && wake.next_due_ms.is_some_and(|deadline| deadline <= now)
-        {
-            self.owned
-                .timeout_runtime_interaction(&wake.room_id, &wake.id)?;
-            self.schedule_wake_delivery(wake);
+        } else if matches!(wake.state.as_str(), "starting" | "running") {
+            // Also covers cards reattached after restart, and terminal sources
+            // (such as cancelled timers) with no occurrence to trigger delivery.
+            self.reconcile_question_condition(wake)?;
+            if wake.next_due_ms.is_some_and(|deadline| deadline <= now) {
+                self.owned
+                    .timeout_runtime_interaction(&wake.room_id, &wake.id)?;
+                self.schedule_wake_delivery(wake);
+            }
         }
         Ok(())
     }
