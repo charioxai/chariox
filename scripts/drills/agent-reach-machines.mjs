@@ -1,7 +1,7 @@
 // MP-08 / MP-09 / MP-10 / MP-11 agent reach, machines: a real Claude Room agent on an enrolled home kernel acquires the
 // smallest managed machine through its `chariox-reach` `request` tool, the owner accepts the question the default
 // setting raises, the machine enrolls and shows up in `kernels`, the agent runs one command on it (the step that creates a
-// Room there needs /sudo, as at home), then stops and releases it. The hosted stack is a disposable validation stack
+// Room there is room-level, no /sudo), then stops and releases it. The hosted stack is a disposable validation stack
 // whose Cloud manager rents the real machine; this script never sees a provider key. Credentials are read inside the
 // script and never printed. After each phase it can run a photo command (the hosted web's Machines view).
 import assert from "node:assert/strict"
@@ -134,7 +134,7 @@ let saveToolLog = () => {}
 async function main() {
   const home = await homeKernel()
   const state = async session => (await home.rpc({ GetSessionState: { session_id: session } })).SessionState.session
-  // The kernel's vault (its passphrase is also the /sudo passkey) and the Claude login the agent runs on.
+  // The kernel's vault and the Claude login the agent runs on.
   const made = (await home.rpc({ CreateSession: { workspace_id: join(home.dir, "work"), worktree_id: join(home.dir, "work"), alias: "vault-room" } })).SessionCreated
   const att = (await home.rpc({ AttachToSession: { session_id: made.session.id, client_id: "reach-setup", capability_level: "FullTerminal" } })).SessionAttached
   await home.client.subscribeToKernelEvents(made.session.id, att.attachment.id)
@@ -181,17 +181,10 @@ async function main() {
       } catch {}
     }, 1000)
   }
-  async function turn(text, marker, { sudo = false, timeout = 900000 } = {}) {
+  async function turn(text, marker, timeout = 900000) {
     const since = Date.now() - 1000
-    let submitted
-    if (sudo) submitted = home.client.send(submitPromptRequest(room.session.id, attached, agent, `/sudo ${text}`, []))
-    else submitted = home.rpc(submitPromptRequest(room.session.id, attached, agent, text, []))
+    const submitted = home.rpc(submitPromptRequest(room.session.id, attached, agent, text, []))
     submitted.catch(error => note("submit-error", { message: String(error.message).slice(0, 300) }))
-    if (sudo) {
-      const popup = await until(async () => { await pump(); return (await state(room.session.id)).active_interactions?.find(x => String(x.id).startsWith("sudo:")) }, "sudo popup", 90000)
-      note("sudo-popup", { title: popup.title, choices: popup.choices.map(c => c.id) })
-      await home.rpc({ RespondToInteraction: { session_id: room.session.id, interaction_id: popup.id, choice_id: "approve", custom_reply: "60", passkey: home.passkey } })
-    }
     await until(async () => { await pump(); return claudeTranscript(home, since).includes(marker) }, `agent turn (${marker})`, timeout, 2000).catch(error => note("turn-timeout", { message: error.message }))
     await submitted.catch(() => {})
     await idle()
@@ -206,6 +199,26 @@ async function main() {
   }
   const request = body => JSON.stringify({ request: body })
 
+  if (flags.get("--rehearse") === "yes") {
+    // No machine: the question and the tools are exercised with a revision the service refuses before it creates anything.
+    const gate = ownerAnswers("accept")
+    let text
+    try {
+      text = await turn([
+        "This is a drill. Use only the chariox-reach MCP tools. Do not retry a failed call.",
+        `1. Call \`request\` with exactly: ${request({ ControlPlane: { action: "capabilities" } })}.`,
+        `2. Call \`request\` with exactly: ${request({ ControlPlane: { action: "acquire", capability_revision: "forged", request_id: "reach-rehearsal" } })}. The owner is asked first.`,
+        "3. Call `kernels` once.",
+        "Then reply with the words REHEARSED and DONE joined by an underscore and the code of the step 2 answer.",
+      ].join("\n"), "REHEARSED_DONE")
+    } finally { clearInterval(gate) }
+    saveToolLog()
+    const answered = JSON.stringify(toolLog(text))
+    check("the owner was asked before the acquisition", cards.length === 1 && /^Let home-room\/\S+ \(Chariox agent\) acquire a machine\?$/.test(cards[0].message), { card: cards[0] })
+    check("the service refused the forged revision and created nothing", /authorization_denied|Refresh the connected service/.test(answered))
+    return
+  }
+
   // 1. Acquire: the default setting asks first; the owner accepts; the agent waits for the machine.
   const gate = ownerAnswers("accept")
   let text1
@@ -216,8 +229,8 @@ async function main() {
       `2. Call \`request\` with: ${request({ ControlPlane: { action: "acquire", capability_revision: "REVISION", request_id: "reach-drill-acquire" } })} (REVISION from step 1). The owner is asked first; the call waits for the answer.`,
       "3. Remember allocation_ref from the answer. Then, up to 60 times: run the shell command `sleep 10`, then call `request` with " + request({ ControlPlane: { action: "get", allocation_ref: "REF" } }) + " until state is ready and access_state is available. If the answer says access_state is pending although the state is ready, keep asking.",
       "4. Call `kernels` once.",
-      "5. Take kernel_target.kernel_id from the last get answer and call `request` with {\"kernel\":\"KERNEL_ID\",\"request\":{\"ListSessions\":null}}, then with {\"kernel\":\"KERNEL_ID\",\"request\":{\"CreateSession\":{\"workspace_id\":\"/home/chariox\",\"worktree_id\":\"/home/chariox\",\"alias\":null,\"slice_ref\":null}}} once and report the code of the answer.",
-      "Then reply with the words ACQUIRED and DONE joined by an underscore, then the allocation_ref, the kernel id, the machine name from a `list` answer if you saw one, and the code from step 5.",
+      "5. Take kernel_target.kernel_id from the last get answer and call `request` with {\"kernel\":\"KERNEL_ID\",\"request\":{\"ListSessions\":null}}.",
+      "Then reply with the words ACQUIRED and DONE joined by an underscore, then the allocation_ref and the kernel id.",
     ].join("\n"), "ACQUIRED_DONE")
   } finally { clearInterval(gate) }
   saveToolLog()
@@ -230,11 +243,11 @@ async function main() {
   check("the machine became ready and its access is available", /access_state\\?":\\?"available/.test(answered), { ref, kernelId })
   const listed = log1.findIndex(row => /chariox[-_]reach.*kernels$/.test(row.call ?? ""))
   check("kernels lists the machine", !!kernelId && listed >= 0 && String(log1[listed + 1]?.answer ?? "").includes(kernelId), { kernelId })
-  check("creating a Room on the machine is refused without /sudo", /reach_requires_sudo/.test(answered))
+  check("the new machine has no room yet", /SessionsListed[^}]*\[\]/.test(answered.replace(/\\"/g, '"')), {})
   writeFileSync(join(evidence, "machine.json"), JSON.stringify({ ref, kernelId, harness }, null, 2))
   photograph("running")
 
-  // 2. The Room on the machine needs /sudo; then one command runs without it.
+  // 2. The agent creates the Room on the machine (room-level, no /sudo) and runs one command there.
   const text2 = await turn([
     "This is a drill. Use only the chariox-reach MCP tools. Do not retry a failed call.",
     `The machine's kernel id is ${kernelId}. With the \`kernel\` argument set to it:`,
@@ -242,10 +255,10 @@ async function main() {
     "2. request AttachToSession {\"session_id\":\"SESSION_ID\",\"client_id\":\"reach-agent\",\"capability_level\":\"FullTerminal\"}; take SessionAttached.attachment.id.",
     "3. request RunShellCommand {\"session_id\":\"SESSION_ID\",\"attachment_id\":\"ATTACHMENT_ID\",\"command\":\"uname\",\"args\":[\"-a\"],\"working_directory\":\"/home/chariox\",\"timeout_ms\":60000}.",
     "Then reply with the words RANCOMMAND and DONE joined by an underscore and the stdout of the command.",
-  ].join("\n"), "RANCOMMAND_DONE", { sudo: true })
+  ].join("\n"), "RANCOMMAND_DONE")
   saveToolLog()
   const log2 = JSON.stringify(toolLog(text2))
-  check("the command ran on the machine under /sudo for the Room only", /exit_code\\?":0/.test(log2) && /Linux/.test(log2), {})
+  check("the agent created a Room on the machine and ran the command there without /sudo", /SessionCreated/.test(log2) && /exit_code\\?":0/.test(log2) && /Linux/.test(log2), {})
 
   // 3. Stop, then release.
   const text3 = await turn([

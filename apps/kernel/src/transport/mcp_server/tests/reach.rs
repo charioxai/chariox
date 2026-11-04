@@ -151,6 +151,12 @@ fn reach_need_follows_the_agents_own_room_authority() {
         assert_eq!(reach_need(&parse(request)), ReachNeed::Room);
     }
     assert_eq!(
+        reach_need(&parse(serde_json::json!({"CreateSession": {
+            "workspace_id": "/tmp/room", "worktree_id": "/tmp/room", "alias": null, "slice_ref": null}}))),
+        ReachNeed::Room,
+        "creating a room is room-level, as it is for an external agent"
+    );
+    assert_eq!(
         reach_need(&parse(
             serde_json::json!({"AliasSession": {"session_id": "s", "alias": "a"}})
         )),
@@ -384,6 +390,12 @@ async fn the_gateway_names_the_agent_and_admits_only_room_requests_for_it() {
     state
         .authorize_gateway_request(&caller.id, &list)
         .expect("room-level requests are admitted");
+    let create = serde_json::from_value(serde_json::json!({"CreateSession": {
+        "workspace_id": "/tmp/room", "worktree_id": "/tmp/room", "alias": null, "slice_ref": null}}))
+    .unwrap();
+    state
+        .authorize_gateway_request(&caller.id, &create)
+        .expect("creating a room is room-level");
     let alias = serde_json::from_value(
         serde_json::json!({"AliasSession": {"session_id": "s", "alias": "a"}}),
     )
@@ -393,6 +405,20 @@ async fn the_gateway_names_the_agent_and_admits_only_room_requests_for_it() {
         .expect_err("sudo-class requests are not admitted for a bare reach caller");
     assert!(state.gateway_origin("reach:no-such-run").is_none());
     drop(reach.app);
+}
+
+#[tokio::test]
+async fn an_agent_creates_a_room_without_sudo_and_a_guests_agent_does_not() {
+    let reach = fixture();
+    let room = crate::test_support::TestWorktree::new("reach-created-room");
+    let path = room.path().display().to_string();
+    let create = serde_json::json!({"CreateSession": {
+        "workspace_id": path, "worktree_id": path, "alias": "made-by-reach", "slice_ref": null}});
+    let (ok, payload) = call(&reach, &reach.owner_token, None, create.clone()).await;
+    assert!(ok, "the owner's agent creates a room without /sudo: {payload}");
+    assert!(payload["SessionCreated"]["session"]["id"].is_string(), "{payload}");
+    let (ok, payload) = call(&reach, &reach.guest_token, None, create).await;
+    assert!(!ok, "a guest's agent never reaches: {payload}");
 }
 
 #[tokio::test]
