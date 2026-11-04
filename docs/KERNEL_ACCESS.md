@@ -61,7 +61,7 @@ History. Another room's history is an ordinary read (`GetSessionHistoryOutline`,
 
 Acquiring a machine (`ControlPlane` acquire, start and start-from-saved-state) needs no question by default. With the setting `agents.ask_before_acquiring_machines = true` ("Ask each time an agent acquires a machine through your connected service"; off by default; owner-only) each such request raises one decision in the agent's room, shown on every client; declining answers `acquisition_declined`.
 
-Drill: `node scripts/drills/agent-reach.mjs` (two real kernels, local relay, a real Claude, Codex or OpenCode agent with `--provider`; the `tools` scenario calls every reach tool and a room tool with a `kernel`, the `view` scenario asks the launched servers for their tool lists and photographs the provider's own tool view).
+Drill: `node scripts/drills/agent-reach.mjs` (two real kernels, local relay, a real Claude, Codex or OpenCode agent with `--provider`; the `tools` scenario calls every reach tool and a room tool with a `kernel`, the `view` scenario asks the launched servers for their tool lists and photographs the provider's own tool view; the `events` scenario has agent X follow agent Y on the other kernel and be woken by Y's finished turn while two unfollowed rooms finish turns, `driver` has Y raise a decision with `request_popup` that X is woken by and answers, `history` has X read Y's room history with no card or /sudo).
 
 ### Development standing grants
 
