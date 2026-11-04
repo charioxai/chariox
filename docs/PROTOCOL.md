@@ -6255,6 +6255,11 @@ without a passphrase is refused, and the passphrase is never part of the recorde
 kernel protocol >=984 (`credentialVaultUnlockMinimumProtocolVersion` in the web). The managed-upgrade
 list is [629, 636, 984]. Focused checks: `cargo test -p chariox-kernel --lib vault_unlock`.
 
+A wrong passphrase typed in the card does not fail the agent's Vault operation: the kernel counts it against the
+owner's wrong-answer budget (unchanged) and raises the same card again, its message led by `That is not the Vault
+passphrase. Try again.` (or `Too many wrong passphrases. Try again in N seconds.`). Cancel or the deadline still ends
+the operation.
+
 `chariox.request_popup` cards always carry a `cancel` choice next to the agent's own (an agent's own
 choice with id `cancel` is kept as it is). Answering it resolves the question with `status:
 "cancelled"` and `choice_id: "cancel"` in the tool result and in the wake payload, so the agent never
