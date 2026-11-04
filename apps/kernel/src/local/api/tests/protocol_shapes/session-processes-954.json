@@ -1,6 +1,6 @@
 {
-  "protocol_version": 985,
-  "relay_peer_protocol_version": 424,
+  "protocol_version": 991,
+  "relay_peer_protocol_version": 430,
   "shapes": [
     {
       "event": "session_processes_changed",
@@ -79,7 +79,17 @@
           }
         }
       ],
-      "session_id": "room-1"
+      "session_id": "room-1",
+      "disk_usage": [
+        {
+          "id": "/work/repo",
+          "path": "/work/repo",
+          "used_bytes": 8192,
+          "sampled_at_ms": 10000,
+          "owner": null,
+          "process_id": null
+        }
+      ]
     },
     {
       "agent_id": "agent-1",

@@ -82,6 +82,7 @@ pub(crate) mod control_plane;
 pub(crate) mod credential_enrollment_control;
 pub(crate) mod daemon_health_projection;
 pub(crate) mod debug_bundle_control;
+pub mod disk_usage;
 pub(crate) mod event_catalog_control;
 pub mod event_log;
 pub(crate) mod external_provider_session_control;

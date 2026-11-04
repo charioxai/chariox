@@ -69,6 +69,7 @@ mod tests {
         );
         SessionSnapshotProjection {
             processes: Vec::new(),
+            disk_usage: Vec::new(),
             room_workflows: crate::runtime::projection::RoomWorkflowInventory::project(
                 &session,
                 crate::session::DEFAULT_LOCAL_USER_ID,

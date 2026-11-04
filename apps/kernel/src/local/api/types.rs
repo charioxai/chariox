@@ -471,4 +471,5 @@ pub use workspace::*;
 /// Allocated 985 adds what a process holds on disk to its row: `disk_written_bytes`,
 /// `deleted_open_bytes` (deleted files it keeps open) and `outlived` (it kept running after the
 /// command that started it ended). The peer protocol is unchanged (424).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 985;
+/// Allocated 991 carries current disk occupancy in the existing process feed.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 991;

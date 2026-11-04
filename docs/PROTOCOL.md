@@ -6389,3 +6389,21 @@ characters of each id, private, created at launch). An entry in it that nothing 
 in it or maps it; a Room that ends clears its folder at once. Focused checks:
 `cargo test -p chariox-kernel --lib -- agent_temp disk_scan disk_pressure disk_use process_resources`
 and `node scripts/drills/process-admission-live.mjs --scenario temp|trim|ask|runaway`.
+
+### MP-08 / MP-09 / MP-10 / MP-11: current disk occupancy — local 991 / peer 430
+
+`SessionState` and `session_processes_changed` carry `disk_usage` beside the
+existing CPU, memory and cumulative I/O process samples. Each allocation has
+`id`, nullable `path`, nullable `used_bytes`, `sampled_at_ms`, nullable `owner`
+and nullable `process_id`. Directory entries describe the Room worktree and
+each agent's worktree, scratch and configured provider state directories.
+Process entries describe allocated regular files currently held open; an
+unlinked file retains its allocation identity with a null path. Shared file
+identities and roots covered by another directory count once in parent totals.
+
+The kernel measures metadata on one blocking worker, at a thirty-second
+cadence. Each directory walk has an entry and time budget, follows no links
+below its root, and counts hard links once. Unreadable or incomplete totals
+remain null. Requests and subscriptions copy the last sample without walking
+the filesystem; inactive Room samples expire. The Machines table presents one
+Disk used column and labels the existing cumulative counter Disk I/O.

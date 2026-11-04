@@ -297,6 +297,7 @@ struct KernelRuntimeOwnedState {
     kernel_browser_secret_observations: room_secret_observation::RoomSecretObservations,
     room_terminals: crate::room_terminal::RoomTerminalService,
     room_execs: crate::room_exec::RoomExecService,
+    disk_usage: crate::runtime::disk_usage::DiskUsageStore,
     environment_execution_gates: environment_execution_gate::EnvironmentExecutionGates,
     computer_input_executions:
         crate::runtime::computer_input_execution::ComputerInputExecutionStore,
@@ -581,6 +582,7 @@ mod provider_login_workflow;
 mod runtime_interaction_owned_state;
 pub(crate) use runtime_interaction_owned_state::interaction_waits;
 mod disk_pressure;
+mod disk_usage;
 mod owner_vault;
 mod process_waits;
 mod runtime_interaction_state;
@@ -1093,6 +1095,7 @@ impl KernelRuntimeState {
                 ).with_identity(&config.relay_private_key),
                 room_terminals,
                 room_execs: Default::default(),
+                disk_usage: Default::default(),
                 computer_input_executions:
                     crate::runtime::computer_input_execution::ComputerInputExecutionStore::default(),
                 room_browser_health_inflight: Arc::new(std::sync::Mutex::new(BTreeSet::new())),

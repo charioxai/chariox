@@ -1040,6 +1040,10 @@ fn local_daemon_protocol_session_process_memory_outcomes_are_versioned() {
         "relay_peer_protocol_version": crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
         "shapes": [
         crate::transport::kernel_protocol::KernelEvent::SessionProcessesChanged {
+            disk_usage: vec![crate::runtime::disk_usage::DiskUsageEntry {
+                id: "/work/repo".into(), path: Some("/work/repo".into()), used_bytes: Some(8192),
+                sampled_at_ms: 10000, owner: None, process_id: None,
+            }],
             session_id: "room-1".into(),
             processes: vec![SessionProcess {
                 owner: SessionProcessOwner::Agent("agent-1".into()),
