@@ -18,8 +18,14 @@ const invalidateNativeState = payload => () => globalThis[${JSON.stringify(nativ
 // Only the person changes the shown Tab: the Tab each window shows is tracked so a page opened by a Tab nobody
 // is looking at never takes the view (an agent's click in a background Tab), and a popup comes to front only
 // when its opener is the Tab on screen.
-const shown = new Map();
-for (const [kind, event] of [['activated', chrome.tabs.onActivated], ['removed', chrome.tabs.onRemoved], ['windowRemoved', chrome.windows.onRemoved]]) event?.addListener?.(info => { if (kind === 'activated' && info) shown.set(info.windowId, info.tabId); invalidateNativeState(kind)(); });
+const shown = new Map(), made = new Map();
+// Chrome may report a page's new Tab as created inactive and activate it a moment later: a Tab activated right after its
+// creation by an opener that was not the shown Tab is put back behind it, like one created active.
+const keepActivated = (info, before) => {
+  const tab = made.get(info.tabId);
+  if (tab && Date.now() - tab.at < 1500 && tab.opener !== undefined && before !== undefined && before !== info.tabId && tab.opener !== before) chrome.tabs.update(before, { active: true }).catch(() => {});
+};
+for (const [kind, event] of [['activated', chrome.tabs.onActivated], ['removed', chrome.tabs.onRemoved], ['windowRemoved', chrome.windows.onRemoved]]) event?.addListener?.(info => { if (kind === 'activated' && info) { const before = shown.get(info.windowId); shown.set(info.windowId, info.tabId); keepActivated(info, before); } invalidateNativeState(kind)(); });
 // Chrome also reports the zoom it applies to a newly committed page; only a changed factor can change the layout.
 chrome.tabs.onZoomChange?.addListener?.(info => invalidateNativeState(typeof info?.oldZoomFactor === 'number' && info.oldZoomFactor === info.newZoomFactor ? 'zoomsame' : 'zoom')());
 chrome.windows.onBoundsChanged?.addListener?.(invalidateNativeState(${JSON.stringify(nativeBoundsPayload)}));
@@ -56,7 +62,7 @@ const fold = async (id, tries = 100) => {
     await chrome.windows.update(main.id, { focused: true });
   } else if (previous !== undefined) await chrome.tabs.update(previous, { active: true }).catch(() => {});
 };
-chrome.tabs.onCreated.addListener(tab => { keepShown(tab, shown.get(tab.windowId)); fold(tab.id).catch(() => {}); });
+chrome.tabs.onCreated.addListener(tab => { made.set(tab.id, { opener: tab.openerTabId, at: Date.now() }); if (made.size > 64) made.delete(made.keys().next().value); keepShown(tab, shown.get(tab.windowId)); fold(tab.id).catch(() => {}); });
 chrome.tabs.onAttached.addListener(id => fold(id).catch(() => {}));
 // MP-08/MP-10/MP-11: one fresh native query supplies active identity and
 // dimensions. Parallel read-only inventory never caches admission authority;

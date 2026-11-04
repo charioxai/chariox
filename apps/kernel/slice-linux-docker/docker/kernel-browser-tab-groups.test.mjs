@@ -279,3 +279,16 @@ test('a group is found by its Tabs, so a changing title never makes a second gro
     assert.deepEqual(calls, [{ tabIds: [7], groupId: 42 }, [42, '⠋ Agent']]);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+test('a page opened by a background Tab that Chrome shows a moment after creating it is put back behind the shown Tab', async () => {
+  const tabs = new Map([[1, { id: 1, windowId: 10 }], [5, { id: 5, windowId: 10 }], [9, { id: 9, windowId: 10, active: false, openerTabId: 5 }]]);
+  const { listeners, calls } = await activation({ tabs, shown: [[10, 1]], windows: [{ id: 10, type: 'normal' }] });
+  listeners.created(tabs.get(9));
+  listeners.activated({ tabId: 9, windowId: 10 });
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.deepEqual(calls, [['update', 1, { active: true }]], 'the person\'s Tab is shown again');
+  calls.length = 0;
+  listeners.activated({ tabId: 5, windowId: 10 });
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.deepEqual(calls, [], 'a Tab the person chooses is left alone');
+});
