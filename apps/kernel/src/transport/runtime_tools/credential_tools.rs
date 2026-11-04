@@ -524,7 +524,7 @@ pub fn credential_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: REQUEST_POPUP_TOOL.to_string(),
-            description: "Ask a question through the shared Chariox interaction card. Use wait:false for questions you can keep working without: returns interaction_id and registration_id immediately; the attributed answer arrives in your durable event inbox and wakes you after you yield or finish this turn. Continue tools while pending, or yield on registration_id. Omit wait (or use true) only when work cannot continue without the answer; this blocks until an answer or timeout. Supply at least one fixed choice. Set default_on_timeout to an existing choice id to return that reply on timeout; omit it to return status timed_out with no choice_id or reply.".to_string(),
+            description: "Ask a question through the shared Chariox interaction card. Use wait:false for questions you can keep working without: returns interaction_id and registration_id immediately; the attributed answer arrives in your durable event inbox and wakes you after you yield or finish this turn. Continue tools while pending, or yield on registration_id. Omit wait (or use true) only when work cannot continue without the answer; this blocks until an answer or timeout. Supply at least one fixed choice; the card always adds a Cancel choice, and a cancel reads as status cancelled with choice_id cancel (not a timeout). Set default_on_timeout to an existing choice id to return that reply on timeout; omit it to return status timed_out with no choice_id or reply.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["message", "choices"],

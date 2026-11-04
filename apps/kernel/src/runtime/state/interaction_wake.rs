@@ -267,7 +267,8 @@ impl KernelRuntimeOwnedState {
                 kind: "interaction_resolved".into(),
                 summary: Some(format!("Question {}", resolution.status)),
                 payload: serde_json::json!({
-                    "interaction_id": wake.id, "status": resolution.status,
+                    "interaction_id": wake.id,
+                    "status": super::tool_dispatch::popup_status(resolution.status, resolution.choice_id.as_deref()),
                     "choice_id": resolution.choice_id, "reply": resolution.reply,
                     "answered_by": answerer.map(|a| a.caller_id.as_str()).or(caller),
                     "user_id": answerer.and_then(|a| a.user_id.as_deref()).or(caller),

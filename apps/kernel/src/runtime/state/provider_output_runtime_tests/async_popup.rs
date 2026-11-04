@@ -129,6 +129,16 @@ async fn answer_through_router(
     user: &str,
     client: &str,
 ) -> Result<crate::local::LocalDaemonResponse, DaemonError> {
+    answer_choice_through_router(f, id, "continue", user, client).await
+}
+
+async fn answer_choice_through_router(
+    f: &Fixture,
+    id: &str,
+    choice: &str,
+    user: &str,
+    client: &str,
+) -> Result<crate::local::LocalDaemonResponse, DaemonError> {
     use crate::runtime::command::{KernelCaller, KernelCommand, KernelCommandSource};
     let router = crate::runtime::router::CommandRouter::with_interactive_capacity(f.app.clone(), 8);
     let mut caller = KernelCaller::for_source(&KernelCommandSource::LocalCli)
@@ -140,7 +150,7 @@ async fn answer_through_router(
         crate::local::RespondToInteractionRequest {
             session_id: f.room.clone(),
             interaction_id: id.into(),
-            choice_id: "continue".into(),
+            choice_id: choice.into(),
             custom_reply: None,
             passkey: None,
             passkey_remember_minutes: None,
@@ -183,6 +193,66 @@ async fn async_popup_returns_first_authorized_answer_wins_with_exact_reply_and_c
     assert_eq!(answers[0]["answered_by"], "owner-web-dpr2");
     assert_eq!(answers[0]["client_id"], "owner-web-dpr2");
     assert_eq!(answers[0]["user_id"], "local");
+}
+
+// VUI-1: a card with only "Done" must still let the person decline, and the agent reads a definitive outcome.
+#[tokio::test]
+async fn async_popup_always_offers_cancel_and_cancel_is_a_definitive_outcome() {
+    let f = fixture("async-popup-cancel-choice", true).await;
+    f.begin(&f.prompt_id);
+    let result = ask(&f, serde_json::json!({})).await;
+    let id = result["interaction_id"].as_str().unwrap();
+    let session = f.runtime.owned.session_store.get_session(&f.room).unwrap();
+    let card = session
+        .active_interactions()
+        .iter()
+        .find(|card| card.id() == id)
+        .expect("the question is pending");
+    assert_eq!(
+        card.choices()
+            .iter()
+            .map(|choice| choice.id())
+            .collect::<Vec<_>>(),
+        vec!["continue", "cancel"]
+    );
+    answer_choice_through_router(&f, id, "cancel", "local", "owner-web")
+        .await
+        .unwrap();
+    let answers = answers(&f, id);
+    assert_eq!(answers.len(), 1);
+    assert_eq!(answers[0]["status"], "cancelled");
+    assert_eq!(answers[0]["choice_id"], "cancel");
+    assert!(f
+        .runtime
+        .owned
+        .session_store
+        .get_session(&f.room)
+        .unwrap()
+        .active_interactions()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn async_popup_keeps_an_agents_own_cancel_choice_and_adds_none() {
+    let f = fixture("async-popup-own-cancel", true).await;
+    f.begin(&f.prompt_id);
+    let result = ask(
+        &f,
+        serde_json::json!({"choices":[
+            {"id":"continue","label":"Continue","reply":"go"},
+            {"id":"cancel","label":"Stop here","reply":"stopped"}
+        ]}),
+    )
+    .await;
+    let id = result["interaction_id"].as_str().unwrap();
+    let session = f.runtime.owned.session_store.get_session(&f.room).unwrap();
+    let card = session
+        .active_interactions()
+        .iter()
+        .find(|card| card.id() == id)
+        .unwrap();
+    assert_eq!(card.choices().len(), 2);
+    assert_eq!(card.choice("cancel").unwrap().label(), "Stop here");
 }
 
 #[tokio::test]

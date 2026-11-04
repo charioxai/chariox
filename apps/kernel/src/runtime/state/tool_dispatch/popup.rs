@@ -10,6 +10,22 @@ fn popup_error(message: &str) -> DaemonError {
     }
 }
 
+/// The choice every agent question carries so the person can always decline.
+pub(in crate::runtime::state) const CANCEL_CHOICE_ID: &str = "cancel";
+
+/// What the agent reads as the outcome: declining is a definitive result of its
+/// own, never a timeout or a missing answer.
+pub(in crate::runtime::state) fn popup_status<'a>(
+    status: &'a str,
+    choice_id: Option<&str>,
+) -> &'a str {
+    if status == "answered" && choice_id == Some(CANCEL_CHOICE_ID) {
+        "cancelled"
+    } else {
+        status
+    }
+}
+
 impl KernelRuntimeState {
     pub(super) async fn dispatch_popup_tool(
         &self,
@@ -75,7 +91,7 @@ impl KernelRuntimeState {
                 message: "popup interactions require at least one choice".to_string(),
             });
         }
-        let choices = args
+        let mut choices = args
             .choices
             .into_iter()
             .map(|choice| {
@@ -87,6 +103,14 @@ impl KernelRuntimeState {
                 )
             })
             .collect::<Vec<_>>();
+        if choices.iter().all(|choice| choice.id() != CANCEL_CHOICE_ID) {
+            choices.push(crate::session::RuntimeInteractionChoice::new(
+                CANCEL_CHOICE_ID,
+                "Cancel",
+                CANCEL_CHOICE_ID,
+                Some(crate::session::RuntimeInteractionChoiceStyle::Secondary),
+            ));
+        }
         let custom_choice = args.custom_choice.map(|choice| {
             crate::session::RuntimeInteractionCustomChoice::new(
                 choice.id,
@@ -197,7 +221,7 @@ impl KernelRuntimeState {
                 ok: true,
                 payload: serde_json::json!({
                     "interaction_id": interaction_id,
-                    "status": resolution.status,
+                    "status": popup_status(&resolution.status, resolution.choice_id.as_deref()),
                     "choice_id": resolution.choice_id,
                     "reply": resolution.reply,
                 }),
@@ -227,7 +251,7 @@ impl KernelRuntimeState {
             ok: true,
             payload: serde_json::json!({
                 "interaction_id": interaction_id,
-                "status": resolution.status,
+                "status": popup_status(resolution.status, resolution.choice_id.as_deref()),
                 "choice_id": resolution.choice_id,
                 "reply": resolution.reply,
             }),
