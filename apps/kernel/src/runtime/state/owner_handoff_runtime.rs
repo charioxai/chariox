@@ -89,6 +89,23 @@ impl KernelRuntimeState {
         })
     }
 
+    /// The tabs this owner's open hand-off cards bind: the person is asked to act in each.
+    pub(super) fn pending_handoff_tabs(&self, user: &str) -> std::collections::BTreeSet<String> {
+        self.owned
+            .session_store
+            .list_all_sessions()
+            .iter()
+            .filter(|session| self.provider_account_authority_owner_user_id(session.owner_user_id()) == user)
+            .flat_map(|session| {
+                session
+                    .active_interactions()
+                    .iter()
+                    .filter_map(|interaction| interaction.handoff().map(|h| h.target.tab_id.clone()))
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
     pub(super) fn owner_handoff_tool_spec(&self) -> Option<RuntimeToolSpec> {
         self.room_agent_tools_enabled().then(handoff_spec)
     }

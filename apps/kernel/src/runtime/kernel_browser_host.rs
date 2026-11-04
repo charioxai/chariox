@@ -1037,6 +1037,14 @@ impl KernelBrowserHost {
         self.check_admission(admission)?;
         result
     }
+    /// The Tabs this owner's open hand-off cards ask them to act in; their agents' native groups say so.
+    pub(crate) fn set_attention(&self, user: &str, tabs: BTreeSet<String>) {
+        if let Ok(model) = self.actor_model(user) {
+            if let Ok(mut model) = model.lock() {
+                model.set_attention(tabs);
+            }
+        }
+    }
     fn actor_model(&self, user: &str) -> Result<Arc<Mutex<KernelBrowserActors>>, String> {
         let mut state = self
             .inner

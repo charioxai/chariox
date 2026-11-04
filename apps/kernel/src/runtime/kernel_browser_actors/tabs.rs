@@ -1,7 +1,7 @@
 //! MP-08/MP-11: shared opener attribution and agent activity, without input authority.
 use crate::session::{EnvironmentActor, EnvironmentActorKind};
 use serde_json::{json, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Default)]
 pub(super) struct BrowserTabActivity {
@@ -11,6 +11,8 @@ pub(super) struct BrowserTabActivity {
     actions: BTreeMap<String, (String, String, EnvironmentActor)>,
     sequence: u64,
     activity: Option<Value>,
+    /// Tabs a person is asked to act in (an open hand-off card): their agent's native group says so.
+    attention: BTreeSet<String>,
 }
 impl BrowserTabActivity {
     // MP-08/MP-10: restored stable Tabs keep their opener attribution. Actions
@@ -77,9 +79,14 @@ impl BrowserTabActivity {
             self.openers
                 .iter()
                 .filter(|(_, actor)| actor.kind == EnvironmentActorKind::Agent)
-                .map(|(tab, actor)| json!({"tab_id":tab,"label":actor.display_label}))
+                .map(|(tab, actor)| {
+                    json!({"tab_id":tab,"label":actor.display_label,"needs_person":self.attention.contains(tab)})
+                })
                 .collect(),
         )
+    }
+    pub(super) fn set_attention(&mut self, tabs: BTreeSet<String>) {
+        self.attention = tabs;
     }
     pub(super) fn activity(&self) -> Value {
         self.activity.clone().unwrap_or(Value::Null)

@@ -75,7 +75,8 @@ export function scheduleHostRequest(request, browser, viewport = hostViewport(),
 const TAB_LIMIT = 128;
 // A Tab the person types or clicks in is theirs until they have been idle this long (an agent's input to it waits).
 export const PERSON_IDLE_MS = 2000;
-const SPINNER = ['◐', '◓', '◑', '◒'], IDLE_MARK = '●';
+// A group's mark: a dot at rest, a spinner while the agent acts, and "needs you" while a card asks the person to act in one of its Tabs.
+const SPINNER = ['◐', '◓', '◑', '◒'], IDLE_MARK = '●', NEEDS_MARK = '▲';
 // How long a spinner stays after an agent's last action in a Tab, so a short action is still seen.
 const SPINNER_LINGER_MS = 1500;
 // Read-only host operations: they never dispatch input into a page.
@@ -355,13 +356,14 @@ export class KernelBrowserHost {
   }
   async syncTabGroups(groups,{restore=false}={}) {
     this.savedGroups = groups.slice(0, TAB_LIMIT).filter(group => typeof group?.tab_id === 'string' && typeof group.label === 'string' && group.label)
-      .map(({ tab_id, label }) => ({ tab_id, label: label.slice(0, 64) }));
+      .map(({ tab_id, label, needs_person }) => ({ tab_id, label: label.slice(0, 64), needs_person: needs_person === true }));
     if(this.restoring&&!restore)return;
-    const labels = new Map();
-    for (const { tab_id, label } of this.savedGroups) {
+    const labels = new Map(), needing = new Set();
+    for (const { tab_id, label, needs_person } of this.savedGroups) {
       const target = this.tabs.get(tab_id)?.target_id;
-      if (target && typeof label === "string" && label) labels.set(label, [...(labels.get(label) ?? []), target]);
+      if (target && typeof label === "string" && label) { labels.set(label, [...(labels.get(label) ?? []), target]); if (needs_person) needing.add(label); }
     }
+    this.groupNeeding = needing;
     this.groupLabels = labels;
     await this.applyTabGroups();
     if (!this.restoring) await this.save();
@@ -370,7 +372,7 @@ export class KernelBrowserHost {
   async applyTabGroups() {
     const labels = this.groupLabels ?? new Map();
     const busy = [...labels].filter(([, targets]) => [...this.agentBusy.keys()].some(id => targets.includes(this.tabs.get(id)?.target_id)));
-    await this.tabGroups?.sync([...labels].map(([label, target_ids]) => ({ label: label.slice(0, 64), target_ids, mark: busy.some(([name]) => name === label) ? SPINNER[this.spin % SPINNER.length] : IDLE_MARK })));
+    await this.tabGroups?.sync([...labels].map(([label, target_ids]) => ({ label: label.slice(0, 64), target_ids, mark: this.groupNeeding?.has(label) ? NEEDS_MARK : busy.some(([name]) => name === label) ? SPINNER[this.spin % SPINNER.length] : IDLE_MARK })));
   }
   noteAgentBusy(tabId, delta) {
     const count = (this.agentBusy.get(tabId) ?? 0) + delta;

@@ -3125,3 +3125,13 @@ test('show_tab makes Chrome activate exactly that Tab for a person, and an agent
   assert.equal(shown.ok, true);
   assert.deepEqual(activations(), [host.tabs.get(tab.tab_id).target_id]);
 }));
+
+test('a group whose Tab a card asks the person to act in says so, over the dot and the spinner', () => using(async ({ host }) => {
+  const sent = [];
+  const opened = await host.request({ op: 'open', url: 'https://example.com/', focused_agent: true });
+  host.tabGroups = { sync: async groups => { sent.push(groups.map(({ label, mark }) => `${mark} ${label}`)); return true; }, close() {}, keepalive: async () => {} };
+  await host.syncTabGroups([{ tab_id: opened.tabs[0].tab_id, label: 'Mara', needs_person: true }]);
+  assert.deepEqual(sent.at(-1), ['▲ Mara']);
+  await host.syncTabGroups([{ tab_id: opened.tabs[0].tab_id, label: 'Mara', needs_person: false }]);
+  assert.deepEqual(sent.at(-1), ['● Mara']);
+}));

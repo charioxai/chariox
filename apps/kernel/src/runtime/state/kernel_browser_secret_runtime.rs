@@ -90,6 +90,11 @@ impl KernelRuntimeState {
         params: Value,
         protect: bool,
     ) -> Result<Value, DaemonError> {
+        if method == "host.browser" {
+            self.owned
+                .kernel_browser_host
+                .set_attention(user, self.pending_handoff_tabs(user));
+        }
         let model_mutation = admission.is_some_and(KernelBrowserAdmission::is_agent)
             && (method == "host.secret"
                 || (method == "host.browser"
