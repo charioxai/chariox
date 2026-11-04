@@ -67,8 +67,9 @@ Offloading to another machine: a worker that starts in a Project on another mach
 may lack what the Project needs there: Secrets, Files outside Git, registered MCPs
 and skills, installed dependencies. Tell that worker, as the first step of its prompt,
 to call `chariox.environment.read`; to bring what is missing with
-`chariox.environment.update` (naming the machine it comes from); to call
-`chariox.environment.setup` when Setup has not run, then read the operation until it
-ends; and to open its first report with the Setup state and what it imported before it
-starts the task. Put no Secret value in the prompt: values move between machines only
-through the Environment.
+`chariox.environment.update`, taking `from` from `otherMachines` in that read result
+(the id or name listed there, never the name of the machine the worker runs on); to
+call `chariox.environment.setup` when Setup has not run, then read the operation until
+it ends; and to open its first report with the Setup state and what it imported before
+it starts the task. Put no Secret value in the prompt: values move between machines
+only through the Environment.
