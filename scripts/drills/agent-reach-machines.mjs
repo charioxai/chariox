@@ -148,6 +148,12 @@ async function main() {
   await home.rpc({ LaunchProviderRun: { session_id: room.session.id, agent_id: agent, adapter_key: provider, provider, account_profile: accountProfile, model, variant, native_tui: false } })
   // The agent's latest turn from the kernel's own history, the same for every provider: its tool calls in order with their answers, and its last words.
   const reachName = call => /chariox[-_]reach/.test(call.tool) ? call.tool.replace(/^.*chariox[-_]reach[._-]*/, "") : /chariox[-_]reach/.test(call.title ?? "") ? call.tool : call.tool
+  // Codex wraps a tool answer in an MCP content envelope; the checks read the answer itself.
+  const unwrapped = output => {
+    let text = String(output ?? "")
+    try { const parsed = JSON.parse(text); if (Array.isArray(parsed.content)) text = parsed.content.map(part => part.text ?? "").join("") } catch {}
+    return text
+  }
   const turnOf = async () => {
     const outline = (await home.rpc({ GetSessionHistoryOutline: { session_id: room.session.id, agent_ids: [agent], latest_prompt_count: 1, include_prefetched_content: true } })).SessionHistoryOutline
     const history = outline.agents.find(x => x.agent_id === agent)
@@ -160,7 +166,7 @@ async function main() {
     const rows = []
     for (const call of calls.values()) {
       rows.push({ call: reachName(call), input: call.input })
-      rows.push({ answer: String(call.output ?? call.error ?? "").slice(0, 1500) })
+      rows.push({ answer: unwrapped(call.output ?? call.error).slice(0, 4000) })
     }
     rows.push({ said: (last?.summary?.entry?.text ?? "").slice(0, 600) })
     return { id: last?.turn_id, done: last?.lifecycle === "completed", rows }
@@ -223,6 +229,9 @@ async function main() {
     // `--ask off` turns the setting off first: the same request then raises no question.
     const askOff = flags.get("--ask") === "off"
     if (askOff) await home.rpc({ SetUserConfigValue: { path: "agents.ask_before_acquiring_machines", value: "false" } })
+    // Before reach a caller had only the plain local request, which needs the owner's access grant for any machine request.
+    const plain = await home.rpc({ ControlPlane: { action: "acquire", capability_revision: "stale-revision", request_id: `reach-plain-${runId}` } }).then(() => "accepted", error => String(error.message))
+    check("a plain local request without a grant is refused control_plane_grant_required", /control_plane_grant_required/.test(plain), { answer: plain.slice(0, 160) })
     const gate = ownerAnswers("accept")
     let rows
     try {
