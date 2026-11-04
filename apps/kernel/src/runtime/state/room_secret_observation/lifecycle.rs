@@ -48,6 +48,35 @@ impl KernelRuntimeState {
         Ok(())
     }
 
+    /// Forgets a value in every Room and in the user-domain browser of `owner`, after its Vault entry was removed.
+    pub(in crate::runtime::state) async fn drop_protected_value(
+        &self,
+        owner: &str,
+        key: &str,
+        value: &str,
+    ) -> Result<(), DaemonError> {
+        let protection = &self.owned.kernel_browser_secret_observations;
+        let mut scopes = self
+            .owned
+            .kernel_browser_host
+            .profile_keys()
+            .map_err(super::super::kernel_browser_runtime::host_error)?;
+        let own = crate::runtime::kernel_browser_host::KernelBrowserHost::profile_key(owner);
+        if !scopes.contains(&own) {
+            scopes.push(own);
+        }
+        for scope in scopes {
+            let _barrier = protection.barrier(&scope)?.write_owned().await;
+            protection.drop_value(&scope, key, value)?;
+        }
+        for session in self.owned.session_store.list_all_sessions() {
+            self.owned
+                .room_secret_observations
+                .drop_value(session.id(), key, value)?;
+        }
+        Ok(())
+    }
+
     pub(in crate::runtime::state) async fn room_secret_input_service(
         &self,
         room: &str,

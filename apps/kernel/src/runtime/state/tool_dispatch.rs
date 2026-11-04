@@ -203,6 +203,7 @@ impl KernelRuntimeState {
             specs.push(super::vault_command::use_env_spec());
             specs.push(super::vault_command::capture_file_spec());
             specs.push(super::vault_command::write_file_spec());
+            specs.push(super::vault_command::remove_capture_spec());
             specs.extend(super::resource_register::specs());
             specs.push(super::agent_auth::spec());
         }
@@ -406,6 +407,9 @@ impl KernelRuntimeState {
         }
         if tool_name == super::vault_command::VAULT_WRITE_FILE {
             return Box::pin(self.vault_write_file(auth_token, arguments)).await;
+        }
+        if tool_name == super::vault_command::VAULT_REMOVE_CAPTURE {
+            return Box::pin(self.vault_remove_capture(auth_token, arguments)).await;
         }
         {
             let owned = &self.owned;

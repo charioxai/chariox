@@ -222,6 +222,11 @@ Two file tools complete the set:
   every `{{NAME}}` replaced by its Vault value and returns only the path, size
   and placeholder names. The agent's own later read of that file is its own
   action and is not scrubbed.
+- `chariox.vault.remove_capture {credential_id}` removes a capture the same agent made in
+  the same session (for example a label captured by mistake) and stops masking its value
+  in observations. The result names the removed entry (`credential_id`, `label`, `length`);
+  the value is never returned and no person approves it. Entries of the owner, of another
+  agent and generated entries are refused. A person removes any entry in the Vault window.
 
 Capture source does not determine destination: each entry grants only the use
 and injection selected by its binding. A retry must preserve that binding.

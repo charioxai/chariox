@@ -7,6 +7,7 @@ use crate::runtime::kernel_access::error;
 
 mod capture;
 mod files;
+mod remove;
 mod use_env;
 
 pub(in crate::runtime::state) use capture::{
@@ -14,6 +15,7 @@ pub(in crate::runtime::state) use capture::{
 };
 pub(crate) use capture::{capture_command_spec, VAULT_CAPTURE_COMMAND};
 pub(crate) use files::{capture_file_spec, write_file_spec, VAULT_CAPTURE_FILE, VAULT_WRITE_FILE};
+pub(crate) use remove::{remove_capture_spec, VAULT_REMOVE_CAPTURE};
 pub(crate) use use_env::{use_env_spec, VAULT_USE_ENV};
 
 /// Codex gives a chariox tool call 300 s; a command stops well before that.

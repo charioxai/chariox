@@ -436,6 +436,53 @@ impl RoomSecretObservations {
         Ok(())
     }
 
+    /// An agent undoes its own mistaken capture: the value stops being scrubbed, masked and fenced.
+    /// Returns whether this Room knew it. Earlier scrubbed history keeps its markers.
+    pub(super) fn drop_value(
+        &self,
+        room: &str,
+        key: &str,
+        value: &str,
+    ) -> Result<bool, DaemonError> {
+        let room = self.room_key(room);
+        let _history_guard = self
+            .public_history
+            .as_ref()
+            .map(|store| store.lock_public_history())
+            .transpose()?;
+        let mut rooms = self.rooms.lock().map_err(|_| protection_error())?;
+        let Some(protection) = rooms.get_mut(room) else {
+            return Ok(false);
+        };
+        let hash = format!("{:x}", Sha256::digest(value.as_bytes()));
+        let known = protection.value_count();
+        let (targets, keys) = (protection.targets.len(), protection.vault_keys.len());
+        for values in [
+            &mut protection.values,
+            &mut protection.retired_values,
+            &mut protection.stored_values,
+        ] {
+            values.retain(|known| known.as_str() != value);
+        }
+        protection
+            .targets
+            .retain(|target| target["value_hash"] != hash);
+        protection.vault_keys.remove(key.trim());
+        if (known, targets, keys)
+            == (
+                protection.value_count(),
+                protection.targets.len(),
+                protection.vault_keys.len(),
+            )
+        {
+            return Ok(false);
+        }
+        protection.history_boundary_bytes = None;
+        protection.revision = protection.revision.saturating_add(1);
+        self.persist_marker(room, protection)?;
+        Ok(true)
+    }
+
     // VAUDIT S3: a value the kernel read from a page node (a revealed key) is
     // protected like a fill of that node, under the same exclusive barrier.
     pub(super) fn register_capture(

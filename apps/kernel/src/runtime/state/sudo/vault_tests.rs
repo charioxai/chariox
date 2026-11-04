@@ -419,7 +419,7 @@ while IFS= read -r request; do
   *'"method":"health"'*) printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s,"diagnostic_code":null}}\n' "$id" "$$" ;;
   *'"method":"host.secret"'*'"op":"capture"'*'"read":"qr"'*) printf '%s' "$request" > "$1/capture"; printf '{"id":%s,"ok":true,"result":{"value":"%s"}}\n' "$id" "$(cat "$1/qr.b64")" ;;
   *'"method":"host.secret"'*'"op":"capture"'*'"read":"node","reveal_node_ref":null'*) printf '%s' "$request" > "$1/capture"; printf '{"id":%s,"ok":true,"result":{"value":"Or enter the secret: jbsw y3dp ehpk 3pxp"}}\n' "$id" ;;
-  *'"method":"host.secret"'*'"op":"capture"'*) printf '%s' "$request" > "$1/capture"; printf '{"id":%s,"ok":true,"result":{"value":"vaudit-captured-fixture-value"}}\n' "$id" ;;
+  *'"method":"host.secret"'*'"op":"capture"'*) printf '%s' "$request" > "$1/capture"; printf '{"id":%s,"ok":true,"result":{"value":"%s"}}\n' "$id" "$(cat "$1/value" 2>/dev/null || echo vaudit-captured-fixture-value)" ;;
   *'"method":"host.secret"'*) printf '%s' "$request" | grep -o '"plain_target":true' > "$1/plain" || true; printf '%s' "$request" | sed -n 's/.*"text":"\([^"]*\)".*/\1/p' > "$1/echo"; printf '%s' "$request" | sed -n 's/.*"vault_factor_input":\(true\|false\).*/\1/p' > "$1/factor_input"; printf '%s' "$request" | sed -n 's/.*"_app_view_tab":"\([^"]*\)".*/\1/p' > "$1/app_view_tab"; if printf '%s' "$request" | grep -q '"submit":true'; then printf '{"id":%s,"ok":true,"result":{"inserted":true,"submitted":{"navigated":true,"url":"http://127.0.0.1:8123/welcome","title":"Welcome"}}}\n' "$id"; else printf '{"id":%s,"ok":true,"result":{}}\n' "$id"; fi ;;
   *'"method":"host.'*'"op":"open"'*) : > "$1/opened"; printf '{"id":%s,"ok":true,"result":{"generation":1,"tab_id":"host-tab-new","tabs":[%s,{"tab_id":"host-tab-new","document_id":"doc-login"}]}}\n' "$id" "$tabs" ;;
   *'"op":"state"'*|*'"op":"start"'*) printf '{"id":%s,"ok":true,"result":{"generation":1,"tabs":[%s]}}\n' "$id" "$tabs" ;;
@@ -1323,6 +1323,7 @@ async fn terminal_secret_rechecks_credential_kind_after_vault_unlock() {
 }
 
 const CAPTURE: &str = "chariox.vault.capture_browser";
+const REMOVE: &str = "chariox.vault.remove_capture";
 const FILL: &str = "chariox.vault.fill_field";
 const CAPTURED: &str = "vaudit-captured-fixture-value";
 
@@ -1432,6 +1433,80 @@ async fn vflag_capture_of_an_already_protected_value_stores_the_value() {
     assert_ne!(first, second);
     assert_eq!(stored(f, &first).as_str(), CAPTURED);
     assert_eq!(stored(f, &second).as_str(), CAPTURED);
+}
+
+// A label captured by mistake ("Token") is undone by the agent that made the capture: the entry goes,
+// and the word is no longer masked in what the agent observes.
+#[tokio::test]
+async fn vflag_agent_removes_its_own_capture_and_the_value_is_no_longer_masked() {
+    crate::test_support::isolated_env_test!();
+    let login = login_room().await;
+    let f = &login.f;
+    unlock(f);
+    std::fs::write(login.root.path().join("value"), "Token").unwrap();
+    let wrong = call(f, CAPTURE, capture_args("label")).await.unwrap();
+    let wrong = wrong["credential_id"].as_str().unwrap().to_string();
+    let scope = crate::runtime::kernel_browser_host::KernelBrowserHost::profile_key("local");
+    let protection = &f.state.owned.kernel_browser_secret_observations;
+    assert_eq!(
+        protection.scrub_text_or_withhold(&scope, "Token page"),
+        "[redacted] page"
+    );
+    std::fs::write(login.root.path().join("value"), CAPTURED).unwrap();
+    let kept = call(f, CAPTURE, capture_args("value")).await.unwrap();
+    let kept = kept["credential_id"].as_str().unwrap().to_string();
+
+    let removed = call(f, REMOVE, json!({"credential_id": wrong}))
+        .await
+        .unwrap();
+    assert_eq!(removed["removed"][0]["credential_id"], wrong.as_str());
+    assert_eq!(removed["removed"][0]["label"], "Stripe secret key");
+    assert_eq!(removed["removed"][0]["length"], 5);
+    assert!(
+        !removed.to_string().contains("Token"),
+        "the value is never returned"
+    );
+    assert_eq!(
+        protection.scrub_text_or_withhold(&scope, "Token page"),
+        "Token page"
+    );
+    assert_eq!(
+        protection.scrub_text_or_withhold(&scope, &format!("key {CAPTURED}")),
+        "key [redacted]",
+        "the other capture stays masked"
+    );
+    let registry = crate::credential::CharioxCredentialRegistry::user().unwrap();
+    assert!(registry.get(&wrong).unwrap().is_none());
+    assert!(registry.get(&kept).unwrap().is_some());
+    assert!(
+        call(f, REMOVE, json!({"credential_id": wrong}))
+            .await
+            .is_err(),
+        "already removed"
+    );
+
+    // Not a capture of this agent: an owner entry and a generated entry are refused.
+    owner_credential(f, "owner-entry", &[SITE], None);
+    let refused = call(f, REMOVE, json!({"credential_id": "owner-entry"}))
+        .await
+        .unwrap_err();
+    assert!(
+        refused
+            .to_string()
+            .contains("only a capture that this agent made"),
+        "{refused}"
+    );
+    owner_credential(
+        f,
+        "other-agents-capture",
+        &[SITE],
+        Some(&f.request.session_id),
+    );
+    assert!(
+        call(f, REMOVE, json!({"credential_id": "other-agents-capture"}))
+            .await
+            .is_err()
+    );
 }
 
 // A page's manual setup key or QR code becomes a TOTP seed bound to the one site.
