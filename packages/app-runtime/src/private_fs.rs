@@ -189,6 +189,12 @@ impl Dir {
     pub(crate) fn try_lock_shared(&self) -> Result<bool> {
         try_flock(&self.0, libc::LOCK_SH)
     }
+    /// Releases the lock now. Closing a descriptor does not: a flock lives as
+    /// long as any copy of the open file does, and a child forked meanwhile
+    /// keeps its copy until it execs.
+    pub(crate) fn unlock(&self) {
+        unsafe { libc::flock(self.0.as_raw_fd(), libc::LOCK_UN) };
+    }
     pub(crate) fn create_private_file(&self, name: &OsStr) -> Result<File> {
         let name = cstring(name)?;
         let output = file(unsafe {
