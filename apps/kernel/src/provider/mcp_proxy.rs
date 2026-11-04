@@ -134,7 +134,7 @@ pub(crate) fn dispatch_provider_mcp_proxy_request(
     )
 }
 
-/// `project_environment` holds the Project's Secret values an MCP server started for this call reads from its environment.
+/// The Project's resolved Secrets supply stdio variables and HTTP authentication.
 pub(crate) fn dispatch_provider_mcp_proxy_request_with_environment(
     owner_provider_run_id: &str,
     owner_session_id: &str,
@@ -159,6 +159,7 @@ pub(crate) fn dispatch_provider_mcp_proxy_request_with_environment(
             bearer_token_env_var.as_deref(),
             http_headers,
             env_http_headers,
+            project_environment,
             payload,
             backing.tool_timeout_sec,
         ),

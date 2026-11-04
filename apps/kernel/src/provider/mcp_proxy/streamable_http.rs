@@ -10,6 +10,7 @@ pub(super) fn forward_streamable_http_mcp_request(
     bearer_token_env_var: Option<&str>,
     http_headers: &BTreeMap<String, String>,
     env_http_headers: &BTreeMap<String, String>,
+    project_environment: &BTreeMap<String, String>,
     payload: serde_json::Value,
     timeout_sec: Option<u64>,
 ) -> Result<serde_json::Value, DaemonError> {
@@ -33,12 +34,20 @@ pub(super) fn forward_streamable_http_mcp_request(
         if reserved_header(key) {
             continue;
         }
-        if let Ok(value) = std::env::var(env_var) {
+        if let Some(value) = project_environment
+            .get(env_var)
+            .cloned()
+            .or_else(|| std::env::var(env_var).ok())
+        {
             request = request.set(key, &value);
         }
     }
     if let Some(env_var) = bearer_token_env_var {
-        if let Ok(value) = std::env::var(env_var) {
+        if let Some(value) = project_environment
+            .get(env_var)
+            .cloned()
+            .or_else(|| std::env::var(env_var).ok())
+        {
             request = request.set("Authorization", &format!("Bearer {value}"));
         }
     }

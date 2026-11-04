@@ -995,6 +995,104 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn imported_http_mcp_uses_imported_project_secrets_for_authentication() {
+        use crate::mcp::{CharioxMcpServerConfig, CharioxMcpTransportConfig};
+        use std::collections::BTreeMap;
+        use std::io::{BufRead, BufReader, Read, Write};
+        use std::net::TcpListener;
+
+        crate::test_support::isolated_env_test!();
+        std::env::set_var("HTTP_TEST_TOKEN", "unrelated-ambient-account");
+        std::env::set_var("HTTP_TEST_HEADER", "unrelated-ambient-header");
+        std::env::set_var("HTTP_TEST_FALLBACK", "ambient-fallback");
+        let rig = Rig::new();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut config = CharioxMcpServerConfig::streamable_http(
+            "http-test",
+            format!("http://{}/mcp", listener.local_addr().unwrap()),
+        );
+        if let CharioxMcpTransportConfig::StreamableHttp {
+            bearer_token_credential,
+            env_http_headers,
+            ..
+        } = &mut config.transport
+        {
+            *bearer_token_credential = Some("source-vault-handle".into());
+            env_http_headers.insert("X-Account".into(), "HTTP_TEST_HEADER".into());
+            env_http_headers.insert("X-Fallback".into(), "HTTP_TEST_FALLBACK".into());
+        }
+        let portable = super::super::registrations::portable_mcp(config);
+        let mut saved = record(1, &["HTTP_TEST_TOKEN", "HTTP_TEST_HEADER"], &[]);
+        saved.mcps.push(ExtensionEntry::registration("http-test"));
+        let mut from = source(Some(saved), &["HTTP_TEST_TOKEN", "HTTP_TEST_HEADER"], &[]);
+        if let Ok(snapshot) = &mut from.snapshot {
+            snapshot.mcps.push("http-test".into());
+        }
+        from.registrations.push((
+            EnvironmentEntryKind::Mcp,
+            "http-test".into(),
+            Registration::Mcp(portable),
+        ));
+        assert_eq!(
+            rig.import("http-auth", &from, None).await.state,
+            EnvironmentOperationState::Succeeded
+        );
+        let Registration::Mcp(imported) = rig.registrations.installed.lock().unwrap()[0].clone()
+        else {
+            panic!("imported MCP")
+        };
+        let service = project_environment_vault_service("p");
+        let values = ["HTTP_TEST_TOKEN", "HTTP_TEST_HEADER"]
+            .into_iter()
+            .map(|name| (name.into(), rig.vault.get_secret(&service, name).unwrap()))
+            .collect::<BTreeMap<_, _>>();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut reader = BufReader::new(&mut stream);
+            let mut headers = String::new();
+            let mut length = 0;
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                if line == "\r\n" {
+                    break;
+                }
+                if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    length = value.trim().parse().unwrap();
+                }
+                headers.push_str(&line);
+            }
+            reader.read_exact(&mut vec![0; length]).unwrap();
+            let body = r#"{"jsonrpc":"2.0","id":1,"result":{"ok":true}}"#;
+            write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
+            headers
+        });
+        let response = crate::provider::dispatch_provider_mcp_proxy_request_with_environment(
+            "http-import-run",
+            "http-import-session",
+            &imported,
+            serde_json::json!({"jsonrpc":"2.0", "id":1, "method":"tools/call"}),
+            &values,
+        )
+        .unwrap();
+        assert_eq!(response["result"]["ok"], true);
+        let headers = server.join().unwrap();
+        assert!(
+            headers.contains("Authorization: Bearer synthetic-HTTP_TEST_TOKEN\r\n"),
+            "imported Project bearer was not used"
+        );
+        assert!(
+            headers.contains("X-Account: synthetic-HTTP_TEST_HEADER\r\n"),
+            "imported Project header was not used"
+        );
+        assert!(headers.contains("X-Fallback: ambient-fallback\r\n"));
+        assert!(!headers.contains("unrelated-ambient"));
+    }
+
+    #[tokio::test]
     async fn slices_are_requested_ahead_and_land_in_order() {
         let rig = Rig::new();
         let mut from = source(Some(record(1, &[], &["big.bin"])), &[], &["big.bin"]);
