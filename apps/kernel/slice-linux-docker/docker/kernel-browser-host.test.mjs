@@ -1492,7 +1492,7 @@ test('MP-08 agent Tabs named by the kernel are grouped by target; the rest stay 
   const reply = await host.handle({ id: 1, method: 'host.browser', params: { op: 'state', _tab_groups: [{ tab_id: b.tab_id, label: 'Mara' }, { tab_id: 'gone', label: 'Ghost' }] } });
   assert.equal(reply.ok, true);
   await new Promise(resolve => setTimeout(resolve, 0));
-  assert.deepEqual(synced, [[{ label: 'Mara', target_ids: [host.tabs.get(b.tab_id).target_id] }]]);
+  assert.deepEqual(synced, [[{ label: 'Mara', target_ids: [host.tabs.get(b.tab_id).target_id], mark: '●' }]]);
   assert.notEqual(host.tabs.get(a.tab_id).target_id, host.tabs.get(b.tab_id).target_id);
 }));
 
@@ -1804,7 +1804,7 @@ test('MP-08 agent Tabs named by the kernel are grouped by target; the rest stay 
   const reply = await host.handle({ id: 1, method: 'host.browser', params: { op: 'state', _tab_groups: [{ tab_id: b.tab_id, label: 'Mara' }, { tab_id: 'gone', label: 'Ghost' }] } });
   assert.equal(reply.ok, true);
   await new Promise(resolve => setTimeout(resolve, 0));
-  assert.deepEqual(synced, [[{ label: 'Mara', target_ids: [host.tabs.get(b.tab_id).target_id] }]]);
+  assert.deepEqual(synced, [[{ label: 'Mara', target_ids: [host.tabs.get(b.tab_id).target_id], mark: '●' }]]);
   assert.notEqual(host.tabs.get(a.tab_id).target_id, host.tabs.get(b.tab_id).target_id);
 }));
 
@@ -3096,3 +3096,32 @@ test('an agent action on another Tab does not wait for the person', { timeout: 5
   await host.request({ op: 'input', focused_agent: true, tab_id: b.tab_id, generation: second.generation, document_id: b.document_id, input: { kind: 'key', key: 'b' } });
   assert.ok(Date.now() - startedAt < 1000);
 }, { personIdleMs: 5000 }));
+
+test('an agent group carries its status dot, and a spinner while the agent acts in one of its Tabs', { timeout: 8000 }, () => using(async ({ host }) => {
+  const sent = [];
+  const opened = await host.request({ op: 'open', url: 'https://example.com/', focused_agent: true });
+  const tab = opened.tabs[0];
+  host.tabGroups = { sync: async groups => { sent.push(groups.map(({ label, mark }) => `${mark} ${label}`)); return true; }, close() {}, keepalive: async () => {} };
+  await host.syncTabGroups([{ tab_id: tab.tab_id, label: 'Mara' }]);
+  assert.deepEqual(sent.at(-1), ['● Mara'], 'idle: the status dot');
+  const acting = host.request({ op: 'snapshot', focused_agent: true, tab_id: tab.tab_id, generation: opened.generation });
+  await new Promise(resolve => setTimeout(resolve, 900));
+  assert.ok(sent.some(groups => /^[◐◓◑◒] Mara$/.test(groups[0])), 'acting: a spinner frame ' + JSON.stringify(sent));
+  await acting;
+  await new Promise(resolve => setTimeout(resolve, 2300));
+  assert.deepEqual(sent.at(-1), ['● Mara'], 'done: the dot again');
+}));
+
+// Protocol 986: only a person makes Chrome show a Tab.
+test('show_tab makes Chrome activate exactly that Tab for a person, and an agent is refused', () => using(async ({ host, sent }) => {
+  const first = await host.request({ op: 'open', url: 'https://example.com/a' });
+  const second = await host.request({ op: 'open', url: 'https://example.com/b' });
+  const tab = first.tabs[0];
+  const activations = () => sent.filter(call => call.method === 'Target.activateTarget').map(call => call.params.targetId);
+  const refused = await host.handle({ id: 'agent-show', method: 'host.browser', params: { op: 'show_tab', focused_agent: true, tab_id: tab.tab_id, generation: second.generation } });
+  assert.equal(refused.ok, false);
+  assert.deepEqual(activations(), [], 'an agent never activates a Tab');
+  const shown = await host.handle({ id: 'person-show', method: 'host.browser', params: { op: 'show_tab', tab_id: tab.tab_id, generation: second.generation } });
+  assert.equal(shown.ok, true);
+  assert.deepEqual(activations(), [host.tabs.get(tab.tab_id).target_id]);
+}));

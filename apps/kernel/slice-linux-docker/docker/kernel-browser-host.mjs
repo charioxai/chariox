@@ -75,6 +75,9 @@ export function scheduleHostRequest(request, browser, viewport = hostViewport(),
 const TAB_LIMIT = 128;
 // A Tab the person types or clicks in is theirs until they have been idle this long (an agent's input to it waits).
 export const PERSON_IDLE_MS = 2000;
+const SPINNER = ['◐', '◓', '◑', '◒'], IDLE_MARK = '●';
+// How long a spinner stays after an agent's last action in a Tab, so a short action is still seen.
+const SPINNER_LINGER_MS = 1500;
 // Read-only host operations: they never dispatch input into a page.
 const OBSERVATION_OPS = new Set(['chrome_window_follow', 'state', 'snapshot', 'screenshot', 'unsubscribe', 'note_selection', 'mirror_subscribe', 'mirror_next', 'mirror_close', 'display_subscribe', 'display_attach', 'display_suspend', 'display_resume', 'display_input_target', 'pointer_cursor']);
 // MP-08/MP-10: opt-in timing names Tab lifecycle ops (fixed labels, never page values).
@@ -142,6 +145,7 @@ export class KernelBrowserHost {
     this.foreground = new WindowForeground();
     // The person's last deliberate input per Tab, and the background-run leases of Tabs agents work in.
     this.personInputAt = new Map(); this.backgroundHolds = new Map();
+    this.agentBusy = new Map(); this.spin = 0; this.spinner = null; this.groupLabels = null;
     this.restoring = false;
     this.adoptedByInput = new WeakSet();
     this.keepaliveTarget = null;
@@ -263,6 +267,7 @@ export class KernelBrowserHost {
     this.browser = null;
     if(this.displayTeardownErrors.length)throw new AggregateError(this.displayTeardownErrors.splice(0),'MD-DISPLAY: owned display teardown failed');
     this.backgroundHolds.clear();this.personInputAt.clear();
+    clearInterval(this.spinner);this.spinner=null;this.agentBusy.clear();
     this.tabs.clear();this.header.clear();this.layouts.clear();this.layoutRevisions.clear();this.windowLayout=null;this.resizeSettled=null;
     this.popupEvidence.clear();
     this.observed = ++this.observations;
@@ -357,8 +362,27 @@ export class KernelBrowserHost {
       const target = this.tabs.get(tab_id)?.target_id;
       if (target && typeof label === "string" && label) labels.set(label, [...(labels.get(label) ?? []), target]);
     }
-    await this.tabGroups?.sync([...labels].map(([label, target_ids]) => ({ label: label.slice(0, 64), target_ids })));
+    this.groupLabels = labels;
+    await this.applyTabGroups();
     if (!this.restoring) await this.save();
+  }
+  // Each agent's group carries its status dot, and a spinner while the agent acts in one of its Tabs.
+  async applyTabGroups() {
+    const labels = this.groupLabels ?? new Map();
+    const busy = [...labels].filter(([, targets]) => [...this.agentBusy.keys()].some(id => targets.includes(this.tabs.get(id)?.target_id)));
+    await this.tabGroups?.sync([...labels].map(([label, target_ids]) => ({ label: label.slice(0, 64), target_ids, mark: busy.some(([name]) => name === label) ? SPINNER[this.spin % SPINNER.length] : IDLE_MARK })));
+  }
+  noteAgentBusy(tabId, delta) {
+    const count = (this.agentBusy.get(tabId) ?? 0) + delta;
+    if (count > 0) this.agentBusy.set(tabId, count); else this.agentBusy.delete(tabId);
+    if (this.agentBusy.size && !this.spinner) {
+      this.spinner = setInterval(() => {
+        this.spin++;
+        if (!this.agentBusy.size) { clearInterval(this.spinner); this.spinner = null; }
+        void this.applyTabGroups().catch(() => {});
+      }, 400);
+      this.spinner.unref?.();
+    }
   }
   // MP-11: fail-closed second layer behind the kernel's managed policies: a Tab that
   // still reaches a blocked scheme is closed unless it shows the policy's own refusal
@@ -885,11 +909,17 @@ export class KernelBrowserHost {
     return command.input?.kind === 'scroll' ? 'wheel' : 'page';
   }
   // A person's input queues in order while a busy renderer cannot answer the fences; agents keep awaiting their ack.
-  request(command, options) {
+  async request(command, options) {
     const person = !command._agent_input && !command.focused_agent;
     if (person) this.notePersonInput(command);
-    return command.op === "input" && person
-      ? this.busyInputs.submit(command.observed_by ?? "adapter", command, options) : this.requestNow(command, options);
+    const acting = !person && typeof command.tab_id === 'string' && ['input', 'navigate', 'snapshot', 'screenshot', 'resize'].includes(command.op) ? command.tab_id : null;
+    if (acting) this.noteAgentBusy(acting, 1);
+    try {
+      return await (command.op === "input" && person
+        ? this.busyInputs.submit(command.observed_by ?? "adapter", command, options) : this.requestNow(command, options));
+    } finally {
+      if (acting) setTimeout(() => this.noteAgentBusy(acting, -1), SPINNER_LINGER_MS).unref?.();
+    }
   }
   // The person's typing, click or scroll in a Tab keeps that Tab theirs until they have been idle for PERSON_IDLE_MS.
   notePersonInput(command) {
@@ -1093,6 +1123,14 @@ export class KernelBrowserHost {
       const state = await this.reconcile();
       await this.rebindWindows();
       return state;
+    }
+    // Protocol 986: a person's "Show tab" (a card's button, Follow agent) makes Chrome itself show the Tab. An agent never may.
+    if (command.op === "show_tab") {
+      if (agentRequest) throw new UserDomainRefusal("not_granted");
+      await this.retireNativeForeground(tab.target_id);
+      await (await this.browser.ensureConnection()).send("Target.activateTarget", { targetId: tab.target_id });
+      this.pendingActive = null;
+      return this.observe(await this.reconcile(), null, scope);
     }
     if (command.op === "navigate") {
       if (app) this.browser.appTabs.noteActivity(tab.target_id);

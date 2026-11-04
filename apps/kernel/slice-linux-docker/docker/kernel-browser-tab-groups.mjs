@@ -206,9 +206,10 @@ export class ChromeTabGroups {
   cachedActive(){return this.nativeState.cachedActive();}
   cachedViewport(){return this.nativeState.cachedViewport();}
   close(){this.nativeState.close();}
-  /** groups: [{target_ids, label}] — one native group per agent label. */
+  /** groups: [{target_ids, label, mark?}] — one native group per agent label. */
   async sync(groups) {
-    const spec = groups.map(({ target_ids, label }) => ({ target_ids: [...target_ids].sort(), title: label, color: colorOf(label) }))
+    // The title carries the agent's live mark ("● Mara", a spinner while it acts); the colour stays the agent's own.
+    const spec = groups.map(({ target_ids, label, mark }) => ({ target_ids: [...target_ids].sort(), title: mark ? `${mark} ${label}` : label, color: colorOf(label) }))
       .sort((a, b) => a.title.localeCompare(b.title));
     const signature = JSON.stringify(spec);
     if (signature === this.signature) return false;
