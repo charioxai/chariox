@@ -501,7 +501,11 @@ async fn the_generated_tools_match_what_the_kernel_reads() {
             panic!("{} does not read its own schema: {error}", spec.name);
         }
     }
-    for example in crate::transport::runtime_tools::reach_examples() {
+    let generated: Value =
+        serde_json::from_str(include_str!("../../runtime_tools/reach_tools.json"))
+            .expect("the generated tools are JSON");
+    for example in generated["examples"].as_array().expect("examples") {
+        let example = &example["request"];
         let request: crate::local::LocalDaemonRequest =
             serde_json::from_value(example.clone()).expect("an example is a kernel request");
         assert!(

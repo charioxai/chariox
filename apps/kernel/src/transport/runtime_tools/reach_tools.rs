@@ -65,11 +65,10 @@ pub struct ReachEventsAckArgs {
 }
 
 /// The tools of `chariox-reach` as the CLI command table generates them
-/// (`scripts/generate-reach-tools.mjs`), with the guide and the example requests.
+/// (`scripts/generate-reach-tools.mjs`), with the guide.
 #[derive(Debug, Deserialize)]
 struct ReachToolsDocument {
     tools: Vec<ReachToolEntry>,
-    examples: Vec<ReachExample>,
     guide: String,
 }
 
@@ -78,11 +77,6 @@ struct ReachToolEntry {
     name: String,
     description: String,
     input_schema: Value,
-}
-
-#[derive(Debug, Deserialize)]
-struct ReachExample {
-    pub request: Value,
 }
 
 fn document() -> &'static ReachToolsDocument {
@@ -107,10 +101,6 @@ pub fn reach_tool_specs() -> Vec<RuntimeToolSpec> {
 
 pub fn reach_guide() -> &'static str {
     &document().guide
-}
-
-pub fn reach_examples() -> impl Iterator<Item = &'static Value> {
-    document().examples.iter().map(|example| &example.request)
 }
 
 /// `events_wait` as the request the home kernel's inbox answers.
