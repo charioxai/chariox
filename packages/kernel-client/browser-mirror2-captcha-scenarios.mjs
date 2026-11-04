@@ -30,8 +30,8 @@ body{margin:0;font-family:Roboto,arial,sans-serif;height:100%}html{height:100%}
 const tilePage = (frameUrl, top = 700, doctype = '<!doctype html>') => `${doctype}<html><head><meta charset="utf-8"><title>Challenge host</title></head><body style="margin:0;font:16px sans-serif"><div style="height:2400px;position:relative;background:linear-gradient(#fff,#dde)"><h1 style="padding:24px">Human check</h1><form style="padding:24px"><input aria-label="name" value="drill"><button type="button">Register</button></form>
 <iframe title="challenge" src="${frameUrl}" style="position:absolute;left:300px;top:${top}px;width:400px;height:580px;border:1px solid #ccc;background:#fff;box-shadow:0 2px 8px #0004"></iframe></div></body></html>`;
 
-// The challenge host that centres its challenge by itself: once after load and again after every answer.
-const selfScrollTilePage = frameUrl => tilePage(frameUrl, 900).replace('</body>', `<script>const f=document.querySelector('iframe'),centre=()=>f.scrollIntoView({block:'center',behavior:'instant'});setTimeout(centre,2500);addEventListener('message',()=>setTimeout(centre,350))</script></body>`);
+// The challenge host scrolls by itself: it drifts down for 8 s while its clock ticks (the kernel keeps reporting its scroll), and centres its challenge after every answer.
+const selfScrollTilePage = frameUrl => tilePage(frameUrl, 900).replace('</body>', `<script>const f=document.querySelector('iframe'),centre=()=>f.scrollIntoView({block:'center',behavior:'instant'});addEventListener('message',()=>setTimeout(centre,350));let n=0;const drift=setInterval(()=>{scrollBy(0,3);if(++n>=80)clearInterval(drift)},100);setInterval(()=>{document.getElementById('clock').textContent=String(Date.now())},50)</script></body>`).replace('<h1', '<p id="clock" style="position:fixed;right:8px;top:8px">0</p><h1');
 
 // Samples the viewer's own scroll positions (page and the challenge frame) every animation frame while the
 // person scrolls/clicks; any move against the person's direction is a jump the person did not make.
@@ -69,22 +69,22 @@ const scrollSession = async ({ page }) => {
   return { wheel_ms: endWheel, samples: trace.length, final: trace.at(-1), jumps: found.slice(0, 10), jumps_while_wheel: found.filter(j => j.t < endWheel).length };
 };
 
-// The person wheels the page, then answers two tiles; the page centres its challenge by itself at 2.5 s and after each answer.
-// A self-scroll is the page's own move: after the viewer reached its target the scroll must stay there (no jump back to an older position).
+// The person wheels the page in bursts while it drifts down by itself (any move up is a jump the person did not make), then answers two
+// tiles; the page centres its challenge by itself after each answer: once the viewer reached that position it must stay there.
 const selfScrollGridSession = async ({ page }) => {
   const viewerFrame = await page.evaluate(() => { const r = document.querySelector('iframe').getBoundingClientRect(); return [r.x, r.y]; });
   await page.evaluate(sampler);
   await page.mouse.move(viewerFrame[0] + 100, viewerFrame[1] + 300);
   const t0 = Date.now(), at = () => Date.now() - t0, events = [];
-  for (let i = 0; i < 6; i++) { await page.mouse.wheel(0, 70); await page.waitForTimeout(40); }
-  const selfScrollAt = 2500;
-  await page.waitForTimeout(Math.max(0, selfScrollAt - at()));
-  events.push({ what: 'load', from: selfScrollAt });
-  await page.waitForTimeout(2500);
+  for (let burst = 0; burst < 12; burst++) { for (let i = 0; i < 4; i++) { await page.mouse.wheel(0, 40); await page.waitForTimeout(30); } await page.waitForTimeout(450 + (burst % 3) * 150); }
+  const wheelEnd = at();
+  await page.waitForTimeout(1500);
   for (const nth of [4, 6]) {
     const tileBox = await page.evaluate(n => { const top = document.querySelector('iframe'), r = top.getBoundingClientRect(), f = top.contentDocument.querySelector('iframe[title="challenge"]'), fr = f.getBoundingClientRect(), t = f.contentDocument.querySelectorAll('.rc-imageselect-tile')[n].getBoundingClientRect(); return [r.x + fr.x + t.x + t.width / 2, r.y + fr.y + t.y + t.height / 2]; }, nth);
+    if (tileBox[1] < 0 || tileBox[1] > 780) await page.mouse.wheel(0, tileBox[1] < 0 ? -600 : 600), await page.waitForTimeout(1200); // bring the tile into view like a person would
+    const again = await page.evaluate(n => { const top = document.querySelector('iframe'), r = top.getBoundingClientRect(), f = top.contentDocument.querySelector('iframe[title="challenge"]'), fr = f.getBoundingClientRect(), t = f.contentDocument.querySelectorAll('.rc-imageselect-tile')[n].getBoundingClientRect(); return [r.x + fr.x + t.x + t.width / 2, r.y + fr.y + t.y + t.height / 2]; }, nth);
     events.push({ what: `answer-${nth}`, from: at() });
-    await page.mouse.click(tileBox[0], tileBox[1]);
+    await page.mouse.click(again[0], again[1]);
     await page.waitForTimeout(2500);
   }
   const trace = await page.evaluate(() => { cancelAnimationFrame(window.__raf); return window.__trace; });
@@ -97,7 +97,8 @@ const selfScrollGridSession = async ({ page }) => {
     const left = window_.slice(reached).filter(p => Math.abs(p[1] - target) > 2);
     if (left.length) reverts.push({ event: ev.what, target, left: left.slice(0, 3).map(p => [p[0] - base, p[1]]) });
   }
-  return { samples: trace.length, final: trace.at(-1), events, reverts, revert_count: reverts.length };
+  const drifting = jumps(trace).filter(j => j.what === 'page' && j.t < wheelEnd);
+  return { samples: trace.length, final: trace.at(-1), events, wheel_ms: wheelEnd, jumps_while_wheel: drifting.length, jumps: drifting.slice(0, 6), reverts, revert_count: reverts.length };
 };
 
 export const sites = async () => {
