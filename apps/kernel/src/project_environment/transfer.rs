@@ -399,14 +399,19 @@ async fn import_entry<S: EnvironmentSource>(
                 .await
                 .map_err(ImportFailure::from)?
                 .ok_or_else(missing_at_source)?;
-            target
+            let inserted = target
                 .vault
-                .set_secret(
+                .insert_secret_if_absent(
                     &project_environment_vault_service(target.project_id),
                     &entry.name,
                     &value,
                 )
-                .map_err(vault_failure)
+                .map_err(vault_failure)?;
+            if inserted {
+                Ok(())
+            } else {
+                Err(ImportFailure::Entry("Already in the Vault".into()))
+            }
         }
         EnvironmentEntryKind::File => {
             if !snapshot.files.contains(&entry.name) {
@@ -546,6 +551,21 @@ mod tests {
                 .insert((service.into(), key.into()), value.into());
             Ok(())
         }
+        fn insert_secret_if_absent(
+            &self,
+            service: &str,
+            key: &str,
+            value: &str,
+        ) -> Result<bool, DaemonError> {
+            use std::collections::hash_map::Entry;
+            match self.0.lock().unwrap().entry((service.into(), key.into())) {
+                Entry::Occupied(_) => Ok(false),
+                Entry::Vacant(entry) => {
+                    entry.insert(value.into());
+                    Ok(true)
+                }
+            }
+        }
         fn delete_secret(&self, service: &str, key: &str) -> Result<(), DaemonError> {
             self.0.lock().unwrap().remove(&(service.into(), key.into()));
             Ok(())
@@ -558,6 +578,7 @@ mod tests {
         pulls: Mutex<Vec<String>>,
         offline_after_read: bool,
         gate: Option<Arc<tokio::sync::Notify>>,
+        secret_gate: Option<Arc<tokio::sync::Notify>>,
         slice_bytes: usize,
     }
 
@@ -573,6 +594,9 @@ mod tests {
             self.pulls.lock().unwrap().push(name.into());
             if self.offline_after_read {
                 return Err(SourceError::Offline);
+            }
+            if let Some(gate) = &self.secret_gate {
+                gate.notified().await;
             }
             Ok(Some(Zeroizing::new(format!("synthetic-{name}"))))
         }
@@ -610,6 +634,7 @@ mod tests {
             pulls: Mutex::default(),
             offline_after_read: false,
             gate: None,
+            secret_gate: None,
             slice_bytes: usize::MAX / 2,
         }
     }
@@ -713,6 +738,70 @@ mod tests {
             .iter()
             .map(|entry| (entry.name.clone(), entry.state, entry.reason.clone()))
             .collect()
+    }
+
+    #[tokio::test]
+    async fn secret_entered_while_import_is_fetching_survives() {
+        use crate::secret::{
+            create_chariox_encrypted_vault_for_test, unlock_chariox_encrypted_vault,
+            VaultUnlockLease,
+        };
+        let rig = Rig::new();
+        let path = rig.root.join("vault");
+        create_chariox_encrypted_vault_for_test(&path, "test-passphrase").unwrap();
+        unlock_chariox_encrypted_vault(&path, "test-passphrase", VaultUnlockLease::KernelShutdown)
+            .unwrap();
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.user_config.credential_vault.path = path.to_string_lossy().into_owned();
+        config.user_config.credential_vault.backend =
+            crate::config::CredentialVaultBackend::CharioxEncrypted;
+        let vault = crate::secret::project_environment_vault(&config).unwrap();
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let mut from = source(Some(record(1, &["KEY"], &[])), &["KEY"], &[]);
+        from.secret_gate = Some(gate.clone());
+        let handle = rig.begin("racing-secret");
+        let on_record = |_: &ProjectEnvironmentRecord| {};
+        let import = run_import(
+            handle,
+            &from,
+            ImportTarget {
+                project_id: "p",
+                checkout: &rig.checkout,
+                store: &rig.store,
+                vault: vault.as_ref(),
+                on_record: &on_record,
+            },
+            None,
+        );
+        let save = async {
+            while from.pulls.lock().unwrap().is_empty() {
+                tokio::task::yield_now().await;
+            }
+            vault
+                .set_secret(
+                    &project_environment_vault_service("p"),
+                    "KEY",
+                    "owner-entered",
+                )
+                .unwrap();
+            gate.notify_one();
+        };
+        tokio::join!(import, save);
+        assert_eq!(
+            vault
+                .get_secret(&project_environment_vault_service("p"), "KEY")
+                .unwrap(),
+            "owner-entered"
+        );
+        let view = rig.operations.get("racing-secret").unwrap().unwrap();
+        assert_eq!(
+            view.entries[0].state,
+            EnvironmentOperationEntryState::Failed
+        );
+        assert_eq!(
+            view.entries[0].reason.as_deref(),
+            Some("Already in the Vault")
+        );
     }
 
     #[tokio::test]
