@@ -32,6 +32,16 @@ export function loadLocalKernelPresences(
   }
 }
 
+/** A kernel with a fresh presence lease on this machine; a slice never counts as local. */
+export function isKernelOnThisMachine(
+  kernelId: string | null | undefined,
+  directory?: string,
+  nowMs = Date.now(),
+): boolean {
+  if (!kernelId || kernelId.startsWith("slice:")) return false
+  return loadLocalKernelPresences(directory, nowMs).some((presence) => presence.kernelId === kernelId)
+}
+
 export function localKernelEndpoint(presence: LocalKernelPresence): string {
   const host = presence.host.includes(":") ? `[${presence.host}]` : presence.host
   return `ws://${host}:${presence.port}/kernel`

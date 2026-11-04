@@ -93,7 +93,7 @@ async fn snapshot<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
 pub(super) async fn check_subscription(root: &str) {
     let (mut socket, _) = client_async(
         "ws://localhost/kernel",
-        tokio::net::UnixStream::connect(Path::new(root).join("run/k.sock"))
+        tokio::net::UnixStream::connect(kernel_access_socket(Path::new(root)))
             .await
             .unwrap(),
     )

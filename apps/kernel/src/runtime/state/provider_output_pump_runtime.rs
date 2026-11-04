@@ -4,6 +4,8 @@ use futures_util::{stream::FuturesUnordered, StreamExt};
 use std::collections::BTreeSet;
 
 const MAX_PROVIDER_OUTPUT_PUMPS: usize = 64;
+// A poll lasts milliseconds; this bounds a starved host, not a normal stop.
+const PROVIDER_OUTPUT_POLLS_STOP_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 
 impl KernelRuntimeState {
     pub(super) fn take_ready_provider_output_run_ids(&self, now_ms: u64) -> BTreeSet<String> {
@@ -62,6 +64,21 @@ impl KernelRuntimeState {
         }
         self.observe_git_after_provider_activity_if_pending(run_id)
             .await;
+    }
+
+    async fn wait_for_provider_output_polls(&self) {
+        let deadline = tokio::time::Instant::now() + PROVIDER_OUTPUT_POLLS_STOP_WAIT;
+        while self.owned.provider_store.any_output_poll_in_flight() {
+            if tokio::time::Instant::now() >= deadline {
+                crate::logging::warn_with_fields(
+                    "daemon.provider_output",
+                    "a provider output poll was still running at shutdown; its output may be lost",
+                    serde_json::json!({}),
+                );
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
     }
 
     #[cfg(test)]
@@ -131,6 +148,9 @@ impl KernelRuntimeState {
             tokio::select! {
                 () = &mut stop => {
                     while jobs.next().await.is_some() {}
+                    // A poll an actor still runs took output from its provider;
+                    // its result must be there to apply below.
+                    self.wait_for_provider_output_polls().await;
                     // Apply the polls those passes started.
                     for run in self.owned.provider_store.list_runs() {
                         self.pump_ready_provider_output_run(run.id()).await;

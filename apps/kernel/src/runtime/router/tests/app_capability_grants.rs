@@ -259,7 +259,16 @@ async fn capability_room_app_transfer_refreshes_the_target_catalog() {
         .unwrap()
         .unwrap();
     } else {
-        control.seed_dormant("alice", "installed");
+        // The start gate can still be closed by the approval's own lifecycle
+        // step on a loaded builder; seed again until it admits the catalog.
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while !control.is_app_dormant("alice", "installed") {
+                control.seed_dormant("alice", "installed");
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the idle App keeps a dormant catalog");
     }
     assert!(control.active_app_lease("alice", "installed").is_none());
     assert!(control.is_app_dormant("alice", "installed"));

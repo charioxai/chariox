@@ -276,14 +276,19 @@ impl KernelRuntimeState {
             .map(|run| run.id().to_string());
         // Not a cancellation of the node: its task keeps the wait, and the workflow keeps the
         // node live for the wake.
-        self.release_cancelled_local_prompt_after_restart(
-            session_id,
-            agent_id,
-            &prompt,
-            provider_run_id.as_deref(),
-            PromptEnding::Cancelled,
-        )
-        .await?;
+        let queue_head_deferred = self
+            .release_cancelled_local_prompt_after_restart(
+                session_id,
+                agent_id,
+                &prompt,
+                provider_run_id.as_deref(),
+                PromptEnding::Cancelled,
+            )
+            .await?;
+        if queue_head_deferred {
+            Box::pin(self.advance_project_queued_prompt_after_settlement(session_id, agent_id))
+                .await;
+        }
         Box::pin(self.deliver_agent_inbox(session_id, agent_id)).await
     }
 
@@ -1023,15 +1028,16 @@ impl KernelRuntimeState {
                 .map(|run| run.id().to_string())
         };
         self.owned.workflow_cancel_prompt(session_id, prompt)?;
-        self.release_cancelled_local_prompt_after_restart(
-            session_id,
-            agent_id,
-            prompt,
-            provider_run_id.as_deref(),
-            ending,
-        )
-        .await?;
-        if failed_delivery.is_some()
+        let queue_head_deferred = self
+            .release_cancelled_local_prompt_after_restart(
+                session_id,
+                agent_id,
+                prompt,
+                provider_run_id.as_deref(),
+                ending,
+            )
+            .await?;
+        if (failed_delivery.is_some() || queue_head_deferred)
             && self
                 .owned
                 .prompt_state_owner
@@ -1041,26 +1047,15 @@ impl KernelRuntimeState {
                 )
                 .is_some()
         {
-            let session_id_owned = session_id.to_string();
-            let agent_id_owned = agent_id.to_string();
-            let replacement_provider_run_id = self
-                .with_app_side_effect(move |app| {
-                    app.ensure_prompt_provider_run_for_agent(&session_id_owned, &agent_id_owned)
-                })
-                .await?;
-            if let Some(dispatch) = self.owned.advance_next_queued_prompt_dispatch(
-                session_id,
-                agent_id,
-                &replacement_provider_run_id,
-            )? {
-                self.spawn_prompt_dispatch(dispatch, self.provider_runtime_lanes.clone());
-            }
+            Box::pin(self.advance_project_queued_prompt_after_settlement(session_id, agent_id))
+                .await;
         }
         Ok(CancelledLocalPromptRestartOutcome::Finalized)
     }
 
     /// Removes the cancelling prompt from its agent and starts what was queued behind it. The
-    /// workflow node, if any, is the caller's to settle.
+    /// workflow node, if any, is the caller's to settle. Returns whether a queued head is
+    /// still waiting for the caller to promote it.
     pub(super) async fn release_cancelled_local_prompt_after_restart(
         &self,
         session_id: &str,
@@ -1068,7 +1063,7 @@ impl KernelRuntimeState {
         prompt: &crate::session::PromptQueueItem,
         provider_run_id: Option<&str>,
         ending: PromptEnding,
-    ) -> Result<(), DaemonError> {
+    ) -> Result<bool, DaemonError> {
         let cancellation = self.owned.finalize_local_prompt_ending(
             session_id,
             agent_id,
@@ -1087,7 +1082,7 @@ impl KernelRuntimeState {
                 let _ = self.fail_prompt_dispatch(dispatch, error).await;
             }
         }
-        Ok(())
+        Ok(cancellation.queue_head_deferred)
     }
 
     async fn recover_local_prompt_provider(

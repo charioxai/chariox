@@ -9,13 +9,13 @@ COPY --from=ca-bundle /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certi
 RUN printf '%s\n' 'deb [check-valid-until=no] https://snapshot.debian.org/archive/debian/20260701T000000Z bookworm main' > /etc/apt/sources.list \
   && rm -f /etc/apt/sources.list.d/debian.sources \
   && apt-get -o Acquire::Check-Valid-Until=false update \
-  && apt-get install -y --no-install-recommends --allow-downgrades bash chromium chromium-sandbox curl dbus fonts-dejavu fonts-liberation novnc openbox procps python3 tint2 websockify x11-utils x11vnc xdotool xvfb zstd \
+  && apt-get install -y --no-install-recommends --allow-downgrades bash chromium chromium-sandbox curl dbus fonts-dejavu fonts-liberation novnc openbox procps python3 python3-xlib tint2 websockify x11-utils x11vnc xdotool xvfb zstd \
   && rm -rf /var/lib/apt/lists/* \
   && groupadd --gid 1001 slice \
   && useradd --uid 1001 --gid 1001 -m -s /bin/bash slice \
   && mkdir -p /opt/chariox-slice/logs /opt/chariox-drill \
   && chown -R slice:slice /opt/chariox-slice
-COPY slice-screen.sh browser-app-restore.mjs browser-cdp.mjs browser-lifecycle.py browser-upload-store.py browser-controller-actions.mjs browser-controller-artifacts.mjs browser-controller-bar.mjs browser-controller-cdp.mjs browser-controller-compatibility.mjs browser-controller-cookie-fence.mjs browser-controller-dialogs.mjs browser-controller-events.mjs browser-controller-files.mjs browser-controller-frames.mjs browser-controller-history.mjs browser-controller-image.mjs browser-controller-input.mjs browser-controller-permissions.mjs browser-controller-snapshot.mjs browser-controller-upload-staging.mjs tint2rc /opt/chariox-slice/
+COPY slice-screen.sh browser-app-restore.mjs browser-cdp.mjs browser-lifecycle.py browser-upload-store.py room-desktop-environment.py slice-keyboard.py native-x11.py x11-text-keyboard.py x11-keymap-fence.py native-fill-targets.py room-native-protection.py native-accessibility.py browser-controller-actions.mjs browser-controller-artifacts.mjs browser-controller-bar.mjs browser-controller-capture.mjs browser-controller-cdp.mjs browser-controller-compatibility.mjs browser-controller-cookie-fence.mjs browser-controller-cursor.mjs browser-controller-dialogs.mjs browser-controller-events.mjs browser-controller-files.mjs browser-controller-frames.mjs browser-controller-history.mjs browser-controller-image.mjs browser-controller-input.mjs browser-controller-notes.mjs browser-controller-permissions.mjs browser-controller-response-bodies.mjs browser-controller-snapshot.mjs browser-controller-upload-staging.mjs browser-controller-web-bot-auth.mjs browser-focus-world.mjs browser-memory.mjs browser-observation-regions.mjs browser-page-permission-shim.mjs browser-page-permissions.mjs browser-protection-regions.mjs browser-renderer-recovery.mjs kernel-browser-geometry.mjs kernel-browser-native-worker.mjs kernel-browser-pixels.mjs tint2rc /opt/chariox-slice/
 # Test-only diagnostic, deliberately absent from the production image.
 COPY chromium-sandbox-probe.mjs /opt/chariox-drill/
 COPY fixture-server.mjs cdp.mjs profile.mjs /opt/chariox-drill/

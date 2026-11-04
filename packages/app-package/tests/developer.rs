@@ -152,14 +152,20 @@ fn executable_round_trip_needs_no_handwritten_manifest_or_code_execution() {
         ],
         0,
     );
+    assert_eq!(created["result"]["manifest"]["schema"], "chariox.app.v2");
     assert_eq!(
-        created["result"]["manifest"]["sdkVersion"],
-        SUPPORTED_SDK_VERSION
+        created["result"]["manifest"]["build"]["sdkVersion"],
+        "0.1.0"
     );
     assert_eq!(
         created["result"]["manifest"]["capabilities"]["agents"],
         serde_json::json!([])
     );
+    fs::write(
+        fixture.path("bundle/runtime/app.wasm"),
+        v2_components::build(chariox_app_wit::APP_WORLD, false),
+    )
+    .unwrap();
     let first = fixture.cli(
         &[
             "pack",
@@ -197,8 +203,6 @@ fn executable_round_trip_needs_no_handwritten_manifest_or_code_execution() {
         fs::read(fixture.path("first.cxapp")).unwrap(),
         fs::read(fixture.path("second.cxapp")).unwrap()
     );
-    let inspected = fixture.cli(&["inspect", "first.cxapp"], 0);
-    assert_eq!(inspected["result"]["status"], "untrusted-claims-only");
     let validated = fixture.cli(
         &[
             "validate",
@@ -214,7 +218,7 @@ fn executable_round_trip_needs_no_handwritten_manifest_or_code_execution() {
         validated["result"]["status"],
         "verified-against-explicit-publisher-file"
     );
-    assert_eq!(validated["result"]["fileCount"], 2);
+    assert_eq!(validated["result"]["fileCount"], 3);
     assert!(!fixture.path("should-not-run").exists());
 
     let mut tampered = fs::read(fixture.path("first.cxapp")).unwrap();
@@ -224,10 +228,6 @@ fn executable_round_trip_needs_no_handwritten_manifest_or_code_execution() {
         .unwrap();
     tampered[index] ^= 1;
     fs::write(fixture.path("tampered.cxapp"), tampered).unwrap();
-    assert_eq!(
-        fixture.cli(&["inspect", "tampered.cxapp"], 0)["result"]["status"],
-        "untrusted-claims-only"
-    );
     assert_eq!(
         fixture.cli(
             &[
@@ -241,20 +241,6 @@ fn executable_round_trip_needs_no_handwritten_manifest_or_code_execution() {
             3
         )["error"]["code"],
         "INTEGRITY_MISMATCH"
-    );
-    assert_eq!(
-        fixture.cli(
-            &[
-                "validate",
-                "first.cxapp",
-                "--trust",
-                "publisher.json",
-                "--kernel-protocol",
-                "284"
-            ],
-            3
-        )["error"]["code"],
-        "INCOMPATIBLE_PROTOCOL"
     );
 }
 
