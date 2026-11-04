@@ -6362,7 +6362,7 @@ identity handshake, and exposes only the versioned App WIT world through the
 kernel capability broker. The replaced engine's launch, runtime enrollment and
 privileged storage-helper paths are removed. Reinstall unsupported stored Apps.
 
-### Environments — local 973 / relay peer 422
+### Environments — local 974 / relay peer 423
 
 A Project has one Environment: a saved record (schema 2) with a Setup script, Variables (`.env` text),
 Secret names and Files outside Git. Values never enter the record. Each kernel keeps a Secret's value in
@@ -6399,13 +6399,26 @@ its own Vault under the Project scope, so presence differs per machine and is co
   on its own provider with no tools: the kernel sends the Project's manifest files and the names of the
   files Git ignores (never their contents), and the answer becomes revision 1 of a Project that has no
   Environment. The operation reads with `kind: "draft"`.
-- `CheckProjectEnvironment { projectId, operationId }` (kind `check`) has an idle agent of the Project on this
-  kernel compare the Project's manifest files with the saved record on its provider with no tools, and
-  stores up to 20 proposals (`ProjectEnvironmentView.proposals`: field setup, variables, secret or file; add or
+- `CheckProjectEnvironment { projectId, operationId, withAgent }` (kind `check`) always compares what the
+  Project's files declare with the saved record in the kernel, with no model (MCP servers and skills the files
+  declare that the record lacks, variable names that `.env.example` or `.mcp.json` refer to, entries whose
+  declaring file no longer declares them: evidence `file missing` or `not in <file>`). With `withAgent` an idle
+  agent of the Project on this kernel adds its own proposals on its provider with no tools. The kernel stores up
+  to 20 proposals (`ProjectEnvironmentView.proposals`: field setup, variables, secret, file, mcp or skill; add or
   remove one line, name or path; evidence path and one line). A proposal the record cannot take is dropped.
   `ResolveEnvironmentProposal { projectId, proposalId, accept }` accepts one as an ordinary Save of the next
   revision (answering `ProjectEnvironmentSaved` or `ProjectEnvironmentConflict`) or dismisses it for good; a
   dismissed proposal is not stored by a later check. Nothing changes until a proposal is accepted.
+- MCP servers and skills that project files declare are rows of the record (`mcps`, `skills`: `{ name, source }`,
+  `source` the declaring file: `.mcp.json`, `.codex/config.toml`, `opencode.json`, `.claude|.agents|.opencode/skills/<name>/SKILL.md`).
+  Git carries the files, so the view reports each as `present` while that file still declares it in the checkout,
+  else `missing`. `SaveProjectEnvironment` carries both lists. Draft fills them from the files, not from the agent.
+- `EnvironmentOperationView.updates` counts every change of an operation. `GetEnvironmentOperation { operationId,
+  waitAfterUpdates? }` with `waitAfterUpdates` holds the answer (at most 20 s) until the operation has more updates
+  than that or has ended, so a state change reaches the reader within a round trip and nothing is polled.
+- Room tools `chariox.environment.read` (names and states), `chariox.environment.setup` (runs the saved Setup
+  in the room's checkout; returns the operation id) and `chariox.environment.check` (the kernel's own comparison).
+  None returns a value.
 - `RunRemoteProjectEnvironmentSetup { projectId, operationId, targetKernelId, checkoutPath? }` runs Setup on
   another kernel of the same authenticated owner (a leased worker included), in the checkout that kernel
   holds for the Project; `RemoteEnvironmentOperation { operationId, targetKernelId, stop? }` reads or stops

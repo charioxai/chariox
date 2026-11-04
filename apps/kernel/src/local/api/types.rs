@@ -464,4 +464,5 @@ pub use workspace::*;
 /// Environments 972 replace the Project Environment requests with one saved record per Project,
 /// its presence on this kernel and Setup runs (peer421 drops the leased Project environment requests).
 /// Environments 973 add Import from another kernel of the same user and Draft with agent (peer422).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 973;
+/// Environments 974 hold an operation read until it changes, add MCPs and Skills that project files declare, and Check without a model (peer423 carries them in the record).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 974;
