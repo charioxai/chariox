@@ -471,7 +471,7 @@ async function main() {
         "This is a drill. Use only the chariox-reach MCP tools. No shell, no files. A call may be refused: do not retry it, except the waits below.",
         `1. Call events_subscribe with exactly: {"kernel":"${target}","session_id":"${roomB.session.id}"}`,
         '2. Call events_wait with exactly {"timeout_seconds":3}, then events_ack with its next_cursor (those records are old).',
-        '3. Call events_wait with {"timeout_seconds":120}, then events_ack with its next_cursor. Repeat step 3 (at most 8 times) until a returned record has a value.outcome field.',
+        '3. Call events_wait with {"timeout_seconds":120}, then events_ack with its next_cursor. Repeat step 3 (at most 8 times) until a returned record has a value.outcome field; a record without it, such as run_state working, is not the end: wait again. Do not reply before that.',
         "Then reply with the words EVENTS and DONE joined by an underscore, nothing else.",
       ].join("\n"), "EVENTS_DONE", async ({ running, seen, waitFor }) => {
         await waitFor(inLongWait({ seen, running }), "X waits")
@@ -512,7 +512,7 @@ async function main() {
         "This is a drill. Use only the chariox-reach MCP tools. No shell, no files. A call may be refused: do not retry it, except the waits below.",
         `1. Call events_subscribe with exactly: {"kernel":"${target}","session_id":"${roomB.session.id}","agent_id":"${yAgent}"}`,
         '2. Call events_wait with exactly {"timeout_seconds":3}, then events_ack with its next_cursor (those records are old).',
-        '3. Call events_wait with {"timeout_seconds":120}. Repeat it (at most 8 times) until a returned record has a value.question field; call events_ack with the cursor after each wait.',
+        '3. Call events_wait with {"timeout_seconds":120}. Repeat it (at most 8 times) until a returned record has a value.question field; call events_ack with the cursor after each wait. A record without value.question is not the end: wait again. Do not reply before that.',
         `4. That record is a decision the person asked you to settle: choose the choice whose id is "ship". Call request with {"kernel":"<the record's kernel field>","request":{"RespondToInteraction":{"session_id":"<the record's session_id>","interaction_id":"<the record's refs.interaction_id>","choice_id":"ship"}}}.`,
         "Then reply with the words DRIVER and DONE joined by an underscore, nothing else.",
       ].join("\n"), "DRIVER_DONE", async ({ running, seen, waitFor }) => {
