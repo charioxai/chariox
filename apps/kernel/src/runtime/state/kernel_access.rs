@@ -972,6 +972,7 @@ impl KernelRuntimeState {
 
 mod cover;
 mod policy;
+pub(crate) mod reach;
 #[cfg(test)]
 pub(super) mod test_support;
 

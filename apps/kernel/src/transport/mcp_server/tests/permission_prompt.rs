@@ -8,7 +8,7 @@ const BROKEN_TOKEN: &str = "claude-print-broken-permission-token";
 /// Where the fixture Claude runs work, as the session rules are stated for that directory.
 const RUN_DIRECTORY: &str = "/work/app";
 
-fn insert_claude_run(
+pub(super) fn insert_claude_run(
     app: &mut DaemonApp,
     session_id: &str,
     agent_id: &str,
@@ -69,7 +69,12 @@ fn insert_claude_run_in_mode(
     app.providers_mut().insert_run_for_test(run);
 }
 
-async fn rpc(router: &Arc<CommandRouter>, token: &str, method: &str, params: Value) -> Value {
+pub(super) async fn rpc(
+    router: &Arc<CommandRouter>,
+    token: &str,
+    method: &str,
+    params: Value,
+) -> Value {
     let response = handle_json_rpc_value(
         router.clone(),
         token,

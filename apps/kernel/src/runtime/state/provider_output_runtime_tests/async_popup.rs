@@ -954,4 +954,55 @@ async fn async_popup_follows_a_timer_the_scheduler_fires() {
     let told = answers(&f, id);
     assert_eq!(told.len(), 1);
     assert_eq!(told[0]["choice_id"], "condition_met");
+
+/// MP-09: a managed kernel counts the unresolved cards as work. Answering one records that change after the
+/// Room is updated; recording it while the Room store is still locked waited for the answerer itself, so the
+/// kernel stopped heartbeating (found creating the Vault on a rented machine).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn answering_a_card_on_a_managed_kernel_does_not_wait_for_itself() {
+    let f = fixture("managed-answer", true).await;
+    f.runtime
+        .ensure_managed_activity_tracking("kernel-managed")
+        .unwrap();
+    let card = crate::session::RuntimeInteraction::new(
+        "blocking-card",
+        &f.agent,
+        crate::session::RuntimeInteractionKind::Choice,
+        crate::session::RuntimeInteractionLevel::Info,
+        None,
+        "Work needs this answer",
+        vec![crate::session::RuntimeInteractionChoice::new(
+            "continue", "Continue", "continue", None,
+        )],
+        None,
+        None,
+        None,
+    );
+    let receiver = f
+        .runtime
+        .create_runtime_interaction(&f.room, card)
+        .await
+        .unwrap();
+    let runtime = f.runtime.clone();
+    let room = f.room.clone();
+    let (done, answered) = std::sync::mpsc::channel();
+    // A wedge blocks its thread for good, so the answer runs on its own thread and the test waits with a deadline.
+    std::thread::spawn(move || {
+        let outcome = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(runtime.resolve_runtime_interaction(
+                &room,
+                "blocking-card",
+                "continue",
+                None,
+            ));
+        let _ = done.send(outcome.is_ok());
+    });
+    assert_eq!(
+        answered.recv_timeout(Duration::from_secs(20)),
+        Ok(true),
+        "answering the card never finished"
+    );
+    assert_eq!(receiver.await.unwrap().reply.as_deref(), Some("continue"));
 }

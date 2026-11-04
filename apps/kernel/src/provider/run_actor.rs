@@ -159,6 +159,12 @@ impl ProviderRunActorMailbox {
         self.runtime_registry.insert_opencode_runtime(run_id, state);
     }
 
+    /// Whether any run still has an output poll queued or running: its result
+    /// is not yet there to apply.
+    pub(crate) fn any_output_poll_in_flight(&self) -> bool {
+        self.in_flight.any_output_poll_in_flight()
+    }
+
     pub(crate) fn structured_prompt_io_in_flight(&self, run_id: &str) -> bool {
         self.in_flight.prompt_io_in_flight(run_id)
     }

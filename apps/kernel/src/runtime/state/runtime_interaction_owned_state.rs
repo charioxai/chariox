@@ -131,8 +131,8 @@ impl KernelRuntimeOwnedState {
         };
         session.add_active_interaction(interaction.with_provider_login(login));
         sessions.restore_session(session);
-        activity_mutation.record();
         drop(sessions);
+        activity_mutation.record();
         self.session_snapshot(session_id)?;
         self.terminal_stream
             .notify_terminal_projection_change(session_id);
@@ -606,8 +606,9 @@ impl KernelRuntimeOwnedState {
             session.remove_active_interaction(interaction_id);
             sessions.restore_session(session);
         }
-        activity_mutation.record();
+        // The count reads the Room store: record it only after this write lock is released.
         drop(sessions);
+        activity_mutation.record();
         if let Some(sender) = pending
             .responder
             .lock()
@@ -738,8 +739,8 @@ impl KernelRuntimeOwnedState {
                     }
                     session.remove_active_interaction(interaction_id);
                     sessions.restore_session(session);
-                    activity_mutation.record();
                     drop(sessions);
+                    activity_mutation.record();
                     self.session_snapshot(session_id)?;
                     self.terminal_stream
                         .notify_terminal_projection_change(session_id);
@@ -830,8 +831,8 @@ impl KernelRuntimeOwnedState {
         self.answer_goal_native_approval(pending.goal_approval.as_ref())?;
         consume();
         sessions.restore_session(session);
-        activity_mutation.record();
         drop(sessions);
+        activity_mutation.record();
         if let Some(sender) = pending
             .responder
             .lock()

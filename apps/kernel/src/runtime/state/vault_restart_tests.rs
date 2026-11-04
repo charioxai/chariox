@@ -212,6 +212,36 @@ async fn mp08_vault_unlock_resumes_other_sessions_and_keeps_one_prompt_per_sessi
     assert!(interaction(&state, &sessions[1].0).is_none());
 }
 
+/// A managed kernel samples its running work while a prompt is registered; reading the session list under
+/// the registration's own write guard used to hang the whole kernel (rented machine, Vault prompt).
+#[test]
+fn mp09_managed_kernel_registers_a_vault_prompt_without_hanging() {
+    let (state, sessions, _workspace, _private) =
+        fixture(crate::config::CredentialVaultUnlockPolicy::KernelInit);
+    state
+        .ensure_managed_activity_tracking("kernel-managed-vault-prompt")
+        .unwrap();
+    let (session, agent) = sessions[0].clone();
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let registering = state.clone();
+    std::thread::spawn(move || {
+        let card = vault_passphrase_interaction(
+            &VaultRequester {
+                agent: None,
+                room: None,
+            },
+            &agent,
+        );
+        let _receiver = registering
+            .create_terminal_credential_interaction(&session, card)
+            .unwrap();
+        let _ = done_tx.send(());
+    });
+    done_rx
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("registering a prompt on a managed kernel must not deadlock on the session lock");
+}
+
 #[tokio::test]
 async fn mp11_vault_retry_cannot_replace_another_live_decision() {
     let (state, sessions, _workspace, _private) =

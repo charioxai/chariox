@@ -6,6 +6,14 @@ fn task_needs_owner_interaction(task: &AgentTaskExecution) -> bool {
     task.state == ExecutionState::Blocked && !task.goal.as_ref().is_some_and(|goal| goal.paused)
 }
 
+/// The decision a blocked task raises: Resume or Cancel. It belongs to the owner but not to their terminal,
+/// so a holder or an agent driving the room may answer it like any routine question.
+pub(super) const BLOCKED_TASK_DECISION_PREFIX: &str = "task-blocked-";
+
+pub(super) fn is_blocked_task_decision(interaction_id: &str) -> bool {
+    interaction_id.starts_with(BLOCKED_TASK_DECISION_PREFIX)
+}
+
 impl KernelRuntimeOwnedState {
     /// Admission cannot wait for the asynchronous task pump to release ended decisions.
     pub(super) fn sweep_stale_task_owner_interactions(&self) -> Result<(), DaemonError> {
@@ -14,7 +22,7 @@ impl KernelRuntimeOwnedState {
             .write()
             .iter()
             .filter(|(id, pending)| {
-                id.starts_with("task-blocked-") && pending.belongs_to(&self.session_store)
+                is_blocked_task_decision(id) && pending.belongs_to(&self.session_store)
             })
             .map(|(_, pending)| pending.session_id.clone())
             .collect::<BTreeSet<_>>();
@@ -43,7 +51,7 @@ impl KernelRuntimeOwnedState {
             .iter()
             .map(|i| i.id())
             .filter(|id| {
-                let Some(rest) = id.strip_prefix("task-blocked-") else {
+                let Some(rest) = id.strip_prefix(BLOCKED_TASK_DECISION_PREFIX) else {
                     return false;
                 };
                 tasks.iter().any(|t| {
@@ -96,7 +104,10 @@ impl KernelRuntimeState {
                 .await;
             return Ok(());
         }
-        let id = format!("task-blocked-{}-{}", task.task_id, task.blocked_revision);
+        let id = format!(
+            "{BLOCKED_TASK_DECISION_PREFIX}{}-{}",
+            task.task_id, task.blocked_revision
+        );
         let session = self.owned.session_store.get_session(&task.room_id)?;
         let message = crate::terminal::public_task_failure_reason(&task.reason);
         if let Some(existing) = session.active_interactions().iter().find(|i| i.id() == id) {
@@ -104,12 +115,15 @@ impl KernelRuntimeState {
                 let mutation = self.owned.begin_managed_activity_mutation();
                 let mut sessions = self.owned.session_store.write();
                 let mut latest = sessions.get_session(&task.room_id)?;
-                if let Some(current) = latest.remove_active_interaction(&id) {
+                let reworded = latest.remove_active_interaction(&id).map(|current| {
                     latest.add_active_interaction(current.with_message(message));
                     sessions.restore_session(latest);
+                });
+                // The count reads the Room store: record it after this write lock is released.
+                drop(sessions);
+                if reworded.is_some() {
                     mutation.record();
                 }
-                drop(sessions);
                 self.owned.session_snapshot(&task.room_id)?;
                 self.owned
                     .terminal_stream

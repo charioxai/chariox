@@ -123,10 +123,10 @@ pub use launch_contract::{
     canonical_external_provider_session_id, canonical_profile_external_provider_session_id,
     default_provider_control_capabilities, external_provider_import_model,
     external_provider_session_providers, normalize_provider_resume_model,
-    provider_resume_failure_notice, provider_uses_inferred_runtime_mcp_binding, AgentExecutionMode,
-    AgentPermissionLevel, ExternalProviderImportMetadata, ExternalProviderObservedCursor,
-    LaunchProviderRequest, ProviderLaunchResult, ProviderResumeState, ProviderWriteAccessMode,
-    RuntimeMcpBinding,
+    provider_resume_failure_notice, provider_uses_inferred_runtime_mcp_binding, reach_mcp_url,
+    AgentExecutionMode, AgentPermissionLevel, ExternalProviderImportMetadata,
+    ExternalProviderObservedCursor, LaunchProviderRequest, ProviderLaunchResult,
+    ProviderResumeState, ProviderWriteAccessMode, RuntimeMcpBinding,
 };
 pub(crate) use managed_isolation::{
     apply_managed_provider_isolation, command_from_provider_launch,

@@ -776,49 +776,16 @@ pub(super) fn serve_gateway(
             GatewayRoute::Forward { kernel, .. } => Some(kernel.clone()),
             GatewayRoute::List => None,
         };
-        let started = std::time::Instant::now();
-        let audited = match &route {
-            GatewayRoute::Forward { kernel, request }
-                if !crate::runtime::kernel_gateway::ledger::is_repeatable(request) =>
-            {
-                Some((
-                    kernel.clone(),
-                    crate::runtime::kernel_gateway::ledger::variant_name(request),
-                ))
-            }
-            _ => None,
-        };
         let outcome = match route {
-            GatewayRoute::Forward { kernel, request } if crate::runtime::state::is_outside_event_request(&request)=>Err(crate::runtime::kernel_gateway::GatewayError::Remote { name:kernel,code:"events_local_only".into(),message:"event requests run on your local kernel; use chariox events subscribe --kernel NAME to follow another kernel".into(),retryable:false }),
             GatewayRoute::Forward { kernel, request } => {
-                let gateway = router.kernel_gateway();
-                if matches!(
-                    *request,
-                    crate::local::LocalDaemonRequest::RequestKernelSudo(_)
-                ) {
-                    gateway.watch_sudo_grant(&kernel, &origin);
-                }
-                let forwarded = gateway.forward(
-                    &kernel,
+                crate::runtime::kernel_gateway::forward_audited(
+                    &router,
                     &origin,
                     &command_id,
+                    &kernel,
                     &request,
-                    crate::runtime::kernel_gateway::ledger::deadline_for(&request),
-                );
-                // A wait that outlasts the owner revoking the gateway ends with the revoke.
-                let mut answered = if crate::runtime::kernel_gateway::ledger::is_long_wait(&request) {
-                    tokio::select! {
-                        answered = forwarded => answered,
-                        error = gateway.until_unaccepted(&kernel, &origin) => Err(error),
-                    }
-                } else {
-                    forwarded.await
-                };
-                if let Ok(response) = &mut answered {
-                    gateway.note_forwarded(&kernel, &origin, &request, response);
-                    gateway.follow_forwarded(&origin, &kernel, &request, response).await;
-                }
-                answered
+                )
+                .await
             }
             GatewayRoute::List => router.kernel_gateway().kernels().await.map(|kernels| {
                 serde_json::to_value(crate::local::LocalDaemonResponse::GatewayKernelsListed {
@@ -827,17 +794,6 @@ pub(super) fn serve_gateway(
                 .expect("kernel list serializes")
             }),
         };
-        if let Some((kernel, kind)) = audited {
-            router.runtime_state().audit_gateway_forward(
-                &origin.grant_id,
-                &kernel,
-                &kind,
-                outcome
-                    .as_ref()
-                    .map_or_else(|failure| failure.code(), |_| "ok"),
-                u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
-            );
-        }
         let (response, error) = match outcome {
             Ok(value) => (Some(value), None),
             Err(failure) => (None, Some(failure.transport_error())),

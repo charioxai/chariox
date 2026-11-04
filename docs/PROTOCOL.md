@@ -960,6 +960,7 @@ alone cannot resume. Cancellation retains obligations until actual owned
 resource settlement. MP-08/MP-10/MP-11: cancellation applies to the addressed
 task; an older independent wait still receives its source completion or deadline
 wake. Historical task ordering is not an agent stop disposition.
+The blocked-task decision is the one kernel-operation decision that is not terminal-only: an external access holder, or an owner's agent driving the Room through reach, answers it with `RespondToInteraction` (`resume` or `cancel`, never implied), and its outside event carries the question instead of a pointer. Every other kernel-operation decision stays terminal-only.
 Legacy `/agent task` commands still address Meta tasks;
 they are not selectors for regular `agent_tasks`. Process/timer watcher sources
 belong to PR3 and leased delivery reconciliation to PR10; unsupported leased
@@ -6277,6 +6278,35 @@ field (additive; old clients ignore it):
   applies (`sudo_request_forbidden`).
 
 Focused checks: `cargo test -p chariox-kernel --lib async_popup card_action person_card`.
+
+### Agent reach — local 974
+
+A Room agent of the kernel owner reaches other rooms and kernels through a second runtime MCP server,
+`chariox-reach` at `/mcp/reach` (tools `kernels`, `sessions`, `request`, `events_subscribe`, `events_wait`,
+`events_ack`, `guide`; see `docs/KERNEL_ACCESS.md`). The identity is the agent's own live provider run
+(`reach:<run>`), authorised as the owner by the rule of its own room: what a Room agent without `/sudo` may do at
+home (read and list, history, create a room, message and steer agents, room terminals and files, the six event
+requests, answering a routine decision of another room, `ControlPlane` machine requests) is allowed elsewhere, what
+needs `/sudo` at home needs it elsewhere (`reach_requires_sudo`), and the human-only set is refused everywhere.
+The wire changes are small:
+
+- User config gains `agents.ask_before_acquiring_machines` (`GetUserConfigSchema` lists it; `SetUserConfigValue`
+  takes `"true"`/`"false"`; owner-only, so a gateway or sudo caller is refused). It is on unless the owner turns it
+  off: each `ControlPlane` acquire, start or start-from-saved-state by an agent raises one decision ("Let
+  `<room>/<agent> (Chariox agent)` acquire a machine?", choices `accept`/`decline`) in the agent's room, shown on
+  every client; declining answers `acquisition_declined`.
+- `on_behalf_of.harness` names `<room>/<agent> (Chariox agent)` in the target's audit and paired-clients list.
+- The kernel sends the same name to the connected service with an agent's `acquire` (`requested_by`; the kernel
+  fills it from its own record of the caller, a request cannot carry it), so the service lists the machine under it.
+- The event requests and `RespondToInteraction` are room-level for a reach caller; an event request with a `kernel`
+  is refused (`events_local_only`). The "Agent needs your action" decision (`task-blocked-…`) is answerable by a
+  holder or reach driver, and its outside event carries `question`.
+- `CreateSession` is room-level for the owner's agents on every kernel. A guest's agent never reaches.
+
+Relay peer 415 is unchanged. A client that shows the setting needs kernel protocol >=974; development stage kernels
+are re-provisioned. The managed-upgrade list is [629, 636, 974]. Focused checks:
+`cargo test -p chariox-kernel --lib mcp_server::tests::reach`, `node scripts/drills/agent-reach.mjs` (two kernels)
+and `node scripts/drills/agent-reach-machines.mjs` (a hosted validation stack and one real machine).
 
 ### Apps v2 — local 966 / relay peer 415
 

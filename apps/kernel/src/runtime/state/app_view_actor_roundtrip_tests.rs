@@ -56,15 +56,8 @@ async fn room_controller_backend_actor_and_late_call_revocation() {
     let directory =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("slice-linux-docker/docker");
     let store = BrowserControllerProcessStore::new(
-        "systemd-run",
+        "node",
         vec![
-            "--scope".into(),
-            "--quiet".into(),
-            "-p".into(),
-            "MemoryMax=4G".into(),
-            "-p".into(),
-            "MemorySwapMax=0".into(),
-            "node".into(),
             fixture.display().to_string(),
             directory.display().to_string(),
             root.display().to_string(),

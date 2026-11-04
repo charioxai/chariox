@@ -103,6 +103,27 @@ impl CommandRouter {
         arguments: serde_json::Value,
     ) -> AuthenticatedRuntimeToolFuture<'a> {
         Box::pin(async move {
+            // A tool that does not declare a `kernel` would run here while the agent believes it ran
+            // there, so another kernel is only reached through `chariox-reach`.
+            if arguments.get("kernel").is_some() {
+                let normalized = |name: &str| {
+                    name.strip_prefix("mcp__chariox__")
+                        .unwrap_or(name)
+                        .replace('.', "_")
+                };
+                let declared = self
+                    .runtime_tool_specs_for_auth_token(auth_token)
+                    .iter()
+                    .any(|spec| {
+                        normalized(&spec.name) == normalized(tool_name)
+                            && spec.input_schema["properties"].get("kernel").is_some()
+                    });
+                if !declared {
+                    return Err(crate::runtime::room_tool_admission::denied(
+                        "this tool acts in your own room; use the chariox-reach tools to reach another kernel",
+                    ));
+                }
+            }
             if crate::transport::runtime_tools::canonical_room_tool_name(tool_name).is_some()
                 && !self.runtime_state.room_agent_tools_enabled()
             {
@@ -181,7 +202,7 @@ impl CommandRouter {
 
     /// One privileged call under a window that both the caller's kernel and,
     /// for a leased agent, its worker fence admitted.
-    async fn dispatch_sudo_kernel_request(
+    pub(super) async fn dispatch_sudo_kernel_request(
         &self,
         turn: crate::local::KernelSudoTurn,
         arguments: serde_json::Value,
