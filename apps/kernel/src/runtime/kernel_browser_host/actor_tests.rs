@@ -1861,3 +1861,32 @@ done
     });
     host.shutdown().unwrap();
 }
+
+#[test]
+fn mp10_same_terminal_lease_reconnect_keeps_takeover_past_the_orphan_deadline() {
+    let host = KernelBrowserHost::new(std::env::temp_dir().join("brtakeover-reconnect"));
+    let lease = host.lease_terminal("alice", "terminal:viewer");
+    let model = host.actor_model("alice").unwrap();
+    {
+        let mut model = model.lock().unwrap();
+        model
+            .reconcile(&json!({"generation":1,"tabs":[{"tab_id":"a","document_id":"d"}]}))
+            .unwrap();
+        model
+            .takeover(
+                EnvironmentActor::new("terminal:viewer", EnvironmentActorKind::Human, "Person"),
+                "a",
+                1,
+            )
+            .unwrap();
+    }
+    drop(lease);
+    let _reconnected = host.lease_terminal("alice", "terminal:viewer");
+    model.lock().unwrap().reclaim_lapsed_takeovers(
+        Instant::now() + super::super::kernel_browser_actors::ORPHANED_TAKEOVER_TIMEOUT,
+    );
+    assert_eq!(
+        host.actor_snapshot("alice").unwrap()["input_ownership"][0]["actor_id"],
+        "terminal:viewer"
+    );
+}

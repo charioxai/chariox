@@ -700,18 +700,19 @@ impl KernelBrowserActors {
         self.pointer_tabs.remove(actor_id);
     }
 
+    /// A renewed authenticated connection no longer has an orphan deadline.
+    pub(crate) fn reconnect(&mut self, actor_id: &str) {
+        self.orphaned_takeovers.remove(actor_id);
+    }
+
     /// The person is one party to the kernel: a viewer of theirs that connects after the one that took a
     /// Tab went away continues that takeover instead of finding the Tab fenced against itself.
     fn adopt_orphaned_takeovers(&mut self, actor_id: &str) {
         if !self.is_human(actor_id) {
             return;
         }
-        let orphans = self
-            .orphaned_takeovers
-            .keys()
-            .filter(|orphan| orphan.as_str() != actor_id)
-            .cloned()
-            .collect::<Vec<_>>();
+        self.reconnect(actor_id);
+        let orphans = self.orphaned_takeovers.keys().cloned().collect::<Vec<_>>();
         for orphan in orphans {
             self.ledger.transfer_tab_ownership(&orphan, actor_id);
             self.forget_orphan(&orphan);
@@ -911,6 +912,30 @@ mod tests {
         model.release("terminal:other", "host-tab-a", 1).unwrap();
         let (action, _) = model.begin(agent(), &input("host-tab-a")).unwrap();
         model.finish(&action, EnvironmentActionTerminal::Completed);
+    }
+    #[test]
+    fn mp10_same_actor_input_or_takeover_clears_its_orphan_deadline() {
+        for request_takeover in [false, true] {
+            let mut model = ready();
+            let person = human("terminal:viewer");
+            model.takeover(person.clone(), "host-tab-a", 1).unwrap();
+            model.disconnect(&person.actor_id);
+            let deadline = model.orphaned_takeovers[&person.actor_id];
+            if request_takeover {
+                model.takeover(person.clone(), "host-tab-a", 1).unwrap();
+            } else {
+                let (action, _) = model.begin(person.clone(), &input("host-tab-a")).unwrap();
+                model.finish(&action, EnvironmentActionTerminal::Completed);
+            }
+            model.reclaim_lapsed_takeovers(deadline + Duration::from_secs(1));
+            assert!(
+                model.begin(agent(), &input("host-tab-a")).is_err(),
+                "a live viewer must keep the agent fenced past its old orphan deadline"
+            );
+            let (action, _) = model.begin(person.clone(), &input("host-tab-a")).unwrap();
+            model.finish(&action, EnvironmentActionTerminal::Completed);
+            model.release(&person.actor_id, "host-tab-a", 1).unwrap();
+        }
     }
     #[test]
     fn mp10_an_agent_acts_again_once_the_orphaned_takeover_has_lapsed() {
