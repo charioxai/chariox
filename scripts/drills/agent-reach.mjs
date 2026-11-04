@@ -383,6 +383,8 @@ async function main() {
     check("chariox-reach serves the seven tools", JSON.stringify([...(lists["chariox-reach"] ?? [])].sort()) === JSON.stringify([...reachTools].sort()), { names: lists["chariox-reach"] })
     check("no reach tool is in the chariox list", !(lists.chariox ?? []).some(name => reachTools.includes(name)), { count: lists.chariox?.length })
     if (flags.has("--expect-chariox-sha")) check("the chariox list is the one of the base kernel", sha(lists.chariox ?? []) === flags.get("--expect-chariox-sha"), { count: lists.chariox?.length, sha256: sha(lists.chariox ?? []) })
+    // The owner's attachment is reaped when nobody pumps it, and the TUI photographs take a minute.
+    const keepAttached = setInterval(() => a.rpc({ PumpTerminalOutput: { session_id: roomA.session.id, attachment_id: attached } }).catch(() => {}), 2000).unref()
     const viewHome = ensureDirectory(join(a.dir, `view-${provider}`)), cwd = join(a.dir, "work")
     const common = { cwd, evidence, label: `${provider} (${model})` }
     if (provider === "claude") {
@@ -406,6 +408,7 @@ async function main() {
         steps: [{ wait: 8000 }, { keys: [{ literal: "/status" }, "Enter"], wait: 4000, shot: "opencode-status" }] })
       note("tui-captured", { shots: shots.map(x => x.shot) })
     }
+    clearInterval(keepAttached)
   }
 
   if (scenarios.has("sudo")) {
