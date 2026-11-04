@@ -59,7 +59,7 @@ Driving another agent. A record with `value.question` is a pending decision of t
 
 History. Another room's history is an ordinary read (`GetSessionHistoryOutline`, `SearchRecall`, `QueryRecall`) for the owner's agent: no /sudo, no approval card. The room history tools (`chariox.history.*`) stay confined to the caller's room.
 
-Acquiring a machine (`ControlPlane` acquire, start and start-from-saved-state) needs no question by default. With the setting `agents.ask_before_acquiring_machines = true` ("Ask each time an agent acquires a machine through your connected service"; off by default; owner-only) each such request raises one decision in the agent's room, shown on every client; declining answers `acquisition_declined`.
+Acquiring a machine (`ControlPlane` acquire, start and start-from-saved-state) raises one decision in the agent's room before each request, shown on every client; declining answers `acquisition_declined`. The setting `agents.ask_before_acquiring_machines` ("Ask each time an agent acquires a machine through your connected service"; on by default; owner-only) turns the question off.
 
 Drill: `node scripts/drills/agent-reach.mjs` (two real kernels, local relay, a real Claude, Codex or OpenCode agent with `--provider`; the `tools` scenario calls every reach tool and a room tool with a `kernel`, the `view` scenario asks the launched servers for their tool lists and photographs the provider's own tool view; the `events` scenario has agent X follow agent Y on the other kernel and be woken by Y's finished turn while two unfollowed rooms finish turns, `driver` has Y raise a decision with `request_popup` that X is woken by and answers, `history` has X read Y's room history with no card or /sudo).
 

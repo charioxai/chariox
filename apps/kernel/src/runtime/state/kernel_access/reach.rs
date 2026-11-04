@@ -192,8 +192,8 @@ impl KernelRuntimeState {
         Some(format!("{room}/{name} (Chariox agent)"))
     }
 
-    /// Whether the owner accepts this acquisition. Always yes unless the setting
-    /// `agents.ask_before_acquiring_machines` is on; then one decision in the agent's room, to every client.
+    /// Whether the owner accepts this acquisition. One decision in the agent's room, shown to every
+    /// client, unless the owner turned `agents.ask_before_acquiring_machines` off.
     pub(crate) async fn confirm_machine_acquisition(
         &self,
         caller: &ReachCaller,
@@ -203,7 +203,7 @@ impl KernelRuntimeState {
             .user_config
             .agents
             .ask_before_acquiring_machines
-            .unwrap_or(false)
+            .unwrap_or(true)
         {
             return Ok(true);
         }

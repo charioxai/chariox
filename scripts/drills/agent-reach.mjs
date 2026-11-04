@@ -619,9 +619,6 @@ async function main() {
     const acquire = call(null, { ControlPlane: { action: "acquire", capability_revision: "r1", request_id: "reach-drill" } })
     const acquirePrompt = tag => ["This is a drill. Use only the chariox-reach `request` tool; no shell, no files. Do not retry.", `Call \`request\` once with exactly: ${acquire}`, `Then reply with the words ${tag} and DONE joined by an underscore, followed by the \`code\` field of the answer if there is one.`].join("\n")
     const askedBefore = async () => (await state(a, roomA.session.id)).active_interactions?.filter(x => String(x.message ?? "").includes("acquire a machine")) ?? []
-    await sendPrompt(acquirePrompt("ACQUIREOFF"), "ACQUIREOFF_DONE")
-    check("the toggle is off by default: no acquisition question and the request goes on", (await askedBefore()).length === 0 && claudeTranscript(a.dir + "/chariox", startedAt).includes("no connected machine service"))
-    await a.rpc({ SetUserConfigValue: { path: "agents.ask_before_acquiring_machines", value: "true" } })
     for (const choice of ["decline", "accept"]) {
       const tag = choice === "decline" ? "ACQUIRENO" : "ACQUIREYES", since = Date.now() - 1000
       const needle = choice === "decline" ? "acquisition_declined" : "no connected machine service"
@@ -640,6 +637,9 @@ async function main() {
       check(`${choice} on the acquisition question is honoured`, honoured)
     }
     await a.rpc({ SetUserConfigValue: { path: "agents.ask_before_acquiring_machines", value: "false" } })
+    const offSince = Date.now() - 1000
+    await sendPrompt(acquirePrompt("ACQUIREOFF"), "ACQUIREOFF_DONE")
+    check("with the toggle off there is no acquisition question and the request goes on", (await askedBefore()).length === 0 && claudeTranscript(a.dir + "/chariox", offSince).includes("no connected machine service"))
   }
 }
 try {

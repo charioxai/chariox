@@ -396,23 +396,8 @@ async fn the_gateway_names_the_agent_and_admits_only_room_requests_for_it() {
 }
 
 #[tokio::test]
-async fn acquiring_a_machine_asks_only_when_the_owner_turned_the_setting_on() {
+async fn acquiring_a_machine_asks_unless_the_owner_turned_the_setting_off() {
     let reach = fixture();
-    let acquire = serde_json::json!({"ControlPlane": {
-        "action": "acquire", "capability_revision": "r1", "request_id": "one"}});
-    // Off by default: the call reaches the control plane (a bare test kernel has none).
-    let (ok, payload) = call(&reach, &reach.owner_token, None, acquire.clone()).await;
-    assert!(!ok);
-    assert_eq!(code(&payload), "request_failed", "{payload}");
-    assert!(payload.to_string().contains("no connected machine service"));
-    assert!(active_questions(&reach).is_empty());
-
-    reach
-        .router
-        .runtime_state()
-        .set_user_config_value("agents.ask_before_acquiring_machines".into(), "true".into())
-        .await
-        .expect("the owner turns the setting on");
     let asked = {
         let router = reach.router.clone();
         let token = reach.owner_token.clone();
@@ -449,6 +434,58 @@ async fn acquiring_a_machine_asks_only_when_the_owner_turned_the_setting_on() {
     let result = asked.await.unwrap().unwrap();
     assert!(!result.ok);
     assert_eq!(code(&result.payload), "acquisition_declined");
+
+    reach
+        .router
+        .runtime_state()
+        .set_user_config_value("agents.ask_before_acquiring_machines".into(), "false".into())
+        .await
+        .expect("the owner turns the setting off");
+    let acquire = serde_json::json!({"ControlPlane": {
+        "action": "acquire", "capability_revision": "r1", "request_id": "one"}});
+    // Off: the call reaches the control plane (a bare test kernel has none) with no question.
+    let (ok, payload) = call(&reach, &reach.owner_token, None, acquire).await;
+    assert!(!ok);
+    assert_eq!(code(&payload), "request_failed", "{payload}");
+    assert!(payload.to_string().contains("no connected machine service"));
+    assert!(active_questions(&reach).is_empty());
+}
+
+#[test]
+fn the_service_names_a_machine_after_the_agent_that_acquired_it() {
+    let reach = fixture();
+    let state = reach.router.runtime_state();
+    let caller = state
+        .reach_for_auth_token(&reach.owner_token)
+        .expect("the owner's run is a reach caller");
+    let acquire = crate::local::ControlPlaneRequest::Acquire {
+        capability_revision: "r1".into(),
+        request_id: "one".into(),
+    };
+    let mut command = crate::runtime::command::KernelCommand::from_local_request(
+        "c",
+        None,
+        Some(caller.id.clone()),
+        &crate::local::LocalDaemonRequest::ControlPlane(acquire.clone()),
+    );
+    command.caller = crate::runtime::command::KernelCaller::for_source(
+        &crate::runtime::command::KernelCommandSource::LocalIpc,
+    )
+    .with_connection_class(crate::local::KernelConnectionClass::KernelAgent);
+    command.caller.caller_id = caller.id.clone();
+    let sent = crate::runtime::control_plane::service_request(&state, &command, &acquire);
+    assert_eq!(sent["requested_by"], caller.harness);
+    assert!(caller.harness.ends_with(" (Chariox agent)"), "{}", caller.harness);
+    let list = crate::runtime::control_plane::service_request(&state, &command, &crate::local::ControlPlaneRequest::List {});
+    assert!(list.get("requested_by").is_none(), "only an acquisition carries a name");
+    let own = crate::runtime::command::KernelCommand::from_local_request(
+        "d",
+        None,
+        None,
+        &crate::local::LocalDaemonRequest::ControlPlane(acquire.clone()),
+    );
+    let sent = crate::runtime::control_plane::service_request(&state, &own, &acquire);
+    assert!(sent.get("requested_by").is_none(), "the owner's own client sends no name");
 }
 
 fn active_questions(reach: &Reach) -> Vec<crate::session::RuntimeInteraction> {
@@ -657,12 +694,6 @@ async fn the_reach_tools_are_listed_before_the_run_is_running_and_called_only_wh
 #[tokio::test]
 async fn a_driver_is_woken_by_the_decision_a_driven_agent_raises_and_answers_it() {
     let reach = fixture();
-    reach
-        .router
-        .runtime_state()
-        .set_user_config_value("agents.ask_before_acquiring_machines".into(), "true".into())
-        .await
-        .expect("the owner turns the setting on");
     let (ok, subscription) = tool(
         &reach,
         "events_subscribe",

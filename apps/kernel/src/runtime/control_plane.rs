@@ -49,7 +49,7 @@ pub(crate) async fn execute(
     };
     let mut result = crate::runtime::cloud_api_client::post_cloud_json::<ControlPlaneResponse>(
         profile.api_url.clone(), "/control-plane",
-        serde_json::json!({"accountId": profile.account_id, "kernelCredential": credential, "request": request}),
+        serde_json::json!({"accountId": profile.account_id, "kernelCredential": credential, "request": service_request(state, command, request)}),
     ).await.map_err(|error| {
         match crate::runtime::cloud_api_client::cloud_error_code(&error) {
             Some("authorization_denied" | "session_invalid" | "client_revoked" | "identity_revoked") =>
@@ -133,6 +133,25 @@ pub(crate) async fn execute(
         }
     }
     Ok(LocalDaemonResponse::ControlPlane { result })
+}
+
+/// An acquisition by an agent names its room and agent, so the service lists the machine under them.
+/// The name comes from the kernel's own record of the caller, never from the request.
+pub(crate) fn service_request(
+    state: &KernelRuntimeState,
+    command: &KernelCommand,
+    request: &ControlPlaneRequest,
+) -> serde_json::Value {
+    let mut value = serde_json::json!(request);
+    if matches!(request, ControlPlaneRequest::Acquire { .. }) {
+        let caller = command
+            .external_grant_id()
+            .or_else(|| command.reach_caller_id());
+        if let Some(origin) = caller.and_then(|id| state.gateway_origin(&id)) {
+            value["requested_by"] = origin.harness.into();
+        }
+    }
+    value
 }
 
 fn unavailable(code: &str, message: &str) -> DaemonError {

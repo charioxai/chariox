@@ -604,7 +604,7 @@ pub struct UserUiConfig {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UserAgentsConfig {
-    /// Off by default: an agent of the kernel owner acquires machines without asking.
+    /// On by default: an agent of the kernel owner needs the person's yes before each acquisition.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ask_before_acquiring_machines: Option<bool>,
 }
