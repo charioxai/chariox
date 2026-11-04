@@ -3057,16 +3057,23 @@ test('an agent opens its Tab behind the shown one; the person opens theirs in fr
   assert.deepEqual(created, [['https://example.com/person', false], ['https://example.com/agent', true], ['https://example.com/agent2', true]]);
 }));
 
-test('a Tab an agent works in is held at full speed once and released when it closes', () => using(async ({ host }) => {
-  const held = [], released = [];
-  const opened = await host.request({ op: 'open', url: 'https://example.com/' });
-  host.browser.inputCapture.hold = async (_connection, session) => { held.push(session); return async () => { released.push(session); }; };
-  const tab = opened.tabs[0], command = { op: 'input', focused_agent: true, tab_id: tab.tab_id, generation: opened.generation, document_id: tab.document_id, input: { kind: 'key', key: 'Tab' } };
-  await host.request(command); await host.request(command);
-  assert.equal(held.length, 1, 'one hold for any number of agent actions');
-  assert.match(held[0], /^session-target-/);
+test('a Tab an agent works in behind the shown one is kept at full speed, and left alone once it closes', { timeout: 8000 }, () => using(async ({ host, sent }) => {
+  const emulation = () => sent.filter(call => call.method === 'Emulation.setFocusEmulationEnabled' && call.params.enabled === true).map(call => call.session);
+  await host.request({ op: 'open', url: 'https://example.com/shown' });
+  const opened = await host.request({ op: 'open', url: 'https://example.com/agent', focused_agent: true });
+  const tab = opened.tabs.find(t => t.url.endsWith('/agent')), session = `session-${host.tabs.get(tab.tab_id).target_id}`;
+  host.activeTarget = host.tabs.get(opened.tabs.find(t => t.url.endsWith('/shown')).tab_id).target_id;
+  const command = { op: 'input', focused_agent: true, tab_id: tab.tab_id, generation: opened.generation, document_id: tab.document_id, input: { kind: 'key', key: 'Tab' } };
+  await host.request(command);
+  assert.ok(emulation().includes(session), 'the first agent action turns focus emulation on for its Tab');
+  const before = emulation().length;
+  await new Promise(resolve => setTimeout(resolve, 1700));
+  assert.ok(emulation().length > before, 'and it is asserted again while the Tab lives');
+  assert.ok(!emulation().includes(`session-${host.activeTarget}`), 'the shown Tab is left as Chrome has it');
   await host.request({ op: 'close', tab_id: tab.tab_id, generation: opened.generation });
-  assert.equal(released.length, 1);
+  const after = emulation().filter(s => s === session).length;
+  await new Promise(resolve => setTimeout(resolve, 1700));
+  assert.equal(emulation().filter(s => s === session).length, after, 'a closed Tab is not touched again');
 }));
 
 test('an agent action on a Tab the person is typing in waits for the person to be idle, and the person never waits', { timeout: 5000 }, () => using(async ({ host, sent }) => {

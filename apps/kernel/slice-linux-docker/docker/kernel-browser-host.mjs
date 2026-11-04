@@ -76,6 +76,8 @@ const TAB_LIMIT = 128;
 // A Tab the person types or clicks in is theirs until they have been idle this long (an agent's input to it waits).
 export const PERSON_IDLE_MS = 2000;
 const SHOW_TAB_WAIT_MS = 1000;
+// How often the focus emulation of the Tabs agents work in behind the shown one is asserted again.
+const BACKGROUND_KEEP_MS = 1500;
 // A group's mark: a dot at rest, a spinner while the agent acts, and "needs you" while a card asks the person to act in one of its Tabs.
 const SPINNER = ['◐', '◓', '◑', '◒'], IDLE_MARK = '●', NEEDS_MARK = '▲';
 // How long a spinner stays after an agent's last action in a Tab, so a short action is still seen.
@@ -147,7 +149,7 @@ export class KernelBrowserHost {
     this.foreground = new WindowForeground();
     // The person's last deliberate input per Tab, and the background-run leases of Tabs agents work in.
     this.personInputAt = new Map(); this.backgroundHolds = new Map();
-    this.agentBusy = new Map(); this.spin = 0; this.spinner = null; this.groupLabels = null;
+    this.agentBusy = new Map(); this.spin = 0; this.spinner = null; this.groupLabels = null; this.keepTimer = null;
     this.restoring = false;
     this.adoptedByInput = new WeakSet();
     this.keepaliveTarget = null;
@@ -269,7 +271,7 @@ export class KernelBrowserHost {
     this.browser = null;
     if(this.displayTeardownErrors.length)throw new AggregateError(this.displayTeardownErrors.splice(0),'MD-DISPLAY: owned display teardown failed');
     this.backgroundHolds.clear();this.personInputAt.clear();
-    clearInterval(this.spinner);this.spinner=null;this.agentBusy.clear();
+    clearInterval(this.spinner);this.spinner=null;this.agentBusy.clear();clearInterval(this.keepTimer);this.keepTimer=null;
     this.tabs.clear();this.header.clear();this.layouts.clear();this.layoutRevisions.clear();this.windowLayout=null;this.resizeSettled=null;
     this.popupEvidence.clear();
     this.observed = ++this.observations;
@@ -938,21 +940,26 @@ export class KernelBrowserHost {
       await delay(Math.min(wait, 250));
     }
   }
-  // MP-08/MP-10: a Tab an agent works in keeps rendering at full speed while Chrome shows another Tab (per-Tab focus emulation, held while the Tab lives).
+  // MP-08/MP-10: a Tab an agent works in keeps rendering at full speed while Chrome shows another Tab: per-Tab focus emulation
+  // (as Playwright does), asserted when the agent first acts in it and every few seconds after, because display and input
+  // code switches it off again whenever it releases a hidden page.
   async holdBackground(tab) {
-    if (this.backgroundHolds.has(tab.target_id)) return;
-    const holding = (async () => {
+    if (!this.backgroundHolds.has(tab.target_id)) {
       const { connection, sessionId } = await this.browser.resolvePageTarget(tab.target_id);
-      return this.browser.inputCapture.hold(connection, sessionId);
-    })();
-    this.backgroundHolds.set(tab.target_id, holding);
-    try { await holding; } catch (error) { this.backgroundHolds.delete(tab.target_id); throw error; }
+      this.backgroundHolds.set(tab.target_id, { connection, sessionId });
+      if (!this.keepTimer) { this.keepTimer = setInterval(() => void this.assertBackground(), BACKGROUND_KEEP_MS); this.keepTimer.unref?.(); }
+    }
+    await this.assertBackground(tab.target_id);
   }
-  async releaseBackground(targetId) {
-    const holding = this.backgroundHolds.get(targetId);
-    this.backgroundHolds.delete(targetId);
-    if (holding) await (await holding.catch(() => () => {}))();
+  async assertBackground(only) {
+    for (const [target, { connection, sessionId }] of [...this.backgroundHolds]) {
+      if (only !== undefined && target !== only) continue;
+      if (target === this.activeTarget) continue;
+      try { await connection.send('Emulation.setFocusEmulationEnabled', { enabled: true }, sessionId); }
+      catch { this.backgroundHolds.delete(target); }
+    }
   }
+  releaseBackground(targetId) { this.backgroundHolds.delete(targetId); }
   async requestNow(command, { signal, inputGuard, nativeDisplay } = {}) {
     const scope = command.observed_by ?? (command.focused_agent ? "focused-agent" : "adapter");
     assertNotCancelled(signal);
@@ -1117,7 +1124,7 @@ export class KernelBrowserHost {
       this.inputEpochs.delete(tab.tab_id);
       this.scrolling.delete(tab.tab_id);
       this.personInputAt.delete(tab.tab_id);
-      await this.releaseBackground(tab.target_id);
+      this.releaseBackground(tab.target_id);
       await this.browser.manageTab({ ...binding, action: "close" }, { signal });
       await this.browser.clearWebBotAuth?.(tab.tab_id);
       this.webBotAuthProjects.delete(tab.tab_id);
