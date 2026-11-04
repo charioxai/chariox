@@ -107,6 +107,15 @@ pub enum OutsideEventValue {
     Steer {
         steer_id: String,
     },
+    /// A command waits for room or runs again: `state` is the row
+    /// `session_processes_changed` shows for `process_id` at that moment.
+    Process {
+        process_id: String,
+        state: crate::runtime::process_resources::SessionProcessState,
+        /// How long it waited, once it runs again.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        waited_ms: Option<u64>,
+    },
     Session {
         state: EventSessionState,
     },

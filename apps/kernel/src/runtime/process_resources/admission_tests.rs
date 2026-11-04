@@ -1,12 +1,12 @@
 //! Admission (OF-01, OF-04, OF-05): a known heavy command waits in line
 //! before it grows and starts by itself when room frees; Start now admits it
 //! at once; a command writing a full disk is paused, not stopped.
-use super::pressure_tests::{domain, pool, settle, Workload};
+use super::pressure_tests::{domain, pool, settle, writer_command, Workload, DIE_WITH_PARENT};
 use super::*;
 
 /// Sleeps `delay` seconds (a build's start), takes `mib`, holds it `seconds`.
 fn heavy(mib: u64, delay: u64, seconds: u64) -> String {
-    format!("python3 -c 'import time,sys; time.sleep({delay}); b=bytearray({mib}*1048576); time.sleep({seconds})' heavy")
+    format!("python3 -c '{DIE_WITH_PARENT}import time,sys; time.sleep({delay}); b=bytearray({mib}*1048576); time.sleep({seconds})' heavy")
 }
 
 fn state(workload: &Workload, name: &str) -> SessionProcessState {
@@ -45,28 +45,49 @@ fn held() -> (Workload, Workload, Arc<pool::Pool>) {
 #[cfg(target_os = "linux")]
 #[test]
 fn a_known_heavy_command_waits_in_line_then_starts_by_itself() {
+    take_wait_events();
     let (a, mut b, _pool) = held();
     assert!(b.waiting("job"), "the heavy command was not held");
     match state(&b, "job") {
-        SessionProcessState::Held {
+        SessionProcessState::Held(Waiting {
             reason: WaitReason::Memory,
             position: 1,
             need_bytes,
             command_line,
+            since_ms,
             ..
-        } => {
+        }) => {
             assert!(need_bytes >= 590 * MIB, "need {need_bytes}");
             assert!(command_line.starts_with("python3 -c"), "{command_line}");
+            assert!(since_ms > 0, "the row does not say since when it waits");
         }
         other => panic!("held command reads {other:?}"),
     }
     assert!(b.alive("job"), "a held command was stopped");
+    // Its own error stream says it waits, why and its place in line.
+    b.assert_told("job", "waiting to start for memory (1st in line");
+    let began = take_wait_events()
+        .into_iter()
+        .filter(|event| matches!(event.state, SessionProcessState::Held(_)))
+        .collect::<Vec<_>>();
+    assert_eq!(began.len(), 1, "the room was not told: {began:?}");
+    assert_eq!(began[0].change, WaitChange::Began);
     // A's job ends: B starts by itself and finishes normally.
     unsafe { libc::kill(a.pid("big"), libc::SIGKILL) };
     settle(3);
     assert!(
         !b.waiting("job"),
         "the held command did not start with room"
+    );
+    b.assert_told("job", "continues after waiting");
+    let resumed = take_wait_events()
+        .into_iter()
+        .filter(|event| event.process_id == began[0].process_id)
+        .collect::<Vec<_>>();
+    assert!(
+        matches!(resumed.as_slice(), [event] if matches!(event.change, WaitChange::Resumed { .. })
+            && event.state == SessionProcessState::Running),
+        "the room was not told it runs again: {resumed:?}"
     );
     assert_eq!(state(&b, "job"), SessionProcessState::Running);
     settle(3);
@@ -121,11 +142,7 @@ fn paused_writer() -> (Workload, Arc<std::sync::atomic::AtomicU64>, Arc<pool::Po
     ));
     let writer = Workload::run(
         domain(&pool, "writer", false),
-        &[(
-            "write",
-            "python3 -c 'import os,sys,time\nf=open(sys.argv[1],\"wb\")\nwhile True:\n f.write(os.urandom(4194304)); f.flush(); os.fsync(f.fileno()); time.sleep(0.5)' \"$0/out\""
-                .into(),
-        )],
+        &[("write", writer_command())],
     );
     settle(3);
     assert!(
@@ -143,10 +160,10 @@ fn a_command_writing_past_the_disk_floor_is_paused_until_space_frees() {
     assert!(writer.alive("write"), "a writer on a full disk was stopped");
     assert!(matches!(
         state(&writer, "write"),
-        SessionProcessState::Paused {
+        SessionProcessState::Paused(Waiting {
             reason: WaitReason::Disk,
             ..
-        }
+        })
     ));
     free.store(50 * GIB, Ordering::SeqCst);
     settle(3);
@@ -170,6 +187,7 @@ fn paused_by_the_previous_program(writer: &Workload) -> admission::HeldCommand {
         paused_rate: 4 * MIB,
         peak: admission::Peak::default(),
         arrived: 1,
+        since_ms: 1,
     }
 }
 
@@ -223,10 +241,10 @@ fn a_command_admission_paused_is_still_listed_and_startable_after_a_hot_reload()
     assert!(
         matches!(
             state(&writer, "write"),
-            SessionProcessState::Paused {
+            SessionProcessState::Paused(Waiting {
                 reason: WaitReason::Disk,
                 ..
-            }
+            })
         ),
         "Health does not show the stopped command as waiting"
     );
@@ -349,11 +367,7 @@ fn paused_after_a_hot_reload(launch: Launch) -> bool {
     };
     let writer = Workload::gated(
         domain(&volume(50 * GIB), "writer", false),
-        &[(
-            "write",
-            "python3 -c 'import os,sys,time\nf=open(sys.argv[1],\"wb\")\nwhile True:\n f.write(os.urandom(4194304)); f.flush(); os.fsync(f.fileno()); time.sleep(0.5)' \"$0/out\""
-                .into(),
-        )],
+        &[("write", writer_command())],
     );
     let key = format!("admission-{:016x}", rand::random::<u64>());
     writer.domain.bind_key(&key);
@@ -535,5 +549,39 @@ fn a_launcher_chain_is_the_harness_and_only_its_later_commands_wait() {
     assert!(
         !b.waiting("job"),
         "the held command did not start with room"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_wait_longer_than_two_minutes_is_told_to_the_room_once() {
+    let (writer, _free, _pool) = paused_writer();
+    take_wait_events();
+    {
+        let mut observation = writer.domain.state.lock().unwrap();
+        for entry in observation.admission.values_mut() {
+            entry.since_ms = crate::session::unix_epoch_ms() - 130_000;
+        }
+    }
+    settle(2);
+    let long = take_wait_events()
+        .into_iter()
+        .filter(|event| event.change == WaitChange::Long)
+        .collect::<Vec<_>>();
+    assert_eq!(long.len(), 1, "a long wait was told {} times", long.len());
+    match &long[0].state {
+        SessionProcessState::Paused(row) => {
+            let notice = long_wait_notice(row, crate::session::unix_epoch_ms());
+            assert!(notice.contains("has waited 2 min"), "{notice}");
+            assert!(notice.contains("disk space"), "{notice}");
+        }
+        other => panic!("a long wait reads {other:?}"),
+    }
+    settle(2);
+    assert!(
+        take_wait_events()
+            .iter()
+            .all(|event| event.change != WaitChange::Long),
+        "the same long wait was told again"
     );
 }

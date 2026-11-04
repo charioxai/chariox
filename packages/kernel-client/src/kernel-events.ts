@@ -194,11 +194,25 @@ export type KernelEvent =
 
 export type SessionProcessWaitReason = "memory" | "disk"
 
-/** Whether a command runs or waits for room; set on the command's own process. */
+/** A command that waits for room: the one row clients show, the agent reads and the room's followers get. */
+export type SessionProcessWaiting = {
+  reason: SessionProcessWaitReason
+  /** Place in line among commands waiting for the same reason, from 1. */
+  position: number
+  need_bytes: number
+  free_bytes: number
+  command_line: string
+  cwd?: string
+  /** When it began to wait (Unix ms). */
+  since_ms: number
+}
+
+/** Whether a command runs or waits for room; set on the command's own process. `held` has not
+ * started; `paused` already started, so it never moves to another machine. */
 export type SessionProcessState =
   | { kind: "running" }
-  | { kind: "held"; reason: SessionProcessWaitReason; position: number; need_bytes: number; free_bytes: number; command_line: string }
-  | { kind: "paused"; reason: SessionProcessWaitReason; command_line: string }
+  | ({ kind: "held" } & SessionProcessWaiting)
+  | ({ kind: "paused" } & SessionProcessWaiting)
 
 export type SessionProcess = {
   process_id: string

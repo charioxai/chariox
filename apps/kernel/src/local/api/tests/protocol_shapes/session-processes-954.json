@@ -1,84 +1,108 @@
 {
-  "protocol_version": 966,
-  "relay_peer_protocol_version": 415,
+  "protocol_version": 983,
+  "relay_peer_protocol_version": 424,
   "shapes": [
     {
       "event": "session_processes_changed",
-      "session_id": "room-1",
       "processes": [
         {
+          "age_ms": 3000,
+          "command": "python3",
+          "cpu_millis": 250,
+          "disk_io_bytes": 4096,
           "owner": {
-            "kind": "agent",
-            "id": "agent-1"
+            "id": "agent-1",
+            "kind": "agent"
           },
           "pid": 42,
-          "command": "python3",
-          "resident_set_bytes": 1048576,
-          "cpu_millis": 250,
-          "sampled_at_ms": 10000,
-          "age_ms": 3000,
           "process_id": "process-issued-1",
+          "resident_set_bytes": 1048576,
+          "sampled_at_ms": 10000,
           "state": {
             "kind": "running"
-          },
-          "disk_io_bytes": 4096
+          }
         },
         {
+          "age_ms": 1000,
+          "command": "cargo",
+          "cpu_millis": 0,
+          "disk_io_bytes": 4096,
           "owner": {
-            "kind": "agent",
-            "id": "agent-1"
+            "id": "agent-1",
+            "kind": "agent"
           },
           "pid": 43,
-          "command": "cargo",
-          "resident_set_bytes": 1048576,
-          "cpu_millis": 0,
-          "sampled_at_ms": 10000,
-          "age_ms": 1000,
           "process_id": "process-issued-2",
+          "resident_set_bytes": 1048576,
+          "sampled_at_ms": 10000,
           "state": {
-            "kind": "held",
-            "reason": "memory",
-            "position": 2,
-            "need_bytes": 6442450944,
+            "command_line": "cargo build --release",
+            "cwd": "/work/repo",
             "free_bytes": 2147483648,
-            "command_line": "cargo build --release"
-          },
-          "disk_io_bytes": 4096
+            "kind": "held",
+            "need_bytes": 6442450944,
+            "position": 2,
+            "reason": "memory",
+            "since_ms": 9000
+          }
         },
         {
+          "age_ms": 1000,
+          "command": "pnpm",
+          "cpu_millis": 0,
+          "disk_io_bytes": 4096,
           "owner": {
-            "kind": "agent",
-            "id": "agent-2"
+            "id": "agent-2",
+            "kind": "agent"
           },
           "pid": 44,
-          "command": "pnpm",
-          "resident_set_bytes": 1048576,
-          "cpu_millis": 0,
-          "sampled_at_ms": 10000,
-          "age_ms": 1000,
           "process_id": "process-issued-3",
+          "resident_set_bytes": 1048576,
+          "sampled_at_ms": 10000,
           "state": {
+            "command_line": "pnpm test",
+            "free_bytes": 1073741824,
             "kind": "paused",
+            "need_bytes": 3221225472,
+            "position": 1,
             "reason": "disk",
-            "command_line": "pnpm test"
-          },
-          "disk_io_bytes": 4096
+            "since_ms": 8000
+          }
         }
-      ]
+      ],
+      "session_id": "room-1"
     },
     {
-      "category": "memory_limit",
-      "reason": "provider process tree exceeded its memory limit of 33554432 bytes",
-      "timestamp_ms": 10000,
-      "failure": {
-        "kind": "other",
-        "retryable": false,
-        "reason": "provider process tree exceeded its memory limit of 33554432 bytes"
+      "agent_id": "agent-1",
+      "at_ms": 10000,
+      "cursor": 5,
+      "kernel": "kernel-1",
+      "machine": "machine-1",
+      "refs": {},
+      "session_id": "room-1",
+      "summary": "running again",
+      "type": "process",
+      "value": {
+        "process_id": "process-issued-2",
+        "state": {
+          "kind": "running"
+        },
+        "waited_ms": 4000
       }
     },
     {
-      "reason": "memory_limit",
-      "limit_bytes": 33554432
+      "category": "memory_limit",
+      "failure": {
+        "kind": "other",
+        "reason": "provider process tree exceeded its memory limit of 33554432 bytes",
+        "retryable": false
+      },
+      "reason": "provider process tree exceeded its memory limit of 33554432 bytes",
+      "timestamp_ms": 10000
+    },
+    {
+      "limit_bytes": 33554432,
+      "reason": "memory_limit"
     },
     {
       "kind": "memory_limit",
@@ -105,18 +129,18 @@
     },
     {
       "category": "outside_end",
-      "reason": "Stopped from Machines.",
-      "timestamp_ms": 10000,
       "failure": {
         "kind": "cancelled",
-        "retryable": false,
-        "reason": ""
-      }
+        "reason": "",
+        "retryable": false
+      },
+      "reason": "Stopped from Machines.",
+      "timestamp_ms": 10000
     },
     {
       "StartSessionProcessNow": {
-        "session_id": "room-1",
-        "process_id": "process-issued-2"
+        "process_id": "process-issued-2",
+        "session_id": "room-1"
       }
     },
     {

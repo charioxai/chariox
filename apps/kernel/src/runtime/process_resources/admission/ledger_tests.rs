@@ -669,3 +669,37 @@ fn growing_builds_finish_one_after_another_under_tight_memory() {
         .collect::<Vec<_>>();
     panic!("builds {paused:?} never finished: all paused under tight memory");
 }
+
+#[test]
+fn a_paused_and_a_held_command_are_one_row_apart_from_the_kind() {
+    let waiting = |wait| {
+        let mut waiting = entry(
+            1,
+            Peak {
+                memory: 6 * GIB,
+                writes: 0,
+            },
+        );
+        waiting.wait = Some(wait);
+        waiting.position = 2;
+        waiting.need = 6 * GIB;
+        waiting.free = GIB;
+        waiting.since_ms = 42;
+        projection::state_of(&waiting)
+    };
+    match (
+        waiting(Wait::Held(WaitReason::Memory)),
+        waiting(Wait::Paused(WaitReason::Memory)),
+    ) {
+        (SessionProcessState::Held(held), SessionProcessState::Paused(paused)) => {
+            assert_eq!(
+                held, paused,
+                "paused and held rows differ in more than the kind"
+            );
+            assert_eq!(held.command_line, "job 1");
+            assert_eq!(held.cwd.as_deref(), Some("/scratch"));
+            assert_eq!((held.position, held.since_ms), (2, 42));
+        }
+        other => panic!("rows read {other:?}"),
+    }
+}

@@ -465,4 +465,7 @@ pub use workspace::*;
 /// Connected service machine requests use the ordinary Chariox access grant.
 /// MP-08/MP-09/MP-10/MP-11: 965 integrates declared Vault uses and enrolled-kernel machine authority (peer414).
 /// MP-08/MP-09/MP-10/MP-11: 966 integrates WASM Apps with Landing965 (peer415).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 966;
+/// Allocated 983 gives a waiting command one row: `SessionProcessState` `held` and `paused` carry the
+/// same fields (reason, place in line, need, free, command line, folder, waiting since), and an
+/// outside `process` event carries that row (peer424).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 983;

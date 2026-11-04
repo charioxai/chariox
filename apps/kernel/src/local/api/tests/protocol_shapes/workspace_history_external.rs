@@ -1033,6 +1033,7 @@ fn local_daemon_protocol_prompt_attachment_size_shape_is_versioned_and_hashed() 
 fn local_daemon_protocol_session_process_memory_outcomes_are_versioned() {
     use crate::runtime::process_resources::{
         ProcessSample, SessionProcess, SessionProcessOwner, SessionProcessState, WaitReason,
+        Waiting,
     };
     let snapshot = serde_json::json!({
         "protocol_version": LOCAL_DAEMON_PROTOCOL_VERSION,
@@ -1065,13 +1066,15 @@ fn local_daemon_protocol_session_process_memory_outcomes_are_versioned() {
                     sampled_at_ms: 10000,
                     age_ms: 1000,
                 },
-                state: SessionProcessState::Held {
+                state: SessionProcessState::Held(Waiting {
                     reason: WaitReason::Memory,
                     position: 2,
                     need_bytes: 6442450944,
                     free_bytes: 2147483648,
                     command_line: "cargo build --release".into(),
-                },
+                    cwd: Some("/work/repo".into()),
+                    since_ms: 9000,
+                }),
             }, SessionProcess {
                 owner: SessionProcessOwner::Agent("agent-2".into()),
                 process: ProcessSample {
@@ -1084,11 +1087,31 @@ fn local_daemon_protocol_session_process_memory_outcomes_are_versioned() {
                     sampled_at_ms: 10000,
                     age_ms: 1000,
                 },
-                state: SessionProcessState::Paused {
+                state: SessionProcessState::Paused(Waiting {
                     reason: WaitReason::Disk,
+                    position: 1,
+                    need_bytes: 3221225472,
+                    free_bytes: 1073741824,
                     command_line: "pnpm test".into(),
-                },
+                    cwd: None,
+                    since_ms: 8000,
+                }),
             }],
+        },
+        crate::local::OutsideEvent {
+            cursor: 5,
+            kernel: "kernel-1".into(),
+            machine: "machine-1".into(),
+            session_id: "room-1".into(),
+            agent_id: Some("agent-1".into()),
+            value: crate::local::OutsideEventValue::Process {
+                process_id: "process-issued-2".into(),
+                state: SessionProcessState::Running,
+                waited_ms: Some(4000),
+            },
+            summary: "running again".into(),
+            at_ms: 10000,
+            refs: crate::local::EventRefs::default(),
         },
         crate::provider::ProviderRunTermination::memory_limit(33554432, 10000),
         crate::room_terminal::RoomTerminalOutcome::MemoryLimit {
@@ -1130,6 +1153,6 @@ fn local_daemon_protocol_session_process_memory_outcomes_are_versioned() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "9ac4e64f7096997409619a023b88308869b18ac59f5a58a9874218a1966d4863"
+        "d3abee5628c33b82ca05e027db805f5ad578e45f10cf5f233ca9aa2dcc44fcd5"
     );
 }

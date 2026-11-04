@@ -39,7 +39,7 @@ pub(super) enum Wait {
     Paused(WaitReason),
 }
 impl Wait {
-    fn reason(self) -> WaitReason {
+    pub(super) fn reason(self) -> WaitReason {
         match self {
             Wait::Held(reason) | Wait::Paused(reason) => reason,
         }
@@ -60,7 +60,7 @@ pub(super) struct Seen {
     pid: u32,
     key: String,
     pub line: String,
-    cwd: Option<PathBuf>,
+    pub cwd: Option<PathBuf>,
 }
 
 /// Admission's view of one command (the top of a subtree under the root).
@@ -88,8 +88,26 @@ pub(super) struct Entry {
     pub position: u32,
     pub need: u64,
     pub free: u64,
+    /// When it began to wait (Unix ms), for the row clients show.
+    pub since_ms: u64,
+    /// The person was told this wait has grown long.
+    pub long_noticed: bool,
 }
 impl Entry {
+    /// It waits from now on, for the reason `wait` names.
+    fn wait_for(&mut self, wait: Wait) {
+        if self.wait.is_none() {
+            self.since_ms = crate::session::unix_epoch_ms();
+            self.long_noticed = false;
+        }
+        self.wait = Some(wait);
+    }
+
+    /// It runs again.
+    fn stop_waiting(&mut self) {
+        self.wait = None;
+    }
+
     #[cfg(test)]
     pub(super) fn holdable(&self) -> bool {
         self.holdable
@@ -120,9 +138,10 @@ impl Entry {
 
     /// Start now: the user admits it whatever the room.
     pub(super) fn force(&mut self) -> bool {
-        if self.wait.take().is_none() {
+        if self.wait.is_none() {
             return false;
         }
+        self.stop_waiting();
         self.forced = true;
         self.admitted = true;
         true
@@ -143,6 +162,7 @@ pub(crate) struct HeldCommand {
     pub(super) paused_rate: u64,
     pub(super) peak: Peak,
     pub(super) arrived: u64,
+    pub(super) since_ms: u64,
 }
 
 impl HeldCommand {
@@ -162,6 +182,7 @@ impl HeldCommand {
             paused_rate: entry.paused_rate,
             peak: entry.peak,
             arrived: entry.arrived,
+            since_ms: entry.since_ms,
         })
     }
 
@@ -178,6 +199,7 @@ impl HeldCommand {
             stopped: self.stopped,
             paused_rate: self.paused_rate,
             peak: self.peak,
+            since_ms: self.since_ms,
             ..Entry::default()
         }
     }
@@ -421,7 +443,7 @@ impl Ledger {
             let need = expected.memory.saturating_sub(entry.resident);
             let disk = entry.disk(room);
             let ahead = entry.writes_ahead(room);
-            entry.wait = if !entry.holdable {
+            let held = if !entry.holdable {
                 None
             } else if expected.memory >= room.light && need > *available && state.heavy_running {
                 Some(Wait::Held(WaitReason::Memory))
@@ -430,7 +452,9 @@ impl Ledger {
             } else {
                 None
             };
-            if entry.wait.is_none() {
+            if let Some(held) = held {
+                entry.wait_for(held);
+            } else {
                 entry.admitted = true;
                 *available = available.saturating_sub(need);
                 if let Some(disk) = disk {
@@ -473,7 +497,7 @@ impl Ledger {
             .admission
             .get_mut(&pid)
         {
-            entry.wait = Some(Wait::Paused(reason));
+            entry.wait_for(Wait::Paused(reason));
             entry.paused_rate = rate;
         }
         crate::logging::info_with_fields(
@@ -526,7 +550,7 @@ impl Ledger {
         if let Some(volume) = volume {
             state.reserve(volume, entry.writes_ahead(room));
         }
-        entry.wait = None;
+        entry.stop_waiting();
         entry.admitted = true;
         state.running(entry, room);
         let unit = observation.unit.clone();
