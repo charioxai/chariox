@@ -72,7 +72,7 @@ impl KernelRuntimeState {
             .ok_or_else(|| error("the Environment tools take an object"))?;
         let context = self.vault_agent_context(token)?;
         let session = self.owned.session_store.get_session(&context.session_id)?;
-        let project = self.owned_project(session.project_id(), &context.owner_user_id)?;
+        let project = self.tool_project(&session, &context.owner_user_id)?;
         let checkout = self.project_checkout(&project, Some(session.worktree_id()))?;
         let record = self.environment_store().load(project.id())?;
         let payload = match tool_name {
