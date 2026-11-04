@@ -767,3 +767,21 @@ fn mp08_mp11_vault_fill_941_shape_and_hash() {
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION
     );
 }
+
+#[test]
+fn show_tab_is_a_person_command_with_its_tab_and_generation() {
+    let command = Command::ShowTab {
+        tab_id: "host-tab-1".into(),
+        generation: 3,
+    };
+    let wire = serde_json::json!({"op":"show_tab","tab_id":"host-tab-1","generation":3});
+    assert_eq!(serde_json::to_value(&command).unwrap(), wire);
+    assert_eq!(serde_json::from_value::<Command>(wire).unwrap(), command);
+    assert!(
+        serde_json::from_value::<Command>(
+            serde_json::json!({"op":"show_tab","tab_id":"t","generation":3,"agent":"a"})
+        )
+        .is_err(),
+        "no field names who asks"
+    );
+}
