@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 /* MP-08/MP-10/MP-11: actual private X server; no desktop/provider state. */
 #include <assert.h>
 #include <unistd.h>
