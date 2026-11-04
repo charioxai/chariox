@@ -11,6 +11,7 @@ the repository), and for `viewer.mjs` also `ROOM_ORIGIN`, `ROOM_EVIDENCE`, `ROOM
 - `driver.mjs` submits `ROOM_DIR/cmd/<agent-id>.<n>.prompt`, and writes `events.jsonl` (provider output and tool calls),
   `interactions.jsonl` (every Room card: appeared and gone with seconds open: the human-step timings) and
   `agentstate.jsonl` (agent and task states: Working, Waiting, Blocked).
+- `front-page.mjs <url>` puts a page in the tab that is in front (the owner API cannot activate a tab) and lists the tabs; `stop-agent.mjs <agent-id> <attachment-id>` cancels an agent's running and queued prompts.
 - `answer-card.mjs` lists or answers open cards. `brief.py` and `wait-event.sh` read the logs. `viewer.mjs` is the owner's real web view.
 
 Learned with this rig: a blocking `request_popup` is cut by the provider after about 5 minutes (use `wait:false` and
