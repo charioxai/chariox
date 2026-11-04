@@ -126,7 +126,9 @@ async function multiAgentLoad() {
     options: { seconds: Number(args.get('--multi-agent-load')), lanes: number('--lanes', 10), leftover: number('--leftover', 500), padding: number('--padding', 1024),
       subscriptions: args.has('--subscriptions') ? args.get('--subscriptions').split(',').filter(Boolean).map(Number) : [30, 24, 20, 2],
       churnPerMin: number('--churn-per-min', 60), readers: number('--readers', 3), readerHz: number('--reader-hz', 8), toggleHz: number('--toggle-hz', 3),
-      promptIntervalMs: number('--prompt-interval-ms', 3000), idleSeconds: number('--idle-seconds', 30) } })
+      promptIntervalMs: number('--prompt-interval-ms', 3000), idleSeconds: number('--idle-seconds', 30),
+      // `cancel` ends each turn through the owner's Stop, which settles the turn's task; the default leaves it unfinished.
+      endTurn: args.get('--end-turn') ?? 'complete' } })
   console.log(`multi-agent load: ${result.verdict} ${result.red.join(' ')}`)
   output.completed = true; save()
   process.exitCode = result.verdict === 'GREEN' ? 0 : 1

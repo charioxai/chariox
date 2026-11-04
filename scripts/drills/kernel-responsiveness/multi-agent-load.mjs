@@ -67,14 +67,22 @@ function countEvents(root) {
 
 export async function measureMultiAgentLoad({ rpc, connect, root, mcpUrl, pid, stop, start, report, save, distribution, logPath, options }) {
   const o = { lanes: 10, leftover: 500, subscriptions: [30, 24, 20, 2], padding: 1024, churnPerMin: 60, readers: 3, readerHz: 8,
-    toggleHz: 3, promptIntervalMs: 3000, idleSeconds: 30, seconds: 120, ...options }
+    toggleHz: 3, promptIntervalMs: 3000, idleSeconds: 30, seconds: 120, endTurn: 'complete', ...options }
   const out = report.multi_agent_load = { options: o, lanes: [], phases: {} }
   save()
   const work = join(root, 'work')
   const mainClient = connect()
   const send = async request => { const result = await mainClient.send(request); if (result.Error) throw new Error(`${Object.keys(request)[0]}: ${result.Error.code}: ${result.Error.message}`); return result }
   // Only completed requests enter a latency distribution; failures are counted separately.
-  const timed = (timings, kind) => async run => { const at = performance.now(); const result = await run(); (timings[kind] ??= []).push(performance.now() - at); return result }
+  // `series` keeps when each sample finished, so a latency that drifts while Rooms accumulate is visible per minute.
+  const series = Symbol('series')
+  const timed = (timings, kind) => async run => { const at = performance.now(); const result = await run(); const done = performance.now()
+    ;(timings[kind] ??= []).push(done - at); ;((timings[series] ??= {})[kind] ??= []).push([done, done - at]); return result }
+  const perMinute = (samples, from) => {
+    const buckets = []
+    for (const [done, ms] of samples ?? []) (buckets[Math.floor((done - from) / 60000)] ??= []).push(ms)
+    return buckets.map(values => values ? (({ n, p50_ms, p99_ms }) => ({ n, p50_ms, p99_ms }))(distribution([...values])) : null)
+  }
 
   // Lanes: a session, an attachment and a dev-stub provider run per lane.
   for (let i = 0; i < o.lanes; i++) {
@@ -181,7 +189,9 @@ export async function measureMultiAgentLoad({ rpc, connect, root, mcpUrl, pid, s
           await guarded('prompt', () => s(() => laneSend(attachment_id => ({ SubmitPrompt: { session_id: lane.session_id, attachment_id, target_agent_id: lane.agent_id, prompt: 'kr06 load turn', attachments: [] } }))).then(() => { submitted = true }))
           await delay(o.promptIntervalMs / 2)
           // A prompt still being dispatched is ended by the next tick; that is not a load error.
-          await guarded('complete', () => f(() => laneSend(() => ({ CompletePrompt: { session_id: lane.session_id } }))).then(() => {
+          await guarded('complete', () => f(() => laneSend(attachment_id => o.endTurn === 'cancel'
+            ? { CancelActivePrompt: { session_id: lane.session_id, attachment_id, target_agent_id: lane.agent_id } }
+            : { CompletePrompt: { session_id: lane.session_id } })).then(() => {
             if (submitted) lane.prompt_cycles = (lane.prompt_cycles ?? 0) + 1
           }, error => {
             if (!String(error.message).includes('has no active prompt')) throw error
@@ -222,6 +232,7 @@ export async function measureMultiAgentLoad({ rpc, connect, root, mcpUrl, pid, s
       durable_events_per_s: +((after.events - before.events) / elapsed).toFixed(2),
       durable_writer: projection.durable_writer,
       latency: Object.fromEntries(Object.entries(timings).filter(([, v]) => v.length).map(([kind, values]) => [kind, distribution(values)])),
+      per_minute: Object.fromEntries(['GetSessionState', 'ListSessions', 'RelayStatus'].map(kind => [kind, perMinute(timings[series]?.[kind], before.at)])),
       request_timings: timingsOf(projection, ['relay.status', 'session.state.get', 'session.list', 'session.create', 'session.end', 'session.attach', 'prompt.submit', 'prompt.cancel', 'room.pinned.set', 'machine_file.read']) }
     save()
   }
