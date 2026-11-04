@@ -8,8 +8,8 @@ impl KernelGateway {
                 for part in parts.into_iter().filter(|part| part.home) {
                     let harness = self
                         .runtime_state
-                        .access_grant_summary(&part.id)
-                        .map_or_else(|| "external agent".into(), |grant| harness_name(&grant));
+                        .gateway_origin(&part.id)
+                        .map_or_else(|| "external agent".into(), |origin| origin.harness);
                     self.start_event_parts(&Origin {
                         grant_id: part.id,
                         harness,
@@ -113,12 +113,7 @@ impl KernelGateway {
             Ok(Some(part)) => part,
             _ => return false,
         };
-        if part.ended.is_none()
-            && self
-                .runtime_state
-                .access_grant_summary(&origin.grant_id)
-                .is_none()
-        {
+        if part.ended.is_none() && !self.runtime_state.event_source_alive(&origin.grant_id) {
             if store
                 .outside_mutate(Mutation::Unsubscribe {
                     id: origin.grant_id.clone(),

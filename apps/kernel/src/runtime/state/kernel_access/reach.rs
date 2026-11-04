@@ -3,6 +3,7 @@
 //! token the agent holds. Without /sudo a reach caller may do elsewhere what a Room
 //! agent without /sudo may do in its own room; a live /sudo window of its own turn
 //! adds what /sudo adds at home. Human-only requests are refused on every path.
+use super::super::outside_events::is_outside_event_request;
 use super::super::sudo::sudo_request_forbidden;
 use super::policy::restricted_request;
 use super::*;
@@ -37,6 +38,13 @@ pub(crate) enum ReachNeed {
 pub(crate) fn reach_need(request: &LocalDaemonRequest) -> ReachNeed {
     if restricted_request(request) {
         return ReachNeed::HumanOnly;
+    }
+    // Following other agents and answering the routine decision of another room are part of
+    // driving it; both stay outside /sudo's reach for the caller's own room (see `reach_request`).
+    if is_outside_event_request(request)
+        || matches!(request, LocalDaemonRequest::RespondToInteraction(_))
+    {
+        return ReachNeed::Room;
     }
     if sudo_request_forbidden(request) {
         return ReachNeed::Excluded;
@@ -225,6 +233,40 @@ impl KernelRuntimeState {
             )
             .await?;
         Ok(answer.payload["choice_id"] == "accept")
+    }
+
+    /// Who owns an event inbox: the access grant or the live reach caller that subscribed.
+    pub(crate) fn event_source_owner(&self, id: &str) -> Option<String> {
+        if id.starts_with(REACH_PREFIX) {
+            return Some(self.reach_for_id(id)?.owner_user_id);
+        }
+        Some(self.access_grant_summary(id)?.owner_user_id)
+    }
+
+    /// Whether the grant or reach run an inbox belongs to still lives; an ended one ends its subscription.
+    pub(crate) fn event_source_alive(&self, id: &str) -> bool {
+        self.event_source_owner(id).is_some()
+    }
+
+    /// Ends the subscriptions of reach runs that are gone, so a finished agent leaves no inbox filling up.
+    pub(crate) fn end_dead_reach_subscriptions(&self) -> Result<(), DaemonError> {
+        use crate::durable_state::agent_lifecycle::outside::Mutation;
+        let store = self.outside_store();
+        for part in store.outside_parts()? {
+            if part.home
+                && part.ended.is_none()
+                && part.id.starts_with(REACH_PREFIX)
+                && !self.event_source_alive(&part.id)
+            {
+                store.outside_mutate(Mutation::Unsubscribe {
+                    id: part.id,
+                    targets: Vec::new(),
+                    all: true,
+                    reason: "run_ended".into(),
+                })?;
+            }
+        }
+        Ok(())
     }
 
     /// What a /sudo window of this caller's own turn adds; `None` without one.

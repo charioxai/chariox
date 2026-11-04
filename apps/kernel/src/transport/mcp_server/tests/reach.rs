@@ -23,6 +23,7 @@ const REACH_TOOL_NAMES: [&str; 7] = [
 
 const OWNER_TOKEN: &str = "reach-owner-token";
 const GUEST_TOKEN: &str = "reach-guest-token";
+const DRIVEN_TOKEN: &str = "reach-driven-token";
 
 /// A live run of `agent_id` that answers to `token`, as a running turn would.
 fn launch(
@@ -70,12 +71,29 @@ fn fixture_with(owner_running: bool) -> Reach {
             )
             .expect("guest agent should be created")
     };
+    let driven = {
+        let mut sessions = app.sessions_mut();
+        let mut agents = app.agents_mut();
+        agents
+            .create_agent(
+                CreateAgentRequest::new(other_session.id(), "dev-stub").with_alias("driven-agent"),
+                &mut sessions,
+            )
+            .expect("driven agent should be created")
+    };
     let owner_token = launch(
         &mut app,
         session.id(),
         agent.id(),
         "reach-run-owner",
         OWNER_TOKEN,
+    );
+    launch(
+        &mut app,
+        other_session.id(),
+        driven.id(),
+        "reach-run-driven",
+        DRIVEN_TOKEN,
     );
     if !owner_running {
         let mut providers = app.providers_mut();
@@ -175,6 +193,26 @@ fn reach_need_follows_the_agents_own_room_authority() {
             serde_json::json!({"DeleteSession": {"session_ref": "s"}})
         )),
         ReachNeed::Excluded
+    );
+    for request in [
+        serde_json::json!({"SubscribeEvents": {"targets": []}}),
+        serde_json::json!({"WaitEvents": {"timeout_ms": 1}}),
+        serde_json::json!({"AckEvents": {"cursor": 1}}),
+        serde_json::json!({"RespondToInteraction": {
+            "session_id": "s", "interaction_id": "i", "choice_id": "accept"}}),
+    ] {
+        assert_eq!(
+            reach_need(&parse(request)),
+            ReachNeed::Room,
+            "following agents and answering a routine decision are room-level"
+        );
+    }
+    assert_eq!(
+        reach_need(&parse(serde_json::json!({"RespondToInteraction": {
+            "session_id": "s", "interaction_id": "i", "choice_id": "approve",
+            "passkey": "x"}}))),
+        ReachNeed::HumanOnly,
+        "a passkey stays with the person"
     );
     assert_eq!(
         reach_need(&parse(
@@ -612,4 +650,147 @@ async fn the_reach_tools_are_listed_before_the_run_is_running_and_called_only_wh
             .is_empty(),
         "a guest's agent gets none, whatever state its run is in"
     );
+}
+
+/// AT-40 on the reach surface: a driver follows the room of an agent it drives, is woken by
+/// the decision that agent raises, reads it and answers it; nothing from other rooms arrives.
+#[tokio::test]
+async fn a_driver_is_woken_by_the_decision_a_driven_agent_raises_and_answers_it() {
+    let reach = fixture();
+    reach
+        .router
+        .runtime_state()
+        .set_user_config_value("agents.ask_before_acquiring_machines".into(), "true".into())
+        .await
+        .expect("the owner turns the setting on");
+    let (ok, subscription) = tool(
+        &reach,
+        "events_subscribe",
+        serde_json::json!({"kernel": "local", "session_id": reach.other_session_id}),
+    )
+    .await;
+    assert!(ok, "{subscription}");
+
+    let driven = {
+        let router = reach.router.clone();
+        let token = DRIVEN_TOKEN;
+        tokio::spawn(async move {
+            router
+                .dispatch_reach_tool_call(
+                    token,
+                    "request",
+                    serde_json::json!({"request": {"ControlPlane": {
+                    "action": "acquire", "capability_revision": "r1", "request_id": "driven"}}}),
+                )
+                .await
+        })
+    };
+    let (ok, batch) = tool(
+        &reach,
+        "events_wait",
+        serde_json::json!({"timeout_seconds": 20}),
+    )
+    .await;
+    assert!(ok, "{batch}");
+    let events = batch["EventsListed"]["events"].as_array().expect("events");
+    assert!(
+        events
+            .iter()
+            .all(|event| event["session_id"] == reach.other_session_id),
+        "only the followed room reports: {batch}"
+    );
+    let card = events
+        .iter()
+        .find(|event| event["type"] == "interaction" && event["value"]["state"] == "pending")
+        .unwrap_or_else(|| panic!("the pending decision wakes the driver: {batch}"));
+    assert!(card["value"]["question"]["message"]
+        .as_str()
+        .unwrap()
+        .starts_with("Let "));
+    assert!(card["agent_id"].is_string() && card["kernel"].is_string());
+    let interaction_id = card["refs"]["interaction_id"]
+        .as_str()
+        .expect("interaction id");
+
+    let (ok, answered) = tool(
+        &reach,
+        "request",
+        serde_json::json!({"request": {"RespondToInteraction": {
+            "session_id": reach.other_session_id,
+            "interaction_id": interaction_id,
+            "choice_id": "accept"}}}),
+    )
+    .await;
+    assert!(ok, "{answered}");
+    let result = driven.await.unwrap().unwrap();
+    assert_ne!(
+        code(&result.payload),
+        "acquisition_declined",
+        "the driver's answer reached the driven agent: {}",
+        result.payload
+    );
+    let cursor = batch["EventsListed"]["next_cursor"]
+        .as_u64()
+        .expect("cursor");
+    let (ok, _) = tool(&reach, "events_ack", serde_json::json!({"cursor": cursor})).await;
+    assert!(ok);
+}
+
+#[tokio::test]
+async fn an_agent_does_not_answer_the_decision_of_its_own_room() {
+    let reach = fixture();
+    let (ok, payload) = call(
+        &reach,
+        &reach.owner_token,
+        None,
+        serde_json::json!({"RespondToInteraction": {
+            "session_id": reach.session_id, "interaction_id": "any", "choice_id": "accept"}}),
+    )
+    .await;
+    assert!(!ok);
+    assert_eq!(code(&payload), "excluded_for_agents");
+}
+
+#[tokio::test]
+async fn events_follow_the_run_and_run_on_the_agents_own_kernel() {
+    let reach = fixture();
+    let (ok, payload) = call(
+        &reach,
+        &reach.owner_token,
+        Some("kernel-b"),
+        serde_json::json!({"WaitEvents": {"timeout_ms": 1}}),
+    )
+    .await;
+    assert!(!ok);
+    assert_eq!(code(&payload), "events_local_only");
+    // A guest's room is not the owner's to follow.
+    let (ok, payload) = tool(
+        &reach,
+        "events_subscribe",
+        serde_json::json!({"kernel": "local", "session_id": "no-such-room"}),
+    )
+    .await;
+    assert!(!ok);
+    assert_eq!(code(&payload), "events_refused", "{payload}");
+
+    let (ok, _) = tool(
+        &reach,
+        "events_subscribe",
+        serde_json::json!({"kernel": "local", "session_id": reach.other_session_id}),
+    )
+    .await;
+    assert!(ok);
+    let state = reach.router.runtime_state();
+    let id = state.reach_for_auth_token(&reach.owner_token).unwrap().id;
+    // The run ends: its inbox ends with it, and nothing waits on a run that is gone.
+    {
+        let app = reach.app.lock().await;
+        let mut providers = app.providers_mut();
+        let mut run = providers.get_run("reach-run-owner").unwrap();
+        run.mark_parked();
+        providers.insert_run_for_test(run);
+    }
+    state.end_dead_reach_subscriptions().unwrap();
+    let ended = state.outside_ended_response(&id).unwrap();
+    assert!(ended.is_some(), "the subscription of an ended run ends");
 }

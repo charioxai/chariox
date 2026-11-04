@@ -5,6 +5,7 @@ use super::CommandRouter;
 use crate::error::DaemonError;
 use crate::local::LocalDaemonRequest;
 use crate::runtime::kernel_gateway::Origin;
+use crate::runtime::state::is_outside_event_request;
 use crate::runtime::state::reach::{acquires_machine, reach_need, ReachCaller, ReachNeed};
 use crate::transport::runtime_tools::{
     reach_events_ack_request, reach_events_subscribe_request, reach_events_wait_request,
@@ -35,6 +36,25 @@ fn kernel_request(request: serde_json::Value) -> Result<LocalDaemonRequest, Daem
     serde_json::from_value(request).map_err(|_| {
         crate::runtime::kernel_access::error("invalid kernel request: use externally tagged JSON in request, for example {\"ListSessions\":null}")
     })
+}
+
+/// Answering a decision of the caller's own room would let an agent approve what it asked for.
+fn answers_own_room(
+    router: &CommandRouter,
+    caller: &ReachCaller,
+    kernel: Option<&str>,
+    request: &LocalDaemonRequest,
+) -> bool {
+    let LocalDaemonRequest::RespondToInteraction(answer) = request else {
+        return false;
+    };
+    let config = router.config_projection.snapshot();
+    let own_kernel = kernel.is_none_or(|kernel| {
+        kernel == "local"
+            || kernel == config.daemon_id
+            || config.daemon_alias.as_deref() == Some(kernel)
+    });
+    own_kernel && answer.session_id == caller.session_id
 }
 
 impl CommandRouter {
@@ -140,6 +160,22 @@ impl CommandRouter {
                     )),
                 },
             };
+        if is_outside_event_request(&request) {
+            // The inbox of events lives on the agent's own kernel, whichever kernel is followed.
+            if kernel.is_some() {
+                return Ok(refused(
+                    "events_local_only",
+                    "event requests run on your own kernel; name the kernel to follow in events_subscribe",
+                ));
+            }
+            return self.reach_events(caller, request).await;
+        }
+        if answers_own_room(self, caller, kernel.as_deref(), &request) {
+            return Ok(refused(
+                "excluded_for_agents",
+                "an agent does not answer the decisions of its own room; answer the room you drive",
+            ));
+        }
         if acquires_machine(&request) && !state.confirm_machine_acquisition(caller).await? {
             return Ok(refused(
                 "acquisition_declined",
@@ -186,6 +222,35 @@ impl CommandRouter {
                 Err(failure) => refused(failure.code(), failure.transport_error().message),
             },
         )
+    }
+
+    /// Follow, wait and acknowledge on the agent's own inbox, which is named after its run.
+    async fn reach_events(
+        &self,
+        caller: &ReachCaller,
+        request: LocalDaemonRequest,
+    ) -> Result<RuntimeToolResult, DaemonError> {
+        let origin = Origin {
+            grant_id: caller.id.clone(),
+            harness: caller.harness.clone(),
+        };
+        if matches!(request, LocalDaemonRequest::SubscribeEvents(_)) {
+            self.runtime_state.end_dead_reach_subscriptions()?;
+        }
+        match self
+            .kernel_gateway()
+            .event_request(&origin, &request, None)
+            .await
+        {
+            Ok(response) => Ok(RuntimeToolResult {
+                ok: true,
+                payload: serde_json::to_value(response).map_err(|_| {
+                    crate::runtime::kernel_access::error("kernel response serialization failed")
+                })?,
+            }),
+            Err(DaemonError::MachineRequest { code, message }) => Ok(refused(&code, message)),
+            Err(error) => Ok(refused("request_failed", error.to_string())),
+        }
     }
 
     /// The agent's own kernel: the owner's request, named after the run, with none of
