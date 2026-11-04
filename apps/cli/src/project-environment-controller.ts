@@ -72,6 +72,7 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
   let sourceIndex = 0
   let message: string | null = null
   let busy = false
+  let saveTextPending = false
   let pollingOperationId: string | null = null
 
   const script = () => typed.script ?? environment?.setup.script ?? ""
@@ -118,7 +119,14 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
       if (mine !== generation) return
       message = failureText(error)
     } finally {
-      if (mine === generation) { busy = false; deps.render() }
+      if (mine === generation) {
+        busy = false
+        deps.render()
+        if (saveTextPending) {
+          saveTextPending = false
+          void saveTypedText()
+        }
+      }
     }
   }
 
@@ -183,12 +191,12 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
   const save = async (patch: { secretNames?: string[]; filePaths?: string[]; mcps?: EnvironmentExtension[]; skills?: EnvironmentExtension[] }) => {
     const current = environment
     if (!current || busy) return
+    const submitted = { script: script(), variables: variables() }
     await guarded(
       async () => projectEnvironmentSaveOutcomeFromResponse(await deps.send(saveProjectEnvironmentRequest({
         projectId,
         expectedRevision: current.revision,
-        script: script(),
-        variables: variables(),
+        ...submitted,
         secretNames: patch.secretNames ?? current.secrets.map((secret) => secret.name),
         filePaths: patch.filePaths ?? current.files.map((file) => file.path),
         mcps: patch.mcps ?? current.mcps.map(({ name, source }) => ({ name, source })),
@@ -196,7 +204,10 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
       }))),
       (outcome) => {
         setEnvironment(outcome.environment)
-        if (outcome.kind === "saved") typed = {}
+        if (outcome.kind === "saved") {
+          if (typed.script === submitted.script) delete typed.script
+          if (typed.variables === submitted.variables) delete typed.variables
+        }
         else message = "Changed elsewhere"
       },
     )
@@ -205,7 +216,9 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
   const hasUnsavedText = () => environment !== null && (script() !== environment.setup.script || variables() !== environment.variables)
 
   const saveTypedText = async () => {
-    if (hasUnsavedText()) await save({})
+    if (!hasUnsavedText()) return
+    if (busy) { saveTextPending = true; return }
+    await save({})
   }
 
   const sendSecret = async (name: string, value: string) => {
@@ -408,6 +421,7 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
       sourceIndex = 0
       message = null
       busy = false
+      saveTextPending = false
       pollingOperationId = null
       deps.render()
       void deps.otherKernels().then((found) => { if (mine === generation) { sources = found; deps.render() } }, () => {})

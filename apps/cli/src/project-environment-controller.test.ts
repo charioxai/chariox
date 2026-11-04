@@ -144,6 +144,33 @@ test("leaving a field without a change sends nothing", async () => {
   assert.equal(h.requests.length, 1)
 })
 
+test("an edit completed during a pending save is saved at the next revision", async () => {
+  const h = harness()
+  await h.open()
+  let finishSave!: (value: unknown) => void
+  h.replies.push(() => new Promise((resolve) => { finishSave = resolve }))
+  h.focusOn("make setup")
+  h.key("return")
+  h.type(" && make test")
+  h.controller.dismiss()
+  await h.settle()
+  h.focusOn("PORT=3000")
+  h.key("return")
+  h.type("&DEBUG=1")
+  h.controller.dismiss()
+  await h.settle()
+  h.replies.push({ ProjectEnvironmentSaved: { environment: environment({ revision: 4, setup: { script: "make setup && make test" }, variables: "PORT=3000&DEBUG=1" }) } })
+  finishSave({ ProjectEnvironmentSaved: { environment: environment({ revision: 3, setup: { script: "make setup && make test" } }) } })
+  await h.settle()
+  const saves = h.requests.filter((request) => request.SaveProjectEnvironment).map((request) => request.SaveProjectEnvironment)
+  assert.equal(saves.length, 2)
+  assert.equal(saves[1].expectedRevision, 3)
+  assert.equal(saves[1].setup.script, "make setup && make test")
+  assert.equal(saves[1].variables, "PORT=3000&DEBUG=1")
+  assert(h.text().includes("PORT=3000&DEBUG=1"))
+  assert(!h.text().includes("Unsaved"))
+})
+
 test("a stale revision reloads the record and keeps the typed text for another save", async () => {
   const h = harness()
   await h.open()
