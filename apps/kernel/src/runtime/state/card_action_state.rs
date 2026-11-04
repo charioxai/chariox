@@ -15,7 +15,9 @@ pub(crate) struct ActionCard {
 }
 
 impl ActionCard {
-    pub(crate) async fn decision(&mut self) -> Result<PendingInteractionResolution, DaemonError> {
+    pub(in crate::runtime) async fn decision(
+        &mut self,
+    ) -> Result<PendingInteractionResolution, DaemonError> {
         let receiver = self
             .decided
             .as_mut()

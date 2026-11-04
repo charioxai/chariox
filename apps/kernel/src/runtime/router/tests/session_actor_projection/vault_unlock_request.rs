@@ -129,20 +129,6 @@ impl Fixture {
         }
     }
 
-    /// The interaction path: an agent's operation asks for the passphrase and
-    /// the person answers it, as a terminal does.
-    async fn unlock_through_the_agent_prompt(&self, passphrase: &str) -> Result<(), DaemonError> {
-        let runtime = self.router.runtime_state.clone();
-        let (session, agent) = (self.session.clone(), self.agent.clone());
-        let operation = tokio::spawn(async move {
-            runtime
-                .manage_credential_vault_unlock(&session, &agent)
-                .await
-        });
-        self.answer_the_unlock_prompt(passphrase).await;
-        operation.await.unwrap().map(|_| ())
-    }
-
     /// The id of the unlock prompt that appears in the agent's terminal.
     async fn the_open_unlock_prompt(&self) -> String {
         tokio::time::timeout(std::time::Duration::from_secs(30), async {
@@ -171,6 +157,56 @@ impl Fixture {
             .unwrap()
             .active_interaction_for_agent(&self.agent)
             .is_none()
+    }
+
+    /// The unlock prompt that is open and is not `after`, with its message.
+    async fn next_prompt(&self, after: Option<&str>) -> (String, String) {
+        tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            loop {
+                let snapshot = self
+                    .router
+                    .runtime_state
+                    .session_snapshot(&self.session)
+                    .await
+                    .unwrap();
+                if let Some(prompt) = snapshot
+                    .active_interaction_for_agent(&self.agent)
+                    .filter(|prompt| Some(prompt.id()) != after)
+                {
+                    break (prompt.id().to_owned(), prompt.message().to_owned());
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("an unlock prompt should appear")
+    }
+
+    async fn answer_prompt(&self, prompt: &str, choice: &str, reply: Option<&str>) {
+        let answer =
+            LocalDaemonRequest::RespondToInteraction(crate::local::RespondToInteractionRequest {
+                session_id: self.session.clone(),
+                interaction_id: prompt.to_owned(),
+                choice_id: choice.into(),
+                custom_reply: reply.map(str::to_owned),
+                passkey: None,
+                passkey_remember_minutes: None,
+            });
+        self.send(answer).await.unwrap();
+    }
+
+    fn the_agents_operation(
+        &self,
+    ) -> tokio::task::JoinHandle<
+        Result<(crate::secret::CharioxVaultUnlockStatus, String), DaemonError>,
+    > {
+        let runtime = self.router.runtime_state.clone();
+        let (session, agent) = (self.session.clone(), self.agent.clone());
+        tokio::spawn(async move {
+            runtime
+                .manage_credential_vault_unlock(&session, &agent)
+                .await
+        })
     }
 
     /// The person answers the unlock prompt that appeared in the agent's terminal.
@@ -329,22 +365,36 @@ async fn parallel_guesses_are_checked_one_at_a_time_inside_the_budget() {
     assert_eq!(count("vault_unlock_rate_limited"), 15);
 }
 
+// PCD-04: a wrong passphrase in the card asks again in a card that says so; the budget is still the owner's one.
 #[tokio::test]
 async fn the_budget_is_shared_with_the_interaction_unlock() {
     let f = Fixture::locked();
+    let operation = f.the_agents_operation();
+    let mut previous: Option<String> = None;
     for _ in 0..5 {
-        assert!(f.unlock_through_the_agent_prompt(WRONG).await.is_err());
+        let (id, _) = f.next_prompt(previous.as_deref()).await;
+        f.answer_prompt(&id, "unlock_kernel", Some(WRONG)).await;
+        previous = Some(id);
     }
+    let (id, message) = f.next_prompt(previous.as_deref()).await;
+    assert!(
+        message.starts_with("That is not the Vault passphrase"),
+        "{message}"
+    );
     let (code, _) = code_of(f.unlock(PASSPHRASE).await);
     assert_eq!(code, "vault_unlock_rate_limited");
-    let error = f
-        .unlock_through_the_agent_prompt(PASSPHRASE)
-        .await
-        .expect_err("a locked-out owner cannot unlock through the prompt either");
+    f.answer_prompt(&id, "unlock_kernel", Some(PASSPHRASE))
+        .await;
+    let (id, message) = f.next_prompt(Some(&id)).await;
     assert!(
-        error.to_string().contains("Too many wrong passphrases"),
-        "{error}"
+        message.contains("Too many wrong passphrases"),
+        "a locked-out owner cannot unlock through the prompt either: {message}"
     );
+    f.answer_prompt(&id, "cancel", None).await;
+    operation
+        .await
+        .unwrap()
+        .expect_err("the cancelled card ends the operation");
     assert!(!f.status().await.unlocked);
 }
 
@@ -354,14 +404,20 @@ async fn wrong_unlocks_count_against_the_interaction_unlock() {
     for _ in 0..5 {
         assert_eq!(code_of(f.unlock(WRONG).await).0, "vault_passphrase_wrong");
     }
-    let error = f
-        .unlock_through_the_agent_prompt(PASSPHRASE)
-        .await
-        .expect_err("the budget is spent");
+    let operation = f.the_agents_operation();
+    let (id, _) = f.next_prompt(None).await;
+    f.answer_prompt(&id, "unlock_kernel", Some(PASSPHRASE))
+        .await;
+    let (id, message) = f.next_prompt(Some(&id)).await;
     assert!(
-        error.to_string().contains("Too many wrong passphrases"),
-        "{error}"
+        message.contains("Too many wrong passphrases"),
+        "the budget is spent: {message}"
     );
+    f.answer_prompt(&id, "cancel", None).await;
+    operation
+        .await
+        .unwrap()
+        .expect_err("the cancelled card ends the operation");
 }
 
 #[tokio::test]

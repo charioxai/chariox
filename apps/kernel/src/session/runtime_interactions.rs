@@ -349,6 +349,12 @@ impl RuntimeInteraction {
         self.asking_task_id.as_deref()
     }
 
+    /// Asking again after an answer that did not work: the card leads with what went wrong.
+    pub(crate) fn noting_problem(mut self, problem: &str) -> Self {
+        self.message = format!("{problem}\n{}", self.message);
+        self
+    }
+
     pub fn closes_with_wake(&self) -> Option<&str> {
         self.closes_with_wake.as_deref()
     }
