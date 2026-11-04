@@ -951,19 +951,20 @@ export class KernelBrowserHost {
   // code switches it off again whenever it releases a hidden page.
   async holdBackground(tab) {
     if (!this.backgroundHolds.has(tab.target_id)) {
-      const { connection, sessionId } = await this.browser.resolvePageTarget(tab.target_id);
-      this.backgroundHolds.set(tab.target_id, { connection, sessionId });
+      this.backgroundHolds.set(tab.target_id, true);
       if (!this.keepTimer) { this.keepTimer = setInterval(() => void this.assertBackground(), BACKGROUND_KEEP_MS); this.keepTimer.unref?.(); }
     }
     await this.assertBackground(tab.target_id);
   }
+  // The session is resolved at each assertion: a Tab's session changes when the controller attaches it again.
   async assertBackground(only) {
-    for (const [target, { connection, sessionId }] of [...this.backgroundHolds]) {
+    for (const target of [...this.backgroundHolds.keys()]) {
       if (only !== undefined && target !== only) continue;
       if (target === this.activeTarget) continue;
-      // A slow answer from a hidden renderer is tried again at the next tick; only a Tab that is gone ends the hold.
-      try { await connection.send('Emulation.setFocusEmulationEnabled', { enabled: true }, sessionId, { timeoutMs: BACKGROUND_KEEP_MS }); }
-      catch (error) { if (/no session|not found|closed|detached|No target/i.test(String(error?.message))) this.backgroundHolds.delete(target); }
+      try {
+        const { connection, sessionId } = await this.browser.resolvePageTarget(target);
+        await connection.send('Emulation.setFocusEmulationEnabled', { enabled: true }, sessionId, { timeoutMs: BACKGROUND_KEEP_MS });
+      } catch { /* a slow or detached page is tried again at the next tick; a closed Tab leaves the map when the Tab list drops it */ }
     }
   }
   releaseBackground(targetId) { this.backgroundHolds.delete(targetId); }
