@@ -2065,42 +2065,63 @@ fn codex_turn_across_a_hot_reload(finish_in_gap: bool, beside_claude: bool) {
         // The new program starts after the old one is gone; a loaded builder
         // can need several times the usual half minute.
         let deadline = Instant::now() + Duration::from_secs(180);
-        while !std::fs::read_dir(scratch.join("logs")).unwrap().any(|file| {
-            std::fs::read_to_string(file.unwrap().path())
-                .unwrap()
-                .contains("continuing a handed-over Codex turn")
-        }) {
+        let adopted = loop {
+            if std::fs::read_dir(scratch.join("logs")).unwrap().any(|file| {
+                std::fs::read_to_string(file.unwrap().path())
+                    .unwrap()
+                    .contains("continuing a handed-over Codex turn")
+            }) {
+                break true;
+            }
+            // A turn that ended in the gap may have been read to its end by
+            // the old program, which settles it: nothing is left to adopt.
+            if finish_in_gap
+                && lines(&record.join("parts")).last().map(String::as_str) == Some("result 1")
+            {
+                let state = request(
+                    &mut socket,
+                    json!({"GetSessionState": {"session_id": session_id}}),
+                )
+                .await;
+                if state["SessionState"]["session"]["prompt_states"][&agent_id]["active_prompt"]
+                    .is_null()
+                {
+                    break false;
+                }
+            }
             assert!(Instant::now() < deadline, "the Codex turn was not adopted");
             tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-        let mut tools = tokio::net::TcpStream::connect(("127.0.0.1", mcp_port))
-            .await
-            .unwrap();
-        tokio::io::AsyncWriteExt::write_all(
-            &mut tools,
-            b"GET /mcp HTTP/1.1\r\nhost: 127.0.0.1\r\nconnection: close\r\n\r\n",
-        )
-        .await
-        .unwrap();
-        let mut answer = Vec::new();
-        tokio::io::AsyncReadExt::read_to_end(&mut tools, &mut answer)
-            .await
-            .unwrap();
-        if computer {
-            let listed = codex_tools(
-                &record,
-                "list",
-                json!({"jsonrpc": "2.0", "id": 3, "method": "tools/list", "params": {}}),
+        };
+        if adopted {
+            let mut tools = tokio::net::TcpStream::connect(("127.0.0.1", mcp_port))
+                .await
+                .unwrap();
+            tokio::io::AsyncWriteExt::write_all(
+                &mut tools,
+                b"GET /mcp HTTP/1.1\r\nhost: 127.0.0.1\r\nconnection: close\r\n\r\n",
             )
-            .await;
-            assert!(
-                listed["result"]["tools"]
-                    .as_array()
-                    .is_some_and(|tools| tools
-                        .iter()
-                        .any(|tool| tool["name"] == "chariox.kernel_computer")),
-                "the adopted run lost the Computer tools it loaded: {listed}"
-            );
+            .await
+            .unwrap();
+            let mut answer = Vec::new();
+            tokio::io::AsyncReadExt::read_to_end(&mut tools, &mut answer)
+                .await
+                .unwrap();
+            if computer {
+                let listed = codex_tools(
+                    &record,
+                    "list",
+                    json!({"jsonrpc": "2.0", "id": 3, "method": "tools/list", "params": {}}),
+                )
+                .await;
+                assert!(
+                    listed["result"]["tools"]
+                        .as_array()
+                        .is_some_and(|tools| tools
+                            .iter()
+                            .any(|tool| tool["name"] == "chariox.kernel_computer")),
+                    "the adopted run lost the Computer tools it loaded: {listed}"
+                );
+            }
         }
         request(&mut socket, focus).await;
         let mut live_parts = 0;
