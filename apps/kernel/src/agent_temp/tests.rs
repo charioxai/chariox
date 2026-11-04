@@ -31,19 +31,17 @@ fn later(by: Duration) -> SystemTime {
 #[test]
 fn the_path_is_short_and_the_same_after_a_restart() {
     let scratch = Scratch::new("short");
-    std::env::set_var("CHARIOX_HOME", &scratch.0);
-    let first = dir("18e4df7c1509db5b", "agent-210eff29d53051337c3df0cbaeb69178").unwrap();
-    assert_eq!(first, scratch.0.join("t/18e4df7c/210eff29"));
-    assert_eq!(
-        Some(first),
-        dir("18e4df7c1509db5b", "agent-210eff29d53051337c3df0cbaeb69178")
-    );
-    let vars = environment("18e4df7c1509db5b", "agent-210eff29d53051337c3df0cbaeb69178");
+    let root = scratch.0.join("t");
+    let (room, agent) = ("18e4df7c1509db5b", "agent-210eff29d53051337c3df0cbaeb69178");
+    let first = dir_in(&root, room, agent);
+    assert_eq!(first, root.join("18e4df7c/210eff29"));
+    assert_eq!(first, dir_in(&root, room, agent));
+    let vars = environment_in(&root, room, agent);
     assert_eq!(
         vars.iter().map(|(name, _)| *name).collect::<Vec<_>>(),
         ["TMPDIR", "TMP", "TEMP"]
     );
-    assert!(scratch.0.join("t/18e4df7c/210eff29").is_dir());
+    assert!(first.is_dir());
 }
 
 #[test]
@@ -130,8 +128,7 @@ fn ending_a_room_clears_its_temp_at_once() {
     let room = folder.parent().unwrap().to_path_buf();
     let other = scratch.0.join("t/room0002/agent001");
     fs::create_dir_all(&other).unwrap();
-    std::env::set_var("CHARIOX_HOME", &scratch.0);
-    clear_room("room0001");
+    clear_room_in(&scratch.0.join("t"), "room0001");
     assert!(!room.exists());
     assert!(other.exists(), "another Room's temp folder was cleared");
 }

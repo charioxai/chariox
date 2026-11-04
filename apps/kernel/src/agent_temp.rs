@@ -41,15 +41,21 @@ pub(crate) fn room_dir(root: &Path, session_id: &str) -> PathBuf {
 }
 
 pub(crate) fn dir(session_id: &str, agent_id: &str) -> Option<PathBuf> {
-    Some(room_dir(&root()?, session_id).join(short(agent_id)))
+    Some(dir_in(&root()?, session_id, agent_id))
+}
+
+fn dir_in(root: &Path, session_id: &str, agent_id: &str) -> PathBuf {
+    room_dir(root, session_id).join(short(agent_id))
 }
 
 /// TMPDIR, TMP and TEMP for the agent, with its folder created (private).
 /// Without a home to put it in, the agent keeps the system temp folder.
 pub(crate) fn environment(session_id: &str, agent_id: &str) -> Vec<(&'static str, String)> {
-    let Some(dir) = dir(session_id, agent_id) else {
-        return Vec::new();
-    };
+    root().map_or_else(Vec::new, |root| environment_in(&root, session_id, agent_id))
+}
+
+fn environment_in(root: &Path, session_id: &str, agent_id: &str) -> Vec<(&'static str, String)> {
+    let dir = dir_in(root, session_id, agent_id);
     if let Err(error) = create_private(&dir) {
         crate::logging::warn_with_fields(
             "agent_temp.create",
@@ -79,11 +85,14 @@ fn create_private(dir: &Path) -> std::io::Result<()> {
 
 /// A Room that ended or was archived leaves nothing in its temp folders.
 pub(crate) fn clear_room(session_id: &str) {
-    let Some(root) = root() else {
-        return;
-    };
-    let room = room_dir(&root, session_id);
-    if short(session_id).is_empty() || !room.starts_with(&root) {
+    if let Some(root) = root() {
+        clear_room_in(&root, session_id);
+    }
+}
+
+fn clear_room_in(root: &Path, session_id: &str) {
+    let room = room_dir(root, session_id);
+    if short(session_id).is_empty() || !room.starts_with(root) {
         return;
     }
     if let Err(error) = std::fs::remove_dir_all(&room) {
