@@ -8,14 +8,18 @@ async function fixture(run) {
   const listeners=new Set(),bodies=new Map(),frame={id:'frame',loaderId:'document'};
   const connection={subscribe(fn){listeners.add(fn);return()=>listeners.delete(fn)},async send(method,args){
     if(method==='Page.getFrameTree')return{frameTree:{frame:{...frame}}};
+    if(method==='Runtime.callFunctionOn')return{result:{objectId:'cleanup'}};
     if(method==='Network.getResponseBody')return bodies.get(args.requestId) ?? {body:'{"sudo":true,"token":"not-in-receipt"}'};
     return{};
   }};
   const watch=await BrowserCardVerification.create(connection,'session',{...frame},config);
+  await watch.bindInput('anchor',7);
+  let inputSequence=0;
   const event=(method,params,sessionId='session')=>{for(const fn of listeners)fn({sessionId,method,params})};
-  const request=id=>event('Network.requestWillBeSent',{requestId:id,frameId:'frame',loaderId:'document',request:{method:'POST',url:config.url,headers:{authorization:'secret'},postData:'code-secret'}});
+  const input=()=>event('Runtime.bindingCalled',{name:watch.bindingName,executionContextId:7,payload:JSON.stringify({sequence:++inputSequence,value:'code-secret'})});
+  const request=id=>{input();event('Network.requestWillBeSent',{requestId:id,frameId:'frame',loaderId:'document',hasUserGesture:true,request:{method:'POST',url:config.url,headers:{authorization:'secret'},postData:'{"code":"code-secret"}'}})};
   const response=async(id,status=200)=>{event('Network.responseReceived',{requestId:id,response:{url:config.url,status,headers:{'set-cookie':'private'}}});event('Network.loadingFinished',{requestId:id,encodedDataLength:100});await delay(0)};
-  try {await run({watch,event,request,response,bodies,frame,listeners,connection})} finally {watch.close()}
+  try {await run({watch,event,request,response,bodies,frame,listeners,connection,input})} finally {watch.close()}
 }
 for(const body of ['{"sudo":false}','{"sudo":"true"}','{"sudo":1}','{}','not JSON'])test('MP-11 nonpositive body cannot verify: '+body,()=>fixture(async({watch,request,response,bodies})=>{
   bodies.set('r',{body});request('r');await response('r');assert.equal(watch.receipt.result,'rejected');assert.ok(!JSON.stringify(watch.receipt).includes('secret'));
@@ -36,3 +40,11 @@ test('MP-11 verification config requires an exact same-origin endpoint and boole
   assert.deepEqual(validateCardVerification(config,'https://example.com'),config);
   for(const changes of [{url:'https://foreign.example/verify'},{url:config.url+'?code=private'},{url:'https://user:pass@example.com/verify'},{accepted_json_pointer:'sudo'},{accepted_json_pointer:'/~2'},{challenge_id:''},{body:'private'}])assert.throws(()=>validateCardVerification({...config,...changes},'https://example.com'));
 });
+test('MP-08/MP-11 an unrelated same-frame POST cannot supply a challenge acceptance',()=>fixture(async({watch,event,response})=>{
+  event('Network.requestWillBeSent',{requestId:'background',frameId:'frame',loaderId:'document',hasUserGesture:false,request:{method:'POST',url:config.url}});
+  await response('background');assert.equal(watch.receipt,null,'no input delivery occurred inside this card');
+}));
+test('MP-08/MP-11 a different code in a gesture POST cannot accept the bound input',()=>fixture(async({watch,event,response,input})=>{
+  input();event('Network.requestWillBeSent',{requestId:'different-code',frameId:'frame',loaderId:'document',hasUserGesture:true,request:{method:'POST',url:config.url,postData:'{"code":"different-submission"}'}});
+  await response('different-code');assert.equal(watch.receipt,null,'the body must carry the code delivered to this card field');
+}));

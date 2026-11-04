@@ -1,5 +1,25 @@
 // MP-08 / MP-09 / MP-10 / MP-11: retain only delivery and verification classification.
 // Request bodies, response fields other than the boolean predicate, headers and tokens never leave CDP.
+import {randomUUID} from 'node:crypto';
+
+function bindVerificationInput(name) {
+  const anchor=this, controls=new Set(anchor.querySelectorAll('input,textarea,button,select,form'));
+  let sequence=0, field=null;
+  const acknowledge=event=>{
+    if (!event.isTrusted || event.target?.ownerDocument!==document || !event.target.isConnected) return;
+    if (!event.composedPath().some(node=>node===anchor || controls.has(node))) return;
+    const target=event.target;
+    if (event.type==='input' && ['INPUT','TEXTAREA'].includes(target.nodeName) && !target.readOnly && !['checkbox','radio','hidden','button','submit'].includes(target.type)) field=target;
+    if (!field?.isConnected || field.ownerDocument!==document || !field.value || field.value.length>512) return;
+    // This private CDP binding is never an observation/event-journal result.
+    // Keep the delivered value inside the helper, solely to correlate the POST.
+    globalThis[name](JSON.stringify({sequence:++sequence,value:field.value}));
+  };
+  const kinds=['input','click','keydown','submit'];
+  for(const kind of kinds)document.addEventListener(kind,acknowledge,true);
+  return ()=>{for(const kind of kinds)document.removeEventListener(kind,acknowledge,true)};
+}
+
 export function validateCardVerification(value, origin) {
   if (!value || typeof value !== 'object' || Object.keys(value).sort().join(',') !== 'accepted_json_pointer,challenge_id,url'
     || !/^[a-zA-Z0-9._:-]{1,128}$/.test(value.challenge_id)
@@ -7,6 +27,18 @@ export function validateCardVerification(value, origin) {
   let url;try {url=new URL(value.url)}catch {throw new Error('Invalid browser verification URL')}
   if (url.origin !== origin || url.username || url.password || url.search || url.hash) throw new Error('Browser verification requires an exact same-origin URL without credentials or query');
   return {challenge_id:value.challenge_id,url:url.href,accepted_json_pointer:value.accepted_json_pointer};
+}
+
+function hasSubmittedValue(body, input) {
+  if (typeof body!=='string' || body.length>65536 || typeof input!=='string' || !input)return false;
+  let parsed;try {parsed=JSON.parse(body)}catch{return false}
+  const pending=[[parsed,0]];let visited=0;
+  while(pending.length && ++visited<=256) {
+    const [value,depth]=pending.pop();
+    if ((typeof value==='string' || typeof value==='number') && String(value)===input)return true;
+    if (value && typeof value==='object' && depth<8)for(const child of Object.values(value))pending.push([child,depth+1]);
+  }
+  return false;
 }
 
 function booleanAt(value, pointer) {
@@ -26,18 +58,43 @@ export class BrowserCardVerification {
   constructor(connection,sessionId,frame,config) {
     this.connection=connection;this.sessionId=sessionId;this.frame=frame;this.config=config;
     this.receipt=null;this.request=null;this.closed=false;
+    this.bindingName='charioxVerification_'+randomUUID().replaceAll('-','_');
+    this.contextId=null;this.inputSequence=0;this.consumedSequence=0;this.inputAt=0;this.cleanupId=null;this.inputValue=null;
     this.unsubscribe=connection.subscribe(message=>this.observe(message));
   }
-  close() {this.closed=true;this.unsubscribe();this.request=null}
+  async bindInput(objectId,contextId) {
+    if(this.contextId!==null)return;
+    await this.connection.send('Runtime.addBinding',{name:this.bindingName,executionContextId:contextId},this.sessionId);
+    const result=await this.connection.send('Runtime.callFunctionOn',{objectId,functionDeclaration:String(bindVerificationInput),arguments:[{value:this.bindingName}],returnByValue:false},this.sessionId);
+    if(result.exceptionDetails || !result.result?.objectId)throw new Error('Browser verification input acknowledgement could not start');
+    this.cleanupId=result.result.objectId;this.contextId=contextId;
+  }
+  close() {
+    if(this.closed)return;
+    this.closed=true;this.unsubscribe();this.request=null;this.inputValue=null;
+    const cleanup=this.cleanupId ? this.connection.send('Runtime.callFunctionOn',{objectId:this.cleanupId,functionDeclaration:'function(){this()}',returnByValue:true},this.sessionId).catch(()=>{}).finally(()=>this.connection.send('Runtime.releaseObject',{objectId:this.cleanupId},this.sessionId).catch(()=>{})) : Promise.resolve();
+    void cleanup.finally(()=>this.connection.send('Runtime.removeBinding',{name:this.bindingName},this.sessionId).catch(()=>{}));
+  }
   observe(message) {
     if(this.closed || this.receipt?.result==='accepted' || message.sessionId!==this.sessionId)return;
     const p=message.params ?? {};
+    if(message.method==='Runtime.bindingCalled') {
+      if(p.name!==this.bindingName || p.executionContextId!==this.contextId || typeof p.payload!=='string' || p.payload.length>2048)return;
+      let input;try {input=JSON.parse(p.payload)}catch{return}
+      if(Number.isSafeInteger(input.sequence) && input.sequence>this.inputSequence && typeof input.value==='string' && input.value.length>0 && input.value.length<=512) {
+        this.inputSequence=input.sequence;this.inputAt=Date.now();this.inputValue=input.value;
+      }
+      return;
+    }
     if(message.method==='Network.requestWillBeSent') {
       if(p.redirectResponse && this.request?.id===p.requestId) {this.finish('failed');return}
-      if(p.frameId!==this.frame.id || p.loaderId!==this.frame.loaderId || p.request?.method!=='POST' || p.request.url!==this.config.url)return;
+      if(p.frameId!==this.frame.id || p.loaderId!==this.frame.loaderId || p.request?.method!=='POST' || p.request.url!==this.config.url
+        || p.hasUserGesture!==true || this.inputSequence<=this.consumedSequence || Date.now()-this.inputAt>5000
+        || !hasSubmittedValue(p.request.postData,this.inputValue))return;
+      this.consumedSequence=this.inputSequence;this.inputValue=null;
       this.request={id:p.requestId,status:null};
       this.receipt={challenge_id:this.config.challenge_id,request_id:p.requestId,input_delivered:true,http_status:null,result:'delivered'};
-    } else if(this.request?.id===p.requestId) {
+    } else if(this.request && this.request.id===p.requestId) {
       if(message.method==='Network.responseReceived') {
         if(p.response?.url!==this.config.url || !Number.isInteger(p.response.status) || p.response.status<100 || p.response.status>599) {this.finish('failed');return}
         this.request.status=p.response.status;

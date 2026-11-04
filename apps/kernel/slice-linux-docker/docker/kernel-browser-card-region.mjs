@@ -161,7 +161,7 @@ export async function resolveCardRegion(host, command, scope, signal) {
   const tab = await host.displayTarget({ tab_id: command.tab_id, generation: remembered.generation });
   if (tab.document_id !== remembered.document_id) return gone('Browser document changed');
   const config = command.verification ? validateCardVerification(command.verification, new URL(tab.url).origin) : null;
-  if (config && !key) throw new Error('Browser verification requires a card identity');
+  if (config && (!key || !command.ref.startsWith('backend:'))) throw new Error('Browser verification requires a card identity and a Tab-document region');
   if (anchor && JSON.stringify(anchor.verification?.config ?? null) !== JSON.stringify(config)) throw new UserDomainRefusal('stale_reference');
   const browser = host.browser, connection = await browser.ensureConnection();
   const sessionId = await browser.ensureTargetSession(connection, tab.target_id);
@@ -184,10 +184,16 @@ export async function resolveCardRegion(host, command, scope, signal) {
   let objectId;
   try {
     let box;
+    if (anchor?.verification && anchor.verification.contextId===null) {
+      const resolved=await connection.send('DOM.resolveNode',{backendNodeId:Number(command.ref.slice(8)),executionContextId:world.contextId},sessionId);
+      objectId=resolved.object?.objectId;
+      if(!objectId)return gone('Browser element disappeared');
+      await anchor.verification.bindInput(objectId,world.contextId);
+    }
     if (remembered.children.has(command.ref)) {
       box = await childFrameBox(browser, connection, sessionId, tab, command);
     } else {
-      const resolved = await connection.send('DOM.resolveNode', { backendNodeId: Number(command.ref.slice(8)), executionContextId: world.contextId }, sessionId);
+      const resolved = objectId ? {object:{objectId}} : await connection.send('DOM.resolveNode', { backendNodeId: Number(command.ref.slice(8)), executionContextId: world.contextId }, sessionId);
       objectId = resolved.object?.objectId;
       if (!objectId) return gone('Browser element disappeared');
       const reply = await connection.send('Runtime.callFunctionOn', { objectId, functionDeclaration: String(watchBox), arguments: [{ value: command.after ?? null }], returnByValue: true, awaitPromise: true }, sessionId);

@@ -2172,7 +2172,11 @@ A verification card binds one challenge to its asking task, card, agent observer
 Tab, browser generation and document. Its optional generic `verification`
 condition names an exact same-origin POST URL and a JSON pointer whose value
 must be boolean true in a successful HTTP response. Only requests started while
-that card watches the same frame and document count. Responses from a different
+that card watches the same frame and document count. A controller-isolated
+listener acknowledges trusted input inside that region. The helper requires
+the bound field value in the request JSON and a user gesture; the value stays
+in private helper memory and is never included in a receipt. The challenge ID
+is the card operation nonce, not a fabricated server-issued challenge ID. Responses from a different
 endpoint, document or older overlapping attempt cannot complete the card.
 
 The kernel projects only request delivery, HTTP status and fixed result labels.

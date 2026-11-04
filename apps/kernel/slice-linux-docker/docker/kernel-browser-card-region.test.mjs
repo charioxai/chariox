@@ -21,6 +21,7 @@ async function withHost(run) {
     calls.push(method);
     if (method === 'Page.getFrameTree') return { frameTree: { frame: { id: 'frame', loaderId: state.document_id } } };
     if (method === 'DOM.resolveNode') return { object: { objectId: 'element' } };
+    if (method === 'Runtime.callFunctionOn' && params.functionDeclaration.includes('function bindVerificationInput')) return {result:{objectId:'cleanup'}};
     if (method === 'Runtime.callFunctionOn') {
       const context = { document, innerWidth: state.width, innerHeight: state.height, setTimeout, clearTimeout,
         requestAnimationFrame: callback => setTimeout(callback, 5), cancelAnimationFrame: clearTimeout };
@@ -171,8 +172,11 @@ test('MP-08/MP-09/MP-10/MP-11 verification requires a positive response and reta
   await snapshot();
   const initial=await region({card_id:'verification',verification});
   const emit=(method,params)=>{for(const listener of listeners)listener({sessionId:'session',method,params})};
+  let inputSequence=0;
   const attempt=async(id,status)=>{
-    emit('Network.requestWillBeSent',{requestId:id,frameId:'frame',loaderId:'doc',request:{method:'POST',url:verification.url,postData:'never-record-this-code'}});
+    const watch=host.cardAnchors.get('agent:a\0verification').verification;
+    emit('Runtime.bindingCalled',{name:watch.bindingName,executionContextId:7,payload:JSON.stringify({sequence:++inputSequence,value:'never-record-this-code'})});
+    emit('Network.requestWillBeSent',{requestId:id,frameId:'frame',loaderId:'doc',hasUserGesture:true,request:{method:'POST',url:verification.url,postData:'{"code":"never-record-this-code"}'}});
     emit('Network.responseReceived',{requestId:id,response:{status,url:verification.url}});
     emit('Network.loadingFinished',{requestId:id,encodedDataLength:128});
     await delay(0);
