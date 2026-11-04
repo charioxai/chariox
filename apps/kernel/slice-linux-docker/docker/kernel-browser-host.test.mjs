@@ -3195,3 +3195,25 @@ test('a background lease follows session replacement and releases while the pers
   await host.releaseBackground(tab.target_id);
   assert.equal(host.backgroundHolds.size,0);assert.equal(host.browser.inputCapture.displayLeases.size,0);
 }));
+
+test('a background renderer has its own tiny acknowledged capture until the person shows it', () => using(async ({host,connection,sent,handlers}) => {
+  await host.request({op:'open',url:'https://example.com/person'});
+  await host.request({op:'open',url:'https://example.com/agent',focused_agent:true});
+  const tab=[...host.tabs.values()].find(t=>t.url.endsWith('/agent'));
+  host.activeTarget=[...host.tabs.values()].find(t=>t.url.endsWith('/person')).target_id;
+  const send=connection.send;
+  connection.send=(method,params,session)=>method==='Target.attachToTarget' ? Promise.resolve({sessionId:'background-capture'}) : send(method,params,session);
+  await host.holdBackground(tab);
+  const start=sent.find(c=>c.method==='Page.startScreencast');
+  assert.ok(start,'focus emulation alone does not schedule hidden RenderWidgets at full speed');
+  assert.equal(start.session,'background-capture');
+  assert.ok(start.params.maxWidth<=16&&start.params.maxHeight<=16);
+  for(const handler of handlers)handler({method:'Page.screencastFrame',sessionId:'background-capture',params:{sessionId:7,data:'UNPROTECTED_PIXELS_MUST_BE_DISCARDED'}});
+  await Promise.resolve();
+  assert.ok(sent.some(c=>c.method==='Page.screencastFrameAck'&&c.session==='background-capture'&&c.params.sessionId===7));
+  assert.ok(!JSON.stringify(sent).includes('UNPROTECTED_PIXELS_MUST_BE_DISCARDED'));
+  host.activeTarget=tab.target_id;await host.assertBackground();
+  assert.ok(sent.some(c=>c.method==='Page.stopScreencast'&&c.session==='background-capture'));
+  assert.ok(sent.some(c=>c.method==='Target.detachFromTarget'&&c.params.sessionId==='background-capture'));
+  assert.ok(!sent.some(c=>c.method==='Target.activateTarget'));
+}));

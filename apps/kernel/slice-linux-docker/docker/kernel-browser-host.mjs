@@ -1,3 +1,4 @@
+import { captureBackgroundRenderer } from './kernel-browser-background.mjs';
 import { AppTabs } from './browser-controller-apps.mjs';
 import { HostDownloads } from "./kernel-browser-downloads.mjs";
 import { BrowserHeaderState } from "./kernel-browser-header.mjs";
@@ -971,7 +972,11 @@ export class KernelBrowserHost {
         if (hold.lease?.connection !== connection || hold.lease?.sessionId !== sessionId) {
           const previous = hold.lease; hold.lease = null;
           await previous?.release().catch(() => {});
-          const release = await this.browser.inputCapture.hold(connection, sessionId);
+          const releaseFocus = await this.browser.inputCapture.hold(connection, sessionId);
+          let releaseFrames;
+          try { releaseFrames = await captureBackgroundRenderer(connection, target); }
+          catch (error) { await releaseFocus().catch(() => {}); throw error; }
+          const release = async () => { try { await releaseFrames(); } finally { await releaseFocus(); } };
           hold.lease = { connection, sessionId, release };
         }
         // A physical-focus observation may have suspended a shared display lease.
