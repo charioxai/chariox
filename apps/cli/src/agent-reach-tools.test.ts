@@ -16,5 +16,7 @@ test("the tool list the kernel embeds is the one the command table generates", (
 test("the reach guide names every tool and none of the CLI's access steps", () => {
   const { guide } = reachToolsDocument()
   for (const tool of REACH_TOOLS) assert.match(guide, new RegExp(`\\b${tool.name}\\(`))
-  assert.doesNotMatch(guide, /access request|RequestKernelSudo|RespondToInteraction/)
+  assert.doesNotMatch(guide, /access request|RequestKernelSudo/)
+  assert.match(guide, /RespondToInteraction/)
+  assert.match(guide, /GetSessionHistoryOutline/)
 })

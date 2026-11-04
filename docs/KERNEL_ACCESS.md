@@ -46,11 +46,18 @@ The identity is the agent's own live provider run (`reach:<run>`); it ends with 
 | --- | --- | --- |
 | Discover and read: sessions, agents, history, recall | allowed | allowed |
 | Attach, message and steer agents; a room's terminals and workspace files; machines (`ControlPlane`, except deleting a saved state) | allowed | allowed |
+| Follow rooms and agents (`SubscribeEvents` and the other five event requests) and answer a routine decision of another room (`RespondToInteraction` without a passkey) | allowed | allowed |
 | Anything else a /sudo window adds at home (settings, extensions, renames, kernel-wide files, ...) | refused: `reach_requires_sudo` | allowed |
-| The /sudo exclusion list (`RequestKernelSudo`, `RespondToInteraction`, deletes, events, ...) | refused: `excluded_for_agents` | refused |
+| The /sudo exclusion list (`RequestKernelSudo`, grants, deletes, answering a decision of the agent's own room, ...) | refused: `excluded_for_agents` | refused |
 | The human-only set (passkeys, Vault, pairing, relay, Cloud identity, protected settings) | refused: `human_only` | refused |
 
 A request for another kernel goes through the owner's gateway (the same one `chariox request --kernel` used); `on_behalf_of.harness` names `<room>/<agent> (Chariox agent)`, so the target's audit rows and its paired-clients list show which agent acted. Authority is enforced on the agent's own kernel.
+
+Events. `events_subscribe`, `events_wait` and `events_ack` keep one inbox per live run on the agent's own kernel (`reach:<run>`), the same inbox an external agent has per grant. A followed room may be on another kernel: the home kernel installs a part there through the gateway and merges what it reports, so a record names `kernel`, `session_id`, `agent_id` and `refs` (`interaction_id`, `run_id`, `task_id`). `events_wait` is pull, not polling: it returns at once when records are pending and otherwise when the first one arrives (at most 280 s per call; a provider ends a longer call). Only the followed rooms and agents report. The inbox ends with the run (`run_ended`) and a driver subscribes again after a restart; the room's own events are followable too. An event request with a `kernel` is refused (`events_local_only`): the target kernel goes in the subscribe call.
+
+Driving another agent. A record with `value.question` is a pending decision of the followed room. The driver answers it with `request` `RespondToInteraction` (`refs.interaction_id`, a `question.choices` id) to the kernel the record names, as an external agent holder does: a decision that needs the person's terminal (passkey, secrets, sudo approvals) is `human_only`, and an agent never answers a decision of its own room (`excluded_for_agents`).
+
+History. Another room's history is an ordinary read (`GetSessionHistoryOutline`, `SearchRecall`, `QueryRecall`) for the owner's agent: no /sudo, no approval card. The room history tools (`chariox.history.*`) stay confined to the caller's room.
 
 Acquiring a machine (`ControlPlane` acquire, start and start-from-saved-state) needs no question by default. With the setting `agents.ask_before_acquiring_machines = true` ("Ask each time an agent acquires a machine through your connected service"; off by default; owner-only) each such request raises one decision in the agent's room, shown on every client; declining answers `acquisition_declined`.
 

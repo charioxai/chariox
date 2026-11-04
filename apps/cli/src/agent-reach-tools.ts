@@ -64,7 +64,7 @@ export const REACH_TOOLS: readonly Tool[] = [
 ]
 
 /** Requests an agent may send; the rest of the CLI's examples are the user's alone or end a room. */
-const REACH_EXAMPLES = ["ListSessions", "ListProjects", "SearchWorkspaceDirectories", "CreateSession", "AttachToSession", "GetSessionState", "SpawnAgent", "SubmitPrompt", "CancelActivePrompt", "RunShellCommand"]
+const REACH_EXAMPLES = ["ListSessions", "ListProjects", "SearchWorkspaceDirectories", "CreateSession", "AttachToSession", "GetSessionState", "SpawnAgent", "SubmitPrompt", "CancelActivePrompt", "RunShellCommand", "RespondToInteraction"]
 
 const requestName = (body: object): string => Object.keys(body)[0]!
 
@@ -93,7 +93,10 @@ export function reachGuideText(): string {
     ...reachExamples().map(({ request, note }) => `  ${JSON.stringify(request)}  | ${note}`),
     "A request the kernel cannot parse comes back with a message naming the expected variants and fields: read it and fix the request.",
     "Follow rooms or single agents with events_subscribe, then events_wait and events_ack with the cursor you keep.",
-    "A record with value.question is a decision for the person: show it to them and do not choose for them.",
+    "A record names kernel, session_id, agent_id and refs (interaction_id, run_id, task_id). A record with value.question is a decision the person may answer through you: ask the person (options are question.choices, a free reply is question.text_reply when present),",
+    "then send request RespondToInteraction with refs.interaction_id and the chosen id to the kernel the record names. Answer without asking only for an agent your user told you to drive and how to decide. You never answer a decision of your own room.",
+    "A record with a pointer and no question is the person's alone: show pointer.one_line verbatim.",
+    "Read what happened in any room of your user, without asking: request {\"GetSessionHistoryOutline\":{\"session_id\":\"SESSION_ID\",\"agent_ids\":[\"AGENT_ID\"],\"latest_prompt_count\":4,\"include_prefetched_content\":true}} (SessionHistoryOutline.agents[].turns and prefetched_blobs).",
     "Refusals are results with a code: reach_requires_sudo (needs your user's /sudo window, as it would in your own room), excluded_for_agents and human_only (never yours), not_allowed, reach_not_available (your run cannot reach), acquisition_declined (the user declined a machine), and the kernel_* codes of an unreachable or slow kernel: retry once with the same request on kernel_request_timeout or kernel_connection_lost, read the state first on kernel_outcome_unknown.",
     "Human-only, never attempted by you: passkey approvals, grants, sudo approvals, secrets and credentials, relay and pairing configuration.",
   ].join("\n")

@@ -434,6 +434,7 @@ An external agent needs to know when something it started has moved: an agent fi
 
 - A session is the confinement boundary for the agents in it. A session agent sees and is woken by changes of its own session only. The `chariox.events.*` tools stay session-scoped and unchanged.
 - Observing several sessions belongs only to **outside principals**: an external agent through its grant (now) and the Chariox assistants (later, the in-product equivalent of an external agent, see the `chariox-assistants` area). Neither is a session member.
+- (Agent reach, S3: the owner's Room agents follow other sessions and kernels through the `chariox-reach` tools `events_subscribe`, `events_wait` and `events_ack`; see `docs/KERNEL_ACCESS.md`. The rule below still holds for the room `chariox` tools and `/sudo`.)
 - The event subscription requests of this section are **not exposed** to Chariox session agents at all: they are absent from kernel MCP tool discovery, from `chariox.events.*`, and from the `/sudo` request vocabulary. There is nothing for a session agent to call, so there is nothing to refuse. They exist only on the external access path (the grant holder's Unix socket and the gateway) and, later, for assistants inside the kernel.
 - Communication between session agents across sessions is a separate future mechanism. Nothing here provides it.
 
