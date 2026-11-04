@@ -46,7 +46,7 @@ fn check_session_error(current_error: bool) {
             let response = if request.starts_with("GET /session/status ") {
                 serde_json::json!({"session-1": {"type": "busy"}})
             } else {
-                assert!(request.starts_with("GET /session/session-1/message "));
+                assert!(request.starts_with("GET /session/session-1/message?limit=100 "));
                 serde_json::json!([{"info": {
                     "id": "assistant-error", "sessionID": "session-1", "role": "assistant",
                     "parentID": if current_error { "user-next" } else { "user-cancelled" },
@@ -146,7 +146,7 @@ fn check_error_without_assistant(user_id: &str, status: &str, expect_failure: bo
             } else if request.starts_with("GET /session/status ") {
                 (200, serde_json::json!({"session-1": {"type": status}}))
             } else {
-                assert!(request.starts_with("GET /session/session-1/message "));
+                assert!(request.starts_with("GET /session/session-1/message?limit=100 "));
                 (
                     200,
                     serde_json::json!([{"info": {

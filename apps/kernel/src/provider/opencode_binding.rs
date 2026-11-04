@@ -1209,7 +1209,7 @@ mod tests {
                     "{}"
                 } else if path.contains("/abort ") {
                     "true"
-                } else if path.contains("/message ") {
+                } else if path.contains("/message?limit=100 ") {
                     "[]"
                 } else {
                     "{}"
