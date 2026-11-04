@@ -1440,10 +1440,22 @@ mod tests {
                 PromptAssemblyMode::NormalProviderTurn,
             )
             .unwrap();
-        for expected in ["renders Markdown inline", "`![alt](path)`", "PNG or SVG file"] {
+        for expected in [
+            "renders Markdown inline",
+            "`![alt](path)`",
+            "write it to a PNG file",
+        ] {
             assert!(
                 envelope.hidden_system_context.contains(expected),
                 "missing {expected}"
+            );
+        }
+        // Every client's Markdown renderer draws PNG, JPEG, GIF and WebP files; SVG files and
+        // fences or Mermaid would reach some of them as source text or an unsupported card.
+        for unsupported in ["svg", "SVG", "Mermaid"] {
+            assert!(
+                !envelope.hidden_system_context.contains(unsupported),
+                "the hint promises {unsupported}"
             );
         }
         assert!(!envelope.visible_user_prompt.contains("![alt](path)"));
