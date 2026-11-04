@@ -75,6 +75,7 @@ export function scheduleHostRequest(request, browser, viewport = hostViewport(),
 const TAB_LIMIT = 128;
 // A Tab the person types or clicks in is theirs until they have been idle this long (an agent's input to it waits).
 export const PERSON_IDLE_MS = 2000;
+const SHOW_TAB_WAIT_MS = 1000;
 // A group's mark: a dot at rest, a spinner while the agent acts, and "needs you" while a card asks the person to act in one of its Tabs.
 const SPINNER = ['◐', '◓', '◑', '◒'], IDLE_MARK = '●', NEEDS_MARK = '▲';
 // How long a spinner stays after an agent's last action in a Tab, so a short action is still seen.
@@ -1132,6 +1133,11 @@ export class KernelBrowserHost {
       await this.retireNativeForeground(tab.target_id);
       await (await this.browser.ensureConnection()).send("Target.activateTarget", { targetId: tab.target_id });
       this.pendingActive = null;
+      // The answer names the Tab Chrome now shows: wait (bounded) until its own report agrees.
+      for (const end = performance.now() + (this.tabGroups ? SHOW_TAB_WAIT_MS : 0); performance.now() < end;) {
+        if (await this.nativeFront(tab).catch(() => true)) break;
+        await delay(20);
+      }
       return this.observe(await this.reconcile(), null, scope);
     }
     if (command.op === "navigate") {
