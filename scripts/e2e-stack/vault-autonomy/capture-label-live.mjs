@@ -18,6 +18,8 @@ const passkey = (await readFile(passkeyFile, 'utf8')).trim()
 const text = bytes => Buffer.from(bytes).toString('utf8')
 const report = {MP: 'MP-08 / MP-09 / MP-10 / MP-11', label}
 const peer = await connect()
+let sessionId, pumping
+let running = false
 try {
   // A second run on the same kernel finds the directory already linked; the error names that profile.
   const profile = await peer.send({LinkProviderAccountProfile: {provider: 'codex', label: 'vflag r6 label drill', path: profileHome}})
@@ -28,11 +30,12 @@ try {
     })
   const worktrees = (await peer.send({ListWorkspaceWorktrees: {workspace_id: workspace}})).WorkspaceWorktreesListed.worktrees
   const created = (await peer.send({CreateSession: {workspace_id: workspace, worktree_id: worktrees[0].path, alias: `vflag label drill ${label}`, agent_defaults: {provider: 'codex', model: 'gpt-6-luna', effort: 'low', account_profile: profile.profile_id}}})).SessionCreated
-  const sessionId = created.session.id, agentId = created.agent.id
+  sessionId = created.session.id
+  const agentId = created.agent.id
   const attachment = (await peer.send({AttachToSession: {session_id: sessionId, client_id: 'vflag-label-drill', capability_level: 'FullTerminal'}})).SessionAttached.attachment.id
   const records = []
-  let running = true
-  const pumping = (async () => {
+  running = true
+  pumping = (async () => {
     while (running) {
       try { for (const record of (await peer.send({PumpTerminalOutput: {session_id: sessionId, attachment_id: attachment}})).TerminalOutput.records) records.push({at: Date.now(), ...record}) } catch {}
       // The Vault is created by the first unlock card; the owner's passphrase answers it.
@@ -74,12 +77,22 @@ try {
     reply: tool.replace(/"(input|arguments)":\{.*?\},/s, '').slice(0, 420),
   }))
   report.removeCalls = tools.filter(tool => /remove_capture/.test(tool)).map(tool => tool.replace(/"(input|arguments)":\{.*?\},/s, '').slice(0, 420))
-  running = false; await pumping
   await writeFile(path.join(evidence, `capture-label-${label}.tools.txt`), records.filter(item => item.kind === 'provider_tool').map(item => text(item.bytes).slice(0, 1500)).join('\n'))
   report.status = /^OK/.test(report.step2 ?? '') && /^OK/.test(report.step3 ?? '') && /^VISIBLE/.test(report.step4 ?? '') ? 'GREEN' : 'RED'
 } catch (error) {
   report.status = 'ERROR'; report.error = String(error.message).slice(0, 400)
 } finally {
+  running = false
+  await pumping
+  if (sessionId) {
+    try {
+      await peer.send({EndSession: {session_id: sessionId}})
+      report.cleanup = 'session ended'
+    } catch (error) {
+      report.status = 'ERROR'
+      report.cleanup = `EndSession failed: ${String(error.message).slice(0, 300)}`
+    }
+  }
   peer.close()
   await writeFile(path.join(evidence, `capture-label-${label}.json`), JSON.stringify(report, null, 2) + '\n')
   console.log(JSON.stringify(report))
