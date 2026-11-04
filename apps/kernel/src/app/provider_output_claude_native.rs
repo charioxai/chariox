@@ -30,7 +30,7 @@ mod transcript;
 mod workspace_trust;
 
 pub(crate) use context_delivery::clear_claude_context_delivery_for_settled_prompt;
-pub(crate) use permission::format_claude_permission_message;
+pub(crate) use permission::{claude_permission_title, format_claude_permission_message};
 pub(super) use startup_exit::claude_native_startup_exit;
 
 use attachments::{
@@ -1381,7 +1381,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             agent_id,
             RuntimeInteractionKind::Permission,
             RuntimeInteractionLevel::Warning,
-            Some("Approve Claude Code tool?".to_string()),
+            Some(claude_permission_title(&Value::Null)),
             claude_rendered_permission_details(&recent),
             vec![
                 RuntimeInteractionChoice::new(
@@ -1487,7 +1487,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             agent_id.to_string(),
             RuntimeInteractionKind::Permission,
             RuntimeInteractionLevel::Warning,
-            Some(format!("Approve Claude Code {tool_name}?")),
+            Some(claude_permission_title(event)),
             format_claude_permission_message(event),
             vec![
                 RuntimeInteractionChoice::new(

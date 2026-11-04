@@ -41,21 +41,13 @@ impl SessionGrant {
     }
 
     /// The button text: the exact allow rules. A terminal strip does not wrap a button, so a list
-    /// too long for one line is replaced by its count; the prompt text always lists every rule.
+    /// too long for one line is left out; the prompt text always lists every rule.
     pub(crate) fn label(&self) -> String {
         let exact = format!("Allow for this session: {}", self.allow.join(", "));
         if exact.chars().count() <= LABEL_LIMIT {
             exact
         } else {
-            format!(
-                "Allow for this session ({} {} listed above)",
-                self.allow.len(),
-                if self.allow.len() == 1 {
-                    "rule"
-                } else {
-                    "rules"
-                }
-            )
+            "Allow for this session".to_string()
         }
     }
 
@@ -142,6 +134,19 @@ mod tests {
                 }],
             })
         );
+    }
+
+    #[test]
+    fn a_rule_too_long_for_its_button_is_left_to_the_prompt_text() {
+        let root = "/root/.chariox/dev/lanes/executor/tmp/chariox-external-access-5lrv12/workspace";
+        let granted = session_grant(
+            "Write",
+            &json!({"file_path": format!("{root}/hello.txt")}),
+            Some(Path::new(root)),
+        )
+        .expect("directory grant");
+        assert_eq!(granted.label(), "Allow for this session");
+        assert!(granted.description().contains(root));
     }
 
     #[test]
