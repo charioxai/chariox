@@ -347,7 +347,8 @@ const cleanup = async () => {
   // A fixture that outlived its agent (the orphan writers) is asked to stop, then ended by exact pid.
   try { writeFileSync(join(work, "STOP"), "") } catch { /* the folder is gone */ }
   await delay(1500)
-  for (const name of ["hog.py", "write.py", "build.py"]) for (const { pid } of osProcesses(name)) if (pid > 1) { try { process.kill(pid, "SIGKILL") } catch { /* gone */ } }
+  const fixtureNames = [...Object.keys(fixtures), "occupancy.py"]
+  for (const name of fixtureNames) for (const { pid } of osProcesses(name)) if (pid > 1) { try { process.kill(pid, "SIGKILL") } catch { /* gone */ } }
   writeFileSync(join(evidence, "os-trace.json"), JSON.stringify(osTrace))
   writeFileSync(join(evidence, "followed.json"), JSON.stringify(readFollowed(), null, 1))
   for (const f of ["grant.err", "subscribe.err", "wait.err", "loop.log"]) if (existsSync(join(holderDir, f))) appendFileSync(join(evidence, "holder-logs.txt"), `== ${f}\n${readFileSync(join(holderDir, f), "utf8")}`)
@@ -355,6 +356,9 @@ const cleanup = async () => {
   if (tui) { try { writeFileSync(join(tuiScreens, "final.txt"), tmux("capture-pane", "-p", "-t", tmuxName)); tmux("kill-session", "-t", tmuxName) } catch { /* gone */ } }
   stopOwned()
   await delay(1500)
+  report.remaining_fixture_processes = fixtureNames.flatMap(name => osProcesses(name).map(row => row.pid))
+  if (report.remaining_fixture_processes.length) report.error = "Owned fixture processes remain after cleanup"
+  note("cleanup-census", {remaining_fixture_processes: report.remaining_fixture_processes})
   for (let attempt = 0; attempt < 10 && existsSync(poolCgroup); attempt++) { removeCgroups(poolCgroup); if (existsSync(poolCgroup)) await delay(1000) }
   unmountVolume()
   for (const f of readdirSync(join(dir, "logs"))) appendFileSync(join(evidence, "kernel-logs.txt"), readFileSync(join(dir, "logs", f), "utf8"))
