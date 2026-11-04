@@ -257,6 +257,8 @@ export class KernelBrowserHost {
     this.foreground.reset();
     this.sampleLanes.clear();this.inputChangedAt.clear();this.scrolling.clear();
 
+    clearInterval(this.keepTimer); this.keepTimer = null;
+    await Promise.all([...this.backgroundHolds.keys()].map(target => this.releaseBackground(target)));
     // MP-11: retire helpers on the old display before Chromium recovery can
     // replace it. A failed key release still requires owned desktop teardown.
     let preserveDesktop = this.chromium.desktop?.isLive?.() === true;
@@ -926,7 +928,7 @@ export class KernelBrowserHost {
     } finally {
       if (acting) {
         setTimeout(() => this.noteAgentBusy(acting, -1), SPINNER_LINGER_MS).unref?.();
-        // Display and input code switch a hidden page's focus emulation off when they finish: the agent's Tab gets it back at once.
+        // Reconcile the background lease after navigation or capture changes its session.
         const target = this.tabs.get(acting)?.target_id;
         if (target !== undefined) void this.assertBackground(target).catch(() => {});
       }
@@ -946,28 +948,47 @@ export class KernelBrowserHost {
       await delay(Math.min(wait, 250));
     }
   }
-  // MP-08/MP-10: a Tab an agent works in keeps rendering at full speed while Chrome shows another Tab: per-Tab focus emulation
-  // (as Playwright does), asserted when the agent first acts in it and every few seconds after, because display and input
-  // code switches it off again whenever it releases a hidden page.
+  // MP-08/MP-10/MP-11: background agent Tabs share the capture owner's wake-up lease.
+  // An independent CDP enable is undone when a display releases its last capture.
   async holdBackground(tab) {
     if (!this.backgroundHolds.has(tab.target_id)) {
-      this.backgroundHolds.set(tab.target_id, true);
+      this.backgroundHolds.set(tab.target_id, { pending: null, lease: null });
       if (!this.keepTimer) { this.keepTimer = setInterval(() => void this.assertBackground(), BACKGROUND_KEEP_MS); this.keepTimer.unref?.(); }
     }
     await this.assertBackground(tab.target_id);
   }
-  // The session is resolved at each assertion: a Tab's session changes when the controller attaches it again.
   async assertBackground(only) {
-    for (const target of [...this.backgroundHolds.keys()]) {
+    for (const [target, hold] of this.backgroundHolds) {
       if (only !== undefined && target !== only) continue;
-      if (target === this.activeTarget) continue;
-      try {
+      if (!hold.pending) hold.pending = (async () => {
+        if (target === this.activeTarget) {
+          const lease = hold.lease; hold.lease = null;
+          await lease?.release();
+          return;
+        }
         const { connection, sessionId } = await this.browser.resolvePageTarget(target);
-        await connection.send('Emulation.setFocusEmulationEnabled', { enabled: true }, sessionId, { timeoutMs: BACKGROUND_KEEP_MS });
-      } catch { /* a slow or detached page is tried again at the next tick; a closed Tab leaves the map when the Tab list drops it */ }
+        if (this.backgroundHolds.get(target) !== hold) return;
+        if (hold.lease?.connection !== connection || hold.lease?.sessionId !== sessionId) {
+          const previous = hold.lease; hold.lease = null;
+          await previous?.release().catch(() => {});
+          const release = await this.browser.inputCapture.hold(connection, sessionId);
+          hold.lease = { connection, sessionId, release };
+        }
+        // A physical-focus observation may have suspended a shared display lease.
+        await this.browser.inputCapture.run(connection, sessionId, async () => {});
+      })().catch(() => {
+        // A busy or detached renderer retries while its Tab remains registered.
+      }).finally(() => { hold.pending = null; });
+      await hold.pending;
     }
   }
-  releaseBackground(targetId) { this.backgroundHolds.delete(targetId); }
+  async releaseBackground(targetId) {
+    const hold = this.backgroundHolds.get(targetId);
+    if (!hold) return;
+    this.backgroundHolds.delete(targetId);
+    await hold.pending;
+    await hold.lease?.release().catch(() => {});
+  }
   async requestNow(command, { signal, inputGuard, nativeDisplay } = {}) {
     const scope = command.observed_by ?? (command.focused_agent ? "focused-agent" : "adapter");
     assertNotCancelled(signal);

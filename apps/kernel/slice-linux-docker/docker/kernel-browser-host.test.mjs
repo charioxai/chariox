@@ -9,6 +9,7 @@ import { PortableEncoder } from "./kernel-browser-display.mjs";
 import { CompositorSource } from "./kernel-browser-compositor.mjs";
 import { PassThrough } from "node:stream";
 import readline from "node:readline";
+import { BrowserInputCapture } from './browser-controller-input.mjs';
 import { BrowserCdpClient } from "./browser-controller-cdp.mjs";
 import { BrowserMemory } from "./browser-memory.mjs";
 import { BrowserControllerStdioServer } from "./browser-controller.mjs";
@@ -3060,6 +3061,7 @@ test('an agent opens its Tab behind the shown one; the person opens theirs in fr
 test('a Tab an agent works in behind the shown one is kept at full speed, and left alone once it closes', { timeout: 8000 }, () => using(async ({ host, sent }) => {
   const emulation = () => sent.filter(call => call.method === 'Emulation.setFocusEmulationEnabled' && call.params.enabled === true).map(call => call.session);
   await host.request({ op: 'open', url: 'https://example.com/shown' });
+  host.browser.inputCapture = new BrowserInputCapture();
   const opened = await host.request({ op: 'open', url: 'https://example.com/agent', focused_agent: true });
   const tab = opened.tabs.find(t => t.url.endsWith('/agent')), session = `session-${host.tabs.get(tab.tab_id).target_id}`;
   host.activeTarget = host.tabs.get(opened.tabs.find(t => t.url.endsWith('/shown')).tab_id).target_id;
@@ -3068,7 +3070,8 @@ test('a Tab an agent works in behind the shown one is kept at full speed, and le
   assert.ok(emulation().includes(session), 'the first agent action turns focus emulation on for its Tab');
   const before = emulation().length;
   await new Promise(resolve => setTimeout(resolve, 1700));
-  assert.ok(emulation().length > before, 'and it is asserted again while the Tab lives');
+  assert.equal(emulation().length, before, 'the background lease stays active without toggling emulation');
+  assert.equal(sent.filter(call => call.method === 'Emulation.setFocusEmulationEnabled' && call.session === session).at(-1).params.enabled, true);
   assert.ok(!emulation().includes(`session-${host.activeTarget}`), 'the shown Tab is left as Chrome has it');
   await host.request({ op: 'close', tab_id: tab.tab_id, generation: opened.generation });
   const after = emulation().filter(s => s === session).length;
@@ -3146,6 +3149,7 @@ test('a group whose Tab a card asks the person to act in says so, over the dot a
 test('a hidden renderer that answers late does not end the hold of its Tab', { timeout: 8000 }, () => using(async ({ host, sent, connection }) => {
   const emulation = () => sent.filter(call => call.method === 'Emulation.setFocusEmulationEnabled' && call.params.enabled === true).length;
   await host.request({ op: 'open', url: 'https://example.com/shown' });
+  host.browser.inputCapture = new BrowserInputCapture();
   const opened = await host.request({ op: 'open', url: 'https://example.com/agent', focused_agent: true });
   const tab = opened.tabs.find(t => t.url.endsWith('/agent'));
   host.activeTarget = host.tabs.get(opened.tabs.find(t => t.url.endsWith('/shown')).tab_id).target_id;
@@ -3153,5 +3157,41 @@ test('a hidden renderer that answers late does not end the hold of its Tab', { t
   connection.beforeSend = async method => { if (method === 'Emulation.setFocusEmulationEnabled' && late-- > 0) throw Object.assign(new Error('browser CDP method Emulation.setFocusEmulationEnabled timed out after 1500ms'), { code: 'browser_cdp_timeout' }); };
   await host.request({ op: 'input', focused_agent: true, tab_id: tab.tab_id, generation: opened.generation, document_id: tab.document_id, input: { kind: 'key', key: 'Tab' } });
   await new Promise(resolve => setTimeout(resolve, 4000));
-  assert.ok(emulation() >= 2, `emulation was asserted again after the late answers (${emulation()})`);
+  assert.ok(emulation() >= 1, `the background lease was acquired after the late answers (${emulation()})`);
+}));
+
+// MP-08/MP-09/MP-10/MP-11: display teardown must not turn off an agent's background renderer.
+test('releasing a display capture preserves the background agent wake-up', () => using(async ({host,connection,sent}) => {
+  await host.request({op:'open',url:'https://example.com/person'});
+  host.browser.inputCapture=new BrowserInputCapture();
+  const opened=await host.request({op:'open',url:'https://example.com/agent',focused_agent:true});
+  const tab=[...host.tabs.values()].find(t=>t.url.endsWith('/agent'));
+  host.activeTarget=[...host.tabs.values()].find(t=>t.url.endsWith('/person')).target_id;
+  await host.holdBackground(tab);
+  const session=`session-${tab.target_id}`;
+  const release=await host.browser.inputCapture.hold(connection,session);
+  await release();
+  assert.equal(sent.filter(c=>c.method==='Emulation.setFocusEmulationEnabled'&&c.session===session).at(-1)?.params.enabled,true,'display release must leave the background lease active');
+}));
+
+test('a background lease follows session replacement and releases while the person shows its Tab', () => using(async ({host,connection,sent}) => {
+  await host.request({op:'open',url:'https://example.com/person'});
+  host.browser.inputCapture=new BrowserInputCapture();
+  await host.request({op:'open',url:'https://example.com/agent',focused_agent:true});
+  const tab=[...host.tabs.values()].find(t=>t.url.endsWith('/agent'));
+  host.activeTarget=[...host.tabs.values()].find(t=>t.url.endsWith('/person')).target_id;
+  let sessionId='first-agent-session';
+  host.browser.resolvePageTarget=async()=>({connection,sessionId});
+  await host.holdBackground(tab);
+  assert.ok(host.browser.inputCapture.displayLeases.has(sessionId));
+  sessionId='replacement-agent-session';await host.assertBackground();
+  assert.ok(!host.browser.inputCapture.displayLeases.has('first-agent-session'));
+  assert.ok(host.browser.inputCapture.displayLeases.has(sessionId));
+  host.activeTarget=tab.target_id;await host.assertBackground();
+  assert.ok(!host.browser.inputCapture.displayLeases.has(sessionId));
+  assert.equal(sent.filter(c=>c.method==='Emulation.setFocusEmulationEnabled'&&c.session===sessionId).at(-1).params.enabled,false);
+  host.activeTarget=null;await host.assertBackground();
+  assert.ok(host.browser.inputCapture.displayLeases.has(sessionId));
+  await host.releaseBackground(tab.target_id);
+  assert.equal(host.backgroundHolds.size,0);assert.equal(host.browser.inputCapture.displayLeases.size,0);
 }));
