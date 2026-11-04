@@ -7,7 +7,7 @@ use crate::transport::runtime_tools::RequestPopupBrowserRegionArgs;
 #[serde(tag = "state", rename_all = "snake_case")]
 enum RegionObservation {
     Present {
-        region: RuntimeInteractionBrowserRegion,
+        region: Box<RuntimeInteractionBrowserRegion>,
     },
     ConditionMet {
         reason: String,
@@ -103,7 +103,7 @@ impl KernelRuntimeState {
             .await?
         {
             RegionObservation::Present { region } => Ok(RuntimeInteractionView {
-                browser_region: region,
+                browser_region: *region,
             }),
             RegionObservation::ConditionMet { .. } => Err(region_error(
                 "browser element is no longer current; take a fresh snapshot",
@@ -195,7 +195,7 @@ impl KernelRuntimeState {
                     failures.observed();
                     if let Err(error) = self
                         .owned
-                        .update_browser_region_card(room, id, previous, region)
+                        .update_browser_region_card(room, id, previous, *region)
                     {
                         tracing::warn!(interaction_id=%id, error=%crate::secret_redaction::redact_secrets(&error.to_string()), "browser card projection retained for retry");
                         tokio::time::sleep(Duration::from_millis(250)).await;
