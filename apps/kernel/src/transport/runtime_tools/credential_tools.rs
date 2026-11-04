@@ -146,6 +146,26 @@ pub struct RequestPopupArgs {
     pub timeout_sec: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_on_timeout: Option<String>,
+    /// Person cards: the card closes by itself when this wake source occurs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub until: Option<RequestPopupUntilArgs>,
+    /// Person cards: one kernel request the kernel runs the moment the person approves.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<RequestPopupActionArgs>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RequestPopupActionArgs {
+    /// One externally tagged kernel request, as `chariox_kernel_request` takes it.
+    pub request: serde_json::Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RequestPopupUntilArgs {
+    /// The `wake_id` an `events.*` tool returned for a source this agent armed.
+    pub wake_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -538,6 +558,20 @@ pub fn credential_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                     },
                     "timeout_sec": {"type": "integer", "minimum": 1},
                     "default_on_timeout": {"type": "string"},
+                    "until": {
+                        "type": "object",
+                        "required": ["wake_id"],
+                        "properties": {"wake_id": {"type": "string"}},
+                        "additionalProperties": false,
+                        "description": "With wait:false only. The wake_id of a source you armed (events.timer, events.process, events.terminal). When it occurs the card closes on every client by itself and you are told how it resolved; no answer is needed."
+                    },
+                    "action": {
+                        "type": "object",
+                        "required": ["request"],
+                        "properties": {"request": {"type": "object"}},
+                        "additionalProperties": false,
+                        "description": "A card that asks for one specific action. request is one kernel request (the shape chariox_kernel_request takes). The card shows the kernel's own description of exactly that request, not your title or message (they are ignored), and asks for the Chariox passkey. On approval the kernel runs it at once and returns its result; on Cancel nothing runs and status is cancelled. Blocks until decided (wait is ignored)."
+                    },
                     "custom_choice": {
                         "type": "object",
                         "required": ["id", "label"],

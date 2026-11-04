@@ -662,6 +662,22 @@ impl KernelRuntimeOwnedState {
         )
     }
 
+    /// A wake source a card follows occurred: the card closes for every client and the
+    /// asking agent is told what happened, in the kernel's words.
+    pub(super) fn settle_card_condition_met(
+        &self,
+        session_id: &str,
+        interaction_id: &str,
+        how: String,
+    ) -> Result<(), DaemonError> {
+        self.settle_runtime_interaction_if_current(
+            session_id,
+            interaction_id,
+            None,
+            Settlement::ConditionMet(how),
+        )
+    }
+
     fn timeout_runtime_interaction_if_current(
         &self,
         session_id: &str,
@@ -841,15 +857,17 @@ impl KernelRuntimeOwnedState {
 }
 
 /// How a pending interaction ends when no one picks one of its choices.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum Settlement {
     TimedOut,
     VaultUnlocked(crate::local::VaultUnlockSurface),
+    /// The wake source the card follows occurred; the text is kernel-written.
+    ConditionMet(String),
 }
 
 impl Settlement {
     fn resolution(
-        self,
+        &self,
         interaction: &crate::session::RuntimeInteraction,
     ) -> super::PendingInteractionResolution {
         match self {
@@ -859,13 +877,20 @@ impl Settlement {
                 choice_id: Some("unlocked".into()),
                 reply: Some(surface.as_str().into()),
             },
+            Self::ConditionMet(how) => super::PendingInteractionResolution {
+                status: "answered",
+                choice_id: Some("condition_met".into()),
+                reply: Some(how.clone()),
+            },
         }
     }
 
-    fn via(self) -> crate::local::EventResolutionVia {
+    fn via(&self) -> crate::local::EventResolutionVia {
         match self {
             Self::TimedOut => crate::local::EventResolutionVia::Timeout,
-            Self::VaultUnlocked(_) => crate::local::EventResolutionVia::Terminal,
+            Self::VaultUnlocked(_) | Self::ConditionMet(_) => {
+                crate::local::EventResolutionVia::Terminal
+            }
         }
     }
 }

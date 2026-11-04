@@ -114,6 +114,7 @@ mod user_app_view_runtime;
 mod vault_command;
 mod vault_generate;
 mod vault_use;
+pub(crate) use card_action_state::APPROVE_CHOICE_ID;
 #[cfg(test)]
 pub(crate) use critical_approval_passkey::critical_approval_audit_payload;
 #[cfg(test)]
@@ -121,7 +122,9 @@ pub(crate) use sudo::leased::LEASED_SUDO_PEER_PROTOCOL_VERSION;
 pub(crate) use sudo::SudoWindowProjection;
 #[cfg(test)]
 pub(crate) use sudo::SUDO_WINDOW_LENGTH_FOR_TEST;
-pub(crate) use sudo::{is_sudo_control, is_sudo_prompt, sudo_window_minutes};
+pub(crate) use sudo::{
+    is_sudo_control, is_sudo_prompt, sudo_request_forbidden, sudo_window_minutes,
+};
 mod passkey_prompts;
 pub(crate) use passkey_prompts::INTERACTION_CLOSED;
 #[cfg(test)]
@@ -1514,6 +1517,7 @@ mod agent_wake_cancellation;
 mod agent_wake_scheduler;
 mod agent_workflow_tasks;
 mod agent_workspace_loss;
+mod card_action_state;
 mod interaction_wake;
 mod leased_task_connectivity;
 mod leased_worker_stop_obligation;

@@ -423,7 +423,9 @@ impl KernelRuntimeState {
     pub(super) fn schedule_wake_delivery(&self, wake: &AgentWake) {
         let state = self.clone();
         let (room, agent) = (wake.room_id.clone(), wake.agent_id.clone());
+        let wake = wake.clone();
         tokio::spawn(async move {
+            state.close_cards_following(&wake);
             let _ = Box::pin(state.deliver_agent_inbox(&room, &agent)).await;
             state.refresh_wake_projection(&room);
         });

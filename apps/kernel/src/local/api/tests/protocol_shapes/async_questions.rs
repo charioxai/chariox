@@ -45,3 +45,40 @@ fn async_popup_returns_protocol_954_403_snapshot_and_hash() {
     let legacy: crate::session::RuntimeInteraction = serde_json::from_value(legacy).unwrap();
     assert_eq!(legacy.choices(), interaction.choices());
 }
+
+// Person cards: a card follows a wake source or carries one pre-bound request.
+#[test]
+fn person_card_arguments_and_interaction_keep_their_shape() {
+    let arguments = serde_json::json!({
+        "wait": false, "message": "Approve the deploy key", "title": "Deploy key",
+        "choices": [{"id": "done", "label": "Done", "reply": "done"}],
+        "until": {"wake_id": "wake-1"},
+        "action": {"request": {"AliasSession": {"session_id": "s-1", "alias": "nightly"}}}
+    });
+    let args: crate::transport::runtime_tools::RequestPopupArgs =
+        serde_json::from_value(arguments.clone()).unwrap();
+    assert_eq!(serde_json::to_value(args).unwrap(), arguments);
+    let unknown = serde_json::json!({"wake_id": "wake-1", "also": true});
+    assert!(
+        serde_json::from_value::<crate::transport::runtime_tools::RequestPopupUntilArgs>(unknown)
+            .is_err()
+    );
+    let interaction = serde_json::json!({
+        "closes_with_wake": "wake-1", "id": "interaction-1", "agent_id": "agent-1",
+        "kind": "choice", "level": "info", "message": "Finish the sign-in",
+        "choices": [{"id": "done", "label": "Done", "reply": "done"}], "requested_at_ms": 1
+    });
+    let card: crate::session::RuntimeInteraction =
+        serde_json::from_value(interaction.clone()).unwrap();
+    assert_eq!(card.closes_with_wake(), Some("wake-1"));
+    assert_eq!(serde_json::to_value(&card).unwrap(), interaction);
+    assert_eq!(
+        format!(
+            "{:x}",
+            Sha256::digest(
+                serde_json::to_vec(&serde_json::json!([arguments, interaction])).unwrap()
+            )
+        ),
+        "825474c60dfef601cb171296e260b7375fb32b8a5728949addd1ec8585f81779"
+    );
+}

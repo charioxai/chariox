@@ -183,6 +183,45 @@ impl KernelRuntimeState {
         })
     }
 
+    /// Person cards: a card that follows `wake` closes on every client when the source
+    /// occurs or ends, and its asking agent is told so through the card's own answer.
+    pub(super) fn close_cards_following(&self, wake: &AgentWake) {
+        let ended = matches!(
+            wake.state.as_str(),
+            "fired" | "exited" | "lost" | "cancelled"
+        );
+        if wake.kind == KIND || !(ended || wake.last_sequence.is_some()) {
+            return;
+        }
+        let Ok(session) = self.owned.session_store.get_session(&wake.room_id) else {
+            return;
+        };
+        let how =
+            crate::secret_redaction::redact_secrets(&if ended && wake.last_sequence.is_none() {
+                format!(
+                    "Wake source '{}' ended ({}) without occurring: {}",
+                    wake.label, wake.state, wake.summary
+                )
+            } else {
+                format!("Wake source '{}' occurred: {}", wake.label, wake.summary)
+            })
+            .into_owned();
+        for card in session
+            .active_interactions()
+            .iter()
+            .filter(|card| card.closes_with_wake() == Some(wake.id.as_str()))
+        {
+            if let Err(error) =
+                self.owned
+                    .settle_card_condition_met(&wake.room_id, card.id(), how.clone())
+            {
+                tracing::warn!(interaction_id=%card.id(), wake_id=%wake.id,
+                    error=%crate::secret_redaction::redact_secrets(&error.to_string()),
+                    "person card could not close on its condition");
+            }
+        }
+    }
+
     /// Runs on the existing scheduler. Both answered and cancelled cards can
     /// survive a crash between the ledger commit and projection cleanup.
     pub(super) fn tick_interaction_wakes(&self, now: u64) -> Result<(), DaemonError> {

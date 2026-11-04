@@ -240,6 +240,9 @@ pub struct RuntimeInteraction {
     /// Protocol 936: a question owned by a durable task, rather than one turn.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     asking_task_id: Option<String>,
+    /// Person cards: the existing wake source whose occurrence closes this card.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    closes_with_wake: Option<String>,
     /// MP-08 / MP-11 protocol 538: kernel-established sudo presentation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     sudo_request: Option<crate::local::SudoRequestPresentation>,
@@ -318,6 +321,7 @@ impl RuntimeInteraction {
     ) -> Self {
         Self {
             asking_task_id: None,
+            closes_with_wake: None,
             id: id.into(),
             subject: RuntimeInteractionSubject::Agent {
                 agent_id: agent_id.into(),
@@ -343,6 +347,15 @@ impl RuntimeInteraction {
 
     pub fn asking_task_id(&self) -> Option<&str> {
         self.asking_task_id.as_deref()
+    }
+
+    pub fn closes_with_wake(&self) -> Option<&str> {
+        self.closes_with_wake.as_deref()
+    }
+
+    pub(crate) fn closing_with_wake(mut self, wake_id: String) -> Self {
+        self.closes_with_wake = Some(wake_id);
+        self
     }
 
     pub(crate) fn with_asking_task_id(mut self, task: String) -> Self {
@@ -459,6 +472,7 @@ impl RuntimeInteraction {
     ) -> Self {
         Self {
             asking_task_id: None,
+            closes_with_wake: None,
             id: id.into(),
             subject: RuntimeInteractionSubject::KernelOperation {
                 kernel_operation_id: operation_id.into(),

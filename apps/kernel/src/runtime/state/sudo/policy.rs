@@ -212,7 +212,7 @@ impl KernelRuntimeState {
     }
 }
 
-pub(super) fn sudo_request_forbidden(request: &LocalDaemonRequest) -> bool {
+pub(crate) fn sudo_request_forbidden(request: &LocalDaemonRequest) -> bool {
     matches!(
         request,
         LocalDaemonRequest::RequestKernelSudo(_)

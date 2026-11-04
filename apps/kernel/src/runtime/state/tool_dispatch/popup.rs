@@ -27,6 +27,36 @@ pub(in crate::runtime::state) fn popup_status<'a>(
 }
 
 impl KernelRuntimeState {
+    /// The wake a card follows must be this agent's own live source, so the card
+    /// can never be closed by someone else's event or wait for one that is over.
+    fn card_condition_wake(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        wake_id: &str,
+    ) -> Result<String, DaemonError> {
+        let wake = self
+            .owned
+            .durable_state_store
+            .agent_wake(wake_id)?
+            .filter(|wake| wake.room_id == session_id && wake.agent_id == agent_id)
+            .ok_or_else(|| {
+                popup_error(&format!(
+                    "until `{wake_id}` is not a wake source you armed in this room"
+                ))
+            })?;
+        if wake.kind == super::super::interaction_wake::KIND {
+            return Err(popup_error("a card cannot follow another card"));
+        }
+        if !matches!(wake.state.as_str(), "scheduled" | "starting" | "running") {
+            return Err(popup_error(&format!(
+                "until `{wake_id}` already ended ({}); check it with events.wakes instead of asking",
+                wake.state
+            )));
+        }
+        Ok(wake.id)
+    }
+
     pub(super) async fn dispatch_popup_tool(
         &self,
         provider_run: &crate::provider::RuntimeProviderRun,
@@ -84,6 +114,11 @@ impl KernelRuntimeState {
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
         if args.timeout_sec == Some(0) {
             return Err(popup_error("timeout_sec must be at least 1"));
+        }
+        if args.action.is_some() {
+            return Err(popup_error(
+                "an action card must be raised by a local agent's own provider run",
+            ));
         }
         if args.choices.is_empty() {
             return Err(DaemonError::LocalTransport {
@@ -158,7 +193,17 @@ impl KernelRuntimeState {
                 });
             }
         }
-        let interaction = crate::session::RuntimeInteraction::new(
+        let closing_wake = match args.until {
+            Some(until) if args.wait != Some(false) => {
+                return Err(popup_error(&format!(
+                    "until `{}` needs wait:false: a blocking card cannot also follow a wake source",
+                    until.wake_id
+                )));
+            }
+            Some(until) => Some(self.card_condition_wake(session_id, agent_id, &until.wake_id)?),
+            None => None,
+        };
+        let mut interaction = crate::session::RuntimeInteraction::new(
             format!("interaction-{:032x}", rand::random::<u128>()),
             agent_id,
             crate::session::RuntimeInteractionKind::Choice,
@@ -171,6 +216,9 @@ impl KernelRuntimeState {
             args.timeout_sec,
             default_choice_id.clone(),
         );
+        if let Some(wake_id) = closing_wake {
+            interaction = interaction.closing_with_wake(wake_id);
+        }
         if args.wait == Some(false) {
             return self.arm_interaction_wake(session_id, agent_id, interaction);
         }

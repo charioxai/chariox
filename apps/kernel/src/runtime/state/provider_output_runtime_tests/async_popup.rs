@@ -2,6 +2,13 @@
 use super::*;
 
 async fn ask(f: &Fixture, extra: serde_json::Value) -> serde_json::Value {
+    try_ask(f, extra).await.unwrap().payload
+}
+
+async fn try_ask(
+    f: &Fixture,
+    extra: serde_json::Value,
+) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
     let token = f
         .runtime
         .owned
@@ -27,8 +34,6 @@ async fn ask(f: &Fixture, extra: serde_json::Value) -> serde_json::Value {
     )
     .await
     .expect("AM-ASK-01: wait:false must return before the question is answered")
-    .unwrap()
-    .payload
 }
 
 #[tokio::test]
@@ -804,4 +809,95 @@ async fn async_popup_review_wait_deadline_follows_the_latest_question() {
             wake.next_due_ms.unwrap_or(253_402_300_799_999)
         );
     }
+}
+
+// PCD-03: a card names a wake source the agent armed; the source occurring closes the card.
+#[tokio::test]
+async fn async_popup_follows_a_wake_source_and_closes_when_it_occurs() {
+    let f = fixture("async-popup-until", true).await;
+    let task = f.begin(&f.prompt_id);
+    let wake = f.arm(&task, "wake-a").unwrap();
+    let result = ask(&f, serde_json::json!({"until":{"wake_id":wake.id}})).await;
+    let id = result["interaction_id"].as_str().unwrap();
+    assert_eq!(
+        f.runtime
+            .owned
+            .session_store
+            .get_session(&f.room)
+            .unwrap()
+            .active_interactions()
+            .iter()
+            .find(|card| card.id() == id)
+            .and_then(|card| card.closes_with_wake().map(str::to_owned)),
+        Some(wake.id.clone()),
+        "the card carries the wake it follows"
+    );
+    f.driver
+        .sink
+        .occurred(f.occurrence(&wake.id, "o-1", None))
+        .unwrap();
+    for _ in 0..40 {
+        if f.runtime
+            .owned
+            .session_store
+            .get_session(&f.room)
+            .unwrap()
+            .active_interactions()
+            .is_empty()
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(
+        f.runtime
+            .owned
+            .session_store
+            .get_session(&f.room)
+            .unwrap()
+            .active_interactions()
+            .is_empty(),
+        "the card closes within 2 s of the event"
+    );
+    let told = answers(&f, id);
+    assert_eq!(told.len(), 1, "the agent is told once");
+    assert_eq!(told[0]["status"], "answered");
+    assert_eq!(told[0]["choice_id"], "condition_met");
+    assert!(
+        told[0]["reply"].as_str().unwrap().contains("occurred"),
+        "{}",
+        told[0]
+    );
+}
+
+#[tokio::test]
+async fn async_popup_refuses_a_condition_it_cannot_follow() {
+    let f = fixture("async-popup-until-refused", true).await;
+    let task = f.begin(&f.prompt_id);
+    let ended = f.arm(&task, "wake-ended").unwrap();
+    f.driver
+        .sink
+        .occurred(f.occurrence(&ended.id, "o-1", Some(WakeEnd::Succeeded)))
+        .unwrap();
+    let live = f.arm(&task, "wake-live").unwrap();
+    for (until, wait, why) in [
+        ("no-such-wake", None, "not a wake source you armed"),
+        (ended.id.as_str(), None, "already ended"),
+        (live.id.as_str(), Some(true), "needs wait:false"),
+    ] {
+        let mut extra = serde_json::json!({"until":{"wake_id":until}});
+        if let Some(wait) = wait {
+            extra["wait"] = wait.into();
+        }
+        let error = try_ask(&f, extra).await.unwrap_err().to_string();
+        assert!(error.contains(why), "{until}: {error}");
+    }
+    assert!(f
+        .runtime
+        .owned
+        .session_store
+        .get_session(&f.room)
+        .unwrap()
+        .active_interactions()
+        .is_empty());
 }

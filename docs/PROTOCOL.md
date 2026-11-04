@@ -6259,6 +6259,25 @@ choice with id `cancel` is kept as it is). Answering it resolves the question wi
 "cancelled"` and `choice_id: "cancel"` in the tool result and in the wake payload, so the agent never
 reads a cancel as a timeout. No serialized shape changes: the card is an ordinary choice list.
 
+### Person cards — local 984 / relay peer 425
+
+`chariox.request_popup` takes two more optional arguments, and a `RuntimeInteraction` one more optional
+field (additive; old clients ignore it):
+
+- `until: { wake_id }` (with `wait:false`): the card follows a wake source the same agent armed. When the
+  source occurs or ends, the kernel answers the card as `answered`, `choice_id: "condition_met"`, `reply`
+  = a kernel-written sentence; every client drops the card and the agent reads it as its answer.
+  `RuntimeInteraction.closes_with_wake` carries the wake id (stored with the question, so a kernel
+  restart keeps it). Unknown, foreign or ended wakes refuse the call.
+- `action: { request }`: one kernel request (the `chariox_kernel_request` shape) the person authorizes
+  with the passkey. The card is a kernel decision (`PasskeyPromptKind::CriticalApproval`) titled
+  "Approve one action" whose message the kernel writes from the request; the agent's `title` and `message`
+  are ignored. Approve runs the request once as the owner and the call returns `{status, choice_id,
+  ran, response | error}`; Cancel returns `status: "cancelled", ran: false`. The `/sudo` refused list
+  applies (`sudo_request_forbidden`).
+
+Focused checks: `cargo test -p chariox-kernel --lib async_popup card_action person_card`.
+
 ### Apps v2 — local 966 / relay peer 415
 
 One allocation carries the whole Apps v2 Stage 1 line. Local requests: `BeginAppInstall` and
