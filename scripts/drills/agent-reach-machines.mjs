@@ -24,6 +24,8 @@ const stateRoot = resolve(required("--state-root")), evidence = resolve(required
 const tokenFile = flags.get("--claude-token-file") ?? "/root/.claude-lanes/oauth-token.chariox"
 const photoCommand = flags.get("--photo-command") // run as `<command> <phase>`; failures are checks, not crashes
 const label = flags.get("--label") ?? "run"
+// The service answers a repeated request id with the machine of the first one, so every run uses its own.
+const runId = Date.now().toString(36)
 assert(stateRoot.startsWith("/root/.chariox/dev/"), "state must be lane-owned")
 assert(!evidence.startsWith(fileURLToPath(new URL("../../", import.meta.url))), "evidence must be outside the repository")
 mkdirSync(stateRoot, { recursive: true, mode: 0o700 })
@@ -207,7 +209,7 @@ async function main() {
       text = await turn([
         "This is a drill. Use only the chariox-reach MCP tools. Do not retry a failed call.",
         `1. Call \`request\` with exactly: ${request({ ControlPlane: { action: "capabilities" } })}.`,
-        `2. Call \`request\` with exactly: ${request({ ControlPlane: { action: "acquire", capability_revision: "forged", request_id: "reach-rehearsal" } })}. The owner is asked first.`,
+        `2. Call \`request\` with exactly: ${request({ ControlPlane: { action: "acquire", capability_revision: "forged", request_id: `reach-rehearsal-${runId}` } })}. The owner is asked first.`,
         "3. Call `kernels` once.",
         "Then reply with the words REHEARSED and DONE joined by an underscore and the code of the step 2 answer.",
       ].join("\n"), "REHEARSED_DONE")
@@ -226,7 +228,7 @@ async function main() {
     text1 = await turn([
       "This is a drill for the owner's connected machine service. Use only the chariox-reach MCP tools, and your shell for `sleep` only. Do not retry a failed call unless told to.",
       `1. Call \`request\` with exactly: ${request({ ControlPlane: { action: "capabilities" } })}. Remember machine_allocation.revision.`,
-      `2. Call \`request\` with: ${request({ ControlPlane: { action: "acquire", capability_revision: "REVISION", request_id: "reach-drill-acquire" } })} (REVISION from step 1). The owner is asked first; the call waits for the answer.`,
+      `2. Call \`request\` with: ${request({ ControlPlane: { action: "acquire", capability_revision: "REVISION", request_id: `reach-drill-acquire-${runId}` } })} (REVISION from step 1). The owner is asked first; the call waits for the answer.`,
       "3. Remember allocation_ref from the answer. Then, up to 60 times: run the shell command `sleep 10`, then call `request` with " + request({ ControlPlane: { action: "get", allocation_ref: "REF" } }) + " until state is ready and access_state is available. If the answer says access_state is pending although the state is ready, keep asking.",
       "4. Call `kernels` once.",
       "5. Take kernel_target.kernel_id from the last get answer and call `request` with {\"kernel\":\"KERNEL_ID\",\"request\":{\"ListSessions\":null}}.",
@@ -265,8 +267,8 @@ async function main() {
     "This is a drill. Use only the chariox-reach MCP tools, and your shell for `sleep` only. Do not retry a failed call unless told to.",
     `The machine is allocation_ref ${ref}.`,
     `1. Call \`request\` with ${request({ ControlPlane: { action: "capabilities" } })} for the revision, and ${request({ ControlPlane: { action: "get", allocation_ref: ref } })} for its current revision. If available_actions does not contain "stop" yet, run \`sleep 10\` and ask again, up to 12 times.`,
-    `2. Stop it: ${request({ ControlPlane: { action: "stop", allocation_ref: ref, capability_revision: "REVISION", request_id: "reach-drill-stop", expected_revision: "REV" } })} (REV is the number revision of the latest get answer). Then up to 40 times: run \`sleep 10\` and call get until state is stopped.`,
-    `3. Release it: ${request({ ControlPlane: { action: "release", allocation_ref: ref, capability_revision: "REVISION", request_id: "reach-drill-release", expected_revision: "REV" } })} with the revision of the latest get answer, then call get up to 30 times (with \`sleep 10\`) until it answers a state of deleting or deleted or refuses because the machine is gone.`,
+    `2. Stop it: ${request({ ControlPlane: { action: "stop", allocation_ref: ref, capability_revision: "REVISION", request_id: `reach-drill-stop-${runId}`, expected_revision: "REV" } })} (REV is the number revision of the latest get answer). Then up to 40 times: run \`sleep 10\` and call get until state is stopped.`,
+    `3. Release it: ${request({ ControlPlane: { action: "release", allocation_ref: ref, capability_revision: "REVISION", request_id: `reach-drill-release-${runId}`, expected_revision: "REV" } })} with the revision of the latest get answer, then call get up to 30 times (with \`sleep 10\`) until it answers a state of deleting or deleted or refuses because the machine is gone.`,
     "Then reply with the words RELEASED and DONE joined by an underscore and the last state you saw.",
   ].join("\n"), "RELEASED_DONE")
   saveToolLog()
