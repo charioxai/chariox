@@ -101,6 +101,35 @@ const selfScrollGridSession = async ({ page }) => {
   return { samples: trace.length, final: trace.at(-1), events, wheel_ms: wheelEnd, jumps_while_wheel: drifting.length, jumps: drifting.slice(0, 6), reverts, revert_count: reverts.length };
 };
 
+// A click that names a document the Tab has left (the page navigated since the person looked) is refused; the browser and its Tabs stay.
+const staleInputSession = async ({ host, tab }) => {
+  const opened = await host.request({ op: 'state', observed_by: 'lab' });
+  const refused = await host.request({ op: 'input', tab_id: tab.tab_id, generation: opened.generation, document_id: 'previous-document', input: { kind: 'click', x: 5, y: 5 } }).then(() => 'accepted', error => error.code);
+  await new Promise(resolve => setTimeout(resolve, 400));
+  const after = await host.request({ op: 'state', observed_by: 'lab' }).then(state => ({ tabs: state.tabs.length, generation: state.generation }), error => ({ error: error.code }));
+  return { refused, tabs_before: opened.tabs.length, after };
+};
+
+// A click whose Tab goes away while the input is in flight (a challenge frame's page closing after the answer): the other Tabs stay.
+const targetGoneSession = async ({ host }) => {
+  const attempts = [];
+  for (let attempt = 0; attempt < 60; attempt++) {
+    const victim = await host.request({ op: 'open', url: 'about:blank' });
+    const victimTab = host.tabs.get(victim.tab_id);
+    const { connection } = await host.browser.resolvePageTarget(victimTab.target_id);
+    const input = host.request({ op: 'input', tab_id: victimTab.tab_id, generation: victim.generation, document_id: victimTab.document_id, input: { kind: 'click', x: 5, y: 5 } }).then(() => 'accepted', error => error.code);
+    await new Promise(resolve => setTimeout(resolve, attempt % 8)); // lands between the press and the release on some attempts
+    await connection.send('Target.closeTarget', { targetId: victimTab.target_id }).catch(() => {});
+    const refused = await input;
+    await new Promise(resolve => setTimeout(resolve, 400));
+    const after = await host.request({ op: 'state', observed_by: 'lab' }).then(state => ({ tabs: state.tabs.length, generation: state.generation }), error => ({ error: error.code }));
+    attempts.push({ attempt, refused, after });
+    if (after.error || (attempts.length > 1 && after.generation !== attempts[0].after.generation)) break; // the browser stopped, or reset itself, under the person
+  }
+  const stopped = attempts.find(item => item.after.error), reset = attempts.find(item => item.after.generation && item.after.generation !== attempts[0].after.generation);
+  return { attempts: attempts.length, refusals: Object.fromEntries([...new Set(attempts.map(item => item.refused))].map(code => [code, attempts.filter(item => item.refused === code).length])), generations: [...new Set(attempts.map(item => item.after.generation))], stopped: stopped ?? null, reset: reset ?? null };
+};
+
 export const sites = async () => {
   const longTop = await listen((req, res) => { res.setHeader('content-type', 'text/html'); res.end(longPage(false)); });
   const tickTop = await listen((req, res) => { res.setHeader('content-type', 'text/html'); res.end(longPage(false, true)); });
@@ -112,6 +141,8 @@ export const sites = async () => {
   const topNear = await listen((req, res) => { res.setHeader('content-type', 'text/html'); res.end(tilePage(`${frameOrigin}/`, 90)); }); // the challenge in view without scrolling (real-path drill)
   return [
   { id: 'grid-near-fixture', url: `http://127.0.0.1:${topNear}/` },
+  { id: 'stale-input-fixture', url: `http://127.0.0.1:${longTop}/`, interact: staleInputSession },
+  { id: 'target-gone-fixture', url: `http://127.0.0.1:${longTop}/`, interact: targetGoneSession },
   { id: 'selfscroll-grid-fixture', url: `http://127.0.0.1:${topSelf}/`, interact: selfScrollGridSession },
   { id: 'scroll-fixture', url: `http://127.0.0.1:${longTop}/`, interact: scrollSession },
   { id: 'ticker-fixture', url: `http://127.0.0.1:${tickTop}/`, interact: burstSession },
