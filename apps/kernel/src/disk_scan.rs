@@ -51,7 +51,7 @@ pub(crate) fn biggest_children(dir: &Path, count: usize) -> Vec<(PathBuf, u64)> 
             (path, bytes)
         })
         .collect();
-    children.sort_by(|a, b| b.1.cmp(&a.1));
+    children.sort_by_key(|(_, bytes)| std::cmp::Reverse(*bytes));
     children.truncate(count);
     children
 }
