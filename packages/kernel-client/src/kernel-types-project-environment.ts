@@ -33,9 +33,11 @@ export type EnvironmentProposal = {
   readonly evidence: { readonly path: string; readonly excerpt: string }
 }
 
-/** An MCP server or skill that a project file declares; `presence` says whether that file still declares it here. */
-export type ProjectEnvironmentExtension = { readonly name: string; readonly source: string; readonly presence: "present" | "missing" }
-export type EnvironmentExtension = { readonly name: string; readonly source: string }
+/** Where an MCP server or skill comes from: a file of the Project, which Git carries, or a Chariox registration a kernel holds. */
+export type EnvironmentExtensionSource = { readonly kind: "file"; readonly path: string } | { readonly kind: "registration" }
+/** `presence` says whether the declaring file still declares it here, or whether this kernel holds the registration. */
+export type ProjectEnvironmentExtension = { readonly name: string; readonly source: EnvironmentExtensionSource; readonly presence: "present" | "missing" }
+export type EnvironmentExtension = { readonly name: string; readonly source: EnvironmentExtensionSource }
 
 export type ProjectEnvironmentView = {
   readonly projectId: string
@@ -57,10 +59,10 @@ export type ProjectEnvironmentView = {
 
 export type EnvironmentOperationState = "running" | "succeeded" | "failed" | "cancelled"
 export type EnvironmentOperationKind = "setup" | "import" | "draft" | "check"
-export type EnvironmentEntryKind = "secret" | "file"
+export type EnvironmentEntryKind = "secret" | "file" | "mcp" | "skill"
 export type EnvironmentEntryState = "pending" | "importing" | "imported" | "failed"
 
-/** One Secret (by name) or File (by relative path) of an Environment. */
+/** One Secret or registration (by name) or File (by relative path) of an Environment. */
 export type EnvironmentEntryRef = {
   readonly kind: EnvironmentEntryKind
   readonly name: string

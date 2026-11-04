@@ -401,6 +401,28 @@ test("Import here sends the focused missing entry to the chosen kernel and the r
   assert.equal(h.controller.view().rows.find((row) => row.text.includes("DB_URL"))?.tone, "text")
 })
 
+test("A registered MCP this machine lacks reads Missing here, I imports it from the chosen kernel and the row follows", async () => {
+  const h = harness(environment({
+    mcps: [{ name: "github", source: { kind: "file", path: ".mcp.json" }, presence: "present" }, { name: "notion", source: { kind: "registration" }, presence: "missing" }],
+    skills: [{ name: "dataviz", source: { kind: "registration" }, presence: "present" }],
+  }), MAC)
+  await h.open()
+  await h.settle()
+  assert.match(h.text(), /notion\s+Missing here/)
+  assert.match(h.text(), /dataviz\s+Registered/)
+  h.focusOn("github")
+  h.key("i")
+  await h.settle()
+  assert.equal(h.requests.filter((request) => request.ImportProjectEnvironmentEntries).length, 0, "a project file is Git's: nothing to import")
+  h.focusOn("notion")
+  assert.match(h.controller.view().hint, /I import here/)
+  h.replies.push({ EnvironmentOperation: { operation: importOperation({ entries: [{ kind: "mcp", name: "notion", state: "importing", reason: null }] }) } })
+  h.key("i")
+  await h.settle()
+  assert.deepEqual(h.requests.find((request) => request.ImportProjectEnvironmentEntries), { ImportProjectEnvironmentEntries: { projectId: "project-1", operationId: "op-1", sourceKernelId: "kernel-mac", entries: [{ kind: "mcp", name: "notion" }] } })
+  assert.match(h.text(), /notion\s+Importing from Miguel's Mac/)
+})
+
 test("Update brings every missing entry, shows n of m, and a row that failed says why in the warning tone", async () => {
   const h = harness(environment(), MAC)
   await h.open()
@@ -520,19 +542,19 @@ test("Check with agent leaves proposals; Enter accepts one as a Save and X dismi
 
 test("MCPs and Skills that project files declare are listed; a missing declaration is a warning and X removes the row", async () => {
   const h = harness(environment({
-    mcps: [{ name: "github", source: ".mcp.json", presence: "present" }, { name: "notion", source: ".mcp.json", presence: "missing" }],
-    skills: [{ name: "dataviz", source: ".claude/skills/dataviz/SKILL.md", presence: "present" }],
+    mcps: [{ name: "github", source: { kind: "file", path: ".mcp.json" }, presence: "present" }, { name: "notion", source: { kind: "file", path: ".mcp.json" }, presence: "missing" }],
+    skills: [{ name: "dataviz", source: { kind: "file", path: ".claude/skills/dataviz/SKILL.md" }, presence: "present" }],
   }))
   await h.open()
   assert.match(h.text(), /MCPs\n {2}github\s+In project files\n {2}notion\s+Missing here\nSkills\n {2}dataviz\s+In project files/)
   assert.equal(h.controller.view().rows.find((row) => row.text.includes("notion"))?.tone, "warning")
   h.focusOn("notion")
-  h.replies.push({ ProjectEnvironmentSaved: { environment: environment({ revision: 3, mcps: [{ name: "github", source: ".mcp.json", presence: "present" }] }) } })
+  h.replies.push({ ProjectEnvironmentSaved: { environment: environment({ revision: 3, mcps: [{ name: "github", source: { kind: "file", path: ".mcp.json" }, presence: "present" }] }) } })
   h.key("x")
   await h.settle()
   const save = h.requests.find((request) => request.SaveProjectEnvironment)!.SaveProjectEnvironment
-  assert.deepEqual(save.mcps, [{ name: "github", source: ".mcp.json" }])
-  assert.deepEqual(save.skills, [{ name: "dataviz", source: ".claude/skills/dataviz/SKILL.md" }], "the skills are saved as they were")
+  assert.deepEqual(save.mcps, [{ name: "github", source: { kind: "file", path: ".mcp.json" } }])
+  assert.deepEqual(save.skills, [{ name: "dataviz", source: { kind: "file", path: ".claude/skills/dataviz/SKILL.md" } }], "the skills are saved as they were")
 })
 
 test("C checks the Project against its own files without an agent, and proposals for an MCP read like the others", async () => {

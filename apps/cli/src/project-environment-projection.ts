@@ -1,6 +1,7 @@
 import type {
   EnvironmentEntryRef,
   EnvironmentOperationView,
+  ProjectEnvironmentExtension,
   ProjectEnvironmentFile,
   ProjectEnvironmentSecret,
   ProjectEnvironmentView,
@@ -213,7 +214,8 @@ function hint(model: EnvironmentDialogModel): string {
   if (!environment) return "Esc close"
   const imports = model.sources.length > 0 && environment.exists
   const focus = model.focus
-  const importable = imports && ((focus.kind === "secret" && environment.secrets[focus.index]?.presence === "missing") || (focus.kind === "file" && environment.files[focus.index]?.presence === "missing"))
+  const missingRegistration = (entries: readonly ProjectEnvironmentExtension[], index: number) => entries[index]?.source.kind === "registration" && entries[index]?.presence === "missing"
+  const importable = imports && ((focus.kind === "secret" && environment.secrets[focus.index]?.presence === "missing") || (focus.kind === "file" && environment.files[focus.index]?.presence === "missing") || (focus.kind === "mcp" && missingRegistration(environment.mcps, focus.index)) || (focus.kind === "skill" && missingRegistration(environment.skills, focus.index)))
   const parts = ["↑/↓", "Enter edit", ...(importable ? ["I import here"] : []), ...(imports && model.sources.length > 1 ? ["M machine"] : []), ...(environment.exists ? ["C check"] : []), "X remove", "Esc close"]
   return parts.join(" • ")
 }
@@ -310,7 +312,9 @@ export function environmentDialogView(model: EnvironmentDialogModel, width: numb
     if (entries.length === 0) continue
     rows.push(row(title, "text", false, true))
     entries.forEach((entry, index) => {
-      rows.push(row(`  ${twoColumns(entry.name, entry.presence === "present" ? "In project files" : "Missing here", width - 2)}`, entry.presence === "present" ? "text" : "warning", focused(kind, index)))
+      const imported = importRowText(model.transfer, { kind, name: entry.name }, chosen)
+      const status = entry.presence === "present" ? (entry.source.kind === "file" ? "In project files" : "Registered") : "Missing here"
+      rows.push(row(`  ${twoColumns(entry.name, imported?.text ?? status, width - 2)}`, (imported ? imported.problem : entry.presence === "missing") ? "warning" : "text", focused(kind, index)))
     })
   }
 

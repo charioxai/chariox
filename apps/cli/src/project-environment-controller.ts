@@ -14,7 +14,7 @@ import {
   saveProjectEnvironmentRequest,
   setProjectEnvironmentSecretRequest,
 } from "@chariox/kernel-client/ipc-project-environment-requests"
-import type { EnvironmentOperationView, ProjectEnvironmentView, SetupState } from "@chariox/kernel-client/kernel-types"
+import type { EnvironmentEntryRef, EnvironmentExtension, EnvironmentOperationView, ProjectEnvironmentView, SetupState } from "@chariox/kernel-client/kernel-types"
 import {
   environmentDialogView,
   environmentFocusables,
@@ -180,7 +180,7 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
     void follow(known)
   }
 
-  const save = async (patch: { secretNames?: string[]; filePaths?: string[]; mcps?: { name: string; source: string }[]; skills?: { name: string; source: string }[] }) => {
+  const save = async (patch: { secretNames?: string[]; filePaths?: string[]; mcps?: EnvironmentExtension[]; skills?: EnvironmentExtension[] }) => {
     const current = environment
     if (!current || busy) return
     await guarded(
@@ -240,7 +240,7 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
   const source = () => sources[sourceIndex] ?? null
 
   /** Brings entries this machine lacks from the chosen kernel; no `entries` brings every missing one (Update). */
-  const importFromSource = async (entries?: readonly { kind: "secret" | "file"; name: string }[]) => {
+  const importFromSource = async (entries?: readonly EnvironmentEntryRef[]) => {
     const from = source()
     if (!from || busy || transfer?.state === "running") return
     await guarded(
@@ -285,6 +285,10 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
     if (!current) return
     if (focus.kind === "secret" && current.secrets[focus.index]?.presence === "missing") void importFromSource([{ kind: "secret", name: current.secrets[focus.index]!.name }])
     else if (focus.kind === "file" && current.files[focus.index]?.presence === "missing") void importFromSource([{ kind: "file", name: current.files[focus.index]!.path }])
+    else if (focus.kind === "mcp" || focus.kind === "skill") {
+      const entry = (focus.kind === "mcp" ? current.mcps : current.skills)[focus.index]
+      if (entry && entry.source.kind === "registration" && entry.presence === "missing") void importFromSource([{ kind: focus.kind, name: entry.name }])
+    }
   }
 
   const startText = (field: EnvironmentTextField) => {

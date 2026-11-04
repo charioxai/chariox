@@ -2,6 +2,7 @@ import type {
   EnvironmentEntryRef,
   EnvironmentExtension,
   EnvironmentOperationView,
+  EnvironmentExtensionSource,
   ProjectEnvironmentExtension,
   ProjectEnvironmentView,
   SetupState,
@@ -189,10 +190,19 @@ function nullableInteger(source: Json, key: string, what: string): number | null
   return value
 }
 
+function extensionSource(row: Json): EnvironmentExtensionSource {
+  const what = "Environment extension source"
+  const source = field(row, "source", "Environment extension")
+  if (!isRecord(source)) throw new Error(`${what} must be an object`)
+  return oneOf(source, "kind", ["file", "registration"], what) === "file"
+    ? { kind: "file", path: text(source, "path", what) }
+    : { kind: "registration" }
+}
+
 function extensionView(row: Json): ProjectEnvironmentExtension {
   return {
     name: text(row, "name", "Environment extension"),
-    source: text(row, "source", "Environment extension"),
+    source: extensionSource(row),
     presence: oneOf(row, "presence", ["present", "missing"], "Environment extension"),
   }
 }
@@ -252,7 +262,7 @@ export function parseEnvironmentOperationView(value: unknown): EnvironmentOperat
     updates: count(value, "updates", what),
     outputTail: text(value, "outputTail", what),
     entries: list(value, "entries", what).map((row) => ({
-      kind: oneOf(row, "kind", ["secret", "file"], "Environment operation entry"),
+      kind: oneOf(row, "kind", ["secret", "file", "mcp", "skill"], "Environment operation entry"),
       name: text(row, "name", "Environment operation entry"),
       state: oneOf(row, "state", ["pending", "importing", "imported", "failed"], "Environment operation entry"),
       reason: nullableText(row, "reason", "Environment operation entry"),

@@ -30,8 +30,8 @@ const view = {
   variables: "PORT=3000\n",
   secrets: [{ name: "API_KEY", presence: "locked" }, { name: "DB_URL", presence: "present" }],
   files: [{ path: ".env.local", presence: "missing", sizeBytes: null }, { path: "certs/dev.pem", presence: "present", sizeBytes: 1200 }],
-  mcps: [{ name: "github", source: ".mcp.json", presence: "present" }, { name: "notion", source: ".mcp.json", presence: "missing" }],
-  skills: [{ name: "dataviz", source: ".claude/skills/dataviz/SKILL.md", presence: "present" }],
+  mcps: [{ name: "github", source: { kind: "file", path: ".mcp.json" }, presence: "present" }, { name: "notion", source: { kind: "registration" }, presence: "missing" }],
+  skills: [{ name: "dataviz", source: { kind: "file", path: ".claude/skills/dataviz/SKILL.md" }, presence: "present" }],
   changedAtMs: 1_700_000_000_000,
   machineLabel: "Miguel's Mac",
   checkoutPath: "/work/project",
@@ -95,17 +95,18 @@ test("an Import operation reads with its entries and source", () => {
   assert.equal(parsed.kind, "import")
   assert.equal(parsed.sourceLabel, "Mac")
   assert.deepEqual(parsed.entries, [{ kind: "file", name: ".env", state: "failed", reason: "Source offline" }])
-  assert.throws(() => parseEnvironmentOperationView({ ...operation, entries: [{ kind: "mcp", name: "x", state: "failed", reason: null }] }), /kind/)
+  assert.equal(parseEnvironmentOperationView({ ...operation, entries: [{ kind: "mcp", name: "notion", state: "pending", reason: null }] }).entries[0]?.kind, "mcp")
+  assert.throws(() => parseEnvironmentOperationView({ ...operation, entries: [{ kind: "folder", name: "x", state: "failed", reason: null }] }), /kind/)
 })
 
 test("SaveProjectEnvironment carries the revision and wraps names and paths as rows", () => {
   assert.deepEqual(saveProjectEnvironmentRequest({
     projectId: "p", expectedRevision: 4, script: "make", variables: "A=1", secretNames: ["TOKEN"], filePaths: [".env"],
-    mcps: [{ name: "github", source: ".mcp.json" }], skills: [],
+    mcps: [{ name: "github", source: { kind: "file", path: ".mcp.json" } }, { name: "notion", source: { kind: "registration" } }], skills: [],
   }), {
     SaveProjectEnvironment: {
       projectId: "p", expectedRevision: 4, setup: { script: "make" }, variables: "A=1",
-      secrets: [{ name: "TOKEN" }], files: [{ path: ".env" }], mcps: [{ name: "github", source: ".mcp.json" }], skills: [],
+      secrets: [{ name: "TOKEN" }], files: [{ path: ".env" }], mcps: [{ name: "github", source: { kind: "file", path: ".mcp.json" } }, { name: "notion", source: { kind: "registration" } }], skills: [],
     },
   })
 })
