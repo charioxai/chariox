@@ -127,33 +127,55 @@ test('MP-08/MP-10: a frame document is laid out in the document mode of its sour
     await apply(page, snapshot([{ id: 'n1', parent: null, kind: 'document' }, { id: 'n2', parent: 'n1', kind: 'element', tag: 'html' }, { id: 'n3', parent: 'n2', kind: 'element', tag: 'body' },
       { id: 'n4', parent: 'n3', kind: 'frame', tag: 'iframe', attrs: { style: 'width:300px;height:500px;border:0' } }, ...frameDoc(5)]));
     const nested = () => page.evaluate(() => { const d = window.r.frame.contentDocument.querySelector('iframe').contentDocument; return [d.compatMode + (d.doctype?.publicId ? '+public' : ''), Math.round(d.querySelector('div').getBoundingClientRect().height)]; });
+    const input = async base => {
+      await frames();
+      await page.evaluate(() => { window.sent = []; });
+      const target = page.frameLocator('#c > iframe:not([inert])').frameLocator('iframe').locator('div');
+      await target.evaluate(el => el.style.minHeight = '40px');
+      await target.click({ position: { x: 10, y: 10 } });
+      await page.keyboard.press('x');
+      await target.evaluate(el => { el.style.cssText = 'height:40px;overflow:auto'; el.innerHTML = '<div style="height:2000px"></div>'; el.scrollTop = 50; });
+      await page.waitForFunction(() => window.sent.some(a => a.kind === 'scroll_to'), null, { timeout: 1000 }).catch(() => {});
+      const sent = await page.evaluate(() => window.sent);
+      assert.equal(sent.filter(a => a.kind === 'click' && a.node_id === `n${base + 3}`).length, 1, 'MP-08: each frame document forwards one click');
+      assert.equal(sent.filter(a => a.kind === 'key' && a.key === 'x').length, 1, 'MP-08: each frame document forwards one key');
+      assert.equal(sent.filter(a => a.kind === 'scroll_to' && a.node_id === `n${base + 3}`).length, 1, 'MP-08: each frame document forwards one scroll');
+    };
     assert.deepEqual(await nested(), ['CSS1Compat', 0], 'MP-08: a standards frame document: an auto-height body makes height:100% auto');
+    await input(5);
     await apply(page, delta(2, [{ op: 'children', id: 'n4', children: ['n9'], nodes: frameDoc(9, { document_mode: 'quirks' }) }]));
     assert.deepEqual(await nested(), ['BackCompat', 500], 'MP-08: a quirks frame document resolves height:100% against the frame');
+    await input(9);
     await apply(page, delta(3, [{ op: 'children', id: 'n4', children: ['n13'], nodes: frameDoc(13, { document_mode: 'limited-quirks' }) }]));
     assert.deepEqual(await nested(), ['CSS1Compat+public', 0], 'MP-08: a limited-quirks frame document keeps standards layout with its almost-standards doctype');
+    await input(13);
     await apply(page, delta(4, [{ op: 'children', id: 'n4', children: ['n17'], nodes: frameDoc(17) }]));
     assert.deepEqual(await nested(), ['CSS1Compat', 0], 'MP-08: the next page of the frame is standards again');
+    await input(17);
   } finally { await page.close(); }
 });
 
 // A canvas region's still keeps its own transparency: the page's content under the transparent part (a CAPTCHA's header banner
 // under a canvas that is drawn only over its grid) stays visible. Before the still arrives the region is an opaque placeholder.
-test('MP-08/MP-10: a tile still with transparent pixels shows the page beneath it, not black', async () => {
+for (const authored of ['', 'background:rgb(12,34,56)', 'background-color:rgb(12,34,56)!important', '--paint:rgb(12,34,56);background:var(--paint)']) test('MP-08/MP-10: a tile still with transparent pixels shows the page beneath it, not black: ' + (authored || 'transparent'), async () => {
   const page = await viewer();
   try {
     const png = await page.evaluate(() => { const c = document.createElement('canvas'); c.width = 100; c.height = 100; const x = c.getContext('2d'); x.fillStyle = '#0a0'; x.fillRect(0, 50, 100, 50); return c.toDataURL('image/png').split(',')[1]; }); // top half transparent
     await apply(page, snapshot([{ id: 'n1', parent: null, kind: 'document' }, { id: 'n2', parent: 'n1', kind: 'element', tag: 'html' }, { id: 'n3', parent: 'n2', kind: 'element', tag: 'body', attrs: { style: 'margin:0' } },
       { id: 'n4', parent: 'n3', kind: 'element', tag: 'div', attrs: { style: 'position:absolute;left:0;top:0;width:100px;height:100px;background:rgb(200,0,0)' } },
-      { id: 'n5', parent: 'n3', kind: 'tile', tag: 'canvas', attrs: { style: 'position:absolute;left:0;top:0;width:100px;height:100px' }, size: [100, 100] }]));
+      { id: 'n5', parent: 'n3', kind: 'tile', tag: 'canvas', attrs: { style: `position:absolute;left:0;top:0;width:100px;height:100px;${authored}` }, size: [100, 100] }]));
     const color = () => page.evaluate(() => getComputedStyle(window.r.frame.contentDocument.querySelector('canvas')).backgroundColor);
     assert.equal(await color(), 'rgb(0, 0, 0)', 'MP-08: before its still the region is an opaque placeholder');
     await apply(page, { ...delta(2), tiles: [{ node_id: 'n5', x: 0, y: 0, width: 100, height: 100, data_base64: png }] });
     await new Promise(resolve => setTimeout(resolve, 200));
-    assert.equal(await color(), 'rgba(0, 0, 0, 0)', 'MP-08: the painted still does not fill its transparent pixels with black');
+    assert.equal(await color(), authored ? 'rgb(12, 34, 56)' : 'rgba(0, 0, 0, 0)', 'MP-08: the painted still does not fill its transparent pixels with black');
     const shot = await page.screenshot({ clip: { x: 10, y: 10, width: 1, height: 1 } });
     const pixel = await page.evaluate(async b64 => { const img = new Image(); img.src = 'data:image/png;base64,' + b64; await img.decode(); const c = document.createElement('canvas'); c.width = c.height = 1; const x = c.getContext('2d'); x.drawImage(img, 0, 0); return [...x.getImageData(0, 0, 1, 1).data]; }, shot.toString('base64'));
-    assert.deepEqual(pixel.slice(0, 3), [200, 0, 0], 'MP-08: the page beneath the transparent part shows through');
+    assert.deepEqual(pixel.slice(0, 3), authored ? [12, 34, 56] : [200, 0, 0], 'MP-08: the page beneath the transparent part shows through');
+    await apply(page, delta(3, [{ op: 'attr', id: 'n5', name: 'style', value: 'background:rgb(70,80,90)' }]));
+    assert.equal(await color(), 'rgb(70, 80, 90)', 'MP-08: author style updates keep their background under the still');
+    await apply(page, delta(4, [{ op: 'attr', id: 'n5', name: 'style', value: null }]));
+    assert.equal(await color(), 'rgba(0, 0, 0, 0)', 'MP-08: removing author style restores transparency without a new placeholder');
   } finally { await page.close(); }
 });
 

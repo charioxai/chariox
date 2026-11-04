@@ -478,7 +478,8 @@ export class BrowserMirror2Renderer {
       const style = (element as HTMLElement).style
       const [width, height] = record.size ?? [0, 0]
       style.setProperty('box-sizing', 'border-box', 'important'); style.setProperty('width', `${width}px`, 'important'); style.setProperty('height', `${height}px`, 'important')
-      style.setProperty('overflow', 'hidden', 'important'); style.setProperty('background-color', 'black', 'important'); style.setProperty('color', 'transparent', 'important')
+      style.setProperty('overflow', 'hidden', 'important'); style.setProperty('color', 'transparent', 'important')
+      if (record.kind === 'mask' || !this.tileUrls.has(record.id)) style.setProperty('background-color', 'black', 'important')
       // A mask keeps the protected box: inline/contents boxes become inline blocks of the source size.
       if (record.kind === 'mask') { style.setProperty('display', record.display === 'none' ? 'none' : !record.display || ['inline', 'contents'].includes(record.display) ? 'inline-block' : record.display, 'important'); style.setProperty('background-image', 'none', 'important'); element.setAttribute('aria-label', 'Protected content') }
       if (record.kind === 'tile') { if (element.localName === 'iframe') element.setAttribute('sandbox', ''); this.paintTile(record.id, element as HTMLElement) }
@@ -630,6 +631,7 @@ export class BrowserMirror2Renderer {
     const now = doc.compatMode === 'BackCompat' ? 'quirks' : doc.doctype?.publicId ? 'limited-quirks' : 'no-quirks'
     if (now === (mode ?? 'no-quirks')) return
     const doctype = mode === 'quirks' ? '' : mode === 'limited-quirks' ? '<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">' : '<!doctype html>'
+    this.bound.delete(doc)
     doc.open(); doc.write(`${doctype}<html></html>`); doc.close()
   }
   private subtree(records: Mirror2Record[], rootId: string): Mirror2Record[] {
@@ -918,15 +920,20 @@ export class BrowserMirror2Renderer {
     const old = this.tileUrls.get(tile.node_id); if (old) URL.revokeObjectURL(old)
     const url = URL.createObjectURL(new Blob([bytesOf(tile.data_base64) as Uint8Array<ArrayBuffer>], { type: 'image/png' })); this.tileUrls.set(tile.node_id, url)
     this.tileBoxes.set(tile.node_id, { x: tile.x, y: tile.y, width: tile.width, height: tile.height })
-    this.paintTile(tile.node_id, element)
+    const record = this.records.get(tile.node_id)
+    if (!old && record?.kind === 'tile') {
+      // Remove the placeholder by restoring author CSS, including shorthand/variable backgrounds.
+      const authored = this.styled.get(`${tile.node_id}#style`)
+      if (authored?.kind === 'attr') element.setAttribute('style', this.substitute(authored.raw))
+      else element.removeAttribute('style')
+      this.opaqueLayout(record, element)
+    } else this.paintTile(tile.node_id, element)
   }
   private paintTile(id: string, element: HTMLElement): void {
     const tile = this.tileBoxes.get(id), url = this.tileUrls.get(id); if (!tile || !url) return
     const style = element.style
     style.setProperty('background-image', `url("${url}")`, 'important'); style.setProperty('background-repeat', 'no-repeat', 'important')
     style.setProperty('background-position', `${tile.x}px ${tile.y}px`, 'important'); style.setProperty('background-size', `${tile.width}px ${tile.height}px`, 'important')
-    // The still carries its own transparency (a canvas drawn over part of its box): only the placeholder before it is black.
-    if (this.records.get(id)?.kind === 'tile') style.setProperty('background-color', 'transparent', 'important')
   }
   close(options?:{preserveFrame?:boolean}): void {
     this.disposed = true; this.onEmptyPaint = undefined; this.onTiming = undefined; this.sheetCache.clear(); this.sheets.clear(); this.releasePointer(); this.queue=[]; this.pendingInputs=0; this.wheel.close()
