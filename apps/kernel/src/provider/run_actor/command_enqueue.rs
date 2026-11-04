@@ -571,7 +571,14 @@ mod tests {
         let mailbox = ProviderRunActorMailbox::default();
         let finished = Arc::clone(&mailbox.finished_output_polls);
         // The worker runs the poll but cannot store its result yet.
-        let held = finished.lock().expect("finished poll list not poisoned");
+        let (holding, held) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let holder = std::thread::spawn(move || {
+            let _held = finished.lock().expect("finished poll list not poisoned");
+            holding.send(()).expect("test is waiting");
+            let _ = released.recv();
+        });
+        held.recv().expect("the list is held");
         assert!(mailbox
             .spawn_output_poll("run-1".to_string(), runtime_run("run-1"))
             .expect("poll should enqueue"));
@@ -580,7 +587,8 @@ mod tests {
             mailbox.any_output_poll_in_flight(),
             "a poll whose result nobody could apply yet no longer counts as in flight"
         );
-        drop(held);
+        release.send(()).expect("holder is waiting");
+        holder.join().expect("holder ends");
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
             while mailbox.any_output_poll_in_flight() {
                 tokio::time::sleep(std::time::Duration::from_millis(5)).await;
