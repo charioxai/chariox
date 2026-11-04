@@ -388,13 +388,20 @@ async function main() {
     const keepAlive = setInterval(() => { for (const [r, session, attachment] of pumped) r.rpc({ PumpTerminalOutput: { session_id: session, attachment_id: attachment } }).catch(() => {}) }, 2000).unref()
     const nonce = randomBytes(3).toString("hex")
     const yAgent = roomB.agent.id
-    const sleepMs = 150
+    // The drill reads the kernels' history while it waits; a slow read keeps that load low so it does not slow what is timed (the kernels' own log is the clock).
+    const sleepMs = 1000
     // One real turn of another agent, to its end.
     async function agentTurn(r, session, attachment, agent, prompt, marker) {
       const before = (await turnOf(r, session, agent)).id
       await r.rpc(submitPromptRequest(session, attachment, agent, prompt, []))
       let turn
-      await until(async () => { turn = await turnOf(r, session, agent); return turn.id !== before && turn.done && turn.answer.includes(marker) }, `turn of ${agent} (${marker})`, 240000)
+      const end = Date.now() + 240000
+      for (;;) {
+        turn = await turnOf(r, session, agent)
+        if (turn.id !== before && turn.done && turn.answer.includes(marker)) break
+        if (Date.now() > end) throw new Error(`timeout: turn of ${agent} (${marker})`)
+        await delay(sleepMs)
+      }
       return turn
     }
     // X's turn: the prompt is submitted, `during` runs beside it (the drill's triggers), and every reach call is stamped the first time it is seen completed.
@@ -428,6 +435,18 @@ async function main() {
       const acks = [...seen.values()].filter(x => x.name === "events_ack")
       return [...seen.values()].some(x => x.name === "events_subscribe") && ([...running.values()].some(x => x.name === "events_wait" && Number(x.input?.timeout_seconds) >= 100) || (acks.length > 0 && Date.now() - acks[0].at > 5000))
     }
+    // When the kernel finished each reach tool call: its own log line, so the number is the product's and not the provider's reporting delay.
+    const reachFinishes = () => {
+      const out = [], dir = join(a.dir, "logs")
+      for (const file of readdirSync(dir)) for (const line of readFileSync(join(dir, file), "utf8").split("\n")) {
+        if (!line.includes("reach tool call finished")) continue
+        try { const entry = JSON.parse(line); out.push({ tool: entry.tool, ok: entry.ok, elapsed_ms: entry.elapsed_ms, ts: entry.timestamp_ms }) } catch {}
+      }
+      return out
+    }
+    // The wait that was open when the record was published returned `lag` ms later. A record published while the agent was between two
+    // calls (thinking) is no wake and gives null: the drill keeps the driven agent busy long enough for the follower to be waiting.
+    const kernelLag = at => { const done = reachFinishes().filter(x => x.tool === "events_wait" && x.ts >= at - 50 && x.ts - x.elapsed_ms <= at + 25).sort((p, q) => p.ts - q.ts)[0]; return done ? done.ts - at : null }
     // A tool answer is the payload itself (Claude, OpenCode) or an MCP result wrapping it as text (Codex).
     const json = text => {
       const from = text.indexOf("{"), to = text.lastIndexOf("}")
@@ -467,7 +486,7 @@ async function main() {
         await delay(3500)
         events.zQuiet = ![...seen.values()].some(x => x.name === "events_wait" && x.at >= outsideStart)
         events.yStart = Date.now()
-        await agentTurn(b, roomB.session.id, attachB, yAgent, `Reply with exactly ${yWord} and nothing else.`, yWord)
+        await agentTurn(b, roomB.session.id, attachB, yAgent, `Run the shell command "sleep 10" first. Then reply with exactly ${yWord} and nothing else.`, yWord)
         events.yDone = Date.now()
       })
       const waits = waited(first.reach)
@@ -477,9 +496,10 @@ async function main() {
       const sessionsSeen = new Set(waits.flatMap(w => w.batch?.events ?? []).map(e => e.session_id))
       check("X follows a room of another kernel: subscribe is answered", !!first.reach.find(c => c.tool === "events_subscribe" && c.output.includes("EventSubscription")), { out: first.reach.find(c => c.tool === "events_subscribe")?.output.slice(0, 200) })
       check("nothing from the rooms X does not follow wakes it (two other rooms finished real turns while it waited)", !!events.z && events.zQuiet === true && [...sessionsSeen].every(id => id === roomB.session.id), { sessions: [...sessionsSeen], z_turns_ms: events.z && events.z.done - events.z.start })
-      const latency = finalWait && finalEvent ? finalWait.seenAt - finalEvent.at_ms : null
-      note("events-latency", { event_at_ms: finalEvent?.at_ms, wait_returned_seen_ms: finalWait?.seenAt, y_done_ms: events.yDone, latency_ms: latency, polling_ms: sleepMs })
-      check("X's events_wait returns Y's finished turn within 2 s (outcome record names kernel, session, agent)", latency !== null && latency <= 2000 && finalEvent.session_id === roomB.session.id && finalEvent.agent_id === yAgent && !!finalEvent.kernel && finalEvent.value.outcome !== "error" && latency >= -sleepMs, { latency_ms: latency, record: finalEvent && { kernel: finalEvent.kernel, session_id: finalEvent.session_id, agent_id: finalEvent.agent_id, value: finalEvent.value } })
+      const seenLag = finalWait && finalEvent ? finalWait.seenAt - finalEvent.at_ms : null
+      const latency = finalEvent ? kernelLag(finalEvent.at_ms) : null
+      note("events-latency", { event_at_ms: finalEvent?.at_ms, y_done_ms: events.yDone, kernel_latency_ms: latency, provider_shows_result_after_ms: seenLag, polling_ms: sleepMs })
+      check("X's events_wait returns Y's finished turn within 2 s (outcome record names kernel, session, agent)", latency !== null && latency <= 2000 && finalEvent.session_id === roomB.session.id && finalEvent.agent_id === yAgent && !!finalEvent.kernel && finalEvent.value.outcome !== "error" && latency >= -250, { kernel_latency_ms: latency, provider_shows_result_after_ms: seenLag, record: finalEvent && { kernel: finalEvent.kernel, session_id: finalEvent.session_id, agent_id: finalEvent.agent_id, value: finalEvent.value } })
       check("X was woken by the wait, not polling (few waits, each one reported)", waits.length >= 2 && waits.length <= 10, { waits: waits.length })
       check("X's turn ended with the words it was asked for", first.turn.answer.includes("EVENTS_DONE"))
     }
@@ -500,7 +520,7 @@ async function main() {
         await delay(1500)
         raised = { start: Date.now() }
         // The driven agent itself raises the decision through its own chariox tool and waits for the answer.
-        const turn = await agentTurn(b, roomB.session.id, attachB, yAgent, [`Use the chariox tool request_popup exactly once, with wait true: message "${ask}", choices [{"id":"ship","label":"Ship","reply":"ship"},{"id":"hold","label":"Hold","reply":"hold"}].`, "When it returns, reply with exactly ANSWER_ followed by the choice id you received, nothing else."].join(" "), "ANSWER_")
+        const turn = await agentTurn(b, roomB.session.id, attachB, yAgent, [`Run the shell command "sleep 12" first. Then use the chariox tool request_popup exactly once, with wait true: message "${ask}", choices [{"id":"ship","label":"Ship","reply":"ship"},{"id":"hold","label":"Hold","reply":"hold"}].`, "When it returns, reply with exactly ANSWER_ followed by the choice id you received, nothing else."].join(" "), "ANSWER_")
         raised.done = Date.now()
         raised.answer = turn.answer
       })
@@ -508,9 +528,10 @@ async function main() {
       const cardWait = waits.find(w => w.batch?.events?.some(e => e.value?.question))
       const card = cardWait?.batch?.events?.find(e => e.value?.question)
       note("driver-card", { record: card && { kernel: card.kernel, session_id: card.session_id, agent_id: card.agent_id, refs: card.refs, message: card.value.question.message, choices: card.value.question.choices.map(c => c.id) } })
-      const latency = cardWait && card ? cardWait.seenAt - card.at_ms : null
-      check("X is woken by the decision Y raised (record names kernel, session, agent and interaction)", !!card && card.kernel === b.status.daemon_id && card.session_id === roomB.session.id && card.agent_id === yAgent && !!card.refs?.interaction_id && card.value.question.message.includes(ask), { latency_ms: latency })
-      check("the wake comes within 2 s of the decision being raised, without polling", latency !== null && latency <= 2000 && latency >= -sleepMs && waits.length <= 6, { latency_ms: latency, waits: waits.length })
+      const seenLag = cardWait && card ? cardWait.seenAt - card.at_ms : null
+      const latency = card ? kernelLag(card.at_ms) : null
+      check("X is woken by the decision Y raised (record names kernel, session, agent and interaction)", !!card && card.kernel === b.status.daemon_id && card.session_id === roomB.session.id && card.agent_id === yAgent && !!card.refs?.interaction_id && card.value.question.message.includes(ask), { kernel_latency_ms: latency, provider_shows_result_after_ms: seenLag })
+      check("the wake comes within 2 s of the decision being raised, without polling", latency !== null && latency <= 2000 && latency >= -250 && waits.length <= 6, { kernel_latency_ms: latency, provider_shows_result_after_ms: seenLag, waits: waits.length })
       const answer = driver.reach.find(c => c.tool === "request" && /RespondToInteraction/.test(JSON.stringify(c.input)))
       check("X answers the card through reach on kernel B", !!answer && answer.status === "completed" && answer.output.includes("InteractionResponded") && answer.input?.request?.RespondToInteraction?.interaction_id === card?.refs?.interaction_id, { input: answer?.input, out: answer?.output.slice(0, 200) })
       check("Y continues with the answer X gave (no person answered)", !!raised?.answer?.includes("ANSWER_ship"), { answer: raised?.answer?.slice(0, 100) })

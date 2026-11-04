@@ -794,3 +794,60 @@ async fn events_follow_the_run_and_run_on_the_agents_own_kernel() {
     let ended = state.outside_ended_response(&id).unwrap();
     assert!(ended.is_some(), "the subscription of an ended run ends");
 }
+
+#[tokio::test]
+async fn a_driver_does_not_answer_a_decision_only_the_person_may_answer() {
+    let reach = fixture();
+    let popup = {
+        let router = reach.router.clone();
+        tokio::spawn(async move {
+            super::permission_prompt::rpc(
+                &router,
+                DRIVEN_TOKEN,
+                "tools/call",
+                serde_json::json!({"name": "chariox.request_popup", "arguments": {
+                    "message": "Wipe the machine?", "level": "critical", "timeout_sec": 30,
+                    "choices": [{"id": "yes", "label": "Yes", "reply": "yes"}]}}),
+            )
+            .await
+        })
+    };
+    let interaction = loop {
+        let open = reach
+            .router
+            .runtime_state()
+            .session_snapshot_projection(&reach.other_session_id, 0)
+            .expect("session projection should remain available")
+            .session
+            .active_interactions()
+            .to_vec();
+        if let Some(interaction) = open.into_iter().next() {
+            break interaction;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    };
+    let (ok, payload) = call(
+        &reach,
+        &reach.owner_token,
+        None,
+        serde_json::json!({"RespondToInteraction": {
+            "session_id": reach.other_session_id,
+            "interaction_id": interaction.id(),
+            "choice_id": "yes"}}),
+    )
+    .await;
+    assert!(!ok, "{payload}");
+    assert!(
+        payload
+            .to_string()
+            .contains("agents cannot answer approvals"),
+        "{payload}"
+    );
+    reach
+        .router
+        .runtime_state()
+        .timeout_runtime_interaction(&reach.other_session_id, interaction.id())
+        .await
+        .expect("the person's side closes the card");
+    popup.await.unwrap();
+}

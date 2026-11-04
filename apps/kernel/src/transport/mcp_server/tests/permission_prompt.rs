@@ -69,7 +69,7 @@ fn insert_claude_run_in_mode(
     app.providers_mut().insert_run_for_test(run);
 }
 
-async fn rpc(router: &Arc<CommandRouter>, token: &str, method: &str, params: Value) -> Value {
+pub(super) async fn rpc(router: &Arc<CommandRouter>, token: &str, method: &str, params: Value) -> Value {
     let response = handle_json_rpc_value(
         router.clone(),
         token,
