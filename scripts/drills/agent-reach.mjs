@@ -9,6 +9,7 @@
 // follows Y in a room on B and is woken without polling when Y finishes a turn, and when Y raises a decision
 // (AT-40) X reads it and answers it; X reads Y's room history with no approval.
 import assert from "node:assert/strict"
+import { responseLossProxy } from "./agent-reach-response-loss.mjs"
 import { spawn } from "node:child_process"
 import { createHmac, createHash, randomBytes, randomUUID } from "node:crypto"
 import { mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, statSync, writeFileSync, rmSync } from "node:fs"
@@ -43,7 +44,7 @@ const tokenFile = flags.get("--claude-token-file") ?? "/root/.claude-lanes/oauth
 // A Codex scope the product linked for drills, and the OpenCode login to copy into a lane-owned scope.
 const codexScope = flags.get("--codex-scope") ?? "/root/.chariox/dev/worker-k/home/state/provider-accounts/local/codex/kaissandra-ai-reviewer-login-esqv7b7c/codex"
 const opencodeAuth = flags.get("--opencode-auth") ?? "/root/.chariox/dev/provider-runtimes/fleet-accounts/opencode-home/.local/share/opencode/auth.json"
-const scenarios = new Set((flags.get("--scenarios") ?? (provider === "claude" ? "reach,sudo,acquisition,tools,events,multiwait,driver,history,view,humanonly,lineage,newrooms,inherit,workday,recall" : "tools,events,multiwait,driver,history,view")).split(","))
+const scenarios = new Set((flags.get("--scenarios") ?? (provider === "claude" ? "reach,sudo,acquisition,acquisition-sudo,response-loss,tools,events,multiwait,driver,history,view,humanonly,lineage,newrooms,inherit,workday,recall" : "tools,events,multiwait,driver,history,view")).split(","))
 assert(provider === "claude" || [...scenarios].every(name => ["tools", "view", "events", "multiwait", "driver", "history"].includes(name)), "only the tools, view, events, multiwait, driver and history scenarios run with Codex or OpenCode")
 const agentScenarios = ["events", "multiwait", "driver", "history"].some(name => scenarios.has(name))
 assert(stateRoot.startsWith("/root/.chariox/dev/"), "state must be lane-owned")
@@ -52,6 +53,7 @@ mkdirSync(stateRoot, { recursive: true, mode: 0o700 })
 mkdirSync(evidence, { recursive: true })
 const root = mkdtempSync(join(stateRoot, "reach-"))
 const children = [], clients = [], steps = []
+let faultProxy
 const note = (name, data = {}) => {
   steps.push({ at: new Date().toISOString(), name, ...data })
   writeFileSync(join(evidence, "steps.json"), JSON.stringify(steps, null, 2) + "\n", { mode: 0o600 })
@@ -172,7 +174,9 @@ const stripped = text => text.replace(/sk-ant-[A-Za-z0-9_-]+/g, "<redacted>")
 let saveToolLog = () => {}
 async function main() {
   note("binaries", { kernel: createHash("sha256").update(readFileSync(binary)).digest("hex"), relay: createHash("sha256").update(readFileSync(relayBinary)).digest("hex") })
-  const relayPort = await freePort(), relayUrl = `ws://127.0.0.1:${relayPort}`
+  const relayPort = await freePort(), upstreamRelayUrl = `ws://127.0.0.1:${relayPort}`
+  faultProxy = scenarios.has("response-loss") ? await responseLossProxy(upstreamRelayUrl, note) : null
+  const relayUrl = faultProxy?.url ?? upstreamRelayUrl
   mkdirSync(join(root, "relay"), { mode: 0o700 })
   start(relayBinary, { HOME: root, CHARIOX_HOME: join(root, "relay"), CHARIOX_RELAY_HOST: "127.0.0.1", CHARIOX_RELAY_PORT: String(relayPort), CHARIOX_RELAY_SCOPED_ISSUER: issuer, CHARIOX_RELAY_SCOPED_HMAC_SECRET: secret }, "relay")
   const a = await role("a"), b = await role("b")
@@ -773,6 +777,45 @@ async function main() {
     await finished("INHERITX_DONE", since)
   }
 
+  if (scenarios.has("response-loss")) {
+    note("scenario", {which: "response-loss"})
+    const counter = join(b.dir, "work", "reach-effects.txt")
+    const exec = call(target, {RoomTerminal: {session_id: roomB.session.id, operation: {operation: "exec_open", command: ["sh", "-c", `echo effect >> '${counter}'`]}}})
+    // Skip the first sessions reply, then lose exec_open's completed reply. The relay still carries real encrypted traffic.
+    faultProxy.arm(1)
+    const lossSince = Date.now() - 1000
+    await sendPrompt([
+      "This is a drill. Use only chariox-reach tools. No shell tool, no other tools.",
+      `First call request with exactly: ${call(target, {ListSessions: null})}`,
+      `Then call request with exactly: ${exec}`,
+      "If that exec_open call returns kernel_connection_lost or kernel_request_timeout, retry it exactly once with identical arguments. Otherwise do not repeat it.",
+      "Then reply with RESPONSELOSS_DONE and the exec_id or refusal code.",
+    ].join("\n"), "RESPONSELOSS_DONE")
+    await until(() => { try { return readFileSync(counter, "utf8").trim().length > 0 } catch { return false } }, "remote side effect")
+    await delay(1000)
+    const effects = readFileSync(counter, "utf8").trim().split("\n").length
+    const recovered = reachAnswers(lossSince).some(x => x.input?.request?.RoomTerminal?.operation?.operation === "exec_open" && x.answer.includes("exec_opened"))
+    check("a lost remote reply runs the command only once and recovers its answer", faultProxy.drops === 1 && effects === 1 && recovered, {drops: faultProxy.drops, effects, recovered})
+  }
+
+  if (scenarios.has("acquisition-sudo")) {
+    note("scenario", {which: "acquisition-sudo"})
+    const since = Date.now() - 1000
+    const prompt = ["This is a drill. Use only chariox-reach request, no shell or files, no retry.",
+      `Call request once with exactly: ${call(null, {ControlPlane: {action: "acquire", capability_revision: "r1", request_id: "sudo-acquire-drill"}})}`,
+      "Then reply with ACQUIRESUDO_DONE and the answer's code."].join("\n")
+    let completed = false
+    const elevated = sudoPrompt(prompt, "ACQUIRESUDO_DONE").finally(() => { completed = true })
+    let extra
+    await until(async () => {
+      extra = (await state(a, roomA.session.id)).active_interactions?.find(x => String(x.message ?? "").includes("acquire a machine"))
+      return extra || completed
+    }, "sudo acquisition result or extra card", 180000)
+    if (extra) await a.rpc({RespondToInteraction: {session_id: roomA.session.id, interaction_id: extra.id, choice_id: "decline"}})
+    await elevated
+    check("an existing sudo window acquires without another question", !extra && claudeTranscript(a.dir + "/chariox", since).includes("no connected machine service"), {extra_card: !!extra})
+  }
+
   if (scenarios.has("acquisition")) {
     note("scenario", { which: "acquisition" })
     const acquire = call(null, { ControlPlane: { action: "acquire", capability_revision: "r1", request_id: "reach-drill" } })
@@ -822,6 +865,7 @@ try {
   note("FAIL", { message: String(error.message).replace(/sk-ant-[A-Za-z0-9_-]+/g, "<redacted>") }); process.exitCode = 1
 } finally {
   for (const client of clients) await client.close().catch(() => {})
+  await faultProxy?.close()
   const stopped = await Promise.allSettled(children.toReversed().map(stop))
   const failed = stopped.some(result => result.status === "rejected")
   if (!failed && (!failures.length || flags.get("--discard") === "yes")) rmSync(root, { recursive: true, force: true })

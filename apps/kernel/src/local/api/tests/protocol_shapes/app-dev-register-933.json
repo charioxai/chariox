@@ -1,5 +1,5 @@
 {
-  "local_protocol": 974,
+  "local_protocol": 989,
   "requests": [
     {
       "BeginAppInstall": {

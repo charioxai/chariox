@@ -41,7 +41,7 @@ independent managed kernels.
 
 Worker reports use `/v1/disposable-workers/activity` with `allocationId` instead
 of `environmentId`. The signed fields are accountId, allocationId, kernelId,
-machineId, runningAgentCount, and sequence, sorted in that order. The Machine
+machineId, workingAgentCount, and sequence, sorted in that order. The Machine
 credential is the HMAC-SHA256 key. Independent managed kernels retain their
 existing endpoint and signature contract.
 

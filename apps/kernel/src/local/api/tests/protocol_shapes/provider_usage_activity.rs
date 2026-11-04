@@ -1440,6 +1440,6 @@ fn local_daemon_protocol_claude_setup_token_login_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "61fd156d07bde442ccc678f7875dcf24e419fe7208aed934d5d2ecc15a2cf0ce"
+        "61fd156d07bde442ccc678f7875dcf24e415fe7208aed934d5d2ecc15a2cf0ce"
     );
 }

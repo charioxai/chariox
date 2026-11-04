@@ -228,13 +228,15 @@ impl CommandRouter {
             return Ok(refused("not_allowed", error.to_string()));
         }
         Ok(
-            match crate::runtime::kernel_gateway::forward_audited(
-                self,
-                &origin,
-                &command_id,
-                &kernel,
-                &request,
-            )
+            match forward_reach(command_id, |id| {
+                let (origin, kernel, request) = (&origin, &kernel, &request);
+                async move {
+                    crate::runtime::kernel_gateway::forward_audited(
+                        self, origin, &id, kernel, request,
+                    )
+                    .await
+                }
+            })
             .await
             {
                 Ok(response) => RuntimeToolResult {
@@ -306,5 +308,102 @@ impl CommandRouter {
                 crate::runtime::kernel_access::error("kernel response serialization failed")
             })?,
         })
+    }
+}
+
+/// MP-08 / MP-09 / MP-10 / MP-11: the tool owns a forwarded command's retry identity.
+async fn forward_reach<F, Fut>(
+    command_id: String,
+    mut forward: F,
+) -> Result<serde_json::Value, crate::runtime::kernel_gateway::GatewayError>
+where
+    F: FnMut(String) -> Fut,
+    Fut: std::future::Future<
+        Output = Result<serde_json::Value, crate::runtime::kernel_gateway::GatewayError>,
+    >,
+{
+    use crate::runtime::kernel_gateway::GatewayError;
+    match forward(command_id.clone()).await {
+        Err(error) if matches!(error.code(), "kernel_request_timeout" | "kernel_connection_lost") => {
+            match forward(command_id).await {
+                Ok(value) => Ok(value),
+                Err(_) => Err(GatewayError::Remote {
+                    name: "remote kernel".into(),
+                    code: "kernel_outcome_unknown".into(),
+                    message: "The kernel may have completed this request, but its reply could not be recovered with the original command ID. Read the state before starting another operation.".into(),
+                    retryable: false,
+                }),
+            }
+        }
+        result => result,
+    }
+}
+
+#[cfg(test)]
+mod retry_tests {
+    use super::*;
+    use crate::runtime::kernel_gateway::{
+        ledger::{GatewayLedger, Settled},
+        GatewayError,
+    };
+    use crate::runtime_transport::command_cache::CommandFingerprint;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    #[tokio::test]
+    async fn reach_lost_response_retries_without_repeating_the_side_effect() {
+        let dir = crate::test_support::TestWorktree::new("reach-retry");
+        let ledger = GatewayLedger::open(dir.path().join("receipts.json"));
+        let effects = AtomicU32::new(0);
+        let attempts = AtomicU32::new(0);
+        let request: LocalDaemonRequest = serde_json::from_value(serde_json::json!({"RoomTerminal": {
+            "session_id": "s", "operation": {"operation": "exec_open", "command": ["uname", "-a"]}
+        }})).unwrap();
+        let command =
+            crate::runtime::command::KernelCommand::from_local_request("one", None, None, &request);
+        let fingerprint = CommandFingerprint::for_app_control(&command, &request);
+        let answer = forward_reach("reach:run:one".into(), |id| {
+            let (ledger, effects, attempts, fingerprint) =
+                (&ledger, &effects, &attempts, fingerprint.clone());
+            async move {
+                let settled = ledger
+                    .run(&id, fingerprint, async {
+                        effects.fetch_add(1, Ordering::SeqCst);
+                        Ok(serde_json::json!({"exec_id": "one"}))
+                    })
+                    .await;
+                // The target completed the operation, but the first response was lost.
+                if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                    return Err(GatewayError::ConnectionLost {
+                        name: "remote".into(),
+                    });
+                }
+                match settled {
+                    Settled::Done(Ok(value)) => Ok(value),
+                    _ => panic!("the retry must recover the original receipt"),
+                }
+            }
+        })
+        .await
+        .expect("a lost response must recover with the original command identity");
+        assert_eq!(answer["exec_id"], "one");
+        assert_eq!(effects.load(Ordering::SeqCst), 1);
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn reach_exhausted_retry_requires_reading_state_instead_of_replaying() {
+        let attempts = AtomicU32::new(0);
+        let failure = forward_reach("reach:one".into(), |_| {
+            attempts.fetch_add(1, Ordering::SeqCst);
+            async {
+                Err(GatewayError::RequestTimeout {
+                    name: "remote".into(),
+                })
+            }
+        })
+        .await
+        .unwrap_err();
+        assert_eq!(failure.code(), "kernel_outcome_unknown");
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
     }
 }

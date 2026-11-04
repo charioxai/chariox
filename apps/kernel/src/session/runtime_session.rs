@@ -777,6 +777,10 @@ impl RuntimeSession {
         self.prompt_runtime.has_any_prompt_work()
     }
 
+    pub fn agents_with_prompt_work(&self) -> impl Iterator<Item = &str> {
+        self.prompt_runtime.agents_with_prompt_work()
+    }
+
     pub fn scheduler_state(&self) -> SchedulerState {
         self.prompt_runtime.scheduler_state()
     }

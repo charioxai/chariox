@@ -2279,3 +2279,32 @@ fn agent_archive_cannot_be_escalated_with_sudo() {
         assert!(super::policy::sudo_request_forbidden(&request));
     }
 }
+
+// MP-08 / MP-09 / MP-10 / MP-11: a live owner window already authorizes acquisition.
+#[tokio::test]
+async fn reach_machine_acquisition_uses_the_live_sudo_window() {
+    let f = fixture_with_options(None, true);
+    running(&f);
+    let result = tokio::time::timeout(
+        Duration::from_secs(1),
+        f.router.dispatch_reach_tool_call(
+            "sudo-fixture-bearer",
+            "request",
+            serde_json::json!({"request": {"ControlPlane": {
+                "action": "acquire", "capability_revision": "r1", "request_id": "sudo-acquire"
+            }}}),
+        ),
+    )
+    .await
+    .expect("an existing sudo window must not wait on another acquisition card")
+    .unwrap();
+    assert!(!result.ok);
+    assert!(
+        result
+            .payload
+            .to_string()
+            .contains("no connected machine service"),
+        "{}",
+        result.payload
+    );
+}

@@ -194,11 +194,15 @@ impl KernelRuntimeState {
     }
 
     /// Whether the owner accepts this acquisition. One decision in the agent's room, shown to every
-    /// client, unless the owner turned `agents.ask_before_acquiring_machines` off.
+    /// client, unless this turn already has a live /sudo window or the owner turned
+    /// `agents.ask_before_acquiring_machines` off.
     pub(crate) async fn confirm_machine_acquisition(
         &self,
         caller: &ReachCaller,
     ) -> Result<bool, DaemonError> {
+        if self.reach_sudo_turn(caller).is_some() {
+            return Ok(true);
+        }
         let config = self.owned.config_projection.snapshot();
         if !config
             .user_config

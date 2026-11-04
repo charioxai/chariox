@@ -105,7 +105,7 @@ impl Fixture {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
         let mut idle_since = std::time::Instant::now();
         loop {
-            if self.runtime.managed_running_agent_count() != 0 {
+            if self.runtime.managed_working_agent_count() != 0 {
                 idle_since = std::time::Instant::now();
             } else if idle_since.elapsed() >= std::time::Duration::from_millis(500) {
                 return shell;
@@ -147,7 +147,7 @@ fn sleep_command() -> Option<Vec<String>> {
 async fn a_running_terminal_command_blocks_the_stop_reservation() {
     let fixture = fixture("terminal-stop-blocked");
     let terminal_id = fixture.open(sleep_command()).await.expect("command opens");
-    assert_eq!(fixture.runtime.managed_running_agent_count(), 1);
+    assert_eq!(fixture.runtime.managed_working_agent_count(), 1);
     assert!(
         !fixture.reserve(),
         "a stop must not be reserved under a running terminal command"
@@ -157,7 +157,7 @@ async fn a_running_terminal_command_blocks_the_stop_reservation() {
         .terminal(RoomTerminalOperation::Close { terminal_id })
         .await
         .expect("close");
-    assert_eq!(fixture.runtime.managed_running_agent_count(), 0);
+    assert_eq!(fixture.runtime.managed_working_agent_count(), 0);
     assert!(fixture.reserve(), "an idle kernel reserves the stop");
 }
 
@@ -165,7 +165,7 @@ async fn a_running_terminal_command_blocks_the_stop_reservation() {
 async fn an_idle_shell_does_not_count_as_work() {
     let fixture = fixture("terminal-idle-shell");
     fixture.open_settled_shell().await;
-    assert_eq!(fixture.runtime.managed_running_agent_count(), 0);
+    assert_eq!(fixture.runtime.managed_working_agent_count(), 0);
     assert!(fixture.reserve());
 }
 
@@ -195,14 +195,14 @@ async fn a_command_typed_at_the_prompt_counts_as_work_until_it_ends() {
         .terminal(input(&shell, "sleep 2\n"))
         .await
         .expect("input");
-    assert_eq!(fixture.runtime.managed_running_agent_count(), 1);
+    assert_eq!(fixture.runtime.managed_working_agent_count(), 1);
     // Past the launch window, the running program itself holds the count.
     tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
-    assert_eq!(fixture.runtime.managed_running_agent_count(), 1);
+    assert_eq!(fixture.runtime.managed_working_agent_count(), 1);
     assert!(!fixture.reserve());
 
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while fixture.runtime.managed_running_agent_count() != 0 {
+    while fixture.runtime.managed_working_agent_count() != 0 {
         assert!(std::time::Instant::now() < deadline, "command never ended");
         tokio::time::sleep(std::time::Duration::from_millis(2)).await;
     }
@@ -220,7 +220,7 @@ async fn a_background_job_keeps_the_stop_back_after_the_prompt_returns() {
     // Past the launch window the shell owns the foreground again.
     tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
     assert_eq!(
-        fixture.runtime.managed_running_agent_count(),
+        fixture.runtime.managed_working_agent_count(),
         1,
         "the job still runs in the terminal's session"
     );
@@ -231,7 +231,7 @@ async fn a_background_job_keeps_the_stop_back_after_the_prompt_returns() {
         .terminal(RoomTerminalOperation::Close { terminal_id: shell })
         .await
         .expect("close");
-    assert_eq!(fixture.runtime.managed_running_agent_count(), 0);
+    assert_eq!(fixture.runtime.managed_working_agent_count(), 0);
     assert!(fixture.reserve());
 }
 
@@ -248,10 +248,10 @@ async fn a_finished_background_job_stops_counting() {
         .await
         .expect("input");
     tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
-    assert_eq!(fixture.runtime.managed_running_agent_count(), 1);
+    assert_eq!(fixture.runtime.managed_working_agent_count(), 1);
     std::fs::write(fixture._worktree.path().join(".background-job-release"), []).unwrap();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while fixture.runtime.managed_running_agent_count() != 0 {
+    while fixture.runtime.managed_working_agent_count() != 0 {
         assert!(std::time::Instant::now() < deadline, "job never ended");
         tokio::time::sleep(std::time::Duration::from_millis(2)).await;
     }
@@ -484,14 +484,14 @@ async fn abandoned_exec_expiry_reports_idle_and_allows_the_managed_stop() {
             .await
             .unwrap();
         assert!(matches!(opened, RoomTerminalResult::ExecOpened { .. }));
-        assert_eq!(fixture.runtime.managed_running_agent_count(), 1);
+        assert_eq!(fixture.runtime.managed_working_agent_count(), 1);
         assert!(!fixture.reserve(), "busy exec prevents a managed stop");
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         tokio::time::pause();
         tokio::time::advance(std::time::Duration::from_secs(301)).await;
         tokio::time::resume();
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            while fixture.runtime.managed_running_agent_count() != 0 {
+            while fixture.runtime.managed_working_agent_count() != 0 {
                 tokio::time::sleep(std::time::Duration::from_millis(20)).await;
             }
         })

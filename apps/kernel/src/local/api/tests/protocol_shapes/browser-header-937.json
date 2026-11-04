@@ -1,5 +1,5 @@
 {
-  "local_protocol": 974,
+  "local_protocol": 989,
   "peer_protocol": 415,
   "state_keys": [
     "active_tab_id",

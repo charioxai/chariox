@@ -434,8 +434,8 @@ fn local_daemon_managed_environment_control_shape_is_versioned() {
             "runtimeStartedAt": snapshot.pointer(
                 "/10/ManagedEnvironmentCatalog/catalog/environments/0/runtimeStartedAt"
             ),
-            "runningAgentCount": snapshot.pointer(
-                "/10/ManagedEnvironmentCatalog/catalog/environments/0/runningAgentCount"
+            "workingAgentCount": snapshot.pointer(
+                "/10/ManagedEnvironmentCatalog/catalog/environments/0/workingAgentCount"
             ),
             "lastActivityReportedAt": snapshot.pointer(
                 "/10/ManagedEnvironmentCatalog/catalog/environments/0/lastActivityReportedAt"
@@ -463,7 +463,7 @@ fn local_daemon_managed_environment_control_shape_is_versioned() {
         .expect("managed shutdown observation wire projection");
     assert_eq!(
         format!("{:x}", Sha256::digest(shutdown_serialized.as_bytes())),
-        "b81527a4eb1ee6e0360a7d0d449d5c62268bba2d71b35a57fade07e1472e2155"
+        "fa52c5c03cb6821d4ccf4f8997f1829cbe422a4171245ed232e2e9c70cdcc5ec"
     );
     let legacy_response = serde_json::json!({
         "ManagedEnvironment": {
@@ -700,7 +700,7 @@ fn managed_environment_summary(
         context_manifest_digest: None,
         auto_stop_policy: policy,
         runtime_started_at: Some("2026-08-21T00:00:00.000Z".to_string()),
-        running_agent_count: Some(0),
+        working_agent_count: Some(0),
         last_activity_reported_at: Some("2026-08-21T00:00:00.000Z".to_string()),
         last_activity_changed_at: Some("2026-08-21T00:00:00.000Z".to_string()),
         auto_stop_warning_at: None,
@@ -739,7 +739,7 @@ fn remove_shutdown_observation_fields(value: &mut serde_json::Value) {
         serde_json::Value::Object(fields) => {
             for key in [
                 "runtimeStartedAt",
-                "runningAgentCount",
+                "workingAgentCount",
                 "lastActivityReportedAt",
                 "lastActivityChangedAt",
                 "autoStopWarningAt",

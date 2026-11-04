@@ -1,3 +1,4 @@
+use super::managed_activity_persistence::ManagedActivityCounts;
 use super::*;
 
 #[cfg(test)]
@@ -11,6 +12,12 @@ pub(super) struct ManagedActivityLockProbe {
     attempted: std::sync::mpsc::SyncSender<()>,
     acquired: std::sync::mpsc::SyncSender<()>,
 }
+
+/// How often an idle managed kernel samples what its agents have registered.
+#[cfg(not(test))]
+const WORKING_AGENT_SAMPLE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+#[cfg(test)]
+const WORKING_AGENT_SAMPLE_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
 
 impl KernelRuntimeState {
     #[cfg(test)]
@@ -33,9 +40,9 @@ impl KernelRuntimeState {
             .expect("managed activity mutation mutex poisoned");
         loop {
             let sequence = self.managed_activity_change_sequence();
-            let running_agent_count = self.owned.managed_running_agent_count_unlocked();
+            let working_agent_count = self.owned.managed_working_agent_count_unlocked();
             if sequence == self.managed_activity_change_sequence() {
-                return (sequence, running_agent_count);
+                return (sequence, working_agent_count);
             }
         }
     }
@@ -77,12 +84,7 @@ impl KernelRuntimeState {
             .expect("managed activity mutation mutex poisoned");
         loop {
             let sequence = self.managed_activity_change_sequence();
-            let running_agent_count = self.owned.managed_running_agent_count_unlocked();
-            match self
-                .owned
-                .managed_activity_transitions
-                .current_observation_with_sequence(running_agent_count)
-            {
+            match self.owned.current_managed_activity_observation_unlocked() {
                 Ok((transition_sequence, observation))
                     if sequence == self.managed_activity_change_sequence() =>
                 {
@@ -110,21 +112,51 @@ impl KernelRuntimeState {
                     return Ok((sequence, latest_observation, local_transition_sequence));
                 }
             }
-            self.owned
-                .runtime_projection_changes
-                .wait_for_change_after(sequence)
-                .await;
+            tokio::select! {
+                _ = self.owned.runtime_projection_changes.wait_for_change_after(sequence) => {}
+                // Wakes are registered and settled in the ledger, session triggers
+                // and watchers, which share no mutation boundary: sample them.
+                _ = tokio::time::sleep(WORKING_AGENT_SAMPLE_INTERVAL) => {
+                    let (latest_sequence, latest_observation, local_transition_sequence) =
+                        self.managed_activity_report_snapshot_with_transition()?;
+                    sequence = latest_sequence;
+                    if latest_observation != observation {
+                        return Ok((sequence, latest_observation, local_transition_sequence));
+                    }
+                }
+            }
         }
     }
 
     #[cfg(test)]
-    pub(crate) fn managed_running_agent_count(&self) -> u8 {
+    pub(crate) fn managed_working_agent_count(&self) -> u8 {
         let _mutation = self
             .owned
             .managed_activity_mutation_lock
             .lock()
             .expect("managed activity mutation mutex poisoned");
-        self.owned.managed_running_agent_count_unlocked()
+        self.owned.managed_working_agent_count_unlocked()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn durable_state_store_for_managed_activity_test(
+        &self,
+    ) -> crate::durable_state::DurableKernelStateStore {
+        self.owned.durable_state_store.clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn restore_room_for_managed_activity_test(&self, room: &str) {
+        self.owned
+            .session_store
+            .restore_session(crate::session::RuntimeSession::new(
+                room,
+                None,
+                "workspace",
+                "worktree",
+                "machine",
+                "kernel",
+            ));
     }
 
     #[cfg(test)]
@@ -194,16 +226,101 @@ impl KernelRuntimeState {
 }
 
 impl KernelRuntimeOwnedState {
-    pub(super) fn managed_running_agent_count_unlocked(&self) -> u8 {
-        // MP-09 A03: a live owned process is work; a future timer alone is not.
-        let active_turn_count =
-            self.active_turns.snapshot().len() + self.agent_wakes.processes.count();
+    pub(super) fn managed_working_agent_count_unlocked(&self) -> u8 {
+        self.managed_activity_counts_unlocked().working_agent_count
+    }
+
+    /// The current observation of the durable activity, after recording what
+    /// agents registered since the last boundary.
+    pub(super) fn current_managed_activity_observation_unlocked(
+        &self,
+    ) -> Result<(u64, super::ManagedActivityObservation), crate::error::DaemonError> {
+        self.record_registration_change_unlocked();
+        self.managed_activity_transitions
+            .current_observation_with_sequence(self.managed_working_agent_count_unlocked())
+    }
+
+    pub(super) fn managed_activity_counts_unlocked(&self) -> ManagedActivityCounts {
+        let active_turns = self.active_turns.snapshot();
         let sessions = self
             .session_store
             .list_non_ended_sessions_including_hidden();
-        running_agent_count(active_turn_count, sessions)
+        // MP-09 A03: a live owned process is work; a future timer alone is not.
+        let active_turn_count = active_turns.len() + self.agent_wakes.processes.count();
+        let any_work = work_in_flight(active_turn_count, &sessions)
             .max(u8::from(self.room_terminals.has_running_work()))
-            .max(u8::from(self.room_execs.has_running_work()))
+            .max(u8::from(self.room_execs.has_running_work()));
+
+        let mut in_flight: BTreeSet<(&str, &str)> = BTreeSet::new();
+        for turn in active_turns.values() {
+            in_flight.insert((&turn.session_id, &turn.agent_id));
+        }
+        for session in &sessions {
+            let room = session.id();
+            for agent in session.agents_with_prompt_work() {
+                in_flight.insert((room, agent));
+            }
+            for agent in session
+                .active_interactions()
+                .iter()
+                .filter_map(|interaction| interaction.agent_id())
+            {
+                in_flight.insert((room, agent));
+            }
+        }
+        let mut working = in_flight.clone();
+        for session in &sessions {
+            for trigger in session.agent_triggers().iter().filter(|t| t.enabled()) {
+                working.insert((session.id(), trigger.agent_id()));
+            }
+        }
+        let awaiting = self.durable_state_store.agents_awaiting_wake();
+        let live_rooms: BTreeSet<&str> = sessions.iter().map(|session| session.id()).collect();
+        match &awaiting {
+            Ok(awaiting) => working.extend(
+                awaiting
+                    .iter()
+                    .filter(|(room, _)| live_rooms.contains(room.as_str()))
+                    .map(|(room, agent)| (room.as_str(), agent.as_str())),
+            ),
+            Err(error) => {
+                // A ledger that cannot be read must not let the machine stop
+                // with wakes armed in it.
+                crate::logging::error_with_fields(
+                    "managed_kernel.activity",
+                    "managed activity could not read registered wakes; counting one working agent",
+                    serde_json::json!({ "error": error.to_string() }),
+                );
+            }
+        }
+        // Work no agent owns (a terminal command, a workflow run) counts as one
+        // agent, so zero always means the machine has nothing to wait for.
+        let count = |agents: usize, floor: u8| u8::try_from(agents).unwrap_or(u8::MAX).max(floor);
+        ManagedActivityCounts {
+            working_agent_count: count(working.len(), any_work.max(u8::from(awaiting.is_err()))),
+            in_flight_agent_count: count(in_flight.len(), any_work),
+        }
+    }
+
+    pub(super) fn record_registration_change_unlocked(&self) {
+        if let Err(error) = self
+            .managed_activity_transitions
+            .record_registration_change(|| {
+                (
+                    self.runtime_projection_changes.sequence(),
+                    self.managed_activity_counts_unlocked(),
+                    crate::session::unix_epoch_ms(),
+                )
+            })
+        {
+            crate::logging::error_with_fields(
+                "managed_kernel.activity",
+                "managed registration change could not be persisted",
+                serde_json::json!({
+                    "error": error.to_string(),
+                }),
+            );
+        }
     }
 
     pub(super) fn record_managed_activity_transition(&self) {
@@ -290,7 +407,7 @@ impl KernelRuntimeOwnedState {
             .record_current_transition(|| {
                 (
                     self.runtime_projection_changes.sequence(),
-                    self.managed_running_agent_count_unlocked(),
+                    self.managed_activity_counts_unlocked(),
                     observed_at_ms.unwrap_or_else(crate::session::unix_epoch_ms),
                 )
             })
@@ -331,12 +448,9 @@ impl ManagedActivityMutation<'_> {
     }
 }
 
-fn running_agent_count(
-    active_turn_count: usize,
-    sessions: impl IntoIterator<Item = crate::session::RuntimeSession>,
-) -> u8 {
+fn work_in_flight(active_turn_count: usize, sessions: &[crate::session::RuntimeSession]) -> u8 {
     if active_turn_count > 0
-        || sessions.into_iter().any(|session| {
+        || sessions.iter().any(|session| {
             session.has_any_prompt_work()
                 || !session.active_interactions().is_empty()
                 || session.has_active_session_task()
@@ -351,7 +465,7 @@ fn running_agent_count(
 
 #[cfg(test)]
 mod tests {
-    use super::running_agent_count;
+    use super::work_in_flight;
     use crate::config::DaemonConfig;
     use crate::runtime::router::CommandRouter;
     use crate::session::{
@@ -388,7 +502,7 @@ mod tests {
             )),
             VecDeque::new(),
         );
-        assert_eq!(running_agent_count(0, [active]), 1);
+        assert_eq!(work_in_flight(0, &[active]), 1);
 
         let mut queued = session();
         queued.mirror_agent_prompt_state(
@@ -402,7 +516,7 @@ mod tests {
                 PromptStatus::Queued,
             )]),
         );
-        assert_eq!(running_agent_count(0, [queued]), 1);
+        assert_eq!(work_in_flight(0, &[queued]), 1);
     }
 
     #[test]
@@ -420,14 +534,14 @@ mod tests {
             None,
             None,
         ));
-        assert_eq!(running_agent_count(0, [session]), 1);
+        assert_eq!(work_in_flight(0, &[session]), 1);
     }
 
     #[test]
     fn managed_activity_counts_active_and_queued_session_tasks() {
         let mut active = session();
         active.start_or_update_metaagent_task("agent-1", "active task");
-        assert_eq!(running_agent_count(0, [active]), 1);
+        assert_eq!(work_in_flight(0, &[active]), 1);
 
         let mut queued = session();
         queued.enqueue_metaagent_task(crate::session::QueuedMetaagentTask::new(
@@ -437,13 +551,13 @@ mod tests {
             "queued task",
             Vec::new(),
         ));
-        assert_eq!(running_agent_count(0, [queued]), 1);
+        assert_eq!(work_in_flight(0, &[queued]), 1);
     }
 
     #[test]
     fn active_turn_blocks_zero_until_prompt_settlement_finishes() {
-        assert_eq!(running_agent_count(1, [session()]), 1);
-        assert_eq!(running_agent_count(0, [session()]), 0);
+        assert_eq!(work_in_flight(1, &[session()]), 1);
+        assert_eq!(work_in_flight(0, &[session()]), 0);
     }
 
     #[tokio::test]
@@ -458,7 +572,7 @@ mod tests {
         let (sequence, observation, initial_transition_sequence) = runtime
             .managed_activity_report_snapshot_with_transition()
             .expect("initial activity should be durable");
-        assert_eq!(observation.running_agent_count, 0);
+        assert_eq!(observation.working_agent_count, 0);
 
         runtime.owned.runtime_projection_changes.record_change();
         let wait = runtime.wait_for_managed_activity_transition_after(sequence, observation);
@@ -485,7 +599,7 @@ mod tests {
                 .await
                 .expect("real activity transition should wake")
                 .expect("activity transition should remain readable");
-        assert_eq!(latest.running_agent_count, 1);
+        assert_eq!(latest.working_agent_count, 1);
         assert!(latest_transition_sequence > initial_transition_sequence);
     }
 
@@ -522,7 +636,7 @@ mod tests {
         .await
         .expect("completed busy-idle cycle should wake")
         .expect("later idle observation should remain readable");
-        assert_eq!(later_idle.running_agent_count, 0);
+        assert_eq!(later_idle.working_agent_count, 0);
         assert!(later_idle.changed_at_ms > initial_idle.changed_at_ms);
         assert!(later_transition_sequence > initial_transition_sequence);
     }
@@ -606,7 +720,7 @@ mod tests {
             .expect("activity transitions should be readable");
         let counts = events
             .iter()
-            .map(|event| event.payload["runningAgentCount"].as_u64())
+            .map(|event| event.payload["workingAgentCount"].as_u64())
             .collect::<Vec<_>>();
         assert_eq!(counts, vec![Some(0), Some(1), Some(0)]);
     }
@@ -640,7 +754,7 @@ mod tests {
         let (_, busy) = runtime
             .managed_activity_report_snapshot()
             .expect("busy workflow transition should be durable");
-        assert_eq!(busy.running_agent_count, 1);
+        assert_eq!(busy.working_agent_count, 1);
 
         let mut session = runtime
             .owned
@@ -661,7 +775,10 @@ mod tests {
         let (_, idle) = runtime
             .managed_activity_report_snapshot()
             .expect("idle workflow transition should be durable");
-        assert_eq!(idle.running_agent_count, 0);
+        assert_eq!(idle.working_agent_count, 0);
         assert!(idle.changed_at_ms >= busy.changed_at_ms);
     }
 }
+
+#[cfg(test)]
+mod working_agents_tests;
