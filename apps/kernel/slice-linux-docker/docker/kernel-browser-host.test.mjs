@@ -3065,3 +3065,26 @@ test("MP-08/MP-10/MP-11 the host snapshot boundary preserves schema words and id
   assert.equal(snapshot.accessibility_nodes[0].name, "Account [redacted]");
   assert.equal(snapshot.dom_nodes[0].attributes["aria-label"], "[redacted]");
 }));
+
+// MP-08 / MP-09 / MP-10 / MP-11: capture-label collisions must not rewrite browser protocol.
+for (const word of ['Tabs', 'generation', 'ready', 'host-tab-protocol']) {
+  test(`MP-11 review: captured ${word} preserves state/open/navigate/input schema`, () => using(async ({ host, pages }) => {
+    const opened = await host.request({ op: 'open', tab_id: 'host-tab-protocol', url: 'https://example.com/' });
+    await host.protect({ unknown: false, values: [word], targets: [] });
+    for (const command of [
+      { op: 'state' },
+      { op: 'open', url: 'https://example.com/?label=' + word },
+      { op: 'navigate', tab_id: opened.tab_id, generation: opened.generation, url: 'https://example.com/?label=' + word },
+      { op: 'input', tab_id: opened.tab_id, generation: opened.generation, document_id: 'doc-target-1', input: { kind: 'key', key: 'ArrowDown' } },
+    ]) {
+      for (const page of pages.values()) page.title = 'Page ' + word;
+      const reply = await host.handle({ id: 888, method: 'host.browser', params: command });
+      assert.equal(reply.ok, true, command.op + ': ' + JSON.stringify(reply.error));
+      assert.equal(reply.result.state, 'ready', command.op + ' keeps state enum');
+      assert.equal(reply.result.generation, opened.generation, command.op + ' keeps generation');
+      assert(Array.isArray(reply.result.tabs), command.op + ' keeps tabs');
+      assert(reply.result.tabs.some(tab => tab.tab_id === opened.tab_id), command.op + ' keeps opaque tab identities');
+      assert(reply.result.tabs.every(tab => !tab.title.includes(word)), command.op + ' scrubs page titles');
+    }
+  }));
+}
