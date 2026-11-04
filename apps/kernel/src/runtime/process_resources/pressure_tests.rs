@@ -2,7 +2,20 @@
 //! room; under pressure exactly one command yields, never its owner's root.
 use super::*;
 
-const ALLOC: &str = "import sys,time
+/// A fixture process dies with its parent, stopped or not: a test that is
+/// killed must not leave commands behind, and a stopped orphan never exits.
+pub(super) const DIE_WITH_PARENT: &str = "import ctypes;ctypes.CDLL(None).prctl(1,9);";
+
+/// A disk writer (4 MiB every half second): it writes at most 256 MiB in its
+/// life and ends with its parent or its scratch directory.
+pub(super) fn writer_command() -> String {
+    format!(
+        "python3 -c '{DIE_WITH_PARENT}import os,sys,time\nf=open(sys.argv[1],\"wb\")\nfor _ in range(64):\n if not os.path.isdir(os.path.dirname(sys.argv[1])): break\n f.write(os.urandom(4194304)); f.flush(); os.fsync(f.fileno()); time.sleep(0.5)' \"$0/out\""
+    )
+}
+
+const ALLOC: &str = "import ctypes,sys,time
+ctypes.CDLL(None).prctl(1,9)
 start,rate,top=map(int,sys.argv[1:4])
 b=[bytearray(start*1048576)] if start else []
 total=start
@@ -98,10 +111,19 @@ impl Workload {
         }
         let (program, args) =
             prepared.command(if launcher { "python3" } else { "/bin/sh" }.into(), argv);
-        let child = std::process::Command::new(program)
-            .args(args)
-            .spawn()
-            .unwrap();
+        let mut command = std::process::Command::new(program);
+        command.args(args);
+        // SAFETY: only `prctl` runs between fork and exec. The root dies with
+        // the test that started it; its commands die with it.
+        #[cfg(target_os = "linux")]
+        unsafe {
+            use std::os::unix::process::CommandExt;
+            command.pre_exec(|| {
+                libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
+                Ok(())
+            });
+        }
+        let child = command.spawn().unwrap();
         let domain = prepared.start(child.id()).unwrap();
         if gated {
             return Self { child, domain, dir };
@@ -149,7 +171,7 @@ impl Workload {
     }
     /// The stopped command was told why on its own error stream. Only Linux
     /// can reopen another process's stream; elsewhere the stop is silent.
-    fn assert_told(&self, name: &str, reason: &str) {
+    pub(super) fn assert_told(&self, name: &str, reason: &str) {
         #[cfg(target_os = "linux")]
         {
             let notice =
@@ -177,8 +199,23 @@ impl Drop for Workload {
             // SAFETY: a positive PID read from the process table a moment ago.
             unsafe { libc::kill(*pid, libc::SIGKILL) };
         }
+        // Nothing may outlive the scratch directory its command line names.
+        for pid in processes_naming(&self.dir) {
+            // SAFETY: a positive PID of a process whose command line names this workload's directory.
+            unsafe { libc::kill(pid, libc::SIGKILL) };
+        }
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut stray = processes_naming(&self.dir);
+        while !stray.is_empty() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+            stray = processes_naming(&self.dir);
+        }
         let _ = std::fs::remove_dir_all(&self.dir);
         if !std::thread::panicking() {
+            assert!(
+                stray.is_empty(),
+                "commands outlived the workload: {stray:?}"
+            );
             let deadline = std::time::Instant::now() + Duration::from_secs(5);
             while tree
                 .iter()
@@ -192,6 +229,28 @@ impl Drop for Workload {
             }
         }
     }
+}
+
+/// The processes whose command line names `dir` (the workload's scratch directory).
+#[cfg(target_os = "linux")]
+fn processes_naming(dir: &std::path::Path) -> Vec<i32> {
+    let name = dir.to_string_lossy().into_owned();
+    let me = std::process::id() as i32;
+    std::fs::read_dir("/proc")
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| entry.file_name().to_str()?.parse::<i32>().ok())
+        .filter(|pid| *pid != me)
+        .filter(|pid| {
+            std::fs::read(format!("/proc/{pid}/cmdline"))
+                .is_ok_and(|bytes| String::from_utf8_lossy(&bytes).contains(&name))
+        })
+        .collect()
+}
+#[cfg(not(target_os = "linux"))]
+fn processes_naming(_dir: &std::path::Path) -> Vec<i32> {
+    Vec::new()
 }
 
 /// Commands admission stopped, under a root that waits on them: what a
