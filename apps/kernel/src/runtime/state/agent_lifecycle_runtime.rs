@@ -1010,12 +1010,12 @@ impl KernelRuntimeState {
                 _ => {}
             }
         }
-        let tasks = self.owned.durable_state_store.agent_tasks(None, None)?;
+        let tasks = self.owned.durable_state_store.agent_tasks_to_sweep()?;
         Box::pin(self.check_leased_task_connections(&tasks, now)).await?;
         self.discharge_worker_stop_obligations(now).await?;
         let now = crate::session::unix_epoch_ms();
         let mut blocked = Vec::new();
-        for task in self.owned.durable_state_store.agent_tasks(None, None)? {
+        for task in self.owned.durable_state_store.agent_tasks_to_sweep()? {
             let Ok(session) = self.owned.session_store.get_session(&task.room_id) else {
                 continue;
             };
@@ -1327,7 +1327,7 @@ impl KernelRuntimeState {
                 },
             );
         }
-        let tasks = self.owned.durable_state_store.agent_tasks(None, None)?;
+        let tasks = self.owned.durable_state_store.agent_tasks_to_sweep()?;
         self.owned
             .human_control_task_waits
             .lock()
@@ -1340,8 +1340,7 @@ impl KernelRuntimeState {
                         && !task.goal.as_ref().is_some_and(|goal| goal.paused)
                 })
             });
-        let mut rooms = BTreeSet::new();
-        for task in tasks.clone() {
+        for task in tasks {
             // Recovery retains unavailable Rooms; their tasks must not halt live supervision.
             if self.owned.session_store.get_session(&task.room_id).is_err() {
                 continue;
@@ -1354,10 +1353,10 @@ impl KernelRuntimeState {
             {
                 tracing::warn!(room_id=%task.room_id, agent_id=%task.agent_id, "MP-08/MP-09/MP-10/MP-11 A02: owner projection unavailable; other recipients continue");
             }
-            if rooms.insert(task.room_id.clone()) {
-                self.retract_stale_task_owner_interactions(&task.room_id, &tasks)
-                    .await;
-            }
+        }
+        // A decision whose task finished is withdrawn here; finished tasks are not in the sweep's set.
+        if let Err(error) = self.owned.sweep_stale_task_owner_interactions() {
+            tracing::warn!(%error, "task owner decision withdrawal failed; interaction admission will retry");
         }
         // A rejected cold submission withdraws its fresh task. The inbox still
         // owns the work and must retry even when this recipient has no tasks.

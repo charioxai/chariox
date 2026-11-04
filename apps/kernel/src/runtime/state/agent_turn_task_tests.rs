@@ -37,10 +37,14 @@ fn decoded_during(
         let prompt = format!("turn-{i}");
         begin(&prompt);
         store
-            .agent_lifecycle(Operation::EndFailedTurn {
-                task: prompt.clone(),
+            .agent_lifecycle(Operation::Settle {
+                room: room.id().into(),
+                agent: agent.id().into(),
                 prompt,
-                reason: "provider run failed".into(),
+                run: format!("run-{i}"),
+                has_answer: true,
+                cancelled: false,
+                now: crate::session::unix_epoch_ms(),
             })
             .unwrap();
     }
@@ -126,5 +130,31 @@ fn a_room_without_legacy_runs_reads_no_tasks_for_the_goal_offer() {
         (few, many),
         (0, 0),
         "the goal offer decoded {few} tasks after 2 earlier turns and {many} after 30"
+    );
+}
+
+/// Tasks decoded by a lifecycle sweep, after `finished` earlier turns whose tasks it has already settled.
+fn decoded_at_sweep(finished: usize) -> usize {
+    decoded_during(finished, |runtime, _room, _agent, _current| {
+        let sweep = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        sweep
+            .block_on(runtime.sweep_agent_lifecycle_for_test())
+            .unwrap();
+        DECODED_TASKS.with(|n| n.set(0));
+        sweep
+            .block_on(runtime.sweep_agent_lifecycle_for_test())
+            .unwrap();
+    })
+}
+
+#[test]
+fn a_sweep_reads_only_the_tasks_that_can_need_it() {
+    let (few, many) = (decoded_at_sweep(2), decoded_at_sweep(30));
+    assert_eq!(
+        few, many,
+        "a sweep decoded {few} tasks after 2 finished turns and {many} after 30"
     );
 }

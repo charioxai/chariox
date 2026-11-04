@@ -143,6 +143,22 @@ impl DurableKernelStateStore {
             params![room, agent],
         )
     }
+    /// The tasks a lifecycle sweep can act on: unfinished or unreadable ones, cancelled ones whose
+    /// terminal outcome is not recorded yet, and finished ones that carry obligations. Every other
+    /// finished task is complete, so the sweep does not read it.
+    pub(crate) fn agent_tasks_to_sweep(&self) -> Result<Vec<AgentTaskExecution>, DaemonError> {
+        self.read_tasks(
+            "agent.lifecycle.sweep_tasks",
+            "rowid IN (\
+             SELECT rowid FROM agent_tasks WHERE state IN ('working','waiting','blocked') \
+             UNION SELECT rowid FROM agent_tasks WHERE state IS NULL \
+             UNION SELECT rowid FROM agent_tasks WHERE obligated=1 \
+             UNION SELECT rowid FROM agent_tasks AS t WHERE state='cancelled' AND NOT EXISTS(\
+              SELECT 1 FROM agent_source_occurrences AS o WHERE o.room_id=t.room_id AND o.source_id=t.task_id \
+              AND o.occurrence_id='task-terminal-'||t.task_id))",
+            [],
+        )
+    }
     /// The agent's task for one turn. Tasks are kept after they finish, so the reads made on
     /// every turn take it by index instead of decoding the agent's whole history.
     pub(crate) fn agent_turn_task(
@@ -639,6 +655,7 @@ fn index_task_lookups(db: &Connection) -> Result<(), DaemonError> {
          CREATE INDEX IF NOT EXISTS agent_tasks_visible ON agent_tasks(room_id,state);
          CREATE INDEX IF NOT EXISTS agent_tasks_pending_prompt ON agent_tasks(pending_prompt_id);
          CREATE INDEX IF NOT EXISTS agent_tasks_obligated ON agent_tasks(room_id,obligated,state);
+         CREATE INDEX IF NOT EXISTS agent_tasks_obligated_any ON agent_tasks(obligated);
          CREATE INDEX IF NOT EXISTS agent_registrations_task ON agent_registrations(task_id);
          CREATE INDEX IF NOT EXISTS agent_registrations_source ON agent_registrations(source_id);",
     )
