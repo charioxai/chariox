@@ -49,6 +49,7 @@ fn entry(arrived: u64, expected: Peak) -> Entry {
         holdable: true,
         expected: Some(expected),
         seen: Some(Seen {
+            exact: 0,
             pid: arrived as u32,
             key: format!("key-{arrived}"),
             line: format!("job {arrived}"),
@@ -78,7 +79,11 @@ fn wait(member: &Arc<Mutex<Observation>>, pid: u32) -> Option<Wait> {
 }
 
 fn scratch(writes: u64) -> Peak {
-    Peak { memory: 0, writes }
+    Peak {
+        memory: 0,
+        writes,
+        exact: 0,
+    }
 }
 
 /// Lets the next resume of any reason happen at once.
@@ -195,6 +200,7 @@ fn a_disk_wait_does_not_resume_onto_memory_another_build_took() {
         Peak {
             memory: 900 * MIB,
             writes: 0,
+            exact: 0,
         },
     );
     build.admitted = true;
@@ -206,6 +212,7 @@ fn a_disk_wait_does_not_resume_onto_memory_another_build_took() {
             Peak {
                 memory: 600 * MIB,
                 writes: GIB,
+                exact: 0,
             },
         )
     };
@@ -240,6 +247,7 @@ fn a_memory_wait_does_not_resume_onto_a_disk_that_filled() {
             Peak {
                 memory: 600 * MIB,
                 writes: 6 * GIB,
+                exact: 0,
             },
         )
     };
@@ -310,6 +318,7 @@ fn two_builds_waiting_for_different_resources_do_not_resume_onto_the_same_memory
             Peak {
                 memory: 6 * GIB,
                 writes: GIB,
+                exact: 0,
             },
         )
     };
@@ -342,6 +351,7 @@ fn two_new_known_builds_do_not_both_start_onto_one_free_machine() {
     let peak = Peak {
         memory: 6 * GIB,
         writes: 0,
+        exact: 0,
     };
     let current = owner(
         "agent",
@@ -681,6 +691,7 @@ fn a_paused_and_a_held_command_are_one_row_apart_from_the_kind() {
             Peak {
                 memory: 6 * GIB,
                 writes: 0,
+                exact: 0,
             },
         );
         waiting.wait = Some(wait);
@@ -903,6 +914,7 @@ fn a_command_that_needs_more_than_the_whole_pool_is_refused_not_held() {
         Peak {
             memory: 80 * GIB,
             writes: 0,
+            exact: 0,
         },
     );
     let fits = entry(
@@ -910,6 +922,7 @@ fn a_command_that_needs_more_than_the_whole_pool_is_refused_not_held() {
         Peak {
             memory: 40 * GIB,
             writes: 0,
+            exact: 0,
         },
     );
     let current = owner(
@@ -929,4 +942,85 @@ fn a_command_that_needs_more_than_the_whole_pool_is_refused_not_held() {
     assert!(ledger.take_refused(&current).is_empty(), "reported twice");
     assert_eq!(wait(&current, 1), None, "an impossible command was held");
     assert_eq!(wait(&current, 2), None, "the one that fits was refused");
+}
+
+#[test]
+fn a_smaller_run_of_a_command_is_not_refused_for_the_peak_of_a_bigger_one() {
+    let free = Arc::new(AtomicU64::new(50 * GIB));
+    let volume = volume(&free);
+    // `-j16` reached 80 GiB; `-j1` has the same normalized key but another exact line.
+    let mut smaller = entry(
+        1,
+        Peak {
+            memory: 80 * GIB,
+            writes: 0,
+            exact: 7,
+        },
+    );
+    smaller.seen.as_mut().unwrap().exact = 8;
+    let mut same = entry(
+        2,
+        Peak {
+            memory: 80 * GIB,
+            writes: 0,
+            exact: 7,
+        },
+    );
+    same.seen.as_mut().unwrap().exact = 7;
+    let current = owner(
+        "agent",
+        true,
+        vec![command(1, 0, 0), command(2, 0, 0)],
+        vec![(1, smaller), (2, same)],
+    );
+    let mut ledger = Ledger::new(None);
+    ledger.pass(
+        std::slice::from_ref(&current),
+        &current,
+        &room(10 * GIB, false, &volume),
+    );
+    assert_eq!(
+        ledger.take_refused(&current),
+        vec![(2, 80 * GIB)],
+        "only the line that reached the peak is refused"
+    );
+    assert_eq!(wait(&current, 1), None, "the smaller run was held");
+}
+
+#[test]
+fn a_full_volume_stops_its_own_writer_and_leaves_one_on_a_roomy_volume_alone() {
+    // Volume 1 has room; volume 2 (a 100 GiB volume with a 10 GiB floor) is below half its floor.
+    let volume: Box<Volume> = Box::new(|path: &Path| {
+        let (id, free) = if path.starts_with("/roomy") {
+            (1, 50 * GIB)
+        } else {
+            (2, 4 * GIB)
+        };
+        Some(Space {
+            id,
+            free,
+            total: 100 * GIB,
+        })
+    });
+    let (_, mut roomy, roomy_use) = writing(1, 8 * GIB, 50 * MIB);
+    roomy.seen.as_mut().unwrap().cwd = Some("/roomy/build".into());
+    let (_, mut full, full_use) = writing(2, GIB, 50 * MIB);
+    full.seen.as_mut().unwrap().cwd = Some("/full/build".into());
+    let current = owner(
+        "agent",
+        true,
+        vec![roomy_use, full_use],
+        vec![(1, roomy), (2, full)],
+    );
+    let mut ledger = Ledger::new(None);
+    ledger.pass(
+        std::slice::from_ref(&current),
+        &current,
+        &room(GIB, false, &*volume),
+    );
+    assert_eq!(
+        ledger.take_fillers(&current).iter().map(|(pid, _)| *pid).collect::<Vec<_>>(),
+        vec![2],
+        "the writer on the full volume is the filler, the older bigger one on the roomy volume is not"
+    );
 }

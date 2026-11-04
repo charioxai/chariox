@@ -54,6 +54,11 @@ impl Wait {
 pub(super) struct Peak {
     pub memory: u64,
     pub writes: u64,
+    /// The exact command line (numbers kept) of the run that reached it: a
+    /// peak decides alone only for that line, since `-j16` and `-j1` share
+    /// the normalized key.
+    #[serde(default)]
+    pub exact: u64,
 }
 
 /// What the kernel recognises a command by: its normalized argv and cwd,
@@ -62,6 +67,8 @@ pub(super) struct Peak {
 pub(super) struct Seen {
     pid: u32,
     key: String,
+    /// The same command line without normalizing its numbers.
+    exact: u64,
     pub line: String,
     pub cwd: Option<PathBuf>,
 }
@@ -317,7 +324,14 @@ impl Ledger {
                 ..
             }) = observation.admission.remove(&pid)
             {
-                self.peaks.record(&seen.key, peak, light);
+                self.peaks.record(
+                    &seen.key,
+                    Peak {
+                        exact: seen.exact,
+                        ..peak
+                    },
+                    light,
+                );
             }
         }
         for command in observation.commands.iter().filter(|command| !command.root) {
@@ -540,8 +554,19 @@ impl Ledger {
                 continue;
             };
             if entry.holdable && expected.memory > room.capacity {
-                entry.refused = Some(expected.memory);
-                entry.admitted = true;
+                // Only the line that reached the peak is refused for it: another
+                // line with the same normalized key (-j1 for -j16) starts as an
+                // unknown command and is judged by what it uses.
+                if entry
+                    .seen
+                    .as_ref()
+                    .is_some_and(|seen| seen.exact == expected.exact)
+                {
+                    entry.refused = Some(expected.memory);
+                    entry.admitted = true;
+                } else {
+                    entry.expected = None;
+                }
                 continue;
             }
             let need = expected.memory.saturating_sub(entry.resident);
@@ -946,9 +971,12 @@ fn recognise(pid: u32) -> Option<Seen> {
     }
     use sha2::Digest;
     let mut hash = sha2::Sha256::new();
+    let mut exact = sha2::Sha256::new();
     for argument in &argv {
         hash.update(normalize(argument).as_bytes());
         hash.update([0]);
+        exact.update(argument.as_bytes());
+        exact.update([0]);
     }
     if let Some(cwd) = &cwd {
         hash.update(cwd.to_string_lossy().as_bytes());
@@ -959,9 +987,11 @@ fn recognise(pid: u32) -> Option<Seen> {
         .take(16)
         .map(|byte| format!("{byte:02x}"))
         .collect();
+    let exact = exact.finalize();
     Some(Seen {
         pid,
         key,
+        exact: u64::from_le_bytes(exact[..8].try_into().expect("a digest has eight bytes")),
         line: display(&argv),
         cwd,
     })
