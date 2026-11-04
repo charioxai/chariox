@@ -1,9 +1,13 @@
 import {
   cancelEnvironmentOperationRequest,
+  checkProjectEnvironmentRequest,
+  draftProjectEnvironmentRequest,
   environmentOperationFromResponse,
   getEnvironmentOperationRequest,
   getProjectEnvironmentRequest,
+  importProjectEnvironmentEntriesRequest,
   projectEnvironmentFromResponse,
+  resolveEnvironmentProposalRequest,
   projectEnvironmentSaveOutcomeFromResponse,
   projectEnvironmentSavedFromResponse,
   runProjectEnvironmentSetupRequest,
@@ -19,11 +23,12 @@ import {
   type EnvironmentDialogView,
   type EnvironmentFocus,
   type EnvironmentInputView,
+  type EnvironmentSourceKernel,
   type EnvironmentTextField,
 } from "./project-environment-projection.js"
 import { applyEditKey, bufferAtEnd, cleanPastedText, insertText, type EditKey, type TextBuffer } from "./text-edit-buffer.js"
 
-const OPERATION_POLL_MS = 1000
+const OPERATION_RETRY_MS = 1000
 
 type EnvironmentKey = EditKey & { readonly eventType?: string | undefined }
 
@@ -35,6 +40,8 @@ type Input =
 
 export type ProjectEnvironmentControllerDeps = {
   send: (request: unknown) => Promise<unknown>
+  /** The user's other connected kernels, from the same Cloud directory the web lists; none when it cannot be read. */
+  otherKernels: () => Promise<readonly EnvironmentSourceKernel[]>
   render: () => void
   schedule: (callback: () => void, delayMs: number) => unknown
   newOperationId: () => string
@@ -59,6 +66,10 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
   let focus: EnvironmentFocus = { kind: "run" }
   let input: Input | null = null
   let operation: EnvironmentOperationView | null = null
+  let transfer: EnvironmentOperationView | null = null
+  let draft: EnvironmentOperationView | null = null
+  let sources: readonly EnvironmentSourceKernel[] = []
+  let sourceIndex = 0
   let message: string | null = null
   let busy = false
   let pollingOperationId: string | null = null
@@ -76,10 +87,17 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
   }
 
   const model = (): EnvironmentDialogModel => ({
-    loading, environment, script: script(), variables: variables(), focus, input: inputView(), operation, message, nowMs: deps.now(),
+    loading, environment, sources, sourceIndex, transfer, draft, script: script(), variables: variables(), focus, input: inputView(), operation, message, nowMs: deps.now(),
   })
 
-  const focusables = () => environmentFocusables(environment)
+  const focusables = () => environmentFocusables(environment, sources.length > 0)
+
+  // Each kind of operation keeps its own slot, so a Draft's answer never replaces the Setup output.
+  const setOperation = (next: EnvironmentOperationView) => {
+    if (next.kind === "import") transfer = next
+    else if (next.kind === "draft" || next.kind === "check") draft = next
+    else operation = next
+  }
 
   const setEnvironment = (next: ProjectEnvironmentView) => {
     environment = next
@@ -131,32 +149,35 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
     }
   }
 
-  // Polls the running operation about once a second; the output tail is the only live data.
-  const poll = (operationId: string) => {
+  // Follows the running operation: the kernel holds each read until the operation has changed, so output and the end show at once.
+  const poll = (operationId: string, known?: number) => {
     if (pollingOperationId === operationId) return
     pollingOperationId = operationId
     const mine = generation
-    const tick = async () => {
+    const follow = async (seen: number | undefined) => {
       if (mine !== generation || pollingOperationId !== operationId) return
       try {
-        const next = environmentOperationFromResponse(await deps.send(getEnvironmentOperationRequest(operationId)))
+        const next = environmentOperationFromResponse(await deps.send(getEnvironmentOperationRequest(operationId, seen)))
         if (mine !== generation || pollingOperationId !== operationId) return
-        operation = next
+        setOperation(next)
         message = null
+        deps.render()
         if (next.state !== "running") {
           pollingOperationId = null
-          deps.render()
           await refresh()
           return
         }
+        await follow(next.updates)
+        return
       } catch (error) {
         if (mine !== generation || pollingOperationId !== operationId) return
         message = failureText(error)
       }
       deps.render()
-      deps.schedule(() => { void tick() }, OPERATION_POLL_MS)
+      // A dropped connection ends the held read; try again after a pause.
+      deps.schedule(() => { void follow(undefined) }, OPERATION_RETRY_MS)
     }
-    deps.schedule(() => { void tick() }, OPERATION_POLL_MS)
+    void follow(known)
   }
 
   const save = async (patch: { secretNames?: string[]; filePaths?: string[] }) => {
@@ -203,14 +224,64 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
       )
       return
     }
+    if (transfer?.state === "running") return
     if (hasUnsavedText()) {
       await saveTypedText()
       if (hasUnsavedText()) return
     }
     await guarded(
       async () => environmentOperationFromResponse(await deps.send(runProjectEnvironmentSetupRequest(projectId, deps.newOperationId()))),
-      (next) => { operation = next; if (next.state === "running") poll(next.operationId); void refresh() },
+      (next) => { operation = next; if (next.state === "running") poll(next.operationId, next.updates); void refresh() },
     )
+  }
+
+  const source = () => sources[sourceIndex] ?? null
+
+  /** Brings entries this machine lacks from the chosen kernel; no `entries` brings every missing one (Update). */
+  const importFromSource = async (entries?: readonly { kind: "secret" | "file"; name: string }[]) => {
+    const from = source()
+    if (!from || busy || transfer?.state === "running") return
+    await guarded(
+      async () => environmentOperationFromResponse(await deps.send(importProjectEnvironmentEntriesRequest({ projectId, operationId: deps.newOperationId(), sourceKernelId: from.id, ...(entries ? { entries } : {}) }))),
+      (next) => { setOperation(next); if (next.state === "running") poll(next.operationId, next.updates) },
+    )
+  }
+
+  /** Stop ends the running Import, Draft or Check. */
+  const stopOperation = async (running: EnvironmentOperationView | null) => {
+    if (!running || running.state !== "running" || busy) return
+    await guarded(
+      async () => environmentOperationFromResponse(await deps.send(cancelEnvironmentOperationRequest(running.operationId))),
+      (next) => { setOperation(next); pollingOperationId = null; void refresh() },
+    )
+  }
+
+  const toggleUpdate = async () => { if (transfer?.state === "running") await stopOperation(transfer); else await importFromSource() }
+
+  const runAgent = async (kind: "draft" | "check") => {
+    if (busy) return
+    if (draft?.state === "running") { await stopOperation(draft); return }
+    await guarded(
+      async () => environmentOperationFromResponse(await deps.send(kind === "draft" ? draftProjectEnvironmentRequest(projectId, deps.newOperationId()) : checkProjectEnvironmentRequest(projectId, deps.newOperationId()))),
+      (next) => { setOperation(next); if (next.state === "running") poll(next.operationId, next.updates) },
+    )
+  }
+
+  const resolveProposal = async (index: number, accept: boolean) => {
+    const proposal = environment?.proposals[index]
+    if (!proposal || busy) return
+    await guarded(
+      async () => projectEnvironmentSavedFromResponse(await deps.send(resolveEnvironmentProposalRequest(projectId, proposal.id, accept))),
+      (next) => setEnvironment(next),
+    )
+  }
+
+  /** Import here: the focused row, when this machine lacks it. */
+  const importFocused = () => {
+    const current = environment
+    if (!current) return
+    if (focus.kind === "secret" && current.secrets[focus.index]?.presence === "missing") void importFromSource([{ kind: "secret", name: current.secrets[focus.index]!.name }])
+    else if (focus.kind === "file" && current.files[focus.index]?.presence === "missing") void importFromSource([{ kind: "file", name: current.files[focus.index]!.path }])
   }
 
   const startText = (field: EnvironmentTextField) => {
@@ -261,7 +332,7 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
     } else if (focus.kind === "file") {
       const index = focus.index
       void save({ filePaths: current.files.filter((_, at) => at !== index).map((file) => file.path) })
-    }
+    } else if (focus.kind === "proposal") void resolveProposal(focus.index, false)
   }
 
   const activateFocused = () => {
@@ -269,6 +340,10 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
     if (!current) return
     switch (focus.kind) {
       case "run": void toggleSetup(); return
+      case "update": void toggleUpdate(); return
+      case "draft": void runAgent("draft"); return
+      case "check": void runAgent("check"); return
+      case "proposal": void resolveProposal(focus.index, true); return
       case "script": startText("script"); return
       case "variables": startText("variables"); return
       case "secret": input = { kind: "secretValue", name: current.secrets[focus.index]!.name, buffer: bufferAtEnd("") }; return
@@ -313,10 +388,15 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
       focus = { kind: "run" }
       input = null
       operation = null
+      transfer = null
+      draft = null
+      sources = []
+      sourceIndex = 0
       message = null
       busy = false
       pollingOperationId = null
       deps.render()
+      void deps.otherKernels().then((found) => { if (mine === generation) { sources = found; deps.render() } }, () => {})
       try {
         const next = projectEnvironmentFromResponse(await deps.send(getProjectEnvironmentRequest(project)))
         if (mine !== generation) return
@@ -352,6 +432,8 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
       else if (event.name === "down") moveFocus(1)
       else if (event.name === "return" || event.name === "enter") activateFocused()
       else if (["x", "delete", "backspace"].includes(event.name) && !event.ctrl && !event.meta) removeFocused()
+      else if (event.name === "i" && !event.ctrl && !event.meta) importFocused()
+      else if (event.name === "m" && !event.ctrl && !event.meta && sources.length > 1) sourceIndex = (sourceIndex + 1) % sources.length
       deps.render()
       return true
     },

@@ -510,7 +510,7 @@ function keyEvent(name: string, options: {
 // Exercise the real stdin ordering with the mounted Environment controller.
 test("Environment panel preserves Ctrl+E and Ctrl+C exit/stop through stdin", async () => {
   for (const name of ["e", "c"]) for (const activeTurnWork of [false, true]) {
-    const panel = createProjectEnvironmentController({ send: async () => { throw new Error("not available") }, render() {}, schedule: () => undefined, newOperationId: () => "op", now: () => 0, pageSize: () => 10, textWidth: () => 72 })
+    const panel = createProjectEnvironmentController({ otherKernels: async () => [], send: async () => { throw new Error("not available") }, render() {}, schedule: () => undefined, newOperationId: () => "op", now: () => 0, pageSize: () => 10, textWidth: () => 72 })
     await panel.open("project")
     const harness = createHarness({ parsedEvent: keyEvent(name, { ctrl: true }), activeTurnWork, handleProjectEnvironmentKey: panel.handleKey })
     assert.equal(harness.controller.handleData("x"), true)

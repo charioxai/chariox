@@ -30,6 +30,8 @@ type AnyFn = (...args: any[]) => any
 
 export type CliOverlayInteractionCompositionDeps = {
   client: any
+  /** The user's other kernels an Environment can import from. */
+  environmentSourceKernels: () => Promise<readonly import("./project-environment-projection.js").EnvironmentSourceKernel[]>
   renderer: any
   dimensions: AnyFn
   appLogger: any
@@ -107,6 +109,7 @@ export function createCliOverlayInteractionComposition(deps: CliOverlayInteracti
   })
   const environmentController = createProjectEnvironmentController({
     send: request => deps.client.send(request),
+    otherKernels: deps.environmentSourceKernels,
     pageSize: () => dialogPageSize(deps.dimensions().height),
     textWidth: () => dialogTextWidth(deps.dimensions().width),
     render: () => dialogOverlayController.render(),

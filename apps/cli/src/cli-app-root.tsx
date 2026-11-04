@@ -8,6 +8,7 @@ import { toggleFocusedTranscriptDetails } from "./transcript-details-controller.
 import { createProviderLoginLinkOpener, localDesktopAvailable } from "./provider-login-link.js"
 import { createProviderLoginInteractionController } from "./provider-login-interaction-controller.js"
 import { getRelayStatus } from "./relay-api.js"
+import { environmentSourceKernels } from "./environment-source-kernels.js"
 import { clipboardCopyMessage, copyTextToClipboard } from "./clipboard.js"
 import { openExternalUrl } from "./external-url.js"
 import { installTerminalNativeSelection } from "./terminal-native-selection.js"
@@ -598,6 +599,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     openTerminalPairingDialog, renderHotkeysOverlay,
   } = createCliOverlayInteractionComposition({
     client, renderer, dimensions, appLogger,
+    environmentSourceKernels: () => environmentSourceKernels(cloudClient, async () => relayStatusState()?.daemon_id ?? (await getRelayStatus(client)).daemon_id),
     formatError,
     debugLogsEnabled: DEBUG_LOGS_ENABLED,
     loadSessions: loadWaitingRoomSessionHistory,

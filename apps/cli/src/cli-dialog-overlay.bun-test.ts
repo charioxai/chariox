@@ -50,7 +50,7 @@ for (const [width, height] of [[80, 24], [60, 24], [40, 24]] as const) {
     const harness = await createTestRenderer({ width, height, useThread: false })
     const overlayBox = new BoxRenderable(harness.renderer, { position: "absolute", left: 0, top: 0, width, height })
     harness.renderer.root.add(overlayBox)
-    const controller = createProjectEnvironmentController({
+    const controller = createProjectEnvironmentController({ otherKernels: async () => [],
       send: async () => ({ ProjectEnvironment: { environment: {
         projectId: "project-1", exists: true, revision: 1, setup: { script: "make setup" }, variables: "A=1",
         secrets: [{ name: "API_KEY", presence: "missing" }], files: [{ path: ".env", presence: "present", sizeBytes: 12 }],
