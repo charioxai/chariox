@@ -239,6 +239,11 @@ export async function measureMultiAgentLoad({ rpc, connect, root, mcpUrl, pid, s
 
   await phase('idle', o.idleSeconds, false)
   await phase('load', o.seconds, true)
+  // Every finished turn settles its task through the kernel; only a turn cut off by the end of the load may remain.
+  for (const lane of out.lanes) {
+    const tasks = (await probe.send({ GetSessionState: { session_id: lane.session_id } })).SessionState.session.agent_tasks ?? []
+    lane.unsettled_tasks = tasks.filter(task => task.state !== 'done' && task.state !== 'cancelled').length
+  }
   const { idle, load } = out.phases
   const p99 = (ph, kind) => ph.latency[kind]?.p99_ms ?? 0
   const checks = {

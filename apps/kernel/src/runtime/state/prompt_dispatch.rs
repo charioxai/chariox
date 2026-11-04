@@ -1518,6 +1518,37 @@ impl KernelRuntimeState {
         }
     }
 
+    /// A client that ends a turn itself leaves no provider event to settle the turn's task, so the
+    /// completion does it, the way a native TUI turn's end does. A failure stays for the ledger sweep.
+    async fn settle_task_of_completed_prompt(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        provider_run_id: Option<&str>,
+        completed: &crate::session::PromptQueueItem,
+    ) {
+        let Some(run) = provider_run_id else {
+            return;
+        };
+        let settled = match self
+            .owned
+            .settle_agent_task(session_id, agent_id, completed, run, false)
+        {
+            Ok(settlement) => {
+                self.finish_agent_task_settlement(settlement, completed)
+                    .await
+            }
+            Err(error) => Err(error),
+        };
+        if let Err(error) = settled {
+            crate::logging::warn_with_fields(
+                "daemon.agent_lifecycle",
+                "completed prompt task settlement retained for sweep",
+                serde_json::json!({"error": crate::secret_redaction::redact_secrets(&error.to_string())}),
+            );
+        }
+    }
+
     pub(crate) async fn complete_agent_prompt_with_external_authority(
         &self,
         session_id: &str,
@@ -1567,6 +1598,13 @@ impl KernelRuntimeState {
                         &completion.completion.completed,
                     )
                     .await;
+                    self.settle_task_of_completed_prompt(
+                        session_id,
+                        target_agent_id,
+                        owned_provider_run_id.as_deref(),
+                        &completion.completion.completed,
+                    )
+                    .await;
                     if completion.completion.completed.workflow_run_id().is_some() {
                         let dispatches = owned.workflow_complete_prompt(
                             session_id,
@@ -1607,6 +1645,13 @@ impl KernelRuntimeState {
                 let completion_result = completion.completion;
                 self.observe_git_after_completed_prompt(
                     Some(session_id),
+                    owned_provider_run_id.as_deref(),
+                    &completion_result.completed,
+                )
+                .await;
+                self.settle_task_of_completed_prompt(
+                    session_id,
+                    target_agent_id,
                     owned_provider_run_id.as_deref(),
                     &completion_result.completed,
                 )

@@ -34,3 +34,11 @@ test('RED when a launched lane never completes a prompt cycle', () => {
 test('a readers-only run with no lanes has nothing to fail', () => {
   assert.ok(verdict([]).verdict === 'GREEN')
 })
+
+test('RED when completed turns leave their tasks working, GREEN with one turn in flight', () => {
+  const settled = { ...working, unsettled_tasks: 1 }
+  assert.ok(verdict([settled, settled]).verdict === 'GREEN')
+  const piling = verdict([settled, { ...working, unsettled_tasks: 40 }])
+  assert.ok(piling.verdict === 'RED')
+  assert.deepEqual(piling.red, ['lanes_with_unsettled_tasks'])
+})

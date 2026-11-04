@@ -7,6 +7,8 @@ export function laneChecks(lanes) {
   return {
     lanes_launch_failed: { value: lanes.filter(lane => !lane.launch).length, limit: 0 },
     lanes_without_prompt_cycle: { value: lanes.filter(lane => !(lane.prompt_cycles > 0)).length, limit: 0 },
+    // One turn can be in flight when the load stops; any more means completed turns left their task working.
+    lanes_with_unsettled_tasks: { value: lanes.filter(lane => lane.unsettled_tasks > 1).length, limit: 0 },
   }
 }
 
