@@ -235,6 +235,29 @@ async fn request(socket: &mut Socket, body: Value) -> Value {
     .expect("the kernel answered in time")
 }
 
+/// Where `/proc/<pid>/<name>` of the kernel points, or `None` when the
+/// reading user may not see it: a kernel that holds a local token is
+/// non-dumpable (`PR_SET_DUMPABLE 0`), so its `/proc` links belong to root and
+/// an ordinary user, as in CI, is refused. Root still gets every check.
+#[cfg(target_os = "linux")]
+fn kernel_link(pid: u32, name: &str) -> Option<PathBuf> {
+    match std::fs::read_link(format!("/proc/{pid}/{name}")) {
+        Ok(target) => Some(target),
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => None,
+        Err(error) => panic!("cannot read /proc/{pid}/{name}: {error}"),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn assert_runs(pid: u32, installed: &Path) {
+    if let Some(program) = kernel_link(pid, "exe") {
+        assert_eq!(
+            program, installed,
+            "the kernel runs the newly installed program"
+        );
+    }
+}
+
 async fn closed_by_the_old_program(mut socket: Socket) {
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
@@ -335,11 +358,7 @@ fn a_hot_reload_keeps_a_running_terminal_command_and_its_output() {
         // keep this one open.
         closed_by_the_old_program(socket).await;
         #[cfg(target_os = "linux")]
-        assert_eq!(
-            std::fs::read_link(format!("/proc/{pid}/exe")).unwrap(),
-            installed,
-            "the kernel runs the newly installed program"
-        );
+        assert_runs(pid as u32, &installed);
         let mut socket = connect(&kernel, Duration::from_secs(60)).await;
         std::fs::write(&go, "").unwrap();
 
@@ -480,10 +499,7 @@ fn a_kernel_whose_token_came_from_a_file_keeps_it_across_a_hot_reload() {
     });
     assert!(!token_file.exists(), "no token is left on disk");
     #[cfg(target_os = "linux")]
-    assert_eq!(
-        std::fs::read_link(format!("/proc/{}/exe", kernel.child.id())).unwrap(),
-        scratch.join("bin/chariox-kernel")
-    );
+    assert_runs(kernel.child.id(), &scratch.join("bin/chariox-kernel"));
 }
 
 /// A client resumes its subscription on the attachment it had: a browser whose
@@ -783,12 +799,9 @@ fn a_hot_reload_keeps_the_managed_slice_broker_connection() {
     }
     #[cfg(target_os = "linux")]
     {
-        let held = std::fs::read_link(format!("/proc/{}/fd/{fd}", kernel.child.id()));
-        assert_eq!(
-            held.ok(),
-            Some(socket_name),
-            "the new program holds the connection"
-        );
+        if let Some(held) = kernel_link(kernel.child.id(), &format!("fd/{fd}")) {
+            assert_eq!(held, socket_name, "the new program holds the connection");
+        }
     }
 }
 
@@ -1680,10 +1693,7 @@ fn claude_turn_across_a_hot_reload(login: Login) {
         assert!(lines(&record.join("starts"))[0].ends_with("token=set"));
     }
     #[cfg(target_os = "linux")]
-    assert_eq!(
-        std::fs::read_link(format!("/proc/{}/exe", kernel.child.id())).unwrap(),
-        scratch.join("bin/chariox-kernel")
-    );
+    assert_runs(kernel.child.id(), &scratch.join("bin/chariox-kernel"));
 }
 
 /// The reviewer's case: an agent's earlier Claude process ended leaving a
