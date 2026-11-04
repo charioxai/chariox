@@ -342,6 +342,20 @@ fn fire_one(
     Ok(Some(wake))
 }
 
+/// Owner questions remain available to the current blocked worker; other sources
+/// still require working authority, and an accepted end of turn stays final.
+fn current_source(task: &AgentTaskExecution, prompt: &str, kind: &str) -> Result<(), DaemonError> {
+    if task.state == ExecutionState::Blocked
+        && kind == "interaction"
+        && task.pending_prompt_id.is_none()
+        && task.wait.is_none()
+    {
+        current_prompt(task, prompt)
+    } else {
+        current(task, prompt)
+    }
+}
+
 /// Commits the obligation, live registration and wake record of a new source
 /// in one transaction. `wake.state` is its first state: `scheduled`
 /// (time-driven) or `starting` (confirmed by a supervisor or driver receipt).
@@ -352,7 +366,7 @@ fn arm(
     mut wake: AgentWake,
 ) -> Result<Outcome, DaemonError> {
     let mut t = load(tx, task)?;
-    current(&t, prompt)?;
+    current_source(&t, prompt, &wake.kind)?;
     let timer = wake.kind == "timer";
     if wake.task_id != t.task_id
         || wake.room_id != t.room_id
@@ -457,7 +471,9 @@ fn confirm_start(
                     |row| row.get::<_, bool>(0),
                 )
                 .map_err(sql)?);
-    if t.state != ExecutionState::Working && !retained_wait {
+    let blocked_question =
+        !leased_only && t.state == ExecutionState::Blocked && wake.kind == "interaction";
+    if t.state != ExecutionState::Working && !retained_wait && !blocked_question {
         return Err(error(
             "wake start authority ended; physical cancellation must settle",
         ));
@@ -711,7 +727,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             let caller = load(tx, &task)?;
             let mut t = load(tx, &wake.task_id)?;
             if let Some(prompt) = &prompt {
-                current(&caller, prompt)?;
+                current_source(&caller, prompt, &wake.kind)?;
                 // A fresh user turn is its own task. It may cancel a retained
                 // source of this same agent, without taking over that task.
                 if caller.room_id != t.room_id

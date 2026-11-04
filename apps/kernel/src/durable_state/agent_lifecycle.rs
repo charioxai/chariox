@@ -770,7 +770,7 @@ fn registrations(tx: &Connection, task: &str) -> Result<Vec<Registration>, Daemo
     })
     .collect()
 }
-fn current(task: &AgentTaskExecution, prompt: &str) -> Result<(), DaemonError> {
+fn current_prompt(task: &AgentTaskExecution, prompt: &str) -> Result<(), DaemonError> {
     if goals::is_check(task, prompt)
         && completion::evaluation(task).is_some_and(|e| e.result.is_none())
     {
@@ -779,6 +779,10 @@ fn current(task: &AgentTaskExecution, prompt: &str) -> Result<(), DaemonError> {
     if task.prompt_id != prompt {
         return Err(error("origin_prompt_id is not this running turn's. Retry with the task_id and origin_prompt_id from this turn's <chariox-task-context>; never reuse ids from an earlier turn"));
     }
+    Ok(())
+}
+fn current(task: &AgentTaskExecution, prompt: &str) -> Result<(), DaemonError> {
+    current_prompt(task, prompt)?;
     if task.state != ExecutionState::Working || task.pending_prompt_id.is_some() {
         return Err(error("this turn can no longer change its task: it is waiting, finished or already ending. End the turn without more tools"));
     }

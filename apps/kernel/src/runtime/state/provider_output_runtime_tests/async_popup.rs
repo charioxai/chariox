@@ -32,6 +32,40 @@ async fn ask(f: &Fixture, extra: serde_json::Value) -> serde_json::Value {
 }
 
 #[tokio::test]
+async fn blocked_worker_can_ask_for_its_missing_owner_decision() {
+    let f = fixture("blocked-popup", true).await;
+    let task = f.begin(&f.prompt_id);
+    f.store()
+        .agent_lifecycle(Operation::Block {
+            task: task.task_id.clone(),
+            prompt: task.prompt_id.clone(),
+            reason: "Choose the next step".into(),
+        })
+        .unwrap();
+    let blocked = f
+        .store()
+        .agent_tasks(Some(&f.room), None)
+        .unwrap()
+        .remove(0);
+    let result = ask(&f, serde_json::json!({"timeout_sec":300})).await;
+    let id = result["interaction_id"].as_str().unwrap();
+    let session = f.runtime.owned.session_store.get_session(&f.room).unwrap();
+    assert!(session.active_interactions().iter().any(|i| i.id() == id));
+    answer_through_router(&f, id, "local", "owner-client")
+        .await
+        .unwrap();
+    assert_eq!(answers(&f, id)[0]["reply"], "Exact reply: continue.");
+    let after = f
+        .store()
+        .agent_tasks(Some(&f.room), None)
+        .unwrap()
+        .remove(0);
+    assert_eq!(after.state, ExecutionState::Blocked);
+    assert_eq!(after.blocked_revision, blocked.blocked_revision);
+    assert_eq!(after.reason, blocked.reason);
+}
+
+#[tokio::test]
 async fn async_popup_returns_while_pending_and_uses_the_existing_wake_registry() {
     let f = fixture("async-popup", true).await;
     let task = f.begin(&f.prompt_id);
