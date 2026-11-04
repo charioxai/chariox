@@ -75,6 +75,9 @@ impl KernelRuntimeState {
         let project = self.tool_project(&session, &context.owner_user_id)?;
         let checkout = self.project_checkout(&project, Some(session.worktree_id()))?;
         let record = self.environment_store().load(project.id())?;
+        if matches!(tool_name, ENVIRONMENT_READ | ENVIRONMENT_UPDATE) {
+            self.ensure_machine_inventory().await;
+        }
         let payload = match tool_name {
             ENVIRONMENT_READ => {
                 if let Some(id) = arguments.get("operationId").and_then(|v| v.as_str()) {
@@ -251,6 +254,26 @@ impl KernelRuntimeState {
             }
         };
         Ok(RuntimeToolResult { ok: true, payload })
+    }
+
+    /// A kernel that has just started has not read the user's machines yet: ask Cloud once when none is cached.
+    async fn ensure_machine_inventory(&self) {
+        if !self.other_machine_names().is_empty() {
+            return;
+        }
+        let refresh = crate::transport::relay_client::refresh_remote_inventory_projection(
+            self.owned.config_projection.clone(),
+            self.owned.notification_inventory_projection.clone(),
+        );
+        match tokio::time::timeout(std::time::Duration::from_secs(5), refresh).await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                tracing::warn!(%error, "the machines of the user could not be read for an Environment tool")
+            }
+            Err(_) => {
+                tracing::warn!("reading the machines of the user for an Environment tool timed out")
+            }
+        }
     }
 
     /// The other machines of this user that are online: id and the name the user knows them by.
