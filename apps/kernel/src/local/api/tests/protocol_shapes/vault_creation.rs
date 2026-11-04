@@ -93,7 +93,7 @@ fn a_sealed_vault_key_travels_as_an_opaque_seed_that_round_trips() {
     )
     .unwrap();
     assert!(
-        matches!(again, LocalDaemonRequest::CreateCredentialVault(request) if matches!(request.origin, crate::local::CredentialVaultOrigin::Seed { seed: ref echoed } if *echoed == seed))
+        matches!(again, LocalDaemonRequest::CreateCredentialVault(request) if matches!(request.origin, crate::local::CredentialVaultOrigin::Seed { seed: ref echoed } if **echoed == seed))
     );
     let _ = std::fs::remove_dir_all(dir);
 }

@@ -43,7 +43,9 @@ async fn a_new_kernel_creates_its_own_vault_with_the_passphrase_of_the_kernel_it
 
     let seed = sealed(&source, &target).await;
     let created = target
-        .send(create(CredentialVaultOrigin::Seed { seed }))
+        .send(create(CredentialVaultOrigin::Seed {
+            seed: Box::new(seed),
+        }))
         .await
         .unwrap();
     let LocalDaemonResponse::CredentialVaultUnlocked { status, action } = created else {
@@ -108,7 +110,9 @@ async fn a_seed_sealed_for_another_kernel_creates_nothing() {
     let other = kernel_without_vault();
     let seed = sealed(&source, &intended).await;
     other
-        .send(create(CredentialVaultOrigin::Seed { seed }))
+        .send(create(CredentialVaultOrigin::Seed {
+            seed: Box::new(seed),
+        }))
         .await
         .unwrap_err();
     assert!(!other.vault.exists());
@@ -123,7 +127,9 @@ async fn only_the_owners_own_client_may_create_or_seal() {
     let agent = KernelCaller::for_source(&KernelCommandSource::LocalCli)
         .with_connection_class(KernelConnectionClass::KernelAgent);
     for request in [
-        create(CredentialVaultOrigin::Seed { seed }),
+        create(CredentialVaultOrigin::Seed {
+            seed: Box::new(seed),
+        }),
         LocalDaemonRequest::SealCredentialVaultKey(SealCredentialVaultKeyRequest {
             target_kernel_id: target.kernel_id.clone(),
             target_public_key: target.relay_public_key.clone(),

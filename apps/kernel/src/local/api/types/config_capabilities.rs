@@ -120,7 +120,9 @@ pub enum CredentialVaultOrigin {
     /// A passphrase the owner typed for this kernel.
     Passphrase { passphrase: VaultPassphrase },
     /// The passphrase of another kernel's Vault, sealed to this kernel by `SealCredentialVaultKey` there.
-    Seed { seed: crate::secret::VaultKeySeed },
+    Seed {
+        seed: Box<crate::secret::VaultKeySeed>,
+    },
 }
 
 /// Seals the key of this kernel's unlocked Vault to another kernel, so the owner can have that kernel create a Vault
