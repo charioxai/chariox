@@ -155,6 +155,12 @@ impl RuntimeProviderRun {
     ) -> Self {
         let now = unix_epoch_ms();
         let preparation_base_path = provider_preparation_base_path(&launch_result);
+        let mut pty_env = launch_result.pty_env;
+        if let Some(agent_id) = request.agent_id.as_deref() {
+            for (name, value) in crate::agent_temp::environment(&request.session_id, agent_id) {
+                pty_env.entry(name.to_string()).or_insert(value);
+            }
+        }
         Self {
             id: id.into(),
             session_id: request.session_id.clone(),
@@ -175,7 +181,7 @@ impl RuntimeProviderRun {
             pty_target: launch_result.pty_target,
             pty_program: launch_result.pty_program,
             pty_args: launch_result.pty_args,
-            pty_env: launch_result.pty_env,
+            pty_env,
             pty_env_remove: launch_result.pty_env_remove,
             requested_provider_env_remove: Some(request.provider_env_remove.clone()),
             working_directory: launch_result.working_directory,
