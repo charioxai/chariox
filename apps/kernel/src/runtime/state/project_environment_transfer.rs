@@ -2,16 +2,17 @@
 //! Environment lists, and answers the same questions about its own Projects.
 use super::*;
 use crate::local::{
-    EnvironmentOperationKind, EnvironmentOperationState, EnvironmentOperationView,
-    ImportProjectEnvironmentEntriesRequest,
+    EnvironmentEntryKind, EnvironmentOperationKind, EnvironmentOperationState,
+    EnvironmentOperationView, ImportProjectEnvironmentEntriesRequest,
 };
 use crate::project_environment::{
     environment_error, register_environment_files, run_import, source_holdings, Begun,
-    EnvironmentSource, FileSlice, ImportTarget, SourceError, SourceSnapshot, IMPORT_CHUNK_BYTES,
-    MAX_IMPORT_FILE_BYTES,
+    EnvironmentSource, FileSlice, ImportTarget, Registration, RegistrationHost, SourceError,
+    SourceSnapshot, UserRegistrations, IMPORT_CHUNK_BYTES, MAX_IMPORT_FILE_BYTES,
 };
 use crate::transport::relay_peer::{
     RelayPeerRequest, RelayPeerResponse, RemoteCredentialSecretInput, RemoteEnvironmentFileBytes,
+    RemoteProjectRegistration,
 };
 use std::path::PathBuf;
 use zeroize::Zeroizing;
@@ -55,11 +56,15 @@ impl EnvironmentSource for PeerSource {
                 record,
                 secrets,
                 files,
+                mcps,
+                skills,
             } => Ok(SourceSnapshot {
                 label: source_label,
                 record,
                 secrets,
                 files,
+                mcps,
+                skills,
             }),
             _ => Err(SourceError::Refused(
                 "The source answered with something unexpected".into(),
@@ -81,6 +86,29 @@ impl EnvironmentSource for PeerSource {
         {
             RelayPeerResponse::ProjectEnvironmentSecretPulled { value } => {
                 Ok(value.map(RemoteCredentialSecretInput::into_zeroizing))
+            }
+            _ => Err(SourceError::Refused(
+                "The source answered with something unexpected".into(),
+            )),
+        }
+    }
+
+    async fn pull_registration(
+        &self,
+        project_id: &str,
+        kind: EnvironmentEntryKind,
+        name: &str,
+    ) -> Result<Option<Registration>, SourceError> {
+        match self
+            .ask(RelayPeerRequest::PullProjectEnvironmentRegistration {
+                project_id: project_id.into(),
+                entry_kind: kind,
+                name: name.into(),
+            })
+            .await?
+        {
+            RelayPeerResponse::ProjectEnvironmentRegistrationPulled { registration } => {
+                Ok(registration.map(|registration| registration.0))
             }
             _ => Err(SourceError::Refused(
                 "The source answered with something unexpected".into(),
@@ -210,6 +238,7 @@ impl KernelRuntimeState {
                     checkout: &checkout,
                     store: &store,
                     vault: vault.as_ref(),
+                    registrations: &UserRegistrations,
                     on_record: &on_record,
                 },
                 entries,
@@ -232,16 +261,23 @@ impl KernelRuntimeState {
         };
         let config = self.owned.config_projection.snapshot();
         let label = Self::machine_label(&config);
-        let (project_id, secret, file) = match &request {
-            RelayPeerRequest::ReadProjectEnvironment { project_id } => (project_id, None, None),
+        let (project_id, secret, file, registration) = match &request {
+            RelayPeerRequest::ReadProjectEnvironment { project_id } => {
+                (project_id, None, None, None)
+            }
             RelayPeerRequest::PullProjectEnvironmentSecret { project_id, name } => {
-                (project_id, Some(name), None)
+                (project_id, Some(name), None, None)
             }
             RelayPeerRequest::PullProjectEnvironmentFile {
                 project_id,
                 path,
                 offset,
-            } => (project_id, None, Some((path, *offset))),
+            } => (project_id, None, Some((path, *offset)), None),
+            RelayPeerRequest::PullProjectEnvironmentRegistration {
+                project_id,
+                entry_kind,
+                name,
+            } => (project_id, None, None, Some((*entry_kind, name))),
             _ => return refuse("not a Project Environment request"),
         };
         let Ok(project) = self.owned_project(project_id, owner) else {
@@ -258,6 +294,8 @@ impl KernelRuntimeState {
                         record: None,
                         secrets: Vec::new(),
                         files: Vec::new(),
+                        mcps: Vec::new(),
+                        skills: Vec::new(),
                     })
                 }
                 _ => refuse(&format!("{label} has no Environment for this Project")),
@@ -280,6 +318,25 @@ impl KernelRuntimeState {
                     refuse(&format!("The Vault of {label} is locked"))
                 }
                 Err(_) => refuse(&format!("The Vault of {label} could not be read")),
+            };
+        }
+        if let Some((kind, name)) = registration {
+            let listed = match kind {
+                EnvironmentEntryKind::Mcp => &record.mcps,
+                EnvironmentEntryKind::Skill => &record.skills,
+                _ => return refuse("not a registration"),
+            };
+            if !listed
+                .iter()
+                .any(|entry| &entry.name == name && entry.file_path().is_none())
+            {
+                return refuse(&format!("{name} is not in the Environment of {label}"));
+            }
+            return match UserRegistrations.read(kind, name) {
+                Ok(registration) => Ok(RelayPeerResponse::ProjectEnvironmentRegistrationPulled {
+                    registration: registration.map(RemoteProjectRegistration),
+                }),
+                Err(reason) => refuse(&reason),
             };
         }
         if let Some((path, offset)) = file {
@@ -310,12 +367,21 @@ impl KernelRuntimeState {
                 content: Some(RemoteEnvironmentFileBytes::encode(&bytes)),
             });
         }
-        let held = source_holdings(&store, project.id(), vault.as_ref(), &checkout, label)?;
+        let held = source_holdings(
+            &store,
+            project.id(),
+            vault.as_ref(),
+            &UserRegistrations,
+            &checkout,
+            label,
+        )?;
         Ok(RelayPeerResponse::ProjectEnvironmentRead {
             source_label: held.label,
             record: held.record,
             secrets: held.secrets,
             files: held.files,
+            mcps: held.mcps,
+            skills: held.skills,
         })
     }
 }

@@ -3,8 +3,9 @@
 //! so every row has its own result and Stop keeps what already landed.
 use super::operations::OperationHandle;
 use super::{
-    environment_error, project_environment_vault_service, relative_project_path, FilePresence,
-    ProjectEnvironmentRecord, ProjectEnvironmentStore,
+    environment_error, project_environment_vault_service, relative_project_path, ExtensionEntry,
+    FilePresence, ProjectEnvironmentRecord, ProjectEnvironmentStore, Registration,
+    RegistrationHost,
 };
 use crate::error::DaemonError;
 use crate::local::{
@@ -34,6 +35,9 @@ pub(crate) struct SourceSnapshot {
     pub secrets: Vec<String>,
     /// Files that exist in the source's checkout.
     pub files: Vec<String>,
+    /// MCP servers and skills the source has registered, of those the record lists as registrations.
+    pub mcps: Vec<String>,
+    pub skills: Vec<String>,
 }
 
 /// One slice of a source file and the size of the whole file.
@@ -76,6 +80,13 @@ pub(crate) trait EnvironmentSource: Send + Sync {
         path: &str,
         offset: u64,
     ) -> impl Future<Output = Result<Option<FileSlice>, SourceError>> + Send;
+    /// The registration of an MCP or skill entry, or `None` when the source has none of that name.
+    fn pull_registration(
+        &self,
+        project_id: &str,
+        kind: EnvironmentEntryKind,
+        name: &str,
+    ) -> impl Future<Output = Result<Option<Registration>, SourceError>> + Send;
 }
 
 /// Where the entries land on this kernel.
@@ -84,6 +95,7 @@ pub(crate) struct ImportTarget<'a> {
     pub checkout: &'a Path,
     pub store: &'a ProjectEnvironmentStore,
     pub vault: &'a dyn CredentialVaultStore,
+    pub registrations: &'a dyn RegistrationHost,
     /// Called with the record after a newer one was adopted, so the Files rules follow it.
     pub on_record: &'a (dyn Fn(&ProjectEnvironmentRecord) + Send + Sync),
 }
@@ -193,6 +205,13 @@ impl Drop for FileWriter {
 }
 
 /// The entries to import: those asked for, or every one of the record this kernel is missing.
+/// Whether the Environment lists `name` as a registration.
+fn registered(entries: &[ExtensionEntry], name: &str) -> bool {
+    entries
+        .iter()
+        .any(|entry| entry.name == name && entry.file_path().is_none())
+}
+
 fn plan(
     record: &ProjectEnvironmentRecord,
     requested: Option<&[EnvironmentEntryRef]>,
@@ -205,6 +224,8 @@ fn plan(
                 let listed = match wanted.kind {
                     EnvironmentEntryKind::Secret => record.secrets.contains(&wanted.name),
                     EnvironmentEntryKind::File => record.files.contains(&wanted.name),
+                    EnvironmentEntryKind::Mcp => registered(&record.mcps, &wanted.name),
+                    EnvironmentEntryKind::Skill => registered(&record.skills, &wanted.name),
                 };
                 let refusal = (!listed).then(|| "Not in this Environment".to_owned());
                 entries.push((entry(wanted.kind, &wanted.name), refusal));
@@ -220,6 +241,16 @@ fn plan(
             for path in &record.files {
                 if !file_here(target, path) {
                     entries.push((entry(EnvironmentEntryKind::File, path), None));
+                }
+            }
+            for (kind, listed) in [
+                (EnvironmentEntryKind::Mcp, &record.mcps),
+                (EnvironmentEntryKind::Skill, &record.skills),
+            ] {
+                for registration in listed.iter().filter(|e| e.file_path().is_none()) {
+                    if !target.registrations.has(kind, &registration.name) {
+                        entries.push((entry(kind, &registration.name), None));
+                    }
                 }
             }
         }
@@ -411,6 +442,28 @@ async fn import_entry<S: EnvironmentSource>(
                 )
                 .map_err(vault_failure)
         }
+        EnvironmentEntryKind::Mcp | EnvironmentEntryKind::Skill => {
+            let held = if entry.kind == EnvironmentEntryKind::Mcp {
+                &snapshot.mcps
+            } else {
+                &snapshot.skills
+            };
+            if !held.contains(&entry.name) {
+                return Err(missing_at_source());
+            }
+            if target.registrations.has(entry.kind, &entry.name) {
+                return Err(ImportFailure::Entry("Already registered here".into()));
+            }
+            let registration = source
+                .pull_registration(target.project_id, entry.kind, &entry.name)
+                .await
+                .map_err(ImportFailure::from)?
+                .ok_or_else(missing_at_source)?;
+            target
+                .registrations
+                .install(registration)
+                .map_err(ImportFailure::Entry)
+        }
         EnvironmentEntryKind::File => {
             if !snapshot.files.contains(&entry.name) {
                 return Err(missing_at_source());
@@ -489,6 +542,7 @@ pub(crate) fn source_holdings(
     store: &ProjectEnvironmentStore,
     project_id: &str,
     vault: &dyn CredentialVaultStore,
+    registrations: &dyn RegistrationHost,
     checkout: &Path,
     label: String,
 ) -> Result<SourceSnapshot, DaemonError> {
@@ -499,8 +553,19 @@ pub(crate) fn source_holdings(
             record: None,
             secrets: Vec::new(),
             files: Vec::new(),
+            mcps: Vec::new(),
+            skills: Vec::new(),
         });
     };
+    let held = |kind, entries: &[ExtensionEntry]| -> Vec<String> {
+        entries
+            .iter()
+            .filter(|entry| entry.file_path().is_none() && registrations.has(kind, &entry.name))
+            .map(|entry| entry.name.clone())
+            .collect()
+    };
+    let mcps = held(EnvironmentEntryKind::Mcp, &listed.mcps);
+    let skills = held(EnvironmentEntryKind::Skill, &listed.skills);
     let service = project_environment_vault_service(project_id);
     let mut secrets = Vec::new();
     for name in &listed.secrets {
@@ -527,6 +592,8 @@ pub(crate) fn source_holdings(
         record,
         secrets,
         files,
+        mcps,
+        skills,
     })
 }
 
@@ -580,6 +647,31 @@ mod tests {
         pull_delay: Duration,
         in_flight: std::sync::atomic::AtomicUsize,
         most_in_flight: std::sync::atomic::AtomicUsize,
+        registrations: Vec<(EnvironmentEntryKind, String, Registration)>,
+    }
+
+    /// The registrations of the kernel under test, in memory.
+    #[derive(Default)]
+    struct MemoryRegistrations {
+        held: Mutex<Vec<(EnvironmentEntryKind, String)>>,
+        installed: Mutex<Vec<Registration>>,
+    }
+
+    impl RegistrationHost for MemoryRegistrations {
+        fn has(&self, kind: EnvironmentEntryKind, name: &str) -> bool {
+            self.held
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(k, n)| *k == kind && n == name)
+        }
+        fn read(&self, _: EnvironmentEntryKind, _: &str) -> Result<Option<Registration>, String> {
+            Ok(None)
+        }
+        fn install(&self, registration: Registration) -> Result<(), String> {
+            self.installed.lock().unwrap().push(registration);
+            Ok(())
+        }
     }
 
     impl EnvironmentSource for FakeSource {
@@ -596,6 +688,19 @@ mod tests {
                 return Err(SourceError::Offline);
             }
             Ok(Some(Zeroizing::new(format!("synthetic-{name}"))))
+        }
+        async fn pull_registration(
+            &self,
+            _: &str,
+            kind: EnvironmentEntryKind,
+            name: &str,
+        ) -> Result<Option<Registration>, SourceError> {
+            self.pulls.lock().unwrap().push(format!("{kind:?}:{name}"));
+            Ok(self
+                .registrations
+                .iter()
+                .find(|(k, n, _)| *k == kind && n == name)
+                .map(|(_, _, registration)| registration.clone()))
         }
         async fn pull_file(
             &self,
@@ -631,7 +736,10 @@ mod tests {
                 record,
                 secrets: secrets.iter().map(|name| name.to_string()).collect(),
                 files: files.iter().map(|name| name.to_string()).collect(),
+                mcps: Vec::new(),
+                skills: Vec::new(),
             }),
+            registrations: Vec::new(),
             pulls: Mutex::default(),
             offline_after_read: false,
             gate: None,
@@ -659,6 +767,7 @@ mod tests {
         checkout: std::path::PathBuf,
         store: ProjectEnvironmentStore,
         vault: MemoryVault,
+        registrations: MemoryRegistrations,
         operations: Arc<EnvironmentOperations>,
         adopted: Mutex<Vec<u64>>,
     }
@@ -678,6 +787,7 @@ mod tests {
                     OperationChanges::new(),
                 ),
                 vault: MemoryVault::default(),
+                registrations: MemoryRegistrations::default(),
                 adopted: Mutex::default(),
                 checkout,
                 root,
@@ -723,6 +833,7 @@ mod tests {
                     checkout: &self.checkout,
                     store: &self.store,
                     vault: &self.vault,
+                    registrations: &self.registrations,
                     on_record: &on_record,
                 },
                 requested,
@@ -835,6 +946,52 @@ mod tests {
             })
             .count();
         assert_eq!(leftovers, 0);
+    }
+
+    #[tokio::test]
+    async fn an_mcp_registration_arrives_as_a_row_and_one_held_here_is_left_alone() {
+        let rig = Rig::new();
+        rig.registrations
+            .held
+            .lock()
+            .unwrap()
+            .push((EnvironmentEntryKind::Mcp, "kept".into()));
+        let mut saved = record(1, &[], &[]);
+        saved.mcps = ["notion", "kept", "gone"]
+            .map(ExtensionEntry::registration)
+            .to_vec();
+        saved.mcps.push(ExtensionEntry::file("github", ".mcp.json"));
+        let mut from = source(Some(saved), &[], &[]);
+        let config = crate::mcp::CharioxMcpServerConfig::stdio("notion", "npx", vec![]);
+        if let Ok(snapshot) = &mut from.snapshot {
+            snapshot.mcps = vec!["notion".into(), "kept".into()];
+        }
+        from.registrations = vec![(
+            EnvironmentEntryKind::Mcp,
+            "notion".into(),
+            Registration::Mcp(config.clone()),
+        )];
+        let view = rig.import("mcp", &from, None).await;
+        assert_eq!(
+            states(&view),
+            vec![
+                (
+                    "notion".to_string(),
+                    EnvironmentOperationEntryState::Imported,
+                    None
+                ),
+                (
+                    "gone".to_string(),
+                    EnvironmentOperationEntryState::Failed,
+                    Some("Not on A".to_string())
+                ),
+            ],
+            "a file entry is Git's and the registration held here is not asked for"
+        );
+        assert_eq!(
+            *rig.registrations.installed.lock().unwrap(),
+            vec![Registration::Mcp(config)]
+        );
     }
 
     #[tokio::test]

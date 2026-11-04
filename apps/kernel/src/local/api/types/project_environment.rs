@@ -1,7 +1,7 @@
 //! The Project Environment contract: one saved record per Project, its presence on this kernel and
 //! the Setup runs. No request or response ever carries a Secret value out of the kernel.
 use super::*;
-use crate::project_environment::{FilePresence, SecretPresence};
+use crate::project_environment::{ExtensionSource, FilePresence, SecretPresence};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -43,12 +43,12 @@ pub struct SaveProjectEnvironmentRequest {
     pub skills: Vec<ProjectEnvironmentExtension>,
 }
 
-/// An MCP server or skill that a file of the Project declares.
+/// An MCP server or skill of the Project: declared by one of its files, or registered with Chariox.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProjectEnvironmentExtension {
     pub name: String,
-    pub source: String,
+    pub source: ExtensionSource,
 }
 
 /// Whether the declaring file still declares the entry on this kernel.
@@ -63,7 +63,7 @@ pub enum ExtensionPresence {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProjectEnvironmentExtensionView {
     pub name: String,
-    pub source: String,
+    pub source: ExtensionSource,
     pub presence: ExtensionPresence,
 }
 
@@ -91,6 +91,8 @@ pub struct RunProjectEnvironmentSetupRequest {
 pub enum EnvironmentEntryKind {
     Secret,
     File,
+    Mcp,
+    Skill,
 }
 
 /// One Secret (by name) or File (by relative path) of the Environment.

@@ -7,13 +7,48 @@ pub const PROJECT_ENVIRONMENT_SCHEMA: u32 = 2;
 const MAX_TEXT_BYTES: usize = 64 * 1024;
 const MAX_ENTRIES: usize = 256;
 
-/// An MCP server or skill the Project's own files declare: Git carries it, so only its name and the file that declares it are saved.
+/// Where an MCP server or skill comes from: a file of the Project, which Git carries, or a registration a kernel holds
+/// (`~/.chariox/mcps`, `~/.chariox/skills`), which only the Environment moves.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+pub enum ExtensionSource {
+    /// The project file (relative path) that declares it, for example `.mcp.json`.
+    File {
+        path: String,
+    },
+    Registration,
+}
+
+/// An MCP server or skill of the Project: its name and where it comes from.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExtensionEntry {
     pub name: String,
-    /// The project file (relative path) that declares it, for example `.mcp.json`.
-    pub source: String,
+    pub source: ExtensionSource,
+}
+
+impl ExtensionEntry {
+    pub fn file(name: impl Into<String>, path: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            source: ExtensionSource::File { path: path.into() },
+        }
+    }
+
+    pub fn registration(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            source: ExtensionSource::Registration,
+        }
+    }
+
+    /// The declaring file of a project-file entry.
+    pub fn file_path(&self) -> Option<&str> {
+        match &self.source {
+            ExtensionSource::File { path } => Some(path),
+            ExtensionSource::Registration => None,
+        }
+    }
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -175,7 +210,9 @@ impl ProjectEnvironmentRecord {
             }
             let mut names = BTreeSet::new();
             for entry in entries {
-                relative_project_path(&entry.source)?;
+                if let Some(path) = entry.file_path() {
+                    relative_project_path(path)?;
+                }
                 if !extension_name(&entry.name) || !names.insert(entry.name.as_str()) {
                     return Err("MCPs and Skills take unique names of letters, digits, _, - and .");
                 }
@@ -238,30 +275,23 @@ mod tests {
     #[test]
     fn mcps_and_skills_take_unique_names_and_a_project_file() {
         let mut value = record();
-        value.mcps = vec![ExtensionEntry {
-            name: "github".into(),
-            source: ".mcp.json".into(),
-        }];
-        value.skills = vec![ExtensionEntry {
-            name: "dataviz".into(),
-            source: ".claude/skills/dataviz/SKILL.md".into(),
-        }];
+        value.mcps = vec![ExtensionEntry::file("github", ".mcp.json")];
+        value.skills = vec![ExtensionEntry::file(
+            "dataviz",
+            ".claude/skills/dataviz/SKILL.md",
+        )];
         assert!(value.validate().is_ok());
         value.mcps.push(value.mcps[0].clone());
         assert!(value.validate().is_err(), "a name is listed once");
-        value.mcps = vec![ExtensionEntry {
-            name: "git hub".into(),
-            source: ".mcp.json".into(),
-        }];
+        value.mcps = vec![ExtensionEntry::file("git hub", ".mcp.json")];
         assert!(value.validate().is_err());
-        value.mcps = vec![ExtensionEntry {
-            name: "github".into(),
-            source: "../.mcp.json".into(),
-        }];
+        value.mcps = vec![ExtensionEntry::file("github", "../.mcp.json")];
         assert!(
             value.validate().is_err(),
             "the source stays inside the project"
         );
+        value.mcps = vec![ExtensionEntry::registration("notion")];
+        assert!(value.validate().is_ok(), "a registration has no file");
     }
 
     #[test]

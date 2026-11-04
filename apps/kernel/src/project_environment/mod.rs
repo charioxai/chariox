@@ -8,6 +8,7 @@ mod operations;
 mod presence;
 mod proposals;
 mod record;
+mod registrations;
 mod setup;
 mod store;
 mod transfer;
@@ -17,7 +18,9 @@ pub(crate) use draft::{draft_facts, draft_prompt, parse_draft};
 pub(crate) use files::{
     copy_environment_files, environment_file_rules, register_environment_files,
 };
-pub(crate) use launch::{attach_project_provider_environment, project_launch_environment};
+pub(crate) use launch::{
+    attach_project_provider_environment, project_launch_environment, project_mcp_environment,
+};
 pub(crate) use operations::{Begun, EnvironmentOperations, OperationChanges, OperationHandle};
 pub(crate) use presence::{file_presence, secret_presence};
 pub use presence::{FilePresence, SecretPresence};
@@ -26,8 +29,10 @@ pub(crate) use proposals::{
 };
 pub use record::{
     environment_variable_name, extension_name, parse_variables, project_environment_protected_name,
-    relative_project_path, ExtensionEntry, ProjectEnvironmentRecord, PROJECT_ENVIRONMENT_SCHEMA,
+    relative_project_path, ExtensionEntry, ExtensionSource, ProjectEnvironmentRecord,
+    PROJECT_ENVIRONMENT_SCHEMA,
 };
+pub(crate) use registrations::{mcp_key_names, Registration, RegistrationHost, UserRegistrations};
 pub(crate) use setup::{SetupRuns, SetupSpec};
 pub(crate) use store::{remove_schema_1_state, ProjectEnvironmentStore, SaveOutcome};
 pub(crate) use transfer::{

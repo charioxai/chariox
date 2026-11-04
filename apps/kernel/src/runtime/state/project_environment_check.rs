@@ -77,14 +77,15 @@ impl KernelRuntimeState {
                 .map_err(|_| environment_error("reading the Project failed"))?;
                 let mut proposals = own;
                 if let (Some((session_id, agent_id)), Some(facts)) = (agent, facts) {
-                    let answer = runtime
-                        .environment_utility_answer(
+                    let asked = runtime
+                        .environment_agent_answer(
                             &session_id,
                             &agent_id,
                             check_prompt(&facts, &record),
+                            |answer| parse_proposals(answer, &record),
                         )
                         .await?;
-                    for proposal in parse_proposals(&answer, &record).map_err(environment_error)? {
+                    for proposal in asked {
                         if !proposals.iter().any(|known| known.id == proposal.id) {
                             proposals.push(proposal);
                         }

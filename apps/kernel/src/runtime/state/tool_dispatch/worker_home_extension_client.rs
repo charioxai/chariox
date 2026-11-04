@@ -117,11 +117,13 @@ impl KernelRuntimeState {
                 message: format!("home-proxy MCP `{name}` is no longer granted"),
             })
         } else {
+            let project_environment = self.project_mcp_environment(&run, name);
             crate::runtime::runtime_mcp_proxy_dispatcher::dispatch_authenticated_mcp_proxy_call(
                 provider_run_projection,
                 auth_token,
                 name,
                 payload,
+                project_environment,
             )
             .await
         };

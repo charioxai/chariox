@@ -1,17 +1,17 @@
 //! The Project Environment as the kernel answers it: read, save, a Secret's value, and Setup runs.
 use super::*;
 use crate::local::{
-    EnvironmentOperationRequest, EnvironmentOperationState, EnvironmentOperationView,
-    ExtensionPresence, GetEnvironmentOperationRequest, GetProjectEnvironmentRequest,
-    ProjectEnvironmentExtension, ProjectEnvironmentExtensionView, ProjectEnvironmentFileView,
-    ProjectEnvironmentSecretView, ProjectEnvironmentSetupField, ProjectEnvironmentSetupState,
-    ProjectEnvironmentView, RunProjectEnvironmentSetupRequest, SaveProjectEnvironmentRequest,
-    SetProjectEnvironmentSecretRequest,
+    EnvironmentEntryKind, EnvironmentOperationRequest, EnvironmentOperationState,
+    EnvironmentOperationView, ExtensionPresence, GetEnvironmentOperationRequest,
+    GetProjectEnvironmentRequest, ProjectEnvironmentExtension, ProjectEnvironmentExtensionView,
+    ProjectEnvironmentFileView, ProjectEnvironmentSecretView, ProjectEnvironmentSetupField,
+    ProjectEnvironmentSetupState, ProjectEnvironmentView, RunProjectEnvironmentSetupRequest,
+    SaveProjectEnvironmentRequest, SetProjectEnvironmentSecretRequest,
 };
 use crate::project_environment::{
     declared_in, environment_error, file_presence, project_environment_vault_service,
     secret_presence, ExtensionEntry, ProjectEnvironmentRecord, ProjectEnvironmentStore,
-    SaveOutcome, SetupSpec, PROJECT_ENVIRONMENT_SCHEMA,
+    RegistrationHost, SaveOutcome, SetupSpec, UserRegistrations, PROJECT_ENVIRONMENT_SCHEMA,
 };
 use std::path::{Path, PathBuf};
 
@@ -22,21 +22,29 @@ fn extension_entry(extension: ProjectEnvironmentExtension) -> ExtensionEntry {
     }
 }
 
-/// Present while the declaring file still declares the entry in this checkout; Git carries the file, so a clone has it.
+/// A project-file entry is present while its declaring file still declares it in this checkout (Git carries the file,
+/// so a clone has it); a registration is present while this kernel holds it.
 fn extension_views(
+    kind: EnvironmentEntryKind,
     checkout: &Path,
     entries: &[ExtensionEntry],
 ) -> Vec<ProjectEnvironmentExtensionView> {
     entries
         .iter()
-        .map(|entry| ProjectEnvironmentExtensionView {
-            name: entry.name.clone(),
-            source: entry.source.clone(),
-            presence: if declared_in(checkout, &entry.source).contains(&entry.name) {
-                ExtensionPresence::Present
-            } else {
-                ExtensionPresence::Missing
-            },
+        .map(|entry| {
+            let here = match entry.file_path() {
+                Some(path) => declared_in(checkout, path).contains(&entry.name),
+                None => UserRegistrations.has(kind, &entry.name),
+            };
+            ProjectEnvironmentExtensionView {
+                name: entry.name.clone(),
+                source: entry.source.clone(),
+                presence: if here {
+                    ExtensionPresence::Present
+                } else {
+                    ExtensionPresence::Missing
+                },
+            }
         })
         .collect()
 }
@@ -158,8 +166,8 @@ impl KernelRuntimeState {
                     ProjectEnvironmentFileView::new(path.clone(), file_presence(&checkout, path))
                 })
                 .collect(),
-            mcps: extension_views(&checkout, &record.mcps),
-            skills: extension_views(&checkout, &record.skills),
+            mcps: extension_views(EnvironmentEntryKind::Mcp, &checkout, &record.mcps),
+            skills: extension_views(EnvironmentEntryKind::Skill, &checkout, &record.skills),
             changed_at_ms: record.changed_at_ms,
             machine_label: Self::machine_label(&config),
             checkout_path: checkout.to_string_lossy().into_owned(),

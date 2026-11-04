@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Stdio};
 use std::sync::{mpsc, Arc, Mutex, OnceLock};
@@ -31,6 +31,7 @@ impl StdioMcpSupervisor {
         owner_provider_run_id: &str,
         owner_session_id: &str,
         backing: &CharioxMcpServerConfig,
+        project_environment: &BTreeMap<String, String>,
     ) -> Result<Arc<Mutex<StdioMcpProcess>>, DaemonError> {
         if self.closed_provider_run_ids.contains(owner_provider_run_id)
             || self.closed_session_ids.contains(owner_session_id)
@@ -44,7 +45,7 @@ impl StdioMcpSupervisor {
             });
         }
         if !self.processes.contains_key(key) {
-            let process = StdioMcpProcess::spawn(backing)?;
+            let process = StdioMcpProcess::spawn(backing, project_environment)?;
             self.processes.insert(
                 key.to_string(),
                 StdioMcpEntry {
@@ -125,6 +126,8 @@ pub(super) struct StdioMcpProcess {
     frames: mpsc::Receiver<Result<serde_json::Value, String>>,
     request_timeout: Duration,
     backing: CharioxMcpServerConfig,
+    /// The Project's Secret values the process was started with, kept to start its replacement the same way.
+    project_environment: BTreeMap<String, String>,
     initialize_request: Option<serde_json::Value>,
     initialize_response: Option<serde_json::Value>,
     restart_required: bool,
@@ -132,7 +135,10 @@ pub(super) struct StdioMcpProcess {
 }
 
 impl StdioMcpProcess {
-    fn spawn(backing: &CharioxMcpServerConfig) -> Result<Self, DaemonError> {
+    fn spawn(
+        backing: &CharioxMcpServerConfig,
+        project_environment: &BTreeMap<String, String>,
+    ) -> Result<Self, DaemonError> {
         let CharioxMcpTransportConfig::Stdio {
             command,
             args,
@@ -148,8 +154,11 @@ impl StdioMcpProcess {
             });
         };
         let mut environment = env.clone();
+        // The Project's Secrets come first: they are the keys the user gave this Project.
         for key in env_vars {
-            if let Ok(value) = std::env::var(key) {
+            if let Some(value) = project_environment.get(key) {
+                environment.insert(key.clone(), value.clone());
+            } else if let Ok(value) = std::env::var(key) {
                 environment.insert(key.clone(), value);
             }
         }
@@ -209,6 +218,7 @@ impl StdioMcpProcess {
             frames: frame_rx,
             request_timeout: Duration::from_secs(backing.tool_timeout_sec.unwrap_or(30).max(1)),
             backing: backing.clone(),
+            project_environment: project_environment.clone(),
             initialize_request: None,
             initialize_response: None,
             restart_required: false,
@@ -238,7 +248,8 @@ impl StdioMcpProcess {
             let initialize = self.initialize_request.clone();
             let notified = self.initialized_notified;
             let backing = self.backing.clone();
-            *self = Self::spawn(&backing)?;
+            let project_environment = self.project_environment.clone();
+            *self = Self::spawn(&backing, &project_environment)?;
             if method != Some("initialize") {
                 if let Some(initialize) = initialize {
                     self.dispatch(initialize)?;

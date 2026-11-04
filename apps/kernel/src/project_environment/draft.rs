@@ -142,16 +142,22 @@ Fill every field the metadata supports; use an empty value only for a field it s
     )
 }
 
-/// The record the agent's answer describes; the first `{...}` object of the text.
+/// The first JSON object of the agent's text that has `key`: a sentence before it, a code fence around it or braces of
+/// its own in the prose do not hide it.
+pub(crate) fn answer_object(output: &str, key: &str) -> Option<serde_json::Value> {
+    output.match_indices('{').find_map(|(start, _)| {
+        serde_json::Deserializer::from_str(&output[start..])
+            .into_iter::<serde_json::Value>()
+            .next()?
+            .ok()
+            .filter(|value| value.get(key).is_some())
+    })
+}
+
+/// The record the agent's answer describes.
 pub(crate) fn parse_draft(output: &str) -> Result<ProjectEnvironmentRecord, String> {
-    let start = output
-        .find('{')
-        .ok_or("The agent did not answer with an Environment")?;
-    let end = output
-        .rfind('}')
-        .ok_or("The agent did not answer with an Environment")?;
-    let value: serde_json::Value = serde_json::from_str(&output[start..=end])
-        .map_err(|_| "The agent's answer is not valid JSON".to_owned())?;
+    let value =
+        answer_object(output, "setup").ok_or("The agent did not answer with an Environment")?;
     let text = |key: &str| {
         value
             .get(key)
@@ -255,6 +261,16 @@ mod tests {
         assert_eq!(record.secrets, vec!["NOTION_TOKEN".to_string()]);
         assert_eq!(record.files, vec![".env".to_string()]);
         assert!(parse_draft("no json").is_err());
+    }
+
+    #[test]
+    fn braces_in_the_agents_prose_do_not_hide_its_object() {
+        let record = parse_draft(
+            "The {setup} is below:\n{\"setup\":\"echo '{}' > a\",\"secrets\":[]}\nNothing else {x}.",
+        )
+        .unwrap();
+        assert_eq!(record.setup_script, "echo '{}' > a");
+        assert!(parse_draft("{\"unrelated\": 1}").is_err());
     }
 
     #[test]

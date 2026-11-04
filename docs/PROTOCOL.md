@@ -6409,10 +6409,20 @@ its own Vault under the Project scope, so presence differs per machine and is co
   `ResolveEnvironmentProposal { projectId, proposalId, accept }` accepts one as an ordinary Save of the next
   revision (answering `ProjectEnvironmentSaved` or `ProjectEnvironmentConflict`) or dismisses it for good; a
   dismissed proposal is not stored by a later check. Nothing changes until a proposal is accepted.
-- MCP servers and skills that project files declare are rows of the record (`mcps`, `skills`: `{ name, source }`,
-  `source` the declaring file: `.mcp.json`, `.codex/config.toml`, `opencode.json`, `.claude|.agents|.opencode/skills/<name>/SKILL.md`).
-  Git carries the files, so the view reports each as `present` while that file still declares it in the checkout,
-  else `missing`. `SaveProjectEnvironment` carries both lists. Draft fills them from the files, not from the agent.
+- MCP servers and skills are rows of the record (`mcps`, `skills`: `{ name, source }`). `source` is
+  `{ "kind": "file", "path": ... }`, the declaring project file (`.mcp.json`, `.codex/config.toml`, `opencode.json`,
+  `.claude|.agents|.opencode/skills/<name>/SKILL.md`), or `{ "kind": "registration" }`, a Chariox registration
+  (`~/.chariox/mcps`, `~/.chariox/skills`). Git carries files, so a file row is `present` while that file still declares
+  it in the checkout; a registration row is `present` while this kernel holds the registration, else `missing`.
+  `SaveProjectEnvironment` carries both lists. Draft fills them from the files and from the MCPs and skills granted to
+  agents of the Project (registered here), not from the agent; the environment variables an MCP reads its keys from
+  (`env_vars`, `credential_env`, bearer token and header variables) are added to the Secrets.
+  Import and Update bring a missing registration: entries of kind `mcp` or `skill`, one peer request each
+  (`PullProjectEnvironmentRegistration { projectId, entryKind, name }`, answered by
+  `ProjectEnvironmentRegistrationPulled`; `ReadProjectEnvironment` also lists the registrations the source holds as
+  `mcps` and `skills`). The MCP is written with its keys as environment variable names (a credential handle exists on
+  one kernel only); a skill travels as its package (at most about 3 MiB). A room created in the Project is granted
+  the registrations the saved record lists that this kernel holds.
 - `EnvironmentOperationView.updates` counts every change of an operation. `GetEnvironmentOperation { operationId,
   waitAfterUpdates? }` with `waitAfterUpdates` holds the answer (at most 20 s) until the operation has more updates
   than that or has ended, so a state change reaches the reader within a round trip and nothing is polled.

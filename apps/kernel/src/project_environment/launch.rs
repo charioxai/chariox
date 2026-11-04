@@ -39,6 +39,38 @@ pub(crate) fn project_launch_environment(
     })
 }
 
+/// The values of the Project's Secrets named in `names`: the keys an MCP server reads from its environment. A locked
+/// Vault or a name the Environment does not list leaves the variable out.
+pub(crate) fn project_mcp_environment(
+    config: &DaemonConfig,
+    project_id: &str,
+    names: &[String],
+) -> std::collections::BTreeMap<String, String> {
+    let mut values = std::collections::BTreeMap::new();
+    let Ok(Some(record)) =
+        ProjectEnvironmentStore::new(&config.private_runtime_state_root()).load(project_id)
+    else {
+        return values;
+    };
+    let wanted: Vec<&String> = names
+        .iter()
+        .filter(|name| record.secrets.contains(name))
+        .collect();
+    if wanted.is_empty() {
+        return values;
+    }
+    let Ok(vault) = crate::secret::project_environment_vault(config) else {
+        return values;
+    };
+    let service = project_environment_vault_service(project_id);
+    for name in wanted {
+        if let Ok(Some(value)) = vault.find_secret(&service, name) {
+            values.insert(name.clone(), value);
+        }
+    }
+    values
+}
+
 /// Provider reuse observes both the saved record and the freshly resolved values. The
 /// process-keyed marker stays runtime-only, so a low-entropy value cannot be guessed from it.
 pub(crate) fn project_environment_launch_revision(

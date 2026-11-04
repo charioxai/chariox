@@ -48,10 +48,7 @@ fn referenced_names(text: &str) -> Vec<String> {
 fn push_mcps(found: &mut Vec<ExtensionEntry>, names: impl Iterator<Item = String>, source: &str) {
     for name in names {
         if extension_name(&name) && !found.iter().any(|entry| entry.name == name) {
-            found.push(ExtensionEntry {
-                name,
-                source: source.to_owned(),
-            });
+            found.push(ExtensionEntry::file(name, source));
         }
     }
 }
@@ -117,7 +114,7 @@ fn skill_dirs(checkout: &Path) -> Vec<ExtensionEntry> {
                 && checkout.join(&source).is_file()
                 && !found.iter().any(|entry| entry.name == name)
             {
-                found.push(ExtensionEntry { name, source });
+                found.push(ExtensionEntry::file(name, source));
             }
         }
     }
@@ -182,7 +179,13 @@ pub(crate) fn facts_text(detected: &Detected) -> String {
     let list = |entries: &[ExtensionEntry]| {
         entries
             .iter()
-            .map(|entry| format!("{} ({})", entry.name, entry.source))
+            .map(|entry| {
+                format!(
+                    "{} ({})",
+                    entry.name,
+                    entry.file_path().unwrap_or("registered")
+                )
+            })
             .collect::<Vec<_>>()
             .join(", ")
     };
@@ -244,7 +247,7 @@ mod tests {
         let names = |entries: &[ExtensionEntry]| {
             entries
                 .iter()
-                .map(|e| format!("{}@{}", e.name, e.source))
+                .map(|e| format!("{}@{}", e.name, e.file_path().unwrap()))
                 .collect::<Vec<_>>()
         };
         assert_eq!(

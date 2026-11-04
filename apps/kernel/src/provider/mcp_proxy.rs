@@ -125,6 +125,23 @@ pub(crate) fn dispatch_provider_mcp_proxy_request(
     backing: &CharioxMcpServerConfig,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, DaemonError> {
+    dispatch_provider_mcp_proxy_request_with_environment(
+        owner_provider_run_id,
+        owner_session_id,
+        backing,
+        payload,
+        &std::collections::BTreeMap::new(),
+    )
+}
+
+/// `project_environment` holds the Project's Secret values an MCP server started for this call reads from its environment.
+pub(crate) fn dispatch_provider_mcp_proxy_request_with_environment(
+    owner_provider_run_id: &str,
+    owner_session_id: &str,
+    backing: &CharioxMcpServerConfig,
+    payload: serde_json::Value,
+    project_environment: &std::collections::BTreeMap<String, String>,
+) -> Result<serde_json::Value, DaemonError> {
     let is_tools_list = payload
         .get("method")
         .and_then(serde_json::Value::as_str)
@@ -150,7 +167,13 @@ pub(crate) fn dispatch_provider_mcp_proxy_request(
             let process = stdio_mcp_supervisor()
                 .lock()
                 .expect("stdio MCP supervisor mutex poisoned")
-                .process(&key, owner_provider_run_id, owner_session_id, backing)?;
+                .process(
+                    &key,
+                    owner_provider_run_id,
+                    owner_session_id,
+                    backing,
+                    project_environment,
+                )?;
             let response = process
                 .lock()
                 .expect("stdio MCP process mutex poisoned")

@@ -29,7 +29,13 @@ fn process_for(
 ) -> Arc<Mutex<StdioMcpProcess>> {
     let key = config.definition_hash().expect("definition hash");
     supervisor
-        .process(&key, provider_run_id, session_id, config)
+        .process(
+            &key,
+            provider_run_id,
+            session_id,
+            config,
+            &Default::default(),
+        )
         .expect("stdio MCP process should start")
 }
 
@@ -108,6 +114,7 @@ fn busy_process_lookup_does_not_hold_the_supervisor_lock() {
                 "provider-run-busy-b",
                 "session-busy-b",
                 &lookup_config,
+                &Default::default(),
             )
             .is_ok();
         let _ = completed_tx.send(result);
@@ -149,14 +156,26 @@ fn closed_run_and_session_reject_late_process_ownership() {
     let mut supervisor = StdioMcpSupervisor::default();
 
     assert!(supervisor.release_run("provider-run-closed").is_empty());
-    let run_error = supervisor.process(&key, "provider-run-closed", "session-open", &config);
+    let run_error = supervisor.process(
+        &key,
+        "provider-run-closed",
+        "session-open",
+        &config,
+        &Default::default(),
+    );
     assert!(
         run_error.is_err(),
         "a released run must not reacquire ownership"
     );
 
     assert!(supervisor.release_session("session-closed").is_empty());
-    let session_error = supervisor.process(&key, "provider-run-open", "session-closed", &config);
+    let session_error = supervisor.process(
+        &key,
+        "provider-run-open",
+        "session-closed",
+        &config,
+        &Default::default(),
+    );
     assert!(
         session_error.is_err(),
         "a released session must not reacquire ownership"
@@ -309,4 +328,49 @@ readline.createInterface({input: process.stdin}).on('line', line => {
         retry.pointer("/result/content/0/text"),
         Some(&json!("recovered"))
     );
+}
+
+#[test]
+fn a_projects_secret_reaches_the_server_that_reads_its_variable() {
+    crate::test_support::isolated_env_test!();
+    let Some(mut config) = node_stdio_config(
+        r#"
+let buffer = ''
+process.stdin.on('data', (chunk) => {
+  buffer += chunk
+  let newline
+  while ((newline = buffer.indexOf('\n')) >= 0) {
+    const message = JSON.parse(buffer.slice(0, newline))
+    buffer = buffer.slice(newline + 1)
+    process.stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: message.id, result: { key: process.env.ENVIMPL_PROJECT_KEY ?? null } })}\n`)
+  }
+})
+"#,
+    ) else {
+        return;
+    };
+    if let CharioxMcpTransportConfig::Stdio { env_vars, .. } = &mut config.transport {
+        env_vars.push("ENVIMPL_PROJECT_KEY".into());
+    }
+    let mut supervisor = StdioMcpSupervisor::default();
+    let key = config.definition_hash().expect("definition hash");
+    let project_environment = BTreeMap::from([(
+        "ENVIMPL_PROJECT_KEY".to_string(),
+        "synthetic-project-key".to_string(),
+    )]);
+    let process = supervisor
+        .process(
+            &key,
+            "provider-run-key",
+            "session-key",
+            &config,
+            &project_environment,
+        )
+        .expect("stdio MCP process should start");
+    let response = process
+        .lock()
+        .expect("process lock")
+        .dispatch(json!({"jsonrpc": "2.0", "id": "k", "method": "tools/call"}))
+        .expect("response");
+    assert_eq!(response["result"]["key"], json!("synthetic-project-key"));
 }

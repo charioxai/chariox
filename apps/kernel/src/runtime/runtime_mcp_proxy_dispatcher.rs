@@ -6,6 +6,7 @@ pub(crate) async fn dispatch_authenticated_mcp_proxy_call(
     auth_token: &str,
     name: &str,
     payload: serde_json::Value,
+    project_environment: std::collections::BTreeMap<String, String>,
 ) -> Result<serde_json::Value, DaemonError> {
     crate::mcp::validate_registry_name(name, "mcp name")?;
     let run = unambiguous_mcp_proxy_provider_run(provider_run_projection, auth_token, name)?;
@@ -21,11 +22,12 @@ pub(crate) async fn dispatch_authenticated_mcp_proxy_call(
     let provider_run_id = run.id().to_string();
     let session_id = run.session_id().to_string();
     tokio::task::spawn_blocking(move || {
-        crate::provider::dispatch_provider_mcp_proxy_request(
+        crate::provider::dispatch_provider_mcp_proxy_request_with_environment(
             &provider_run_id,
             &session_id,
             &backing,
             payload,
+            &project_environment,
         )
     })
     .await

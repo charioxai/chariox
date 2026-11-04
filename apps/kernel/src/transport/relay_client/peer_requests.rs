@@ -356,6 +356,7 @@ pub(super) async fn handle_daemon_peer_request(
             | RelayPeerRequest::ReadProjectEnvironment { .. }
             | RelayPeerRequest::PullProjectEnvironmentSecret { .. }
             | RelayPeerRequest::PullProjectEnvironmentFile { .. }
+            | RelayPeerRequest::PullProjectEnvironmentRegistration { .. }
             | RelayPeerRequest::RunProjectEnvironmentSetup { .. }
             | RelayPeerRequest::GetProjectEnvironmentOperation { .. }
             | RelayPeerRequest::CancelProjectEnvironmentOperation { .. }
@@ -422,6 +423,7 @@ pub(super) async fn handle_daemon_peer_request(
             RelayPeerRequest::ReadProjectEnvironment { .. }
                 | RelayPeerRequest::PullProjectEnvironmentSecret { .. }
                 | RelayPeerRequest::PullProjectEnvironmentFile { .. }
+                | RelayPeerRequest::PullProjectEnvironmentRegistration { .. }
                 | RelayPeerRequest::RunProjectEnvironmentSetup { .. }
                 | RelayPeerRequest::GetProjectEnvironmentOperation { .. }
                 | RelayPeerRequest::CancelProjectEnvironmentOperation { .. }
@@ -552,6 +554,7 @@ pub(super) async fn handle_daemon_peer_request(
         | RelayPeerRequest::ReadProjectEnvironment { .. }
         | RelayPeerRequest::PullProjectEnvironmentSecret { .. }
         | RelayPeerRequest::PullProjectEnvironmentFile { .. }
+        | RelayPeerRequest::PullProjectEnvironmentRegistration { .. }
         | RelayPeerRequest::RunProjectEnvironmentSetup { .. }
         | RelayPeerRequest::GetProjectEnvironmentOperation { .. }
         | RelayPeerRequest::CancelProjectEnvironmentOperation { .. } => {

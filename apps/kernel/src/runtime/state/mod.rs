@@ -134,6 +134,7 @@ mod owner_context_review;
 mod project_environment;
 mod project_environment_check;
 mod project_environment_draft;
+mod project_environment_registrations;
 mod project_environment_remote_setup;
 mod project_environment_transfer;
 mod project_prompt_promotion;

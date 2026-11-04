@@ -1,6 +1,7 @@
 //! What an agent proposed for the saved Environment and what the owner dismissed: kept apart from the
 //! record, so accepting is an ordinary Save and a dismissed proposal is not made again.
 use super::detect::{declared_in, detect};
+use super::draft::answer_object;
 use super::{
     environment_error, environment_variable_name, extension_name, parse_variables,
     project_environment_protected_name, relative_project_path, ExtensionEntry,
@@ -206,20 +207,26 @@ pub(crate) fn deterministic_proposals(
         (EnvironmentProposalField::Skill, &detected.skills),
     ] {
         for entry in found {
-            propose(
-                field,
-                EnvironmentProposalChange::Add,
-                &entry.name,
-                &entry.source,
-                &entry.name,
-            );
+            if let Some(path) = entry.file_path() {
+                propose(
+                    field,
+                    EnvironmentProposalChange::Add,
+                    &entry.name,
+                    path,
+                    &entry.name,
+                );
+            }
         }
+        // A registration is no project file: this check has nothing to compare it with.
         for entry in extensions(record, field) {
-            if declared_in(checkout, &entry.source).contains(&entry.name) {
+            let Some(path) = entry.file_path() else {
+                continue;
+            };
+            if declared_in(checkout, path).contains(&entry.name) {
                 continue;
             }
-            let excerpt = if checkout.join(&entry.source).is_file() {
-                format!("not in {}", entry.source)
+            let excerpt = if checkout.join(path).is_file() {
+                format!("not in {path}")
             } else {
                 "file missing".to_owned()
             };
@@ -227,7 +234,7 @@ pub(crate) fn deterministic_proposals(
                 field,
                 EnvironmentProposalChange::Remove,
                 &entry.name,
-                &entry.source,
+                path,
                 &excerpt,
             );
         }
@@ -252,14 +259,8 @@ pub(crate) fn parse_proposals(
     output: &str,
     record: &ProjectEnvironmentRecord,
 ) -> Result<Vec<EnvironmentProposal>, String> {
-    let start = output
-        .find('{')
-        .ok_or("The agent did not answer with proposals")?;
-    let end = output
-        .rfind('}')
-        .ok_or("The agent did not answer with proposals")?;
-    let value: serde_json::Value = serde_json::from_str(&output[start..=end])
-        .map_err(|_| "The agent's answer is not valid JSON".to_owned())?;
+    let value =
+        answer_object(output, "proposals").ok_or("The agent did not answer with proposals")?;
     let listed = value
         .get("proposals")
         .and_then(|v| v.as_array())
@@ -363,10 +364,7 @@ pub(crate) fn apply(
                 &mut next.skills
             };
             if add {
-                entries.push(ExtensionEntry {
-                    name: text.to_owned(),
-                    source: proposal.evidence.path.clone(),
-                });
+                entries.push(ExtensionEntry::file(text, &proposal.evidence.path));
             } else {
                 entries.retain(|entry| entry.name != text);
             }
@@ -415,10 +413,7 @@ mod tests {
             (".env.example", "STRIPE_SECRET_KEY=\nLOG_LEVEL=info\n"),
         ]);
         let mut saved = record();
-        saved.mcps = vec![ExtensionEntry {
-            name: "github".into(),
-            source: ".mcp.json".into(),
-        }];
+        saved.mcps = vec![ExtensionEntry::file("github", ".mcp.json")];
         saved.variables = "LOG_LEVEL=debug".into();
         saved.secrets.clear();
         let found = deterministic_proposals(&dir, &saved);
