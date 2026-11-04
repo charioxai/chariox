@@ -251,7 +251,9 @@ async function main() {
     return
   }
 
-  // 1. Acquire: the default setting asks first; the owner accepts; the agent waits for the machine.
+  // 1. Acquire: the default setting asks first and the owner accepts; with `--ask off` nothing is asked. The agent waits for the machine.
+  const askOff = flags.get("--ask") === "off"
+  if (askOff) await home.rpc({ SetUserConfigValue: { path: "agents.ask_before_acquiring_machines", value: "false" } })
   const gate = ownerAnswers("accept")
   let text1
   try {
@@ -268,8 +270,9 @@ async function main() {
   saveToolLog()
   const log1 = text1
   const answered = JSON.stringify(log1)
-  const harness = /^Let (home-room\/\S+ \(Chariox agent\)) acquire a machine\?$/.exec(cards[0]?.message ?? "")?.[1]
-  check("the owner was asked before the acquisition (default setting), naming the room and agent", cards.length === 1 && !!harness && cards[0].choices.join() === "accept,decline", { card: cards[0] })
+  const harness = askOff ? "home-room/agent-1 (Chariox agent)" : /^Let (home-room\/\S+ \(Chariox agent\)) acquire a machine\?$/.exec(cards[0]?.message ?? "")?.[1]
+  if (askOff) check("with the setting off the owner was not asked and the machine was acquired", cards.length === 0 && /allocation_ref/.test(answered), { cards: cards.length })
+  else check("the owner was asked before the acquisition (default setting), naming the room and agent", cards.length === 1 && !!harness && cards[0].choices.join() === "accept,decline", { card: cards[0] })
   const ref = /"allocation_ref\\?":\\?"([^"\\]+)/.exec(answered)?.[1]
   const kernelId = /"kernel_id\\?":\\?"([^"\\]+)/.exec(answered.slice(answered.indexOf("kernel_target")))?.[1]
   check("the machine became ready and its access is available", /access_state\\?":\\?"available/.test(answered), { ref, kernelId })
