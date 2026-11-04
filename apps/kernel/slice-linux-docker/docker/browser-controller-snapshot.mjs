@@ -54,7 +54,7 @@ export async function captureBrowserSnapshot({
       "browser frame tree changed during snapshot capture",
     );
   }
-  const compactedDom = compactDomSnapshot(dom, options);
+  const compactedDom = compactDomSnapshot(dom, options, accessibility.nodes);
   return {
     browser_generation: browserGeneration,
     target_id: targetId,
@@ -341,15 +341,20 @@ function announcedStates(properties) {
   ];
 }
 
-function compactDomSnapshot(rawSnapshot, options) {
+function compactDomSnapshot(rawSnapshot, options, accessibilityNodes) {
   const strings = Array.isArray(rawSnapshot?.strings) ? rawSnapshot.strings : [];
   const documents = Array.isArray(rawSnapshot?.documents)
     ? rawSnapshot.documents
     : [];
+  const documentCount = Math.min(documents.length, options.maxNodes);
+  // Reserve space for observed AX nodes so a late modal remains authorizable
+  // when decorative markup exhausts the DOM budget (for example SVG paths).
+  const observed = new Set(accessibilityNodes.map(node => node.node_ref));
+  let remainingObserved = documents.slice(0, documentCount).reduce((count, document) => count +
+    (document?.nodes?.backendNodeId ?? []).filter(id => observed.has(backendNodeReference(id))).length, 0);
   const compacted = [];
   const ownerByDocumentIndex = new Map();
   const shadowRoots = [];
-  const documentCount = Math.min(documents.length, options.maxNodes);
   for (let documentIndex = 0; documentIndex < documentCount; documentIndex += 1) {
     const document = documents[documentIndex];
     if (compacted.length >= options.maxNodes) {
@@ -362,19 +367,23 @@ function compactDomSnapshot(rawSnapshot, options) {
     const layoutBounds = boundsByNodeIndex(document?.layout);
     const contentDocuments = rareDataByIndex(nodes.contentDocumentIndex);
     const shadowRootTypes = rareDataByIndex(nodes.shadowRootType);
+    const retainedAncestor = [];
     for (
       let nodeIndex = 0;
       nodeIndex < backendNodeIds.length && compacted.length < options.maxNodes;
       nodeIndex += 1
     ) {
+      const parentIndex = arrayValue(nodes.parentIndex, nodeIndex);
+      const parentRef = Number.isSafeInteger(parentIndex)
+        ? retainedAncestor[parentIndex] ?? null : null;
+      retainedAncestor[nodeIndex] = parentRef;
       const nodeRef = backendNodeReference(backendNodeIds[nodeIndex]);
       if (!nodeRef) {
         continue;
       }
-      const parentIndex = arrayValue(nodes.parentIndex, nodeIndex);
-      const parentRef = Number.isSafeInteger(parentIndex)
-        ? backendNodeReference(backendNodeIds[parentIndex])
-        : null;
+      if (observed.has(nodeRef)) remainingObserved -= 1;
+      else if (compacted.length >= options.maxNodes - remainingObserved) continue;
+      retainedAncestor[nodeIndex] = nodeRef;
       const nodeType = arrayValue(nodes.nodeType, nodeIndex);
       const nodeName = snapshotString(
         strings,

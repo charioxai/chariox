@@ -176,3 +176,18 @@ test("MP-08/MP-11 a captured value echoed in a custom tag remains protected", as
   assert.equal(snapshot.dom_nodes[0].node_name,"[redacted]");
   assert.equal(observations.redactSnapshot({...snapshot,dom_nodes:[{...snapshot.dom_nodes[0],node_name:secret}]},[secret]).dom_nodes[0].node_name,"[redacted]");
 });
+
+test("MP-08/MP-11 observed controls after decorative nodes fit in the DOM budget", async () => {
+  const connection = {async send(method) {
+    if (method === "Page.getFrameTree") return {frameTree:{frame:{id:"root",loaderId:"page-1"}}};
+    if (method === "Accessibility.getFullAXTree") return {nodes:[{nodeId:"field",backendDOMNodeId:7,role:{value:"textbox"},name:{value:"Code"},properties:[{name:"focused",value:{value:true}}]}]};
+    return {strings:["DIV","INPUT","type","text"],documents:[{nodes:{backendNodeId:[1,2,3,4,5,6,7],nodeType:[1,1,1,1,1,1,1],nodeName:[0,0,0,0,0,0,1],nodeValue:[-1,-1,-1,-1,-1,-1,-1],parentIndex:[-1,0,1,2,3,4,5],attributes:[[],[],[],[],[],[],[2,3]]}}]};
+  }};
+  const snapshot=await capture(connection,{maxNodes:3});
+  assert.equal(snapshot.dom_nodes.length,3);
+  assert(snapshot.dom_nodes.some(n=>n.node_ref==="backend:7"&&n.node_name==="INPUT"));
+  assert.equal(snapshot.accessibility_nodes[0].focused,true);
+  const refs=new Set(snapshot.dom_nodes.map(n=>n.node_ref));
+  assert(snapshot.dom_nodes.every(n=>n.parent_ref===null||refs.has(n.parent_ref)));
+  assert.equal(snapshot.dom_nodes.at(-1).parent_ref,"backend:2");
+});
