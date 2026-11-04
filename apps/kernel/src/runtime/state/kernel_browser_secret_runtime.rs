@@ -819,12 +819,14 @@ mod tests {
         assert_eq!(wire["display_frame"], frame);
         assert_eq!(wire["frame_sent"], true);
         assert_eq!(wire["generation"], 1);
-        for key in ["title", "url", "text"] {
+        for key in ["title", "text"] {
             let text = wire[key].as_str().unwrap();
             for secret in ["AAAA", "stripes", "frame"] {
                 assert!(!text.contains(secret));
             }
         }
+        // A short value is masked as a whole word of visible text only, never inside a URL.
+        assert_eq!(wire["url"], "https://example.org/stripes/frame");
         let mut reply = json!({"KernelBrowser":{"result":wire}});
         let (id, sequence, event) =
             crate::transport::kernel_browser_display::take_display_event(&mut reply).unwrap();
@@ -849,14 +851,16 @@ mod tests {
             false,
         )
         .unwrap();
-        for key in ["title", "url"] {
-            for secret in ["AAAA", "stripes", "frame"] {
-                assert!(!metadata["display_frame"][key]
-                    .as_str()
-                    .unwrap()
-                    .contains(secret));
-            }
+        for secret in ["AAAA", "stripes", "frame"] {
+            assert!(!metadata["display_frame"]["title"]
+                .as_str()
+                .unwrap()
+                .contains(secret));
         }
+        assert_eq!(
+            metadata["display_frame"]["url"],
+            "https://example.org/stripes/frame"
+        );
         assert!(metadata["observation"].get("frame").is_none());
         let scalar = scrub_browser_result(
             &store,
