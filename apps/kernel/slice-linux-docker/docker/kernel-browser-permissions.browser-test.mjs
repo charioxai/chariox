@@ -8,11 +8,12 @@ import { KernelBrowserHost } from './kernel-browser-host.mjs';
 
 const root = process.env.CHARIOX_MDACCESS_DRILL_ROOT;
 assert(root, 'explicit disposable drill root required');
+const nativeGeolocationState = `new Promise(resolve => { const worker = new Worker(URL.createObjectURL(new Blob(["navigator.permissions.query({name:'geolocation'}).then(s => postMessage(s.state))"]))); worker.onmessage = event => resolve(event.data); })`;
 const delay = ms => new Promise(r => setTimeout(r, ms));
 
 test('MP-08/09/10/11 permission requests share state, answer, timeout, session and cleanup', {timeout:90000}, async () => {
   const home = await mkdtemp(path.join(root, 'permissions-'));
-  const host = new KernelBrowserHost(home);
+  const host = new KernelBrowserHost(home, {appStorageRoot: path.join(home, 'apps')});
   const server = createServer((_q, r) => r.end('<!doctype html><title>Permissions</title><p>Permission regression</p>'));
   try {
     await new Promise(r => server.listen(0, '127.0.0.1', r));
@@ -38,7 +39,8 @@ test('MP-08/09/10/11 permission requests share state, answer, timeout, session a
     await evaluate('navigator.geolocation.getCurrentPosition(()=>{window.geo="ok"},e=>{window.geo=e.code});undefined');
     const geo = await pending('geolocation'); await answer(geo,'accept');
     assert.equal(await evaluate('navigator.permissions.query({name:"geolocation"}).then(s=>s.state)'), 'granted');
-    assert.equal(await evaluate('Permissions.prototype.query.call(navigator.permissions,{name:"geolocation"}).then(s=>s.state)'), 'granted', 'Chromium must receive the real native grant');
+    // A worker has no page shim, so it reads the state Chromium itself holds.
+    assert.equal(await evaluate(nativeGeolocationState), 'granted', 'Chromium must receive the real native grant');
     await assert.rejects(answer(geo,'accept'), {code:'browser_dialog_invalid'});
     await evaluate('Notification.requestPermission().then(s=>window.notified=s);undefined');
     const notifications = await pending('notifications'); await answer(notifications,'dismiss');
@@ -56,14 +58,14 @@ test('MP-08/09/10/11 permission requests share state, answer, timeout, session a
     assert.deepEqual((await host.request({op:'state'})).dialogs,[]);
     // New origins cannot reuse a grant. Closing the tab cancels its timer/dialog.
     const other=await host.request({op:'open',url:url.replace('127.0.0.1','localhost')});
-    tab=host.tabs.get(other.active_tab_id); ({connection,sessionId}=await host.browser.resolvePageTarget(tab.target_id));
+    tab=host.tabs.get(other.tab_id); ({connection,sessionId}=await host.browser.resolvePageTarget(tab.target_id));
     await evaluate('navigator.geolocation.getCurrentPosition(()=>{},()=>{});undefined');
     const isolated=await pending('geolocation',new URL(url.replace('127.0.0.1','localhost')).origin); assert.equal(isolated.origin,new URL(url.replace('127.0.0.1','localhost')).origin);
     await host.request({op:'close',tab_id:tab.tab_id,generation:other.generation});
     assert.equal(host.browser.pagePermissions.requests.size,0);
     await host.stop();
     const restarted=await host.request({op:'open',url});
-    tab=host.tabs.get(restarted.active_tab_id); ({connection,sessionId}=await host.browser.resolvePageTarget(tab.target_id));
+    tab=host.tabs.get(restarted.tab_id); ({connection,sessionId}=await host.browser.resolvePageTarget(tab.target_id));
     assert.equal(await evaluate('navigator.permissions.query({name:"geolocation"}).then(s=>s.state)'), 'prompt');
     await evaluate('navigator.geolocation.getCurrentPosition(()=>{},()=>{});undefined');
     await answer(await pending('geolocation'),'dismiss');

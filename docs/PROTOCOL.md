@@ -964,6 +964,7 @@ alone cannot resume. Cancellation retains obligations until actual owned
 resource settlement. MP-08/MP-10/MP-11: cancellation applies to the addressed
 task; an older independent wait still receives its source completion or deadline
 wake. Historical task ordering is not an agent stop disposition.
+The blocked-task decision is the one kernel-operation decision that is not terminal-only: an external access holder, or an owner's agent driving the Room through reach, answers it with `RespondToInteraction` (`resume` or `cancel`, never implied), and its outside event carries the question instead of a pointer. Every other kernel-operation decision stays terminal-only.
 Legacy `/agent task` commands still address Meta tasks;
 they are not selectors for regular `agent_tasks`. Process/timer watcher sources
 belong to PR3 and leased delivery reconciliation to PR10; unsupported leased
@@ -6219,8 +6220,7 @@ owner's user id. A session member, an agent and a Metaagent get `vault_unlock_ow
 kernel-access grant holders and sudo agents are refused too, and no agent tool carries it. The passphrase
 is a redacted, zeroed value: command records show `[redacted]`, and it is never logged. The
 request unlocks an existing Vault only; a missing Vault file is refused and never created.
-The Vault stays open per its policy (`ttl` the default TTL, `kernel_init` until shutdown); under
-`always` the unlock is single use: it lasts 60 seconds and ends after the next account copy.
+How long the Vault stays open is the owner's choice on every unlock (local 984, below).
 
 Refusals carry a code and a plain sentence: `vault_passphrase_wrong`,
 `vault_unlock_rate_limited` (the sentence names the wait in seconds), `vault_missing`,
@@ -6232,6 +6232,128 @@ time), shared by this request, the passkey check and the unlock prompt an agent'
 Clients need kernel protocol >=923 (`credentialVaultUnlockMinimumProtocolVersion` in the
 web). The managed-upgrade list is [629, 636, 923]. Focused checks:
 `cargo test -p chariox-kernel --lib vault_unlock` and `node --test scripts/protocol-versions.test.mjs`.
+
+### Vault unlock duration — local 984 / relay peer 425
+
+Every Vault unlock names how long the Vault stays open. `UnlockCredentialVault { passphrase, duration }`
+takes a required `duration`: `{"kind":"once"}` (the next operation, then the Vault closes; for the
+owner's own client that is the 60 second single-use unlock), `{"kind":"minutes","minutes":N}`
+(capped by `credential_vault.max_ttl_minutes`) or `{"kind":"until_kernel_stops"}`
+(`VaultUnlockLease::KernelShutdown`). `GetCredentialVaultStatus` answers
+`CredentialVaultStatus { status, unlock }` with `unlock = { durations, default }`: the durations a
+client offers and the one it preselects. `credential_vault.unlock_policy` no longer decides a lease
+or forces a prompt; it only picks `default` (`always` once, `ttl` its default minutes, `kernel_init`
+until the kernel stops).
+
+`UnlockCredentialVault` also names the `surface` the owner typed the passphrase in: `vault_window`,
+`settings`, `sidebar` or `terminal` (`card` is the card's own answer and is refused on this request with
+`vault_unlock_card_surface`). Whatever surface unlocks the Vault, with any duration, every open unlock card
+of every Room is answered by the kernel as `answered` with `choice_id: "unlocked"` and the surface as
+`reply`, which closes it at once on every client; the agent's blocked operation continues. The card offers
+only the passphrase, the duration and Unlock, and Cancel.
+
+The Unlock card an agent's Vault use raises (`Unlock Chariox Vault`) carries the same list as
+choices: each duration is a choice with `vault_unlock` set to that duration, next to `cancel`. The
+person answers with one duration choice and the passphrase as `custom_reply`; a duration choice
+without a passphrase is refused, and the passphrase is never part of the recorded answer. Clients need
+kernel protocol >=984 (`credentialVaultUnlockMinimumProtocolVersion` in the web). The managed-upgrade
+list is [629, 636, 984]. Focused checks: `cargo test -p chariox-kernel --lib vault_unlock`.
+
+A wrong passphrase typed in the card does not fail the agent's Vault operation: the kernel counts it against the
+owner's wrong-answer budget (unchanged) and raises the same card again, its message led by `That is not the Vault
+passphrase. Try again.` (or `Too many wrong passphrases. Try again in N seconds.`). Cancel or the deadline still ends
+the operation.
+
+`chariox.request_popup` cards always carry a `cancel` choice next to the agent's own (an agent's own
+choice with id `cancel` is kept as it is). Answering it resolves the question with `status:
+"cancelled"` and `choice_id: "cancel"` in the tool result and in the wake payload, so the agent never
+reads a cancel as a timeout. No serialized shape changes: the card is an ordinary choice list.
+
+### Person cards — local 984 / relay peer 425
+
+`chariox.request_popup` takes two more optional arguments, and a `RuntimeInteraction` one more optional
+field (additive; old clients ignore it):
+
+- `until: { wake_id }` (with `wait:false`): the card follows a wake source the same agent armed. When the
+  source occurs or ends, the kernel answers the card as `answered`, `choice_id: "condition_met"`, `reply`
+  = a kernel-written sentence; every client drops the card and the agent reads it as its answer.
+  `RuntimeInteraction.closes_with_wake` carries the wake id (stored with the question, so a kernel
+  restart keeps it). Unknown, foreign or ended wakes refuse the call.
+- `action: { request }`: one kernel request (the `chariox_kernel_request` shape) the person authorizes
+  with the passkey. The card is a kernel decision (`PasskeyPromptKind::CriticalApproval`) titled
+  "Approve one action" whose message the kernel writes from the request; the agent's `title` and `message`
+  are ignored. Approve runs the request once as the owner and the call returns `{status, choice_id,
+  ran, response | error}`; Cancel returns `status: "cancelled", ran: false`. The `/sudo` refused list
+  applies (`sudo_request_forbidden`).
+
+Focused checks: `cargo test -p chariox-kernel --lib async_popup card_action person_card`.
+
+### Live browser person cards — local 988 / relay peer 427
+
+MP-08 / MP-09 / MP-10 / MP-11: `request_popup` accepts
+`view: { browser_region: { tab_id, ref } }`, where `ref` is a `node_ref` from a browser
+snapshot observed by this agent for this Tab. This requires the agent's existing browser
+grant; a card never grants browser access. Unknown, foreign and stale references refuse
+registration. `action` and `view` are mutually exclusive.
+
+The kernel projects `RuntimeInteraction.view.browser_region` with `tab_id`, `ref`,
+`generation`, `document_id`, `origin`, `rect: { x, y, width, height }`, `viewport_width`,
+and `viewport_height`. Coordinates are integer CSS pixels in the existing Tab display.
+The element's viewport box has a 16 CSS pixel margin, clipped to the viewport; offscreen
+content can produce an empty rectangle. `origin` is the browser-owned site origin and
+never includes URL userinfo, path, query or fragment. The card attaches another viewer
+to the existing protected Tab display, without a second image or video capture path.
+
+A renderer geometry wait follows root element scroll, resize and movement, returning
+only when geometry changes or its one-second idle timeout expires. Child-frame boxes
+use the shared frame ownership walk and frame-owner affine transforms; their geometry
+refresh is bounded to 100 ms. Only changed metadata publishes a new card projection.
+The existing wake scheduler reattaches card watchers after recovery. A removed element,
+replaced document or retired browser reference resolves the ordinary question once with
+`choice_id: "condition_met"` and a kernel-written reason. The same condition reaches the
+durable inbox for `wait:false` and the blocked tool for `wait:true`.
+Revoked browser access instead resolves `status: "unavailable"`, no choice id, and
+a kernel-written reason. Continuous observation failures retry with the last-known crop
+for up to 15 seconds, then resolve the same definitive unavailable outcome. A successful
+observation resets that failure budget; an offscreen box remains a live, empty crop.
+Each live card pins its one element binding independently of the bounded snapshot-reference
+cache. Watchers renew that controller lease and release it when the card closes. An abandoned
+lease expires after 15 seconds; the controller refuses new anchors at its 1,024-card limit
+instead of evicting a live anchor. Losing only registry state resolves unavailable, rather
+than claiming an element disappeared. Geometry updates replace the view in place, preserving
+card order even when questions share a request timestamp.
+
+Focused regression checks: `cargo test -p chariox-kernel --lib async_popup_browser_region`
+and `node --test apps/kernel/slice-linux-docker/docker/kernel-browser-card-region.test.mjs`.
+
+### Agent reach — local 974
+
+A Room agent of the kernel owner reaches other rooms and kernels through a second runtime MCP server,
+`chariox-reach` at `/mcp/reach` (tools `kernels`, `sessions`, `request`, `events_subscribe`, `events_wait`,
+`events_ack`, `guide`; see `docs/KERNEL_ACCESS.md`). The identity is the agent's own live provider run
+(`reach:<run>`), authorised as the owner by the rule of its own room: what a Room agent without `/sudo` may do at
+home (read and list, history, create a room, message and steer agents, room terminals and files, the six event
+requests, answering a routine decision of another room, `ControlPlane` machine requests) is allowed elsewhere, what
+needs `/sudo` at home needs it elsewhere (`reach_requires_sudo`), and the human-only set is refused everywhere.
+The wire changes are small:
+
+- User config gains `agents.ask_before_acquiring_machines` (`GetUserConfigSchema` lists it; `SetUserConfigValue`
+  takes `"true"`/`"false"`; owner-only, so a gateway or sudo caller is refused). It is on unless the owner turns it
+  off: each `ControlPlane` acquire, start or start-from-saved-state by an agent raises one decision ("Let
+  `<room>/<agent> (Chariox agent)` acquire a machine?", choices `accept`/`cancel`) in the agent's room, shown on
+  every client; declining answers `acquisition_declined`.
+- `on_behalf_of.harness` names `<room>/<agent> (Chariox agent)` in the target's audit and paired-clients list.
+- The kernel sends the same name to the connected service with an agent's `acquire` (`requested_by`; the kernel
+  fills it from its own record of the caller, a request cannot carry it), so the service lists the machine under it.
+- The event requests and `RespondToInteraction` are room-level for a reach caller; an event request with a `kernel`
+  is refused (`events_local_only`). The "Agent needs your action" decision (`task-blocked-…`) is answerable by a
+  holder or reach driver, and its outside event carries `question`.
+- `CreateSession` is room-level for the owner's agents on every kernel. A guest's agent never reaches.
+
+Relay peer 415 is unchanged. A client that shows the setting needs kernel protocol >=974; development stage kernels
+are re-provisioned. The managed-upgrade list is [629, 636, 974]. Focused checks:
+`cargo test -p chariox-kernel --lib mcp_server::tests::reach`, `node scripts/drills/agent-reach.mjs` (two kernels)
+and `node scripts/drills/agent-reach-machines.mjs` (a hosted validation stack and one real machine).
 
 ### Apps v2 — local 966 / relay peer 415
 
@@ -6365,3 +6487,15 @@ only. The native worker ships beside the kernel, enters containment before its
 identity handshake, and exposes only the versioned App WIT world through the
 kernel capability broker. The replaced engine's launch, runtime enrollment and
 privileged storage-helper paths are removed. Reinstall unsupported stored Apps.
+
+
+### Acquisition offer descriptor — local 988 / relay peer 427
+
+MP-08 / MP-09 / MP-10 / MP-11: `ControlPlane` capabilities include the current
+`machine_allocation.offer`: `machine_type`, `vcpu`, `ram_gb`, `disk_gb`, `location`,
+and `price: { amount, currency, period }` (`hour` or `month`). Cloud supplies these
+provider-neutral values from its placement provider's catalogue at offer time.
+The capability revision covers the descriptor. Before asking an agent to confirm
+Acquire, the kernel verifies that revision and writes every offer fact in the
+existing Accept/Cancel interaction. Cancel acquires nothing; Accept remains
+subject to the same Cloud admission and revision checks.

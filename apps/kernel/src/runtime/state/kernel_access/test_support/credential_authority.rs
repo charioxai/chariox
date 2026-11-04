@@ -2,6 +2,17 @@ use super::*;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+fn publish_result(
+    root: &std::path::Path,
+    name: &str,
+    bytes: impl AsRef<[u8]>,
+) -> std::io::Result<()> {
+    // Polling readers use the final pathname as the completion signal.
+    let pending = root.join(format!(".{name}.pending"));
+    std::fs::write(&pending, bytes)?;
+    std::fs::rename(pending, root.join(name))
+}
+
 #[tokio::test]
 async fn kernel_access_refuses_raw_registry_credentials_and_provider_imports() {
     let worktree = crate::test_support::TestWorktree::new("access-mcp-secret-read");
@@ -109,6 +120,8 @@ async fn kernel_access_cannot_unlock_the_vault() {
     let request =
         LocalDaemonRequest::UnlockCredentialVault(crate::local::UnlockCredentialVaultRequest {
             passphrase: crate::local::VaultPassphrase::new("passphrase"),
+            duration: crate::local::VaultUnlockDuration::Once,
+            surface: crate::local::VaultUnlockSurface::VaultWindow,
         });
     assert!(state.authorize_external_request(&grant, &request).is_err());
 }
@@ -168,8 +181,9 @@ impl KernelRuntimeState {
                 let state = self.clone();
                 tokio::spawn(async move {
                     let result = state.manage_credential_vault_unlock(SESSION, AGENT).await;
-                    std::fs::write(
-                        root.join("vault-result"),
+                    publish_result(
+                        &root,
+                        "vault-result",
                         if result.is_ok() { "ok" } else { "cancelled" },
                     )
                     .unwrap();
@@ -182,8 +196,9 @@ impl KernelRuntimeState {
                     let result = state
                         .ensure_vault_unlocked_for_agent(SESSION, AGENT, "access-test")
                         .await;
-                    std::fs::write(
-                        root.join("vault-result"),
+                    publish_result(
+                        &root,
+                        "vault-result",
                         if result.is_ok() { "ok" } else { "cancelled" },
                     )
                     .unwrap();
@@ -276,8 +291,9 @@ impl KernelRuntimeState {
                     else {
                         panic!("unexpected provider batch response");
                     };
-                    std::fs::write(
-                        root.join("batch-result"),
+                    publish_result(
+                        &root,
+                        "batch-result",
                         serde_json::to_vec(&serde_json::json!({
                             "provider_run_count":provider_runs.len(),
                             "failures":failures.into_iter().map(|failure| failure.message).collect::<Vec<_>>(),

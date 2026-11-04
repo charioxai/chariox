@@ -133,6 +133,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
         Operation::Sweep {
             now,
             busy_recipients,
+            vault_wait_recipients,
             held_work,
         } => {
             let mut changed = vec![];
@@ -257,6 +258,34 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 }
             }
             for mut e in events {
+                if e.state == "submitting"
+                    && e.submit_epoch.is_none()
+                    && e.provider_run_id.is_none()
+                    && e.target_prompt_id.is_none()
+                    && vault_wait_recipients
+                        .iter()
+                        .any(|(room, agent)| room == &e.room_id && agent == &e.agent_id)
+                {
+                    // Waiting for owner input before I/O does not consume a provider receipt window.
+                    e.attempted_at_ms = Some(now);
+                    save_event(tx, &e)?;
+                    continue;
+                }
+                let mut owner_held = false;
+                if refused_wake(&e) {
+                    for task in live_tasks(tx, &e.room_id, &e.agent_id)? {
+                        if task.state == ExecutionState::Blocked
+                            && task.wait.is_some()
+                            && delivery_belongs_to_task(tx, &e, &task)?
+                        {
+                            owner_held = true;
+                            break;
+                        }
+                    }
+                }
+                if owner_held {
+                    continue;
+                }
                 let mut clock_quarantined = false;
                 let deadline_start = if e.state == "pending" {
                     // Busy refusals are normal queueing, not missing receipts.
@@ -472,9 +501,12 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     }
                 }
             }
+            let retry_wake = resume && t.wait.is_some() && pending_refused_wake(tx, &t)?;
             let blocked_revision = t.blocked_revision;
             super::goals::clock(&mut t, now);
-            t.state = if resume {
+            t.state = if retry_wake {
+                ExecutionState::Waiting
+            } else if resume {
                 ExecutionState::Working
             } else {
                 ExecutionState::Cancelled
@@ -483,7 +515,9 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 cancel_intent(tx, &mut t)?;
             }
             t.no_progress_wakes = 0;
-            t.wait = None;
+            if !retry_wake {
+                t.wait = None;
+            }
             t.revision += 1;
             if resume {
                 if let Some(g) = &mut t.goal {
@@ -491,12 +525,16 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     g.continuation_sequence += 1;
                     g.next_check_in_ms = None;
                 }
-                t.pending_prompt_id = Some(format!(
-                    "{}{}-{}",
-                    super::goals::OWNER_RESUME_PROMPT_PREFIX,
-                    t.task_id,
-                    t.revision
-                ));
+                t.pending_prompt_id = if retry_wake {
+                    None
+                } else {
+                    Some(format!(
+                        "{}{}-{}",
+                        super::goals::OWNER_RESUME_PROMPT_PREFIX,
+                        t.task_id,
+                        t.revision
+                    ))
+                };
                 t.last_progress_at_ms = now;
                 if let Some(goal) = &t.goal {
                     migration::audit(
@@ -602,6 +640,39 @@ fn delivery_belongs_to_task(
         if for_turn(tx, &event.room_id, &event.agent_id, prompt)?
             .is_some_and(|bound| bound.task_id == task.task_id)
         {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn refused_wake(event: &InboxEvent) -> bool {
+    event.state == "pending"
+        && event.kind != "message"
+        && event.attempted_at_ms.is_some()
+        && event.submit_epoch.is_none()
+}
+
+fn pending_refused_wake(
+    tx: &Transaction<'_>,
+    task: &AgentTaskExecution,
+) -> Result<bool, DaemonError> {
+    let mut query = tx.prepare("SELECT sequence FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND json_extract(payload,'$.state')='pending'").map_err(sql)?;
+    let sequences = query
+        .query_map(params![task.room_id, task.agent_id], |row| {
+            row.get::<_, i64>(0)
+        })
+        .map_err(sql)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(sql)?;
+    for sequence in sequences {
+        let event = get_event(
+            tx,
+            &task.room_id,
+            &task.agent_id,
+            u64::try_from(sequence).map_err(|_| error("corrupt inbox sequence"))?,
+        )?;
+        if refused_wake(&event) && delivery_belongs_to_task(tx, &event, task)? {
             return Ok(true);
         }
     }

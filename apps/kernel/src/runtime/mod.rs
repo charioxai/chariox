@@ -61,6 +61,7 @@ pub(crate) mod browser_import_admission;
 pub(crate) mod browser_import_payload;
 pub mod capability_executor;
 pub(crate) mod capability_registry;
+pub(crate) mod card_action;
 mod claude_setup_token_login;
 mod client_catalog_revisions;
 pub(crate) mod cloud_api_client;

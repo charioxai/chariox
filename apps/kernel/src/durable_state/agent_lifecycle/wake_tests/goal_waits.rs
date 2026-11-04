@@ -77,6 +77,7 @@ fn a12_long_timer_survives_two_checkins_without_spending_progress_guard() {
         assert!(now < due);
         f.apply(Operation::Sweep {
             now,
+            vault_wait_recipients: Vec::new(),
             busy_recipients: vec![],
             held_work: vec![],
         });
@@ -158,6 +159,7 @@ fn a12_refused_checkin_does_not_erase_an_earlier_progress_guard_strike() {
         let now = f.task().goal.as_ref().unwrap().next_check_in_ms.unwrap();
         f.apply(Operation::Sweep {
             now,
+            vault_wait_recipients: Vec::new(),
             busy_recipients: vec![],
             held_work: vec![],
         });

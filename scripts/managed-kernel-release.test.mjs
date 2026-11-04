@@ -732,7 +732,6 @@ test("managed kernel release packages one reproducible signed rootfs", async (co
       .filter((entry) =>
         entry.type === "file" &&
         !entry.path.startsWith("usr/local/bin/") &&
-        entry.path !== "usr/libexec/chariox-app-storage" &&
         !entry.path.endsWith("/enter-rootless-docker-namespace.sh") &&
         !entry.path.endsWith("/managed-rootless-service.sh") &&
         !entry.path.endsWith("/provision-linux-docker-slice.sh") &&

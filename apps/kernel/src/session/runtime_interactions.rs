@@ -50,6 +50,10 @@ pub struct RuntimeInteractionChoice {
     /// decisions may set it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     requires_passkey: bool,
+    /// A Vault unlock answer: this choice unlocks for this long, with the
+    /// passphrase as the custom reply.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    vault_unlock: Option<crate::local::VaultUnlockDuration>,
 }
 
 impl RuntimeInteractionChoice {
@@ -65,7 +69,17 @@ impl RuntimeInteractionChoice {
             reply: reply.into(),
             style,
             requires_passkey: false,
+            vault_unlock: None,
         }
+    }
+
+    pub(crate) fn unlocking_vault(mut self, duration: crate::local::VaultUnlockDuration) -> Self {
+        self.vault_unlock = Some(duration);
+        self
+    }
+
+    pub fn vault_unlock(&self) -> Option<crate::local::VaultUnlockDuration> {
+        self.vault_unlock
     }
 
     /// Marks a critical approval: the kernel accepts it only with a verified
@@ -223,9 +237,15 @@ impl NativeInteractionOrigin {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeInteraction {
+    /// Kernel-resolved presentation; agents supply only the observed element reference.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    view: Option<RuntimeInteractionView>,
     /// Protocol 936: a question owned by a durable task, rather than one turn.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     asking_task_id: Option<String>,
+    /// Person cards: the existing wake source whose occurrence closes this card.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    closes_with_wake: Option<String>,
     /// MP-08 / MP-11 protocol 538: kernel-established sudo presentation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     sudo_request: Option<crate::local::SudoRequestPresentation>,
@@ -261,6 +281,33 @@ pub struct RuntimeInteraction {
     /// Local only: when a forwarded decision stops being actionable.
     #[serde(skip)]
     decision_expires_at: Option<tokio::time::Instant>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeInteractionView {
+    pub browser_region: RuntimeInteractionBrowserRegion,
+}
+
+/// CSS pixels in the existing Tab display. No page text or pixel bytes are copied into the card.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeInteractionBrowserRegion {
+    pub tab_id: String,
+    #[serde(rename = "ref")]
+    pub reference: String,
+    pub generation: u64,
+    pub document_id: String,
+    pub origin: String,
+    pub rect: RuntimeInteractionBrowserRect,
+    pub viewport_width: u32,
+    pub viewport_height: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeInteractionBrowserRect {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -303,7 +350,9 @@ impl RuntimeInteraction {
         default_on_timeout: Option<String>,
     ) -> Self {
         Self {
+            view: None,
             asking_task_id: None,
+            closes_with_wake: None,
             id: id.into(),
             subject: RuntimeInteractionSubject::Agent {
                 agent_id: agent_id.into(),
@@ -329,6 +378,30 @@ impl RuntimeInteraction {
 
     pub fn asking_task_id(&self) -> Option<&str> {
         self.asking_task_id.as_deref()
+    }
+
+    pub fn view(&self) -> Option<&RuntimeInteractionView> {
+        self.view.as_ref()
+    }
+
+    pub(crate) fn with_view(mut self, view: RuntimeInteractionView) -> Self {
+        self.view = Some(view);
+        self
+    }
+
+    /// Asking again after an answer that did not work: the card leads with what went wrong.
+    pub(crate) fn noting_problem(mut self, problem: &str) -> Self {
+        self.message = format!("{problem}\n{}", self.message);
+        self
+    }
+
+    pub fn closes_with_wake(&self) -> Option<&str> {
+        self.closes_with_wake.as_deref()
+    }
+
+    pub(crate) fn closing_with_wake(mut self, wake_id: String) -> Self {
+        self.closes_with_wake = Some(wake_id);
+        self
     }
 
     pub(crate) fn with_asking_task_id(mut self, task: String) -> Self {
@@ -444,7 +517,9 @@ impl RuntimeInteraction {
         choices: Vec<RuntimeInteractionChoice>,
     ) -> Self {
         Self {
+            view: None,
             asking_task_id: None,
+            closes_with_wake: None,
             id: id.into(),
             subject: RuntimeInteractionSubject::KernelOperation {
                 kernel_operation_id: operation_id.into(),

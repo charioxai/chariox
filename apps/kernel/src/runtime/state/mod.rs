@@ -100,6 +100,7 @@ mod computer_secret_input_runtime_state;
 mod config_runtime_state;
 mod critical_approval_passkey;
 mod kernel_access;
+pub(crate) use kernel_access::reach;
 pub(crate) use kernel_access::AccessSubmission;
 mod outside_events;
 pub(crate) use outside_events::is_outside_event_request;
@@ -114,6 +115,7 @@ mod user_app_view_runtime;
 mod vault_command;
 mod vault_generate;
 mod vault_use;
+pub(crate) use card_action_state::APPROVE_CHOICE_ID;
 #[cfg(test)]
 pub(crate) use critical_approval_passkey::critical_approval_audit_payload;
 #[cfg(test)]
@@ -121,7 +123,9 @@ pub(crate) use sudo::leased::LEASED_SUDO_PEER_PROTOCOL_VERSION;
 pub(crate) use sudo::SudoWindowProjection;
 #[cfg(test)]
 pub(crate) use sudo::SUDO_WINDOW_LENGTH_FOR_TEST;
-pub(crate) use sudo::{is_sudo_control, is_sudo_prompt, sudo_window_minutes};
+pub(crate) use sudo::{
+    is_sudo_control, is_sudo_prompt, sudo_request_forbidden, sudo_window_minutes,
+};
 mod passkey_prompts;
 pub(crate) use passkey_prompts::INTERACTION_CLOSED;
 #[cfg(test)]
@@ -367,6 +371,7 @@ struct KernelRuntimeOwnedState {
     connector_adapter_processes: crate::connector::ConnectorAdapterProcessPool,
     pending_provider_reloads: PendingProviderReloadStore,
     pending_interactions: PendingInteractionStore,
+    browser_region_cards: Arc<std::sync::Mutex<BTreeSet<String>>>,
     handoff_claims: Arc<std::sync::Mutex<BTreeSet<String>>>,
     git_turn_snapshots: crate::git_observer::GitTurnSnapshotStore,
     completed_git_turn_snapshots: crate::git_observer::CompletedGitTurnSnapshotStore,
@@ -582,6 +587,7 @@ mod claude_token_first_use;
 mod provider_login_workflow;
 mod runtime_interaction_owned_state;
 pub(crate) use runtime_interaction_owned_state::interaction_waits;
+mod browser_region_card;
 mod owner_vault;
 mod runtime_interaction_state;
 mod runtime_notice_owned_state;
@@ -1156,6 +1162,7 @@ impl KernelRuntimeState {
                 ),
                 pending_provider_reloads: PendingProviderReloadStore::default(),
                 pending_interactions: PendingInteractionStore::shared(),
+                browser_region_cards: Arc::default(),
                 handoff_claims: Arc::default(),
                 git_turn_snapshots: crate::git_observer::GitTurnSnapshotStore::default(),
                 completed_git_turn_snapshots,
@@ -1519,11 +1526,14 @@ mod agent_wake_cancellation;
 mod agent_wake_scheduler;
 mod agent_workflow_tasks;
 mod agent_workspace_loss;
+mod card_action_state;
 mod interaction_wake;
 mod leased_task_connectivity;
 mod leased_worker_stop_obligation;
 mod room_dispatch_obligation;
 mod terminal_wake;
 mod terminal_wake_worker;
+#[cfg(test)]
+mod workflow_blocked_claim_retry_tests;
 // MD-3: typed internal seam for display integration; public protocol remains coordinator-owned.
 pub(crate) use kernel_browser_runtime::{KernelBrowserDisplayRequest, KernelBrowserPushCredit};

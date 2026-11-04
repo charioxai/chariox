@@ -324,6 +324,516 @@ async fn ev13_driver_occurrence_wakes_the_waiting_task_once() {
     assert_eq!(f.wake_state("wake-a"), "exited");
 }
 
+// MP-08 / MP-09 / MP-10 / MP-11: a worker can write a steer before its ACK reaches home.
+#[tokio::test]
+async fn delayed_leased_steer_ack_keeps_the_original_receipt_deadline_while_the_agent_is_busy() {
+    let home = fixture("pcd11-delayed-leased-steer-ack", true).await;
+    home.begin(&home.prompt_id);
+    let mut worker_config = crate::config::DaemonConfig::for_tests();
+    worker_config.accept_remote_leases = true;
+    let mut worker = DaemonApp::bootstrap(worker_config.clone()).unwrap();
+    let home_config = home.runtime.owned.config_projection.snapshot();
+    let owner = home
+        .runtime
+        .owned
+        .session_store
+        .get_session(&home.room)
+        .unwrap()
+        .owner_user_id()
+        .to_owned();
+    let lease = crate::app::RemoteLeaseRuntime::new(&mut worker)
+        .create_execution_lease(
+            &home_config.daemon_id,
+            &home.room,
+            &home.agent,
+            false,
+            &owner,
+        )
+        .unwrap();
+    let leased = crate::app::RemoteLeaseRuntime::new(&mut worker)
+        .create_leased_agent(
+            &lease.id,
+            "managed-dev-stub",
+            "default",
+            Some("default".into()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+    let context = crate::transport::relay_peer::RemoteGitTurnContext {
+        home_session_id: home.room.clone(),
+        home_agent_id: home.agent.clone(),
+        home_prompt_id: home.prompt_id.clone(),
+        home_turn_id: home.prompt_id.clone(),
+        source_attachment_id: None,
+        workspace_live_sync_mode: None,
+        prompt_origin: Some(crate::session::PromptOrigin::Chariox),
+        external_provider: None,
+        external_provider_session_id: None,
+        external_provider_turn_id: None,
+        prompt_summary: "active leased turn".into(),
+    };
+    let (worker_run, _) = crate::app::RemoteLeaseRuntime::new(&mut worker)
+        .submit_leased_prompt_with_workflow_context(
+            &leased.id,
+            "active leased turn",
+            Vec::new(),
+            None,
+            Some(context),
+            Vec::new(),
+            None,
+            crate::extension::RemoteExtensionManifest::default(),
+        )
+        .unwrap();
+    spawn_inert_pty_for_run(&mut worker, &worker_run);
+    let worker = Arc::new(Mutex::new(worker));
+    let _worker_pty = InertPtyCleanup {
+        app: worker.clone(),
+        provider_run_id: worker_run.clone(),
+    };
+    let worker_router =
+        crate::runtime::router::CommandRouter::with_interactive_capacity(worker.clone(), 1);
+    home.runtime
+        .owned
+        .agent_store
+        .bind_remote_execution(
+            &home.agent,
+            crate::agent::RemoteAgentBinding {
+                worker_kernel_id: worker_config.daemon_id,
+                worker_machine_id: worker_config.host_machine_id,
+                execution_lease_id: lease.id,
+                leased_agent_id: leased.id.clone(),
+                active_worker_provider_run_id: Some(worker_run.clone()),
+                relay_url: None,
+                relay_token: None,
+                relay_peer_protocol_version: Some(
+                    crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+                ),
+            },
+        )
+        .unwrap();
+    let mut event = crate::durable_state::agent_lifecycle::occurrence(
+        &home.room,
+        &home.agent,
+        "source",
+        "late-ack",
+        "message",
+        serde_json::json!({"text":"PCD11_STEER_WRITTEN_ONCE"}),
+    );
+    event.urgent = true;
+    let Outcome::Event(event) = home
+        .store()
+        .agent_lifecycle(Operation::Occur(event))
+        .unwrap()
+    else {
+        panic!("event");
+    };
+    let steer_id = format!("agent-event-{}-{}", home.agent, event.sequence);
+    let at = crate::session::unix_epoch_ms();
+    home.store()
+        .agent_lifecycle(Operation::Attempt {
+            room: home.room.clone(),
+            agent: home.agent.clone(),
+            sequence: event.sequence,
+            prompt: steer_id.clone(),
+            target: Some(home.prompt_id.clone()),
+            run: Some(crate::provider::projected_leased_provider_run_id(
+                &leased.id,
+                &worker_run,
+            )),
+            now: at,
+            work: None,
+        })
+        .unwrap();
+    // Drive the real worker entry and retain its ACK before recording it at home.
+    let ack = worker_router
+        .relay_steer_leased_prompt(
+            &leased.id,
+            &steer_id,
+            &home.prompt_id,
+            "PCD11_STEER_WRITTEN_ONCE",
+            "",
+            Vec::new(),
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(!ack.1);
+    let writes = || {
+        worker
+            .try_lock()
+            .unwrap()
+            .terminal()
+            .input_records()
+            .into_iter()
+            .filter(|record| {
+                String::from_utf8_lossy(&record.bytes).contains("PCD11_STEER_WRITTEN_ONCE")
+            })
+            .count()
+    };
+    assert_eq!(
+        writes(),
+        1,
+        "worker provider I/O happened before the home receipt"
+    );
+    let before = home
+        .store()
+        .agent_inbox(&home.room, &home.agent, 0)
+        .unwrap()
+        .remove(0);
+    assert!(
+        before.submit_epoch.is_none(),
+        "leased I/O is not yet represented by a home epoch"
+    );
+    assert!(home
+        .runtime
+        .owned
+        .prompt_state_owner
+        .active_prompt_for_agent(
+            &home
+                .runtime
+                .owned
+                .session_store
+                .get_session(&home.room)
+                .unwrap(),
+            &home.agent
+        )
+        .is_some());
+    assert!(!home
+        .runtime
+        .agent_inbox_waits_for_vault(&home.room, &home.agent));
+    home.store()
+        .agent_lifecycle(Operation::Sweep {
+            now: at + crate::durable_state::agent_lifecycle::DELIVERY_TIMEOUT_MS + 1,
+            vault_wait_recipients: Vec::new(),
+            busy_recipients: vec![(home.room.clone(), home.agent.clone())],
+            held_work: Vec::new(),
+        })
+        .unwrap();
+    let timed_out = home
+        .store()
+        .agent_inbox(&home.room, &home.agent, 0)
+        .unwrap()
+        .remove(0);
+    assert_eq!(
+        timed_out.state, "blocked",
+        "an active leased turn must not renew an already-sent receipt window"
+    );
+    assert_eq!(timed_out.attempted_at_ms, Some(at));
+    home.runtime
+        .record_agent_delivery_receipt(&home.room, &home.agent, event.sequence, "accepted")
+        .unwrap();
+    let replay = worker_router
+        .relay_steer_leased_prompt(
+            &leased.id,
+            &steer_id,
+            &home.prompt_id,
+            "PCD11_STEER_WRITTEN_ONCE",
+            "",
+            Vec::new(),
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(replay.1);
+    assert_eq!(
+        writes(),
+        1,
+        "late acceptance reconciliation never repeats provider I/O"
+    );
+    let after = home
+        .store()
+        .agent_inbox(&home.room, &home.agent, 0)
+        .unwrap();
+    assert_eq!(after.len(), 1);
+    assert_eq!(after[0].sequence, event.sequence);
+    assert_eq!(after[0].state, "accepted");
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11 PCD-11: a cold provider cannot consume an answer before Vault approval.
+#[tokio::test]
+async fn declined_vault_start_blocks_the_wake_with_its_reason_and_resume_retries_the_answer_once() {
+    crate::test_support::isolated_env_test!();
+    refused_vault_wake_start(false).await;
+}
+
+#[tokio::test]
+async fn timed_out_vault_start_blocks_the_wake_with_its_reason_and_resume_retries_the_answer_once()
+{
+    crate::test_support::isolated_env_test!();
+    refused_vault_wake_start(true).await;
+}
+
+async fn refused_vault_wake_start(timed_out: bool) {
+    let _env = crate::env_lock::lock();
+    let private = crate::test_support::TestWorktree::new("pcd11-vault-refused-state");
+    std::env::set_var("CHARIOX_HOME", private.path());
+    #[cfg(unix)]
+    let _claude = crate::test_support::TestClaudeExecutable::new();
+    let f = fixture("pcd11-vault-refused-wake", true).await;
+    let vault = private.path().join("credentials.vault");
+    let mut config = f.runtime.owned.config_projection.snapshot();
+    config.user_config.credential_vault.backend =
+        crate::config::CredentialVaultBackend::CharioxEncrypted;
+    config.user_config.credential_vault.path = vault.display().to_string();
+    f.runtime.owned.config_projection.update(config.clone());
+    crate::secret::create_chariox_encrypted_vault_for_test(&vault, "test passphrase").unwrap();
+    crate::secret::unlock_chariox_encrypted_vault(
+        &vault,
+        "test passphrase",
+        crate::secret::VaultUnlockLease::KernelShutdown,
+    )
+    .unwrap();
+    let registry = f.app.lock().await.provider_account_profile_registry();
+    let profile = registry
+        .create_managed(
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            "claude",
+            "PCD11 vaulted fixture",
+        )
+        .unwrap();
+    crate::provider::store_provider_account_credential(
+        &config,
+        crate::session::DEFAULT_LOCAL_USER_ID,
+        "claude",
+        &profile.profile_id,
+        "synthetic-setup-token",
+        false,
+    )
+    .unwrap();
+    crate::test_support::authenticate_provider_account(
+        &registry,
+        crate::session::DEFAULT_LOCAL_USER_ID,
+        "claude",
+        &profile.profile_id,
+    )
+    .unwrap();
+    let task = f.begin(&f.prompt_id);
+    let question = crate::session::RuntimeInteraction::new(
+        "pcd11-original-question",
+        &f.agent,
+        crate::session::RuntimeInteractionKind::Choice,
+        crate::session::RuntimeInteractionLevel::Info,
+        None,
+        "Continue after restart?",
+        vec![crate::session::RuntimeInteractionChoice::new(
+            "done", "Done", "done", None,
+        )],
+        None,
+        Some(900),
+        None,
+    );
+    f.runtime
+        .arm_interaction_wake(&f.room, &f.agent, question)
+        .unwrap();
+    let wake = f
+        .store()
+        .agent_wake("pcd11-original-question")
+        .unwrap()
+        .unwrap();
+    f.wait_on(&task, &wake.registration_id);
+    {
+        let mut app = f.app.lock().await;
+        app.prompt_owner_complete_active_prompt_only(&f.room, &f.agent)
+            .unwrap();
+        app.pty_mut().remove_process(&f.run).unwrap();
+        app.providers_mut()
+            .terminate_run_provider_only(&f.room, &f.run)
+            .unwrap();
+        app.agents_mut()
+            .set_agent_runtime_profile_with_account_profile(
+                &f.agent,
+                "claude",
+                Some("claude-sonnet".into()),
+                None,
+                Some(profile.profile_id.clone()),
+                crate::provider::ProviderResumeState::default(),
+            )
+            .unwrap();
+    }
+    crate::secret::lock_chariox_encrypted_vault(&vault).unwrap();
+    crate::secret::clear_vault_secret_process_cache().unwrap();
+    let owner = f
+        .runtime
+        .owned
+        .session_store
+        .get_session(&f.room)
+        .unwrap()
+        .owner_user_id()
+        .to_owned();
+    f.runtime
+        .owned
+        .resolve_runtime_interaction(
+            &f.room,
+            "pcd11-original-question",
+            "done",
+            None,
+            Some(&owner),
+            true,
+        )
+        .unwrap();
+    let original = f
+        .store()
+        .agent_inbox(&f.room, &f.agent, 0)
+        .unwrap()
+        .remove(0);
+    let runtime = f.runtime.clone();
+    let room = f.room.clone();
+    let agent = f.agent.clone();
+    let delivery = tokio::spawn(async move { runtime.deliver_agent_inbox(&room, &agent).await });
+    let card = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let session = f.runtime.owned.session_store.get_session(&f.room).unwrap();
+            if let Some(card) = session.active_interactions().iter().find(|card| {
+                card.agent_id() == Some(f.agent.as_str())
+                    && card
+                        .choices()
+                        .iter()
+                        .any(|choice| choice.vault_unlock().is_some())
+            }) {
+                break card.id().to_owned();
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("cold launch asks for Vault approval");
+    let pending = f
+        .store()
+        .agent_inbox(&f.room, &f.agent, 0)
+        .unwrap()
+        .remove(0);
+    assert!(
+        pending.submit_epoch.is_none(),
+        "no provider I/O while the owner decides"
+    );
+    // The typed Vault card above proves an owner wait; advance only the ledger clock.
+    let busy = vec![(f.room.clone(), f.agent.clone())];
+    f.store()
+        .agent_lifecycle(Operation::Sweep {
+            now: pending.attempted_at_ms.unwrap()
+                + crate::durable_state::agent_lifecycle::DELIVERY_TIMEOUT_MS
+                + 1,
+            vault_wait_recipients: busy,
+            busy_recipients: Vec::new(),
+            held_work: Vec::new(),
+        })
+        .unwrap();
+    assert_eq!(
+        f.store().agent_inbox(&f.room, &f.agent, 0).unwrap()[0].state,
+        "submitting",
+        "a visible owner wait is not unconfirmed provider I/O"
+    );
+    if timed_out {
+        f.runtime
+            .timeout_runtime_interaction(&f.room, &card)
+            .await
+            .unwrap();
+    } else {
+        f.runtime
+            .owned
+            .resolve_runtime_interaction(&f.room, &card, "cancel", None, Some(&owner), true)
+            .unwrap();
+    }
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_secs(10), delivery)
+            .await
+            .unwrap()
+            .unwrap()
+            .is_err()
+    );
+    let blocked = f.task(&task.task_id);
+    assert_eq!(blocked.state, ExecutionState::Blocked);
+    assert!(
+        blocked.reason.contains(if timed_out {
+            "Vault unlock timed out"
+        } else {
+            "Vault unlock was declined"
+        }),
+        "{}",
+        blocked.reason
+    );
+    assert!(!blocked.reason.contains("Unconfirmed"));
+    assert!(blocked.reason.contains("Resume"));
+    f.runtime
+        .deliver_agent_inbox(&f.room, &f.agent)
+        .await
+        .unwrap();
+    let retained = f.store().agent_inbox(&f.room, &f.agent, 0).unwrap();
+    assert_eq!(retained.len(), 1);
+    assert_eq!(
+        retained[0].state, "pending",
+        "the failed start never discards the answer"
+    );
+    assert_eq!(retained[0].payload, original.payload);
+    f.store()
+        .agent_lifecycle(Operation::Sweep {
+            now: crate::session::unix_epoch_ms()
+                + 2 * crate::durable_state::agent_lifecycle::DELIVERY_TIMEOUT_MS,
+            vault_wait_recipients: Vec::new(),
+            busy_recipients: Vec::new(),
+            held_work: Vec::new(),
+        })
+        .unwrap();
+    assert_eq!(
+        f.store().agent_inbox(&f.room, &f.agent, 0).unwrap()[0].state,
+        "pending",
+        "a definitive refusal waits for Resume rather than aging into unconfirmed delivery"
+    );
+    assert_eq!(f.task(&task.task_id).reason, blocked.reason);
+
+    let retry_run = {
+        let mut app = f.app.lock().await;
+        app.agents_mut()
+            .set_agent_runtime_profile_with_account_profile(
+                &f.agent,
+                "dev-stub",
+                None,
+                None,
+                None,
+                crate::provider::ProviderResumeState::default(),
+            )
+            .unwrap();
+        let run = app
+            .launch_provider(
+                crate::provider::LaunchProviderRequest::new(
+                    &f.room, "dev-stub", "dev-stub", "default", "sonnet",
+                )
+                .with_agent_id(&f.agent),
+            )
+            .unwrap();
+        spawn_inert_pty_for_run(&mut app, run.id());
+        run.id().to_owned()
+    };
+    let _retry_pty = InertPtyCleanup {
+        app: f.app.clone(),
+        provider_run_id: retry_run,
+    };
+    f.runtime
+        .resolve_agent_task_owner_action(&blocked, true)
+        .await;
+    let retried = f.store().agent_inbox(&f.room, &f.agent, 0).unwrap();
+    assert_eq!(retried.len(), 1);
+    assert_eq!(retried[0].sequence, original.sequence);
+    assert_eq!(
+        retried[0].state, "accepted",
+        "explicit Resume delivers the original answer once"
+    );
+    assert_eq!(retried[0].payload, original.payload);
+    f.runtime
+        .deliver_agent_inbox(&f.room, &f.agent)
+        .await
+        .unwrap();
+    assert_eq!(
+        f.store().agent_inbox(&f.room, &f.agent, 0).unwrap().len(),
+        1
+    );
+}
+
 #[tokio::test]
 async fn failed_wake_dispatch_settles_the_admitted_prompt_and_keeps_the_receipt() {
     let f = fixture("ev13-dispatch-failure", false).await;
@@ -1246,6 +1756,7 @@ async fn a_stalled_sweep_does_not_wake_a_live_wait_early() {
     f.store()
         .agent_lifecycle(Operation::Sweep {
             now: crate::session::unix_epoch_ms(),
+            vault_wait_recipients: Vec::new(),
             busy_recipients: Vec::new(),
             held_work: Vec::new(),
         })

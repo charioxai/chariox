@@ -63,6 +63,15 @@ test('MD-DISPLAY recovering an exited browser closes the previous X server befor
  }finally{await host.stop();for(const display of displays)await display.close();await rm(root,{recursive:true,force:true})}
 });
 
+test('MP-08/MP-10/MP-11 the pipe-controlled browser does not announce automation to pages',async()=>{
+ const {launchArguments}=await import('./kernel-browser-process.mjs');
+ for(const display of [false,true]){
+  const args=launchArguments('/private',false,display);
+  assert(args.includes('--disable-blink-features=AutomationControlled'),'navigator.webdriver must stay false');
+  assert(!args.includes('--enable-automation'));
+ }
+});
+
 test('MP-08/MP-10 source browser keeps normal animation cadence rather than outrunning capture',async()=>{
  const {launchArguments}=await import('./kernel-browser-process.mjs');
  assert(!launchArguments('/private',false,true).includes('--disable-frame-rate-limit'));

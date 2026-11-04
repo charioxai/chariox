@@ -14,6 +14,8 @@ import {
   lockCredentialVaultRequest,
   manageCredentialVaultRequest,
   unlockCredentialVaultRequest,
+  vaultUnlockDefaultFromStatus,
+  type VaultUnlockDuration,
   setWorkspaceLiveSyncModeRequest,
   setUserConfigValueRequest,
   setCredentialSecretRequest,
@@ -81,11 +83,14 @@ export async function lockCredentialVault(
   return expectVariant<{ status: Record<string, unknown> }>(response, "CredentialVaultLocked").status
 }
 
+/** `duration` is what the owner asked for; without one the Vault stays open for the length the kernel preselects. */
 export async function unlockCredentialVault(
   client: LocalIpcClient,
   passphrase: string,
+  duration?: VaultUnlockDuration,
 ): Promise<{ action: string; status: Record<string, unknown> }> {
-  const response = await client.send<Record<string, unknown>>(unlockCredentialVaultRequest(passphrase))
+  const chosen = duration ?? vaultUnlockDefaultFromStatus(await client.send<Record<string, unknown>>(getCredentialVaultStatusRequest()))
+  const response = await client.send<Record<string, unknown>>(unlockCredentialVaultRequest(passphrase, chosen, "terminal"))
   return expectVariant<{ action: string; status: Record<string, unknown> }>(response, "CredentialVaultUnlocked")
 }
 

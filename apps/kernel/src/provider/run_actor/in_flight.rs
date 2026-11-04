@@ -29,6 +29,14 @@ impl ProviderRunInFlightState {
             .remove(run_id);
     }
 
+    pub(super) fn any_output_poll_in_flight(&self) -> bool {
+        !self
+            .output_polls
+            .lock()
+            .expect("structured output poll set poisoned")
+            .is_empty()
+    }
+
     #[cfg(test)]
     pub(super) fn output_poll_in_flight(&self, run_id: &str) -> bool {
         self.output_polls

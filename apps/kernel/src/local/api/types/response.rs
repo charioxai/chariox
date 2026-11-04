@@ -271,7 +271,7 @@ pub enum LocalDaemonResponse {
     OwnerVault { result: OwnerVaultResult },
     CredentialSecretStored { key: String, },
     CredentialSecretDeleted { key: String, },
-    CredentialVaultStatus { status: crate::secret::CharioxVaultUnlockStatus, },
+    CredentialVaultStatus { status: crate::secret::CharioxVaultUnlockStatus, unlock: crate::local::VaultUnlockOptions, },
     CredentialVaultLocked { status: crate::secret::CharioxVaultUnlockStatus, },
     CredentialVaultUnlocked { status: crate::secret::CharioxVaultUnlockStatus, action: String, },
     CredentialVaultManaged { status: crate::secret::CharioxVaultUnlockStatus, action: String, },

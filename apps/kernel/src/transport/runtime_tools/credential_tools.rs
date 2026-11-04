@@ -133,6 +133,8 @@ pub struct RequestPopupCustomChoiceArgs {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RequestPopupArgs {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub view: Option<RequestPopupViewArgs>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wait: Option<bool>,
     pub message: String,
     pub choices: Vec<RequestPopupChoiceArgs>,
@@ -146,6 +148,40 @@ pub struct RequestPopupArgs {
     pub timeout_sec: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_on_timeout: Option<String>,
+    /// Person cards: the card closes by itself when this wake source occurs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub until: Option<RequestPopupUntilArgs>,
+    /// Person cards: one kernel request the kernel runs the moment the person approves.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<RequestPopupActionArgs>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RequestPopupViewArgs {
+    pub browser_region: RequestPopupBrowserRegionArgs,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RequestPopupBrowserRegionArgs {
+    pub tab_id: String,
+    #[serde(rename = "ref")]
+    pub reference: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RequestPopupActionArgs {
+    /// One externally tagged kernel request, as `chariox_kernel_request` takes it.
+    pub request: serde_json::Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RequestPopupUntilArgs {
+    /// The `wake_id` an `events.*` tool returned for a source this agent armed.
+    pub wake_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -524,7 +560,7 @@ pub fn credential_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: REQUEST_POPUP_TOOL.to_string(),
-            description: "Ask a question through the shared Chariox interaction card. Use wait:false for questions you can keep working without: returns interaction_id and registration_id immediately; the attributed answer arrives in your durable event inbox and wakes you after you yield or finish this turn. Continue tools while pending, or yield on registration_id. Omit wait (or use true) only when work cannot continue without the answer; this blocks until an answer or timeout. Supply at least one fixed choice. Set default_on_timeout to an existing choice id to return that reply on timeout; omit it to return status timed_out with no choice_id or reply. The provider cuts a blocking call after about 5 minutes and its card is withdrawn, so for a step a person must do (CAPTCHA, login, approval, anything that can take minutes) use wait:false and yield on the registration_id.".to_string(),
+            description: "Ask a question through the shared Chariox interaction card. Use wait:false for questions you can keep working without: returns interaction_id and registration_id immediately; the attributed answer arrives in your durable event inbox and wakes you after you yield or finish this turn. Continue tools while pending, or yield on registration_id. Omit wait (or use true) only when work cannot continue without the answer; this blocks until an answer or timeout. Supply at least one fixed choice; the card always adds a Cancel choice, and a cancel reads as status cancelled with choice_id cancel (not a timeout). Set default_on_timeout to an existing choice id to return that reply on timeout; omit it to return status timed_out with no choice_id or reply. The provider cuts a blocking call after about 5 minutes and its card is withdrawn, so for a step a person must do (CAPTCHA, login, approval, anything that can take minutes) use wait:false and yield on the registration_id.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["message", "choices"],
@@ -538,6 +574,28 @@ pub fn credential_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                     },
                     "timeout_sec": {"type": "integer", "minimum": 1},
                     "default_on_timeout": {"type": "string"},
+                    "view": {
+                        "type": "object", "required": ["browser_region"], "additionalProperties": false,
+                        "properties": {"browser_region": {
+                            "type": "object", "required": ["tab_id", "ref"], "additionalProperties": false,
+                            "properties": {"tab_id": {"type": "string", "minLength": 1}, "ref": {"type": "string", "minLength": 1}}
+                        }},
+                        "description": "Show a live browser element from your observed snapshot (tab_id and node_ref as ref). The kernel follows its position with a margin and closes the card with condition_met when the element disappears or its document changes. Uses the existing protected Tab display."
+                    },
+                    "until": {
+                        "type": "object",
+                        "required": ["wake_id"],
+                        "properties": {"wake_id": {"type": "string"}},
+                        "additionalProperties": false,
+                        "description": "With wait:false only. The wake_id of a source you armed (events.timer, events.process, events.terminal). When it occurs the card closes on every client by itself and you are told how it resolved; no answer is needed."
+                    },
+                    "action": {
+                        "type": "object",
+                        "required": ["request"],
+                        "properties": {"request": {"type": "object"}},
+                        "additionalProperties": false,
+                        "description": "A card that asks for one specific action. request is one kernel request (the shape chariox_kernel_request takes). The card shows the kernel's own description of exactly that request, not your title or message (they are ignored), and asks for the Chariox passkey. On approval the kernel runs it at once and returns its result; on Cancel nothing runs and status is cancelled. Blocks until decided (wait is ignored)."
+                    },
                     "custom_choice": {
                         "type": "object",
                         "required": ["id", "label"],

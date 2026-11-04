@@ -188,6 +188,7 @@ pub(super) async fn handle_prepared_daemon_request(
                 crate::runtime::kernel_gateway::origins::Named {
                     kernel: c.origin_kernel.as_str(),
                     name: c.origin_name.as_deref(),
+                    harness: c.harness.as_str(),
                 }
             });
             match router

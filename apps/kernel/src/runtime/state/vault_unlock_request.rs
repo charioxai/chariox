@@ -3,7 +3,7 @@
 use super::runtime_vault_unlock_state::{expand_vault_path, vault_unlock_request_lock};
 use super::vault_unlock_requests::notify_vault_unlocked;
 use super::*;
-use crate::config::{CredentialVaultBackend, CredentialVaultUnlockPolicy};
+use crate::config::CredentialVaultBackend;
 
 // Everything the owner reads about an unlock that did not happen lives here.
 mod wording {
@@ -12,6 +12,8 @@ mod wording {
         "This kernel has no Vault yet. Create it on that machine first.";
     pub(super) const LOCKED: &str = "The Vault is locked. Unlock it, then try again.";
     pub(super) const OWNER_ONLY: &str = "Only the owner of this kernel can unlock its Vault.";
+    pub(super) const CARD_SURFACE: &str =
+        "An unlock card is answered in the card; this request names the window it came from.";
 
     pub(super) fn rate_limited(seconds: u64) -> String {
         format!("Too many wrong passphrases. Try again in {seconds} seconds.")
@@ -23,6 +25,7 @@ const RATE_LIMITED: &str = "vault_unlock_rate_limited";
 const MISSING: &str = "vault_missing";
 const LOCKED: &str = "vault_locked";
 const OWNER_ONLY: &str = "vault_unlock_owner_only";
+const CARD_SURFACE: &str = "vault_unlock_card_surface";
 
 pub(super) fn refusal(
     code: &'static str,
@@ -40,23 +43,6 @@ pub(super) fn refusal(
 /// client unlocks it, then repeats the same operation.
 pub(crate) fn vault_locked_error() -> DaemonError {
     refusal(LOCKED, wording::LOCKED, true)
-}
-
-/// Where the owner's own client leaves the Vault open afterwards: the policy's
-/// lease, and under "ask every time" just the next operation.
-fn owner_client_lease(
-    config: &crate::config::UserCredentialVaultConfig,
-) -> crate::secret::VaultUnlockLease {
-    match config.unlock_policy {
-        CredentialVaultUnlockPolicy::Always => crate::secret::VaultUnlockLease::SingleUse,
-        CredentialVaultUnlockPolicy::KernelInit => crate::secret::VaultUnlockLease::KernelShutdown,
-        CredentialVaultUnlockPolicy::Ttl => crate::secret::VaultUnlockLease::TtlMinutes(
-            config
-                .default_ttl_minutes
-                .min(config.max_ttl_minutes)
-                .max(1),
-        ),
-    }
 }
 
 impl KernelRuntimeState {
@@ -114,12 +100,15 @@ impl KernelRuntimeState {
                 "not_required",
             ));
         }
+        if request.surface == crate::local::VaultUnlockSurface::Card {
+            return Err(refusal(CARD_SURFACE, wording::CARD_SURFACE, false));
+        }
         let _mutation = vault_unlock_request_lock(&path).lock_owned().await;
         let status = crate::secret::chariox_encrypted_vault_status(&path)?;
         if status.unlocked {
             return Ok((status, "already_unlocked"));
         }
-        let lease = owner_client_lease(&config);
+        let lease = request.duration.lease(&config, false);
         let status = self
             .unlock_vault_counted(
                 owner,
@@ -129,9 +118,8 @@ impl KernelRuntimeState {
                 false,
             )
             .await?;
-        if lease != crate::secret::VaultUnlockLease::SingleUse {
-            notify_vault_unlocked(&path);
-        }
+        // Every open unlock card closes, whatever lease the owner chose.
+        notify_vault_unlocked(&path, request.surface);
         Ok((status, "unlocked"))
     }
 

@@ -173,7 +173,7 @@ impl KernelRuntimeState {
                 ));
             }
             if let Some(grant) = grant {
-                if self.access_grant_summary(grant).is_none() {
+                if !self.event_source_alive(grant) {
                     self.outside_store().outside_mutate(Mutation::Unsubscribe {
                         id: id.into(),
                         targets: vec![],

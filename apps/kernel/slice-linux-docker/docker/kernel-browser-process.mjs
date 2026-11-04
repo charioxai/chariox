@@ -48,6 +48,9 @@ export function launchArguments(profile, headless, display = false, scale = 1, v
     "--hide-crash-restore-bubble", "--disable-background-networking",
     // MP-08/MP-11: the kernel loads its tab-groups component extension over this pipe.
     "--enable-unsafe-extension-debugging",
+    // The pipe marks the browser as automation-controlled (navigator.webdriver true), which sites such as Google
+    // sign-in answer with "This browser or app may not be secure". The person drives this browser like any Chrome.
+    "--disable-blink-features=AutomationControlled",
     // Without a usable GPU Chromium refuses WebGL unless software GL is opted in; real GPUs still win.
     "--enable-unsafe-swiftshader", ...videoDecode,
     `--window-size=${geometry.width},${geometry.height+(display?chromeBandHeight:0)}`, ...(headless ? ["--headless=new"] : []),

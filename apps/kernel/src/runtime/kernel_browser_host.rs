@@ -618,6 +618,7 @@ impl KernelBrowserHost {
                     Some(
                         "state"
                             | "snapshot"
+                            | "popup_region"
                             | "screenshot"
                             | "unsubscribe"
                             | "display_subscribe"
@@ -840,7 +841,7 @@ impl KernelBrowserHost {
         let note = method == "host.browser"
             && matches!(
                 params["op"].as_str(),
-                Some("note_selection" | "pointer_cursor")
+                Some("note_selection" | "pointer_cursor" | "popup_region")
             );
         // Dropping a display stream releases its compositor on the controller, which can take seconds
         // (the Browser view does it right after a navigation paints): input must not queue behind it.

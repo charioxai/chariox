@@ -35,6 +35,31 @@ withdraws pending questions, without choosing a default. Treat `source_lost`,
 including the existing `public_answer.cancelled:true` receipt, as withdrawal
 rather than an answer. An ended asking task does not start another provider turn.
 
+### Person cards (to-dos, conditions, one action)
+
+A card is the shared interaction card with up to three extras. All are the
+kernel's: the clients only show the card and send the answer.
+
+- **To-do**: a `wait:false` card whose only choice is Done, for a step only the
+  person can do. The agent keeps working; Done wakes it. The card survives a
+  page reload and a kernel restart like any `wait:false` question.
+- **Completion condition** (`until: {"wake_id": ...}`, `wait:false` only): the
+  `wake_id` of a source the same agent armed (`events.timer`, `events.process`,
+  `events.terminal`). When that source occurs or ends, the card closes on every
+  client within the wake delivery (about a second) and the agent receives the
+  card's answer as `status:"answered"`, `choice_id:"condition_met"` and a
+  kernel-written `reply` ("Wake source 'x' occurred: ..."). No answer is needed.
+  An unknown, foreign or already ended source refuses the card.
+- **One action** (`action: {"request": <kernel request>}`): the card shows the
+  kernel's own description of exactly that request ("<agent> asks to run
+  AliasSession (alias: ..., session_id: ...)"); the agent's title and message are
+  ignored. It is a passkey decision: Approve needs the Chariox passkey and runs
+  the request at once as the owner; Cancel (or an expired or abandoned card)
+  runs nothing. The call blocks until decided and returns `ran` and the result.
+  What `/sudo` refuses (approvals, access, secrets, the passkey, pairing) is
+  refused here too, and a second answer to the same card finds it gone, so the
+  request runs once.
+
 Use the default `wait:true` only when work cannot continue without the answer.
 That mode keeps the existing blocking result. `events.blocked` is for an owner
 action that actually prevents further work.

@@ -2140,3 +2140,27 @@ These paths are common to ordinary and managed kernels. No placement branch,
 provider execution rule, relay admission, signing/trust or managed automatic
 shutdown behavior changes (MP-09). Focused router/storage and hosted owner-to-agent
 drills cover this seam only; they do not close the entire MP-10 comparison matrix.
+
+
+## MP-08 / MP-09 / MP-10 / MP-11 person cards (2026-11-04)
+
+Local 988 / peer 427 adds a provider-neutral acquisition offer to the existing
+Cloud capability. Cloud resolves specifications and a currency/period price from
+its provider catalogue; the kernel writes the confirmation text and binds it to
+the capability revision. OSS contains no compute-provider catalogue or pricing
+logic. A missing approved signed placement blocks both live rental legs.
+
+The same interaction and browser-grant paths resolve `view.browser_region` on
+ordinary and managed kernels. The kernel follows browser-owned geometry, publishes
+only changed crops, and resolves a removed/replaced element with `condition_met`.
+Revocation or a failed observation source gives an explicit unavailable result.
+Clients project the existing folded question stripes, a half-height scrolling
+pile, and the shared protected browser display inside the existing popup.
+
+A Vault wait before provider I/O pauses the inbox receipt clock. Declining or
+expiring that unlock blocks the retained task with the actual Vault reason;
+explicit Resume retries the original answer once. This does not weaken receipts
+for attempts that reached the provider, change browser observation protection,
+or alter managed shutdown activity/policy (MP-09). Focused regressions and hosted
+provider drills cover these seams; they do not close the entire MP-10 matrix or
+replace MP-11 security-anchor review.

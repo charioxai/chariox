@@ -58,6 +58,16 @@ impl KernelCommand {
         .then(|| self.caller.caller_id.clone())
     }
 
+    /// A command a kernel owner's Room agent sent through its reach tools.
+    pub(crate) fn reach_caller_id(&self) -> Option<String> {
+        (self.caller.connection_class == Some(crate::local::KernelConnectionClass::KernelAgent)
+            && self
+                .caller
+                .caller_id
+                .starts_with(crate::runtime::state::reach::REACH_PREFIX))
+        .then(|| self.caller.caller_id.clone())
+    }
+
     /// A command an elevated provider turn submitted through its sudo grant.
     pub(crate) fn is_sudo_command(&self) -> bool {
         self.external_grant_id()

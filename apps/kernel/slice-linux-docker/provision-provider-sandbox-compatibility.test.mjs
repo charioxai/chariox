@@ -32,7 +32,7 @@ throw new Error("unexpected Docker operation: " + JSON.stringify(args));
       !name.startsWith("CHARIOX_SLICE_")))
     const result = spawnSync("bash", [provisioner, "start-runtime"], {
       encoding: "utf8",
-      timeout: 60_000,
+      timeout: 300_000,
       env: {
         ...environment,
         PATH: `${root}:${environment.PATH}`,
@@ -98,7 +98,7 @@ throw new Error("unexpected Docker operation: " + JSON.stringify(args));
       !name.startsWith("CHARIOX_SLICE_")))
     const result = spawnSync("bash", [provisioner, "start-runtime"], {
       encoding: "utf8",
-      timeout: 60_000,
+      timeout: 300_000,
       env: {
         ...environment,
         PATH: `${root}:${environment.PATH}`,

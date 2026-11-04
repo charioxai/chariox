@@ -284,6 +284,7 @@ async fn older_wait_after_newer_cancellation(deadline: bool) {
         store
             .agent_lifecycle(Operation::Sweep {
                 now: now + 60_001,
+                vault_wait_recipients: Vec::new(),
                 busy_recipients: vec![],
                 held_work: Vec::new(),
             })

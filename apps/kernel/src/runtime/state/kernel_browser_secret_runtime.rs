@@ -138,6 +138,7 @@ impl KernelRuntimeState {
                 || params["op"] == "display_subscribe");
         let mirror = method == "host.browser" && params["op"] == "mirror_next";
         let snapshot = method == "host.browser" && params["op"] == "snapshot";
+        let card_region = method == "host.browser" && params["op"] == "popup_region";
         let input =
             matches!(method.as_str(), "host.browser" | "host.computer") && params["op"] == "input";
         let at = std::time::Instant::now();
@@ -155,6 +156,16 @@ impl KernelRuntimeState {
         // The capture reply is the value itself, headed for the Vault and never for the model:
         // scrubbing it would store the redaction marker when the value is already protected.
         if !protect || capture {
+            return Ok(result);
+        }
+        if card_region {
+            // The controller returns only binding IDs, geometry and fixed result
+            // labels. Scrub the site origin without corrupting keys or IDs when
+            // a protected value happens to be a short protocol substring.
+            let mut result = result;
+            if let Some(origin) = result.pointer_mut("/region/origin") {
+                *origin = protection.scrub(&scope, origin.take())?;
+            }
             return Ok(result);
         }
         scrub_browser_result(

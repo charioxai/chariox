@@ -1,3 +1,4 @@
+import { parseVaultUnlockDurationArgument, vaultUnlockDefaultFromStatus, vaultUnlockDurationUsage } from "./vault-unlock-duration.js"
 import { visibleUserConfigEntries, workspaceLiveSyncUiEnabled } from "./workspace-live-sync-mode.js"
 import type {
   CharioxUserConfigPayload,
@@ -146,9 +147,12 @@ export async function executeCredentialCommand(
           message: "credential vault unlock requires hidden input support; run it from interactive chariox-shell",
         }
       }
+      const chosen = rest[0] === undefined ? undefined : parseVaultUnlockDurationArgument(rest[0])
+      if (chosen === null) return { ok: false, message: `unknown unlock length "${rest[0]}". ${vaultUnlockDurationUsage}` }
       const passphrase = await deps.readSecret("Vault passphrase: ")
       if (!passphrase) return { ok: false, message: "the Vault passphrase must not be empty" }
-      const response = await deps.client.send(unlockCredentialVaultRequest(passphrase))
+      const duration = chosen ?? vaultUnlockDefaultFromStatus(await deps.client.send(getCredentialVaultStatusRequest()))
+      const response = await deps.client.send(unlockCredentialVaultRequest(passphrase, duration, "terminal"))
       const payload = expectVariant<{ action: string; status: Record<string, unknown> }>(response, "CredentialVaultUnlocked")
       return { ok: true, message: `vault ${payload.action}`, data: payload, format: "json" }
     }
@@ -160,7 +164,7 @@ export async function executeCredentialCommand(
       const payload = expectVariant<{ action: string; status: Record<string, unknown> }>(response, "CredentialVaultManaged")
       return { ok: true, message: `vault ${payload.action}`, data: payload, format: "json" }
     }
-    return { ok: false, message: "usage: credential vault status|lock|unlock|manage" }
+    return { ok: false, message: "usage: credential vault status|lock|unlock [once|30m|2h|kernel]|manage" }
   }
   if (!action || action === "list" || action === "ls") {
     const response = await deps.client.send(listCredentialsRequest())

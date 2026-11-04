@@ -60,7 +60,12 @@ async fn popup_notice_accepts_one_acknowledgement_and_rejects_empty_choices() {
                 }
             }) => result.expect("notice must enter the shared interaction store"),
         };
-        assert_eq!(interaction.choices().len(), choice_count);
+        // The card always carries Cancel, whether or not the agent sent its own.
+        assert_eq!(
+            interaction.choices().len(),
+            2,
+            "{choice_count} agent choice(s)"
+        );
         runtime
             .resolve_runtime_interaction(session.id(), interaction.id(), "ack", None)
             .await

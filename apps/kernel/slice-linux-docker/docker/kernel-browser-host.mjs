@@ -2,6 +2,7 @@ import { AppTabs } from './browser-controller-apps.mjs';
 import { HostDownloads } from "./kernel-browser-downloads.mjs";
 import { BrowserHeaderState } from "./kernel-browser-header.mjs";
 import {resolveDisplayTarget,nativeStateObservationOptions} from './kernel-browser-display-document.mjs';
+import { rememberCardReferences, resolveCardRegion } from './kernel-browser-card-region.mjs';
 import {capturePageScreenshot} from './kernel-browser-screenshot.mjs';
 import { mirror2ObserverExpression } from './kernel-browser-mirror2-observer.mjs';
 import {captureVisiblePage,pngFallbackCommand,subscribeVisiblePage,visiblePageInputSource,viewerPageInputActive,nativeInputDocumentTarget} from './kernel-browser-page-display.mjs';
@@ -67,14 +68,14 @@ export function scheduleHostRequest(request, browser, viewport = hostViewport(),
     typeof request.params.display_subscription_id === 'string' || request.params?.op === 'mirror_next' && typeof request.params.subscription_id === 'string' ||
     (request.params?.op === 'state' || request.params?.op === 'display_subscribe' && (request.params.target || nativeDesktop && request.method === 'host.browser')) && browser?.canReconcileConcurrently?.(viewport) === true ||
     request.params?.op === 'state_signal' || request.params?.op === 'state' && browser?.dialogDefaults?.pending().length > 0 ||
-    ['chrome_window_follow', 'note_selection', 'pointer_cursor'].includes(request.params?.op) ||
+    ['chrome_window_follow', 'note_selection', 'pointer_cursor', 'popup_region'].includes(request.params?.op) ||
     // Releasing a display's compositor takes seconds; the person's input and resize must not queue behind it.
     request.method === 'host.browser' && request.params?.op === 'unsubscribe')
     ? {kind:'bridge'} : {kind:'barrier'};
 }
 const TAB_LIMIT = 128;
 // Read-only host operations: they never dispatch input into a page.
-const OBSERVATION_OPS = new Set(['chrome_window_follow', 'state', 'snapshot', 'screenshot', 'unsubscribe', 'note_selection', 'mirror_subscribe', 'mirror_next', 'mirror_close', 'display_subscribe', 'display_attach', 'display_suspend', 'display_resume', 'display_input_target', 'pointer_cursor']);
+const OBSERVATION_OPS = new Set(['chrome_window_follow', 'state', 'snapshot', 'screenshot', 'unsubscribe', 'note_selection', 'mirror_subscribe', 'mirror_next', 'mirror_close', 'display_subscribe', 'display_attach', 'display_suspend', 'display_resume', 'display_input_target', 'pointer_cursor', 'popup_region']);
 // MP-08/MP-10: opt-in timing names Tab lifecycle ops (fixed labels, never page values).
 const SLOW_OP_MS = 1000;
 const POST_INPUT_OBSERVE_MS = 500;
@@ -141,6 +142,8 @@ export class KernelBrowserHost {
     this.adoptedByInput = new WeakSet();
     this.keepaliveTarget = null;
     this.observedDocuments = new Map();
+    this.cardReferences = new Map();
+    this.cardAnchors = new Map();
     this.displayDocuments = new DisplayDocuments((stage, started, ended) => this.timing?.(stage, started, ended));
     this.stateSignal = new StateSignal();
     this.downloads = new HostDownloads({ ownerRoot: root, notify: () => this.stateSignal.notify() });
@@ -261,6 +264,8 @@ export class KernelBrowserHost {
     this.popupEvidence.clear();
     this.observed = ++this.observations;
     this.observedDocuments.clear();
+    this.cardReferences.clear();
+    this.cardAnchors.clear();
     this.displayDocuments.clear();
     await mkdir(this.root, { recursive: true, mode: 0o700 });
     let saved = { generation: 0, tabs: [] };
@@ -898,7 +903,7 @@ export class KernelBrowserHost {
       return result;
     }
     // MP-11: observation never launches/relaunches the browser.
-    await this.start({ signal, allowStart: !["cancel_download", "dialog", "state", "snapshot", "screenshot", "unsubscribe", "display_subscribe", "display_attach", "display_suspend", "display_resume", "display_park", "display_input_target", "resize", "note_selection", "pointer_cursor", "mirror_subscribe", "mirror_next", "mirror_close", "chrome_window_follow"].includes(command.op) });
+    await this.start({ signal, allowStart: !["cancel_download", "dialog", "state", "snapshot", "screenshot", "unsubscribe", "display_subscribe", "display_attach", "display_suspend", "display_resume", "display_park", "display_input_target", "resize", "note_selection", "pointer_cursor", "mirror_subscribe", "mirror_next", "mirror_close", "chrome_window_follow", "popup_region"].includes(command.op) });
     assertNotCancelled(signal);
     const browserAtStart = this.browser;
     if (this.protection.unknown) throw new Error("MD-5: observation registry unavailable");
@@ -932,6 +937,7 @@ export class KernelBrowserHost {
     if (command.op === "state" && this.busyInputs.parked(scope)) return this.parkedState(scope);
     // PERF_AUDIT 4.2.2/4.2.6: the window a person's Chrome UI input left, read outside the input lane.
     if (command.op === "chrome_window_follow") return this.arbiter?.follow ? this.arbiter.follow(command) : {};
+    if (command.op === "popup_region") return resolveCardRegion(this, command, scope, signal);
     // Protocol 556: the signal count is taken before the read, so a change during it wakes the next wait.
     const stateSignal = command.state_wait === true ? this.stateSignal.count : null;
     // Protocol 540: a viewer's state read right after an address-bar key sees the list Chrome opened.
@@ -1044,6 +1050,8 @@ export class KernelBrowserHost {
       this.webBotAuthProjects.delete(tab.tab_id);
       this.webBotAuthRestoreUrls.delete(tab.tab_id);
       for (const observed of this.observedDocuments.values()) observed.delete(tab.tab_id);
+      for (const references of this.cardReferences.values()) references.delete(tab.tab_id);
+      for (const [id, anchor] of this.cardAnchors) if (anchor.tab_id === tab.tab_id) this.cardAnchors.delete(id);
       const state = await this.reconcile();
       await this.rebindWindows();
       return state;
@@ -1075,7 +1083,11 @@ export class KernelBrowserHost {
       if (!Number.isSafeInteger(command.x) || !Number.isSafeInteger(command.y) || command.x < 0 || command.y < 0 || command.x >= page.width || command.y >= page.height) throw new Error("MP-08: pointer cursor point outside the page");
       return { generation: this.generation, cursor: await this.browser.pointerCursor({ ...binding, x: command.x, y: command.y }) };
     }
-    if (command.op === "snapshot") return this.observe({ generation: this.generation, snapshot: await this.browser.snapshot(binding) }, tab, scope);
+    if (command.op === "snapshot") {
+      const snapshot = await this.browser.snapshot(binding);
+      rememberCardReferences(this, scope, tab, snapshot);
+      return this.observe({ generation: this.generation, snapshot }, tab, scope);
+    }
     if (command.op === "input") {
       if (app) this.browser.appTabs.noteActivity(tab.target_id);
       const observed = command.document_id ?? (command.focused_agent ? null : this.observedDocuments.get(scope)?.get(tab.tab_id));
@@ -1313,6 +1325,8 @@ export class KernelBrowserHost {
       }
       if (request.method === 'host.browser.retire_observer') {
         this.busyInputs.retire(key => key === request.params.observer);
+        this.cardReferences.delete(request.params.observer);
+        for (const [id, anchor] of this.cardAnchors) if (anchor.scope === request.params.observer) this.cardAnchors.delete(id);
         return {id:request.id,ok:true,result:{retired:true}};
       }
       if (request.method === 'host.computer.retire') {

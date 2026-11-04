@@ -1030,6 +1030,66 @@ async fn grant_holder_can_choose_allow_session_on_a_routine_permission() {
     );
 }
 
+// The blocked-task decision (Resume or Cancel) belongs to the owner but not to their terminal: a holder or
+// an agent driving the room answers it. Every other kernel-operation decision stays terminal-only.
+#[tokio::test]
+async fn the_blocked_task_decision_is_the_one_kernel_decision_a_holder_may_answer() {
+    use crate::session::{RuntimeInteraction, RuntimeInteractionChoice};
+    let workspace = crate::test_support::TestWorktree::new("blocked-task-decision");
+    let mut app =
+        crate::test_support::bootstrap_authenticated_app(crate::config::DaemonConfig::for_tests())
+            .unwrap();
+    let (session, _agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(workspace.session_request())
+        .unwrap();
+    let state =
+        crate::runtime::state::workflow_prompt_queue_owned_state::tests::runtime_state_from_app(
+            app,
+        );
+    let grant = state.insert_access_grant_for_test(session.id());
+    for id in ["task-blocked-t1-1", "resource-acquisition-1"] {
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        state
+            .owned
+            .register_runtime_interaction(
+                session.id(),
+                RuntimeInteraction::for_kernel_operation(
+                    id,
+                    id,
+                    "Agent needs your action",
+                    "The task is blocked",
+                    vec![
+                        RuntimeInteractionChoice::new("cancel", "Cancel", "cancel", None),
+                        RuntimeInteractionChoice::new("resume", "Resume", "resume", None),
+                    ],
+                ),
+                tx,
+                Some("local"),
+                None,
+                None,
+            )
+            .unwrap();
+    }
+    let answer = |id: &str| {
+        LocalDaemonRequest::RespondToInteraction(
+            serde_json::from_value(serde_json::json!({
+                "session_id": session.id(), "interaction_id": id, "choice_id": "resume",
+            }))
+            .unwrap(),
+        )
+    };
+    state
+        .authorize_external_request(&grant, &answer("task-blocked-t1-1"))
+        .expect("a holder may answer the blocked-task decision");
+    let refused = state
+        .authorize_external_request(&grant, &answer("resource-acquisition-1"))
+        .expect_err("another kernel-operation decision stays terminal-only");
+    assert_eq!(
+        crate::runtime::kernel_access::Refusal::of(&refused),
+        crate::runtime::kernel_access::Refusal::HumanOnly
+    );
+}
+
 // A decision raised while nobody follows its agent (a kernel restart gap) is
 // told to the holder that follows afterwards, once, and can then be answered.
 #[tokio::test]

@@ -234,7 +234,6 @@ if [ "$1" = buildx ] && [ "$2" = build ]; then
   printf 'bootstrap\\n' > "$destination/chariox-managed-bootstrap"
   printf 'relay\\n' > "$destination/chariox-relay"
   printf 'app package\\n' > "$destination/chariox-app-package"
-  printf 'app storage\\n' > "$destination/chariox-app-storage"
   printf 'app wasm worker\\n' > "$destination/chariox-app-wasm-worker"
   printf '{"buildx.build.ref":"%s"}\\n' "$build_ref" > "$metadata_path"
   exit 0
@@ -573,7 +572,7 @@ test("managed release build requires a bounded, already-running Buildx builder b
   assert.doesNotMatch(trace.join("\n"), /--bootstrap|buildx create|buildx stop|buildx rm/)
   assert.deepEqual((await readdir(fixture.output)).sort(), [
     "build-attestation.json", "build-attestation.sig", "builder-public-key",
-    "chariox-app-package", "chariox-app-storage", "chariox-app-wasm-worker",
+    "chariox-app-package", "chariox-app-wasm-worker",
     "chariox-kernel", "chariox-managed-bootstrap", "chariox-relay",
   ])
   const attestation = await readFile(join(fixture.output, "build-attestation.json"))
@@ -660,7 +659,7 @@ test("a post-rename directory-sync failure retains a prepared barrier for safe r
   assert.equal(await lstat(barrier.sourceDirectory).then(() => true, () => false), false)
   assert.deepEqual((await readdir(fixture.output)).sort(), [
     "build-attestation.json", "build-attestation.sig", "builder-public-key",
-    "chariox-app-package", "chariox-app-storage", "chariox-app-wasm-worker",
+    "chariox-app-package", "chariox-app-wasm-worker",
     "chariox-kernel", "chariox-managed-bootstrap", "chariox-relay",
   ])
   assert.match(await readFile(join(fixture.output, "build-attestation.sig"), "utf8"), /^[A-Za-z0-9+/]+=*\n?$/)
@@ -845,7 +844,7 @@ test("managed release restart keeps the builder leased until the exact prior sou
   assert.equal(await readFile(originalSourceFile).then(() => true, () => false), false)
   assert.deepEqual((await readdir(fixture.output)).sort(), [
     "build-attestation.json", "build-attestation.sig", "builder-public-key",
-    "chariox-app-package", "chariox-app-storage", "chariox-app-wasm-worker",
+    "chariox-app-package", "chariox-app-wasm-worker",
     "chariox-kernel", "chariox-managed-bootstrap", "chariox-relay",
   ])
 })
