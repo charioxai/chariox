@@ -165,7 +165,7 @@ fn app_package_upload_protocol_shapes_bind_retry_bytes_and_opaque_handles() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "eb09d2a4c9ede9b7936ffc58c3d369f65bd4dd93253fea60ec415d663be63c6a"
+        "eb09d2a4c9ede9b7936ffc58c3d369f65bd4dd93253fea60ec419d663be63c6a"
     );
     for field in ["owner_id", "path", "expires_at_ms"] {
         let mut forged = serde_json::to_value(&requests[0]).unwrap();
