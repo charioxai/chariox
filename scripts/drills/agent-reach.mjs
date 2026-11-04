@@ -620,16 +620,16 @@ async function main() {
     rows.forEach((row, i) => { if (row.call && /chariox[-_]reach/.test(row.call)) out.push({ tool: row.call.replace(/^.*chariox[-_]reach[._-]*/, ""), input: row.input, answer: rows[i + 1]?.answer ?? "" }) })
     return out
   }
-  const codesOf = since => reachAnswers(since).filter(x => x.tool === "request").map(x => /"code\\?":\\?"([a-z_]+)/.exec(x.answer.replace(/\\"/g, '"'))?.[1] ?? "ok")
+  const codesOf = (since, skip = 0) => reachAnswers(since).slice(skip).filter(x => x.tool === "request").map(x => /"code\\?":\\?"([a-z_]+)/.exec(x.answer.replace(/\\"/g, '"'))?.[1] ?? "ok")
   const drillPrompt = lines => ["This is a drill. Use only the chariox-reach `request` tool; no shell, no files. Make the calls one at a time, in order. Do not retry a refused call.", ...lines].join("\n")
 
   if (scenarios.has("humanonly")) {
     note("scenario", { which: "humanonly" })
     const pairedBefore = (await b.rpc({ ListPairedClients: {} })).PairedClientsListed.clients.length, aliasBefore = (await bState()).alias
     const requests = [{ ListCredentials: null }, { CloudRelayStatus: null }, { ConnectCloudRelay: null }, { CreateTerminalPairingLink: { terminal_type: "cli", expires_in_ms: 300000 } }, { RequestKernelSudo: { agent_id: roomB.agent.id, prompt: "give me a window" } }]
-    const since = Date.now() - 1000
+    const since = startedAt, skip = reachAnswers(since).length
     await sendPrompt(drillPrompt([...requests.map((r, i) => `${i + 1}. Call \`request\` with exactly: ${call(target, r)}`), "Then reply with the words HUMANONLY and DONE joined by an underscore."]), "HUMANONLY_DONE")
-    const codes = codesOf(since)
+    const codes = codesOf(since, skip)
     check("the human-only requests are refused on B and a sudo request for itself is excluded", codes.join() === "human_only,human_only,human_only,human_only,excluded_for_agents", { codes })
     check("B is unchanged", (await b.rpc({ ListPairedClients: {} })).PairedClientsListed.clients.length === pairedBefore && (await bState()).alias === aliasBefore)
   }
@@ -647,16 +647,17 @@ async function main() {
     ]
     const roomsOf = async r => (await r.rpc({ ListSessions: null })).SessionsListed.sessions.map(x => x.id).sort().join()
     const unchanged = async () => (await bState()).agents.some(x => x.id === roomB.agent.id && !x.archived) && (await bState()).alias !== "renamed-by-reach" && (await roomsOf(b)).includes(roomB.session.id) && (await roomsOf(a)).includes(siblingA.session.id) && (await roomsOf(a)).includes(roomA.session.id)
-    const since = Date.now() - 1000
+    const since = startedAt, skip = reachAnswers(since).length
     await sendPrompt(drillPrompt([...attempts.map((r, i) => `${i + 1}. Call \`request\` with exactly: ${r}`), "Then reply with the words LINEAGE and DONE joined by an underscore."]), "LINEAGE_DONE")
-    const codes = codesOf(since)
-    check("renaming, archiving and deleting other agents and rooms is refused without /sudo", codes.length === attempts.length && codes.every(c => refused.includes(c)), { codes })
+    const codes = codesOf(since, skip)
+    check("renaming, archiving and deleting other agents and rooms, and destroying itself, is refused without /sudo", codes.length === attempts.length && codes.every(c => refused.includes(c)), { codes })
     check("nothing changed", await unchanged())
-    const sudoSince = Date.now() - 1000
-    await sudoPrompt(drillPrompt([`1. Call \`request\` with exactly: ${attempts[2]}`, `2. Call \`request\` with exactly: ${attempts[3]}`, `3. Call \`request\` with exactly: ${attempts[5]}`, "Then reply with the words LINEAGESUDO and DONE joined by an underscore."]), "LINEAGESUDO_DONE")
-    const sudoCodes = codesOf(sudoSince)
-    check("deleting stays refused inside a /sudo window", sudoCodes.length === 3 && sudoCodes.every(c => refused.includes(c) && c !== "reach_requires_sudo"), { sudoCodes })
-    check("still nothing changed", await unchanged())
+    // Inside a /sudo window the owner's authority is the agent's, as at home: a rename works, deleting a room stays excluded.
+    const sudoSkip = reachAnswers(since).length
+    await sudoPrompt(drillPrompt([`1. Call \`request\` with exactly: ${attempts[3]}`, `2. Call \`request\` with exactly: ${call(target, { AliasAgent: { session_id: roomB.session.id, agent_id: roomB.agent.id, alias: "renamed-in-sudo" } })}`, "Then reply with the words LINEAGESUDO and DONE joined by an underscore."]), "LINEAGESUDO_DONE")
+    const sudoCodes = codesOf(since, sudoSkip)
+    check("inside a /sudo window deleting a room stays excluded and a rename works", sudoCodes.join() === "excluded_for_agents,ok" && (await bState()).agents.some(x => x.id === roomB.agent.id && x.alias === "renamed-in-sudo"), { sudoCodes })
+    check("no room is gone", (await roomsOf(b)).includes(roomB.session.id) && (await roomsOf(a)).includes(siblingA.session.id) && (await roomsOf(a)).includes(roomA.session.id))
   }
 
   // The text of every base64 chunk an agent's answers carried since `since` (room terminal output), decoded.
@@ -676,19 +677,16 @@ async function main() {
       `4. ${terminalRequest({ operation: "open", cols: 80, rows: 24, title: "reach", command: ["sh"] })} gives the terminal id.`,
       `5. Type into it: ${terminalRequest({ operation: "input", terminal_id: "TERMINAL_ID", data_base64: Buffer.from(`echo pty-${nonce}\n`).toString("base64") })}, then read: ${terminalRequest({ operation: "read_output", terminal_id: "TERMINAL_ID", after_offset: 0, wait_ms: 3000 })}.`,
       `6. List the terminals (${terminalRequest({ operation: "list" })}) and close yours (${terminalRequest({ operation: "close", terminal_id: "TERMINAL_ID" })}).`,
-      "Files: ",
-      `7. ${call(target, { AttachToSession: { session_id: roomB.session.id, client_id: "reach-workday", capability_level: "FullTerminal" } })} gives the attachment id.`,
-      `8. ${call(target, { ReadDirectoryTree: { session_id: roomB.session.id, attachment_id: "ATTACHMENT_ID", path: null, max_depth: 1 } })}`,
-      `9. ${call(target, { EditFile: { session_id: roomB.session.id, attachment_id: "ATTACHMENT_ID", path: file, contents: `workday ${nonce}\n` } })}`,
-      `10. ${call(target, { ReadFile: { session_id: roomB.session.id, attachment_id: "ATTACHMENT_ID", path: file } })}`,
+      "Files, by commands in the room (your attachments cannot read or write files themselves):",
+      `7. ${terminalRequest({ operation: "exec_open", command: ["sh", "-c", `printf 'workday ${nonce}\\n' > reach-note-${nonce}.txt && cat reach-note-${nonce}.txt && ls`] })}, then exec_read it as in step 2 and exec_close it.`,
       "Then reply with the words WORKDAY and DONE joined by an underscore and the code of every refused answer.",
     ]), "WORKDAY_DONE")
     const out = decodedOutput(since), answers = reachAnswers(since)
     check("the agent ran a command on the other kernel's room and read its output", out.includes(`workday-${nonce}`), { tail: out.slice(-120) })
     check("the agent typed into a terminal of that room and read the echo", out.includes(`pty-${nonce}`))
     const written = (() => { try { return readFileSync(file, "utf8") } catch { return null } })()
-    note("workday-files", { written, answers: answers.filter(x => /ReadDirectoryTree|EditFile|ReadFile/.test(JSON.stringify(x.input))).map(x => x.answer.slice(0, 200)) })
-    check("the agent wrote and read a file in that room", written === `workday ${nonce}\n`, { written })
+    check("the agent wrote a file in that room and read it back", written === `workday ${nonce}\n` && out.includes(`workday ${nonce}`), { written })
+    note("workday-codes", { codes: codesOf(since) })
   }
 
   if (scenarios.has("recall")) {
