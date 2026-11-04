@@ -25,7 +25,7 @@ const WRITE_FILE = /tool\\*"\s*:\s*\\*"(?:mcp__chariox__chariox_vault_write_file
 
 function usage() {
   return `usage: CHARIOX_KERNEL_BINARY=<kernel> live-vault-command-drill.mjs --root <dir> --evidence <dir>
-  [--providers codex,claude] [--codex-home <dir>] [--claude-token-file <file>]
+  [--providers codex,claude] [--codex-home <dir>] [--codex-profile <id>] [--claude-token-file <file>]
   [--expect-missing] [--lifecycle] [--timeout-ms 300000]`
 }
 
@@ -42,6 +42,7 @@ function parseArgs(argv) {
     else if (flag === '--root') options.root = path.resolve(value())
     else if (flag === '--evidence') options.evidence = path.resolve(value())
     else if (flag === '--codex-home') options.codexHome = path.resolve(value())
+    else if (flag === '--codex-profile') options.codexProfile = value()
     else if (flag === '--claude-token-file') options.claudeTokenFile = path.resolve(value())
     else if (flag === '--timeout-ms') options.timeoutMs = Number(value())
     else if (flag === '--expect-missing') options.expectMissing = true
@@ -166,6 +167,7 @@ async function filesContaining(roots, needles, sinceMs) {
 
 async function linkProvider(client, requests, provider, options) {
   if (provider === 'codex') {
+    if (options.codexProfile) return options.codexProfile
     return unwrap(await client.send(requests.linkProviderAccountProfileRequest('codex', 'S2 drill Codex', options.codexHome)),
       'ProviderAccountProfile').profile.profile_id
   }
