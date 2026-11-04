@@ -136,7 +136,7 @@ export function setupStateText(state: SetupState, nowMs: number): string {
   }
 }
 
-function secretPresenceText(secret: ProjectEnvironmentSecret): string {
+export function secretPresenceText(secret: ProjectEnvironmentSecret): string {
   switch (secret.presence) {
     case "present": return "In Vault"
     case "missing": return "Missing here"
@@ -150,7 +150,7 @@ function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
-function filePresenceText(file: ProjectEnvironmentFile): string {
+export function filePresenceText(file: ProjectEnvironmentFile): string {
   if (file.presence === "missing") return "Missing here"
   return file.sizeBytes === null ? "Present" : `Present · ${formatSize(file.sizeBytes)}`
 }

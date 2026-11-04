@@ -1063,6 +1063,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     handleSigint, handleStdinData, requestPromptStop, submitFocusedInteractionChoice,
     submitPrompt, submitWorkspaceShellCommand,
   } = createCliAppCommandRoutingComposition({
+    environmentSourceKernels: () => environmentSourceKernels(cloudClient, async () => relayStatusState()?.daemon_id ?? (await getRelayStatus(client)).daemon_id),
     userAppViews, appActions,
     bootstrapProviderLaunch: props.bootstrap.deferred?.providerLaunch,
     onProviderAccountPromptBlocked: (target: {sessionId: string; agentId: string}) => { blockedAccountTarget = target },

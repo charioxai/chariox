@@ -147,6 +147,43 @@
     ]
   },
   {
+    "id": "environment",
+    "label": "/environment",
+    "description": "This Project's Environment on this machine",
+    "value": "/environment ",
+    "surfaces": ["session"],
+    "children": [
+      {
+        "id": "environment-status",
+        "label": "status",
+        "description": "Show Setup, Secrets, Files, MCPs and Skills and what is missing here",
+        "value": "/environment status",
+        "surfaces": ["session"]
+      },
+      {
+        "id": "environment-update",
+        "label": "update",
+        "description": "Bring what is missing from another machine",
+        "value": "/environment update ",
+        "surfaces": ["session"]
+      },
+      {
+        "id": "environment-setup",
+        "label": "setup",
+        "description": "Run the saved Setup script",
+        "value": "/environment setup",
+        "surfaces": ["session"]
+      },
+      {
+        "id": "environment-check",
+        "label": "check",
+        "description": "Compare the Project's files with the Environment",
+        "value": "/environment check",
+        "surfaces": ["session"]
+      }
+    ]
+  },
+  {
     "id": "script",
     "label": "/script",
     "description": "Manage script extensions",

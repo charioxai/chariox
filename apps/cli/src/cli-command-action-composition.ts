@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto"
+import { projectEnvironmentCommand } from "./project-environment-command.js"
 import { listProviderAccountCopyOffers, copyProviderAccountFromKernel } from "./provider-api.js"
 import { withAgentTaskUpdate } from "@chariox/kernel-client/agent-task-state"
 import type { AgentTaskExecution } from "@chariox/kernel-client/kernel-types"
@@ -233,6 +234,7 @@ export type CliCommandActionCompositionDeps = {
   setPendingWorktreeTarget: AnyFn
   isAttached: AnyFn
   sessionState: AnyFn
+  environmentSourceKernels: () => Promise<readonly import("./project-environment-projection.js").EnvironmentSourceKernel[]>
   attachmentState: AnyFn
   providerRunState: AnyFn
   currentModelId: AnyFn
@@ -795,6 +797,13 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     getSkill: (name) => getSkill(client, pendingWorkspaceTarget(), name),
     grantAgentSkill: (agentRef, name) => grantAgentSkill(client, pendingWorkspaceTarget(), agentRef, name),
     revokeAgentSkill: (agentRef, name) => revokeAgentSkill(client, agentRef, name),
+    projectEnvironmentCommand: (args) => projectEnvironmentCommand({
+      send: (request) => client.send(request as never),
+      room: () => ({ projectId: sessionState().project_id, checkoutPath: sessionState().worktree_id }),
+      otherKernels: deps.environmentSourceKernels,
+      newOperationId: randomUUID,
+      now: Date.now,
+    }, args),
     listEnvironments: () => listEnvironments(client, pendingWorkspaceTarget()),
     getEnvironment: (name) => getEnvironment(client, pendingWorkspaceTarget(), name),
     registerEnvironment: (config) => registerEnvironment(client, pendingWorkspaceTarget(), config),
