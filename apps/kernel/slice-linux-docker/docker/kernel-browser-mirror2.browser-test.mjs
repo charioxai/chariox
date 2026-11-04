@@ -2535,3 +2535,32 @@ test("bbcframes: a web font used inside a nested cross-origin frame is delivered
     assert(delivered.some(([key, mime]) => mime === "font/woff2" && Number(key.slice(1)) >= 2e6), `the nested frame's font arrived in its own slot (${JSON.stringify(delivered)})`);
   }, { "/outer": nestedOuter2("/inner"), "/inner": { type: "text/html", body: '<!doctype html><style>@font-face{font-family:T;src:url(http://a.localhost:PORT/t.woff2) format("woff2")}b{font-family:T}</style><b id="creative">Truth matters</b>' }, "/t.woff2": { type: "font/woff2", headers: { "Access-Control-Allow-Origin": "*" }, body: "wOF2" + "\u0001".repeat(60) } }));
 function nestedOuter2(path) { return { type: "text/html", body: `<!doctype html><body><iframe src="http://a.localhost:PORT${path}" style="width:300px;height:90px"></iframe>` }; }
+
+// A src change replaces the mirror owner ID while Chrome keeps the same frame ID.
+// Its old mapping must not drain the new owner's observer and rebase updates to retired IDs.
+test("MP-08/MP-10: frame navigation retires the old owner before forwarding child mutations", () => mirrored(
+  '<iframe id="f" src="http://localhost:PORT/quirks" style="width:600px;height:300px"></iframe>', async ({ next, evaluate, input, host, subscription_id }) => {
+    await next();
+    for (const mode of ['standards', 'quirks', 'standards']) {
+      await evaluate(`document.querySelector('#f').src='http://localhost:'+location.port+'/${mode}';true`);
+      let mounted, button;
+      const rememberButton = packet => { for (const op of packet.ops) if (op.op === 'children') for (const [id, tag, attrs] of elements({ nodes: op.nodes })) if (tag === 'button' && attrs.id === 'counter') button = id; };
+      for (let i = 0; i < 12 && !mounted; i++) {
+        const packet = await next(500); rememberButton(packet);
+        if (packet.ops.some(op => op.op === 'children' && elements({ nodes: op.nodes }).some(([, tag, attrs]) => tag === 'button' && attrs.id === 'counter'))) mounted = packet;
+      }
+      assert(mounted, 'the navigated child is published');
+      // The parent's src mutation can follow the child's navigation snapshot by one credit.
+      rememberButton(await next(500)); rememberButton(await next(500));
+      const stream = host.mirror.streams.get(subscription_id);
+      assert.equal(stream.frames.size, 1, 'one live owner drains this Chrome frame');
+      assert(button, 'the live child button reached the viewer');
+      await input(stream.issued, { kind: 'click', node_id: button, x: 20, y: 10 });
+      let echoed = false;
+      for (let i = 0; i < 6 && !echoed; i++) {
+        const packet = await next(500);
+        echoed = packet.ops.some(op => op.op === 'text' && op.text === '1');
+      }
+      assert(echoed, `${mode}: the counter mutation uses the live owner's IDs`);
+    }
+  }, Object.fromEntries(['quirks', 'standards'].map(mode => ['/' + mode, { type: 'text/html', body: (mode === 'standards' ? '<!doctype html>' : '') + '<body style="margin:0;font:16px sans-serif"><h3>' + mode + '</h3><button id="counter" onclick="count.textContent=Number(count.textContent)+1">Count click</button><span id="count">0</span></body>' }]))));

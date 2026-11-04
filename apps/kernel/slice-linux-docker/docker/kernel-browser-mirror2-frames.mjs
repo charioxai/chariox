@@ -114,6 +114,9 @@ export class MirrorFrames {
   // A child document mounted under its owner (an element of `host`, at slot `hostSlot`): its records, ops and resources in
   // viewer ids, with the cross-origin frames it hosts attached below it.
   async mount(host, hostSlot, stream, owner, frame, policy, tab, depth) {
+    // A src mutation can replace the mirror owner while Chrome keeps its frame.
+    // Its observer belongs to this subscription: only the new owner may drain it.
+    for (const previous of [...stream.frames.values()]) if (previous.child.frame.id === frame.id) this.forget(stream, previous);
     const slot = ++stream.frameSlot;
     const child = await this.world(host, frame, stream.id);
     const loaderId = await this.loaderId(child);
