@@ -25,6 +25,17 @@ relay authority and managed automatic shutdown policy are unchanged (MP-09).
 Focused regressions and the live resume drill cover this seam; they do not
 close the wider MP-10 matrix or MP-11 security-anchor review.
 
+Required regression scenarios for this seam are:
+
+| Acceptance ID | Required evidence |
+| --- | --- |
+| `apps-agent-model/RESUME-64MIB` | A real Codex agent accumulates more than 64 MiB of native tool history on the base, fails to resume after restart, then completes a turn through the built CLI on the fixed kernel with the same agent and native thread. MCP regressions prove large output is bounded before native persistence and startup failures settle. Audit Claude and OpenCode and run their native restart paths. A provider usage limit must settle definitively and preserve its reason for the person; an exhausted account blocks that provider's restart leg. |
+| `apps-agent-model/PARKED-OWNER-CANCEL` | The built CLI cancels parked tasks and independent timers without an active prompt. A real provider receives the cancellation reason on its next wake. Entry-point regressions cover unrelated active work, stale revisions, foreign owners, removed completion subscriptions, idempotency and acknowledgement. |
+
+These are ordinary-kernel regression scenarios. Managed placement, hosted
+transport, browser sites and the wider parity matrix retain their separate
+acceptance rows.
+
 ## MP-08 / MP-09 / MP-10 / MP-11 process disk telemetry (2026-11-02)
 
 Local954 / peer403 adds nullable `disk_io_bytes` to the existing session process
