@@ -32,7 +32,9 @@ pub use record::{
     relative_project_path, ExtensionEntry, ExtensionSource, ProjectEnvironmentRecord,
     PROJECT_ENVIRONMENT_SCHEMA,
 };
-pub(crate) use registrations::{mcp_key_names, Registration, RegistrationHost, UserRegistrations};
+pub(crate) use registrations::{
+    mcp_key_names, ProjectRegistrations, Registration, RegistrationHost, UserRegistrations,
+};
 pub(crate) use setup::{SetupRuns, SetupSpec};
 pub(crate) use store::{remove_schema_1_state, ProjectEnvironmentStore, SaveOutcome};
 pub(crate) use transfer::{

@@ -1,5 +1,6 @@
 //! Chariox registrations (MCP servers and skills) as entries of the Environment: whether this kernel holds one,
 //! the keys an MCP reads, and the reads and writes an Import makes. A key's value is a Secret and never appears here.
+use super::ExtensionEntry;
 use crate::error::DaemonError;
 use crate::local::EnvironmentEntryKind;
 use crate::mcp::{CharioxMcpRegistry, CharioxMcpServerConfig, CharioxMcpTransportConfig};
@@ -8,6 +9,14 @@ use serde::{Deserialize, Serialize};
 
 /// A skill travels in one peer message, so it stays small: text and a few assets.
 const MAX_SKILL_BYTES: usize = 3 * 1024 * 1024;
+
+/// The registrations the agents of a Project's rooms hold grants for, as Environment entries, and the
+/// variable names the MCPs among them read their keys from.
+pub(crate) struct ProjectRegistrations {
+    pub mcps: Vec<ExtensionEntry>,
+    pub skills: Vec<ExtensionEntry>,
+    pub key_names: Vec<String>,
+}
 
 /// What an Import moves for an MCP or skill entry.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

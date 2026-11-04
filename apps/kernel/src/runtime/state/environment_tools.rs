@@ -159,8 +159,9 @@ impl KernelRuntimeState {
                 let record = record.ok_or_else(|| {
                     environment_error("this Project has no Environment to check yet")
                 })?;
+                let registered = self.project_registrations(&project)?;
                 let proposals = tokio::task::spawn_blocking(move || {
-                    deterministic_proposals(&checkout, &record)
+                    deterministic_proposals(&checkout, &record, &registered)
                 })
                 .await
                 .map_err(|_| environment_error("reading the Project failed"))?;

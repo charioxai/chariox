@@ -59,6 +59,7 @@ impl KernelRuntimeState {
             }
             Begun::Started(handle) => handle,
         };
+        let registered = self.project_registrations(&project)?;
         let runtime = self.clone();
         let project_id = project.id().to_string();
         tokio::spawn(async move {
@@ -68,7 +69,7 @@ impl KernelRuntimeState {
                 let (own, facts) = tokio::task::spawn_blocking({
                     let (checkout, record) = (checkout.clone(), record.clone());
                     move || {
-                        let own = deterministic_proposals(&checkout, &record);
+                        let own = deterministic_proposals(&checkout, &record, &registered);
                         let facts = with_agent.then(|| draft_facts(&checkout));
                         (own, facts)
                     }

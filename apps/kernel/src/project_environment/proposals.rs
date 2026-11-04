@@ -5,7 +5,7 @@ use super::draft::answer_object;
 use super::{
     environment_error, environment_variable_name, extension_name, parse_variables,
     project_environment_protected_name, relative_project_path, ExtensionEntry,
-    ProjectEnvironmentRecord,
+    ProjectEnvironmentRecord, ProjectRegistrations,
 };
 use crate::error::DaemonError;
 use crate::local::{
@@ -21,6 +21,8 @@ use std::sync::Mutex;
 const DIRECTORY: &str = "project-environment-proposals";
 const MAX_PROPOSALS: usize = 20;
 const MAX_TEXT: usize = 2048;
+/// The evidence of a proposal that comes from a Chariox registration: no Project file shows it.
+const REGISTRATION_EVIDENCE: &str = "Chariox registration";
 
 static WRITES: Mutex<()> = Mutex::new(());
 
@@ -163,7 +165,8 @@ fn applicable(record: &ProjectEnvironmentRecord, proposal: &EnvironmentProposal)
             entries.iter().any(|entry| entry.name == text) != add
                 && (!add
                     || (extension_name(text)
-                        && relative_project_path(&proposal.evidence.path).is_ok()))
+                        && (proposal.evidence.path == REGISTRATION_EVIDENCE
+                            || relative_project_path(&proposal.evidence.path).is_ok())))
         }
     }
 }
@@ -179,14 +182,16 @@ fn extensions(
     }
 }
 
-/// What the Project's files say against the saved record, with no model: MCPs, skills and variable names
-/// the files declare that the record lacks, and entries whose declaring file no longer declares them.
+/// What the Project's files and the registrations granted to its rooms say against the saved record, with no
+/// model: MCPs, skills and variable names they declare that the record lacks, and entries whose declaring file no
+/// longer declares them.
 pub(crate) fn deterministic_proposals(
     checkout: &Path,
     record: &ProjectEnvironmentRecord,
+    registered: &ProjectRegistrations,
 ) -> Vec<EnvironmentProposal> {
     let detected = detect(checkout);
-    let mut proposals = Vec::new();
+    let mut proposals: Vec<EnvironmentProposal> = Vec::new();
     let mut propose = |field, change, text: &str, path: &str, excerpt: &str| {
         let proposal = EnvironmentProposal {
             id: proposal_id(field, change, text),
@@ -198,7 +203,7 @@ pub(crate) fn deterministic_proposals(
                 excerpt: excerpt.to_owned(),
             },
         };
-        if applicable(record, &proposal) {
+        if applicable(record, &proposal) && !proposals.iter().any(|known| known.id == proposal.id) {
             proposals.push(proposal);
         }
     };
@@ -217,7 +222,7 @@ pub(crate) fn deterministic_proposals(
                 );
             }
         }
-        // A registration is no project file: this check has nothing to compare it with.
+        // A saved registration is no project file, and one this kernel no longer holds may only be missing here.
         for entry in extensions(record, field) {
             let Some(path) = entry.file_path() else {
                 continue;
@@ -238,6 +243,29 @@ pub(crate) fn deterministic_proposals(
                 &excerpt,
             );
         }
+    }
+    for (field, held) in [
+        (EnvironmentProposalField::Mcp, &registered.mcps),
+        (EnvironmentProposalField::Skill, &registered.skills),
+    ] {
+        for entry in held {
+            propose(
+                field,
+                EnvironmentProposalChange::Add,
+                &entry.name,
+                REGISTRATION_EVIDENCE,
+                "granted to a room of this Project",
+            );
+        }
+    }
+    for key in &registered.key_names {
+        propose(
+            EnvironmentProposalField::Secret,
+            EnvironmentProposalChange::Add,
+            key,
+            REGISTRATION_EVIDENCE,
+            "read by a registered MCP",
+        );
     }
     let known = parse_variables(&record.variables).unwrap_or_default();
     for (name, source) in &detected.variables {
@@ -364,7 +392,11 @@ pub(crate) fn apply(
                 &mut next.skills
             };
             if add {
-                entries.push(ExtensionEntry::file(text, &proposal.evidence.path));
+                entries.push(if proposal.evidence.path == REGISTRATION_EVIDENCE {
+                    ExtensionEntry::registration(text)
+                } else {
+                    ExtensionEntry::file(text, &proposal.evidence.path)
+                });
             } else {
                 entries.retain(|entry| entry.name != text);
             }
@@ -416,7 +448,7 @@ mod tests {
         saved.mcps = vec![ExtensionEntry::file("github", ".mcp.json")];
         saved.variables = "LOG_LEVEL=debug".into();
         saved.secrets.clear();
-        let found = deterministic_proposals(&dir, &saved);
+        let found = deterministic_proposals(&dir, &saved, &no_registrations());
         let shown: Vec<String> = found
             .iter()
             .map(|p| {
@@ -435,7 +467,7 @@ mod tests {
             "github is already saved and LOG_LEVEL is already a Variable"
         );
         std::fs::remove_file(dir.join(".mcp.json")).unwrap();
-        let gone = deterministic_proposals(&dir, &saved);
+        let gone = deterministic_proposals(&dir, &saved, &no_registrations());
         let first = gone
             .iter()
             .find(|p| p.field == EnvironmentProposalField::Mcp)
@@ -455,7 +487,7 @@ mod tests {
             )
         );
         let other = project_with(&[(".mcp.json", r#"{"mcpServers":{"linear":{}}}"#)]);
-        let still = deterministic_proposals(&other, &saved);
+        let still = deterministic_proposals(&other, &saved, &no_registrations());
         let removed = still
             .iter()
             .find(|p| p.change == EnvironmentProposalChange::Remove)
@@ -467,6 +499,63 @@ mod tests {
         let next = apply(&saved, removed).unwrap();
         assert!(next.mcps.is_empty());
         let _ = std::fs::remove_dir_all(other);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn no_registrations() -> ProjectRegistrations {
+        ProjectRegistrations {
+            mcps: Vec::new(),
+            skills: Vec::new(),
+            key_names: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_registration_granted_after_the_draft_is_proposed_with_the_keys_it_reads() {
+        let dir = project_with(&[]);
+        let mut saved = record();
+        saved.mcps = vec![ExtensionEntry::registration("notion")];
+        saved.secrets = vec!["NOTION_TOKEN".into()];
+        let registered = ProjectRegistrations {
+            mcps: vec![
+                ExtensionEntry::registration("notion"),
+                ExtensionEntry::registration("linear"),
+            ],
+            skills: vec![ExtensionEntry::registration("dataviz")],
+            key_names: vec!["NOTION_TOKEN".into(), "LINEAR_API_KEY".into()],
+        };
+        let found = deterministic_proposals(&dir, &saved, &registered);
+        let shown: Vec<String> = found
+            .iter()
+            .map(|p| {
+                format!(
+                    "{:?} {:?} {} @{}",
+                    p.field, p.change, p.text, p.evidence.path
+                )
+            })
+            .collect();
+        assert_eq!(
+            shown,
+            vec![
+                "Mcp Add linear @Chariox registration".to_owned(),
+                "Skill Add dataviz @Chariox registration".to_owned(),
+                "Secret Add LINEAR_API_KEY @Chariox registration".to_owned(),
+            ],
+            "notion and its key are already saved"
+        );
+        let mut next = saved.clone();
+        for proposal in &found {
+            next = apply(&next, proposal).unwrap();
+        }
+        assert_eq!(
+            next.mcps,
+            vec![
+                ExtensionEntry::registration("notion"),
+                ExtensionEntry::registration("linear")
+            ]
+        );
+        assert_eq!(next.skills, vec![ExtensionEntry::registration("dataviz")]);
+        assert!(next.secrets.contains(&"LINEAR_API_KEY".to_owned()));
         let _ = std::fs::remove_dir_all(dir);
     }
 

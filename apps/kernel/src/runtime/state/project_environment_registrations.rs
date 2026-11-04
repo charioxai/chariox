@@ -4,16 +4,9 @@ use super::*;
 use crate::extension::{ExtensionGrant, ExtensionKind};
 use crate::local::EnvironmentEntryKind;
 use crate::project_environment::{
-    mcp_key_names, ExtensionEntry, ProjectEnvironmentStore, RegistrationHost, UserRegistrations,
+    mcp_key_names, ExtensionEntry, ProjectEnvironmentStore, ProjectRegistrations, RegistrationHost,
+    UserRegistrations,
 };
-
-/// The registrations the agents of a Project's rooms hold grants for, as Environment entries, and the
-/// variable names the MCPs among them read their keys from.
-pub(crate) struct ProjectRegistrations {
-    pub mcps: Vec<ExtensionEntry>,
-    pub skills: Vec<ExtensionEntry>,
-    pub key_names: Vec<String>,
-}
 
 impl KernelRuntimeState {
     pub(crate) fn project_registrations(

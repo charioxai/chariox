@@ -1,7 +1,6 @@
 //! Draft with agent: an idle agent of the Project reads what the kernel shows it of the Project's
 //! files and the answer becomes revision 1 of the Environment. Nothing is confirmed or run.
 use super::metadata_utility_scratch::MetadataUtilityScratch;
-use super::project_environment_registrations::ProjectRegistrations;
 use super::*;
 use crate::local::{
     DraftProjectEnvironmentRequest, EnvironmentOperationKind, EnvironmentOperationState,
@@ -9,7 +8,7 @@ use crate::local::{
 };
 use crate::project_environment::{
     detect, draft_prompt, environment_error, parse_draft, register_environment_files, Begun,
-    OperationHandle, ProjectEnvironmentRecord, SaveOutcome,
+    OperationHandle, ProjectEnvironmentRecord, ProjectRegistrations, SaveOutcome,
 };
 use crate::provider::{ProviderRunState, ProviderUtilityExecutionPolicy};
 use crate::runtime::agent_utility_executor::{
