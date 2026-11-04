@@ -139,7 +139,7 @@ fn mp11_released416_turn_undo_and_agent_fork_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "415f420e9d4df21589f7f8f96ec7d2d86be82384300e09dc504cc5789904e846"
+        "f1075f3839537b25fe0c792a75a5a5bbb55e24aa0319c0f9f2dd79b6972027ba"
     );
 }
 

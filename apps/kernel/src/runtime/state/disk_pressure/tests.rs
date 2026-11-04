@@ -69,3 +69,9 @@ fn the_ask_names_what_the_agent_holds_so_it_can_stop_leftovers() {
 fn holders_are_ranked_by_what_their_processes_wrote_hold_deleted_and_keep_in_temp() {
     assert_eq!(holding().used(), 3 * GIB + 2 * GIB + 800 * MIB);
 }
+
+#[test]
+fn just_under_the_floor_the_ask_does_not_say_ten_gigabytes_below_ten_gigabytes() {
+    let text = ask_text(&holding(), 10 * GIB - 40 * MIB, 10 * GIB);
+    assert!(text.contains("10200 MB free, below the 10240 MB"), "{text}");
+}

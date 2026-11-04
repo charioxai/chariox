@@ -84,10 +84,17 @@ fn named(folders: &[(PathBuf, u64)]) -> String {
 /// its own rebuildable output and stop leftovers it does not know about.
 pub(crate) fn ask_text(holding: &Holding, free: u64, floor: u64) -> String {
     let size = process_resources::size;
+    // Just under the floor both read the same in gigabytes: say it in megabytes then.
+    let (free_text, floor_text) = if size(free) == size(floor) {
+        (
+            format!("{} MB", free / (1024 * 1024)),
+            format!("{} MB", floor / (1024 * 1024)),
+        )
+    } else {
+        (size(free), size(floor))
+    };
     let mut text = format!(
-        "The disk is running out of room: {} free, below the {} the machine keeps free. You are one of the biggest users. Free what you can rebuild yourself (build output, caches, copies you downloaded), stop anything you started that is not needed any more, and tell me what you freed. Never delete results or source.",
-        size(free),
-        size(floor),
+        "The disk is running out of room: {free_text} free, below the {floor_text} the machine keeps free. You are one of the biggest users. Free what you can rebuild yourself (build output, caches, copies you downloaded), stop anything you started that is not needed any more, and tell me what you freed. Never delete results or source.",
     );
     let processes: Vec<_> = holding
         .processes
