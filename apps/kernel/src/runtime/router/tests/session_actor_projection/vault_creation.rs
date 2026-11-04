@@ -63,12 +63,15 @@ async fn a_new_kernel_creates_its_own_vault_with_the_passphrase_of_the_kernel_it
 
     crate::secret::lock_chariox_encrypted_vault(&target.vault).unwrap();
     assert!(!target.status().await.unlocked);
+    assert_eq!(
+        code_of(target.unlock("not the passphrase").await).0,
+        "vault_passphrase_wrong"
+    );
     target.unlock(PASSPHRASE).await.unwrap();
     assert!(
         target.status().await.unlocked,
         "the same passphrase opens it later"
     );
-    assert!(code_of(target.unlock("not the passphrase").await).0 == "vault_passphrase_wrong");
 }
 
 #[tokio::test]
@@ -144,7 +147,7 @@ fn the_requests_and_their_answer_keep_a_secret_out_of_debug_and_command_records(
     });
     assert!(!format!("{request:?}").contains("sentinel-passphrase-9a2e"));
     let recorded = crate::runtime::command::KernelCommand::from_local_request_with_caller(
-        "c".into(),
+        "c",
         KernelCommandSource::LocalCli,
         KernelCaller::for_source(&KernelCommandSource::LocalCli),
         None,
