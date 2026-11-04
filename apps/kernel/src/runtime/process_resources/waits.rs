@@ -102,7 +102,7 @@ pub(super) fn began_line(state: &SessionProcessState) -> Option<String> {
         SessionProcessState::Running => return None,
     };
     Some(format!(
-        "chariox: this command {what} for {} ({} in line, about {} needed, {} free). It continues by itself when there is room; Start now in Health runs it at once, Cancel ends it.{stays}\n",
+        "chariox: this command {what} for {} ({} in line, about {} needed, {} free). It continues by itself when there is room; Start now in Machines runs it at once, Cancel ends it.{stays}\n",
         resource(row.reason),
         ordinal(row.position.max(1)),
         gigabytes(row.need_bytes),
@@ -120,7 +120,7 @@ pub(super) fn resumed_line(waited_ms: u64) -> String {
 /// What the person is told when a wait grows long.
 pub(crate) fn long_wait_notice(row: &Waiting, now_ms: u64) -> String {
     format!(
-        "{} has waited {} for {}. It continues by itself; Start now in Health runs it at once, Cancel ends it.",
+        "{} has waited {} for {}. It continues by itself; Start now in Machines runs it at once, Cancel ends it.",
         row.command_line,
         duration(now_ms.saturating_sub(row.since_ms)),
         resource(row.reason),
