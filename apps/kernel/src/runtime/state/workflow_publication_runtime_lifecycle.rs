@@ -2320,6 +2320,38 @@ mod tests {
     use std::net::TcpListener;
     use std::os::unix::fs::PermissionsExt;
 
+    /// What a publication scan may allocate on its own, whatever the number of Rooms.
+    const SCAN_OVERHEAD: usize = 4096;
+
+    #[tokio::test]
+    async fn disabled_publication_scan_allocates_nothing_per_room() {
+        use crate::test_support::allocation::{measured, runtime_with_rooms};
+        let (few, many) = (runtime_with_rooms(8), runtime_with_rooms(48));
+        let (_, few) = measured(super::stop_disabled_publication_runtimes(&few)).await;
+        let (_, many) = measured(super::stop_disabled_publication_runtimes(&many)).await;
+        assert!(
+            many.allocated <= few.allocated + SCAN_OVERHEAD,
+            "the scan allocated {} bytes with 8 Rooms and {} with 48",
+            few.allocated,
+            many.allocated
+        );
+    }
+
+    #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+    #[tokio::test]
+    async fn orphaned_deployment_scan_allocates_nothing_per_room() {
+        use crate::test_support::allocation::{measured, runtime_with_rooms};
+        let (few, many) = (runtime_with_rooms(8), runtime_with_rooms(48));
+        let (_, few) = measured(super::remove_orphaned_deployment_copies(&few)).await;
+        let (_, many) = measured(super::remove_orphaned_deployment_copies(&many)).await;
+        assert!(
+            many.allocated <= few.allocated + SCAN_OVERHEAD,
+            "the scan allocated {} bytes with 8 Rooms and {} with 48",
+            few.allocated,
+            many.allocated
+        );
+    }
+
     #[test]
     fn launched_ingress_runtime_waits_for_endpoint_registration() {
         assert_eq!(launched_publication_runtime_status(false), "starting");

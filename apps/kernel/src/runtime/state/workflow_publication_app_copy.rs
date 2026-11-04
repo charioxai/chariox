@@ -232,8 +232,7 @@ impl KernelRuntimeState {
             .owned
             .session_store
             .read()
-            .list_all_sessions()
-            .into_iter()
+            .all_session_refs()
             .filter(|session| session.is_hidden())
             .flat_map(|session| {
                 let owner = session.owner_user_id().to_owned();

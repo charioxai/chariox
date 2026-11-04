@@ -1517,6 +1517,8 @@ mod agent_workspace_loss;
 mod interaction_wake;
 mod leased_task_connectivity;
 mod leased_worker_stop_obligation;
+#[cfg(test)]
+mod resident_room_scan_tests;
 mod room_dispatch_obligation;
 mod terminal_wake;
 mod terminal_wake_worker;

@@ -6,6 +6,7 @@ use crate::{DaemonApp, DaemonConfig, DaemonError};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+pub(crate) mod allocation;
 #[cfg(unix)]
 mod claude_executable;
 #[cfg(unix)]
