@@ -799,6 +799,19 @@ async function main() {
     const offSince = Date.now() - 1000
     await sendPrompt(acquirePrompt("ACQUIREOFF"), "ACQUIREOFF_DONE")
     check("with the toggle off there is no acquisition question and the request goes on", (await askedBefore()).length === 0 && claudeTranscript(a.dir + "/chariox", offSince).includes("no connected machine service"))
+    // Switched on again, the question comes back.
+    await a.rpc({ SetUserConfigValue: { path: "agents.ask_before_acquiring_machines", value: "true" } })
+    const onAgain = Date.now() - 1000
+    await a.rpc(submitPromptRequest(roomA.session.id, attached, agentA, acquirePrompt("ACQUIREAGAIN"), []))
+    let askedAgain
+    await until(async () => {
+      await a.rpc({ PumpTerminalOutput: { session_id: roomA.session.id, attachment_id: attached } }).catch(() => {})
+      askedAgain = (await askedBefore())[0]
+      return askedAgain
+    }, "acquisition question after the setting is switched on again", 180000)
+    check("switched on again, the acquisition question is asked again", !!askedAgain, { message: askedAgain?.message })
+    await a.rpc({ RespondToInteraction: { session_id: roomA.session.id, interaction_id: askedAgain.id, choice_id: "decline" } })
+    await finished("ACQUIREAGAIN_DONE", onAgain)
   }
 }
 try {
