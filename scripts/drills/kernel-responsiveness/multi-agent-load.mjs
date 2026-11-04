@@ -60,6 +60,10 @@ function seedSubscriptions(root, kernel, sizes, targets, runStates, padding) {
     return db.prepare('SELECT count(*) AS n, sum(length(payload)) AS bytes FROM agent_outside_subscriptions').get()
   } finally { db.close() }
 }
+function countTaskStates(root) {
+  const db = new DatabaseSync(join(root, 'chariox/state.db'), { readOnly: true })
+  try { return Object.fromEntries(db.prepare('SELECT state, count(*) AS n FROM agent_tasks GROUP BY state').all().map(row => [row.state ?? 'unreadable', row.n])) } finally { db.close() }
+}
 function countEvents(root) {
   const db = new DatabaseSync(join(root, 'chariox/state.db'), { readOnly: true })
   try { return db.prepare('SELECT count(*) AS n FROM durable_state_events').get().n } finally { db.close() }
@@ -245,6 +249,7 @@ export async function measureMultiAgentLoad({ rpc, connect, root, mcpUrl, pid, s
 
   await phase('idle', o.idleSeconds, false)
   await phase('load', o.seconds, true)
+  out.task_states = countTaskStates(root)
   // Every finished turn settles its task through the kernel; only a turn cut off by the end of the load may remain.
   for (const lane of out.lanes) {
     const tasks = (await probe.send({ GetSessionState: { session_id: lane.session_id } })).SessionState.session.agent_tasks ?? []

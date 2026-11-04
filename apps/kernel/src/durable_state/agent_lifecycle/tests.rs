@@ -3833,3 +3833,47 @@ fn source_outcome_reads_only_the_tasks_it_can_change() {
         "a terminal outcome decoded {few} tasks with 2 other turns and {many} with 40"
     );
 }
+
+// MP-08 / MP-09 / MP-10 / MP-11 KR-06: this check runs on every turn completion.
+#[test]
+fn another_unfinished_task_is_found_without_walking_the_finished_history() {
+    let f = Fixture::new();
+    let mut db = Connection::open(f.root.join("state.sqlite")).unwrap();
+    let mut steps = Vec::new();
+    let mut next = 0;
+    for count in [10, 500] {
+        let tx = db.transaction().unwrap();
+        while next < count {
+            let id = format!("finished-{next}");
+            let state = if next % 2 == 0 { "done" } else { "cancelled" };
+            let payload = serde_json::json!({"state":state});
+            tx.execute("INSERT INTO agent_tasks(task_id,room_id,agent_id,prompt_id,payload) VALUES(?1,'r','a',?1,?2)", params![id, payload.to_string()]).unwrap();
+            next += 1;
+        }
+        tx.commit().unwrap();
+        assert!(!f
+            .store
+            .agent_has_other_unfinished_task("r", "a", "current")
+            .unwrap());
+        steps.push(UNFINISHED_TASK_STEPS.with(|n| n.get()));
+    }
+    assert!(
+        steps[1] <= steps[0] + 64,
+        "the unfinished lookup grew from {} to {} SQLite steps",
+        steps[0],
+        steps[1]
+    );
+    db.execute("INSERT INTO agent_tasks(task_id,room_id,agent_id,prompt_id,payload) VALUES('broken','r','a','broken','{')", []).unwrap();
+    assert!(
+        f.store
+            .agent_has_other_unfinished_task("r", "a", "current")
+            .unwrap(),
+        "an unreadable task must still count as unfinished"
+    );
+    assert!(
+        !f.store
+            .agent_has_other_unfinished_task("r", "a", "broken")
+            .unwrap(),
+        "the current task is excluded"
+    );
+}

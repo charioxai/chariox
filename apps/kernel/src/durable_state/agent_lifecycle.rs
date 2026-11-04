@@ -143,6 +143,12 @@ impl DurableKernelStateStore {
             params![room, agent],
         )
     }
+    /// One task by its immutable identity, without reading its agent's history.
+    pub(crate) fn agent_task(&self, task: &str) -> Result<Option<AgentTaskExecution>, DaemonError> {
+        Ok(self
+            .read_tasks("agent.lifecycle.task", "task_id=?1", [task])?
+            .pop())
+    }
     /// The tasks a lifecycle sweep can act on: unfinished or unreadable ones, cancelled ones whose
     /// terminal outcome is not recorded yet, and finished ones that carry obligations. Every other
     /// finished task is complete, so the sweep does not read it.
@@ -200,13 +206,15 @@ impl DurableKernelStateStore {
         task: &str,
     ) -> Result<bool, DaemonError> {
         let db = self.lock_connection("agent.lifecycle.unfinished")?;
-        db.query_row(
-            "SELECT EXISTS(SELECT 1 FROM agent_tasks WHERE room_id=?1 AND agent_id=?2 AND task_id<>?3 \
-             AND (state IS NULL OR state NOT IN ('done','cancelled')))",
-            params![room, agent, task],
-            |r| r.get(0),
-        )
-        .map_err(sql)
+        // The planner otherwise prefers the per-agent history index before ANALYZE.
+        let mut q = db.prepare("SELECT EXISTS(SELECT 1 FROM agent_tasks INDEXED BY agent_tasks_unfinished WHERE room_id=?1 AND agent_id=?2 AND task_id<>?3 \
+             AND (state IS NULL OR state NOT IN ('done','cancelled')))").map_err(sql)?;
+        let exists = q
+            .query_row(params![room, agent, task], |r| r.get(0))
+            .map_err(sql)?;
+        #[cfg(test)]
+        UNFINISHED_TASK_STEPS.with(|n| n.set(q.get_status(rusqlite::StatementStatus::VmStep)));
+        Ok(exists)
     }
     fn read_tasks(
         &self,
@@ -651,6 +659,8 @@ fn index_task_lookups(db: &Connection) -> Result<(), DaemonError> {
     }
     db.execute_batch(
         "CREATE INDEX IF NOT EXISTS agent_tasks_state ON agent_tasks(state);
+         CREATE INDEX IF NOT EXISTS agent_tasks_unfinished ON agent_tasks(room_id,agent_id)
+             WHERE state IS NULL OR state NOT IN ('done','cancelled');
          CREATE INDEX IF NOT EXISTS agent_tasks_live ON agent_tasks(room_id,agent_id,state);
          CREATE INDEX IF NOT EXISTS agent_tasks_visible ON agent_tasks(room_id,state);
          CREATE INDEX IF NOT EXISTS agent_tasks_pending_prompt ON agent_tasks(pending_prompt_id);
@@ -1202,3 +1212,6 @@ impl PendingLifecycleOutcome {
             .map_err(|_| error("writer response lost; intent uncertain"))?
     }
 }
+
+#[cfg(test)]
+thread_local! { static UNFINISHED_TASK_STEPS: std::cell::Cell<i32> = const { std::cell::Cell::new(0) }; }
