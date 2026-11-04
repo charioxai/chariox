@@ -73,6 +73,10 @@ pub(super) struct Entry {
     admitted: bool,
     /// The user started it now: it never waits again.
     forced: bool,
+    /// It waited and its turn came: a writer then keeps writing, like the
+    /// oldest one, down to half the disk floor instead of waiting again a
+    /// moment later.
+    resumed: bool,
     /// It may wait for room: set when it starts, by who started it, and
     /// never changed after (a person's own terminal command never waits).
     holdable: bool,
@@ -391,13 +395,14 @@ impl Ledger {
                 changed.push(owner);
             }
         }
-        // The oldest writer keeps writing into the margin above half the
-        // floor, so one build finishes and frees what it wrote; below that
-        // nothing may write.
+        // The oldest writer, and a writer whose turn in line came, keep
+        // writing into the margin above half the floor, so a build finishes
+        // and frees what it wrote; below that nothing may write.
         let full = |entry: &Entry| {
             entry.disk(room).is_some_and(|disk| {
                 disk.free < disk.floor
-                    && (Some(entry.arrived) != state.oldest_writer || disk.free < disk.floor / 2)
+                    && ((Some(entry.arrived) != state.oldest_writer && !entry.resumed)
+                        || disk.free < disk.floor / 2)
             })
         };
         if let Some(owner) = self.pause(members, WaitReason::Disk, |entry, command| {
@@ -586,6 +591,7 @@ impl Ledger {
         }
         entry.stop_waiting();
         entry.admitted = true;
+        entry.resumed = true;
         state.running(entry, room);
         let unit = observation.unit.clone();
         drop(observation);

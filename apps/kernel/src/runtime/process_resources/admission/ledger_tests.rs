@@ -827,6 +827,51 @@ fn the_oldest_writer_keeps_writing_down_to_half_the_floor_and_stops_below() {
 }
 
 #[test]
+fn a_writer_whose_turn_came_keeps_writing_down_to_half_the_floor() {
+    // A 100 GiB volume has a 10 GiB floor: 9 GiB is below it, above its half.
+    let free = Arc::new(AtomicU64::new(9 * GIB));
+    let volume = volume(&free);
+    let mut build = entry(1, Peak::default());
+    build.expected = None;
+    build.wait = Some(Wait::Paused(WaitReason::Disk));
+    build.stopped = true;
+    build.writes = 100 * MIB;
+    let current = owner(
+        "agent",
+        true,
+        vec![writer(1, 100 * MIB, 50 * MIB)],
+        vec![(1, build)],
+    );
+    let mut ledger = Ledger::new(None);
+    let pass = |ledger: &mut Ledger| {
+        ledger.pass(
+            std::slice::from_ref(&current),
+            &current,
+            &room(GIB, false, &*volume),
+        );
+    };
+    pass(&mut ledger);
+    assert_eq!(
+        wait(&current, 1),
+        None,
+        "the waiting writer did not continue"
+    );
+    pass(&mut ledger);
+    assert_eq!(
+        wait(&current, 1),
+        None,
+        "the writer that just continued was paused again"
+    );
+    free.store(4 * GIB, Ordering::SeqCst);
+    pass(&mut ledger);
+    assert_eq!(
+        wait(&current, 1),
+        Some(Wait::Paused(WaitReason::Disk)),
+        "a writer kept writing below half the floor"
+    );
+}
+
+#[test]
 fn a_command_that_needs_more_than_the_whole_pool_is_refused_not_held() {
     let free = Arc::new(AtomicU64::new(50 * GIB));
     let volume = volume(&free);
