@@ -622,6 +622,42 @@ fn a_short_value_split_across_stream_chunks_is_masked_as_a_whole_word() {
     assert_eq!(parts, ["say [redacted]", " now", " tokenhunter"]);
 }
 
+// A mistaken capture removed after a restart must stay removed: the sealed registry is loaded lazily.
+#[test]
+fn a_dropped_value_stays_dropped_in_a_room_not_yet_loaded_after_restart() {
+    let root = TestRoot::new();
+    let path = root.path().join("observations");
+    let key = crate::transport::relay_crypto::generate_private_key_base64();
+    let store = RoomSecretObservations::new(path.clone(), BTreeSet::new()).with_identity(&key);
+    store.register("room", "Token").unwrap();
+    store
+        .register("room", "vault-page-copy-regression-value")
+        .unwrap();
+    drop(store);
+
+    let restarted = RoomSecretObservations::new(path.clone(), BTreeSet::from(["room".into()]))
+        .with_identity(&key);
+    assert!(restarted.drop_value("room", "cap-1", "Token").unwrap());
+    assert_eq!(
+        restarted.scrub_text_or_withhold("room", "Token page"),
+        "Token page"
+    );
+
+    let again =
+        RoomSecretObservations::new(path, BTreeSet::from(["room".into()])).with_identity(&key);
+    assert_eq!(
+        again.scrub_text_or_withhold("room", "Token page"),
+        "Token page"
+    );
+    assert_eq!(
+        again.scrub_text_or_withhold("room", "vault-page-copy-regression-value"),
+        "[redacted]"
+    );
+    assert!(!again
+        .drop_value("never-protected", "cap-1", "Token")
+        .unwrap());
+}
+
 #[test]
 fn vault_echo_scrubs_nested_tool_text_and_simple_transforms_and_room_isolation() {
     let root = TestRoot::new();

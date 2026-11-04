@@ -451,9 +451,14 @@ impl RoomSecretObservations {
             .map(|store| store.lock_public_history())
             .transpose()?;
         let mut rooms = self.rooms.lock().map_err(|_| protection_error())?;
-        let Some(protection) = rooms.get_mut(room) else {
-            return Ok(false);
-        };
+        // A Room not loaded since the restart still has its sealed registry on disk.
+        if !rooms.contains_key(room) {
+            if std::fs::symlink_metadata(self.marker(room)).is_err() {
+                return Ok(false);
+            }
+            rooms.insert(room.into(), self.initial(room)?);
+        }
+        let protection = rooms.get_mut(room).ok_or_else(protection_error)?;
         let hash = format!("{:x}", Sha256::digest(value.as_bytes()));
         let known = protection.value_count();
         let (targets, keys) = (protection.targets.len(), protection.vault_keys.len());
