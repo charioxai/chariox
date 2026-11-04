@@ -9,6 +9,12 @@ connector for its existing retry/backoff path. Reauthentication queued on a
 socket is not evidence that the relay received it. These changes add no runtime
 authority to Cloud or the relay and change no serialized protocol shape.
 
+Graceful kernel shutdown waits for the serialized Cloud presence publisher to
+send its final OFFLINE intent, within a bounded deadline. Otherwise a stopped
+kernel stays advertised as ONLINE until heartbeat expiry, causing later browser
+clients to attempt stale targets and eventually receive bootstrap failures.
+Connection status also checks the selected relay URL during transport changes.
+
 Web briefly retains events that precede subscription binding, preserves ingress
 order across binding, and quietly expires unknown or retired subscriptions.
 The shared directory bounds simultaneous registration waits. Real Web/TUI Room

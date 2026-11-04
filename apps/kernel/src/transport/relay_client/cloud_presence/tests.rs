@@ -100,3 +100,45 @@ fn presence_retry_delay_is_prompt_and_bounded() {
     assert_eq!(presence_retry_delay(2), Duration::from_secs(4));
     assert_eq!(presence_retry_delay(9), Duration::from_secs(5));
 }
+
+#[tokio::test(start_paused = true)]
+async fn shutdown_drains_the_final_offline_intent_after_the_in_flight_publish() {
+    let cloud = Arc::new(FakeCloud::default());
+    *cloud.gated.lock().unwrap() = true;
+    let publisher = fake_publisher(Arc::clone(&cloud));
+    publisher.publish(true, "relay registration sent");
+    settle().await;
+    publisher.publish(false, "kernel shutting down");
+    let finishing = tokio::spawn(publisher.finish());
+    settle().await;
+    assert!(
+        !finishing.is_finished(),
+        "shutdown must await the pending presence request"
+    );
+    *cloud.gated.lock().unwrap() = false;
+    cloud.gate.notify_one();
+    finishing.await.unwrap();
+    assert_eq!(*cloud.published.lock().unwrap(), vec![true, false]);
+    assert_eq!(*cloud.max_in_flight.lock().unwrap(), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn shutdown_attempts_the_final_intent_once_without_retrying_forever() {
+    let cloud = Arc::new(FakeCloud::default());
+    *cloud.failures_left.lock().unwrap() = 100;
+    let publisher = fake_publisher(Arc::clone(&cloud));
+    publisher.publish(false, "kernel shutting down");
+    publisher.finish().await;
+    assert_eq!(*cloud.failures_left.lock().unwrap(), 99);
+}
+
+#[tokio::test(start_paused = true)]
+async fn shutdown_aborts_a_presence_request_that_never_finishes() {
+    let cloud = Arc::new(FakeCloud::default());
+    *cloud.gated.lock().unwrap() = true;
+    let publisher = fake_publisher(cloud);
+    publisher.publish(false, "kernel shutting down");
+    let started = tokio::time::Instant::now();
+    publisher.finish().await;
+    assert_eq!(started.elapsed(), CLOUD_PRESENCE_SHUTDOWN_TIMEOUT);
+}

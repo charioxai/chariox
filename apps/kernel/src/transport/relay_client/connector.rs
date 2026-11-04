@@ -18,13 +18,13 @@ use managed_slice_activation::{socket_has_current_token, ManagedSliceActivationC
 pub async fn run_daemon_relay_connector(
     app: Arc<Mutex<DaemonApp>>,
     state: Arc<RwLock<RelayClientState>>,
-    mut shutdown: watch::Receiver<bool>,
+    shutdown: watch::Receiver<bool>,
 ) {
     let router = Arc::new(CommandRouter::with_interactive_capacity_from_app(
         app,
         INTERACTIVE_COMMAND_QUEUE_LIMIT,
     ));
-    run_daemon_relay_connector_inner(router, state, &mut shutdown, None).await;
+    run_daemon_relay_connector_with_router(router, state, shutdown).await;
 }
 
 pub async fn run_daemon_relay_connector_with_router(
@@ -32,7 +32,9 @@ pub async fn run_daemon_relay_connector_with_router(
     state: Arc<RwLock<RelayClientState>>,
     mut shutdown: watch::Receiver<bool>,
 ) {
-    run_daemon_relay_connector_inner(router, state, &mut shutdown, None).await;
+    let presence = CloudPresencePublisher::start(Arc::clone(&router));
+    run_daemon_relay_connector_inner(router, state, &mut shutdown, None, Some(&presence)).await;
+    presence.finish().await;
 }
 
 #[cfg(test)]
@@ -51,6 +53,7 @@ pub async fn run_daemon_relay_connector_with_router_and_static_relay(
             relay_url,
             relay_token,
         }),
+        None,
     )
     .await;
 }
@@ -74,6 +77,7 @@ pub async fn run_daemon_relay_connector_with_static_relay(
             relay_url,
             relay_token,
         }),
+        None,
     )
     .await;
 }
@@ -560,6 +564,7 @@ async fn run_daemon_relay_connector_inner(
     state: Arc<RwLock<RelayClientState>>,
     shutdown: &mut watch::Receiver<bool>,
     static_relay: Option<StaticRelayConfig>,
+    presence: Option<&CloudPresencePublisher>,
 ) {
     let event_runtime = match RelayEventRuntime::new(router.relay_event_counter_path()) {
         Ok(runtime) => Arc::new(runtime),
@@ -599,9 +604,6 @@ async fn run_daemon_relay_connector_inner(
         Arc::clone(&command_result_cache),
         shutdown.clone(),
     );
-    let presence = static_relay
-        .is_none()
-        .then(|| CloudPresencePublisher::start(Arc::clone(&router)));
     let mut missing_relay_config_reported = false;
     let mut reconnect_attempt = 0_u32;
     let mut token_refresh_failures = 0_u32;
@@ -612,7 +614,7 @@ async fn run_daemon_relay_connector_inner(
 
     loop {
         if *shutdown.borrow() {
-            disconnect_relay(&state, "shutdown before relay connect", presence.as_ref()).await;
+            disconnect_relay(&state, "shutdown before relay connect", presence).await;
             return;
         }
 
@@ -682,7 +684,7 @@ async fn run_daemon_relay_connector_inner(
                     }),
                 );
                 if token_refresh_failures == 0 {
-                    disconnect_relay(&state, "cloud relay token expired", presence.as_ref()).await;
+                    disconnect_relay(&state, "cloud relay token expired", presence).await;
                 }
                 record_relay_reconnect(&router, &relay_url, "cloud relay token expired", delay);
                 token_refresh_failures = token_refresh_failures.saturating_add(1);
@@ -732,7 +734,7 @@ async fn run_daemon_relay_connector_inner(
                                     disconnect_relay(
                                         &state,
                                         "relay configuration unavailable",
-                                        presence.as_ref(),
+                                        presence,
                                     )
                                     .await;
                                 }
@@ -759,7 +761,7 @@ async fn run_daemon_relay_connector_inner(
                                     disconnect_relay(
                                         &state,
                                         "shutdown while relay configuration unavailable",
-                                        presence.as_ref(),
+                                        presence,
                                     )
                                     .await;
                                     return;
@@ -821,7 +823,7 @@ async fn run_daemon_relay_connector_inner(
                         "timeout_ms": RELAY_CONNECT_TIMEOUT.as_millis(),
                     }),
                 );
-                disconnect_relay(&state, "relay connect timed out", presence.as_ref()).await;
+                disconnect_relay(&state, "relay connect timed out", presence).await;
                 let daemon_id = router.relay_daemon_id();
                 let delay = relay_reconnect_delay(&daemon_id, reconnect_attempt);
                 record_relay_reconnect(&router, &relay_url, "relay connect timed out", delay);
@@ -885,12 +887,7 @@ async fn run_daemon_relay_connector_inner(
                 if send_outgoing_envelope(&outgoing_tx, register).is_err() {
                     writer_task.abort();
                     clear_remote_inventory_projection(&router);
-                    disconnect_relay(
-                        &state,
-                        "failed to send relay registration",
-                        presence.as_ref(),
-                    )
-                    .await;
+                    disconnect_relay(&state, "failed to send relay registration", presence).await;
                     let delay = relay_reconnect_delay(&daemon_id, reconnect_attempt);
                     record_relay_reconnect(
                         &router,
@@ -920,7 +917,7 @@ async fn run_daemon_relay_connector_inner(
                         Err(error) => {
                             writer_task.abort();
                             clear_remote_inventory_projection(&router);
-                            disconnect_relay(&state, &error, presence.as_ref()).await;
+                            disconnect_relay(&state, &error, presence).await;
                             let delay = relay_reconnect_delay(&daemon_id, reconnect_attempt);
                             record_relay_reconnect(&router, &relay_url, &error, delay);
                             reconnect_attempt = reconnect_attempt.saturating_add(1);
@@ -957,7 +954,7 @@ async fn run_daemon_relay_connector_inner(
                 }
                 reconnect_attempt = 0;
                 let connected_at = Instant::now();
-                if let Some(presence) = presence.as_ref() {
+                if let Some(presence) = presence {
                     presence.publish(true, "relay registration sent");
                 }
                 let mut cloud_presence_schedule =
@@ -994,7 +991,7 @@ async fn run_daemon_relay_connector_inner(
                                 abort_subscription_tasks(&router, &subscription_tasks).await;
                                 writer_task.abort();
                                 clear_remote_inventory_projection(&router);
-                                disconnect_relay(&state, "daemon shutting down", presence.as_ref()).await;
+                                disconnect_relay(&state, "daemon shutting down", presence).await;
                                 return;
                             }
                         }
@@ -1013,7 +1010,7 @@ async fn run_daemon_relay_connector_inner(
                                             abort_subscription_tasks(&router, &subscription_tasks).await;
                                             writer_task.abort();
                                             clear_remote_inventory_projection(&router);
-                                            disconnect_relay(&state, "relay receipt writer stalled", presence.as_ref()).await;
+                                            disconnect_relay(&state, "relay receipt writer stalled", presence).await;
                                             break "relay receipt writer stalled";
                                         }
                                     }
@@ -1054,7 +1051,7 @@ async fn run_daemon_relay_connector_inner(
                                         disconnect_relay(
                                             &state,
                                             &disconnect_reason,
-                                            presence.as_ref(),
+                                            presence,
                                         )
                                         .await;
                                         break "relay payload handling failed";
@@ -1071,7 +1068,7 @@ async fn run_daemon_relay_connector_inner(
                                     abort_subscription_tasks(&router, &subscription_tasks).await;
                                     writer_task.abort();
                                     clear_remote_inventory_projection(&router);
-                                    disconnect_relay(&state, "relay close frame received", presence.as_ref()).await;
+                                    disconnect_relay(&state, "relay close frame received", presence).await;
                                     break "relay close frame received";
                                 }
                                 Some(Ok(Message::Ping(payload))) => {
@@ -1087,7 +1084,7 @@ async fn run_daemon_relay_connector_inner(
                                     abort_subscription_tasks(&router, &subscription_tasks).await;
                                     writer_task.abort();
                                     clear_remote_inventory_projection(&router);
-                                    disconnect_relay(&state, "relay read failed or ended", presence.as_ref()).await;
+                                    disconnect_relay(&state, "relay read failed or ended", presence).await;
                                     break "relay read failed or ended";
                                 }
                             }
@@ -1099,7 +1096,7 @@ async fn run_daemon_relay_connector_inner(
                             abort_subscription_tasks(&router, &subscription_tasks).await;
                             writer_task.abort();
                             clear_remote_inventory_projection(&router);
-                            disconnect_relay(&state, "relay writer ended", presence.as_ref()).await;
+                            disconnect_relay(&state, "relay writer ended", presence).await;
                             break "relay writer ended";
                         }
                         _ = tokio::time::sleep_until((last_relay_read_at + RELAY_READ_IDLE_TIMEOUT).into()) => {
@@ -1108,7 +1105,7 @@ async fn run_daemon_relay_connector_inner(
                             abort_subscription_tasks(&router, &subscription_tasks).await;
                             writer_task.abort();
                             clear_remote_inventory_projection(&router);
-                            disconnect_relay(&state, "relay stopped sending frames", presence.as_ref()).await;
+                            disconnect_relay(&state, "relay stopped sending frames", presence).await;
                             break "relay stopped sending frames";
                         }
                         _ = token_refresh_interval.tick() => {
@@ -1159,7 +1156,7 @@ async fn run_daemon_relay_connector_inner(
                                                 "phase": "token_refresh",
                                             }),
                                         );
-                                        if let Some(presence) = presence.as_ref() {
+                                        if let Some(presence) = presence {
                                             presence.publish(true, "relay reauthenticated");
                                         }
                                         None
@@ -1220,7 +1217,7 @@ async fn run_daemon_relay_connector_inner(
                                             "phase": "heartbeat",
                                         }),
                                     );
-                                    if let Some(presence) = presence.as_ref() {
+                                    if let Some(presence) = presence {
                                         presence.publish(true, "relay reauthenticated");
                                     }
                                 }
@@ -1257,7 +1254,7 @@ async fn run_daemon_relay_connector_inner(
                                 abort_subscription_tasks(&router, &subscription_tasks).await;
                                 writer_task.abort();
                                 clear_remote_inventory_projection(&router);
-                                disconnect_relay(&state, "relay heartbeat send failed", presence.as_ref()).await;
+                                disconnect_relay(&state, "relay heartbeat send failed", presence).await;
                                 break "relay heartbeat send failed";
                             }
                             // Same-identity token installation reauthenticates in place.
@@ -1283,7 +1280,7 @@ async fn run_daemon_relay_connector_inner(
                                     outgoing_tx.clone(),
                                 ));
                             }
-                            if let Some(presence) = presence.as_ref() {
+                            if let Some(presence) = presence {
                                 if cloud_presence_schedule.claim_publish_if_due(Instant::now()) {
                                     presence.publish(true, "relay heartbeat");
                                 }
@@ -1311,7 +1308,7 @@ async fn run_daemon_relay_connector_inner(
                     }),
                 );
                 clear_remote_inventory_projection(&router);
-                disconnect_relay(&state, "relay socket connect failed", presence.as_ref()).await;
+                disconnect_relay(&state, "relay socket connect failed", presence).await;
                 let daemon_id = router.relay_daemon_id();
                 let delay = relay_reconnect_delay(&daemon_id, reconnect_attempt);
                 record_relay_reconnect(&router, &relay_url, "relay socket connect failed", delay);

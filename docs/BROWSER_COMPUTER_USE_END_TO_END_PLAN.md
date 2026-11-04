@@ -1663,6 +1663,15 @@ traffic must not produce console warnings; waits for unknown ids must have a
 bounded duration and capacity. Repeat Room opening in the real built Web client
 at DPR 1 and 2 and retain screenshots and sanitized console captures.
 
+Repeat with two independent browser clients and reload, then stop the kernel
+immediately after a fresh Cloud presence heartbeat. Start another kernel against
+the same hosted stack and repeat both clients and reload. The stopped kernel
+must be OFFLINE before shutdown completes, receive no browser bootstrap or
+socket admission, and leave no console warning/error or bootstrap HTTP failure.
+The final presence intent must drain behind any in-flight publish, with a bounded
+shutdown deadline. When switching relays, connection status must belong to the
+selected relay rather than a previous socket.
+
 ### Resiliency and failure injection
 
 Resiliency is a release gate, not an incidental result of happy-path tests.
