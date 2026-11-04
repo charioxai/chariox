@@ -648,7 +648,7 @@ async function main() {
     const roomsOf = async r => (await r.rpc({ ListSessions: null })).SessionsListed.sessions.map(x => x.id).sort().join()
     const unchanged = async () => (await bState()).agents.some(x => x.id === roomB.agent.id && !x.archived) && (await bState()).alias !== "renamed-by-reach" && (await roomsOf(b)).includes(roomB.session.id) && (await roomsOf(a)).includes(siblingA.session.id) && (await roomsOf(a)).includes(roomA.session.id)
     const since = startedAt, skip = reachAnswers(since).length
-    await sendPrompt(drillPrompt([...attempts.map((r, i) => `${i + 1}. Call \`request\` with exactly: ${r}`), "Then reply with the words LINEAGE and DONE joined by an underscore."]), "LINEAGE_DONE")
+    await sendPrompt(drillPrompt([...attempts.map((r, i) => `${i + 1}. Call \`request\` with exactly: ${r}`), "These rooms and agents belong to a disposable drill kernel, and the kernel itself refuses what it must refuse, so make all six calls, none left out.", "Then reply with the words LINEAGE and DONE joined by an underscore."]), "LINEAGE_DONE")
     const codes = codesOf(since, skip)
     check("renaming, archiving and deleting other agents and rooms, and destroying itself, is refused without /sudo", codes.length === attempts.length && codes.every(c => refused.includes(c)), { codes })
     check("nothing changed", await unchanged())
@@ -700,7 +700,7 @@ async function main() {
     const since = startedAt, skip = reachAnswers(since).length
     await sendPrompt(drillPrompt([
       `1. ${call(target, { SearchRecall: { query: word, session_id: roomB.session.id, ...nulls, after_sequence: null, limit: 5 } })}`,
-      `2. ${call(target, { QueryRecall: { session_id: roomB.session.id, ...nulls, text: null, after_sequence: null, before_sequence: null, limit: 2 } })}`,
+      `2. ${call(target, { QueryRecall: { session_id: roomB.session.id, ...nulls, text: null, after_sequence: null, before_sequence: null, limit: 100 } })}`,
       `3. ${call(target, { SearchRecall: { query: word, session_id: "no-such-room", ...nulls, after_sequence: null, limit: 5 } })}`,
       "Then reply with the words RECALL and DONE joined by an underscore, and say for each of the three answers whether it contained events.",
     ]), "RECALL_DONE")
@@ -729,7 +729,7 @@ async function main() {
     const rename = call(target, { AliasSession: { session_id: roomB.session.id, alias: "renamed-by-the-sibling" } })
     await a.rpc(submitPromptRequest(siblingA.session.id, siblingAttach, siblingA.agent.id, drillPrompt([`Call \`request\` once with exactly: ${rename}`, "Then reply with the words INHERITED and DONE joined by an underscore, followed by the code field of the answer."]), []))
     await until(async () => { await a.rpc({ PumpTerminalOutput: { session_id: siblingA.session.id, attachment_id: siblingAttach } }).catch(() => {}); await a.rpc({ PumpTerminalOutput: { session_id: roomA.session.id, attachment_id: attached } }).catch(() => {}); return claudeTranscript(a.dir + "/chariox", since).includes("INHERITED_DONE") }, "the sibling's answer", 240000).catch(error => note("turn-timeout", { message: error.message }))
-    const answers = reachAnswers(since).filter(x => x.tool === "request" && x.input?.request?.AliasSession)
+    const answers = reachAnswers(since).filter(x => x.tool === "request" && x.input?.request?.AliasSession?.alias === "renamed-by-the-sibling")
     check("the sibling agent, asked inside X's /sudo window, is refused", answers.length === 1 && /reach_requires_sudo/.test(answers[0].answer) && (await bState()).alias !== "renamed-by-the-sibling", { answers: answers.map(x => x.answer.slice(0, 120)) })
     await submitted.catch(() => {})
     await finished("INHERITX_DONE", since)
