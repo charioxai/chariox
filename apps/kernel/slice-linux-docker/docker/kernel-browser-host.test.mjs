@@ -3198,11 +3198,11 @@ test('a background lease follows session replacement and releases while the pers
 
 test('a background renderer has its own tiny acknowledged capture until the person shows it', () => using(async ({host,connection,sent,handlers}) => {
   await host.request({op:'open',url:'https://example.com/person'});
+  const send=connection.send;
+  connection.send=(method,params,session)=>method==='Target.attachToTarget' ? Promise.resolve({sessionId:'background-capture'}) : send(method,params,session);
   await host.request({op:'open',url:'https://example.com/agent',focused_agent:true});
   const tab=[...host.tabs.values()].find(t=>t.url.endsWith('/agent'));
   host.activeTarget=[...host.tabs.values()].find(t=>t.url.endsWith('/person')).target_id;
-  const send=connection.send;
-  connection.send=(method,params,session)=>method==='Target.attachToTarget' ? Promise.resolve({sessionId:'background-capture'}) : send(method,params,session);
   await host.holdBackground(tab);
   const start=sent.find(c=>c.method==='Page.startScreencast');
   assert.ok(start,'focus emulation alone does not schedule hidden RenderWidgets at full speed');
@@ -3226,3 +3226,14 @@ test('kernel-admitted agent input does not repeat the idle wait while Rust holds
   await host.request({ op: 'input', focused_agent: true, _person_idle_checked: true, ...base, input: { kind: 'key', key: 'b' } });
   assert.ok(Date.now() - startedAt < 100, 'the kernel already waited outside its mutation reservation');
 }, { personIdleMs: 150 }));
+
+test('an agent opening a background Tab starts its renderer before any later agent action', () => using(async ({ host, sent }) => {
+  const shown = await host.request({ op: 'open', url: 'https://example.com/person' });
+  const front = host.tabs.get(shown.tab_id).target_id;
+  host.tabGroups = { active: async () => front, sync: async () => true, close() {}, keepalive: async () => {}, viewport: () => null };
+  host.browser.inputCapture = new BrowserInputCapture();
+  const opened = await host.request({ op: 'open', url: 'https://example.com/agent', focused_agent: true });
+  const target = host.tabs.get(opened.tab_id).target_id;
+  assert.ok(host.backgroundHolds.has(target), 'open itself holds the background renderer');
+  assert.ok(sent.some(call => call.method === 'Page.startScreencast'), 'the new renderer is already scheduling frames');
+}));

@@ -1056,7 +1056,13 @@ export class KernelBrowserHost {
     const agentRequest = command.focused_agent || command._agent_input;
     if (agentRequest && ["open", "navigate"].includes(command.op) && extensionManagementUrl(command.url)) throw new Error(EXTENSIONS_REFUSED);
     // Only the person changes the visible Tab: an agent's new Tab opens behind it.
-    if (command.op === "open") { const opened = await this.open(command.url, command.tab_id, { signal, downloadSession: command._download_session, background: Boolean(agentRequest) }); await this.rebindWindows(); return this.observe(opened, null, scope); }
+    if (command.op === "open") {
+      const opened = await this.open(command.url, command.tab_id, { signal, downloadSession: command._download_session, background: Boolean(agentRequest) });
+      await this.rebindWindows();
+      const tab = agentRequest ? this.tabs.get(opened.tab_id) : null;
+      if (tab) await this.holdBackground(tab).catch(() => {});
+      return this.observe(opened, null, scope);
+    }
     for (const stream of this.displays.values()) if (Date.now() > stream.expires) await this.removeDisplay(stream);
     if(['display_suspend','display_resume'].includes(command.op)){
       if(command.focused_agent||command._agent_input)throw new UserDomainRefusal('not_granted');
