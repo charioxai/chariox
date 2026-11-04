@@ -755,6 +755,27 @@ fn watched_sleep(unit: &str) -> (std::process::Child, ProcessDomain, String) {
     (child, domain, key)
 }
 
+/// A hot reload ends the children the kernel leaves behind; a sample running
+/// then must not stop the tree it watches, which the new program adopts.
+#[cfg(unix)]
+#[test]
+fn a_ps_ended_by_a_signal_does_not_stop_the_tree_it_samples() {
+    use std::os::unix::process::ExitStatusExt;
+    let killed = std::process::ExitStatus::from_raw(libc::SIGKILL);
+    assert!(
+        matches!(sampling::ps_refusal(killed), sampling::SamplingError::Ended),
+        "a signal ended ps, which says nothing of the tree"
+    );
+    let refused = std::process::ExitStatus::from_raw(1 << 8);
+    assert!(
+        matches!(
+            sampling::ps_refusal(refused),
+            sampling::SamplingError::Unusable(_)
+        ),
+        "a ps that exits with a failure cannot give the columns"
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn a_kernel_short_of_resources_for_a_moment_keeps_the_tree_it_watches() {
