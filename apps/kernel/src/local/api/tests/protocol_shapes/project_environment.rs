@@ -177,10 +177,18 @@ fn environment_requests_have_the_camel_case_wire_of_protocol_972() {
             json!({"ResolveEnvironmentProposal": {"projectId": "p", "proposalId": "0123456789abcdef", "accept": false}}),
         ),
         (
-            LocalDaemonRequest::GetEnvironmentOperation(EnvironmentOperationRequest {
+            LocalDaemonRequest::GetEnvironmentOperation(GetEnvironmentOperationRequest {
                 operation_id: "op".into(),
+                wait_after_updates: None,
             }),
             json!({"GetEnvironmentOperation": {"operationId": "op"}}),
+        ),
+        (
+            LocalDaemonRequest::GetEnvironmentOperation(GetEnvironmentOperationRequest {
+                operation_id: "op".into(),
+                wait_after_updates: Some(3),
+            }),
+            json!({"GetEnvironmentOperation": {"operationId": "op", "waitAfterUpdates": 3}}),
         ),
         (
             LocalDaemonRequest::CancelEnvironmentOperation(EnvironmentOperationRequest {
@@ -258,6 +266,7 @@ fn environment_views_carry_names_and_presence_never_a_value() {
         ended_at_ms: None,
         exit_code: None,
         reason: None,
+        updates: 0,
         output_tail: "line\n".into(),
         entries: Vec::new(),
         source_label: None,
@@ -267,7 +276,7 @@ fn environment_views_carry_names_and_presence_never_a_value() {
         json!({"EnvironmentOperation": {"operation": {
             "operationId": "op", "projectId": "p", "checkoutPath": "/work/p", "kind": "setup",
             "state": "running", "startedAtMs": 1, "endedAtMs": null, "exitCode": null,
-            "reason": null, "outputTail": "line\n", "entries": [], "sourceLabel": null
+            "reason": null, "updates": 0, "outputTail": "line\n", "entries": [], "sourceLabel": null
         }}})
     );
     let import = EnvironmentOperationView {
@@ -297,6 +306,7 @@ fn environment_views_carry_names_and_presence_never_a_value() {
             ended_at_ms: Some(2),
             exit_code: None,
             reason: Some("Source offline".into()),
+            updates: 0,
             output_tail: String::new(),
             entries: Vec::new(),
             source_label: None,
@@ -307,7 +317,7 @@ fn environment_views_carry_names_and_presence_never_a_value() {
         json!({
             "operationId": "op", "projectId": "p", "checkoutPath": "/work/p", "kind": "import",
             "state": "failed", "startedAtMs": 1, "endedAtMs": 2, "exitCode": null,
-            "reason": "Source offline", "outputTail": "",
+            "reason": "Source offline", "updates": 0, "outputTail": "",
             "entries": [
                 {"kind": "file", "name": "config/secrets.json", "state": "imported", "reason": null},
                 {"kind": "secret", "name": "NOTION_TOKEN", "state": "failed", "reason": "Source offline"}

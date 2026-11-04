@@ -12,6 +12,25 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 const DIRECTORY: &str = "project-environment-operations";
 
+/// Wakes the readers that wait for an operation to change; every operation of this kernel signals it.
+#[derive(Clone)]
+pub(crate) struct OperationChanges(Arc<tokio::sync::watch::Sender<u64>>);
+
+impl OperationChanges {
+    pub(crate) fn new() -> Self {
+        Self(Arc::new(tokio::sync::watch::channel(0).0))
+    }
+
+    pub(crate) fn notify(&self) {
+        self.0.send_modify(|count| *count += 1);
+    }
+
+    /// Subscribe before reading the view, so a change in between is not missed.
+    pub(crate) fn subscribe(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.0.subscribe()
+    }
+}
+
 struct Live {
     view: Mutex<EnvironmentOperationView>,
     stop: tokio::sync::watch::Sender<bool>,
@@ -25,6 +44,7 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 pub(crate) struct EnvironmentOperations {
     root: PathBuf,
+    changes: OperationChanges,
     live: Mutex<HashMap<String, Arc<Live>>>,
 }
 
@@ -41,9 +61,10 @@ pub(crate) enum Begun {
 }
 
 impl EnvironmentOperations {
-    pub(crate) fn new(private_state_root: &Path) -> Arc<Self> {
+    pub(crate) fn new(private_state_root: &Path, changes: OperationChanges) -> Arc<Self> {
         Arc::new(Self {
             root: private_state_root.join(DIRECTORY),
+            changes,
             live: Mutex::new(HashMap::new()),
         })
     }
@@ -91,6 +112,7 @@ impl EnvironmentOperations {
             view.state = EnvironmentOperationState::Failed;
             view.ended_at_ms = Some(crate::session::unix_epoch_ms());
             view.reason = Some("Kernel restarted".into());
+            view.updates += 1;
             self.persist(&view)?;
         }
         Ok(Some(view))
@@ -134,11 +156,13 @@ impl EnvironmentOperations {
             if view.state == EnvironmentOperationState::Running {
                 view.state = EnvironmentOperationState::Cancelled;
                 view.ended_at_ms = Some(crate::session::unix_epoch_ms());
+                view.updates += 1;
                 self.persist(&view)?;
             }
             view.clone()
         };
         live.stop.send_replace(true);
+        self.changes.notify();
         Ok(Some(view))
     }
 }
@@ -165,7 +189,10 @@ impl OperationHandle {
             return;
         }
         change(&mut view);
+        view.updates += 1;
         let _ = self.operations.persist(&view);
+        drop(view);
+        self.operations.changes.notify();
     }
 
     pub(crate) fn finish(&self, state: EnvironmentOperationState, reason: Option<String>) {
@@ -176,7 +203,10 @@ impl OperationHandle {
         view.state = state;
         view.reason = reason;
         view.ended_at_ms = Some(crate::session::unix_epoch_ms());
+        view.updates += 1;
         let _ = self.operations.persist(&view);
+        drop(view);
+        self.operations.changes.notify();
     }
 }
 
@@ -208,6 +238,7 @@ mod tests {
             ended_at_ms: None,
             exit_code: None,
             reason: None,
+            updates: 0,
             output_tail: String::new(),
             entries: Vec::new(),
             source_label: None,
@@ -224,7 +255,7 @@ mod tests {
     #[tokio::test]
     async fn stop_ends_the_view_at_once_and_later_changes_are_dropped() {
         let root = scratch();
-        let operations = EnvironmentOperations::new(&root);
+        let operations = EnvironmentOperations::new(&root, OperationChanges::new());
         let Begun::Started(handle) = operations.begin(view("a")).unwrap() else {
             panic!("new operation");
         };
@@ -245,7 +276,7 @@ mod tests {
     #[tokio::test]
     async fn a_repeated_id_answers_the_existing_operation_and_a_restart_fails_a_running_one() {
         let root = scratch();
-        let operations = EnvironmentOperations::new(&root);
+        let operations = EnvironmentOperations::new(&root, OperationChanges::new());
         let Begun::Started(handle) = operations.begin(view("a")).unwrap() else {
             panic!("new operation");
         };
@@ -258,7 +289,7 @@ mod tests {
         assert!(operations.begin(other_project).is_err());
         // A second kernel process over the same state sees the run as cut off.
         std::mem::forget(handle);
-        let restarted = EnvironmentOperations::new(&root);
+        let restarted = EnvironmentOperations::new(&root, OperationChanges::new());
         let settled = restarted.get("a").unwrap().unwrap();
         assert_eq!(settled.state, EnvironmentOperationState::Failed);
         assert_eq!(settled.reason.as_deref(), Some("Kernel restarted"));
@@ -266,9 +297,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn every_change_counts_as_an_update_and_wakes_a_waiting_reader() {
+        let root = scratch();
+        let changes = OperationChanges::new();
+        let operations = EnvironmentOperations::new(&root, changes.clone());
+        let Begun::Started(handle) = operations.begin(view("a")).unwrap() else {
+            panic!("new operation");
+        };
+        let mut waiting = changes.subscribe();
+        let woken = tokio::spawn(async move { waiting.changed().await.is_ok() });
+        handle.update(|view| view.source_label = Some("A".into()));
+        assert!(woken.await.unwrap(), "the update woke the reader");
+        assert_eq!(operations.get("a").unwrap().unwrap().updates, 1);
+        let mut waiting = changes.subscribe();
+        let woken = tokio::spawn(async move { waiting.changed().await.is_ok() });
+        handle.finish(EnvironmentOperationState::Succeeded, None);
+        assert!(woken.await.unwrap(), "the end woke the reader");
+        assert_eq!(operations.get("a").unwrap().unwrap().updates, 2);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
     async fn a_dropped_handle_does_not_leave_the_operation_running() {
         let root = scratch();
-        let operations = EnvironmentOperations::new(&root);
+        let operations = EnvironmentOperations::new(&root, OperationChanges::new());
         let Begun::Started(handle) = operations.begin(view("a")).unwrap() else {
             panic!("new operation");
         };

@@ -43,6 +43,7 @@ impl KernelRuntimeState {
             ended_at_ms: None,
             exit_code: None,
             reason: None,
+            updates: 0,
             output_tail: String::new(),
             entries: Vec::new(),
             source_label: None,

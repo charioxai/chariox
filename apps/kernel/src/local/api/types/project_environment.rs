@@ -178,6 +178,17 @@ pub struct EnvironmentOperationRequest {
     pub operation_id: String,
 }
 
+/// Reads an operation. With `wait_after_updates` the answer is held (at most 20 s) until the
+/// operation has more updates than the reader has seen or has ended, so a change reaches the
+/// reader as soon as it happens and an idle operation costs no polling.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GetEnvironmentOperationRequest {
+    pub operation_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait_after_updates: Option<u64>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProjectEnvironmentSecretView {
@@ -314,6 +325,8 @@ pub struct EnvironmentOperationView {
     pub ended_at_ms: Option<u64>,
     pub exit_code: Option<i32>,
     pub reason: Option<String>,
+    /// Counts every change of this view, so a reader can wait for the next one.
+    pub updates: u64,
     /// The last 64 KiB of output, with Secret values replaced by their names in brackets.
     pub output_tail: String,
     /// Import only: the entries and their results, in order.

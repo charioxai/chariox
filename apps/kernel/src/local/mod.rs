@@ -337,8 +337,8 @@ pub use api::{UserDomainGrant, UserDomainNotice, UserDomainResource, UserDomainW
 pub use client::LocalDaemonClient;
 pub use harness::{run_local_harness, LocalHarnessReport};
 
-pub use api::EnvironmentOperationRequest;
 pub use api::{AddSshMachineRequest, RemoveSshMachineRequest, SshMachineResult};
+pub use api::{EnvironmentOperationRequest, GetEnvironmentOperationRequest};
 
 pub use api::{
     AckEventsRequest, EventApprovalPointer, EventInteractionState, EventKernelHealth,

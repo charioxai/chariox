@@ -86,8 +86,9 @@ export function remoteEnvironmentOperationRequest(operationId: string, targetKer
   return { RemoteEnvironmentOperation: { operationId, targetKernelId, ...(stop ? { stop } : {}) } } as const
 }
 
-export function getEnvironmentOperationRequest(operationId: string) {
-  return { GetEnvironmentOperation: { operationId } } as const
+/** With `waitAfterUpdates` the kernel holds the answer until the operation has more updates than that, or has ended. */
+export function getEnvironmentOperationRequest(operationId: string, waitAfterUpdates?: number) {
+  return { GetEnvironmentOperation: { operationId, ...(waitAfterUpdates === undefined ? {} : { waitAfterUpdates }) } } as const
 }
 
 export function cancelEnvironmentOperationRequest(operationId: string) {
@@ -231,6 +232,7 @@ export function parseEnvironmentOperationView(value: unknown): EnvironmentOperat
     endedAtMs: nullableCount(value, "endedAtMs", what),
     exitCode: nullableInteger(value, "exitCode", what),
     reason: nullableText(value, "reason", what),
+    updates: count(value, "updates", what),
     outputTail: text(value, "outputTail", what),
     entries: list(value, "entries", what).map((row) => ({
       kind: oneOf(row, "kind", ["secret", "file"], "Environment operation entry"),

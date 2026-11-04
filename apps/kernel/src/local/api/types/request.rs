@@ -111,7 +111,7 @@ pub enum LocalDaemonRequest {
     ResolveEnvironmentProposal(ResolveEnvironmentProposalRequest),
     RunRemoteProjectEnvironmentSetup(RunRemoteProjectEnvironmentSetupRequest),
     RemoteEnvironmentOperation(RemoteEnvironmentOperationRequest),
-    GetEnvironmentOperation(EnvironmentOperationRequest),
+    GetEnvironmentOperation(GetEnvironmentOperationRequest),
     CancelEnvironmentOperation(EnvironmentOperationRequest),
     SetProjectPinned(SetProjectPinnedRequest),
     SetRoomPinned(SetRoomPinnedRequest),

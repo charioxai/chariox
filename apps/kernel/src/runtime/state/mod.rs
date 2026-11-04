@@ -393,6 +393,7 @@ struct KernelRuntimeOwnedState {
         crate::runtime::state::workflow_publication_runtime_lifecycle::WorkflowPublicationRuntimeProcessStore,
     project_environment_setups: Arc<crate::project_environment::SetupRuns>,
     environment_operations: Arc<crate::project_environment::EnvironmentOperations>,
+    environment_operation_changes: crate::project_environment::OperationChanges,
 }
 
 #[derive(Debug, Clone)]
@@ -1009,6 +1010,7 @@ impl KernelRuntimeState {
                 std::thread::sleep(Duration::from_millis(2));
             }
         };
+        let environment_operation_changes = crate::project_environment::OperationChanges::new();
         let mut runtime = Self {
             external_command_authority: None,
             room_provider_origin: None,
@@ -1185,10 +1187,13 @@ impl KernelRuntimeState {
                     crate::runtime::state::workflow_publication_runtime_lifecycle::WorkflowPublicationRuntimeProcessStore::default(),
                 project_environment_setups: crate::project_environment::SetupRuns::new(
                     &config.private_runtime_state_root(),
+                    environment_operation_changes.clone(),
                 ),
                 environment_operations: crate::project_environment::EnvironmentOperations::new(
                     &config.private_runtime_state_root(),
+                    environment_operation_changes.clone(),
                 ),
+                environment_operation_changes,
             },
         };
         runtime.link_room_terminals_to_managed_kernel();

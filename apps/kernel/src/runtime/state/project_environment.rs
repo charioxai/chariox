@@ -1,7 +1,8 @@
 //! The Project Environment as the kernel answers it: read, save, a Secret's value, and Setup runs.
 use super::*;
 use crate::local::{
-    EnvironmentOperationRequest, GetProjectEnvironmentRequest, ProjectEnvironmentFileView,
+    EnvironmentOperationRequest, EnvironmentOperationState, EnvironmentOperationView,
+    GetEnvironmentOperationRequest, GetProjectEnvironmentRequest, ProjectEnvironmentFileView,
     ProjectEnvironmentSecretView, ProjectEnvironmentSetupField, ProjectEnvironmentSetupState,
     ProjectEnvironmentView, RunProjectEnvironmentSetupRequest, SaveProjectEnvironmentRequest,
     SetProjectEnvironmentSecretRequest,
@@ -13,6 +14,7 @@ use crate::project_environment::{
 };
 use std::path::{Path, PathBuf};
 
+const OPERATION_WAIT: std::time::Duration = std::time::Duration::from_secs(20);
 const MAX_SECRET_VALUE_BYTES: usize = 64 * 1024;
 
 impl KernelRuntimeState {
@@ -265,16 +267,43 @@ impl KernelRuntimeState {
         Ok(LocalDaemonResponse::EnvironmentOperation { operation })
     }
 
-    pub(crate) fn get_environment_operation(
+    /// The operation now, or, when the reader says how many updates it has seen, the first state with
+    /// more of them (or an ended one), at most `OPERATION_WAIT` later.
+    pub(crate) async fn get_environment_operation(
         &self,
-        request: EnvironmentOperationRequest,
+        request: GetEnvironmentOperationRequest,
         caller_user_id: &str,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        let mut changes = self.owned.environment_operation_changes.subscribe();
+        let deadline = tokio::time::Instant::now() + OPERATION_WAIT;
+        loop {
+            let operation =
+                self.read_environment_operation(&request.operation_id, caller_user_id)?;
+            let seen = request.wait_after_updates;
+            let settled = seen.is_none_or(|seen| {
+                operation.updates > seen || operation.state != EnvironmentOperationState::Running
+            });
+            if settled
+                || tokio::time::timeout_at(deadline, changes.changed())
+                    .await
+                    .is_err()
+            {
+                return Ok(LocalDaemonResponse::EnvironmentOperation { operation });
+            }
+        }
+    }
+
+    /// The operation as it is now, for the owner of its Project.
+    pub(crate) fn read_environment_operation(
+        &self,
+        operation_id: &str,
+        caller_user_id: &str,
+    ) -> Result<EnvironmentOperationView, DaemonError> {
         let operation = self
-            .environment_operation(&request.operation_id)?
+            .environment_operation(operation_id)?
             .ok_or_else(|| environment_error("this operation is unknown"))?;
         self.owned_project(&operation.project_id, caller_user_id)?;
-        Ok(LocalDaemonResponse::EnvironmentOperation { operation })
+        Ok(operation)
     }
 
     pub(crate) fn cancel_environment_operation(

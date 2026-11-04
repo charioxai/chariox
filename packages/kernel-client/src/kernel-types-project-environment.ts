@@ -76,6 +76,8 @@ export type EnvironmentOperationView = {
   readonly endedAtMs: number | null
   readonly exitCode: number | null
   readonly reason: string | null
+  /** Counts every change of the operation, so a reader can wait for the next one. */
+  readonly updates: number
   readonly outputTail: string
   /** Import only. */
   readonly entries: readonly EnvironmentOperationEntry[]

@@ -21,6 +21,7 @@ const OUTPUT_TAIL_BYTES: usize = 64 * 1024;
 /// How long output may still arrive after the script exited.
 const OUTPUT_DRAIN_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
 /// How long a run's progress may sit only in memory.
+const OUTPUT_ANNOUNCE_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
 const PERSIST_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
 
 pub(crate) struct SetupSpec {
@@ -56,6 +57,7 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 pub(crate) struct SetupRuns {
     root: PathBuf,
+    changes: super::OperationChanges,
     live: Mutex<HashMap<String, Arc<LiveRun>>>,
 }
 
@@ -69,9 +71,10 @@ fn digest(parts: &[&str]) -> String {
 }
 
 impl SetupRuns {
-    pub(crate) fn new(private_state_root: &Path) -> Arc<Self> {
+    pub(crate) fn new(private_state_root: &Path, changes: super::OperationChanges) -> Arc<Self> {
         Arc::new(Self {
             root: private_state_root.join(DIRECTORY),
+            changes,
             live: Mutex::new(HashMap::new()),
         })
     }
@@ -119,6 +122,7 @@ impl SetupRuns {
             run.view.state = EnvironmentOperationState::Failed;
             run.view.ended_at_ms = Some(crate::session::unix_epoch_ms());
             run.view.reason = Some("Kernel restarted".into());
+            run.view.updates += 1;
             self.persist(&run)?;
         }
         Ok(run)
@@ -207,6 +211,7 @@ impl SetupRuns {
             ended_at_ms: None,
             exit_code: None,
             reason: None,
+            updates: 0,
             output_tail: String::new(),
             entries: Vec::new(),
             source_label: None,
@@ -296,9 +301,12 @@ impl SetupRuns {
         let live = Arc::clone(live);
         let secrets = Arc::clone(secrets);
         let runs_root = self.root.clone();
+        let changes = self.changes.clone();
         tokio::spawn(async move {
             let mut lines = BufReader::new(pipe).lines();
             let mut persisted = std::time::Instant::now();
+            let mut announced = std::time::Instant::now();
+            let announce_pending = Arc::new(std::sync::atomic::AtomicBool::new(false));
             while let Ok(Some(line)) = lines.next_line().await {
                 let mut line = line;
                 for (name, value) in secrets.iter() {
@@ -309,8 +317,23 @@ impl SetupRuns {
                 let snapshot = {
                     let mut run = lock(&live.run);
                     append_tail(&mut run.view.output_tail, &line);
+                    run.view.updates += 1;
                     (persisted.elapsed() >= PERSIST_INTERVAL).then(|| run.clone())
                 };
+                // A burst of lines wakes readers at most every OUTPUT_ANNOUNCE_INTERVAL; a delayed wake
+                // announces the last line of a burst, so output never waits for the next line to show.
+                if announced.elapsed() >= OUTPUT_ANNOUNCE_INTERVAL {
+                    announced = std::time::Instant::now();
+                    changes.notify();
+                } else if !announce_pending.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                    let changes = changes.clone();
+                    let announce_pending = Arc::clone(&announce_pending);
+                    tokio::spawn(async move {
+                        tokio::time::sleep(OUTPUT_ANNOUNCE_INTERVAL).await;
+                        announce_pending.store(false, std::sync::atomic::Ordering::SeqCst);
+                        changes.notify();
+                    });
+                }
                 if let Some(snapshot) = snapshot {
                     persisted = std::time::Instant::now();
                     let _ = write_run(&runs_root, &snapshot);
@@ -322,6 +345,7 @@ impl SetupRuns {
     fn finish(&self, live: &Arc<LiveRun>, outcome: Result<std::process::ExitStatus, String>) {
         let mut run = lock(&live.run);
         run.view.ended_at_ms = Some(crate::session::unix_epoch_ms());
+        run.view.updates += 1;
         if live.cancelled.load(std::sync::atomic::Ordering::SeqCst) {
             run.view.state = EnvironmentOperationState::Cancelled;
         } else {
@@ -346,6 +370,7 @@ impl SetupRuns {
         let operation_id = run.view.operation_id.clone();
         drop(run);
         lock(&self.live).remove(&operation_id);
+        self.changes.notify();
     }
 
     /// Ends the run's process tree by its exact PID; the run then settles as cancelled.
@@ -438,7 +463,7 @@ mod tests {
     #[tokio::test]
     async fn a_run_executes_in_the_checkout_with_the_environment_and_never_prints_a_secret_value() {
         let dir = scratch();
-        let runs = SetupRuns::new(&dir.0);
+        let runs = SetupRuns::new(&dir.0, super::super::OperationChanges::new());
         let script = "pwd; echo level=$LOG_LEVEL; echo token=$NOTION_TOKEN";
         runs.start(spec(&dir, "op-1", script)).unwrap();
         let view = finished(&runs, "op-1").await;
@@ -465,7 +490,7 @@ mod tests {
     #[tokio::test]
     async fn a_changed_script_makes_the_last_run_not_run_and_a_failed_exit_is_reported() {
         let dir = scratch();
-        let runs = SetupRuns::new(&dir.0);
+        let runs = SetupRuns::new(&dir.0, super::super::OperationChanges::new());
         runs.start(spec(&dir, "op-fail", "echo before; exit 3"))
             .unwrap();
         let view = finished(&runs, "op-fail").await;
@@ -490,7 +515,7 @@ mod tests {
     #[tokio::test]
     async fn stop_ends_the_process_by_its_exact_pid_and_the_run_settles_as_cancelled() {
         let dir = scratch();
-        let runs = SetupRuns::new(&dir.0);
+        let runs = SetupRuns::new(&dir.0, super::super::OperationChanges::new());
         runs.start(spec(&dir, "op-stop", "echo started; sleep 60"))
             .unwrap();
         let live = lock(&runs.live).get("op-stop").cloned().unwrap();
@@ -521,7 +546,7 @@ mod tests {
     #[tokio::test]
     async fn a_background_process_holding_the_output_does_not_keep_the_run_open() {
         let dir = scratch();
-        let runs = SetupRuns::new(&dir.0);
+        let runs = SetupRuns::new(&dir.0, super::super::OperationChanges::new());
         runs.start(spec(&dir, "op-background", "sleep 4 & echo done"))
             .unwrap();
         let view = finished(&runs, "op-background").await;
@@ -536,7 +561,7 @@ mod tests {
     #[tokio::test]
     async fn a_stop_sent_before_the_process_exists_still_ends_the_run() {
         let dir = scratch();
-        let runs = SetupRuns::new(&dir.0);
+        let runs = SetupRuns::new(&dir.0, super::super::OperationChanges::new());
         runs.start(spec(&dir, "op-early", "sleep 60")).unwrap();
         runs.cancel("op-early").unwrap();
         let view = finished(&runs, "op-early").await;
@@ -546,11 +571,11 @@ mod tests {
     #[tokio::test]
     async fn a_run_cut_off_by_a_kernel_restart_reads_as_failed_with_that_reason() {
         let dir = scratch();
-        let before = SetupRuns::new(&dir.0);
+        let before = SetupRuns::new(&dir.0, super::super::OperationChanges::new());
         before.start(spec(&dir, "op-restart", "sleep 60")).unwrap();
         let live = lock(&before.live).get("op-restart").cloned().unwrap();
         // The new kernel process has no live run for the persisted one.
-        let after = SetupRuns::new(&dir.0);
+        let after = SetupRuns::new(&dir.0, super::super::OperationChanges::new());
         let view = after.get("op-restart").unwrap().unwrap();
         assert_eq!(view.state, EnvironmentOperationState::Failed);
         assert_eq!(view.reason.as_deref(), Some("Kernel restarted"));

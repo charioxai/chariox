@@ -47,6 +47,7 @@ const operation = {
   endedAtMs: null,
   exitCode: null,
   reason: null,
+  updates: 4,
   outputTail: "installing\n",
   entries: [],
   sourceLabel: null,
@@ -59,6 +60,7 @@ test("Environment v2 requests use the wire names and drop absent checkoutPath", 
   assert.deepEqual(runProjectEnvironmentSetupRequest("p", "op"), { RunProjectEnvironmentSetup: { projectId: "p", operationId: "op" } })
   assert.deepEqual(runProjectEnvironmentSetupRequest("p", "op", "/work/p"), { RunProjectEnvironmentSetup: { projectId: "p", operationId: "op", checkoutPath: "/work/p" } })
   assert.deepEqual(getEnvironmentOperationRequest("op"), { GetEnvironmentOperation: { operationId: "op" } })
+  assert.deepEqual(getEnvironmentOperationRequest("op", 0), { GetEnvironmentOperation: { operationId: "op", waitAfterUpdates: 0 } })
   assert.deepEqual(cancelEnvironmentOperationRequest("op"), { CancelEnvironmentOperation: { operationId: "op" } })
   assert.deepEqual(setProjectEnvironmentSecretRequest("p", "API_KEY", "v"), { SetProjectEnvironmentSecret: { projectId: "p", name: "API_KEY", value: "v" } })
 })

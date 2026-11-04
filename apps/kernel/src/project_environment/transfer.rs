@@ -517,7 +517,7 @@ pub(crate) fn source_holdings(
 
 #[cfg(test)]
 mod tests {
-    use super::super::operations::{Begun, EnvironmentOperations};
+    use super::super::operations::{Begun, EnvironmentOperations, OperationChanges};
     use super::*;
     use crate::local::{EnvironmentOperationKind, EnvironmentOperationView};
     use std::collections::HashMap;
@@ -645,7 +645,10 @@ mod tests {
             std::fs::create_dir_all(&checkout).unwrap();
             Self {
                 store: ProjectEnvironmentStore::new(&root.join("state")),
-                operations: EnvironmentOperations::new(&root.join("state")),
+                operations: EnvironmentOperations::new(
+                    &root.join("state"),
+                    OperationChanges::new(),
+                ),
                 vault: MemoryVault::default(),
                 adopted: Mutex::default(),
                 checkout,
@@ -664,6 +667,7 @@ mod tests {
                 ended_at_ms: None,
                 exit_code: None,
                 reason: None,
+                updates: 0,
                 output_tail: String::new(),
                 entries: Vec::new(),
                 source_label: None,
