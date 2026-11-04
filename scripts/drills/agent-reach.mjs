@@ -43,7 +43,7 @@ const tokenFile = flags.get("--claude-token-file") ?? "/root/.claude-lanes/oauth
 // A Codex scope the product linked for drills, and the OpenCode login to copy into a lane-owned scope.
 const codexScope = flags.get("--codex-scope") ?? "/root/.chariox/dev/worker-k/home/state/provider-accounts/local/codex/kaissandra-ai-reviewer-login-esqv7b7c/codex"
 const opencodeAuth = flags.get("--opencode-auth") ?? "/root/.chariox/dev/provider-runtimes/fleet-accounts/opencode-home/.local/share/opencode/auth.json"
-const scenarios = new Set((flags.get("--scenarios") ?? (provider === "claude" ? "reach,sudo,acquisition,tools,events,driver,history,view,humanonly,lineage,inherit,workday,recall" : "tools,events,driver,history,view")).split(","))
+const scenarios = new Set((flags.get("--scenarios") ?? (provider === "claude" ? "reach,sudo,acquisition,tools,events,driver,history,view,humanonly,lineage,newrooms,inherit,workday,recall" : "tools,events,driver,history,view")).split(","))
 assert(provider === "claude" || [...scenarios].every(name => ["tools", "view", "events", "driver", "history"].includes(name)), "only the tools, view, events, driver and history scenarios run with Codex or OpenCode")
 const agentScenarios = ["events", "driver", "history"].some(name => scenarios.has(name))
 assert(stateRoot.startsWith("/root/.chariox/dev/"), "state must be lane-owned")
@@ -658,6 +658,17 @@ async function main() {
     const sudoCodes = codesOf(since, sudoSkip)
     check("inside a /sudo window deleting a room stays excluded and a rename works", sudoCodes.join() === "excluded_for_agents,ok" && (await bState()).agents.some(x => x.id === roomB.agent.id && x.alias === "renamed-in-sudo"), { sudoCodes })
     check("no room is gone", (await roomsOf(b)).includes(roomB.session.id) && (await roomsOf(a)).includes(siblingA.session.id) && (await roomsOf(a)).includes(roomA.session.id))
+  }
+
+  if (scenarios.has("newrooms")) {
+    note("scenario", { which: "newrooms" })
+    // Creating a Room is room-level: no /sudo, on the agent's own kernel and on another one.
+    const create = (kernelArg, r, alias) => call(kernelArg, { CreateSession: { workspace_id: join(r.dir, "work"), worktree_id: join(r.dir, "work"), alias, slice_ref: null } })
+    const aliasesOf = async r => (await r.rpc({ ListSessions: null })).SessionsListed.sessions.map(x => x.alias)
+    const since = startedAt, skip = reachAnswers(since).length
+    await sendPrompt(drillPrompt([`1. Call \`request\` with exactly: ${create(null, a, "made-at-home")}`, `2. Call \`request\` with exactly: ${create(target, b, "made-on-the-other-kernel")}`, "Then reply with the words NEWROOMS and DONE joined by an underscore."]), "NEWROOMS_DONE")
+    const codes = codesOf(since, skip)
+    check("the agent created a Room on its own kernel and on another one without /sudo", codes.join() === "ok,ok" && (await aliasesOf(a)).includes("made-at-home") && (await aliasesOf(b)).includes("made-on-the-other-kernel"), { codes })
   }
 
   // The text of every base64 chunk an agent's answers carried since `since` (room terminal output), decoded.
