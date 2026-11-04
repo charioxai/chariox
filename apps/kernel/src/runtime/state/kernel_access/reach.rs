@@ -140,6 +140,18 @@ impl KernelRuntimeState {
     }
 
     fn reach_for_run(&self, run_id: &str, live: bool) -> Result<ReachCaller, DaemonError> {
+        if self
+            .owned
+            .kernel_access
+            .lock()
+            .expect("access state poisoned")
+            .revoked_reach_runs
+            .contains(run_id)
+        {
+            return Err(reach_error(
+                "reach revoked: the owner ended this run's gateway access",
+            ));
+        }
         let run = self
             .owned
             .provider_store
@@ -181,6 +193,37 @@ impl KernelRuntimeState {
                 .agent_harness_name(run.session_id(), agent_id)
                 .ok_or_else(|| reach_error("this agent's room is unavailable"))?,
         })
+    }
+
+    /// A gateway revoke ends existing reach identities, not the agents' work in their rooms.
+    /// Runs belong to this kernel process; a later provider run has a new identity.
+    pub(super) fn revoke_reach_access(&self, owner: Option<&str>, id: Option<&str>) -> usize {
+        let runs = self.owned.provider_store.list_runs();
+        let active: std::collections::HashSet<_> = runs
+            .iter()
+            .filter(|run| run.state() != crate::provider::ProviderRunState::Ended)
+            .map(|run| run.id().to_owned())
+            .collect();
+        let callers: Vec<_> = runs
+            .iter()
+            .filter(|run| active.contains(run.id()))
+            .filter_map(|run| self.reach_for_run(run.id(), false).ok())
+            .filter(|caller| {
+                id.is_none_or(|id| id == caller.id)
+                    && owner.is_none_or(|owner| self.access_owned_by(owner, &caller.owner_user_id))
+            })
+            .collect();
+        let mut access = self
+            .owned
+            .kernel_access
+            .lock()
+            .expect("access state poisoned");
+        access.revoked_reach_runs.retain(|run| active.contains(run));
+        let mut count = 0;
+        for caller in callers {
+            count += usize::from(access.revoked_reach_runs.insert(caller.run_id));
+        }
+        count
     }
 
     /// `<room>/<agent> (Chariox agent)`: how another kernel's audit and paired

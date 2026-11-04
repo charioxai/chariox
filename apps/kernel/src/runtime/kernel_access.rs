@@ -7,7 +7,7 @@ pub(crate) use sudo_request::SudoRequestFailure;
 pub(crate) const ACCESS_INTERACTION_SCOPE: &str = "kernel-access";
 use crate::local::{CoveredProcess, KernelAccessGrant};
 use process::ProcessIdentity;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -118,6 +118,8 @@ pub(crate) fn time_left(
 #[derive(Default)]
 pub(crate) struct AccessState {
     pub(crate) grants: BTreeMap<String, Grant>,
+    /// Revoking access fences the current provider identities, even while their runs stay live.
+    pub(crate) revoked_reach_runs: HashSet<String>,
     /// Admission wakes the idle pump so it can watch the new holder's exit.
     pub(crate) holder_changed: Arc<tokio::sync::Notify>,
     pub(crate) pending: BTreeMap<(u32, u64, String), KernelAccessGrant>,

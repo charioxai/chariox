@@ -238,6 +238,7 @@ impl KernelGateway {
             validate_machine_target(expected, &kernel)?;
         }
         if grant_live {
+            self.ensure_access_live(origin, target)?;
             self.register_for(&origin.grant_id, target).await?;
         }
         let gateway_ready = is_gateway_ready(&kernel);
@@ -503,7 +504,7 @@ impl KernelGateway {
     }
 
     /// The owner revoked this kernel's gateway in the Cloud clients list. That ends
-    /// every agent access grant; a new grant registers the gateway again.
+    /// every existing agent access identity; a new grant or run may register again.
     async fn gateway_revoked(&self) -> GatewayError {
         if self.hosted.revoked().await {
             let hosted = self.hosted.clone();

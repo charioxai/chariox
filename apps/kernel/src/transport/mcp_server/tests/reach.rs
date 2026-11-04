@@ -931,3 +931,98 @@ async fn a_driver_does_not_answer_a_decision_only_the_person_may_answer() {
         .expect("the person's side closes the card");
     popup.await.unwrap();
 }
+
+#[tokio::test]
+async fn gateway_revoke_ends_live_reach_requests_and_subscriptions() {
+    let reach = fixture();
+    let state = reach.router.runtime_state();
+    let caller = state.reach_for_auth_token(&reach.owner_token).unwrap();
+    let origin = state.gateway_origin(&caller.id).unwrap();
+    let (ok, _) = tool(
+        &reach,
+        "events_subscribe",
+        serde_json::json!({
+            "kernel": "local", "session_id": reach.other_session_id
+        }),
+    )
+    .await;
+    assert!(ok);
+    state
+        .revoke_kernel_access(None, None, "gateway_revoked")
+        .unwrap();
+    assert!(
+        state.gateway_origin(&caller.id).is_none(),
+        "the same live run cannot register the gateway again"
+    );
+    assert!(!state.event_source_alive(&caller.id));
+    state.end_dead_reach_subscriptions().unwrap();
+    assert!(state.outside_ended_response(&caller.id).unwrap().is_some());
+    let request: crate::local::LocalDaemonRequest =
+        serde_json::from_value(serde_json::json!({"ListSessions": null})).unwrap();
+    assert!(state
+        .authorize_gateway_request(&caller.id, &request)
+        .is_err());
+    let result = reach
+        .router
+        .kernel_gateway()
+        .forward(
+            "must-not-resolve-or-register",
+            &origin,
+            "after-revoke",
+            &request,
+            std::time::Duration::from_secs(1),
+        )
+        .await;
+    assert!(
+        matches!(
+            result,
+            Err(crate::runtime::kernel_gateway::GatewayError::AccessEnded { .. })
+        ),
+        "{result:?}"
+    );
+    let (ok, payload) = call(
+        &reach,
+        &reach.owner_token,
+        Some("local"),
+        serde_json::json!({"ListSessions": null}),
+    )
+    .await;
+    assert!(!ok, "{payload}");
+    let (ok, payload) = tool(
+        &reach,
+        "events_subscribe",
+        serde_json::json!({
+            "kernel": "local", "session_id": reach.other_session_id
+        }),
+    )
+    .await;
+    assert!(!ok, "{payload}");
+}
+
+#[tokio::test]
+async fn revoking_one_reach_identity_keeps_other_runs_and_allows_a_new_run() {
+    let reach = fixture();
+    let state = reach.router.runtime_state();
+    let caller = state.reach_for_auth_token(&reach.owner_token).unwrap();
+    let other = state.reach_for_auth_token(DRIVEN_TOKEN).unwrap();
+    assert_eq!(
+        state
+            .revoke_kernel_access(None, Some(&caller.id), "revoked_by_owner")
+            .unwrap(),
+        1
+    );
+    assert!(state.reach_for_auth_token(&reach.owner_token).is_err());
+    assert!(state.gateway_origin(&other.id).is_some());
+    {
+        let mut app = reach.app.lock().await;
+        launch(
+            &mut app,
+            &caller.session_id,
+            &caller.agent_id,
+            "fresh-reach-run",
+            "fresh-reach-token",
+        );
+    }
+    let fresh = state.reach_for_auth_token("fresh-reach-token").unwrap();
+    assert!(state.gateway_origin(&fresh.id).is_some());
+}
