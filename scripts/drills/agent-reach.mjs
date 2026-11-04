@@ -697,31 +697,39 @@ async function main() {
     await until(async () => { await b.rpc({ PumpTerminalOutput: { session_id: roomB.session.id, attachment_id: bAttach } }).catch(() => {}); return claudeTranscript(b.dir + "/chariox", bSince).includes(word) }, "B's agent answers", 180000)
     await delay(3000)
     const nulls = { agent_id: null, provider: null, model: null, workflow_id: null, machine_id: null, repo_root: null, worktree_path: null, kind: null }
-    const since = Date.now() - 1000
+    const since = startedAt, skip = reachAnswers(since).length
     await sendPrompt(drillPrompt([
       `1. ${call(target, { SearchRecall: { query: word, session_id: roomB.session.id, ...nulls, after_sequence: null, limit: 5 } })}`,
       `2. ${call(target, { QueryRecall: { session_id: roomB.session.id, ...nulls, text: null, after_sequence: null, before_sequence: null, limit: 2 } })}`,
       `3. ${call(target, { SearchRecall: { query: word, session_id: "no-such-room", ...nulls, after_sequence: null, limit: 5 } })}`,
       "Then reply with the words RECALL and DONE joined by an underscore, and say for each of the three answers whether it contained events.",
     ]), "RECALL_DONE")
-    const answers = reachAnswers(since).filter(x => x.tool === "request")
+    const answers = reachAnswers(since).slice(skip).filter(x => x.tool === "request")
     check("the agent found another room's real work by a term of it", answers[0]?.answer.includes(word), { answer: answers[0]?.answer.slice(0, 160) })
     check("the agent paged another room's recent history", answers[1] !== undefined && !/"code"/.test(answers[1].answer), { answer: answers[1]?.answer.slice(0, 160) })
     note("recall-unknown-room", { answer: answers[2]?.answer.slice(0, 300) })
-    check("an unknown room answers without the word", answers[2] !== undefined && !answers[2].answer.includes(word))
+    check("an unknown room answers session_not_found without the word", /session_not_found/.test(answers[2]?.answer ?? "") && !answers[2].answer.includes(word))
   }
 
   if (scenarios.has("inherit")) {
     note("scenario", { which: "inherit" })
-    // X holds a /sudo window and drives the agent of the sibling room, which makes the sudo-class request itself: the window is X's turn's, not the sibling's.
+    // X holds a /sudo window (its task is a long command). While it runs, the person asks the agent of the sibling room for the same sudo-class request:
+    // the window is X's task's, not every agent's of the kernel.
     const siblingAttach = (await a.rpc({ AttachToSession: { session_id: siblingA.session.id, client_id: "reach-inherit", capability_level: "FullTerminal" } })).SessionAttached.attachment.id
     await a.rpc({ LaunchProviderRun: { session_id: siblingA.session.id, agent_id: siblingA.agent.id, adapter_key: provider, provider, account_profile: accountProfile, model, variant: providers[provider].variant, native_tui: false } }).catch(() => {})
     const since = Date.now() - 1000
-    const ask = `This is a drill. Use only the chariox-reach request tool; no shell, no files. Do not retry. Call request once with exactly: ${call(target, { AliasSession: { session_id: roomB.session.id, alias: "renamed-by-the-sibling" } })} Then reply with the words INHERITED and DONE joined by an underscore, followed by the code field of the answer if there is one.`
-    await sudoPrompt(["This is a drill. Use only the chariox-reach request tool. Do not retry.", `Call \`request\` once with exactly: ${call(null, { SubmitPrompt: { session_id: siblingA.session.id, attachment_id: siblingAttach, target_agent_id: siblingA.agent.id, text: ask, attachments: [] } })}`, "Then reply with the words DRIVER and DONE joined by an underscore."].join("\n"), "DRIVER_DONE")
-    await until(async () => { await a.rpc({ PumpTerminalOutput: { session_id: siblingA.session.id, attachment_id: siblingAttach } }).catch(() => {}); return claudeTranscript(a.dir + "/chariox", since).includes("INHERITED_DONE") || /reach_requires_sudo/.test(claudeTranscript(a.dir + "/chariox", since).split("INHERITED")[1] ?? "") }, "the driven sibling's answer", 240000).catch(() => {})
-    const text = claudeTranscript(a.dir + "/chariox", since)
-    check("an agent driven inside a /sudo window does not inherit the window", (await bState()).alias !== "renamed-by-the-sibling" && /reach_requires_sudo/.test(text.slice(text.indexOf("INHERITED") >= 0 ? 0 : 0)), { alias: (await bState()).alias })
+    const submitted = a.client.send(submitPromptRequest(roomA.session.id, attached, agentA, "/sudo This is a drill. Run the shell command `sleep 75`, then reply with the words INHERITX and DONE joined by an underscore.", []))
+    submitted.catch(error => note("sudo-submit-error", { message: String(error.message).slice(0, 300) }))
+    const popup = await until(async () => { await a.rpc({ PumpTerminalOutput: { session_id: roomA.session.id, attachment_id: attached } }).catch(() => {}); return (await state(a, roomA.session.id)).active_interactions?.find(x => String(x.id).startsWith("sudo:")) }, "sudo popup", 60000)
+    await a.rpc({ RespondToInteraction: { session_id: roomA.session.id, interaction_id: popup.id, choice_id: "approve", custom_reply: "60", passkey: a.passkey } })
+    await delay(8000)
+    const rename = call(target, { AliasSession: { session_id: roomB.session.id, alias: "renamed-by-the-sibling" } })
+    await a.rpc(submitPromptRequest(siblingA.session.id, siblingAttach, siblingA.agent.id, drillPrompt([`Call \`request\` once with exactly: ${rename}`, "Then reply with the words INHERITED and DONE joined by an underscore, followed by the code field of the answer."]), []))
+    await until(async () => { await a.rpc({ PumpTerminalOutput: { session_id: siblingA.session.id, attachment_id: siblingAttach } }).catch(() => {}); await a.rpc({ PumpTerminalOutput: { session_id: roomA.session.id, attachment_id: attached } }).catch(() => {}); return claudeTranscript(a.dir + "/chariox", since).includes("INHERITED_DONE") }, "the sibling's answer", 240000).catch(error => note("turn-timeout", { message: error.message }))
+    const answers = reachAnswers(since).filter(x => x.tool === "request" && x.input?.request?.AliasSession)
+    check("the sibling agent, asked inside X's /sudo window, is refused", answers.length === 1 && /reach_requires_sudo/.test(answers[0].answer) && (await bState()).alias !== "renamed-by-the-sibling", { answers: answers.map(x => x.answer.slice(0, 120)) })
+    await submitted.catch(() => {})
+    await finished("INHERITX_DONE", since)
   }
 
   if (scenarios.has("acquisition")) {
