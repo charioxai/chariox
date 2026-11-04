@@ -22,50 +22,62 @@ fn acquisition(action: &str) -> Value {
 }
 
 #[tokio::test]
-async fn default_on_machine_acquisition_uses_only_the_callers_covered_live_sudo_window() {
-    for action in ["acquire", "start", "start_saved_state"] {
-        let f = fixture_with_options(None, true);
-        let turn = running(&f);
-        assert!(f
-            .state
-            .owned
-            .config_projection
-            .snapshot()
-            .user_config
-            .agents
-            .ask_before_acquiring_machines
-            .unwrap_or(true));
-        let caller = f.state.reach_for_auth_token(TOKEN).unwrap();
-        assert_eq!(
-            f.state.reach_sudo_turn(&caller).unwrap().entry_id,
-            turn.entry_id
-        );
-        let request = acquisition(action);
-        let typed: LocalDaemonRequest = serde_json::from_value(request["request"].clone()).unwrap();
-        f.state
-            .authorize_sudo_request(&turn.entry_id, &typed)
-            .unwrap();
-        let result = tokio::time::timeout(
-            Duration::from_secs(2),
-            f.router.dispatch_reach_tool_call(TOKEN, "request", request),
-        )
-        .await
-        .expect("a covered acquisition reaches the service without another human answer");
-        // This real self-hosted control-plane entry has no service: reaching its definitive
-        // error proves approval was bypassed, rather than discovery refusing the request first.
-        assert!(
-            matches!(result, Err(DaemonError::RelayTransport { code, .. }) if code == "control_plane_unavailable"),
-            "{action} did not reach the authorized service operation"
-        );
-        assert!(f
-            .state
-            .owned
-            .session_store
-            .get_session(&turn.session_id)
-            .unwrap()
-            .active_interactions()
-            .is_empty());
-    }
+async fn default_on_machine_acquire_uses_the_callers_covered_live_sudo_window() {
+    assert_covered_acquisition_reaches_service("acquire").await;
+}
+
+#[tokio::test]
+async fn default_on_machine_start_uses_the_callers_covered_live_sudo_window() {
+    assert_covered_acquisition_reaches_service("start").await;
+}
+
+#[tokio::test]
+async fn default_on_saved_state_start_uses_the_callers_covered_live_sudo_window() {
+    assert_covered_acquisition_reaches_service("start_saved_state").await;
+}
+
+async fn assert_covered_acquisition_reaches_service(action: &str) {
+    let f = fixture_with_options(None, true);
+    let turn = running(&f);
+    assert!(f
+        .state
+        .owned
+        .config_projection
+        .snapshot()
+        .user_config
+        .agents
+        .ask_before_acquiring_machines
+        .unwrap_or(true));
+    let caller = f.state.reach_for_auth_token(TOKEN).unwrap();
+    assert_eq!(
+        f.state.reach_sudo_turn(&caller).unwrap().entry_id,
+        turn.entry_id
+    );
+    let request = acquisition(action);
+    let typed: LocalDaemonRequest = serde_json::from_value(request["request"].clone()).unwrap();
+    f.state
+        .authorize_sudo_request(&turn.entry_id, &typed)
+        .unwrap();
+    let result = tokio::time::timeout(
+        Duration::from_secs(2),
+        f.router.dispatch_reach_tool_call(TOKEN, "request", request),
+    )
+    .await
+    .expect("a covered acquisition reaches the service without another human answer");
+    // The self-hosted service is absent. Its definitive code must survive the shared
+    // sudo response boundary, which strips the raw transport diagnostics.
+    assert!(
+        matches!(&result, Err(DaemonError::ExternalRequestFailed { code, retryable: false }) if code == "control_plane_unavailable"),
+        "{action} did not reach the authorized service operation: {result:?}"
+    );
+    assert!(f
+        .state
+        .owned
+        .session_store
+        .get_session(&turn.session_id)
+        .unwrap()
+        .active_interactions()
+        .is_empty());
 }
 
 async fn assert_start_still_asks(f: &Fixture, token: &str, agent: &str) {
