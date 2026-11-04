@@ -73,7 +73,7 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
   let message: string | null = null
   let busy = false
   let saveTextPending = false
-  let pollingOperationId: string | null = null
+  const pollingOperations = new Map<string, object>()
 
   const script = () => typed.script ?? environment?.setup.script ?? ""
   const variables = () => typed.variables ?? environment?.variables ?? ""
@@ -159,26 +159,28 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
 
   // Follows the running operation: the kernel holds each read until the operation has changed, so output and the end show at once.
   const poll = (operationId: string, known?: number) => {
-    if (pollingOperationId === operationId) return
-    pollingOperationId = operationId
+    if (pollingOperations.has(operationId)) return
+    const token = {}
+    pollingOperations.set(operationId, token)
     const mine = generation
+    const current = () => mine === generation && pollingOperations.get(operationId) === token
     const follow = async (seen: number | undefined) => {
-      if (mine !== generation || pollingOperationId !== operationId) return
+      if (!current()) return
       try {
         const next = environmentOperationFromResponse(await deps.send(getEnvironmentOperationRequest(operationId, seen)))
-        if (mine !== generation || pollingOperationId !== operationId) return
+        if (!current()) return
         setOperation(next)
         message = null
         deps.render()
         if (next.state !== "running") {
-          pollingOperationId = null
+          pollingOperations.delete(operationId)
           await refresh()
           return
         }
         await follow(next.updates)
         return
       } catch (error) {
-        if (mine !== generation || pollingOperationId !== operationId) return
+        if (!current()) return
         message = failureText(error)
       }
       deps.render()
@@ -235,7 +237,7 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
       const operationId = current.setupState.operationId
       await guarded(
         async () => environmentOperationFromResponse(await deps.send(cancelEnvironmentOperationRequest(operationId))),
-        (next) => { operation = next; pollingOperationId = null; void refresh() },
+        (next) => { operation = next; pollingOperations.delete(operationId); void refresh() },
       )
       return
     }
@@ -267,7 +269,7 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
     if (!running || running.state !== "running" || busy) return
     await guarded(
       async () => environmentOperationFromResponse(await deps.send(cancelEnvironmentOperationRequest(running.operationId))),
-      (next) => { setOperation(next); pollingOperationId = null; void refresh() },
+      (next) => { setOperation(next); pollingOperations.delete(running.operationId); void refresh() },
     )
   }
 
@@ -396,7 +398,7 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
       open = false
       generation++
       input = null
-      pollingOperationId = null
+      pollingOperations.clear()
       deps.render()
     },
     /** Esc: leaves the active input first, closes the dialog when none is active. */
@@ -422,7 +424,7 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
       message = null
       busy = false
       saveTextPending = false
-      pollingOperationId = null
+      pollingOperations.clear()
       deps.render()
       void deps.otherKernels().then((found) => { if (mine === generation) { sources = found; deps.render() } }, () => {})
       try {

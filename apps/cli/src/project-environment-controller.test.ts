@@ -384,6 +384,41 @@ test("a reopened dialog shows the output of the last finished run once", async (
 const MAC = [{ id: "kernel-mac", label: "Miguel's Mac" }]
 const importOperation = (patch: Partial<EnvironmentOperationView> = {}) => operation({ operationId: "op-1", kind: "import", sourceLabel: "Miguel's Mac", outputTail: "", ...patch })
 
+for (const checkFinishesFirst of [true, false]) {
+  test(`Update and Check both finish when ${checkFinishesFirst ? "Check" : "Update"} finishes first`, async () => {
+    const h = harness(environment(), [{ id: "kernel-mac", label: "Miguel's Mac" }])
+    await h.open()
+    h.replies.push({ EnvironmentOperation: { operation: importOperation() } })
+    h.focusOn("Update")
+    h.key("return")
+    await h.settle()
+    h.replies.push({ EnvironmentOperation: { operation: operation({ operationId: "op-2", kind: "check", outputTail: "" }) } })
+    h.key("c")
+    await h.settle()
+    assert.equal(h.held.length, 2)
+    const updateRead = h.held.shift()!
+    const checkRead = h.held.shift()!
+    const finishUpdate = async () => {
+      h.replies.push({ ProjectEnvironment: { environment: environment() } })
+      updateRead({ EnvironmentOperation: { operation: importOperation({ state: "succeeded", updates: 1, endedAtMs: NOW + 1 }) } })
+      await h.settle()
+    }
+    const finishCheck = async () => {
+      h.replies.push({ ProjectEnvironment: { environment: environment() } })
+      checkRead({ EnvironmentOperation: { operation: operation({ operationId: "op-2", kind: "check", state: "succeeded", updates: 1, endedAtMs: NOW + 1, outputTail: "" }) } })
+      await h.settle()
+    }
+    if (checkFinishesFirst) { await finishCheck(); await finishUpdate() }
+    else { await finishUpdate(); await finishCheck() }
+    h.replies.push({ EnvironmentOperation: { operation: importOperation({ operationId: "op-3", state: "succeeded" }) } })
+    h.focusOn("Update")
+    h.key("return")
+    await h.settle()
+    assert.equal(h.requests.filter((request) => request.ImportProjectEnvironmentEntries).length, 2, "a finished Update must allow the next one")
+    assert(!h.text().includes("Running"))
+  })
+}
+
 test("Update and Import here are offered only when the user has another kernel", async () => {
   const alone = harness()
   await alone.open()
