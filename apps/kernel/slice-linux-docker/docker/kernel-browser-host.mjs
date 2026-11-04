@@ -359,14 +359,15 @@ export class KernelBrowserHost {
   }
   async syncTabGroups(groups,{restore=false}={}) {
     this.savedGroups = groups.slice(0, TAB_LIMIT).filter(group => typeof group?.tab_id === 'string' && typeof group.label === 'string' && group.label)
-      .map(({ tab_id, label, needs_person }) => ({ tab_id, label: label.slice(0, 64), needs_person: needs_person === true }));
+      .map(({ tab_id, label }) => ({ tab_id, label: label.slice(0, 64) }));
     if(this.restoring&&!restore)return;
-    const labels = new Map(), needing = new Set();
-    for (const { tab_id, label, needs_person } of this.savedGroups) {
+    const labels = new Map();
+    for (const { tab_id, label } of this.savedGroups) {
       const target = this.tabs.get(tab_id)?.target_id;
-      if (target && typeof label === "string" && label) { labels.set(label, [...(labels.get(label) ?? []), target]); if (needs_person) needing.add(label); }
+      if (target && typeof label === "string" && label) labels.set(label, [...(labels.get(label) ?? []), target]);
     }
-    this.groupNeeding = needing;
+    // A card asking the person to act in one of an agent's Tabs marks that agent's group (not saved: it follows the cards).
+    this.groupNeeding = new Set(groups.filter(group => group?.needs_person === true && typeof group.label === 'string').map(group => group.label.slice(0, 64)));
     this.groupLabels = labels;
     await this.applyTabGroups();
     if (!this.restoring) await this.save();
