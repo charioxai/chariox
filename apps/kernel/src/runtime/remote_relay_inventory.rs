@@ -196,6 +196,28 @@ mod tests {
     use crate::config::DaemonConfig;
 
     #[tokio::test]
+    async fn relay_status_does_not_admit_the_previous_relay_after_a_switch() {
+        let previous_url = "wss://previous-relay.example";
+        let selected_url = "wss://selected-relay.example";
+        let mut config = DaemonConfig::for_tests();
+        config.relay_url = Some(selected_url.into());
+        config.relay_token = Some("selected-relay-token".into());
+        let mut state = RelayClientState::default();
+        let (outgoing, _priority, _events) = crate::transport::relay_client::RelayOutgoingSender::channel(4);
+        state.test_set_connected_sender(outgoing.clone(), previous_url);
+        let state = Arc::new(RwLock::new(state));
+        let projection = DaemonConfigProjectionStore::new(config);
+
+        let pending = projected_relay_status(state.clone(), projection.clone()).await;
+        assert_eq!(pending.relay_url.as_deref(), Some(selected_url));
+        assert!(pending.configured);
+        assert!(!pending.connected, "the previous relay cannot admit a browser to the selected relay");
+
+        state.write().await.test_set_connected_sender(outgoing, selected_url);
+        assert!(projected_relay_status(state, projection).await.connected);
+    }
+
+    #[tokio::test]
     async fn relay_status_projects_config_and_connection_state() {
         let mut config = DaemonConfig::for_tests();
         config.relay_url = Some("wss://relay.example".to_string());
