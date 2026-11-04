@@ -604,3 +604,68 @@ fn a_running_start_now_override_cannot_pass_to_a_reused_pid() {
         "a different process birth inherited the Start now override"
     );
 }
+
+/// Five builds grow together on a machine that stays short of memory while
+/// paused builds keep what they hold. Each tick every owner's sample runs one
+/// pass, as the pool does.
+#[test]
+fn growing_builds_finish_one_after_another_under_tight_memory() {
+    const BUILDS: u32 = 5;
+    const MEMORY: u64 = 60 * GIB;
+    const TIGHT_ABOVE: u64 = 16 * GIB;
+    const PEAK: u64 = 16 * GIB;
+    let free = Arc::new(AtomicU64::new(50 * GIB));
+    let volume = volume(&free);
+    let mut ledger = Ledger::new(None);
+    let owners = (1..=BUILDS)
+        .map(|pid| owner(&format!("build-{pid}"), true, Vec::new(), Vec::new()))
+        .collect::<Vec<_>>();
+    let mut resident = BTreeMap::<u32, u64>::new();
+    for (pid, member) in (1..=BUILDS).zip(&owners) {
+        submit(member, true);
+        run_line(member, &[pid]);
+        resident.insert(pid, GIB);
+        start(&mut ledger, member, pid, GIB);
+    }
+    let mut finished = Vec::new();
+    for _tick in 0..400 {
+        for (pid, member) in (1..=BUILDS).zip(&owners) {
+            if finished.contains(&pid) {
+                continue;
+            }
+            let paused = member
+                .lock()
+                .unwrap()
+                .admission
+                .get(&pid)
+                .is_some_and(|entry| entry.wait.is_some());
+            let grown = if paused { 0 } else { 2 * GIB };
+            let held = resident[&pid] + grown;
+            resident.insert(pid, held);
+            if held >= PEAK {
+                member.lock().unwrap().commands.clear();
+                resident.insert(pid, 0);
+                finished.push(pid);
+            } else {
+                member.lock().unwrap().commands = vec![command(pid, held, grown)];
+            }
+        }
+        let total = resident.values().sum::<u64>();
+        for member in &owners {
+            ledger.register(member, 512 * MIB);
+            unsettle(&mut ledger);
+            ledger.pass(
+                &owners,
+                member,
+                &room(MEMORY.saturating_sub(total), total > TIGHT_ABOVE, &volume),
+            );
+        }
+        if finished.len() == BUILDS as usize {
+            return;
+        }
+    }
+    let paused = (1..=BUILDS)
+        .filter(|pid| !finished.contains(pid))
+        .collect::<Vec<_>>();
+    panic!("builds {paused:?} never finished: all paused under tight memory");
+}

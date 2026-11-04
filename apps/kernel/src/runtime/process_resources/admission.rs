@@ -350,14 +350,20 @@ impl Ledger {
                 Some(owner) => changed.push(owner),
                 None => may_stop = true,
             }
-        } else if let Some(owner) = self.resume(
-            members,
-            WaitReason::Memory,
-            &mut state,
-            room,
-            &mut available,
-        ) {
-            changed.push(owner);
+        }
+        // Paused commands keep their memory, so a tight pool stays tight
+        // until one of them finishes. When nothing heavy runs any more, the
+        // next in line continues anyway: one command always makes progress.
+        if !room.tight || !state.heavy_running {
+            if let Some(owner) = self.resume(
+                members,
+                WaitReason::Memory,
+                &mut state,
+                room,
+                &mut available,
+            ) {
+                changed.push(owner);
+            }
         }
         let full = |entry: &Entry| entry.disk(room).is_some_and(|disk| disk.free < disk.floor);
         if let Some(owner) = self.pause(members, WaitReason::Disk, |entry, command| {
