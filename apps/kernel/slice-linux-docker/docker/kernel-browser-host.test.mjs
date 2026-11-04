@@ -32,7 +32,7 @@ test('MP-08 / MP-11: Chromium temporary sockets use the held private directory t
   for (const pid of [0, 1, -1, NaN]) assert.throws(() => chromiumTemporaryEnvironment(environment, 5, pid));
 });
 
-function fixture(root, { realCdp = false } = {}) {
+function fixture(root, { realCdp = false, personIdleMs } = {}) {
   fixture.popups = [];
   const pages = new Map();
   let next = 0;
@@ -81,7 +81,7 @@ function fixture(root, { realCdp = false } = {}) {
     clearViewport: async target => connection.send('Emulation.clearDeviceMetricsOverride', {}, `session-${target}`),
     inputCapture: { hold: async()=>async()=>{}, run: async (_connection, _session, operation) => operation() },
   });
-  return { host: new KernelBrowserHost(root, { chromium, browserFactory: realCdp
+  return { host: new KernelBrowserHost(root, { chromium, ...(personIdleMs ? { personIdleMs } : {}), browserFactory: realCdp
     ? () => new BrowserCdpClient({ connectionFactory: async () => connection }) : browserFactory }), chromium, handlers, sent, pages, connection };
 }
 
@@ -3047,3 +3047,52 @@ test('MP-08/MP-11 a same-size window resize retires an in-flight native fit', {t
   assert.equal(source.allowed(host.protection),false,'the resize owns the shared window even without a CSS-size change');
  }finally{await host.closeCompositors();LinuxCapture.prototype.start=start;LinuxCapture.prototype.close=close;await display.close()}
 }));
+
+// Miguel 11-04: parallel agents never change the Tab the person sees, run their Tabs at full speed, and wait for the person's input.
+test('an agent opens its Tab behind the shown one; the person opens theirs in front', () => using(async ({ host, sent }) => {
+  await host.request({ op: 'open', url: 'https://example.com/person' });
+  await host.request({ op: 'open', url: 'https://example.com/agent', focused_agent: true });
+  await host.request({ op: 'open', url: 'https://example.com/agent2', _agent_input: true });
+  const created = sent.filter(call => call.method === 'Target.createTarget' && call.params.url.includes('example.com')).map(call => [call.params.url, call.params.background === true]);
+  assert.deepEqual(created, [['https://example.com/person', false], ['https://example.com/agent', true], ['https://example.com/agent2', true]]);
+}));
+
+test('a Tab an agent works in is held at full speed once and released when it closes', () => using(async ({ host }) => {
+  const held = [], released = [];
+  const opened = await host.request({ op: 'open', url: 'https://example.com/' });
+  host.browser.inputCapture.hold = async (_connection, session) => { held.push(session); return async () => { released.push(session); }; };
+  const tab = opened.tabs[0], command = { op: 'input', focused_agent: true, tab_id: tab.tab_id, generation: opened.generation, document_id: tab.document_id, input: { kind: 'key', key: 'Tab' } };
+  await host.request(command); await host.request(command);
+  assert.equal(held.length, 1, 'one hold for any number of agent actions');
+  assert.match(held[0], /^session-target-/);
+  await host.request({ op: 'close', tab_id: tab.tab_id, generation: opened.generation });
+  assert.equal(released.length, 1);
+}));
+
+test('an agent action on a Tab the person is typing in waits for the person to be idle, and the person never waits', { timeout: 5000 }, () => using(async ({ host, sent }) => {
+  const opened = await host.request({ op: 'open', url: 'https://example.com/' });
+  const tab = opened.tabs[0], base = { tab_id: tab.tab_id, generation: opened.generation, document_id: tab.document_id };
+  const keys = () => sent.filter(call => call.method === 'Input.dispatchKeyEvent').length;
+  await host.request({ op: 'input', ...base, input: { kind: 'key', key: 'a' } });
+  const afterPerson = keys();
+  assert.ok(afterPerson > 0, 'the person\'s key is dispatched at once');
+  const startedAt = Date.now();
+  const agent = host.request({ op: 'input', focused_agent: true, ...base, input: { kind: 'key', key: 'b' } });
+  await new Promise(resolve => setTimeout(resolve, 60));
+  assert.equal(keys(), afterPerson, 'the agent waits while the person has just typed');
+  await host.request({ op: 'input', ...base, input: { kind: 'key', key: 'c' } });
+  assert.ok(keys() > afterPerson, 'the person is not held back by the waiting agent');
+  await agent;
+  assert.ok(Date.now() - startedAt >= 140, 'the agent resumed only after the person had been idle');
+  assert.ok(keys() > afterPerson + 1);
+}, { personIdleMs: 150 }));
+
+test('an agent action on another Tab does not wait for the person', { timeout: 5000 }, () => using(async ({ host }) => {
+  const first = await host.request({ op: 'open', url: 'https://example.com/a' });
+  const second = await host.request({ op: 'open', url: 'https://example.com/b' });
+  const [a, b] = [first.tabs[0], second.tabs.find(tab => tab.tab_id !== first.tabs[0].tab_id)];
+  await host.request({ op: 'input', tab_id: a.tab_id, generation: first.generation, document_id: a.document_id, input: { kind: 'key', key: 'a' } });
+  const startedAt = Date.now();
+  await host.request({ op: 'input', focused_agent: true, tab_id: b.tab_id, generation: second.generation, document_id: b.document_id, input: { kind: 'key', key: 'b' } });
+  assert.ok(Date.now() - startedAt < 1000);
+}, { personIdleMs: 5000 }));

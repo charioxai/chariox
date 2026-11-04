@@ -73,6 +73,8 @@ export function scheduleHostRequest(request, browser, viewport = hostViewport(),
     ? {kind:'bridge'} : {kind:'barrier'};
 }
 const TAB_LIMIT = 128;
+// A Tab the person types or clicks in is theirs until they have been idle this long (an agent's input to it waits).
+export const PERSON_IDLE_MS = 2000;
 // Read-only host operations: they never dispatch input into a page.
 const OBSERVATION_OPS = new Set(['chrome_window_follow', 'state', 'snapshot', 'screenshot', 'unsubscribe', 'note_selection', 'mirror_subscribe', 'mirror_next', 'mirror_close', 'display_subscribe', 'display_attach', 'display_suspend', 'display_resume', 'display_input_target', 'pointer_cursor']);
 // MP-08/MP-10: opt-in timing names Tab lifecycle ops (fixed labels, never page values).
@@ -98,8 +100,9 @@ export function navigationUrl(raw) {
 }
 
 export class KernelBrowserHost {
-  constructor(root, { appStorageRoot, chromium = new HostChromium(root, { appStorageRoot }), browserFactory = connection => new BrowserCdpClient({ connectionFactory: () => connection, permissionRequests: true, focusWorldSource: mirror2ObserverExpression() }) } = {}) {
+  constructor(root, { appStorageRoot, chromium = new HostChromium(root, { appStorageRoot }), browserFactory = connection => new BrowserCdpClient({ connectionFactory: () => connection, permissionRequests: true, focusWorldSource: mirror2ObserverExpression() }), personIdleMs = PERSON_IDLE_MS } = {}) {
     this.root = root;
+    this.personIdleMs = personIdleMs;
     this.timing = displayTiming(root);
     this.visitedLinks = new VisitedLinks();
     // r55: a Node event loop that stalls delays every request behind it without any step to name: mark the stall itself.
@@ -137,6 +140,8 @@ export class KernelBrowserHost {
     this.sampleLanes = new Map();
     this.compositors = new Map();
     this.foreground = new WindowForeground();
+    // The person's last deliberate input per Tab, and the background-run leases of Tabs agents work in.
+    this.personInputAt = new Map(); this.backgroundHolds = new Map();
     this.restoring = false;
     this.adoptedByInput = new WeakSet();
     this.keepaliveTarget = null;
@@ -257,6 +262,7 @@ export class KernelBrowserHost {
     await this.downloads.close();
     this.browser = null;
     if(this.displayTeardownErrors.length)throw new AggregateError(this.displayTeardownErrors.splice(0),'MD-DISPLAY: owned display teardown failed');
+    this.backgroundHolds.clear();this.personInputAt.clear();
     this.tabs.clear();this.header.clear();this.layouts.clear();this.layoutRevisions.clear();this.windowLayout=null;this.resizeSettled=null;
     this.popupEvidence.clear();
     this.observed = ++this.observations;
@@ -665,6 +671,8 @@ export class KernelBrowserHost {
       if (!this.downloads.bindings.has(tab.target_id)) this.downloads.bind(tab,
         this.downloads.bindings.get(tab.opener_target_id)?.session ?? "browser-viewer");
     }
+    for (const target of [...this.backgroundHolds.keys()]) if (![...this.tabs.values()].some(tab => tab.target_id === target)) void this.releaseBackground(target);
+    for (const id of [...this.personInputAt.keys()]) if (!this.tabs.has(id)) this.personInputAt.delete(id);
     // A surviving Tab keeps its committed page size; only retired Tabs drop theirs.
     for (const map of [this.layouts, this.layoutRevisions]) for (const id of [...map.keys()]) if (!this.tabs.has(id)) map.delete(id);
     // A Tab that opened in the resized window is laid out at the window's size, not the canonical one.
@@ -722,9 +730,10 @@ export class KernelBrowserHost {
       for (const [id, entry] of [...this.compositors]) if (entry.source instanceof LinuxCapture && !kept(id)) await this.closeCompositors(id);
     });
   }
-  async open(url, tabId = `host-tab-${randomUUID()}`, { signal, downloadSession } = {}) {
-    await this.closeCompositors();this.foreground.reset();
-    await this.createTab(url, tabId, { signal, downloadSession });
+  async open(url, tabId = `host-tab-${randomUUID()}`, { signal, downloadSession, background = false } = {}) {
+    // A background Tab leaves the shown Tab, and the native claim on it, as they are.
+    if (!background) { await this.closeCompositors();this.foreground.reset(); }
+    await this.createTab(url, tabId, { signal, downloadSession, background });
     const state = await this.reconcile();
     return { ...state, tab_id: tabId };
   }
@@ -877,8 +886,39 @@ export class KernelBrowserHost {
   }
   // A person's input queues in order while a busy renderer cannot answer the fences; agents keep awaiting their ack.
   request(command, options) {
-    return command.op === "input" && !command._agent_input && !command.focused_agent
+    const person = !command._agent_input && !command.focused_agent;
+    if (person) this.notePersonInput(command);
+    return command.op === "input" && person
       ? this.busyInputs.submit(command.observed_by ?? "adapter", command, options) : this.requestNow(command, options);
+  }
+  // The person's typing, click or scroll in a Tab keeps that Tab theirs until they have been idle for PERSON_IDLE_MS.
+  notePersonInput(command) {
+    if (!['input', 'mirror_input', 'display_input'].includes(command.op) || typeof command.tab_id !== 'string') return;
+    if (command.action?.kind === 'selection') return;
+    this.personInputAt.set(command.tab_id, Date.now());
+  }
+  async personQuiet(tabId, signal) {
+    for (;;) {
+      assertNotCancelled(signal);
+      const wait = (this.personInputAt.get(tabId) ?? 0) + this.personIdleMs - Date.now();
+      if (wait <= 0) { this.personInputAt.delete(tabId); return; }
+      await delay(Math.min(wait, 250));
+    }
+  }
+  // MP-08/MP-10: a Tab an agent works in keeps rendering at full speed while Chrome shows another Tab (per-Tab focus emulation, held while the Tab lives).
+  async holdBackground(tab) {
+    if (this.backgroundHolds.has(tab.target_id)) return;
+    const holding = (async () => {
+      const { connection, sessionId } = await this.browser.resolvePageTarget(tab.target_id);
+      return this.browser.inputCapture.hold(connection, sessionId);
+    })();
+    this.backgroundHolds.set(tab.target_id, holding);
+    try { await holding; } catch (error) { this.backgroundHolds.delete(tab.target_id); throw error; }
+  }
+  async releaseBackground(targetId) {
+    const holding = this.backgroundHolds.get(targetId);
+    this.backgroundHolds.delete(targetId);
+    if (holding) await (await holding.catch(() => () => {}))();
   }
   async requestNow(command, { signal, inputGuard, nativeDisplay } = {}) {
     const scope = command.observed_by ?? (command.focused_agent ? "focused-agent" : "adapter");
@@ -941,7 +981,8 @@ export class KernelBrowserHost {
     }
     const agentRequest = command.focused_agent || command._agent_input;
     if (agentRequest && ["open", "navigate"].includes(command.op) && extensionManagementUrl(command.url)) throw new Error(EXTENSIONS_REFUSED);
-    if (command.op === "open") { const opened = await this.open(command.url, command.tab_id, { signal, downloadSession: command._download_session }); await this.rebindWindows(); return this.observe(opened, null, scope); }
+    // Only the person changes the visible Tab: an agent's new Tab opens behind it.
+    if (command.op === "open") { const opened = await this.open(command.url, command.tab_id, { signal, downloadSession: command._download_session, background: Boolean(agentRequest) }); await this.rebindWindows(); return this.observe(opened, null, scope); }
     for (const stream of this.displays.values()) if (Date.now() > stream.expires) await this.removeDisplay(stream);
     if(['display_suspend','display_resume'].includes(command.op)){
       if(command.focused_agent||command._agent_input)throw new UserDomainRefusal('not_granted');
@@ -1003,6 +1044,9 @@ export class KernelBrowserHost {
       ? await slowMark(this.timing, 'input_wait display_target', this.displayTarget(command,nativeInputDocumentTarget(this,command,scope,nativeDisplay),INPUT_DOCUMENT_WAIT_MS)) : await this.target(command);
     assertNotCancelled(signal);
     if (agentRequest && ["input", "navigate"].includes(command.op) && extensionManagementUrl(tab.url)) throw new Error(EXTENSIONS_REFUSED);
+    // An agent's Tab runs at full speed behind the shown one; the person's own input to it goes first.
+    if (agentRequest) await this.holdBackground(tab).catch(() => {});
+    if (agentRequest && command.op === "input") await this.personQuiet(tab.tab_id, signal);
     const app = this.appForInput(tab, command, ["input", "navigate", "close", "resize"].includes(command.op));
     // The page stays on its origin.
     if (app && command.op === "navigate" && new URL(navigationUrl(command.url)).origin !== app.origin) {
@@ -1039,6 +1083,8 @@ export class KernelBrowserHost {
       this.scales.delete(tab.tab_id);
       this.inputEpochs.delete(tab.tab_id);
       this.scrolling.delete(tab.tab_id);
+      this.personInputAt.delete(tab.tab_id);
+      await this.releaseBackground(tab.target_id);
       await this.browser.manageTab({ ...binding, action: "close" }, { signal });
       await this.browser.clearWebBotAuth?.(tab.tab_id);
       this.webBotAuthProjects.delete(tab.tab_id);

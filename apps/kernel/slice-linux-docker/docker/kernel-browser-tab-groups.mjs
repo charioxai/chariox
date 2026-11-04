@@ -15,13 +15,21 @@ const manifest = { manifest_version: 3, name: "Chariox tab groups", version: "1"
 const worker = `// MP-08/MP-11: driven by the kernel over CDP.
 const invalidateNativeState = payload => () => globalThis[${JSON.stringify(nativeWindowChangedBinding)}]?.(payload);
 // The payload only names the event kind (diagnostics); every kind but bounds retires the guards.
-for (const [kind, event] of [['activated', chrome.tabs.onActivated], ['removed', chrome.tabs.onRemoved], ['windowRemoved', chrome.windows.onRemoved]]) event?.addListener?.(invalidateNativeState(kind));
+// Only the person changes the shown Tab: the Tab each window shows is tracked so a page opened by a Tab nobody
+// is looking at never takes the view (an agent's click in a background Tab), and a popup comes to front only
+// when its opener is the Tab on screen.
+const shown = new Map();
+for (const [kind, event] of [['activated', chrome.tabs.onActivated], ['removed', chrome.tabs.onRemoved], ['windowRemoved', chrome.windows.onRemoved]]) event?.addListener?.(info => { if (kind === 'activated' && info) shown.set(info.windowId, info.tabId); invalidateNativeState(kind)(); });
 // Chrome also reports the zoom it applies to a newly committed page; only a changed factor can change the layout.
 chrome.tabs.onZoomChange?.addListener?.(info => invalidateNativeState(typeof info?.oldZoomFactor === 'number' && info.oldZoomFactor === info.newZoomFactor ? 'zoomsame' : 'zoom')());
 chrome.windows.onBoundsChanged?.addListener?.(invalidateNativeState(${JSON.stringify(nativeBoundsPayload)}));
 const targetTabs = async () => new Map((await chrome.debugger.getTargets()).filter(t => t.tabId !== undefined).map(t => [t.id, t.tabId]));
 // An extension API call every 20 s keeps this worker alive for the kernel.
 setInterval(() => chrome.runtime.getPlatformInfo(), 20000);
+chrome.tabs.query?.({ active: true })?.then?.(tabs => { for (const tab of tabs) if (!shown.has(tab.windowId)) shown.set(tab.windowId, tab.id); })?.catch?.(() => {});
+const keepShown = (tab, previous) => {
+  if (tab.active && tab.openerTabId !== undefined && previous !== undefined && previous !== tab.id && tab.openerTabId !== previous) chrome.tabs.update(previous, { active: true }).catch(() => {});
+};
 // MP-08/MP-10: page popups and second windows stay inside the shared browser.
 // The kernel identifies its internal keepalive before popup folding is enabled.
 let keepaliveTab = null;
@@ -36,16 +44,19 @@ const fold = async (id, tries = 100) => {
   // that existing page instead of leaving a popup without a tabbed window.
   if (!main) { await chrome.windows.create({ tabId: id, type: "normal", focused: true }); return; }
   if (tab.windowId === main.id) return;
+  const previous = shown.get(main.id), watched = tab.openerTabId !== undefined && tab.openerTabId === previous;
   try { await chrome.tabs.move(id, { windowId: main.id, index: -1 }); }
   catch (error) {
     if (!tries || !/dragging/.test(error?.message)) throw error;
     await new Promise(resolve => setTimeout(resolve, 100));
     return fold(id, tries - 1);
   }
-  await chrome.tabs.update(id, { active: true });
-  await chrome.windows.update(main.id, { focused: true });
+  if (watched) {
+    await chrome.tabs.update(id, { active: true });
+    await chrome.windows.update(main.id, { focused: true });
+  } else if (previous !== undefined) await chrome.tabs.update(previous, { active: true }).catch(() => {});
 };
-chrome.tabs.onCreated.addListener(tab => fold(tab.id).catch(() => {}));
+chrome.tabs.onCreated.addListener(tab => { keepShown(tab, shown.get(tab.windowId)); fold(tab.id).catch(() => {}); });
 chrome.tabs.onAttached.addListener(id => fold(id).catch(() => {}));
 // MP-08/MP-10/MP-11: one fresh native query supplies active identity and
 // dimensions. Parallel read-only inventory never caches admission authority;
@@ -86,7 +97,7 @@ const favicon = async target => {
   }
 };
 globalThis.charioxTabs = {
-  revision: 5,
+  revision: 6,
   favicon,
   async keepalive(target) { keepaliveTab = (await targetTabs()).get(target) ?? null; },
   async viewport(target) {
@@ -103,8 +114,9 @@ globalThis.charioxTabs = {
       const tabIds = target_ids.map(id => ids.get(id)).filter(id => id !== undefined);
       if (!tabIds.length) continue;
       const windowId = (await chrome.tabs.get(tabIds[0])).windowId;
-      const existing = (await chrome.tabGroups.query({ title, windowId }))[0];
-      const groupId = await chrome.tabs.group({ tabIds, ...(existing ? { groupId: existing.id } : { createProperties: { windowId } }) });
+      // The title carries the agent's live mark, so the group is found by the Tabs it already holds.
+      const held = (await Promise.all(tabIds.map(id => chrome.tabs.get(id)))).find(tab => Number.isInteger(tab.groupId) && tab.groupId !== -1 && tab.windowId === windowId);
+      const groupId = await chrome.tabs.group({ tabIds, ...(held ? { groupId: held.groupId } : { createProperties: { windowId } }) });
       await chrome.tabGroups.update(groupId, { title, color, collapsed: false });
       tabIds.forEach(id => grouped.add(id));
     }
@@ -160,7 +172,7 @@ export class ChromeTabGroups {
       for(let attempt=0;attempt<2;attempt++){
         const {sessionId}=await this.connection.send("Target.attachToTarget",{targetId:worker.targetId,flatten:true});
         await this.nativeState.attach(sessionId);
-        const {result}=await this.connection.send("Runtime.evaluate",{expression:"charioxTabs.revision === 5",returnByValue:true},sessionId);
+        const {result}=await this.connection.send("Runtime.evaluate",{expression:"charioxTabs.revision === 6",returnByValue:true},sessionId);
         if(result?.value===true){
           if(this.keepaliveTarget)await this.connection.send("Runtime.evaluate",{expression:`charioxTabs.keepalive(${JSON.stringify(this.keepaliveTarget)})`,awaitPromise:true},sessionId);
           this.session=sessionId;return sessionId;
