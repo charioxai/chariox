@@ -91,6 +91,24 @@
       }
     },
     {
+      "agent_id": "agent-1",
+      "at_ms": 10000,
+      "cursor": 6,
+      "kernel": "kernel-1",
+      "machine": "machine-1",
+      "refs": {},
+      "session_id": "room-1",
+      "summary": "stopped",
+      "type": "process",
+      "value": {
+        "ended": "chariox: stopped this command: it needs about 80 GB and this machine's memory pool is 64 GB, so it can never fit here.",
+        "process_id": "process-issued-2",
+        "state": {
+          "kind": "running"
+        }
+      }
+    },
+    {
       "category": "memory_limit",
       "failure": {
         "kind": "other",

@@ -35,13 +35,18 @@ impl KernelRuntimeState {
                     );
                 }
                 (change, state) => {
-                    let (summary, waited_ms) = match (change, state) {
+                    let (summary, waited_ms, ended) = match (change, state) {
+                        (WaitChange::Stopped { reason }, _) => {
+                            ("stopped".to_string(), None, Some(reason.clone()))
+                        }
                         (WaitChange::Resumed { waited_ms }, _) => {
-                            ("running again".to_string(), Some(*waited_ms))
+                            ("running again".to_string(), Some(*waited_ms), None)
                         }
-                        (_, SessionProcessState::Held(row) | SessionProcessState::Paused(row)) => {
-                            (format!("waiting for room: {}", row.command_line), None)
-                        }
+                        (_, SessionProcessState::Held(row) | SessionProcessState::Paused(row)) => (
+                            format!("waiting for room: {}", row.command_line),
+                            None,
+                            None,
+                        ),
                         _ => continue,
                     };
                     if let Err(error) = self.owned.durable_state_store.outside_publish(
@@ -51,6 +56,7 @@ impl KernelRuntimeState {
                             process_id: event.process_id.clone(),
                             state: event.state.clone(),
                             waited_ms,
+                            ended,
                         },
                         &summary,
                         EventRefs {

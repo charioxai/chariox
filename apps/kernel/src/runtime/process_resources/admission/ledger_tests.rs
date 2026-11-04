@@ -24,6 +24,7 @@ fn room<'a>(memory: u64, tight: bool, volume: &'a Volume) -> Room<'a> {
         tight,
         light: 512 * MIB,
         growth_room: GIB,
+        capacity: 64 * GIB,
         volume,
     }
 }
@@ -823,4 +824,41 @@ fn the_oldest_writer_keeps_writing_down_to_half_the_floor_and_stops_below() {
         Some(Wait::Paused(WaitReason::Disk)),
         "the only writer kept writing below half the floor"
     );
+}
+
+#[test]
+fn a_command_that_needs_more_than_the_whole_pool_is_refused_not_held() {
+    let free = Arc::new(AtomicU64::new(50 * GIB));
+    let volume = volume(&free);
+    let big = entry(
+        1,
+        Peak {
+            memory: 80 * GIB,
+            writes: 0,
+        },
+    );
+    let fits = entry(
+        2,
+        Peak {
+            memory: 40 * GIB,
+            writes: 0,
+        },
+    );
+    let current = owner(
+        "agent",
+        true,
+        vec![command(1, 0, 0), command(2, 0, 0)],
+        vec![(1, big), (2, fits)],
+    );
+    let mut ledger = Ledger::new(None);
+    // 64 GiB pool: the first can never fit, the second only has to wait.
+    ledger.pass(
+        std::slice::from_ref(&current),
+        &current,
+        &room(10 * GIB, false, &volume),
+    );
+    assert_eq!(ledger.take_refused(&current), vec![(1, 80 * GIB)]);
+    assert!(ledger.take_refused(&current).is_empty(), "reported twice");
+    assert_eq!(wait(&current, 1), None, "an impossible command was held");
+    assert_eq!(wait(&current, 2), None, "the one that fits was refused");
 }

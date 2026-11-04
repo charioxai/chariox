@@ -447,6 +447,7 @@ impl PreparedDomain {
                             }
                         } else {
                             announce(pid, &notice);
+                            tell_stopped(&watched, pid, notice);
                         }
                         tree.kill(pid);
                     }
@@ -576,7 +577,7 @@ fn admit(tree: &sampling::ProcessTree, watched: &Arc<Mutex<Observation>>) {
         let line = match change {
             waits::WaitChange::Began => waits::began_line(&state),
             waits::WaitChange::Resumed { waited_ms } => Some(waits::resumed_line(waited_ms)),
-            waits::WaitChange::Long => None,
+            waits::WaitChange::Long | waits::WaitChange::Stopped { .. } => None,
         };
         if let Some(line) = line {
             announce(command, &line);
@@ -590,6 +591,31 @@ fn admit(tree: &sampling::ProcessTree, watched: &Arc<Mutex<Observation>>) {
             });
         }
     }
+}
+
+/// The room hears that the pool ended the command at `pid`, and why.
+fn tell_stopped(watched: &Arc<Mutex<Observation>>, pid: u32, notice: String) {
+    let (process_id, state) = {
+        let observation = watched.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(sample) = observation.samples.iter().find(|sample| sample.pid == pid) else {
+            return;
+        };
+        (
+            sample.process_id.clone(),
+            observation
+                .admission
+                .get(&pid)
+                .map_or(SessionProcessState::Running, projection::state_of),
+        )
+    };
+    waits::push(waits::WaitEvent {
+        keys: keys_of(watched),
+        process_id,
+        change: waits::WaitChange::Stopped {
+            reason: notice.trim_end().to_string(),
+        },
+        state,
+    });
 }
 
 /// The keys the workload is registered under.

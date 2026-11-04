@@ -173,14 +173,52 @@ impl Pool {
             tight: memory < self.margin.max(growing),
             light,
             growth_room: admission::growth_room(self.ceiling),
+            capacity: self.ceiling.saturating_sub(self.margin),
             volume: &*self.volume,
         };
         let may_stop = ledger.pass(&members, current, &room);
+        let refused = ledger.take_refused(current);
         drop(ledger);
+        self.end_oversized(current, refused, room.capacity);
         // Paused and held commands do not grow: with nothing growing the
         // pool waits rather than stops.
         if may_stop && growing > 0 && self.pressed(&members) {
             self.stop_one(&members, None, Cause::Pressure);
+        }
+    }
+
+    /// A command whose known peak exceeds the whole pool can never run here:
+    /// it ends now, with the reason in its own error stream.
+    fn end_oversized(
+        &self,
+        current: &Arc<Mutex<Observation>>,
+        refused: Vec<(u32, u64)>,
+        capacity: u64,
+    ) {
+        let control = current
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .control
+            .clone();
+        let Some(control) = control else {
+            return;
+        };
+        for (pid, needs) in refused {
+            let notice = format!(
+                "chariox: stopped this command: it needs about {} GB and this machine's memory pool is {} GB, so it can never fit here. Run it on a larger machine or lower its memory use.\n",
+                needs.div_ceil(1024 * MIB),
+                capacity / (1024 * MIB),
+            );
+            crate::logging::warn_with_fields(
+                "process_resources.memory_stop",
+                notice.trim_end(),
+                serde_json::json!({"pid": pid, "needs_bytes": needs, "pool_bytes": capacity}),
+            );
+            let _ = control.send(WatchCommand::MemoryStop {
+                pid,
+                limit_bytes: capacity,
+                notice,
+            });
         }
     }
 

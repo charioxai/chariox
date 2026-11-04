@@ -92,6 +92,8 @@ pub(super) struct Entry {
     pub since_ms: u64,
     /// The person was told this wait has grown long.
     pub long_noticed: bool,
+    /// Its known peak is larger than the whole pool: it is ended, not held.
+    refused: Option<u64>,
 }
 impl Entry {
     /// It waits from now on, for the reason `wait` names.
@@ -257,6 +259,8 @@ pub(super) struct Room<'a> {
     pub tight: bool,
     pub light: u64,
     pub growth_room: u64,
+    /// The whole pool: what a command can never exceed, however long it waits.
+    pub capacity: u64,
     pub volume: &'a Volume,
 }
 
@@ -429,6 +433,17 @@ impl Ledger {
         may_stop
     }
 
+    /// The commands of `current` that can never fit the pool, with the peak
+    /// they are known to reach; each is reported once.
+    pub(super) fn take_refused(&mut self, current: &Arc<Mutex<Observation>>) -> Vec<(u32, u64)> {
+        let mut observation = current.lock().unwrap_or_else(|e| e.into_inner());
+        observation
+            .admission
+            .iter_mut()
+            .filter_map(|(pid, entry)| Some((*pid, entry.refused.take()?)))
+            .collect()
+    }
+
     /// New commands of `current` with a known heavy peak start only with room
     /// for it; otherwise they are held before they grow.
     fn hold(
@@ -448,6 +463,11 @@ impl Ledger {
                 entry.admitted = entry.resident >= room.light;
                 continue;
             };
+            if entry.holdable && expected.memory > room.capacity {
+                entry.refused = Some(expected.memory);
+                entry.admitted = true;
+                continue;
+            }
             let need = expected.memory.saturating_sub(entry.resident);
             let disk = entry.disk(room);
             let ahead = entry.writes_ahead(room);

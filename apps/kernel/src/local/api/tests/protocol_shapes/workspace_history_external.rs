@@ -1108,8 +1108,25 @@ fn local_daemon_protocol_session_process_memory_outcomes_are_versioned() {
                 process_id: "process-issued-2".into(),
                 state: SessionProcessState::Running,
                 waited_ms: Some(4000),
+                ended: None,
             },
             summary: "running again".into(),
+            at_ms: 10000,
+            refs: crate::local::EventRefs::default(),
+        },
+        crate::local::OutsideEvent {
+            cursor: 6,
+            kernel: "kernel-1".into(),
+            machine: "machine-1".into(),
+            session_id: "room-1".into(),
+            agent_id: Some("agent-1".into()),
+            value: crate::local::OutsideEventValue::Process {
+                process_id: "process-issued-2".into(),
+                state: SessionProcessState::Running,
+                waited_ms: None,
+                ended: Some("chariox: stopped this command: it needs about 80 GB and this machine's memory pool is 64 GB, so it can never fit here.".into()),
+            },
+            summary: "stopped".into(),
             at_ms: 10000,
             refs: crate::local::EventRefs::default(),
         },
@@ -1153,6 +1170,6 @@ fn local_daemon_protocol_session_process_memory_outcomes_are_versioned() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "d3abee5628c33b82ca05e027db805f5ad578e45f10cf5f233ca9aa2dcc44fcd5"
+        "14d9486f73b1aed677170c1323b5c8d02263fa2f00afc43bda09ade5e3376d32"
     );
 }

@@ -98,6 +98,7 @@ fn a_wait_and_its_end_reach_a_follower_of_the_agent() {
                                 process_id,
                                 state,
                                 waited_ms,
+                                ..
                             } => Some((event.agent_id, process_id, state, waited_ms)),
                             _ => None,
                         })

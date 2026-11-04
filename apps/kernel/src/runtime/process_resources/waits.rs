@@ -12,7 +12,7 @@ pub(super) const LONG_WAIT_MS: u64 = 120_000;
 /// Events kept until the runtime takes them; the oldest go first.
 const KEPT: usize = 256;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum WaitChange {
     Began,
     Resumed {
@@ -20,6 +20,10 @@ pub(crate) enum WaitChange {
     },
     /// Still waiting after `LONG_WAIT_MS`.
     Long,
+    /// The pool ended the command, for this reason.
+    Stopped {
+        reason: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -115,6 +115,9 @@ pub enum OutsideEventValue {
         /// How long it waited, once it runs again.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         waited_ms: Option<u64>,
+        /// Why the pool ended the command, when it did.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ended: Option<String>,
     },
     Session {
         state: EventSessionState,
