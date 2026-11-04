@@ -43,8 +43,21 @@ unsafe impl GlobalAlloc for Counting {
     }
 }
 
-/// Bytes allocated and bytes still held, on this thread, while `future` runs.
-/// Run it on a current-thread runtime so the work stays on this thread.
+/// Bytes allocated and bytes still held, on this thread, while `work` runs.
+pub(crate) fn measure<R>(work: impl FnOnce() -> R) -> (R, Measured) {
+    let before = (ALLOCATED.get(), LIVE.get());
+    let output = work();
+    let after = (ALLOCATED.get(), LIVE.get());
+    (
+        output,
+        Measured {
+            allocated: after.0 - before.0,
+            retained: after.1 - before.1,
+        },
+    )
+}
+
+/// The same for a future; run it on a current-thread runtime so the work stays on this thread.
 pub(crate) async fn measured<F: Future>(future: F) -> (F::Output, Measured) {
     let before = (ALLOCATED.get(), LIVE.get());
     let output = future.await;

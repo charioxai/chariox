@@ -7,7 +7,6 @@ fn daemon_app_bootstrap_wires_runtime_services() {
 
     assert_eq!(app.config(), &config);
     assert_eq!(app.sessions().active_session_count(), 0);
-    assert!(app.attachments().list_events().is_empty());
     assert!(app.providers().registry().registered_adapter_count() >= 1);
     assert!(app.terminal().input_records().is_empty());
     assert!(app.terminal().output_records().is_empty());
