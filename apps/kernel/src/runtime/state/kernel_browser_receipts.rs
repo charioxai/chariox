@@ -72,7 +72,7 @@ impl KernelRuntimeState {
     #[cfg(test)]
     pub(crate) fn install_kernel_browser_fixture(&self, user: &str, root: &std::path::Path) {
         let script = root.join("MD5-controller.sh");
-        std::fs::write(&script, r#"set -eu
+        std::fs::write(&script, r##"set -eu
 while IFS= read -r request; do
  id=${request#*:}; id=${id%%,*}
  case "$request" in
@@ -92,7 +92,7 @@ while IFS= read -r request; do
   *'"method":"shutdown"'*) printf '{"id":%s,"ok":true,"result":{"state":"stopped","process_id":null,"diagnostic_code":null}}\n' "$id"; exit 0 ;;
  esac
 done
-"#).unwrap();
+"##).unwrap();
         self.owned
             .kernel_browser_host
             .install_fixture_backend(user, &script, root);
