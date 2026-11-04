@@ -16,6 +16,7 @@ import { fileURLToPath } from "node:url"
 import { DatabaseSync } from "node:sqlite"
 import { LocalIpcClient } from "../../packages/kernel-client/dist/ipc.js"
 import { submitPromptRequest } from "../../packages/kernel-client/dist/ipc-requests.js"
+import { ensureDirectory, launchedServers, photographTui, sha, toolNames } from "./agent-reach-tool-view.mjs"
 
 const flags = new Map()
 for (let i = 2; i < process.argv.length; i++) flags.set(process.argv[i], process.argv[++i])
@@ -39,8 +40,8 @@ const tokenFile = flags.get("--claude-token-file") ?? "/root/.claude-lanes/oauth
 // A Codex scope the product linked for drills, and the OpenCode login to copy into a lane-owned scope.
 const codexScope = flags.get("--codex-scope") ?? "/root/.chariox/dev/worker-k/home/state/provider-accounts/local/codex/kaissandra-ai-reviewer-login-esqv7b7c/codex"
 const opencodeAuth = flags.get("--opencode-auth") ?? "/root/.chariox/dev/provider-runtimes/fleet-accounts/opencode-home/.local/share/opencode/auth.json"
-const scenarios = new Set((flags.get("--scenarios") ?? (provider === "claude" ? "reach,sudo,acquisition,tools" : "tools")).split(","))
-assert(provider === "claude" || [...scenarios].every(name => name === "tools"), "only the tools scenario runs with Codex or OpenCode")
+const scenarios = new Set((flags.get("--scenarios") ?? (provider === "claude" ? "reach,sudo,acquisition,tools,view" : "tools,view")).split(","))
+assert(provider === "claude" || [...scenarios].every(name => name === "tools" || name === "view"), "only the tools and view scenarios run with Codex or OpenCode")
 assert(stateRoot.startsWith("/root/.chariox/dev/"), "state must be lane-owned")
 assert(!evidence.startsWith(fileURLToPath(new URL("../../", import.meta.url))), "evidence must be outside the repository")
 mkdirSync(stateRoot, { recursive: true, mode: 0o700 })
@@ -357,7 +358,7 @@ async function main() {
     const rows = audit().filter(row => String(row.harness ?? "").startsWith("home-room/") && String(row.harness).includes("(Chariox agent)"))
     check("B's audit names the room and agent for the request", rows.some(row => row.request === "AttachToSession"), { requests: rows.map(row => row.request) })
     const second = await toolsTurn([
-      "This is a drill. Use only the chariox-reach MCP tools. No shell, no files. Do not retry a failed call.",
+      "This is a drill. Use only the chariox-reach MCP tools. No shell, no files. A call may answer with an error result: that is expected, do not retry it and make all three calls in order anyway.",
       `1. Call \`events_subscribe\` with exactly: {"kernel":"${target}","session_id":"${roomB.session.id}"}`,
       '2. Call `events_wait` with exactly: {"timeout_seconds":2}',
       '3. Call `events_ack` with exactly: {"cursor":0}',
@@ -368,6 +369,43 @@ async function main() {
     note("events-tools", { calls: events.map(call => call && { tool: call.tool, status: call.status, output: call.output.slice(0, 200) }) })
     check("the agent calls the three events tools and each answers with a typed code", events.every(call => call && /code\W+[a-z_]{4,}/.test(call.output)))
     if (flags.has("--hold")) await delay(Number(flags.get("--hold")) * 1000)
+  }
+
+  if (scenarios.has("view")) {
+    note("scenario", { which: "view", provider })
+    let launch
+    await until(() => { try { launch = launchedServers(provider, a.child.pid); return true } catch { return false } }, `${provider} process`, 90000)
+    const lists = {}
+    for (const [name, server] of Object.entries(launch.servers)) lists[name] = await toolNames(server)
+    const reachTools = ["kernels", "sessions", "request", "events_subscribe", "events_wait", "events_ack", "guide"]
+    writeFileSync(join(evidence, "served-tools.json"), JSON.stringify(Object.fromEntries(Object.entries(lists).map(([name, names]) => [name, { count: names.length, sha256: sha(names), names }])), null, 1), { mode: 0o600 })
+    check("the run is launched with the chariox and chariox-reach servers", Object.keys(launch.servers).sort().join() === "chariox,chariox-reach", { servers: Object.keys(launch.servers) })
+    check("chariox-reach serves the seven tools", JSON.stringify([...(lists["chariox-reach"] ?? [])].sort()) === JSON.stringify([...reachTools].sort()), { names: lists["chariox-reach"] })
+    check("no reach tool is in the chariox list", !(lists.chariox ?? []).some(name => reachTools.includes(name)), { count: lists.chariox?.length })
+    if (flags.has("--expect-chariox-sha")) check("the chariox list is the one of the base kernel", sha(lists.chariox ?? []) === flags.get("--expect-chariox-sha"), { count: lists.chariox?.length, sha256: sha(lists.chariox ?? []) })
+    const viewHome = ensureDirectory(join(a.dir, `view-${provider}`)), cwd = join(a.dir, "work")
+    const common = { cwd, evidence, label: `${provider} (${model})` }
+    if (provider === "claude") {
+      writeFileSync(join(viewHome, ".claude.json"), JSON.stringify({ hasCompletedOnboarding: true, theme: "dark", projects: { [cwd]: { hasTrustDialogAccepted: true } } }), { mode: 0o600 })
+      const shots = await photographTui({ ...common, name: "claude", program: ["claude", "--mcp-config", launch.file, "--strict-mcp-config", "--model", model],
+        env: { HOME: viewHome, CLAUDE_CODE_OAUTH_TOKEN: readFileSync(tokenFile, "utf8").trim(), TERM: "xterm-256color", PATH: process.env.PATH },
+        ready: /for shortcuts/, dialogs: [{ when: /Press Enter to continue/, keys: ["Enter"] }, { when: /Yes, I trust this folder/, keys: ["Down", "Enter"] }, { when: /Dark mode|text style/, keys: ["Enter"] }],
+        steps: [{ keys: [{ literal: "/mcp" }, "Enter"], wait: 3000, shot: "claude-mcp-servers" },
+          { keys: ["Down", "Enter"], wait: 2500, shot: "claude-mcp-reach-server" }, { keys: ["Enter"], wait: 2500, shot: "claude-mcp-reach-tools" }] })
+      note("tui-captured", { shots: shots.map(x => x.shot) })
+    } else if (provider === "codex") {
+      const tokenVar = JSON.parse(launch.overrides.find(entry => entry.startsWith("mcp_servers.chariox-reach.bearer_token_env_var=")).split("=").slice(1).join("="))
+      const shots = await photographTui({ ...common, name: "codex", program: ["codex", ...launch.overrides.flatMap(entry => ["-c", entry]), "-c", `projects."${cwd}".trust_level="trusted"`, "-c", "check_for_update_on_startup=false", "--model", model],
+        env: { HOME: viewHome, CODEX_HOME: codexScope, [tokenVar]: launch.env[tokenVar], TERM: "xterm-256color", PATH: process.env.PATH },
+        ready: /Ask Codex to do anything/, dialogs: [{ when: /Trust this folder\?/, keys: ["Enter"] }],
+        steps: [{ keys: [{ literal: "/mcp" }], wait: 1500 }, { keys: ["Enter"], wait: 800 }, { keys: ["Enter"], wait: 5000, shot: "codex-mcp" }] })
+      note("tui-captured", { shots: shots.map(x => x.shot) })
+    } else {
+      const shots = await photographTui({ ...common, name: "opencode", program: ["opencode"],
+        env: { HOME: viewHome, OPENCODE_CONFIG_CONTENT: JSON.stringify({ mcp: launch.servers }), XDG_DATA_HOME: join(a.dir, "opencode-scope/data"), XDG_CONFIG_HOME: join(viewHome, "config"), XDG_CACHE_HOME: join(viewHome, "cache"), XDG_STATE_HOME: join(viewHome, "state"), TERM: "xterm-256color", PATH: process.env.PATH },
+        steps: [{ wait: 8000 }, { keys: [{ literal: "/status" }, "Enter"], wait: 4000, shot: "opencode-status" }] })
+      note("tui-captured", { shots: shots.map(x => x.shot) })
+    }
   }
 
   if (scenarios.has("sudo")) {

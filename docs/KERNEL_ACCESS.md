@@ -36,7 +36,9 @@ An external agent (Claude Code, Codex, OpenCode) talks only to its local kernel 
 
 ### Agent reach (Room agents)
 
-A Room agent of the kernel owner reaches other rooms and the user's other kernels through its runtime MCP, which carries a second server, `chariox-reach` (`/mcp/reach`), next to `chariox`. It has two tools: `kernels` (the kernels the user can reach) and `request` (one `LocalDaemonRequest`, optionally with a `kernel`). There is no CLI or socket door for Room agents, and no off switch for the owner's agents. An agent of a guest never gets the tools.
+A Room agent of the kernel owner reaches other rooms and the user's other kernels through its runtime MCP, which carries a second server, `chariox-reach` (`/mcp/reach`), next to `chariox`. Its seven tools come from the CLI command table (`apps/cli/src/agent-reach-tools.ts`, written to `apps/kernel/src/transport/runtime_tools/reach_tools.json` by `pnpm reach:generate`; a CLI test fails while the file is stale and while a command gains a flag the tools neither offer nor name as left out): `kernels` (the kernels the user can reach), `sessions` (the rooms of a kernel, or one room's agents), `request` (one `LocalDaemonRequest`, optionally with a `kernel`), `events_subscribe`, `events_wait`, `events_ack` (the agent's own event inbox) and `guide`. The `chariox` list does not change, and a `chariox` room tool that is given a `kernel` argument is refused (`use the chariox-reach tools`), since it would run in the agent's own room while the agent believes it ran elsewhere. There is no CLI or socket door for Room agents, and no off switch for the owner's agents. An agent of a guest never gets the tools. The tools are listed for the owner's agent whatever state its run is in (OpenCode asks while the run is still starting and keeps the answer); a call needs the live run.
+
+The three `events_*` tools send the same requests as `chariox events subscribe|wait|ack`, to the agent's own kernel, where the inbox lives. Until the events slice (S3) takes the six event requests off the exclusion list for the reach caller they answer `excluded_for_agents`. S3 changes `reach_need` and the subscription owner (`reach:<run>`); the tools, their arguments and the 280 s cap on one `events_wait` (a provider ends a longer tool call) stay. A driver agent that must be woken by a driven agent's question card (agent-triggers/AT-40) follows that agent's room with `events_subscribe` and reads the `value.question` record from `events_wait`; answering the card is a person's `RespondToInteraction`, which stays on the exclusion list.
 
 The identity is the agent's own live provider run (`reach:<run>`); it ends with the run. The kernel authorises it as the owner, with the same rule as at home:
 
@@ -52,7 +54,7 @@ A request for another kernel goes through the owner's gateway (the same one `cha
 
 Acquiring a machine (`ControlPlane` acquire, start and start-from-saved-state) needs no question by default. With the setting `agents.ask_before_acquiring_machines = true` ("Ask each time an agent acquires a machine through your connected service"; off by default; owner-only) each such request raises one decision in the agent's room, shown on every client; declining answers `acquisition_declined`.
 
-Drill: `node scripts/drills/agent-reach.mjs` (two real kernels, local relay, a real Claude agent).
+Drill: `node scripts/drills/agent-reach.mjs` (two real kernels, local relay, a real Claude, Codex or OpenCode agent with `--provider`; the `tools` scenario calls every reach tool and a room tool with a `kernel`, the `view` scenario asks the launched servers for their tool lists and photographs the provider's own tool view).
 
 ### Development standing grants
 
