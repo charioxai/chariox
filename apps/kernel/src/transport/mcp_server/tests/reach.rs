@@ -44,6 +44,11 @@ fn launch(
 }
 
 fn fixture() -> Reach {
+    fixture_with(true)
+}
+
+/// `owner_running` false leaves the owner's run parked, as a provider's run is while it starts.
+fn fixture_with(owner_running: bool) -> Reach {
     let worktree = crate::test_support::TestWorktree::new("reach-worktree");
     let other = crate::test_support::TestWorktree::new("reach-other-worktree");
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
@@ -72,6 +77,14 @@ fn fixture() -> Reach {
         "reach-run-owner",
         OWNER_TOKEN,
     );
+    if !owner_running {
+        let mut providers = app.providers_mut();
+        let mut run = providers
+            .get_run("reach-run-owner")
+            .expect("the owner's run exists");
+        run.mark_parked();
+        providers.insert_run_for_test(run);
+    }
     let guest_token = launch(
         &mut app,
         session.id(),
@@ -572,4 +585,27 @@ async fn a_room_tool_given_another_kernel_is_refused() {
         .await
         .expect("the room tool still works");
     assert!(listed.ok);
+}
+
+/// OpenCode lists its tools while its run is still starting and keeps the answer.
+#[tokio::test]
+async fn the_reach_tools_are_listed_before_the_run_is_running_and_called_only_while_it_runs() {
+    let reach = fixture_with(false);
+    let names = reach
+        .router
+        .reach_tool_specs_for_auth_token(&reach.owner_token)
+        .into_iter()
+        .map(|tool| tool.name)
+        .collect::<Vec<_>>();
+    assert_eq!(names, REACH_TOOL_NAMES);
+    let (ok, payload) = tool(&reach, "sessions", serde_json::json!({})).await;
+    assert!(!ok);
+    assert_eq!(code(&payload), "reach_not_available");
+    assert!(
+        reach
+            .router
+            .reach_tool_specs_for_auth_token(&reach.guest_token)
+            .is_empty(),
+        "a guest's agent gets none, whatever state its run is in"
+    );
 }

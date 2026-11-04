@@ -3,6 +3,8 @@
 // in the agent's own room is refused on B without /sudo and works inside a /sudo window; the "ask before agents acquire machines" setting turns an acquisition into one decision in the agent's room.
 // Real kernels, local scoped relay, real Claude. Credentials are read inside this script, never printed or stored
 // in evidence. Red on a base kernel without `chariox-reach`: the agent has no tool, so the B-side checks fail.
+// The `tools` scenario runs with a real Claude, Codex or OpenCode agent (`--provider`): the agent calls every
+// `chariox-reach` tool and a room tool given another kernel, and B's audit names it.
 import assert from "node:assert/strict"
 import { spawn } from "node:child_process"
 import { createHmac, createHash, randomBytes, randomUUID } from "node:crypto"
@@ -25,9 +27,20 @@ function required(key) {
 const binary = required("--kernel-binary"), relayBinary = required("--relay-binary")
 const stateRoot = required("--state-root"), evidence = required("--evidence-dir")
 const label = flags.get("--label") ?? "run"
-const model = flags.get("--model") ?? "claude-haiku-5-5"
+const provider = flags.get("--provider") ?? "claude"
+const providers = {
+  claude: { model: "claude-haiku-5-5", variant: "low" },
+  codex: { model: "gpt-6-luna", variant: "low" },
+  opencode: { model: "opencode-go/deepseek-v4.1-flash", variant: null },
+}
+assert(providers[provider], `--provider is one of ${Object.keys(providers)}`)
+const model = flags.get("--model") ?? providers[provider].model
 const tokenFile = flags.get("--claude-token-file") ?? "/root/.claude-lanes/oauth-token"
-const scenarios = new Set((flags.get("--scenarios") ?? "reach,sudo,acquisition").split(","))
+// A Codex scope the product linked for drills, and the OpenCode login to copy into a lane-owned scope.
+const codexScope = flags.get("--codex-scope") ?? "/root/.chariox/dev/worker-k/home/state/provider-accounts/local/codex/kaissandra-ai-reviewer-login-esqv7b7c/codex"
+const opencodeAuth = flags.get("--opencode-auth") ?? "/root/.chariox/dev/provider-runtimes/fleet-accounts/opencode-home/.local/share/opencode/auth.json"
+const scenarios = new Set((flags.get("--scenarios") ?? (provider === "claude" ? "reach,sudo,acquisition,tools" : "tools")).split(","))
+assert(provider === "claude" || [...scenarios].every(name => name === "tools"), "only the tools scenario runs with Codex or OpenCode")
 assert(stateRoot.startsWith("/root/.chariox/dev/"), "state must be lane-owned")
 assert(!evidence.startsWith(fileURLToPath(new URL("../../", import.meta.url))), "evidence must be outside the repository")
 mkdirSync(stateRoot, { recursive: true, mode: 0o700 })
@@ -101,7 +114,7 @@ async function role(name) {
   }
   await until(async () => { try { return !!(await r.rpc({ RelayStatus: null })).RelayStatus } catch { return false } }, `${name} ready`)
   r.status = (await r.rpc({ RelayStatus: null })).RelayStatus.status
-  note("kernel-ready", { role: name, kernel: r.status.daemon_id })
+  note("kernel-ready", { role: name, kernel: r.status.daemon_id, opencode_port: ports[2], mcp_port: ports[1] })
   return r
 }
 const state = async (r, session) => (await r.rpc({ GetSessionState: { session_id: session } })).SessionState.session
@@ -168,26 +181,43 @@ async function main() {
   const target = b.status.daemon_id
 
   // Each kernel: a vault (its passphrase is the /sudo passkey) and the Claude profile.
-  const oauth = readFileSync(tokenFile, "utf8").trim()
+  const oauth = provider === "claude" ? readFileSync(tokenFile, "utf8").trim() : null
   async function provision(r) {
+    if (provider === "codex") {
+      const profile = (await r.rpc({ LinkProviderAccountProfile: { provider, label: "reach drill", path: codexScope } })).ProviderAccountProfile.profile.profile_id
+      await r.rpc({ GetProviderAuthStatus: { provider, account_profile: profile } })
+      note("provider-profile-linked", { kernel: r.name, provider })
+      return profile
+    }
+    if (provider === "opencode") {
+      const scope = join(r.dir, "opencode-scope"), data = join(scope, "data/opencode")
+      mkdirSync(data, { recursive: true, mode: 0o700 })
+      writeFileSync(join(data, "auth.json"), readFileSync(opencodeAuth), { mode: 0o600 })
+      const profile = (await r.rpc({ LinkProviderAccountProfile: { provider, label: "reach drill", path: scope } })).ProviderAccountProfile.profile.profile_id
+      note("provider-profile-linked", { kernel: r.name, provider })
+      return profile
+    }
     const made = (await r.rpc({ CreateSession: { workspace_id: join(r.dir, "work"), worktree_id: join(r.dir, "work"), alias: "vault-room" } })).SessionCreated
     const att = (await r.rpc({ AttachToSession: { session_id: made.session.id, client_id: "reach-setup", capability_level: "FullTerminal" } })).SessionAttached
     await r.client.subscribeToKernelEvents(made.session.id, att.attachment.id)
     await unlock(r, made.session.id, made.agent.id)
     const credential = await r.rpc({ SetProviderAccountCredential: { provider: "claude", account_profile: "default", value: oauth, overwrite: true } })
     note("claude-profile-stored", { kernel: r.name, stored: !!credential.ProviderAccountCredentialStored })
+    return "default"
   }
-  await provision(a)
-  await provision(b)
-  const agentDefaults = { provider: "claude", account_profile: "default", model, effort: "low", permission_level: "yolo" }
+  const accountProfile = await provision(a)
+  // Only the Claude scenarios touch kernel B's agent; for the tools scenario B is a passive target.
+  if (provider === "claude") await provision(b)
+  const agentDefaults = { provider, account_profile: accountProfile, model, effort: providers[provider].variant, permission_level: "yolo" }
   // Kernel B: the room another room's agent will message, and the room the agent must not rename without /sudo.
-  const roomB = (await b.rpc({ CreateSession: { workspace_id: join(b.dir, "work"), worktree_id: join(b.dir, "work"), alias: "target-room", agent_defaults: agentDefaults } })).SessionCreated
+  const roomB = (await b.rpc({ CreateSession: { workspace_id: join(b.dir, "work"), worktree_id: join(b.dir, "work"), alias: "target-room", agent_defaults: provider === "claude" ? agentDefaults : undefined } })).SessionCreated
   const roomA = (await a.rpc({ CreateSession: { workspace_id: join(a.dir, "work"), worktree_id: join(a.dir, "work"), alias: "home-room", agent_defaults: agentDefaults } })).SessionCreated
   const siblingA = (await a.rpc({ CreateSession: { workspace_id: join(a.dir, "work"), worktree_id: join(a.dir, "work"), alias: "sibling-room", agent_defaults: agentDefaults } })).SessionCreated
   const attached = (await a.rpc({ AttachToSession: { session_id: roomA.session.id, client_id: "reach-owner", capability_level: "FullTerminal" } })).SessionAttached.attachment.id
   const agentA = roomA.agent.id
-  await a.rpc({ LaunchProviderRun: { session_id: roomA.session.id, agent_id: agentA, adapter_key: "claude", provider: "claude", account_profile: "default", model, variant: "low", native_tui: false } })
+  await a.rpc({ LaunchProviderRun: { session_id: roomA.session.id, agent_id: agentA, adapter_key: provider, provider, account_profile: accountProfile, model, variant: providers[provider].variant, native_tui: false } })
   const startedAt = Date.now()
+  if (flags.has("--hold-start")) { note("holding", {}); await delay(Number(flags.get("--hold-start")) * 1000) }
   saveToolLog = () => writeFileSync(join(evidence, "agent-tool-log.json"), stripped(JSON.stringify(toolLog(claudeTranscript(a.dir + "/chariox", startedAt)), null, 1)), { mode: 0o600 })
 
   async function idle(timeout = 240000) {
@@ -269,6 +299,75 @@ async function main() {
     check("the agent messaged an agent in another room on its own kernel", await until(() => siblingHas("hello sibling from the reach drill"), "sibling prompt", 90000).then(() => true, () => false))
     const paired = (await b.rpc({ ListPairedClients: {} })).PairedClientsListed.clients
     check("B's paired-clients list shows the gateway row with the agent", paired.some(c => String(c.alias ?? "").includes("(Chariox agent)")), { aliases: paired.map(c => c.alias) })
+  }
+
+  if (scenarios.has("tools")) {
+    note("scenario", { which: "tools", provider, model })
+    // The agent's latest turn from the kernel's own history, the same for every provider: its tool calls with their answers, and its last words.
+    const latestTurn = async () => {
+      const outline = (await a.rpc({ GetSessionHistoryOutline: { session_id: roomA.session.id, agent_ids: [agentA], latest_prompt_count: 1, include_prefetched_content: true } })).SessionHistoryOutline
+      const history = outline.agents.find(x => x.agent_id === agentA)
+      const turn = history?.turns?.at(-1)
+      const calls = new Map()
+      for (const blob of history?.prefetched_blobs ?? []) for (const { entry } of blob.entries) {
+        if (entry.kind !== "provider_tool") continue
+        let call
+        try { call = JSON.parse(entry.text) } catch { continue }
+        calls.set(entry.merge_key, call)
+      }
+      if (process.env.REACH_DRILL_RAW) writeFileSync(join(evidence, "outline-raw.json"), JSON.stringify(outline, null, 1))
+      return { id: turn?.turn_id, done: turn?.lifecycle === "completed", answer: turn?.summary?.entry?.text ?? "", calls: [...calls.values()] }
+    }
+    // Claude and OpenCode put the server in the tool name; Codex names the server in the call's title.
+    const reachName = call => /chariox[-_]reach/.test(call.tool) ? call.tool.replace(/^.*chariox[-_]reach[._-]*/, "") : /chariox[-_]reach/.test(call.title ?? "") ? call.tool : null
+    async function toolsTurn(prompt, marker) {
+      const before = (await latestTurn()).id
+      await a.rpc(submitPromptRequest(roomA.session.id, attached, agentA, prompt, []))
+      let turn
+      await until(async () => {
+        await a.rpc({ PumpTerminalOutput: { session_id: roomA.session.id, attachment_id: attached } }).catch(() => {})
+        turn = await latestTurn()
+        return turn.id !== before && turn.done && turn.answer.includes(marker)
+      }, `agent turn (${marker})`, 240000).catch(error => note("turn-timeout", { message: error.message, answer: turn?.answer?.slice(0, 200) }))
+      const reach = turn.calls.filter(call => reachName(call) !== null).map(call => ({ tool: reachName(call), input: call.input, status: call.status, output: String(call.output ?? call.error ?? "") }))
+      writeFileSync(join(evidence, `tools-${marker}.json`), JSON.stringify({ provider, model, answer: turn.answer.slice(0, 600), calls: turn.calls.map(call => ({ tool: call.tool, server: call.title, input: call.input, status: call.status, output: String(call.output ?? call.error ?? "").slice(0, 1200) })) }, null, 1), { mode: 0o600 })
+      return { ...turn, reach }
+    }
+    const answered = (turn, name) => turn.reach.find(call => call.tool === name && call.status === "completed" && call.output)
+    const first = await toolsTurn([
+      "This is a drill. Use only MCP tools of the servers chariox and chariox-reach. No shell, no files. Do not retry a failed call.",
+      "1. Call the chariox-reach tool `kernels`.",
+      `2. Call the chariox-reach tool \`sessions\` with exactly: {"kernel":"${target}"}`,
+      `3. Call the chariox-reach tool \`request\` with exactly: ${call(target, { ListSessions: null })}`,
+      `4. Call the chariox-reach tool \`request\` with exactly: ${call(target, { AttachToSession: { session_id: roomB.session.id, client_id: "reach-agent", capability_level: "FullTerminal" } })}`,
+      "5. Call the chariox-reach tool `guide`.",
+      `6. Call the chariox tool \`list_session_agents\` and add the argument "kernel":"${target}" to it, even if its schema does not list it.`,
+      "Then reply with the words TOOLS and DONE joined by an underscore, nothing else.",
+    ].join("\n"), "TOOLS_DONE")
+    const names = [...new Set(first.reach.map(call => call.tool))]
+    note("reach-tools-called", { names })
+    check("the agent sees the chariox-reach group and calls kernels, sessions, request and guide", ["kernels", "sessions", "request", "guide"].every(name => answered(first, name)), { names })
+    check("sessions lists B's rooms", !!answered(first, "sessions")?.output.includes(roomB.session.id))
+    check("request reaches kernel B", !!answered(first, "request")?.output.includes("SessionsListed") && !!answered(first, "request")?.output.includes(roomB.session.id))
+    check("guide answers with the reach guide", !!answered(first, "guide")?.output.includes("Chariox reach guide"))
+    const roomCall = first.calls.find(call => /list_session_agents/.test(call.tool) && reachName(call) === null)
+    const roomOutput = String(roomCall?.output ?? roomCall?.error ?? "")
+    note("room-tool-with-kernel", { called: !!roomCall, input: roomCall?.input, status: roomCall?.status, output: roomOutput.slice(0, 300) })
+    check("a room tool given another kernel is refused", !!roomCall && roomCall.input?.kernel === target && /chariox-reach/.test(roomOutput) && !roomOutput.includes("\"agents\""), { provider_dropped_the_argument: !!roomCall && roomCall.input?.kernel !== target })
+    const rows = audit().filter(row => String(row.harness ?? "").startsWith("home-room/") && String(row.harness).includes("(Chariox agent)"))
+    check("B's audit names the room and agent for the request", rows.some(row => row.request === "AttachToSession"), { requests: rows.map(row => row.request) })
+    const second = await toolsTurn([
+      "This is a drill. Use only the chariox-reach MCP tools. No shell, no files. Do not retry a failed call.",
+      `1. Call \`events_subscribe\` with exactly: {"kernel":"${target}","session_id":"${roomB.session.id}"}`,
+      '2. Call `events_wait` with exactly: {"timeout_seconds":2}',
+      '3. Call `events_ack` with exactly: {"cursor":0}',
+      "Then reply with the words EVENTS and DONE joined by an underscore, nothing else.",
+    ].join("\n"), "EVENTS_DONE")
+    // Following events from a Room agent arrives with slice S3: today each call is a tool result with a typed refusal.
+    const events = ["events_subscribe", "events_wait", "events_ack"].map(name => second.reach.find(call => call.tool === name))
+    note("events-tools", { calls: events.map(call => call && { tool: call.tool, status: call.status, output: call.output.slice(0, 200) }) })
+    check("the agent calls the three events tools and each answers with a typed code", events.every(call => call && /code\W+[a-z_]{4,}/.test(call.output)))
+    if (flags.has("--hold")) await delay(Number(flags.get("--hold")) * 1000)
   }
 
   if (scenarios.has("sudo")) {

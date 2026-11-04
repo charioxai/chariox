@@ -101,6 +101,19 @@ impl KernelRuntimeState {
     /// The reach caller behind a runtime MCP bearer: one live run of an agent
     /// the kernel owner owns. A guest's agent in a shared room is refused.
     pub(crate) fn reach_for_auth_token(&self, token: &str) -> Result<ReachCaller, DaemonError> {
+        self.reach_for_token(token, true)
+    }
+
+    /// Who asks for the tools of a bearer. OpenCode lists its MCP tools while its run is
+    /// still starting and keeps the answer, so listing needs the owner's agent, not a live run.
+    pub(crate) fn reach_listing_for_auth_token(
+        &self,
+        token: &str,
+    ) -> Result<ReachCaller, DaemonError> {
+        self.reach_for_token(token, false)
+    }
+
+    fn reach_for_token(&self, token: &str, live: bool) -> Result<ReachCaller, DaemonError> {
         let runs = self
             .owned
             .provider_store
@@ -108,15 +121,16 @@ impl KernelRuntimeState {
         let [run] = runs.as_slice() else {
             return Err(reach_error("reach needs one active provider run"));
         };
-        self.reach_for_run(run.id())
+        self.reach_for_run(run.id(), live)
     }
 
     /// The live caller of a `reach:<run>` id, for the gateway and the control plane.
     pub(crate) fn reach_for_id(&self, id: &str) -> Option<ReachCaller> {
-        self.reach_for_run(id.strip_prefix(REACH_PREFIX)?).ok()
+        self.reach_for_run(id.strip_prefix(REACH_PREFIX)?, true)
+            .ok()
     }
 
-    fn reach_for_run(&self, run_id: &str) -> Result<ReachCaller, DaemonError> {
+    fn reach_for_run(&self, run_id: &str, live: bool) -> Result<ReachCaller, DaemonError> {
         let run = self
             .owned
             .provider_store
@@ -131,7 +145,7 @@ impl KernelRuntimeState {
                 .provider_store
                 .get_run_for_agent(run.session_id(), agent_id)
                 .is_some_and(|current| current.id() == run_id);
-        if !current {
+        if live && !current {
             return Err(reach_error("this provider run has ended"));
         }
         let agent = self.owned.agent_store.get_agent(agent_id)?;

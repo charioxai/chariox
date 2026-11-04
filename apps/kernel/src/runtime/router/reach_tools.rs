@@ -42,7 +42,7 @@ impl CommandRouter {
         &self,
         auth_token: &str,
     ) -> Vec<crate::transport::runtime_tools::RuntimeToolSpec> {
-        match self.runtime_state.reach_for_auth_token(auth_token) {
+        match self.runtime_state.reach_listing_for_auth_token(auth_token) {
             Ok(_) => crate::transport::runtime_tools::reach_tool_specs(),
             Err(_) => Vec::new(),
         }
