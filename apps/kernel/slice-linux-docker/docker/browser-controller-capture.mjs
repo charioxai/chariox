@@ -3,6 +3,7 @@
 // The value goes back to the kernel only; it never appears in an error.
 import { randomUUID } from "node:crypto";
 import { assertCurrentDocument, assertNotCancelled, BrowserActionError, resolveBackendNode } from "./browser-controller-actions.mjs";
+import { redactObservation } from "./browser-controller-snapshot.mjs";
 
 const VALUE_LIMIT = 16 * 1024;
 // A QR code is read from a picture of its element: the kernel decodes it and
@@ -135,6 +136,31 @@ const INSTALL_CLIPBOARD_RECORDER = `function(slot, expectedDocumentUrl) {
   } });
   return { value: true };
 }`;
+
+// The kernel binds a capture or fill to the document URL it observed, and that observation has
+// protected text redacted. The page compares its real URL, so a protected word inside the URL
+// (a generic label, or a key in a query) would make every bind fail.
+/** Returns the node's real document URL when it is the one the kernel observed, else `observed` unchanged. */
+export async function realUrlOfObserved(connection, sessionId, nodeRef, observed, protectedValues) {
+  const match = /^backend:([1-9][0-9]*)$/.exec(String(nodeRef));
+  if (!match || typeof observed !== "string" || !protectedValues.size) return observed;
+  let objectId;
+  try {
+    objectId = await resolveBackendNode(connection, sessionId, Number(match[1]), true);
+    const response = await connection.send("Runtime.callFunctionOn", {
+      objectId,
+      functionDeclaration: "function() { return this.ownerDocument?.defaultView?.location.href ?? null; }",
+      returnByValue: true,
+    }, sessionId);
+    const href = response?.result?.value;
+    return typeof href === "string" && redactObservation(href, protectedValues) === observed ? href : observed;
+  } catch {
+    // An unreachable node fails the action's own check with the usual stale-element error.
+    return observed;
+  } finally {
+    if (objectId) await connection.send("Runtime.releaseObject", { objectId }, sessionId).catch(() => {});
+  }
+}
 
 async function callOnNode(connection, sessionId, backendNodeId, isolated, functionDeclaration, args) {
   const objectId = await resolveBackendNode(connection, sessionId, backendNodeId, isolated);

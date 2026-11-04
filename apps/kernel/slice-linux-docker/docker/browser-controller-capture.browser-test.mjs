@@ -27,7 +27,7 @@ const html = `<!doctype html><body style="margin:0;background:white">
 <img id=qr alt="" style="position:absolute;left:80px;top:360px;width:150px;height:150px;image-rendering:pixelated" src="data:image/png;base64,${qrPng}">
 </body>`;
 
-async function setup(dpr, run) {
+async function setup(dpr, run, pagePath = '/') {
   const root = await mkdtemp(path.join(tmpdir(), 'vaudit-capture-'));
   const server = createServer((req, res) => { res.setHeader('content-type', 'text/html'); res.end(html); });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -37,7 +37,7 @@ async function setup(dpr, run) {
     const { browser, connection } = chrome, { targetInfos } = await connection.send('Target.getTargets');
     const targetId = targetInfos.find((t) => t.type === 'page').targetId, { sessionId } = await browser.resolvePageTarget(targetId);
     await connection.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 800, deviceScaleFactor: dpr, mobile: false }, sessionId);
-    const url = `http://127.0.0.1:${server.address().port}/`;
+    const url = `http://127.0.0.1:${server.address().port}${pagePath}`;
     await connection.send('Page.navigate', { url }, sessionId);
     for (let i = 0; i < 100; i++) { const { result } = await connection.send('Runtime.evaluate', { expression: 'document.readyState', returnByValue: true }, sessionId); if (result.value === 'complete') break; await new Promise((r) => setTimeout(r, 30)); }
     const documentId = (await connection.send('Page.getFrameTree', {}, sessionId)).frameTree.frame.loaderId;
@@ -123,4 +123,17 @@ for (const dpr of [1, 2]) {
     await assert.rejects(browser.performAction({ target_id: targetId, document_id: documentId, node_ref: reveal,
       action: { kind: 'fill', text: secret, expected_document_url: url, plain_target: true }, timeout_ms: 500 }), /not become actionable|editable text field/);
   }));
+
+  // A protected generic word in the page's own URL: the kernel binds to the redacted URL it observed.
+  test(`DPR${dpr}: capture and fill bind to the observed URL when protected text is redacted in it`, () => setup(dpr, async ({ browser, ref, capture, evaluate, targetId, documentId, url }) => {
+    browser.protectedValues.add('token');
+    const observed = url.replace('token', '[redacted]');
+    assert.notEqual(observed, url);
+    assert.equal(await capture({ node_ref: await ref('#hidden'), expected_document_url: observed }), secret);
+    assert.equal(await capture({ node_ref: await ref('#copy'), read: 'clipboard', expected_document_url: observed }), secret);
+    const node_ref = await ref('#env');
+    await browser.performAction({ target_id: targetId, document_id: documentId, node_ref, action: { kind: 'fill', text: secret, expected_document_url: observed } });
+    assert.equal(await evaluate("document.querySelector('#env').value"), secret);
+    await assert.rejects(capture({ node_ref: await ref('#hidden'), expected_document_url: observed.replace('keys', 'other') }), /changed/);
+  }, '/keys#key_token_1'));
 }

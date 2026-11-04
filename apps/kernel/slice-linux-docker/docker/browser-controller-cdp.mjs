@@ -9,7 +9,7 @@ import { createHash } from "node:crypto";
 import { BrowserWebBotAuth } from "./browser-controller-web-bot-auth.mjs";
 import { artifactBytes, BrowserArtifactError, BrowserPassiveCapture, readCompletedDownload, withUploadArtifacts } from "./browser-controller-artifacts.mjs";
 import { captureProtectedBrowserImage } from "./browser-controller-image.mjs";
-import { captureBrowserValue } from "./browser-controller-capture.mjs";
+import { captureBrowserValue, realUrlOfObserved } from "./browser-controller-capture.mjs";
 import { observeBrowserNote } from "./browser-controller-notes.mjs";
 import { readPointerCursor } from "./browser-controller-cursor.mjs";
 import { redactObservation } from "./browser-controller-snapshot.mjs";
@@ -1103,6 +1103,10 @@ export class BrowserCdpClient {
       );
     }
     const sessionId = await this.ensureTargetSession(connection, targetId);
+    if (rawRequest?.action?.expected_document_url) {
+      const expected = await realUrlOfObserved(connection, sessionId, rawRequest.node_ref, rawRequest.action.expected_document_url, this.protectedValues);
+      rawRequest = { ...rawRequest, action: { ...rawRequest.action, expected_document_url: expected } };
+    }
     try {
       const dispatch = async (inputTimestamp, inputToken) => {
         const result = await withBrowserActionFrame({
@@ -1168,6 +1172,7 @@ export class BrowserCdpClient {
     const targetId = requiredIdentity(rawRequest?.target_id, "target_id");
     const documentId = requiredIdentity(rawRequest?.document_id, "document_id");
     const { connection, sessionId } = await this.resolvePageTarget(targetId);
+    const expectedDocumentUrl = await realUrlOfObserved(connection, sessionId, rawRequest?.node_ref, rawRequest?.expected_document_url, this.protectedValues);
     const value = await captureBrowserValue({
       connection,
       sessionId,
@@ -1176,10 +1181,10 @@ export class BrowserCdpClient {
       nodeRef: rawRequest?.node_ref,
       revealNodeRef: rawRequest?.reveal_node_ref ?? null,
       read: rawRequest?.read ?? "node",
-      expectedDocumentUrl: rawRequest?.expected_document_url,
+      expectedDocumentUrl,
       signal,
       click: (nodeRef) => this.performAction({ target_id: targetId, document_id: documentId, node_ref: nodeRef,
-        action: { kind: "click", expected_document_url: rawRequest.expected_document_url }, timeout_ms: 10_000 }, { signal }),
+        action: { kind: "click", expected_document_url: expectedDocumentUrl }, timeout_ms: 10_000 }, { signal }),
     }).catch((error) => { throw normalizeControllerError(error); });
     // A QR capture returns the picture of the element, not a secret to scrub.
     if ((rawRequest?.read ?? "node") !== "qr") this.protectedValues.add(value);
