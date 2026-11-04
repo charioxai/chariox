@@ -831,7 +831,10 @@ impl KernelRuntimeOwnedState {
         })
     }
 
-    fn ensure_agent_trigger_attachment(&self, session_id: &str) -> Result<String, DaemonError> {
+    pub(super) fn ensure_agent_trigger_attachment(
+        &self,
+        session_id: &str,
+    ) -> Result<String, DaemonError> {
         // The client id predates triggers; queued firings already reference it.
         let client_id = format!("agent-schedules:{session_id}");
         if let Some(attachment) = self

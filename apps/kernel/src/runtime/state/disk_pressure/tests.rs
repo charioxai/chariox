@@ -1,0 +1,71 @@
+use super::*;
+use crate::runtime::process_resources::{ProcessSample, SessionProcessState};
+
+const MIB: u64 = 1024 * 1024;
+const GIB: u64 = 1024 * MIB;
+
+fn row(pid: u32, command: &str, written: u64, deleted_open: u64, outlived: bool) -> SessionProcess {
+    SessionProcess {
+        owner: SessionProcessOwner::Agent("agent-1".into()),
+        process: ProcessSample {
+            process_id: format!("process-{pid}"),
+            pid,
+            command: command.into(),
+            resident_set_bytes: 0,
+            cpu_millis: 0,
+            disk_io_bytes: Some(written),
+            disk_written_bytes: Some(written),
+            deleted_open_bytes: deleted_open,
+            outlived,
+            sampled_at_ms: 0,
+            age_ms: 0,
+        },
+        state: SessionProcessState::Running,
+    }
+}
+
+fn holding() -> Holding {
+    Holding {
+        session_id: "room-1".into(),
+        agent_id: "agent-1".into(),
+        processes: vec![
+            row(41, "python3 fill.py", 3 * GIB, 2 * GIB, true),
+            row(42, "sleep 600", 0, 0, false),
+        ],
+        temp: Some(PathBuf::from("/h/t/room0001/agent001")),
+        temp_bytes: 800 * MIB,
+        temp_biggest: vec![(PathBuf::from("/h/t/room0001/agent001/cache"), 500 * MIB)],
+        workspace: Some(PathBuf::from("/work/repo")),
+        workspace_biggest: vec![(PathBuf::from("/work/repo/target"), 4 * GIB)],
+    }
+}
+
+#[test]
+fn the_ask_names_what_the_agent_holds_so_it_can_stop_leftovers() {
+    let text = ask_text(&holding(), GIB, 10 * GIB);
+    assert!(text.contains("1 GB free"), "{text}");
+    assert!(
+        text.contains("pid 41 `python3 fill.py`: wrote 3 GB"),
+        "{text}"
+    );
+    assert!(text.contains("keeps 2 GB in deleted files open"), "{text}");
+    assert!(
+        text.contains("still running after the command that started it ended"),
+        "{text}"
+    );
+    assert!(
+        !text.contains("sleep 600"),
+        "a process that wrote nothing is not listed: {text}"
+    );
+    assert!(
+        text.contains("$TMPDIR (/h/t/room0001/agent001): 800 MB; biggest: cache (500 MB)"),
+        "{text}"
+    );
+    assert!(text.contains("target (4 GB)"), "{text}");
+    assert!(text.contains("Never delete results or source"), "{text}");
+}
+
+#[test]
+fn holders_are_ranked_by_what_their_processes_wrote_hold_deleted_and_keep_in_temp() {
+    assert_eq!(holding().used(), 3 * GIB + 2 * GIB + 800 * MIB);
+}

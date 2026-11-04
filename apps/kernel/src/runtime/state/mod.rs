@@ -580,6 +580,7 @@ mod claude_token_first_use;
 mod provider_login_workflow;
 mod runtime_interaction_owned_state;
 pub(crate) use runtime_interaction_owned_state::interaction_waits;
+mod disk_pressure;
 mod owner_vault;
 mod process_waits;
 mod runtime_interaction_state;

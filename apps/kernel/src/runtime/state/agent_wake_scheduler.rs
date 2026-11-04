@@ -107,6 +107,7 @@ impl KernelRuntimeState {
                     .is_ok();
             }
             self.deliver_process_waits();
+            self.tend_disk().await;
             let monitor = &self.owned.agent_wakes;
             let paused = monitor.stall_fault.as_ref().is_some_and(|p| p.exists());
             if !paused
