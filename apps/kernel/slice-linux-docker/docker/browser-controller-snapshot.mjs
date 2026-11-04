@@ -107,6 +107,17 @@ function isWholeWord(text, start, end) {
   return edgeBefore && edgeAfter;
 }
 
+/** Whether `redactText` would change `input`, without building the redacted copy. */
+export function containsProtected(input, spellings) {
+  for (const { text, wholeWord } of spellings) {
+    if (!wholeWord) { if (input.includes(text)) return true; continue; }
+    for (let found = input.indexOf(text); found !== -1; found = input.indexOf(text, found + text.length)) {
+      if (isWholeWord(input, found, found + text.length)) return true;
+    }
+  }
+  return false;
+}
+
 function redactText(input, spellings) {
   for (const { text, wholeWord } of spellings) {
     if (!wholeWord) { input = input.replaceAll(text, "[redacted]"); continue; }

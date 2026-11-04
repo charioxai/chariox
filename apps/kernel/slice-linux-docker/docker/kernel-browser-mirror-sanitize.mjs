@@ -1,11 +1,12 @@
 // MP-08/MP-11: the final structured tree, hash and incremental base share one policy.
 // Ordinary matching pixels remain visible through the protected compositor path.
-import { observationProtectedVariants } from './browser-controller-snapshot.mjs';
+import { containsProtected, observationSpellings } from './browser-controller-snapshot.mjs';
 
 export function sanitizeMirrorTree(source, values) {
-  const variants=observationProtectedVariants(values);
-  if(!variants.length)return false;
-  const matches=value=>typeof value==='string'&&variants.some(variant=>value.includes(variant));
+  const spellings=observationSpellings(values);
+  if(!spellings.length)return false;
+  // A short value matches as a whole word only, like observation redaction: a link to /keys#key_token_1 stays a DOM node.
+  const matches=value=>typeof value==='string'&&containsProtected(value,spellings);
   const contains=value=>typeof value==='string'?matches(value):value&&typeof value==='object'&&Object.values(value).some(contains);
   const byId=new Map(source.nodes.map(node=>[node.id,node])),tiles=new Set();
   // A scrubbed style/font can change layout outside its own node. Use the
