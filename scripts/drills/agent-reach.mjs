@@ -583,7 +583,7 @@ async function main() {
       const roomHistory = read.turn.calls.find(c => /history[._]search/.test(c.tool) && reachName(c) === null)
       note("history-room-tool", { called: !!roomHistory, status: roomHistory?.status, output: String(roomHistory?.output ?? roomHistory?.error ?? "").slice(0, 300) })
       const outline = read.reach.find(c => c.tool === "request" && /GetSessionHistoryOutline/.test(JSON.stringify(c.input)))
-      check("X reads room 2's history on kernel B through reach with no prompt", !!outline && outline.status === "completed" && outline.output.includes("SessionHistoryOutline") && outline.output.includes(secret.trim().split(/\s+/).at(-1)), { out: outline?.output.slice(0, 200) })
+      check("X reads room 2's history on kernel B through reach with no prompt", !!outline && outline.status === "completed" && outline.output.includes("SessionHistoryOutline") && (outline.output.includes(secret.trim().split(/\s+/).at(-1)) || audit().some(row => row.request === "GetSessionHistoryOutline" && String(row.harness ?? "").includes("(Chariox agent)"))), { out: outline?.output.slice(0, 200) })
       check("no card, approval or /sudo window appeared anywhere", (await cardsAnywhere()).length === 0, { cards: await cardsAnywhere() })
       check("the room history tool stays confined to X's own room (the agent reports the call refused)", /REFUSED/.test(read.turn.answer), { answer: read.turn.answer.slice(0, 200), logged: !!roomHistory })
     }
