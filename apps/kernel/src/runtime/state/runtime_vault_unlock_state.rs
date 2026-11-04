@@ -1256,8 +1256,10 @@ mod tests {
     fn unlock_card(
         policy: crate::config::CredentialVaultUnlockPolicy,
     ) -> crate::session::RuntimeInteraction {
-        let mut config = crate::config::UserCredentialVaultConfig::default();
-        config.unlock_policy = policy;
+        let config = crate::config::UserCredentialVaultConfig {
+            unlock_policy: policy,
+            ..Default::default()
+        };
         vault_passphrase_interaction(&requester(None, None), "agent-1", &config)
     }
 
