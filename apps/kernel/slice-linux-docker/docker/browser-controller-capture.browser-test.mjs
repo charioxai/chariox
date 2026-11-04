@@ -125,9 +125,9 @@ for (const dpr of [1, 2]) {
   }));
 
   // A protected generic word in the page's own URL: the kernel binds to the redacted URL it observed.
-  test(`DPR${dpr}: capture and fill bind to the observed URL when protected text is redacted in it`, () => setup(dpr, async ({ browser, ref, capture, evaluate, targetId, documentId, url }) => {
-    browser.protectedValues.add('token');
-    const observed = url.replace('token', '[redacted]');
+  test(`DPR${dpr}: capture and fill bind to the observed URL when a protected value is redacted in it`, () => setup(dpr, async ({ browser, ref, capture, evaluate, targetId, documentId, url }) => {
+    browser.protectedValues.add(secret);
+    const observed = url.replace(secret, '[redacted]');
     assert.notEqual(observed, url);
     assert.equal(await capture({ node_ref: await ref('#hidden'), expected_document_url: observed }), secret);
     assert.equal(await capture({ node_ref: await ref('#copy'), read: 'clipboard', expected_document_url: observed }), secret);
@@ -135,5 +135,5 @@ for (const dpr of [1, 2]) {
     await browser.performAction({ target_id: targetId, document_id: documentId, node_ref, action: { kind: 'fill', text: secret, expected_document_url: observed } });
     assert.equal(await evaluate("document.querySelector('#env').value"), secret);
     await assert.rejects(capture({ node_ref: await ref('#hidden'), expected_document_url: observed.replace('keys', 'other') }), /changed/);
-  }, '/keys#key_token_1'));
+  }, `/keys#key_${secret}_1`));
 }

@@ -121,3 +121,23 @@ test("MP-08/MP-10/MP-11 known-value scrubbing covers nested results, keys and si
   assert.deepEqual(result["[redacted]"], variants.map(() => "[redacted]"));
   assert.equal(result.nested.output, "[redacted]");
 });
+
+// A short password or a mistaken label stays masked in prose but never rewrites a URL, id or longer word.
+test("a value under 8 characters is redacted only as a whole word", () => {
+  const page = {
+    url: "https://dynv6.com/keys#key_token_1",
+    path: "https://en.wikipedia.org/wiki/Token?x=1",
+    id: "data-Token-field",
+    longer: "Tokens and tokenizer, hunter2",
+    prose: "Your Token is ready. The password hunter, then Token: ok",
+    exact: "hunter",
+    end: "type hunter.",
+    longInUrl: "https://x.test/a?k=vaudit-long-secret-value-12345",
+  };
+  const result = observations.redactObservation(page, ["Token", "hunter", "vaudit-long-secret-value-12345"]);
+  for (const key of ["url", "path", "id", "longer"]) assert.equal(result[key], page[key], `${key} must be left alone`);
+  assert.equal(result.prose, "Your [redacted] is ready. The password [redacted], then [redacted]: ok");
+  assert.equal(result.exact, "[redacted]");
+  assert.equal(result.end, "type [redacted].");
+  assert.equal(result.longInUrl, "https://x.test/a?k=[redacted]", "a long value keeps today's matching");
+});

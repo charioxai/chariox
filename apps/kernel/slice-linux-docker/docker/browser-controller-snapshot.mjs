@@ -66,31 +66,65 @@ export async function captureBrowserSnapshot({
   };
 }
 
+// A protected value shorter than this is redacted only as a whole word of visible text, so it never
+// rewrites a URL, an id, a selector or a longer word (kernel: BARE_WORD_CHARS in room_secret_observation/spelling.rs).
+const BARE_WORD_CHARS = 8;
+
 // MD-N2 / MP-08/MP-10/MP-11: one variant policy for raw span protection
 // and ordinary observation redaction, including kernel-replayed retired values.
-export function observationProtectedVariants(protectedValues) {
-  const variants = new Set();
+// Each spelling says whether it matches as a whole word only; one that any long value also produces matches anywhere.
+export function observationSpellings(protectedValues) {
+  const spellings = new Map();
   for (const secret of protectedValues) {
     if (typeof secret !== "string" || !secret) continue;
+    const wholeWord = [...secret].length < BARE_WORD_CHARS;
     for (const variant of [secret, secret.toLowerCase(), secret.toUpperCase(),
       encodeURIComponent(secret), encodeURIComponent(secret).toLowerCase(),
       JSON.stringify(secret).slice(1, -1),
       secret.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#39;"),
       Buffer.from(secret).toString("base64"), Buffer.from(secret).toString("base64url"),
       Buffer.from(secret).toString("hex"), Buffer.from(secret).toString("hex").toUpperCase()]) {
-      variants.add(variant);
+      spellings.set(variant, (spellings.get(variant) ?? true) && wholeWord);
     }
   }
-  return [...variants].sort((a, b) => b.length - a.length);
+  return [...spellings].map(([text, wholeWord]) => ({ text, wholeWord })).sort((a, b) => b.text.length - a.text.length);
+}
+
+export function observationProtectedVariants(protectedValues) {
+  return observationSpellings(protectedValues).map(({ text }) => text);
+}
+
+const EDGE_BEFORE = "\"'`([{<>,;|*!:";
+const EDGE_AFTER = "\"'`)]}<>,;|*!?:";
+
+/** The match [start, end) stands alone in prose: no letter, digit, `_`, `-`, `.`, `/` or other URL, id or selector character touches it. */
+function isWholeWord(text, start, end) {
+  const before = text[start - 1];
+  const next = text[end];
+  const edgeBefore = before === undefined || /\s/u.test(before) || EDGE_BEFORE.includes(before);
+  const edgeAfter = next === undefined || /\s/u.test(next) || EDGE_AFTER.includes(next)
+    || (next === "." && (text[end + 1] === undefined || /\s/u.test(text[end + 1])));
+  return edgeBefore && edgeAfter;
+}
+
+function redactText(input, spellings) {
+  for (const { text, wholeWord } of spellings) {
+    if (!wholeWord) { input = input.replaceAll(text, "[redacted]"); continue; }
+    let out = "", at = 0, found;
+    while ((found = input.indexOf(text, at)) !== -1) {
+      const end = found + text.length;
+      out += input.slice(at, found) + (isWholeWord(input, found, end) ? "[redacted]" : input.slice(found, end));
+      at = end;
+    }
+    input = out + input.slice(at);
+  }
+  return input;
 }
 
 export function redactObservation(value, protectedValues) {
-  const ordered = observationProtectedVariants(protectedValues);
+  const ordered = observationSpellings(protectedValues);
   const scrub = (input) => {
-    if (typeof input === "string") {
-      for (const variant of ordered) input = input.replaceAll(variant, "[redacted]");
-      return input;
-    }
+    if (typeof input === "string") return redactText(input, ordered);
     if (Array.isArray(input)) return input.map(scrub);
     if (input && typeof input === "object") return Object.fromEntries(
       Object.entries(input).map(([key, child]) => [scrub(key), scrub(child)]),
