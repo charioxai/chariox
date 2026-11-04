@@ -6,8 +6,15 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { BrowserSnapshotError } from './browser-controller-snapshot.mjs';
 
 const validReference = ref => typeof ref === 'string' && /^(?:frame:.+:)?backend:[1-9][0-9]{0,15}$/.test(ref);
+const anchorLifetimeMs = 15_000;
+const maxAnchors = 1_024;
+
+export function pruneCardAnchors(host, now = Date.now()) {
+  for (const [id, anchor] of host.cardAnchors) if (anchor.expires <= now) host.cardAnchors.delete(id);
+}
 
 export function rememberCardReferences(host, scope, tab, snapshot) {
+  pruneCardAnchors(host);
   let tabs = host.cardReferences.get(scope);
   if (!tabs) {
     if (host.cardReferences.size >= 64) host.cardReferences.delete(host.cardReferences.keys().next().value);
@@ -116,9 +123,22 @@ function watchBox(previous) {
 }
 
 export async function resolveCardRegion(host, command, scope, signal) {
-  const remembered = host.cardReferences.get(scope)?.get(command.tab_id);
-  if (!remembered || !remembered.refs.has(command.ref) || !validReference(command.ref)) throw new UserDomainRefusal('stale_reference');
+  pruneCardAnchors(host);
+  const key = typeof command.card_id === 'string' ? `${scope}\0${command.card_id}` : null;
+  let anchor = key ? host.cardAnchors.get(key) : null;
+  if (command.release === true) {
+    if (anchor?.tab_id === command.tab_id) host.cardAnchors.delete(key);
+    return { released: true };
+  }
+  if (anchor && (anchor.tab_id !== command.tab_id || anchor.ref !== command.ref)) throw new UserDomainRefusal('stale_reference');
+  const remembered = anchor?.binding ?? host.cardReferences.get(scope)?.get(command.tab_id);
   const gone = reason => ({ state: 'condition_met', reason });
+  if ((!remembered || !remembered.refs.has(command.ref)) && command.document_id !== undefined) {
+    const tab = await host.displayTarget({ tab_id: command.tab_id, generation: command.generation });
+    if (tab.document_id !== command.document_id) return gone('Browser document changed');
+    return { state: 'unavailable', reason: 'Browser region reference expired; take a fresh snapshot and ask again' };
+  }
+  if (!remembered || !remembered.refs.has(command.ref) || !validReference(command.ref)) throw new UserDomainRefusal('stale_reference');
   if (remembered.generation !== host.generation || command.generation !== undefined && command.generation !== host.generation) return gone('Browser restarted');
   if (command.document_id !== undefined && command.document_id !== remembered.document_id) return gone('Browser document changed');
   const tab = await host.displayTarget({ tab_id: command.tab_id, generation: remembered.generation });
@@ -128,6 +148,16 @@ export async function resolveCardRegion(host, command, scope, signal) {
   const current = async () => (await connection.send('Page.getFrameTree', {}, sessionId)).frameTree?.frame;
   const frame = await current();
   if (frame?.loaderId !== remembered.document_id) return gone('Browser document changed');
+  if (key) {
+    if (!anchor) {
+      if (host.cardAnchors.size >= maxAnchors) throw new Error('Browser card limit reached; close an existing browser card and try again');
+      // Pin only this card's binding. Snapshot cache eviction must not retire
+      // a live element. Failed registration expires without a watcher renewal.
+      anchor = { scope, tab_id: command.tab_id, ref: command.ref, binding: { generation: remembered.generation, document_id: remembered.document_id, refs: new Set([command.ref]), children: new Set(remembered.children.has(command.ref) ? [command.ref] : []) } };
+      host.cardAnchors.set(key, anchor);
+    }
+    anchor.expires = Date.now() + anchorLifetimeMs;
+  }
   const world = await browser.ensureFocusWorld(connection, sessionId, tab.target_id, frame);
   let objectId;
   try {

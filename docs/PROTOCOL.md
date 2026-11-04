@@ -6312,6 +6312,12 @@ Revoked browser access instead resolves `status: "unavailable"`, no choice id, a
 a kernel-written reason. Continuous observation failures retry with the last-known crop
 for up to 15 seconds, then resolve the same definitive unavailable outcome. A successful
 observation resets that failure budget; an offscreen box remains a live, empty crop.
+Each live card pins its one element binding independently of the bounded snapshot-reference
+cache. Watchers renew that controller lease and release it when the card closes. An abandoned
+lease expires after 15 seconds; the controller refuses new anchors at its 1,024-card limit
+instead of evicting a live anchor. Losing only registry state resolves unavailable, rather
+than claiming an element disappeared. Geometry updates replace the view in place, preserving
+card order even when questions share a request timestamp.
 
 Focused regression checks: `cargo test -p chariox-kernel --lib async_popup_browser_region`
 and `node --test apps/kernel/slice-linux-docker/docker/kernel-browser-card-region.test.mjs`.

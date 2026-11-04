@@ -130,3 +130,33 @@ test('MP-08/MP-10 pending card geometry does not hold the browser input lane', a
   input.end(); release(); await running;
   assert(progressed, 'ordinary input must proceed while the card awaits its next geometry change');
 });
+
+test('MP-08/MP-11 active card anchors survive ref and observer-cache eviction, then release', () => withHost(async ({ host, snapshot, region }) => {
+  await snapshot();
+  const first = await region({ card_id: 'kept-card' });
+  assert.equal(first.state, 'present');
+  host.browser.snapshot = async () => ({ document_id: 'doc', dom_nodes: Array.from({ length: 10_001 }, (_, i) => ({ node_ref: `backend:${i + 100}`, document_index: 0 })) });
+  await snapshot();
+  assert.equal(host.cardReferences.get('agent:a').get('one').refs.has('backend:42'), false);
+  assert.equal((await region({ card_id: 'kept-card', generation: 1, document_id: 'doc' })).state, 'present', 'evicting issued refs must preserve the live card anchor');
+  for (let i = 0; i < 65; i++) await snapshot(`observer:${i}`);
+  assert.equal(host.cardReferences.has('agent:a'), false);
+  assert.equal((await region({ card_id: 'kept-card', generation: 1, document_id: 'doc' })).state, 'present', 'evicting the snapshot observer must preserve the live card anchor');
+  assert.deepEqual(await region({ card_id: 'kept-card', release: true }), { released: true });
+  assert.equal(host.cardAnchors.size, 0);
+  const expired = await region({ card_id: 'kept-card', generation: 1, document_id: 'doc' });
+  assert.equal(expired.state, 'unavailable', 'missing registry state cannot claim the element disappeared');
+}));
+
+test('MP-08/MP-11 abandoned card anchors expire and capacity refuses without evicting live anchors', () => withHost(async ({ host, snapshot, region }) => {
+  await snapshot();
+  await region({ card_id: 'abandoned' });
+  host.cardAnchors.get('agent:a\0abandoned').expires = Date.now() - 1;
+  host.cardReferences.clear();
+  assert.equal((await region({ card_id: 'abandoned', generation: 1, document_id: 'doc' })).state, 'unavailable');
+  assert.equal(host.cardAnchors.size, 0);
+  await snapshot();
+  for (let i = 0; i < 1_024; i++) host.cardAnchors.set(`other\0${i}`, { expires: Date.now() + 60_000 });
+  await assert.rejects(region({ card_id: 'one-too-many' }), /Browser card limit reached/);
+  assert.equal(host.cardAnchors.size, 1_024, 'existing active anchors are never evicted to admit another');
+}));

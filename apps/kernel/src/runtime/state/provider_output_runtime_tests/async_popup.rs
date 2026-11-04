@@ -20,6 +20,45 @@ fn browser_region() -> crate::session::RuntimeInteractionBrowserRegion {
 }
 
 #[tokio::test]
+async fn async_popup_browser_region_preserves_equal_timestamp_card_order() {
+    let f = fixture("async-popup-region-equal-time-order", true).await;
+    f.begin(&f.prompt_id);
+    let first = ask(&f, serde_json::json!({})).await;
+    let second = ask(&f, serde_json::json!({})).await;
+    let first_id = first["interaction_id"].as_str().unwrap();
+    let second_id = second["interaction_id"].as_str().unwrap();
+    let region = browser_region();
+    {
+        let mut sessions = f.runtime.owned.session_store.write();
+        let mut session = sessions.get_session(&f.room).unwrap();
+        let first = session.remove_active_interaction(first_id).unwrap();
+        let second = session.remove_active_interaction(second_id).unwrap();
+        let mut second = serde_json::to_value(second).unwrap();
+        second["requested_at_ms"] = first.requested_at_ms().into();
+        session.add_active_interaction(first.with_view(crate::session::RuntimeInteractionView {
+            browser_region: region.clone(),
+        }));
+        session.add_active_interaction(serde_json::from_value(second).unwrap());
+        sessions.restore_session(session);
+    }
+    let mut moved = region.clone();
+    moved.rect.y = 2;
+    f.runtime
+        .owned
+        .update_browser_region_card(&f.room, first_id, &region, moved)
+        .unwrap();
+    let session = f.runtime.owned.session_store.get_session(&f.room).unwrap();
+    assert_eq!(
+        session
+            .active_interactions()
+            .iter()
+            .map(|card| card.id())
+            .collect::<Vec<_>>(),
+        vec![first_id, second_id]
+    );
+}
+
+#[tokio::test]
 async fn async_popup_browser_region_refuses_without_browser_authority_before_registering() {
     let f = fixture("async-popup-region-admission", true).await;
     f.begin(&f.prompt_id);

@@ -12,6 +12,9 @@ enum RegionObservation {
     ConditionMet {
         reason: String,
     },
+    Unavailable {
+        reason: String,
+    },
 }
 
 fn region_error(message: &str) -> DaemonError {
@@ -56,6 +59,7 @@ impl KernelRuntimeState {
         &self,
         session_id: &str,
         agent_id: &str,
+        card_id: &str,
         target: &RequestPopupBrowserRegionArgs,
         previous: Option<&RuntimeInteractionBrowserRegion>,
     ) -> Result<RegionObservation, DaemonError> {
@@ -66,7 +70,7 @@ impl KernelRuntimeState {
             ));
         }
         let user = self.provider_account_authority_owner_user_id(agent.owner_user_id());
-        let mut params = serde_json::json!({"op":"popup_region", "tab_id": target.tab_id, "ref":target.reference});
+        let mut params = serde_json::json!({"op":"popup_region", "card_id":card_id, "tab_id": target.tab_id, "ref":target.reference});
         if let Some(previous) = previous {
             params["generation"] = previous.generation.into();
             params["document_id"] = previous.document_id.clone().into();
@@ -87,10 +91,11 @@ impl KernelRuntimeState {
         &self,
         session_id: &str,
         agent_id: &str,
+        card_id: &str,
         target: &RequestPopupBrowserRegionArgs,
     ) -> Result<RuntimeInteractionView, DaemonError> {
         match self
-            .observe_card_region(session_id, agent_id, target, None)
+            .observe_card_region(session_id, agent_id, card_id, target, None)
             .await?
         {
             RegionObservation::Present { region } => Ok(RuntimeInteractionView {
@@ -99,6 +104,7 @@ impl KernelRuntimeState {
             RegionObservation::ConditionMet { .. } => Err(region_error(
                 "browser element is no longer current; take a fresh snapshot",
             )),
+            RegionObservation::Unavailable { reason } => Err(region_error(&reason)),
         }
     }
 
@@ -122,6 +128,16 @@ impl KernelRuntimeState {
                 .iter()
                 .filter(|i| i.view().is_some())
             {
+                let Some(agent) = interaction.agent_id() else {
+                    continue;
+                };
+                let agent = agent.to_owned();
+                let tab = interaction
+                    .view()
+                    .expect("filtered browser view")
+                    .browser_region
+                    .tab_id
+                    .clone();
                 let id = interaction.id().to_owned();
                 if !self
                     .owned
@@ -140,6 +156,9 @@ impl KernelRuntimeState {
                 let room = room.clone();
                 tokio::spawn(async move {
                     state.follow_browser_region_card(&room, &watch.id).await;
+                    state
+                        .release_browser_region_card(&agent, &watch.id, &tab)
+                        .await;
                     drop(watch);
                 });
             }
@@ -164,7 +183,7 @@ impl KernelRuntimeState {
                 reference: previous.reference.clone(),
             };
             let result = self
-                .observe_card_region(room, agent, &target, Some(previous))
+                .observe_card_region(room, agent, id, &target, Some(previous))
                 .await;
             match result {
                 Ok(RegionObservation::Present { region }) => {
@@ -179,6 +198,15 @@ impl KernelRuntimeState {
                 }
                 Ok(RegionObservation::ConditionMet { reason }) => {
                     if self.close_browser_region_card(room, id, reason).is_ok() {
+                        return;
+                    }
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                }
+                Ok(RegionObservation::Unavailable { reason }) => {
+                    if self
+                        .close_unavailable_browser_region_card(room, id, reason)
+                        .is_ok()
+                    {
                         return;
                     }
                     tokio::time::sleep(Duration::from_millis(250)).await;
@@ -228,6 +256,16 @@ impl KernelRuntimeState {
         self.schedule_question_answer_delivery(id)
     }
 
+    async fn release_browser_region_card(&self, agent: &str, card: &str, tab: &str) {
+        let Ok(agent_record) = self.owned.agent_store.get_agent(agent) else {
+            return;
+        };
+        let user = self.provider_account_authority_owner_user_id(agent_record.owner_user_id());
+        // Revocation can prevent cleanup admission. The bounded controller
+        // lease then expires without another watcher renewal.
+        let _ = self.kernel_browser_operation(&user, Some(agent), "host.browser", serde_json::json!({"op":"popup_region", "card_id":card, "tab_id":tab, "release":true})).await;
+    }
+
     pub(super) fn close_unavailable_browser_region_card(
         &self,
         room: &str,
@@ -270,12 +308,12 @@ impl KernelRuntimeOwnedState {
                 "browser card observation changed its document binding",
             ));
         }
-        let Some(card) = session.remove_active_interaction(id) else {
-            return Ok(());
-        };
-        session.add_active_interaction(card.with_view(RuntimeInteractionView {
-            browser_region: region,
-        }));
+        session.update_active_interaction_view(
+            id,
+            RuntimeInteractionView {
+                browser_region: region,
+            },
+        );
         sessions.restore_session(session);
         drop(sessions);
         activity.record();

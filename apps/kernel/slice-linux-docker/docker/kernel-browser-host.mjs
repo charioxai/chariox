@@ -143,6 +143,7 @@ export class KernelBrowserHost {
     this.keepaliveTarget = null;
     this.observedDocuments = new Map();
     this.cardReferences = new Map();
+    this.cardAnchors = new Map();
     this.displayDocuments = new DisplayDocuments((stage, started, ended) => this.timing?.(stage, started, ended));
     this.stateSignal = new StateSignal();
     this.downloads = new HostDownloads({ ownerRoot: root, notify: () => this.stateSignal.notify() });
@@ -264,6 +265,7 @@ export class KernelBrowserHost {
     this.observed = ++this.observations;
     this.observedDocuments.clear();
     this.cardReferences.clear();
+    this.cardAnchors.clear();
     this.displayDocuments.clear();
     await mkdir(this.root, { recursive: true, mode: 0o700 });
     let saved = { generation: 0, tabs: [] };
@@ -1049,6 +1051,7 @@ export class KernelBrowserHost {
       this.webBotAuthRestoreUrls.delete(tab.tab_id);
       for (const observed of this.observedDocuments.values()) observed.delete(tab.tab_id);
       for (const references of this.cardReferences.values()) references.delete(tab.tab_id);
+      for (const [id, anchor] of this.cardAnchors) if (anchor.tab_id === tab.tab_id) this.cardAnchors.delete(id);
       const state = await this.reconcile();
       await this.rebindWindows();
       return state;
@@ -1323,6 +1326,7 @@ export class KernelBrowserHost {
       if (request.method === 'host.browser.retire_observer') {
         this.busyInputs.retire(key => key === request.params.observer);
         this.cardReferences.delete(request.params.observer);
+        for (const [id, anchor] of this.cardAnchors) if (anchor.scope === request.params.observer) this.cardAnchors.delete(id);
         return {id:request.id,ok:true,result:{retired:true}};
       }
       if (request.method === 'host.computer.retire') {

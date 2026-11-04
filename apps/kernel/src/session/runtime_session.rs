@@ -1030,6 +1030,20 @@ impl RuntimeSession {
             .sort_by_key(|left| (left.asking_task_id().is_some(), left.requested_at_ms()));
     }
 
+    pub(crate) fn update_active_interaction_view(
+        &mut self,
+        id: &str,
+        view: super::RuntimeInteractionView,
+    ) {
+        if let Some(interaction) = self
+            .active_interactions
+            .iter_mut()
+            .find(|interaction| interaction.id() == id)
+        {
+            *interaction = interaction.clone().with_view(view);
+        }
+    }
+
     pub fn remove_active_interaction(
         &mut self,
         interaction_id: &str,

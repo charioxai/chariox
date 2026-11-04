@@ -120,17 +120,6 @@ impl KernelRuntimeState {
                 "an action card must be raised by a local agent's own provider run",
             ));
         }
-        let view = if let Some(view) = args.view.as_ref() {
-            if let Some(run) = provider_run {
-                self.user_domain_agent_authority(run)?;
-            }
-            Some(
-                self.resolve_popup_view(session_id, agent_id, &view.browser_region)
-                    .await?,
-            )
-        } else {
-            None
-        };
         if args.choices.is_empty() {
             return Err(DaemonError::LocalTransport {
                 operation: "runtime_tool_request_popup",
@@ -214,8 +203,25 @@ impl KernelRuntimeState {
             Some(until) => Some(self.card_condition_wake(session_id, agent_id, &until.wake_id)?),
             None => None,
         };
+        let interaction_id = format!("interaction-{:032x}", rand::random::<u128>());
+        let view = if let Some(view) = args.view.as_ref() {
+            if let Some(run) = provider_run {
+                self.user_domain_agent_authority(run)?;
+            }
+            Some(
+                self.resolve_popup_view(
+                    session_id,
+                    agent_id,
+                    &interaction_id,
+                    &view.browser_region,
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
         let mut interaction = crate::session::RuntimeInteraction::new(
-            format!("interaction-{:032x}", rand::random::<u128>()),
+            interaction_id,
             agent_id,
             crate::session::RuntimeInteractionKind::Choice,
             args.level
