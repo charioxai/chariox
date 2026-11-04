@@ -456,7 +456,11 @@ async fn acquiring_a_machine_asks_unless_the_owner_turned_the_setting_off() {
         .iter()
         .map(|choice| choice.id().to_string())
         .collect::<Vec<_>>();
-    assert_eq!(ids, ["accept", "decline"]);
+    assert_eq!(
+        ids,
+        ["accept", "cancel"],
+        "Accept, and the Cancel every card carries"
+    );
     reach
         .router
         .runtime_state()

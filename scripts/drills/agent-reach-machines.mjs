@@ -272,7 +272,7 @@ async function main() {
   const answered = JSON.stringify(log1)
   const harness = askOff ? "home-room/agent-1 (Chariox agent)" : /^Let (home-room\/\S+ \(Chariox agent\)) acquire a machine\?$/.exec(cards[0]?.message ?? "")?.[1]
   if (askOff) check("with the setting off the owner was not asked and the machine was acquired", cards.length === 0 && /allocation_ref/.test(answered), { cards: cards.length })
-  else check("the owner was asked before the acquisition (default setting), naming the room and agent", cards.length === 1 && !!harness && cards[0].choices.join() === "accept,decline", { card: cards[0] })
+  else check("the owner was asked before the acquisition (default setting), naming the room and agent", cards.length === 1 && !!harness && cards[0].choices.join() === "accept,cancel", { card: cards[0] })
   const ref = /"allocation_ref\\?":\\?"([^"\\]+)/.exec(answered)?.[1]
   const kernelId = /"kernel_id\\?":\\?"([^"\\]+)/.exec(answered.slice(answered.indexOf("kernel_target")))?.[1]
   check("the machine became ready and its access is available", /access_state\\?":\\?"available/.test(answered), { ref, kernelId })

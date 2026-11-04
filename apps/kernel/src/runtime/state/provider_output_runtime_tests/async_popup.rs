@@ -954,6 +954,7 @@ async fn async_popup_follows_a_timer_the_scheduler_fires() {
     let told = answers(&f, id);
     assert_eq!(told.len(), 1);
     assert_eq!(told[0]["choice_id"], "condition_met");
+}
 
 /// MP-09: a managed kernel counts the unresolved cards as work. Answering one records that change after the
 /// Room is updated; recording it while the Room store is still locked waited for the answerer itself, so the

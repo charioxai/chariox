@@ -224,12 +224,14 @@ impl KernelRuntimeState {
                 crate::transport::runtime_tools::RequestPopupArgs {
                     wait: None,
                     message: format!("Let {} acquire a machine?", caller.harness),
-                    choices: vec![choice("accept", "Allow"), choice("decline", "Decline")],
+                    choices: vec![choice("accept", "Accept")],
                     custom_choice: None,
                     title: None,
                     level: None,
                     timeout_sec: Some(900),
                     default_on_timeout: None,
+                    until: None,
+                    action: None,
                 },
             )
             .await?;

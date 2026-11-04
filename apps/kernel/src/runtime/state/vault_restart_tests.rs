@@ -231,6 +231,7 @@ fn mp09_managed_kernel_registers_a_vault_prompt_without_hanging() {
                 room: None,
             },
             &agent,
+            &crate::config::UserCredentialVaultConfig::default(),
         );
         let _receiver = registering
             .create_terminal_credential_interaction(&session, card)
