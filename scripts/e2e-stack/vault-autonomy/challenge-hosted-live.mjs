@@ -67,6 +67,8 @@ try {
     await card.waitFor({timeout:300_000})
     const live=(await state()).active_interactions.find(c=>c.title==='Verification '+tag)
     assert.ok(live?.asking_task_id&&live.view?.browser_region)
+    const activeRun=(await state()).active_provider_run_id;
+    if(activeRun){const run=(await fixture.send({GetProviderRun:{provider_run_id:activeRun}})).ProviderRun.provider_run;row.model=run.model;row.effort=run.variant;assert.equal(run.model,'gpt-6-luna')}
     Object.assign(row,{task_id:live.asking_task_id,card_id:live.id,region:live.view.browser_region})
     assert.equal((await(await fetch(challenge.url+'/status')).json()).issued,false,'card precedes first code request')
     assert.equal(await card.locator('[data-choice-id]').count(),1,'no separate Confirm/Done')
@@ -81,6 +83,8 @@ try {
     await frame.locator('#code').click();await frame.locator('#code').pressSequentially('000000',{delay:50});await frame.locator('#code').press('Enter')
     await waitFor(async()=>(await(await fetch(challenge.url+'/status')).json()).events.some(e=>e.result==='rejected'),'server rejection')
     await page.waitForTimeout(2000)
+    row.ui_after_rejection=await frame.locator('body').evaluate(body=>({has_rejection:body.textContent.includes('That code was not accepted'),has_verify:body.textContent.includes('Verify'),alerts:body.querySelectorAll('[role=alert]').length,nodes:['challenge','verify','code'].map(id=>{const node=body.querySelector('#'+id);const box=node?.getBoundingClientRect();return{id,present:Boolean(node),hidden:node?.hidden,children:node?.childNodes.length,box:box?{x:box.x,y:box.y,width:box.width,height:box.height}:null}})}));
+    await save()
     const afterRejected=await state()
     row.rejection_card_retained=(afterRejected.active_interactions??[]).some(c=>c.id===live.id)
     await page.screenshot({path:path.join(evidence,cell.id+'-rejected.png')})

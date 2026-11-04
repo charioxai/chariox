@@ -826,7 +826,23 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       if (node.nodeType === 1) {
         // Children pair by position; the rest serialize fresh / are forgotten.
         const previous = kids.get(oldId) ?? [], list = [], out = [];
-        [...node.childNodes].forEach((child, i) => { const reuse = previous[i] !== undefined && morph(previous[i], child, ops, depth + 1) ? previous[i] : null; const childId = reuse ?? serialize(child, oldId, out, depth + 1); if (childId) list.push(childId); });
+        [...node.childNodes].forEach((child, i) => {
+          // Replacing an ancestor can move its still-live form and text nodes.
+          // Re-serializing their IDs resets child lists and empties the viewer.
+          const existing = mirrored(child);
+          if (existing) {
+            if (parentOf.get(existing) !== oldId) {
+              const siblings = kids.get(parentOf.get(existing)), index = siblings?.indexOf(existing) ?? -1;
+              if (index >= 0) siblings.splice(index, 1);
+              parentOf.set(existing, oldId);
+            }
+            list.push(existing);
+            return;
+          }
+          const reuse = previous[i] !== undefined && morph(previous[i], child, ops, depth + 1) ? previous[i] : null;
+          const childId = reuse ?? serialize(child, oldId, out, depth + 1);
+          if (childId) list.push(childId);
+        });
         for (const child of previous) if (!list.includes(child) && parentOf.get(child) === oldId) forget(child);
         kids.set(oldId, list);
         if (out.length || list.length !== previous.length || list.some((child, i) => child !== previous[i])) ops.push({ op: 'children', id: oldId, children: list, nodes: out });
