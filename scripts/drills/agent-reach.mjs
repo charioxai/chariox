@@ -43,7 +43,7 @@ const tokenFile = flags.get("--claude-token-file") ?? "/root/.claude-lanes/oauth
 // A Codex scope the product linked for drills, and the OpenCode login to copy into a lane-owned scope.
 const codexScope = flags.get("--codex-scope") ?? "/root/.chariox/dev/worker-k/home/state/provider-accounts/local/codex/kaissandra-ai-reviewer-login-esqv7b7c/codex"
 const opencodeAuth = flags.get("--opencode-auth") ?? "/root/.chariox/dev/provider-runtimes/fleet-accounts/opencode-home/.local/share/opencode/auth.json"
-const scenarios = new Set((flags.get("--scenarios") ?? (provider === "claude" ? "reach,sudo,acquisition,tools,events,driver,history,view,humanonly,lineage,inherit" : "tools,events,driver,history,view")).split(","))
+const scenarios = new Set((flags.get("--scenarios") ?? (provider === "claude" ? "reach,sudo,acquisition,tools,events,driver,history,view,humanonly,lineage,inherit,workday,recall" : "tools,events,driver,history,view")).split(","))
 assert(provider === "claude" || [...scenarios].every(name => ["tools", "view", "events", "driver", "history"].includes(name)), "only the tools, view, events, driver and history scenarios run with Codex or OpenCode")
 const agentScenarios = ["events", "driver", "history"].some(name => scenarios.has(name))
 assert(stateRoot.startsWith("/root/.chariox/dev/"), "state must be lane-owned")
@@ -657,6 +657,60 @@ async function main() {
     const sudoCodes = codesOf(sudoSince)
     check("deleting stays refused inside a /sudo window", sudoCodes.length === 3 && sudoCodes.every(c => refused.includes(c) && c !== "reach_requires_sudo"), { sudoCodes })
     check("still nothing changed", await unchanged())
+  }
+
+  // The text of every base64 chunk an agent's answers carried since `since` (room terminal output), decoded.
+  const decodedOutput = since => reachAnswers(since).flatMap(x => [...x.answer.replace(/\\"/g, '"').matchAll(/"data_base64":"([A-Za-z0-9+/=]+)"/g)].map(m => Buffer.from(m[1], "base64").toString("utf8"))).join("")
+
+  if (scenarios.has("workday")) {
+    note("scenario", { which: "workday" })
+    const nonce = randomBytes(3).toString("hex"), file = join(b.dir, "work", `reach-note-${nonce}.txt`)
+    const terminalRequest = operation => call(target, { RoomTerminal: { session_id: roomB.session.id, operation } })
+    const since = Date.now() - 1000
+    await sendPrompt(drillPrompt([
+      "A command in room " + roomB.session.id + " on the other kernel:",
+      `1. ${terminalRequest({ operation: "exec_open", command: ["sh", "-c", `echo workday-${nonce}`] })} gives exec_opened.exec_id.`,
+      `2. Read it: ${terminalRequest({ operation: "exec_read", exec_id: "EXEC_ID", after_cursor: 0, wait_ms: 10000 })} until the answer has an outcome.`,
+      `3. List the execs (${terminalRequest({ operation: "exec_list" })}) and close yours (${terminalRequest({ operation: "exec_close", exec_id: "EXEC_ID" })}).`,
+      "A terminal: ",
+      `4. ${terminalRequest({ operation: "open", cols: 80, rows: 24, title: "reach", command: ["sh"] })} gives the terminal id.`,
+      `5. Type into it: ${terminalRequest({ operation: "input", terminal_id: "TERMINAL_ID", data_base64: Buffer.from(`echo pty-${nonce}\n`).toString("base64") })}, then read: ${terminalRequest({ operation: "read_output", terminal_id: "TERMINAL_ID", after_offset: 0, wait_ms: 3000 })}.`,
+      `6. List the terminals (${terminalRequest({ operation: "list" })}) and close yours (${terminalRequest({ operation: "close", terminal_id: "TERMINAL_ID" })}).`,
+      "Files: ",
+      `7. ${call(target, { AttachToSession: { session_id: roomB.session.id, client_id: "reach-workday", capability_level: "FullTerminal" } })} gives the attachment id.`,
+      `8. ${call(target, { ReadDirectoryTree: { session_id: roomB.session.id, attachment_id: "ATTACHMENT_ID", path: null, max_depth: 1 } })}`,
+      `9. ${call(target, { EditFile: { session_id: roomB.session.id, attachment_id: "ATTACHMENT_ID", path: file, contents: `workday ${nonce}\n` } })}`,
+      `10. ${call(target, { ReadFile: { session_id: roomB.session.id, attachment_id: "ATTACHMENT_ID", path: file } })}`,
+      "Then reply with the words WORKDAY and DONE joined by an underscore and the code of every refused answer.",
+    ]), "WORKDAY_DONE")
+    const out = decodedOutput(since), answers = reachAnswers(since)
+    check("the agent ran a command on the other kernel's room and read its output", out.includes(`workday-${nonce}`), { tail: out.slice(-120) })
+    check("the agent typed into a terminal of that room and read the echo", out.includes(`pty-${nonce}`))
+    const written = (() => { try { return readFileSync(file, "utf8") } catch { return null } })()
+    note("workday-files", { written, answers: answers.filter(x => /ReadDirectoryTree|EditFile|ReadFile/.test(JSON.stringify(x.input))).map(x => x.answer.slice(0, 200)) })
+    check("the agent wrote and read a file in that room", written === `workday ${nonce}\n`, { written })
+  }
+
+  if (scenarios.has("recall")) {
+    note("scenario", { which: "recall" })
+    const word = `RECALLWORD${randomBytes(3).toString("hex")}`, bAttach = (await b.rpc({ AttachToSession: { session_id: roomB.session.id, client_id: "reach-recall", capability_level: "FullTerminal" } })).SessionAttached.attachment.id
+    const bSince = Date.now() - 1000
+    await b.rpc(submitPromptRequest(roomB.session.id, bAttach, roomB.agent.id, `This is a drill. Reply with the single word ${word} and nothing else.`, []))
+    await until(async () => { await b.rpc({ PumpTerminalOutput: { session_id: roomB.session.id, attachment_id: bAttach } }).catch(() => {}); return claudeTranscript(b.dir + "/chariox", bSince).includes(word) }, "B's agent answers", 180000)
+    await delay(3000)
+    const nulls = { agent_id: null, provider: null, model: null, workflow_id: null, machine_id: null, repo_root: null, worktree_path: null, kind: null }
+    const since = Date.now() - 1000
+    await sendPrompt(drillPrompt([
+      `1. ${call(target, { SearchRecall: { query: word, session_id: roomB.session.id, ...nulls, after_sequence: null, limit: 5 } })}`,
+      `2. ${call(target, { QueryRecall: { session_id: roomB.session.id, ...nulls, text: null, after_sequence: null, before_sequence: null, limit: 2 } })}`,
+      `3. ${call(target, { SearchRecall: { query: word, session_id: "no-such-room", ...nulls, after_sequence: null, limit: 5 } })}`,
+      "Then reply with the words RECALL and DONE joined by an underscore, and say for each of the three answers whether it contained events.",
+    ]), "RECALL_DONE")
+    const answers = reachAnswers(since).filter(x => x.tool === "request")
+    check("the agent found another room's real work by a term of it", answers[0]?.answer.includes(word), { answer: answers[0]?.answer.slice(0, 160) })
+    check("the agent paged another room's recent history", answers[1] !== undefined && !/"code"/.test(answers[1].answer), { answer: answers[1]?.answer.slice(0, 160) })
+    note("recall-unknown-room", { answer: answers[2]?.answer.slice(0, 300) })
+    check("an unknown room answers without the word", answers[2] !== undefined && !answers[2].answer.includes(word))
   }
 
   if (scenarios.has("inherit")) {
