@@ -111,29 +111,33 @@ impl SetupRuns {
         }
     }
 
-    /// A run recorded as running with no live process was cut off by a kernel restart.
-    fn settle_orphan(&self, mut run: StoredRun) -> Result<StoredRun, DaemonError> {
-        if run.view.state == EnvironmentOperationState::Running
-            && !lock(&self.live).contains_key(&run.view.operation_id)
-        {
+    pub(crate) fn get(
+        &self,
+        operation_id: &str,
+    ) -> Result<Option<EnvironmentOperationView>, DaemonError> {
+        self.get_with_live(operation_id, &lock(&self.live))
+    }
+
+    fn get_with_live(
+        &self,
+        operation_id: &str,
+        live: &HashMap<String, Arc<LiveRun>>,
+    ) -> Result<Option<EnvironmentOperationView>, DaemonError> {
+        if let Some(run) = live.get(operation_id) {
+            return Ok(Some(lock(&run.run).view.clone()));
+        }
+        let Some(mut run) = self.load(operation_id)? else {
+            return Ok(None);
+        };
+        // Admission holds the same lock until the persisted run is live. Only a restart can
+        // leave a running record without its reservation when a reader acquires the lock.
+        if run.view.state == EnvironmentOperationState::Running {
             run.view.state = EnvironmentOperationState::Failed;
             run.view.ended_at_ms = Some(crate::session::unix_epoch_ms());
             run.view.reason = Some("Kernel restarted".into());
             self.persist(&run)?;
         }
-        Ok(run)
-    }
-
-    pub(crate) fn get(
-        &self,
-        operation_id: &str,
-    ) -> Result<Option<EnvironmentOperationView>, DaemonError> {
-        if let Some(live) = lock(&self.live).get(operation_id) {
-            return Ok(Some(lock(&live.run).view.clone()));
-        }
-        self.load(operation_id)?
-            .map(|run| self.settle_orphan(run).map(|run| run.view))
-            .transpose()
+        Ok(Some(run.view))
     }
 
     pub(crate) fn state_for(
@@ -184,7 +188,9 @@ impl SetupRuns {
         self: &Arc<Self>,
         spec: SetupSpec,
     ) -> Result<EnvironmentOperationView, DaemonError> {
-        if let Some(existing) = self.get(&spec.operation_id)? {
+        // Serialize competing operation ids and keep readers out until publication is complete.
+        let mut live_runs = lock(&self.live);
+        if let Some(existing) = self.get_with_live(&spec.operation_id, &live_runs)? {
             if existing.project_id != spec.project_id {
                 return Err(environment_error(
                     "this operation id belongs to another Project",
@@ -192,9 +198,11 @@ impl SetupRuns {
             }
             return Ok(existing);
         }
-        if let ProjectEnvironmentSetupState::Running { .. } =
-            self.state_for(&spec.project_id, &spec.checkout, &spec.script_digest)?
-        {
+        if live_runs.values().any(|live| {
+            let run = lock(&live.run);
+            run.view.state == EnvironmentOperationState::Running
+                && Path::new(&run.view.checkout_path) == spec.checkout
+        }) {
             return Err(environment_error("Setup is already running here"));
         }
         let view = EnvironmentOperationView {
@@ -216,17 +224,22 @@ impl SetupRuns {
             script_digest: spec.script_digest.clone(),
         };
         self.persist(&stored)?;
-        fs::write(
+        if fs::write(
             self.last_path(&spec.project_id, &spec.checkout),
             &spec.operation_id,
         )
-        .map_err(|_| environment_error("saving the Setup run failed"))?;
+        .is_err()
+        {
+            let _ = fs::remove_file(self.run_path(&spec.operation_id));
+            return Err(environment_error("saving the Setup run failed"));
+        }
         let live = Arc::new(LiveRun {
             run: Mutex::new(stored),
             pid: Mutex::new(None),
             cancelled: std::sync::atomic::AtomicBool::new(false),
         });
-        lock(&self.live).insert(spec.operation_id.clone(), Arc::clone(&live));
+        live_runs.insert(spec.operation_id.clone(), Arc::clone(&live));
+        drop(live_runs);
         let runs = Arc::clone(self);
         tokio::spawn(async move {
             let outcome = runs.execute(&live, &spec).await;
@@ -433,6 +446,101 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         }
         panic!("the Setup run did not finish");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_admissions_start_only_one_script_and_never_settle_a_live_run_as_restarted()
+    {
+        for _ in 0..16 {
+            let dir = scratch();
+            let runs = SetupRuns::new(&dir.0);
+            let barrier = Arc::new(std::sync::Barrier::new(3));
+            let script = "echo started >> starts; while [ ! -e release ]; do sleep 0.01; done";
+            let completed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let mut threads = Vec::new();
+            for id in ["op-a", "op-b"] {
+                let runs = Arc::clone(&runs);
+                let barrier = Arc::clone(&barrier);
+                let completed = Arc::clone(&completed);
+                let spec = spec(&dir, id, script);
+                let runtime = tokio::runtime::Handle::current();
+                threads.push(std::thread::spawn(move || {
+                    let _entered = runtime.enter();
+                    barrier.wait();
+                    let result = runs.start(spec);
+                    completed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    result
+                }));
+            }
+            barrier.wait();
+            let mut polled = Vec::new();
+            while completed.load(std::sync::atomic::Ordering::SeqCst) < 2 {
+                for id in ["op-a", "op-b"] {
+                    if let Some(view) = runs.get(id).unwrap() {
+                        polled.push(view);
+                    }
+                }
+                std::thread::yield_now();
+            }
+            let results: Vec<_> = threads
+                .into_iter()
+                .map(|thread| thread.join().unwrap())
+                .collect();
+            let accepted: Vec<_> = results
+                .iter()
+                .filter_map(|result| result.as_ref().ok())
+                .collect();
+            let observed: Vec<_> = accepted
+                .iter()
+                .map(|view| runs.get(&view.operation_id).unwrap().unwrap())
+                .collect();
+            let state = runs
+                .state_for("project", &dir.0.join("checkout"), &digest(&[script]))
+                .unwrap();
+            // Always let every admitted script finish, including on the unfixed implementation.
+            fs::write(dir.0.join("checkout/release"), "").unwrap();
+            for view in &accepted {
+                finished(&runs, &view.operation_id).await;
+            }
+            assert!(
+                polled
+                    .iter()
+                    .all(|view| view.state == EnvironmentOperationState::Running
+                        && view.reason.is_none()),
+                "a poll falsely settled a live run"
+            );
+            assert_eq!(
+                accepted.len(),
+                1,
+                "competing requests admitted more than one Setup"
+            );
+            assert!(observed
+                .iter()
+                .all(|view| view.state == EnvironmentOperationState::Running
+                    && view.reason.is_none()));
+            assert!(matches!(
+                state,
+                ProjectEnvironmentSetupState::Running { .. }
+            ));
+            assert_eq!(
+                fs::read_to_string(dir.0.join("checkout/starts"))
+                    .unwrap()
+                    .lines()
+                    .count(),
+                1
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn an_unpublished_run_is_removed_when_the_checkout_pointer_cannot_be_saved() {
+        let dir = scratch();
+        let runs = SetupRuns::new(&dir.0);
+        let spec = spec(&dir, "op-unpublished", "echo should-not-start");
+        fs::create_dir_all(runs.last_path(&spec.project_id, &spec.checkout)).unwrap();
+        assert!(runs.start(spec).is_err());
+        assert!(runs.get("op-unpublished").unwrap().is_none());
+        assert!(lock(&runs.live).is_empty());
     }
 
     #[tokio::test]
