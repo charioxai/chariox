@@ -3709,6 +3709,41 @@ fn visible_tasks_are_unfinished_and_recent_finished_ones_in_ledger_order() {
     assert_eq!((ids[32].as_str(), ids[33].as_str()), ("t39", "broken"));
 }
 
+/// Virtual machine steps one snapshot read takes in a room with `done` finished tasks and one waiting.
+fn visible_read_steps(done: usize) -> i32 {
+    let f = Fixture::new();
+    let db = Connection::open(f.root.join("state.sqlite")).unwrap();
+    let insert = |id: &str, state: &str| {
+        let payload = serde_json::json!({"task_id":id,"room_id":"r","agent_id":"a","prompt_id":id,"provider_run_id":null,"revision":1,"state":state,"reason":"","obligations":[],"wait":null,"last_progress_at_ms":1,"progress_sequence":0,"no_progress_wakes":0,"correction_used":false,"pending_prompt_id":null});
+        db.execute(
+            "INSERT INTO agent_tasks VALUES(?1,'r','a',?1,?2)",
+            params![id, payload.to_string()],
+        )
+        .unwrap();
+    };
+    insert("waiting", "waiting");
+    for index in 0..done {
+        insert(
+            &format!("done-{index}"),
+            if index % 2 == 0 { "done" } else { "cancelled" },
+        );
+    }
+    let visible = f.store.visible_agent_tasks("r", 4).unwrap();
+    assert_eq!(visible.len(), 5);
+    VISIBLE_TASK_STEPS.with(|steps| steps.get())
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11: a room's finished history stays in the ledger, so a snapshot
+// must find its few recent finished tasks through the index and not walk the history.
+#[test]
+fn a_snapshot_read_does_not_walk_the_finished_history() {
+    let (few, many) = (visible_read_steps(10), visible_read_steps(400));
+    assert!(
+        many <= few + 64,
+        "a snapshot read took {few} steps after 10 finished tasks and {many} after 400"
+    );
+}
+
 // MP-08 / MP-09 / MP-10 / MP-11: finished tasks and outside inbox rows stay in the ledger,
 // so the lookups made on every turn and every sweep must read an index, not the history.
 #[test]
