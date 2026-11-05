@@ -12,7 +12,22 @@ const maxAnchors = 1_024;
 
 export function forgetCardAnchor(host, id) {
   host.cardAnchors.get(id)?.verification?.close();
+  host.cardAnchors.get(id)?.releaseElement?.();
   host.cardAnchors.delete(id);
+}
+
+// A framework may replace a complete challenge form in the same DOM slot.
+// Follow only its unique stable id in the original parent and document.
+function trackCardElement() {
+  const original = this, parent = this.parentElement, id = this.id, tag = this.localName;
+  return () => {
+    if (original.isConnected && original.ownerDocument === document) return original;
+    if (!id || !parent?.isConnected || parent.ownerDocument !== document) return null;
+    const matches = document.querySelectorAll('#' + CSS.escape(id));
+    if (matches.length !== 1) return null;
+    const node = matches[0];
+    return node.parentElement === parent && node.localName === tag ? node : null;
+  };
 }
 
 export function pruneCardAnchors(host, now = Date.now()) {
@@ -142,12 +157,6 @@ export async function resolveCardRegion(host, command, scope, signal) {
   const gone = async reason => {
     if (!anchor?.verification) return {state:'condition_met',reason};
     if (anchor.verification.receipt?.result === 'accepted') return completion();
-    if (reason === 'Browser element disappeared' && anchor.region) {
-      // A framework can replace the crop anchor after rejection. Keep this
-      // document's last crop; disappearance never supplies acceptance.
-      await delay(250);
-      return {state:'present',region:{...anchor.region,...(anchor.verification.receipt ? {verification_result:anchor.verification.receipt} : {})}};
-    }
     return {state:'unavailable',reason};
   };
   if ((!remembered || !remembered.refs.has(command.ref)) && command.document_id !== undefined) {
@@ -184,11 +193,24 @@ export async function resolveCardRegion(host, command, scope, signal) {
   let objectId;
   try {
     let box;
-    if (anchor?.verification && anchor.verification.contextId===null) {
+    if (anchor?.verification && !anchor.elementResolver) {
       const resolved=await connection.send('DOM.resolveNode',{backendNodeId:Number(command.ref.slice(8)),executionContextId:world.contextId},sessionId);
       objectId=resolved.object?.objectId;
       if(!objectId)return gone('Browser element disappeared');
-      await anchor.verification.bindInput(objectId,world.contextId);
+      const tracked = await connection.send('Runtime.callFunctionOn', {objectId,functionDeclaration:String(trackCardElement),returnByValue:false},sessionId);
+      if (tracked.exceptionDetails || !tracked.result?.objectId) throw new Error('Browser card element tracking could not start');
+      anchor.elementResolver = tracked.result.objectId;
+      const resolver = anchor.elementResolver;
+      anchor.releaseElement = () => { void connection.send('Runtime.releaseObject',{objectId:resolver},sessionId).catch(()=>{}); };
+      await anchor.verification.bindInput(objectId,world.contextId,resolver);
+    }
+    if (anchor?.elementResolver) {
+      if (objectId) await connection.send('Runtime.releaseObject',{objectId},sessionId);
+      objectId = undefined;
+      const resolved = await connection.send('Runtime.callFunctionOn', {objectId:anchor.elementResolver,functionDeclaration:'function(){return this()}',returnByValue:false},sessionId);
+      if (resolved.exceptionDetails) return gone('Browser element disappeared');
+      objectId = resolved.result?.objectId;
+      if (!objectId) return gone('Browser element disappeared');
     }
     if (remembered.children.has(command.ref)) {
       box = await childFrameBox(browser, connection, sessionId, tab, command);

@@ -2,12 +2,13 @@
 // Request bodies, response fields other than the boolean predicate, headers and tokens never leave CDP.
 import {randomUUID} from 'node:crypto';
 
-function bindVerificationInput(name) {
-  const anchor=this, controls=new Set(anchor.querySelectorAll('input,textarea,button,select,form'));
+function bindVerificationInput(name, resolveAnchor) {
+  const original=this;
   let sequence=0, field=null;
   const acknowledge=event=>{
     if (!event.isTrusted || event.target?.ownerDocument!==document || !event.target.isConnected) return;
-    if (!event.composedPath().some(node=>node===anchor || controls.has(node))) return;
+    const anchor=resolveAnchor ? resolveAnchor() : original;
+    if (!anchor?.isConnected || !event.composedPath().includes(anchor)) return;
     const target=event.target;
     if (event.type==='input' && ['INPUT','TEXTAREA'].includes(target.nodeName) && !target.readOnly && !['checkbox','radio','hidden','button','submit'].includes(target.type)) field=target;
     if (!field?.isConnected || field.ownerDocument!==document || !field.value || field.value.length>512) return;
@@ -62,10 +63,10 @@ export class BrowserCardVerification {
     this.contextId=null;this.inputSequence=0;this.consumedSequence=0;this.inputAt=0;this.cleanupId=null;this.inputValue=null;
     this.unsubscribe=connection.subscribe(message=>this.observe(message));
   }
-  async bindInput(objectId,contextId) {
+  async bindInput(objectId,contextId,resolverId) {
     if(this.contextId!==null)return;
     await this.connection.send('Runtime.addBinding',{name:this.bindingName,executionContextId:contextId},this.sessionId);
-    const result=await this.connection.send('Runtime.callFunctionOn',{objectId,functionDeclaration:String(bindVerificationInput),arguments:[{value:this.bindingName}],returnByValue:false},this.sessionId);
+    const result=await this.connection.send('Runtime.callFunctionOn',{objectId,functionDeclaration:String(bindVerificationInput),arguments:[{value:this.bindingName},...(resolverId ? [{objectId:resolverId}] : [])],returnByValue:false},this.sessionId);
     if(result.exceptionDetails || !result.result?.objectId)throw new Error('Browser verification input acknowledgement could not start');
     this.cleanupId=result.result.objectId;this.contextId=contextId;
   }

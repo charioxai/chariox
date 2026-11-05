@@ -31,6 +31,11 @@ test('MP-08/MP-10/MP-11 trusted region input retains rejection and closes only o
     let rejected;
     for(let i=0;i<40;i++) {rejected=await host.request({...command,document_id:snapshot.document_id});if(rejected.region?.verification_result?.result==='rejected')break;await delay(100)}
     assert.equal(rejected.state,'present');assert.equal(rejected.region.verification_result?.input_delivered,true);assert.equal(rejected.region.verification_result?.http_status,422);
+    await delay(100);
+    const replacement=(await host.request({op:'snapshot',...binding})).snapshot.dom_nodes.find(n=>n.node_name==='MAIN');
+    assert.notEqual(replacement.node_ref,main.node_ref,'the entire challenge anchor was replaced');
+    rejected=await host.request({...command,document_id:snapshot.document_id});
+    assert.ok(rejected.region.rect.y>first.region.rect.y,'the crop follows replacement geometry');
     await click('code');await input({kind:'key',key:'a',modifiers:2});await input({kind:'text',text:'246810'});await input({kind:'key',key:'Enter'});
     let accepted;
     for(let i=0;i<40;i++) {accepted=await host.request({...command,document_id:snapshot.document_id});if(accepted.state==='condition_met')break;await delay(100)}

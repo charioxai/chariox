@@ -21,6 +21,8 @@ async function withHost(run) {
     calls.push(method);
     if (method === 'Page.getFrameTree') return { frameTree: { frame: { id: 'frame', loaderId: state.document_id } } };
     if (method === 'DOM.resolveNode') return { object: { objectId: 'element' } };
+    if (method === 'Runtime.callFunctionOn' && params.functionDeclaration.includes('function trackCardElement')) return {result:{objectId:'resolver'}};
+    if (method === 'Runtime.callFunctionOn' && params.objectId === 'resolver') return {result:node.isConnected ? {objectId:'element'} : {subtype:'null',value:null}};
     if (method === 'Runtime.callFunctionOn' && params.functionDeclaration.includes('function bindVerificationInput')) return {result:{objectId:'cleanup'}};
     if (method === 'Runtime.callFunctionOn') {
       const context = { document, innerWidth: state.width, innerHeight: state.height, setTimeout, clearTimeout,
@@ -184,8 +186,8 @@ test('MP-08/MP-09/MP-10/MP-11 verification requires a positive response and reta
   await attempt('rejected',422);
   node.isConnected=false;
   const rejected=await region({card_id:'verification',verification,generation:1,document_id:'doc',after:initial.region});
-  assert.equal(rejected.state,'present','a rejected response and replaced anchor must keep the card');
-  assert.deepEqual(rejected.region.verification_result,{challenge_id:'challenge-one',request_id:'rejected',input_delivered:true,http_status:422,result:'rejected'});
+  assert.deepEqual(rejected,{state:'unavailable',reason:'Browser element disappeared'},'an unidentifiable replacement cannot retain a stale crop');
+  node.isConnected=true;
   accepted=true;await attempt('accepted',200);
   const result=await region({card_id:'verification',verification,generation:1,document_id:'doc'});
   assert.equal(result.state,'condition_met');
