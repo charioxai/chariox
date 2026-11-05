@@ -89,3 +89,11 @@ native `--kernel` before submission, peer cancellation, original grant revocatio
 and target gateway revocation. It does not move a queued launch to another kernel.
 Post-hold placement, paid-VM placement, hosted Web DPR1/2 and durable remote claim
 recovery remain separate acceptance work.
+
+The MP-08 / MP-09 / MP-10 / MP-11 `target-restart.mjs` contract drill uses the
+same arguments. It starts a binary on the selected peer, observes its marker,
+SIGKILLs that owned target kernel and restarts it with the same state. Reading the
+original exec ID must report an explicit unknown/incomplete outcome and must not
+replay the program. This drill is known-red on the base and the r2 foundation:
+both lose the receipt and return `exec_not_found`. It is separate from the passing
+origin-connection-loss drill and is not a claim of durable recovery.
