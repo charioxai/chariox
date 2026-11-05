@@ -3682,7 +3682,7 @@ fn visible_tasks_are_unfinished_and_recent_finished_ones_in_ledger_order() {
     let insert = |id: &str, room: &str, state: &str| {
         let payload = serde_json::json!({"task_id":id,"room_id":room,"agent_id":"a","prompt_id":id,"provider_run_id":null,"revision":1,"state":state,"reason":"","obligations":[],"wait":null,"last_progress_at_ms":1,"progress_sequence":0,"no_progress_wakes":0,"correction_used":false,"pending_prompt_id":null});
         db.execute(
-            "INSERT INTO agent_tasks VALUES(?1,?2,'a',?1,?3)",
+            "INSERT INTO agent_tasks(task_id,room_id,agent_id,prompt_id,payload) VALUES(?1,?2,'a',?1,?3)",
             params![id, room, payload.to_string()],
         )
         .unwrap();
@@ -3692,7 +3692,7 @@ fn visible_tasks_are_unfinished_and_recent_finished_ones_in_ledger_order() {
         insert(&format!("t{index}"), "r", "done");
     }
     db.execute(
-        "INSERT INTO agent_tasks VALUES('broken','r','a','broken','{')",
+        "INSERT INTO agent_tasks(task_id,room_id,agent_id,prompt_id,payload) VALUES('broken','r','a','broken','{')",
         [],
     )
     .unwrap();
@@ -3716,7 +3716,7 @@ fn visible_read_steps(done: usize) -> i32 {
     let insert = |id: &str, state: &str| {
         let payload = serde_json::json!({"task_id":id,"room_id":"r","agent_id":"a","prompt_id":id,"provider_run_id":null,"revision":1,"state":state,"reason":"","obligations":[],"wait":null,"last_progress_at_ms":1,"progress_sequence":0,"no_progress_wakes":0,"correction_used":false,"pending_prompt_id":null});
         db.execute(
-            "INSERT INTO agent_tasks VALUES(?1,'r','a',?1,?2)",
+            "INSERT INTO agent_tasks(task_id,room_id,agent_id,prompt_id,payload) VALUES(?1,'r','a',?1,?2)",
             params![id, payload.to_string()],
         )
         .unwrap();
@@ -3875,5 +3875,155 @@ fn another_unfinished_task_is_found_without_walking_the_finished_history() {
             .agent_has_other_unfinished_task("r", "a", "broken")
             .unwrap(),
         "the current task is excluded"
+    );
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11 KR-06: terminal cancellations remain as history.
+#[test]
+fn cancelled_history_does_not_grow_the_lifecycle_sweep() {
+    let f = Fixture::new();
+    f.begin("current");
+    let current = f.task();
+    let mut db = Connection::open(f.root.join("state.sqlite")).unwrap();
+    let mut next = 0;
+    let mut measured = Vec::new();
+    for count in [10, 500] {
+        let from = next;
+        let tx = db.transaction().unwrap();
+        while next < count {
+            let mut old = current.clone();
+            old.task_id = format!("history-task-{next}");
+            old.prompt_id = format!("history-prompt-{next}");
+            old.state = ExecutionState::Cancelled;
+            tx.execute("INSERT INTO agent_tasks(task_id,room_id,agent_id,prompt_id,payload) VALUES(?1,?2,?3,?4,?5)",params![old.task_id,old.room_id,old.agent_id,old.prompt_id,serde_json::to_string(&old).unwrap()]).unwrap();
+            next += 1;
+        }
+        tx.commit().unwrap();
+        for n in from..next {
+            let source = format!("history-task-{n}");
+            f.apply(Operation::SourceOutcome {
+                room: "room".into(),
+                occurrence: format!("task-terminal-{source}"),
+                source,
+                success: false,
+                public_answer: None,
+                now: 2,
+            });
+        }
+        let selected = f.store.agent_tasks_to_sweep().unwrap();
+        assert_eq!(
+            selected
+                .iter()
+                .map(|task| &task.task_id)
+                .collect::<Vec<_>>(),
+            vec![&current.task_id]
+        );
+        measured.push(TASK_QUERY_STEPS.with(|n| n.get()));
+    }
+    eprintln!("sweep steps after 10/500 cancelled tasks: {measured:?}");
+    assert!(
+        measured[1] <= measured[0] + 64,
+        "cancelled history grew the sweep from {} to {} SQLite steps",
+        measured[0],
+        measured[1]
+    );
+}
+
+#[test]
+fn only_the_matching_terminal_outcome_retires_a_cancellation() {
+    let f = Fixture::new();
+    f.begin("current");
+    let mut task = f.task();
+    task.state = ExecutionState::Cancelled;
+    task.prompt_id = "continuation-prompt".into();
+    let db = Connection::open(f.root.join("state.sqlite")).unwrap();
+    db.execute(
+        "UPDATE agent_tasks SET prompt_id=?1,payload=?2 WHERE task_id=?3",
+        params![task.prompt_id, encode(&task).unwrap(), task.task_id],
+    )
+    .unwrap();
+    let pending = || {
+        f.store
+            .agent_tasks_to_sweep()
+            .unwrap()
+            .iter()
+            .any(|t| t.task_id == task.task_id)
+    };
+    assert!(pending());
+    f.apply(Operation::SourceOutcome {
+        room: task.room_id.clone(),
+        source: task.prompt_id.clone(),
+        occurrence: format!("task-terminal-{}", task.task_id),
+        success: false,
+        public_answer: None,
+        now: 2,
+    });
+    assert!(
+        pending(),
+        "a prompt's occurrence is not the task's terminal outcome"
+    );
+    f.apply(Operation::SourceOutcome {
+        room: task.room_id.clone(),
+        source: task.task_id.clone(),
+        occurrence: format!("task-terminal-{}", task.task_id),
+        success: false,
+        public_answer: None,
+        now: 3,
+    });
+    assert!(!pending());
+    let committed = Connection::open(f.root.join("state.sqlite")).unwrap();
+    assert_eq!(
+        committed
+            .query_row(
+                "SELECT terminal_outcome_recorded FROM agent_tasks WHERE task_id=?1",
+                [&task.task_id],
+                |r| r.get::<_, i32>(0)
+            )
+            .unwrap(),
+        1
+    );
+}
+
+#[test]
+fn terminal_outcome_and_cancellation_projection_commit_together() {
+    let f = Fixture::new();
+    f.begin("current");
+    let mut task = f.task();
+    task.state = ExecutionState::Cancelled;
+    let mut db = Connection::open(f.root.join("state.sqlite")).unwrap();
+    db.execute(
+        "UPDATE agent_tasks SET payload=?1 WHERE task_id=?2",
+        params![encode(&task).unwrap(), task.task_id],
+    )
+    .unwrap();
+    db.execute_batch("CREATE TRIGGER fail_terminal_projection BEFORE UPDATE OF terminal_outcome_recorded ON agent_tasks BEGIN SELECT RAISE(ABORT,'injected terminal projection failure'); END;").unwrap();
+    let outcome = || Operation::SourceOutcome {
+        room: task.room_id.clone(),
+        source: task.task_id.clone(),
+        occurrence: format!("task-terminal-{}", task.task_id),
+        success: false,
+        public_answer: None,
+        now: 2,
+    };
+    assert!(f.store.agent_lifecycle(outcome()).is_err());
+    assert_eq!(
+        db.query_row(
+            "SELECT COUNT(*) FROM agent_source_occurrences WHERE room_id=?1 AND source_id=?2",
+            params![task.room_id, task.task_id],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+    assert_eq!(f.store.agent_tasks_to_sweep().unwrap().len(), 1);
+    db.execute_batch("DROP TRIGGER fail_terminal_projection")
+        .unwrap();
+    f.apply(outcome());
+    assert!(f.store.agent_tasks_to_sweep().unwrap().is_empty());
+    db.execute_batch("DROP INDEX agent_tasks_cancelled_pending; ALTER TABLE agent_tasks DROP COLUMN terminal_outcome_recorded;").unwrap();
+    initialize(&mut db).unwrap();
+    assert!(
+        f.store.agent_tasks_to_sweep().unwrap().is_empty(),
+        "recorded outcomes must be backfilled on schema initialization"
     );
 }

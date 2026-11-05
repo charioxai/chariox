@@ -159,9 +159,8 @@ impl DurableKernelStateStore {
              SELECT rowid FROM agent_tasks WHERE state IN ('working','waiting','blocked') \
              UNION SELECT rowid FROM agent_tasks WHERE state IS NULL \
              UNION SELECT rowid FROM agent_tasks WHERE obligated=1 \
-             UNION SELECT rowid FROM agent_tasks AS t WHERE state='cancelled' AND NOT EXISTS(\
-              SELECT 1 FROM agent_source_occurrences AS o WHERE o.room_id=t.room_id AND o.source_id=t.task_id \
-              AND o.occurrence_id='task-terminal-'||t.task_id))",
+             UNION SELECT rowid FROM agent_tasks INDEXED BY agent_tasks_cancelled_pending \
+              WHERE state='cancelled' AND terminal_outcome_recorded=0)",
             [],
         )
     }
@@ -228,6 +227,8 @@ impl DurableKernelStateStore {
                 "SELECT task_id,room_id,agent_id,prompt_id,payload FROM agent_tasks WHERE {filter} ORDER BY rowid"
             ))
             .map_err(sql)?;
+        #[cfg(test)]
+        q.reset_status(rusqlite::StatementStatus::VmStep);
         let rows = q
             .query_map(values, |r| {
                 Ok((
@@ -239,12 +240,16 @@ impl DurableKernelStateStore {
                 ))
             })
             .map_err(sql)?;
-        rows.map(|row| {
-            let (id, room, agent, prompt, payload) = row.map_err(sql)?;
-            Ok(decode_task(&id, &room, &agent, &prompt, &payload)
-                .unwrap_or_else(|_| quarantine::task(id, room, agent, prompt)))
-        })
-        .collect()
+        let tasks = rows
+            .map(|row| {
+                let (id, room, agent, prompt, payload) = row.map_err(sql)?;
+                Ok(decode_task(&id, &room, &agent, &prompt, &payload)
+                    .unwrap_or_else(|_| quarantine::task(id, room, agent, prompt)))
+            })
+            .collect();
+        #[cfg(test)]
+        TASK_QUERY_STEPS.with(|n| n.set(q.get_status(rusqlite::StatementStatus::VmStep)));
+        tasks
     }
     /// The room's unfinished tasks and its `finished` most recent finished ones, in ledger
     /// order. Older finished tasks are not read, so a long room costs a read no more.
@@ -610,7 +615,7 @@ fn save(tx: &Transaction<'_>, task: &AgentTaskExecution) -> Result<(), DaemonErr
         .map_err(sql)?
         .map(|s| decode::<AgentTaskExecution>(&s))
         .transpose()?;
-    tx.execute("INSERT INTO agent_tasks VALUES(?1,?2,?3,?4,?5) ON CONFLICT(task_id) DO UPDATE SET prompt_id=excluded.prompt_id,payload=excluded.payload",params![task.task_id,task.room_id,task.agent_id,task.prompt_id,encode(task)?]).map_err(sql)?;
+    tx.execute("INSERT INTO agent_tasks(task_id,room_id,agent_id,prompt_id,payload) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(task_id) DO UPDATE SET prompt_id=excluded.prompt_id,payload=excluded.payload",params![task.task_id,task.room_id,task.agent_id,task.prompt_id,encode(task)?]).map_err(sql)?;
     outside::publish_task(tx, task, previous.as_ref())?;
     if matches!(task.state, ExecutionState::Done | ExecutionState::Cancelled) {
         tx.execute("UPDATE agent_registrations SET payload=json_set(payload,'$.live',json('false')) WHERE task_id=?1 AND json_valid(payload)", [&task.task_id]).map_err(sql)?;
@@ -643,6 +648,23 @@ fn index_task_lookups(db: &Connection) -> Result<(), DaemonError> {
                 .map_err(sql)?;
         }
     }
+    if !columns
+        .iter()
+        .any(|column| column == "terminal_outcome_recorded")
+    {
+        // A cancelled task and its terminal source commit separately. Remember that
+        // completion durably, so every later sweep reads only the pending work.
+        db.execute_batch(
+            "SAVEPOINT task_terminal_projection;
+             ALTER TABLE agent_tasks ADD COLUMN terminal_outcome_recorded INTEGER NOT NULL DEFAULT 0
+                 CHECK(terminal_outcome_recorded IN (0,1));
+             UPDATE agent_tasks AS t SET terminal_outcome_recorded=1 WHERE EXISTS(
+                 SELECT 1 FROM agent_source_occurrences o WHERE o.room_id=t.room_id
+                 AND o.source_id=t.task_id AND o.occurrence_id='task-terminal-'||t.task_id);
+             RELEASE task_terminal_projection;",
+        )
+        .map_err(sql)?;
+    }
     let registration_columns: Vec<String> = db
         .prepare("PRAGMA table_xinfo(agent_registrations)")
         .map_err(sql)?
@@ -659,6 +681,8 @@ fn index_task_lookups(db: &Connection) -> Result<(), DaemonError> {
     }
     db.execute_batch(
         "CREATE INDEX IF NOT EXISTS agent_tasks_state ON agent_tasks(state);
+         CREATE INDEX IF NOT EXISTS agent_tasks_cancelled_pending ON agent_tasks(task_id)
+             WHERE state='cancelled' AND terminal_outcome_recorded=0;
          CREATE INDEX IF NOT EXISTS agent_tasks_unfinished ON agent_tasks(room_id,agent_id)
              WHERE state IS NULL OR state NOT IN ('done','cancelled');
          CREATE INDEX IF NOT EXISTS agent_tasks_live ON agent_tasks(room_id,agent_id,state);
@@ -1215,3 +1239,6 @@ impl PendingLifecycleOutcome {
 
 #[cfg(test)]
 thread_local! { static UNFINISHED_TASK_STEPS: std::cell::Cell<i32> = const { std::cell::Cell::new(0) }; }
+
+#[cfg(test)]
+thread_local! { static TASK_QUERY_STEPS: std::cell::Cell<i32> = const { std::cell::Cell::new(0) }; }
