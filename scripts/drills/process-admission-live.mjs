@@ -10,6 +10,7 @@
 //   --login-file F [--agents 5] [--mem 7G] [--disk-gb 12] [--task a.txt:marker,b.txt:marker2] [--tui 1]
 //   [--codex-agents 5 --codex-profile-dir DIR] [--work-dir DIR] [--seed-peaks FILE]
 //   [--opencode-agents 3 --opencode-profile-dir DIR --opencode-model M] [--temp-idle-s 20]
+//   --tui-input 1: submit prompts and focus agents through the actual TUI keyboard; requires --tui 1.
 //   --scenario ui --ui-handoff FILE: the kernel, Room and agents are left to a browser drill (it reads FILE, sends the
 //   prompts itself and creates FILE.done when it is finished).
 // Run it under `unshare -m --propagation private` (the loop mount must not leak into other mount namespaces).
@@ -238,7 +239,24 @@ for (let n = 1; n <= agentCount; n++) {
 }
 const agent = agents[0]
 report.agent_ids = agents.map(a => a.id)
-const ask = async (text, target = agent) => { await rpc({ SubmitPrompt: { session_id: sessionId, attachment_id: att.attachment.id, target_agent_id: target.id, prompt: text, attachments: [] } }); note("prompt", { agent: target.id, text: text.slice(0, 120) }) }
+let tuiInputQueue = Promise.resolve()
+const ask = async (text, target = agent) => {
+  if (flags.get("--tui-input") === "1") {
+    const pending = tuiInputQueue.then(async () => {
+      assert(tui, "--tui-input requires --tui")
+      await focusInTui(target)
+      execFileSync("tmux", ["load-buffer", "-b", tmuxName, "-"], { input: text })
+      tmux("paste-buffer", "-p", "-d", "-b", tmuxName, "-t", tmuxName)
+      tmux("send-keys", "-t", tmuxName, "Enter")
+      note("tui-prompt", { agent: target.id, text: text.slice(0, 120) })
+      await delay(300)
+    })
+    tuiInputQueue = pending
+    return pending
+  }
+  await rpc({ SubmitPrompt: { session_id: sessionId, attachment_id: att.attachment.id, target_agent_id: target.id, prompt: text, attachments: [] } })
+  note("prompt", { agent: target.id, text: text.slice(0, 120) })
+}
 
 // The follower: an outside holder (its own process tree, the `chariox` command) that gets a grant, follows the
 // agents and logs every record with the time it received it.
@@ -277,6 +295,16 @@ if (flags.has("--tui")) {
     `env -i 'PATH=${kernelEnv.PATH}' 'HOME=${kernelEnv.HOME}' 'TERM=xterm-256color' 'CHARIOX_HOME=${kernelEnv.CHARIOX_HOME}' 'CHARIOX_DAEMON_SOCKET=${kernelEnv.CHARIOX_DAEMON_SOCKET}' 'XDG_CONFIG_HOME=${kernelEnv.XDG_CONFIG_HOME}' bun ${resolve(cliWrapper)} --kernel-url ws://127.0.0.1:${ports[0]}/kernel --session ${sessionId} --client-id tui-drill`)
   tui = true
   note("tui-start", { tmux: tmuxName })
+}
+const focusInTui = async target => {
+  await until(() => tmux("capture-pane", "-p", "-t", tmuxName).includes("Write your next prompt here"), "TUI prompt editor", 60000)
+  tmux("send-keys", "-t", tmuxName, "-l", `/agent focus ${target.alias}`)
+  tmux("send-keys", "-t", tmuxName, "Enter")
+  await until(async () => {
+    const session = (await rpc({ GetSessionState: { session_id: sessionId } })).SessionState.session
+    return session.focused_agent_id === target.id && tmux("capture-pane", "-p", "-t", tmuxName).includes(`${target.alias} •`)
+  }, `TUI focus ${target.alias}`, 60000)
+  writeFileSync(join(tuiScreens, `focus-${target.alias}-${Date.now()}.txt`), tmux("capture-pane", "-p", "-t", tmuxName))
 }
 let tuiShots = 0, lastScreen = ""
 const watchTui = async () => {
