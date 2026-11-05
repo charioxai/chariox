@@ -1,3 +1,4 @@
+use crate::runtime::bounded_process::BoundedChildExt as _;
 use std::ffi::OsString;
 use std::path::Path;
 
@@ -217,7 +218,7 @@ fn parse_login_path(output: &[u8]) -> Result<OsString, &'static str> {
 fn stop_probe(child: &mut Child, pid: u32) {
     stop_process_group(pid);
     let _ = child.kill();
-    let _ = child.wait();
+    let _ = child.bounded_wait();
 }
 
 #[cfg(unix)]

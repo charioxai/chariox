@@ -2,6 +2,7 @@ use super::workspace_live_sync_permission::{
     workspace_live_sync_permission_interaction, workspace_live_sync_tool_requires_popup,
 };
 use super::*;
+use crate::runtime::bounded_process::BoundedCommandExt as _;
 
 impl KernelRuntimeState {
     pub(super) async fn workspace_live_sync_workspace_for_provider_run(
@@ -110,7 +111,7 @@ fn workspace_live_sync_git_toplevel(path: &Path) -> Option<PathBuf> {
         .arg(path)
         .arg("rev-parse")
         .arg("--show-toplevel")
-        .output()
+        .bounded_output()
         .ok()?;
     if !output.status.success() {
         return None;

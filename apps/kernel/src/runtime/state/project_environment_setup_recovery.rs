@@ -1,3 +1,4 @@
+use crate::runtime::bounded_process::BoundedChildExt as _;
 use std::fs::{self, File, OpenOptions};
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -464,7 +465,7 @@ pub(in crate::runtime::state::project_environment_setup) fn wait_child_or_cancel
                 process_group_settled: false,
             });
         }
-        let status = child.wait().map_err(|error| ProcessRunError {
+        let status = child.bounded_wait().map_err(|error| ProcessRunError {
             message: format!("validation child could not be reaped: {error}"),
             process_group_settled: false,
         })?;

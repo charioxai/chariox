@@ -1,4 +1,5 @@
 use super::*;
+use crate::runtime::bounded_process::BoundedChildExt as _;
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -1388,19 +1389,19 @@ pub(super) fn run_worker_validation_command(
     let mut child = command.spawn().map_err(|error| error.to_string())?;
     let Some(stdout) = child.stdout.take() else {
         let _ = child.kill();
-        let _ = child.wait();
+        let _ = child.bounded_wait();
         return Err("worker validation command did not provide stdout capture".to_string());
     };
     let Some(stderr) = child.stderr.take() else {
         let _ = child.kill();
-        let _ = child.wait();
+        let _ = child.bounded_wait();
         return Err("worker validation command did not provide stderr capture".to_string());
     };
     let stdout_reader = match spawn_validation_output_reader(stdout) {
         Ok(reader) => reader,
         Err(error) => {
             terminate_validation_process_group(&mut child);
-            let _ = child.wait();
+            let _ = child.bounded_wait();
             return Err(error);
         }
     };
@@ -1408,7 +1409,7 @@ pub(super) fn run_worker_validation_command(
         Ok(reader) => reader,
         Err(error) => {
             terminate_validation_process_group(&mut child);
-            let _ = child.wait();
+            let _ = child.bounded_wait();
             return match settle_validation_output_readers(
                 Some(stdout_reader),
                 None,
@@ -1437,7 +1438,7 @@ pub(super) fn run_worker_validation_command(
         Ok(status) => status,
         Err(error) => {
             terminate_validation_process_group(&mut child);
-            let _ = child.wait();
+            let _ = child.bounded_wait();
             return match settle_validation_output_readers(
                 Some(stdout_reader),
                 Some(stderr_reader),

@@ -1,4 +1,5 @@
 //! Windows pipe producers start suspended so no descendant can escape job assignment.
+use crate::runtime::bounded_process::BoundedChildExt as _;
 use std::ffi::c_void;
 use std::io;
 use std::os::windows::io::AsRawHandle;
@@ -106,6 +107,26 @@ impl Process {
         Ok(process)
     }
 
+    pub(crate) fn from_child(mut child: Child) -> io::Result<Self> {
+        let job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+        if job.is_null() {
+            let error = io::Error::last_os_error();
+            crate::runtime::child_shutdown::stop(&mut child, "capture_job_setup")?;
+            return Err(error);
+        }
+        let mut process = Self {
+            child,
+            job: OwnedHandle(job),
+            stopped: false,
+        };
+        if unsafe { AssignProcessToJobObject(process.job.0, process.child.as_raw_handle()) } == 0 {
+            let error = io::Error::last_os_error();
+            process.stop()?;
+            return Err(error);
+        }
+        Ok(process)
+    }
+
     pub(crate) fn stop(&mut self) -> io::Result<()> {
         if self.stopped {
             return Ok(());
@@ -116,7 +137,7 @@ impl Process {
             Ok(())
         };
         let _ = self.child.kill();
-        let reaped = self.child.wait().map(|_| ());
+        let reaped = self.child.bounded_wait().map(|_| ());
         self.stopped = true;
         cleanup.and(reaped)
     }

@@ -1,3 +1,4 @@
+use crate::runtime::bounded_process::BoundedCommandExt as _;
 use std::fs::OpenOptions;
 use std::path::Path;
 use std::process::Stdio;
@@ -33,7 +34,7 @@ pub(super) fn digest(path: &Path, operation: &'static str) -> Result<(u64, Strin
         .stdin(Stdio::from(file.try_clone().map_err(|e| {
             error(format!("failed to retain slice archive pin: {e}"))
         })?))
-        .output()
+        .bounded_output()
         .map_err(|e| {
             error(format!(
                 "failed to supervise slice archive verification: {e}"

@@ -1,3 +1,5 @@
+use crate::runtime::bounded_process::BoundedChildExt as _;
+use crate::runtime::bounded_process::BoundedCommandExt as _;
 use std::collections::BTreeSet;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
@@ -430,7 +432,7 @@ pub fn run_local_docker_slice_action(
             command
                 .stdout(Stdio::from(log_file))
                 .stderr(Stdio::from(stderr_log))
-                .status()
+                .bounded_status()
                 .map_err(|error| DaemonError::LocalTransport {
                     operation: "slice.local_docker",
                     message: format!(
@@ -540,7 +542,7 @@ fn bounded_github_token(
         None => {
             let _ = crate::runtime::process_health::terminate_process_tree(child.id());
             let _ = child.kill();
-            let _ = child.wait();
+            let _ = child.bounded_wait();
             let _ = reader.join();
             return None;
         }
@@ -698,7 +700,7 @@ pub fn start_local_docker_slice_provider_login(
     configure_local_docker_slice_command(&mut command, record, None, options, false)?;
     let output = broker::run_provisioner(&command, "start-provider-login", &[])
         .map(|response| response.map(|response| response.output))
-        .unwrap_or_else(|| command.output())
+        .unwrap_or_else(|| command.bounded_output())
         .map_err(|error| DaemonError::LocalTransport {
             operation: "slice.auth.login",
             message: format!(
@@ -812,7 +814,7 @@ pub fn inspect_local_docker_slice_provider_auth(
     for (summary_provider, path) in checks {
         let status = docker_command()
             .args(["exec", "-u", "slice", &container, "test", "-s", path])
-            .status()
+            .bounded_status()
             .map_err(|error| DaemonError::LocalTransport {
                 operation: "slice.auth.inspect",
                 message: format!(
@@ -936,7 +938,7 @@ pub fn inspect_local_docker_slice_host_runtime(
             "{{.State.Running}} {{.State.Status}}",
             &container,
         ])
-        .output();
+        .bounded_output();
     let Ok(output) = output else {
         return super::SliceHostRuntimeState::Unknown;
     };
@@ -974,7 +976,7 @@ pub fn inspect_local_docker_slice_relay_endpoint(
             ".relay_url",
             "/home/slice/.chariox/daemon/config.json",
         ])
-        .output()
+        .bounded_output()
         .ok()?;
     if !output.status.success() {
         return None;
@@ -1521,7 +1523,7 @@ pub(super) fn ensure_local_docker_slice_ports_available(
 pub(super) fn local_docker_container_is_running(record: &SliceRecord) -> bool {
     let output = docker_command()
         .args(["ps", "--format", "{{.Names}}"])
-        .output();
+        .bounded_output();
     let Ok(output) = output else {
         return false;
     };
@@ -1578,7 +1580,7 @@ pub(super) fn run_local_docker_slice_screen(
             "/opt/chariox-slice/slice-screen.sh",
             action,
         ])
-        .status()
+        .bounded_status()
         .map_err(|error| DaemonError::LocalTransport {
             operation,
             message: format!(
@@ -1710,7 +1712,7 @@ pub(super) fn ensure_host_docker_ready() -> Result<(), DaemonError> {
             .arg("info")
             .stdout(Stdio::null())
             .stderr(Stdio::null())
-            .status()
+            .bounded_status()
             .map_err(|error| DaemonError::LocalTransport {
                 operation: "slice.local_docker.broker",
                 message: format!("managed slice Docker broker is unavailable: {error}"),
@@ -1740,7 +1742,7 @@ pub(super) fn ensure_host_docker_ready() -> Result<(), DaemonError> {
             .arg("start")
             .stdout(Stdio::null())
             .stderr(Stdio::null())
-            .status();
+            .bounded_status();
         if wait_for_docker_ready() {
             return Ok(());
         }
@@ -1754,7 +1756,7 @@ pub(super) fn ensure_host_docker_ready() -> Result<(), DaemonError> {
                 .args(["-ga", "Docker"])
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
-                .status();
+                .bounded_status();
             if wait_for_docker_ready() {
                 return Ok(());
             }
@@ -1787,7 +1789,7 @@ fn docker_is_ready() -> bool {
         .arg("info")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .status()
+        .bounded_status()
         .is_ok_and(|status| status.success())
 }
 
@@ -1796,7 +1798,7 @@ fn command_exists(command: &str) -> bool {
         .args(["-c", "command -v \"$1\" >/dev/null 2>&1", "sh", command])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .status()
+        .bounded_status()
         .is_ok_and(|status| status.success())
 }
 

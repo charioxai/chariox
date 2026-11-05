@@ -1,3 +1,4 @@
+use crate::runtime::bounded_process::BoundedCommandExt as _;
 use std::collections::BTreeMap;
 use std::env;
 use std::fs;
@@ -390,7 +391,7 @@ pub(super) fn runtime_display_machine_name() -> Option<String> {
 fn command_output(command: &str, args: &[&str]) -> Option<String> {
     let output = crate::process_spawn::command(command)
         .args(args)
-        .output()
+        .bounded_output()
         .ok()?;
     if !output.status.success() {
         return None;

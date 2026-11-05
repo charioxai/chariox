@@ -2,6 +2,7 @@
 use super::project_environment_export::environment_failure;
 use super::*;
 use crate::project_environment::*;
+use crate::runtime::bounded_process::BoundedCommandExt as _;
 use crate::session::{
     RuntimeInteraction, RuntimeInteractionChoice, RuntimeInteractionChoiceStyle,
     RuntimeInteractionCustomChoice, RuntimeInteractionKind, RuntimeInteractionLevel,
@@ -394,7 +395,7 @@ pub(super) fn project_environment_code_summary(
                     .arg("-C")
                     .arg(&repository.worktree_path)
                     .args(args)
-                    .output()
+                    .bounded_output()
                     .ok()?;
                 if !output.status.success() || output.stdout.len() > 4 * 1024 * 1024 {
                     return None;

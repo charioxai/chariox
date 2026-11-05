@@ -38,6 +38,7 @@ async fn ordinary_submission_retries_failed_project_promotion_in_fifo_order() {
 
 async fn run_case(case: Case) {
     use std::os::unix::fs::PermissionsExt;
+    #[cfg(test)]
     let _env = crate::env_lock::lock();
     let workspace = crate::test_support::TestWorktree::new("queued-project-native-refresh");
     let mut config = crate::config::DaemonConfig::for_tests();

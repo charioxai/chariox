@@ -1,3 +1,4 @@
+use crate::runtime::bounded_process::BoundedCommandExt as _;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -22,6 +23,32 @@ pub(crate) struct ProviderProcessReapSummary {
     pub(crate) orphan_processes_reaped: usize,
 }
 
+struct LaunchedProcess<'a> {
+    app: &'a mut DaemonApp,
+    run_id: String,
+    committed: bool,
+}
+
+impl LaunchedProcess<'_> {
+    fn commit(mut self) {
+        self.committed = true;
+    }
+}
+
+impl Drop for LaunchedProcess<'_> {
+    fn drop(&mut self) {
+        if !self.committed {
+            if let Err(error) = ProviderProcessTracker::new(self.app).remove_run(&self.run_id) {
+                crate::logging::error_with_fields(
+                    "daemon.provider",
+                    "uncommitted provider spawn cleanup failed",
+                    serde_json::json!({"operation": "spawn_rollback", "provider_run_id": self.run_id, "error": error.to_string()}),
+                );
+            }
+        }
+    }
+}
+
 impl<'a> ProviderLaunchProcessRuntime<'a> {
     pub(crate) fn new(app: &'a mut DaemonApp) -> Self {
         Self { app }
@@ -43,8 +70,15 @@ impl<'a> ProviderLaunchProcessRuntime<'a> {
         let store = self.app.providers.clone();
         store
             .with_current_live_launch(run, |current| {
-                self.spawn_authorized_launch(current, credentials)
+                let mut launched = LaunchedProcess {
+                    app: &mut *self.app,
+                    run_id: current.id().to_string(),
+                    committed: false,
+                };
+                Self::spawn_authorized_launch(&mut *launched.app, current, credentials)?;
+                Ok(launched)
             })?
+            .map(LaunchedProcess::commit)
             .ok_or_else(|| DaemonError::InvalidProviderRunState {
                 provider_run_id: run.id().into(),
                 state: store
@@ -56,7 +90,7 @@ impl<'a> ProviderLaunchProcessRuntime<'a> {
     }
 
     fn spawn_authorized_launch(
-        &mut self,
+        app: &mut DaemonApp,
         run: &RuntimeProviderRun,
         credentials: &crate::provider::ProviderCredentialEnvironment,
     ) -> Result<(), DaemonError> {
@@ -81,10 +115,8 @@ impl<'a> ProviderLaunchProcessRuntime<'a> {
         if run.endpoint_mode() != AgentEndpointMode::Managed {
             return Ok(());
         }
-        self.app
-            .pty
-            .spawn_for_run_with_credentials(run, credentials)?;
-        ProviderProcessTracker::new(self.app).register_managed_run(run)
+        app.pty.spawn_for_run_with_credentials(run, credentials)?;
+        ProviderProcessTracker::new(app).register_managed_run(run)
     }
 
     pub(crate) fn remove_run(
@@ -542,7 +574,7 @@ fn owned_orphan_provider_process_ids(
 ) -> Vec<u32> {
     let output = match crate::process_spawn::command("ps")
         .args(["-axo", "pid=,ppid=,pgid=,etimes=,command="])
-        .output()
+        .bounded_output()
     {
         Ok(output) => output,
         Err(_) => return Vec::new(),

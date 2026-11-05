@@ -10,6 +10,7 @@
 //! only on a direct Docker engine and predicts the flatten for disk admission.
 
 use crate::error::DaemonError;
+use crate::runtime::bounded_process::BoundedCommandExt as _;
 
 use super::broker::{self, docker_command};
 
@@ -45,7 +46,7 @@ pub(super) fn capture_will_flatten(container: &str) -> bool {
 }
 
 fn docker_stdout(args: &[&str]) -> Option<String> {
-    let output = docker_command().args(args).output().ok()?;
+    let output = docker_command().args(args).bounded_output().ok()?;
     output
         .status
         .success()
@@ -65,7 +66,7 @@ pub(super) fn commit_container_bounded(
     }
     let status = docker_command()
         .args(["commit", container, image_ref])
-        .status()
+        .bounded_status()
         .map_err(|error| DaemonError::LocalTransport {
             operation,
             message: format!("failed to commit slice container `{container}`: {error}"),
@@ -106,7 +107,7 @@ fn flatten_container_into_image(
         command.env_remove("DOCKER_CONTEXT");
     }
     let status = command
-        .status()
+        .bounded_status()
         .map_err(|error| DaemonError::LocalTransport {
             operation,
             message: format!("failed to flatten slice container `{container}`: {error}"),

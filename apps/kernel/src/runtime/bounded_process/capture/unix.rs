@@ -26,8 +26,12 @@ pub(super) struct Process {
 impl Process {
     pub(super) fn spawn(command: &mut Command) -> io::Result<Self> {
         command.process_group(0);
+        Self::from_child(command.spawn()?)
+    }
+
+    pub(super) fn from_child(child: Child) -> io::Result<Self> {
         let process = Self {
-            child: command.spawn()?,
+            child,
             stopped: false,
         };
         for fd in process.pipe_fds() {
@@ -71,7 +75,7 @@ impl Process {
             return Err(io::Error::other("refusing to signal a protected process"));
         }
         let _ = self.child.kill();
-        let reaped = self.child.wait().map(|_| ());
+        let reaped = crate::runtime::child_shutdown::stop(&mut self.child, "capture_cleanup");
         self.stopped = true;
         cleanup.and(reaped)
     }
@@ -79,6 +83,12 @@ impl Process {
 
 impl Drop for Process {
     fn drop(&mut self) {
-        let _ = self.stop();
+        if let Err(error) = self.stop() {
+            crate::logging::error_with_fields(
+                "subprocess",
+                "capture cleanup failed",
+                serde_json::json!({"operation": "capture_cleanup", "pid": self.child.id(), "error": error.to_string()}),
+            );
+        }
     }
 }

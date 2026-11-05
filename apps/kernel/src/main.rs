@@ -123,31 +123,10 @@ fn main() -> Result<(), chariox_kernel::DaemonError> {
     chariox_kernel::hot_reload::remember_start();
     chariox_kernel::slice::initialize_managed_docker_broker();
     chariox_kernel::runtime_transport::initialize_kernel_local_auth_from_env()?;
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .thread_stack_size(chariox_kernel::runtime_transport::KERNEL_RUNTIME_THREAD_STACK_SIZE)
-        .build()
-        .map_err(|error| chariox_kernel::DaemonError::LocalTransport {
-            operation: "daemon runtime",
-            message: format!("failed to start Tokio runtime: {error}"),
-        })?;
-    runtime.block_on(async_main())
-}
-
-async fn async_main() -> Result<(), chariox_kernel::DaemonError> {
-    let process_started = Instant::now();
-    if let Ok(log_path) = chariox_kernel::logging::init_process_logger("daemon") {
-        chariox_kernel::logging::info_with_fields(
-            "daemon.main",
-            "daemon process starting",
-            serde_json::json!({
-                "log_path": log_path.display().to_string(),
-            }),
-        );
-    }
+    // Consume bootstrap-only environment before runtime/logger workers start.
     #[cfg(unix)]
     chariox_kernel::hot_reload::receive();
-    chariox_kernel::managed_context::kernel::scavenge_source_snapshots();
+    let process_started = Instant::now();
     let config_started = Instant::now();
     let config = DaemonConfig::load_from_env();
     for name in [
@@ -157,11 +136,38 @@ async fn async_main() -> Result<(), chariox_kernel::DaemonError> {
     ] {
         std::env::remove_var(name);
     }
+    let config_load_ms = config_started.elapsed().as_millis();
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_stack_size(chariox_kernel::runtime_transport::KERNEL_RUNTIME_THREAD_STACK_SIZE)
+        .build()
+        .map_err(|error| chariox_kernel::DaemonError::LocalTransport {
+            operation: "daemon runtime",
+            message: format!("failed to start Tokio runtime: {error}"),
+        })?;
+    runtime.block_on(async_main(config, process_started, config_load_ms))
+}
+
+async fn async_main(
+    config: DaemonConfig,
+    process_started: Instant,
+    config_load_ms: u128,
+) -> Result<(), chariox_kernel::DaemonError> {
+    if let Ok(log_path) = chariox_kernel::logging::init_process_logger("daemon") {
+        chariox_kernel::logging::info_with_fields(
+            "daemon.main",
+            "daemon process starting",
+            serde_json::json!({
+                "log_path": log_path.display().to_string(),
+            }),
+        );
+    }
+    chariox_kernel::managed_context::kernel::scavenge_source_snapshots();
     chariox_kernel::logging::info_with_fields(
         "daemon.startup",
         "daemon config loaded",
         serde_json::json!({
-            "config_load_ms": config_started.elapsed().as_millis(),
+            "config_load_ms": config_load_ms,
             "process_elapsed_ms": process_started.elapsed().as_millis(),
             "user_config_path": config.user_config_path().display().to_string(),
             "relay_configured": config.relay_url.is_some() && config.relay_token.is_some(),

@@ -1,5 +1,6 @@
 //! MP-07 / MP-08 / MP-11: owner admission, approved releases and SSH deployment.
 use crate::local::{LocalDaemonRequest, LocalDaemonResponse, SshMachineResult};
+use crate::runtime::bounded_process::AsyncChildOwner as _;
 use crate::runtime::command::KernelCommand;
 use crate::{DaemonConfig, DaemonError};
 use serde::{Deserialize, Serialize};
@@ -292,7 +293,7 @@ async fn deploy(state: &Path, input: Value) -> Result<Value, DaemonError> {
     drop(stdin);
     let output = tokio::time::timeout(
         std::time::Duration::from_secs(570),
-        child.wait_with_output(),
+        child.output_with_deadline(std::time::Duration::from_secs(570)),
     )
     .await
     .map_err(|_| error("SSH install timed out"))?

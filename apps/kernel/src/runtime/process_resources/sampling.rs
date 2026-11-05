@@ -1,3 +1,4 @@
+use crate::runtime::bounded_process::BoundedCommandExt as _;
 use crate::runtime::kernel_access::process::{inspect, ProcessIdentity};
 use std::collections::BTreeMap;
 
@@ -259,12 +260,12 @@ impl ProcessTree {
         // Once the original root is gone, only previously observed descendants
         // can remain owned. Never adopt a replacement process with its PID.
         Ok(rows
-            .into_iter()
+            .iter()
             .filter(|row| self.owned.contains_key(&row.pid))
             .map(|row| ProcessSample {
                 process_id: self.ids[&row.pid].clone(),
                 pid: row.pid,
-                command: row.command,
+                command: row.command.clone(),
                 resident_set_bytes: row.rss,
                 cpu_millis: row.cpu,
                 disk_io_bytes: super::admission::disk_io(row.pid)
@@ -401,7 +402,7 @@ impl ProcessTree {
         if self.marker.is_none() {
             return true;
         }
-        if !read_process_rows().is_ok_and(|rows| self.observe(&rows).is_ok()) {
+        if !process_rows().is_ok_and(|rows| self.observe(&rows).is_ok()) {
             return false;
         }
         self.empty_since
@@ -414,7 +415,7 @@ impl ProcessTree {
         before_root_stop: impl FnOnce(),
         force_domain: impl FnOnce(),
     ) -> Result<Vec<String>, String> {
-        let rows = read_process_rows()?;
+        let rows = process_rows()?;
         self.observe(&rows)?;
         let target = match process_id {
             None => self.root,
@@ -438,7 +439,7 @@ impl ProcessTree {
         };
         loop {
             let before = selected.len();
-            for row in &rows {
+            for row in rows.iter() {
                 if selected.contains(&row.parent) && self.owned.contains_key(&row.pid) {
                     selected.insert(row.pid);
                 }
@@ -704,7 +705,7 @@ mod ownership_tests {
     }
 }
 #[derive(Clone)]
-struct Row {
+pub(super) struct Row {
     pid: u32,
     parent: u32,
     rss: u64,
@@ -766,34 +767,100 @@ fn shortage(error: &std::io::Error) -> Option<i32> {
     }
 }
 
-type CachedRows = (std::time::Instant, Result<Vec<Row>, SamplingError>);
-
-/// One shared sample avoids a ps process for every watchdog tick.
-fn cached_rows() -> std::sync::MutexGuard<'static, CachedRows> {
-    static ROWS: std::sync::OnceLock<std::sync::Mutex<CachedRows>> = std::sync::OnceLock::new();
-    ROWS.get_or_init(|| {
-        std::sync::Mutex::new((
-            std::time::Instant::now() - std::time::Duration::from_secs(1),
-            Err(SamplingError::Unusable("process sample unavailable".into())),
-        ))
-    })
-    .lock()
-    .unwrap_or_else(|e| e.into_inner())
+// The sampler owns ps and publishes a new immutable table. Readers never wait
+// for process creation, pipe I/O or a previous reader's refresh.
+struct RowSnapshot {
+    rows: Option<std::sync::Arc<Vec<Row>>>,
+    error: Option<SamplingError>,
 }
 
-fn process_rows() -> Result<Vec<Row>, SamplingError> {
-    let mut cache = cached_rows();
-    if cache.0.elapsed() >= std::time::Duration::from_millis(200) {
-        cache.1 = read_process_rows();
-        cache.0 = std::time::Instant::now();
+struct Sampler {
+    snapshot: std::sync::Arc<crate::runtime::checked_lock::CheckedMutex<RowSnapshot>>,
+    stop: std::sync::mpsc::Sender<()>,
+    worker: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Sampler {
+    fn new(mut read: impl FnMut() -> Result<Vec<Row>, SamplingError> + Send + 'static) -> Self {
+        let snapshot = std::sync::Arc::new(crate::runtime::checked_lock::CheckedMutex::new(
+            "process_rows_snapshot",
+            RowSnapshot {
+                rows: None,
+                error: None,
+            },
+        ));
+        let published = std::sync::Arc::clone(&snapshot);
+        let (stop, stopping) = std::sync::mpsc::channel();
+        let worker = std::thread::Builder::new().name("chariox-sampler".into()).spawn(move || {
+            let mut failed = false;
+            loop {
+                let result = read();
+                let mut state = published.lock().unwrap_or_else(|e| e.into_inner());
+                match result {
+                    Ok(rows) => {
+                        state.rows = Some(std::sync::Arc::new(rows));
+                        state.error = None;
+                        failed = false;
+                    }
+                    Err(error) => {
+                        state.error = Some(error.clone());
+                        drop(state);
+                        if !failed {
+                            crate::logging::warn_with_fields("process_resources.sampler", "process sample failed; retaining the last good snapshot", serde_json::json!({"operation": "ps", "error": error.to_string()}));
+                            failed = true;
+                        }
+                        if !matches!(stopping.recv_timeout(std::time::Duration::from_millis(200)), Err(std::sync::mpsc::RecvTimeoutError::Timeout)) { break; }
+                        continue;
+                    }
+                }
+                drop(state);
+                if !matches!(stopping.recv_timeout(std::time::Duration::from_millis(200)), Err(std::sync::mpsc::RecvTimeoutError::Timeout)) { break; }
+            }
+        }).expect("process sampler thread must start");
+        Self {
+            snapshot,
+            stop,
+            worker: Some(worker),
+        }
     }
-    cache.1.clone()
+
+    fn rows(&self) -> Result<std::sync::Arc<Vec<Row>>, SamplingError> {
+        let state = self.snapshot.lock().unwrap_or_else(|e| e.into_inner());
+        state.rows.clone().ok_or_else(|| {
+            state
+                .error
+                .clone()
+                .unwrap_or(SamplingError::Short(libc::EAGAIN))
+        })
+    }
+}
+
+impl Drop for Sampler {
+    fn drop(&mut self) {
+        let _ = self.stop.send(());
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
+fn sampler() -> &'static Sampler {
+    static SAMPLER: std::sync::OnceLock<Sampler> = std::sync::OnceLock::new();
+    SAMPLER.get_or_init(|| Sampler::new(read_process_rows))
+}
+
+pub(super) fn process_rows() -> Result<std::sync::Arc<Vec<Row>>, SamplingError> {
+    #[cfg(test)]
+    if let Some(errno) = ps_failure::injected() {
+        return Err(SamplingError::Short(errno));
+    }
+    sampler().rows()
 }
 
 /// The process groups of what `root` started and still runs, read now rather
 /// than from the sampler's last table.
 pub(super) fn live_groups(root: u32) -> Vec<u32> {
-    let rows = match read_process_rows() {
+    let rows = match process_rows() {
         Ok(rows) => rows,
         Err(error) => {
             crate::logging::error_with_fields(
@@ -808,7 +875,7 @@ pub(super) fn live_groups(root: u32) -> Vec<u32> {
     let mut grown = true;
     while grown {
         grown = false;
-        for row in &rows {
+        for row in rows.iter() {
             grown |= below.contains(&row.parent) && below.insert(row.pid);
         }
     }
@@ -825,11 +892,12 @@ pub(super) fn live_groups(root: u32) -> Vec<u32> {
 }
 
 pub(super) fn ensure_available() -> std::io::Result<()> {
-    process_rows().map(|_| ()).map_err(|error| match error {
-        SamplingError::Short(errno) => std::io::Error::from_raw_os_error(errno),
-        SamplingError::Ended => std::io::Error::other(SamplingError::Ended.to_string()),
-        SamplingError::Unusable(message) => std::io::Error::other(message),
-    })
+    #[cfg(test)]
+    if let Some(errno) = ps_failure::injected() {
+        return Err(std::io::Error::from_raw_os_error(errno));
+    }
+    let _ = sampler();
+    super::validate_executable("ps", None, std::env::var_os("PATH").as_deref())
 }
 
 fn run_ps() -> std::io::Result<std::process::Output> {
@@ -840,7 +908,7 @@ fn run_ps() -> std::io::Result<std::process::Output> {
     crate::process_spawn::command("ps")
         .env("LC_ALL", "C")
         .args(["-axo", "pid=,ppid=,rss=,pcpu=,etime=,lstart=,comm="])
-        .output()
+        .output_with_deadline(std::time::Duration::from_secs(1))
 }
 
 /// Makes starting `ps` fail with an errno, as a kernel at its descriptor limit does.
@@ -855,7 +923,6 @@ pub(super) mod ps_failure {
     /// Also forgets the table read meanwhile, so the next read sees the change.
     pub(in crate::runtime::process_resources) fn set(errno: Option<i32>) {
         *ERRNO.lock().unwrap_or_else(|e| e.into_inner()) = errno;
-        super::cached_rows().0 = std::time::Instant::now() - std::time::Duration::from_secs(1);
     }
 }
 
@@ -975,5 +1042,69 @@ mod marker_cache_tests {
         let _ = job.wait();
         assert!(kept_skipping, "a process already read was read again");
         assert!(adopted, "a marked process on a reused PID was skipped");
+    }
+}
+
+#[cfg(all(test, unix))]
+mod snapshot_stall_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn stalled_ps_keeps_last_snapshot_readable_and_is_reaped() {
+        crate::test_support::isolated_env_test!();
+        let root = crate::test_support::TestWorktree::new("stuck-ps");
+        let pid_file = root.path().join("ps.pid");
+        let target = pid_file.clone();
+        let mut calls = 0;
+        let sampler = Sampler::new(move || {
+            calls += 1;
+            if calls == 1 {
+                return Ok(vec![Row {
+                    pid: 42,
+                    parent: 2,
+                    rss: 1,
+                    cpu: 0,
+                    age_ms: 1,
+                    birth: "fixture".into(),
+                    sampled_at_ms: 1,
+                    command: "fixture".into(),
+                }]);
+            }
+            if calls > 2 {
+                return Err(SamplingError::Ended);
+            }
+            let script = format!("import os,signal,time,pathlib; signal.signal(signal.SIGTERM,signal.SIG_IGN); pathlib.Path({:?}).write_text(str(os.getpid())); time.sleep(600)", target.to_string_lossy());
+            let result = crate::process_spawn::command("python3")
+                .args(["-c", &script])
+                .output_with_deadline(Duration::from_millis(500));
+            assert!(result.is_err(), "the ps stand-in must hit its deadline");
+            Err(SamplingError::Ended)
+        });
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !pid_file.exists() {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let pid: u32 = std::fs::read_to_string(&pid_file).unwrap().parse().unwrap();
+        let start = Instant::now();
+        for _ in 0..100 {
+            assert_eq!(sampler.rows().unwrap()[0].pid, 42);
+        }
+        assert!(start.elapsed() < Duration::from_millis(100));
+        while sampler.snapshot.lock().unwrap().error.is_none() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let timed_out = sampler.snapshot.lock().unwrap().error.is_some();
+        // Keep the fail-first form safe if the owner regresses to an unbounded wait.
+        if !timed_out && pid > 1 && pid <= i32::MAX as u32 {
+            unsafe {
+                libc::kill(pid as i32, libc::SIGKILL);
+            }
+        }
+        assert_eq!(sampler.rows().unwrap()[0].pid, 42);
+        drop(sampler);
+        assert!(!crate::runtime::process_health::process_running(pid));
+        assert!(timed_out, "stalled ps did not hit its process deadline");
     }
 }

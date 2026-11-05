@@ -1,3 +1,4 @@
+use crate::runtime::bounded_process::BoundedCommandExt as _;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -127,7 +128,10 @@ fn try_capture_to(path: &Path) -> Result<bool, String> {
 }
 
 fn run_optional_command(command: &str, args: &[String]) -> Result<bool, String> {
-    match crate::process_spawn::command(command).args(args).output() {
+    match crate::process_spawn::command(command)
+        .args(args)
+        .bounded_output()
+    {
         Ok(output) if output.status.success() => Ok(true),
         Ok(output) => Err(String::from_utf8_lossy(&output.stderr).into_owned()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),

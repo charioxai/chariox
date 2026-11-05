@@ -178,6 +178,17 @@ be replaced when the agent's previous run is unchanged; simultaneous starts for
 one agent return an explicit retry error. Waiting-room target computation also
 runs outside its cache lock.
 
+The PTY spawn boundary uses a separate execution permit from the general run
+actor lane, avoiding re-entry of an already held actor permit. A session permit
+orders spawn/commit against session retirement; a run permit orders exec/attach
+against per-run retirement and replacement. Only the semaphore references are
+read under the lane-map mutex. Waiting occurs outside STORE with a 15-second
+bound. The spawn takes a live snapshot, releases STORE, performs exec/attachment,
+then confirms the snapshot. An uncommitted process guard removes the child on
+failure or stale confirmation before releasing the execution permits. Direct
+app spawn callers use the same boundary. Session retirement advances an internal
+epoch, so a plan that was still preparing cannot publish after session teardown.
+
 The checked-lock ranks below are executable in tests. A reverse edge or recursive
 acquisition panics before waiting. Production records holder/waiter call sites,
 thread names, and durations. The independent watchdog logs one notice per stall
@@ -193,6 +204,7 @@ handler exceeding that deadline is dropped and reconnected.
 | `provider_move_admission` | 20 | clone move-store reference |
 | `provider_service` | 30 | reserve/read/commit run state |
 | `process_rows_snapshot` | 40 | clone/publish immutable table |
+| `provider_operation_lanes` | 50 | clone/forget a semaphore reference |
 
 The gate admission and agent-move records guards wrap only reservation and commit,
 using their existing order gate -> move records -> STORE. Those admission guards
@@ -232,10 +244,10 @@ environment mutation.
 1. Replace the lexical candidate classifications with a cross-function order
    graph and verify every remaining RwLock/tokio guard scope; migrate remaining
    lock classes to checked guards. The tables deliberately mark unresolved cases.
-2. Finish removing STORE from runtime binding/spawn, park/resume/termination and
+2. Finish removing STORE from runtime binding, park/resume/termination and
    other closures outside the planning/commit path; preserve stale-run cleanup
    and retirement races. The sampler owner removes the original STORE -> ps edge,
-   but process creation and filesystem preflight still need extraction there.
+   but runtime clearing and lifecycle filesystem work still need extraction there.
 3. Give MCP stdio, browser/display writers, filesystem persistence and joins owned
    workers and explicit deadlines. Per-run serialization alone does not bound I/O.
 4. Replace bootstrap environment scrubs with explicit startup context and inherited

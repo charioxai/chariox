@@ -1,3 +1,4 @@
+use crate::runtime::bounded_process::BoundedCommandExt as _;
 use std::ffi::{OsStr, OsString};
 use std::io::{self, Write};
 use std::process::{Command, ExitStatus, Output, Stdio};
@@ -780,6 +781,14 @@ impl DockerCommand {
         self
     }
 
+    pub(super) fn bounded_status(&mut self) -> io::Result<std::process::ExitStatus> {
+        self.status()
+    }
+
+    pub(super) fn bounded_output(&mut self) -> io::Result<std::process::Output> {
+        self.output()
+    }
+
     pub(super) fn output(&mut self) -> io::Result<Output> {
         if broker_is_configured() {
             #[cfg(unix)]
@@ -799,7 +808,7 @@ impl DockerCommand {
                 return execute(&BrokerRequest::Docker { args: &args });
             }
         }
-        self.local_command().output()
+        self.local_command().bounded_output()
     }
 
     pub(super) fn bounded_log_output(&mut self) -> io::Result<super::log_output::BoundedLogOutput> {
@@ -807,7 +816,7 @@ impl DockerCommand {
         if broker_is_configured() {
             // The broker already enforces its finite output/transport budget.
             // Project a smaller byte-bounded diagnostic on both runtime paths.
-            let output = self.output()?;
+            let output = self.bounded_output()?;
             let budget = MAX_LOG_BYTES / 2;
             let truncated = output.stdout.len() > budget || output.stderr.len() > budget;
             let tail = |bytes: Vec<u8>| bytes[bytes.len().saturating_sub(budget)..].to_vec();
@@ -823,7 +832,7 @@ impl DockerCommand {
 
     pub(super) fn status(&mut self) -> io::Result<ExitStatus> {
         if broker_is_configured() {
-            let output = self.output()?;
+            let output = self.bounded_output()?;
             if !self.quiet_stdout {
                 io::stdout().write_all(&output.stdout)?;
             }
@@ -832,7 +841,7 @@ impl DockerCommand {
             }
             return Ok(output.status);
         }
-        self.local_command().status()
+        self.local_command().bounded_status()
     }
 
     fn local_command(&self) -> Command {

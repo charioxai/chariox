@@ -1,4 +1,5 @@
 use super::*;
+use crate::runtime::bounded_process::BoundedChildExt as _;
 use crate::transport::relay_peer::RelayPeerEvent;
 use std::os::unix::fs::PermissionsExt;
 use wait_timeout::ChildExt;
@@ -253,7 +254,7 @@ fi
         // MP-08 / MP-10 / MP-11: signal only the fixture's reserved child PID.
         assert!(child.id() > 1, "refuse a system PID during fixture cleanup");
         let _ = child.kill();
-        let _ = child.wait();
+        let _ = child.bounded_wait();
         panic!("isolated leased launch fixture timed out");
     }
     let output = child.wait_with_output().unwrap();

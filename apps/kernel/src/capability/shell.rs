@@ -138,6 +138,7 @@ use crate::io::windows_pipe_process as platform;
 
 #[cfg(unix)]
 mod platform {
+    use crate::runtime::bounded_process::BoundedChildExt as _;
     use std::io;
     use std::os::fd::AsRawFd;
     use std::os::unix::process::CommandExt;
@@ -175,7 +176,7 @@ mod platform {
                 Ok(owned) => owned,
                 Err(error) => {
                     let _ = child.kill();
-                    let _ = child.wait();
+                    let _ = child.bounded_wait();
                     return Err(error);
                 }
             };
@@ -220,7 +221,7 @@ mod platform {
         /// Ends everything the command started, then reaps its leader.
         pub(super) fn finish(&mut self) -> io::Result<std::process::ExitStatus> {
             self.end_session();
-            let status = self.child.wait();
+            let status = self.child.bounded_wait();
             self.reaped = true;
             status
         }
@@ -242,7 +243,7 @@ mod platform {
             if !self.reaped {
                 self.end_session();
                 let _ = self.child.kill();
-                let _ = self.child.wait();
+                let _ = self.child.bounded_wait();
             }
         }
     }

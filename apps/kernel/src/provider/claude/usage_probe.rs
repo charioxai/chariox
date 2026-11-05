@@ -1,3 +1,4 @@
+use crate::runtime::bounded_process::BoundedChildExt as _;
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::{Read, Seek, Write};
@@ -420,7 +421,7 @@ fn stop_claude_probe(child: &mut std::process::Child) {
     if child.id() > 1 {
         let _ = child.kill();
     }
-    let _ = child.wait();
+    let _ = child.bounded_wait();
 }
 
 fn validated_claude_usage_result(value: &serde_json::Value) -> Result<&str, DaemonError> {

@@ -225,7 +225,7 @@ pub(crate) fn recover(
     if !obligation.helpers.is_empty() {
         let listed = docker_command()
             .args(["ps", "-a", "--format", "{{.Names}}"])
-            .output()
+            .bounded_output()
             .map_err(|e| error(e.to_string()))?;
         if !listed.status.success() {
             return Err(error("cannot inspect snapshot helpers"));
@@ -240,7 +240,7 @@ pub(crate) fn recover(
                         "{{index .Config.Labels \"io.chariox.snapshot-helper\"}}",
                         helper,
                     ])
-                    .output()
+                    .bounded_output()
                     .map_err(|e| error(e.to_string()))?;
                 if !owner.status.success()
                     || String::from_utf8_lossy(&owner.stdout).trim() != helper
@@ -249,7 +249,7 @@ pub(crate) fn recover(
                 }
                 let removed = docker_command()
                     .args(["rm", "-f", helper])
-                    .status()
+                    .bounded_status()
                     .map_err(|e| error(e.to_string()))?;
                 if !removed.success() {
                     return Err(error("cannot remove abandoned snapshot helper"));
@@ -265,14 +265,14 @@ pub(crate) fn recover(
                 "{{.State.Running}} {{.State.Status}}",
                 &container,
             ])
-            .output()
+            .bounded_output()
             .map_err(|e| error(e.to_string()))?;
         let running = if inspected.status.success() {
             match String::from_utf8_lossy(&inspected.stdout).trim() {
                 "true paused" => {
                     let status = docker_command()
                         .args(["unpause", &container])
-                        .status()
+                        .bounded_status()
                         .map_err(|e| error(e.to_string()))?;
                     if !status.success() {
                         return Err(error("failed to resume snapshot-paused container"));
@@ -292,7 +292,7 @@ pub(crate) fn recover(
             // inventory proving absence permits retiring a vanished container's lease.
             let listed = docker_command()
                 .args(["ps", "-a", "--format", "{{.Names}}"])
-                .output()
+                .bounded_output()
                 .map_err(|e| error(e.to_string()))?;
             if !listed.status.success()
                 || String::from_utf8_lossy(&listed.stdout)

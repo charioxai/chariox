@@ -7,6 +7,7 @@
 //! (clients, the relay, idle provider processes) comes back as after any
 //! restart.
 
+use crate::runtime::bounded_process::AsyncBoundedCommandExt as _;
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -403,6 +404,21 @@ pub(crate) fn provider_handed_over(session_id: &str, agent_id: &str) -> bool {
     lock(&RECEIVED_PROVIDERS)
         .iter()
         .any(|p| p.session_id == session_id && p.agent_id.as_deref() == Some(agent_id))
+}
+
+pub(crate) fn handed_over_run_id(
+    session_id: &str,
+    agent_id: Option<&str>,
+    adapter_key: &str,
+) -> Option<String> {
+    lock(&RECEIVED_PROVIDERS)
+        .iter()
+        .find(|p| {
+            p.session_id == session_id
+                && p.agent_id.as_deref() == agent_id
+                && p.process.adapter_key() == adapter_key
+        })
+        .map(|p| p.run_id.clone())
 }
 
 /// A new run of the agent takes the handed-over run's id and tool token, and
@@ -834,7 +850,7 @@ async fn verify(start: &Start) -> Result<(), String> {
             .arg("--handover-format")
             .env_clear()
             .kill_on_drop(true)
-            .output(),
+            .bounded_output(),
     )
     .await
     .map_err(|_| "the new kernel program did not answer in time".to_string())?

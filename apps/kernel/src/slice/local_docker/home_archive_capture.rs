@@ -1,3 +1,4 @@
+use crate::runtime::bounded_process::BoundedChildExt as _;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -254,7 +255,7 @@ fn capture_with_progress_timeout(
             #[cfg(unix)]
             {
                 stop_producer(&mut child);
-                let _ = child.wait();
+                let _ = child.bounded_wait();
             }
             #[cfg(windows)]
             {

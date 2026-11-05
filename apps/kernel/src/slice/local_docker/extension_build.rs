@@ -1,3 +1,4 @@
+use crate::runtime::bounded_process::BoundedChildExt as _;
 use std::fs::File;
 use std::process::Command;
 
@@ -213,7 +214,7 @@ mod linux {
             .write_all(&payload);
         if let Err(error) = written {
             let _ = child.kill();
-            let _ = child.wait();
+            let _ = child.bounded_wait();
             return Err(failure(format!(
                 "failed to submit extension build request: {error}"
             )));
@@ -221,11 +222,11 @@ mod linux {
         // Ordinary extension builds have no global deadline. The helper binds
         // its namespace to this caller and the sudo monitor, bounds retained
         // output, and settles all descendants on cancellation/caller death.
-        match child.wait() {
+        match child.bounded_wait() {
             Ok(status) => Ok(status),
             Err(error) => {
                 let _ = child.kill();
-                let _ = child.wait();
+                let _ = child.bounded_wait();
                 Err(failure(format!(
                     "failed to wait for extension build helper: {error}"
                 )))

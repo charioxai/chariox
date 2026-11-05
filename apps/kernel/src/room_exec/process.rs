@@ -1,3 +1,4 @@
+use crate::runtime::bounded_process::AsyncChildOwner as _;
 use std::io;
 use std::path::Path;
 use std::process::Stdio;
@@ -216,7 +217,7 @@ async fn supervise(
         // fails; cancel its root rather than wait forever for a live command.
         let _ = process.child.start_kill();
     }
-    let status = process.child.wait().await;
+    let status = process.child.supervised_wait().await;
     if let Some(message) = failure.or_else(|| cleanup.err().map(|error| error.to_string())) {
         return ExecOutcome::Failed {
             message: format!("command cleanup failed: {message}"),

@@ -1,5 +1,6 @@
 //! Bootstrap for a disposable VM. After enrollment it runs the ordinary lease-only kernel.
 
+use crate::runtime::bounded_process::BoundedChildExt as _;
 use std::env;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -516,8 +517,7 @@ fn run_once(
         }
         worker.pending = None;
     }
-    child
-        .wait()
+    crate::runtime::bounded_process::supervise(&mut child)
         .map_err(|error| worker_error(format!("wait for worker kernel: {error}")))
 }
 
@@ -665,7 +665,7 @@ fn stop_child(child: &mut Child) -> Result<(), DaemonError> {
             .kill_child()
             .map_err(|error| worker_error(format!("stop worker kernel: {error}")))?;
         child
-            .wait()
+            .bounded_wait()
             .map_err(|error| worker_error(format!("reap worker kernel: {error}")))?;
     }
     Ok(())

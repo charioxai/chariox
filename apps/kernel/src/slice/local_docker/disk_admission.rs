@@ -306,7 +306,7 @@ fn measure_slice_storage_with_helper(
 fn docker_success(args: &[&str], operation: &'static str) -> Result<(), DaemonError> {
     let output = docker_command()
         .args(args)
-        .output()
+        .bounded_output()
         .map_err(|error| disk_measurement_error(&format!("failed to {operation}: {error}")))?;
     if output.status.success() {
         Ok(())
@@ -477,7 +477,7 @@ fn docker_numeric_field(args: &[&str], operation: &'static str) -> Result<u64, D
 fn docker_output(args: &[&str], operation: &'static str) -> Result<String, DaemonError> {
     let output = docker_command()
         .args(args)
-        .output()
+        .bounded_output()
         .map_err(|error| disk_measurement_error(&format!("failed to {operation}: {error}")))?;
     if !output.status.success() {
         return Err(disk_measurement_error(&format!(

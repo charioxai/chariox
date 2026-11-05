@@ -223,6 +223,7 @@ fn mp05_mp08_mp11_owner_managed_context_encrypted_peer_drill() {
 }
 
 async fn owner_managed_context_encrypted_peer_drill_inner() {
+    #[cfg(test)]
     let _lock = crate::env_lock::lock();
     let root = std::env::temp_dir().join(format!(
         "chariox-owner-peer-{:032x}",

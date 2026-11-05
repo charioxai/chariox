@@ -1,4 +1,5 @@
 //! Long-lived children must belong to the kernel process, not a temporary caller.
+use crate::runtime::bounded_process::BoundedChildExt as _;
 use portable_pty::{CommandBuilder, SlavePty};
 use std::io;
 use std::process::{Child, Command};
@@ -74,7 +75,7 @@ pub(crate) fn spawn_command(mut command: Command) -> io::Result<Child> {
         move || command.spawn(),
         |mut child| {
             let _ = child.kill();
-            let _ = child.wait();
+            let _ = child.bounded_wait();
         },
     )
 }
@@ -136,7 +137,7 @@ pub(crate) fn spawn_pty(
         },
         |mut child| {
             let _ = child.kill();
-            let _ = child.wait();
+            let _ = child.bounded_wait();
         },
     )
 }

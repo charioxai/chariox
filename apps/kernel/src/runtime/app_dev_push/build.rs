@@ -1,4 +1,5 @@
 //! Build inputs are source files, never a caller-selected shell command.
+use crate::runtime::bounded_process::BoundedChildExt as _;
 use std::{
     collections::BTreeMap,
     fs::{self, File},
@@ -248,6 +249,6 @@ impl Drop for BuildChild {
                 }
             }
         }
-        let _ = self.child.wait();
+        let _ = self.child.bounded_wait();
     }
 }

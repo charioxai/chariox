@@ -1,3 +1,4 @@
+use crate::runtime::bounded_process::BoundedChildExt as _;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -446,7 +447,7 @@ fn run_managed_publication_access_helper(
         .ok_or_else(|| slice_development_error("managed publication helper stderr is missing"))?;
     let stdout_reader = std::thread::spawn(move || read_bounded_helper_output(stdout));
     let stderr_reader = std::thread::spawn(move || read_bounded_helper_output(stderr));
-    let status = child.wait().map_err(|error| {
+    let status = child.bounded_wait().map_err(|error| {
         slice_development_error(format!(
             "wait for managed publication access helper: {error}"
         ))

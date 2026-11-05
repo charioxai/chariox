@@ -5,6 +5,8 @@
 //! Waiting commands start by themselves, in turn across owners, once their
 //! room is free. Light commands never wait.
 use super::*;
+#[cfg(target_os = "macos")]
+use crate::runtime::bounded_process::BoundedCommandExt as _;
 use crate::runtime::kernel_access::process::inspect;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -856,7 +858,7 @@ fn arguments(pid: u32) -> Option<(Vec<String>, Option<PathBuf>)> {
 fn arguments(pid: u32) -> Option<(Vec<String>, Option<PathBuf>)> {
     let output = crate::process_spawn::command("ps")
         .args(["-o", "args=", "-p", &pid.to_string()])
-        .output()
+        .bounded_output()
         .ok()?;
     let argv = String::from_utf8_lossy(&output.stdout)
         .split_whitespace()

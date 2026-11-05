@@ -1,3 +1,4 @@
+use crate::runtime::bounded_process::BoundedCommandExt as _;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -184,7 +185,7 @@ impl CharioxEnvironmentConfig {
                 }
                 let status = crate::process_spawn::command(python)
                     .arg("--version")
-                    .status()
+                    .bounded_status()
                     .map_err(io_error("env.validate"))?;
                 if !status.success() {
                     return Err(DaemonError::InvalidConfig {
@@ -210,7 +211,7 @@ impl CharioxEnvironmentConfig {
                 }
                 let status = crate::process_spawn::command(node)
                     .arg("--version")
-                    .status()
+                    .bounded_status()
                     .map_err(io_error("env.validate"))?;
                 if !status.success() {
                     return Err(DaemonError::InvalidConfig {

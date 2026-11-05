@@ -2,6 +2,7 @@
 use super::resolver::{environment_error, read_environment_file};
 use super::*;
 use crate::error::DaemonError;
+use crate::runtime::bounded_process::BoundedCommandExt as _;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -317,7 +318,7 @@ fn ignored_files(root: &Path) -> Result<BTreeSet<String>, DaemonError> {
             "-z",
             "--",
         ])
-        .output()
+        .bounded_output()
         .map_err(|_| environment_error("private file inventory could not run"))?;
     if !output.status.success() {
         return Ok(BTreeSet::new());

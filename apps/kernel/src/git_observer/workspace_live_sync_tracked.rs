@@ -1,3 +1,4 @@
+use crate::runtime::bounded_process::BoundedCommandExt as _;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -222,7 +223,7 @@ fn committed_path_changes(
             after_head,
         ])
         .current_dir(&worktree_path)
-        .output();
+        .bounded_output();
     let Ok(output) = output else {
         return Vec::new();
     };
@@ -393,7 +394,7 @@ fn git_blob_snapshot(
         .arg(repo_root)
         .arg("show")
         .arg(format!("{revision}:{path}"))
-        .output()
+        .bounded_output()
         .ok()?;
     output
         .status

@@ -697,7 +697,13 @@ where
     };
     let pump_task = tokio::spawn(async move {
         let pump_state = pump_router.runtime_state();
+        let progress = crate::runtime::stall_watchdog::progress_watch(
+            "kernel.runtime",
+            "transport_pump",
+            Duration::from_secs(10),
+        );
         loop {
+            progress.progress();
             // MP-08 / MP-10: capture readiness before draining, so an arrival
             // during the pump cannot be hidden by the post-pump sleep.
             let output_ready_sequence = pump_state.provider_output_ready_sequence();

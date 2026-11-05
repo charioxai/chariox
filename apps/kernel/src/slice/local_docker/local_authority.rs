@@ -1,5 +1,6 @@
 //! Optional root-installed Linux local DEV broker. Absence preserves legacy
 //! local Docker behavior; present but invalid enrollment fails closed.
+use crate::runtime::bounded_process::BoundedChildExt as _;
 #[cfg(target_os = "linux")]
 use std::{
     fs,
@@ -105,7 +106,7 @@ fn launch(launcher: &Path, uid: u32) -> std::io::Result<PathBuf> {
                 && !path.contains('\0') =>
         {
             std::thread::spawn(move || {
-                let _ = child.wait();
+                let _ = child.bounded_wait();
             });
             Ok(PathBuf::from(path))
         }
@@ -121,7 +122,7 @@ fn launch(launcher: &Path, uid: u32) -> std::io::Result<PathBuf> {
                 .is_none()
             {
                 let _ = child.kill();
-                let _ = child.wait();
+                let _ = child.bounded_wait();
             }
             let refusal = refusal_receive
                 .recv_timeout(Duration::from_secs(1))

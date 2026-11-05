@@ -856,3 +856,8 @@ pub(crate) fn has_key(key: &str) -> bool {
         .get(key)
         .is_some_and(|state| state.strong_count() > 0)
 }
+
+#[cfg(test)]
+pub(crate) fn snapshot_row_count_for_test() -> usize {
+    sampling::process_rows().map(|rows| rows.len()).unwrap_or(0)
+}

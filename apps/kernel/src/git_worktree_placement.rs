@@ -1,3 +1,4 @@
+use crate::runtime::bounded_process::BoundedCommandExt as _;
 use std::path::{Path, PathBuf};
 
 use crate::agent::GitWorktreePlacement;
@@ -428,7 +429,7 @@ pub(crate) fn is_git_worktree(base_directory: impl AsRef<Path>) -> bool {
     crate::process_spawn::command("git")
         .args(["rev-parse", "--is-inside-work-tree"])
         .current_dir(base_directory.as_ref())
-        .output()
+        .bounded_output()
         .is_ok_and(|output| {
             output.status.success() && String::from_utf8_lossy(&output.stdout).trim() == "true"
         })
@@ -619,7 +620,7 @@ fn run_git(cwd: &Path, args: &[&str], operation: &'static str) -> Result<String,
     let output = crate::process_spawn::command("git")
         .args(args)
         .current_dir(cwd)
-        .output()
+        .bounded_output()
         .map_err(|error| DaemonError::LocalTransport {
             operation,
             message: format!(

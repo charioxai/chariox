@@ -1,4 +1,6 @@
 //! Signals require a retained PID/start witness, including every group member.
+#[cfg(target_os = "macos")]
+use crate::runtime::bounded_process::BoundedCommandExt as _;
 use std::{collections::BTreeMap, io, process::Child};
 
 #[derive(Clone, Debug)]
@@ -265,7 +267,7 @@ fn snapshot() -> io::Result<Vec<ProcessIdentity>> {
     let result = crate::process_spawn::command("/bin/ps")
         .args(["-axo", "pid=,ppid=,pgid="])
         .env("LC_ALL", "C")
-        .output()?;
+        .bounded_output()?;
     if !result.status.success() {
         return Err(io::Error::other("process metadata unavailable"));
     }

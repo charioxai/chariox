@@ -1,4 +1,6 @@
 //! MD-2: verify membership before signaling a controller's private Unix group.
+#[cfg(target_os = "macos")]
+use crate::runtime::bounded_process::BoundedCommandExt as _;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -395,7 +397,7 @@ fn snapshot(root: u32) -> Option<BTreeMap<u32, Process>> {
         // Numeric IDs and start time only; never command lines or environment.
         let output = crate::process_spawn::command("ps")
             .args(["-axo", "pid=,ppid=,pgid=,lstart="])
-            .output()
+            .bounded_output()
             .ok()?;
         if !output.status.success() {
             return None;

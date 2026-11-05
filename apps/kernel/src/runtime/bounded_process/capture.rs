@@ -1,20 +1,20 @@
 //! Short-lived provider utilities own their output pipes and process cleanup.
 //! Reads never block, and stdout plus stderr have one fixed memory budget.
 use std::io::{self, Read};
-use std::process::{Command, Output, Stdio};
+use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
 #[cfg(unix)]
-#[path = "probe_capture/unix.rs"]
+#[path = "capture/unix.rs"]
 mod platform;
 #[cfg(windows)]
 use crate::io::windows_pipe_process as platform;
 
-pub(super) const OUTPUT_LIMIT: usize = 1024 * 1024;
+pub(crate) const OUTPUT_LIMIT: usize = 1024 * 1024;
 const READ_BUDGET: usize = 64 * 1024;
 
 #[derive(Debug)]
-pub(super) enum CaptureError {
+pub(crate) enum CaptureError {
     Io(io::Error),
     TimedOut,
     OutputLimit,
@@ -26,13 +26,52 @@ impl From<io::Error> for CaptureError {
     }
 }
 
-pub(super) fn capture(mut command: Command, timeout: Duration) -> Result<Output, CaptureError> {
+pub(crate) fn capture(mut command: Command, timeout: Duration) -> Result<Output, CaptureError> {
+    capture_command_with_limit(&mut command, timeout, OUTPUT_LIMIT)
+}
+
+pub(super) fn capture_command(
+    command: &mut Command,
+    timeout: Duration,
+) -> Result<Output, CaptureError> {
+    capture_command_with_limit(command, timeout, 64 * 1024 * 1024)
+}
+
+fn capture_command_with_limit(
+    command: &mut Command,
+    timeout: Duration,
+    output_limit: usize,
+) -> Result<Output, CaptureError> {
     let deadline = Instant::now() + timeout;
     command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let mut process = platform::Process::spawn(&mut command)?;
+    let process = platform::Process::spawn(command)?;
+    capture_process(process, deadline, output_limit)
+}
+
+pub(super) fn capture_child(mut child: Child, timeout: Duration) -> Result<Output, CaptureError> {
+    drop(child.stdin.take());
+    if child.stdout.is_none() || child.stderr.is_none() {
+        crate::runtime::child_shutdown::stop(&mut child, "capture_missing_pipes")?;
+        return Err(
+            io::Error::other("child output capture requires piped stdout and stderr").into(),
+        );
+    }
+    let deadline = Instant::now() + timeout;
+    capture_process(
+        platform::Process::from_child(child)?,
+        deadline,
+        64 * 1024 * 1024,
+    )
+}
+
+fn capture_process(
+    mut process: platform::Process,
+    deadline: Instant,
+    output_limit: usize,
+) -> Result<Output, CaptureError> {
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
     loop {
@@ -40,11 +79,13 @@ pub(super) fn capture(mut command: Command, timeout: Duration) -> Result<Output,
             process.child.stdout.as_mut().expect("captured stdout"),
             &mut stdout,
             stderr.len(),
+            output_limit,
         )?;
         drain(
             process.child.stderr.as_mut().expect("captured stderr"),
             &mut stderr,
             stdout.len(),
+            output_limit,
         )?;
         if let Some(status) = process.child.try_wait()? {
             // A successful launcher can leave pipe writers behind. End them
@@ -54,11 +95,13 @@ pub(super) fn capture(mut command: Command, timeout: Duration) -> Result<Output,
                 process.child.stdout.as_mut().expect("captured stdout"),
                 &mut stdout,
                 stderr.len(),
+                output_limit,
             )? {}
             while drain(
                 process.child.stderr.as_mut().expect("captured stderr"),
                 &mut stderr,
                 stdout.len(),
+                output_limit,
             )? {}
             return Ok(Output {
                 status,
@@ -83,6 +126,7 @@ fn drain<P: Read + platform::Pipe>(
     pipe: &mut P,
     bytes: &mut Vec<u8>,
     other_len: usize,
+    output_limit: usize,
 ) -> Result<bool, CaptureError> {
     let mut buffer = [0_u8; 8192];
     let mut read = 0;
@@ -95,7 +139,7 @@ fn drain<P: Read + platform::Pipe>(
         match pipe.read(&mut buffer[..len]) {
             Ok(0) => return Ok(false),
             Ok(len) => {
-                if bytes.len() + other_len + len > OUTPUT_LIMIT {
+                if bytes.len() + other_len + len > output_limit {
                     return Err(CaptureError::OutputLimit);
                 }
                 bytes.extend_from_slice(&buffer[..len]);
@@ -110,5 +154,5 @@ fn drain<P: Read + platform::Pipe>(
 }
 
 #[cfg(test)]
-#[path = "probe_capture/tests.rs"]
+#[path = "capture/tests.rs"]
 mod tests;

@@ -1,17 +1,34 @@
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+#[cfg(test)]
+use std::sync::Mutex;
 
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::runtime::projection::{ActorQueueSnapshot, ProviderRunActorHealthSnapshot};
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub(crate) struct ProviderRunOperationLanes {
-    pub(super) lanes: Arc<Mutex<BTreeMap<String, Arc<Semaphore>>>>,
+    pub(super) lanes:
+        Arc<crate::runtime::checked_lock::CheckedMutex<BTreeMap<String, Arc<Semaphore>>>>,
     health: Arc<ProviderRunActorHealthCounters>,
     #[cfg(test)]
     acquire_probes: Arc<Mutex<BTreeMap<String, Arc<tokio::sync::Notify>>>>,
+}
+
+impl Default for ProviderRunOperationLanes {
+    fn default() -> Self {
+        Self {
+            lanes: Arc::new(crate::runtime::checked_lock::CheckedMutex::new(
+                "provider_operation_lanes",
+                BTreeMap::new(),
+            )),
+            health: Default::default(),
+            #[cfg(test)]
+            acquire_probes: Default::default(),
+        }
+    }
 }
 
 pub(crate) struct ProviderRunOperationPermit {

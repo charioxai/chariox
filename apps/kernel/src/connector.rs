@@ -1,3 +1,4 @@
+use crate::runtime::bounded_process::BoundedChildExt as _;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, Write};
@@ -361,7 +362,7 @@ fn run_adapter_request_once(
         Ok(Err(error)) => return Err(io_error("connector.adapter")(error)),
         Err(_) => {
             let _ = child.kill();
-            let _ = child.wait();
+            let _ = child.bounded_wait();
             return Err(connector_error(
                 "connector.adapter",
                 format!("adapter request timed out after {}ms", request.timeout_ms),
@@ -370,7 +371,7 @@ fn run_adapter_request_once(
     };
     if line.len() > request.max_response_bytes as usize {
         let _ = child.kill();
-        let _ = child.wait();
+        let _ = child.bounded_wait();
         return Err(connector_error(
             "connector.adapter",
             format!(
@@ -381,7 +382,7 @@ fn run_adapter_request_once(
     }
     let _ = child.wait_timeout(Duration::from_millis(250));
     let _ = child.kill();
-    let _ = child.wait();
+    let _ = child.bounded_wait();
     let response = serde_json::from_str::<ConnectorAdapterResponse>(&line).map_err(|error| {
         connector_error(
             "connector.adapter",

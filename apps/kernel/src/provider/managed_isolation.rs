@@ -1,3 +1,4 @@
+use crate::runtime::bounded_process::BoundedCommandExt as _;
 use std::collections::BTreeMap;
 #[cfg(any(target_os = "linux", test))]
 use std::collections::BTreeSet;
@@ -2250,7 +2251,7 @@ fn resolve_git_root(path: &Path) -> Option<PathBuf> {
         .arg("-C")
         .arg(path)
         .args(["rev-parse", "--show-toplevel"])
-        .output()
+        .bounded_output()
         .ok()?;
     if !output.status.success() {
         return None;

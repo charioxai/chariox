@@ -89,6 +89,7 @@ const _: () = assert!(
         < CLOUD_RELAY_TOKEN_REFRESH_TIMEOUT.as_millis()
 );
 const CLOUD_RELAY_PRESENCE_JITTER_SPREAD_MS: u64 = 5_000;
+const RELAY_READ_IDLE_LIMIT: Duration = Duration::from_secs(90);
 const RELAY_RECEIPT_STALL_LIMIT: Duration = Duration::from_secs(30);
 const RELAY_RECONNECT_BASE_DELAY_MS: u64 = 500;
 const RELAY_RECONNECT_MAX_DELAY_MS: u64 = 1_000;
@@ -970,6 +971,12 @@ async fn run_daemon_relay_connector_inner(
                 let mut leased_projection_pump_task = None;
                 let mut heartbeat_tick: u64 = 0;
 
+                let mut last_read_at = Instant::now();
+                let reader_progress = crate::runtime::stall_watchdog::progress_watch(
+                    "daemon.relay_client",
+                    "socket_read",
+                    RELAY_READ_IDLE_LIMIT,
+                );
                 let reconnect_reason = loop {
                     tokio::select! {
                         changed = shutdown.changed() => {
@@ -990,7 +997,19 @@ async fn run_daemon_relay_connector_inner(
                                 return;
                             }
                         }
+                        _ = tokio::time::sleep_until(tokio::time::Instant::from_std(last_read_at + RELAY_READ_IDLE_LIMIT)) => {
+                            crate::logging::warn_with_fields("daemon.relay_client", "relay reader stalled; reconnecting", serde_json::json!({"operation": "socket_read", "duration_ms": last_read_at.elapsed().as_millis()}));
+                            abort_leased_projection_pump_task(&mut leased_projection_pump_task);
+                            abort_inventory_refresh_task(&mut inventory_refresh_task);
+                            writer_task.abort();
+                            abort_subscription_tasks(&router, &subscription_tasks).await;
+                            clear_remote_inventory_projection(&router);
+                            disconnect_relay(&state, "relay read deadline exceeded", presence.as_ref()).await;
+                            break "relay read deadline exceeded";
+                        }
                         incoming = reader.next() => {
+                            last_read_at = Instant::now();
+                            reader_progress.progress();
                             match incoming {
                                 Some(Ok(Message::Text(payload))) => {
                                     let (payload, receipt) = relay_frames.receive(&payload).unwrap_or_else(|_| (
@@ -1010,7 +1029,7 @@ async fn run_daemon_relay_connector_inner(
                                     }
                                     let Some(payload) = payload else { continue; };
 
-                                    if let Err(error) = handle_incoming_envelope(
+                                    if let Err(error) = timeout(RELAY_READ_IDLE_LIMIT, handle_incoming_envelope(
                                         IncomingEnvelopeContext {
                                             router: &router,
                                             command_sequence: &command_sequence,
@@ -1027,8 +1046,12 @@ async fn run_daemon_relay_connector_inner(
                                             active_relay_token.as_str(),
                                         )),
                                         &payload,
-                                    )
+                                    ))
                                     .await
+                                    .unwrap_or_else(|_| Err(DaemonError::LocalTransport {
+                                        operation: "relay_payload",
+                                        message: "relay payload processing exceeded the read deadline".into(),
+                                    }))
                                     {
                                         let disconnect_reason =
                                             format!("relay payload handling failed: {error}");

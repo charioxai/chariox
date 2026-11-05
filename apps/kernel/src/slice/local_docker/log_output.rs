@@ -1,4 +1,5 @@
 //! Bounded log tails from regular descriptors and concurrently drained commands.
+use crate::runtime::bounded_process::BoundedChildExt as _;
 use std::collections::VecDeque;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom};
@@ -89,10 +90,10 @@ impl LogCommandOutput for Command {
         let stderr = child.stderr.take().expect("piped stderr");
         let output = std::thread::spawn(move || drain(stdout, MAX_LOG_BYTES / 2));
         let diagnostic = std::thread::spawn(move || drain(stderr, MAX_LOG_BYTES / 2));
-        let status = child.wait();
+        let status = child.bounded_wait();
         if status.is_err() {
             let _ = child.kill();
-            let _ = child.wait();
+            let _ = child.bounded_wait();
         }
         let (stdout, out_truncated) = output.join().map_err(|_| io::ErrorKind::Other)??;
         let (stderr, err_truncated) = diagnostic.join().map_err(|_| io::ErrorKind::Other)??;

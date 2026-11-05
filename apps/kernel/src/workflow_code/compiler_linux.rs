@@ -1,5 +1,6 @@
 //! MP-08 / MP-11: exact read-only Node runtime assets, including distro builtins.
 use super::*;
+use crate::runtime::bounded_process::BoundedCommandExt as _;
 use std::io::{Read, Seek, SeekFrom};
 
 /// The operator-fixed runtime is discovered once per canonical path, size and
@@ -36,7 +37,7 @@ fn discover_runtime_files(node: &Path) -> Result<BTreeSet<PathBuf>, crate::Daemo
     let dependencies = crate::process_spawn::command("/usr/bin/ldd")
         .env_clear()
         .arg(node)
-        .output()
+        .bounded_output()
         .map_err(io_error("workflow_code.compile"))?;
     if !dependencies.status.success() {
         return Err(isolation_error(

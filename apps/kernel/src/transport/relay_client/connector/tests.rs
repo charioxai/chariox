@@ -908,3 +908,69 @@ fn only_a_link_that_stayed_up_resets_the_drop_backoff() {
     backoff.after_connection(STABLE_RELAY_CONNECTION);
     assert_eq!(backoff.delay("daemon-a"), Duration::ZERO);
 }
+
+#[tokio::test]
+async fn silent_relay_socket_is_dropped_and_reconnected_after_read_deadline() {
+    crate::test_support::isolated_env_test!();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let (accepted, mut connections) = mpsc::channel(4);
+    let (server_stop, mut stopped) = oneshot::channel();
+    let server = tokio::spawn(async move {
+        let mut readers = tokio::task::JoinSet::new();
+        loop {
+            tokio::select! {
+                _ = &mut stopped => break,
+                incoming = listener.accept() => {
+                    let (stream, _) = incoming.unwrap();
+                    let socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+                    accepted.send(()).await.unwrap();
+                    readers.spawn(async move {
+                        let (_, mut read) = socket.split();
+                        while read.next().await.is_some() {}
+                    });
+                }
+            }
+        }
+        readers.abort_all();
+        while readers.join_next().await.is_some() {}
+    });
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.relay_url = Some(format!("ws://{address}"));
+    config.relay_token = Some("idle-fixture".into());
+    config.relay_heartbeat_ms = 100;
+    let app = Arc::new(Mutex::new(DaemonApp::bootstrap(config).unwrap()));
+    let state = Arc::new(RwLock::new(RelayClientState::default()));
+    let (stop, stopping) = watch::channel(false);
+    let connector = tokio::spawn(run_daemon_relay_connector(
+        app,
+        Arc::clone(&state),
+        stopping,
+    ));
+    timeout(Duration::from_secs(3), connections.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    timeout(Duration::from_secs(3), async {
+        while !state.read().await.connected() {
+            sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    tokio::time::pause();
+    tokio::time::advance(RELAY_READ_IDLE_LIMIT + Duration::from_secs(1)).await;
+    for _ in 0..20 {
+        tokio::task::yield_now().await;
+    }
+    tokio::time::resume();
+    let reconnected = timeout(Duration::from_secs(4), connections.recv()).await;
+    let _ = stop.send(true);
+    connector.await.unwrap();
+    let _ = server_stop.send(());
+    server.await.unwrap();
+    assert!(
+        matches!(reconnected, Ok(Some(()))),
+        "a writable but silent relay socket was never replaced"
+    );
+}

@@ -1,3 +1,4 @@
+use crate::runtime::bounded_process::BoundedCommandExt as _;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::error::DaemonError;
@@ -252,7 +253,7 @@ fn run_gh_output(
     let output = crate::process_spawn::command("gh")
         .args(args)
         .current_dir(worktree_path)
-        .output()
+        .bounded_output()
         .map_err(|error| DaemonError::LocalTransport {
             operation,
             message: error.to_string(),

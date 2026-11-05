@@ -1,3 +1,5 @@
+use crate::runtime::bounded_process::BoundedChildExt as _;
+use crate::runtime::bounded_process::BoundedCommandExt as _;
 use std::fs;
 use std::io::Write;
 use std::path::Path;
@@ -199,7 +201,7 @@ pub(super) fn inspect_script(
                 .arg("-c")
                 .arg(PYTHON_INSPECTOR)
                 .arg(source)
-                .output()
+                .bounded_output()
                 .map_err(io_error("script.inspect"))?;
             if !output.status.success() {
                 return Err(DaemonError::LocalTransport {
@@ -330,7 +332,9 @@ fn run_node_test(
     if let Some(package_root) = package_root {
         command.current_dir(package_root);
     }
-    let output = command.output().map_err(io_error("script.inspect"))?;
+    let output = command
+        .bounded_output()
+        .map_err(io_error("script.inspect"))?;
     if output.status.success() {
         Ok(())
     } else {
@@ -387,7 +391,7 @@ pub(super) fn execute_python_script(
         .map_err(io_error("script.execute"))?;
     if status.is_none() {
         let _ = child.kill();
-        let _ = child.wait();
+        let _ = child.bounded_wait();
         return Ok(ScriptExecutionResult {
             ok: false,
             payload: serde_json::json!({
@@ -400,7 +404,7 @@ pub(super) fn execute_python_script(
         });
     }
     let output = child
-        .wait_with_output()
+        .output_with_deadline(std::time::Duration::from_secs(1))
         .map_err(io_error("script.execute"))?;
     let value = serde_json::from_slice::<Value>(&output.stdout).map_err(|error| {
         DaemonError::LocalTransport {
@@ -468,7 +472,7 @@ pub(super) fn execute_node_script(
         .map_err(io_error("script.execute"))?;
     if status.is_none() {
         let _ = child.kill();
-        let _ = child.wait();
+        let _ = child.bounded_wait();
         return Ok(ScriptExecutionResult {
             ok: false,
             payload: serde_json::json!({
@@ -481,7 +485,7 @@ pub(super) fn execute_node_script(
         });
     }
     let output = child
-        .wait_with_output()
+        .output_with_deadline(std::time::Duration::from_secs(1))
         .map_err(io_error("script.execute"))?;
     let value = serde_json::from_slice::<Value>(&output.stdout).map_err(|error| {
         DaemonError::LocalTransport {

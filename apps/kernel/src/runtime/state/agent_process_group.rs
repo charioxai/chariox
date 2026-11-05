@@ -1,4 +1,5 @@
 //! MP-09 / MP-11 A03: verify an isolated owned session before pinned signals.
+use crate::runtime::bounded_process::BoundedChildExt as _;
 use std::io;
 
 #[cfg(target_os = "linux")]
@@ -178,7 +179,7 @@ pub(super) fn poll_exit(
         }
         return Ok(None);
     }
-    child.wait().map(Some)
+    child.bounded_wait().map(Some)
 }
 
 #[cfg(not(target_os = "linux"))]
