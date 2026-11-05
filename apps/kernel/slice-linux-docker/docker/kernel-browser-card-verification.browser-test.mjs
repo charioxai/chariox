@@ -8,11 +8,11 @@ import {setTimeout as delay} from 'node:timers/promises';
 import {KernelBrowserHost} from './kernel-browser-host.mjs';
 import {startChallengeService} from '../../../../scripts/e2e-stack/vault-autonomy/challenge-service.mjs';
 
-for (const pendingPoll of [false,true]) test('MP-08/MP-10/MP-11 trusted region input retains rejection and closes only on real acceptance, pending poll='+pendingPoll,{timeout:120_000},async()=>{
+for (const [pendingPoll,requestEncoding] of [[false,'json'],[true,'json'],[true,'urlencoded']]) test('MP-08/MP-10/MP-11 trusted region input retains rejection and closes only on real acceptance, pending poll='+pendingPoll+', encoding='+requestEncoding,{timeout:120_000},async()=>{
   const root=await mkdtemp(path.join(tmpdir(),'verification-chrome-')),service=await startChallengeService();
   const host=new KernelBrowserHost(root,{appStorageRoot:path.join(root,'apps')}),scope='agent:verification-chrome';
   try {
-    const challenge=service.create(),opened=await host.request({op:'open',url:challenge.url,observed_by:scope});
+    const challenge=service.create({requestEncoding}),opened=await host.request({op:'open',url:challenge.url,observed_by:scope});
     const binding={tab_id:opened.tab_id,generation:opened.generation,observed_by:scope};
     const snapshot=(await host.request({op:'snapshot',...binding})).snapshot;
     const main=snapshot.dom_nodes.find(n=>n.node_name==='MAIN');assert.ok(main,'late AX-observed challenge anchor survives the DOM bound');

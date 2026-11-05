@@ -17,7 +17,7 @@ async function fixture(run) {
   let inputSequence=0;
   const event=(method,params,sessionId='session')=>{for(const fn of listeners)fn({sessionId,method,params})};
   const input=()=>event('Runtime.bindingCalled',{name:watch.bindingName,executionContextId:7,payload:JSON.stringify({sequence:++inputSequence,value:'code-secret'})});
-  const request=id=>{input();event('Network.requestWillBeSent',{requestId:id,frameId:'frame',loaderId:'document',hasUserGesture:true,request:{method:'POST',url:config.url,headers:{authorization:'secret'},postData:'{"code":"code-secret"}'}})};
+  const request=(id,changes={})=>{input();event('Network.requestWillBeSent',{requestId:id,frameId:'frame',loaderId:'document',hasUserGesture:true,request:{method:'POST',url:config.url,headers:{authorization:'secret'},postData:'{"code":"code-secret"}',...changes}})};
   const response=async(id,status=200)=>{event('Network.responseReceived',{requestId:id,response:{url:config.url,status,headers:{'set-cookie':'private'}}});event('Network.loadingFinished',{requestId:id,encodedDataLength:100});await delay(0)};
   try {await run({watch,event,request,response,bodies,frame,listeners,connection,input})} finally {watch.close()}
 }
@@ -47,4 +47,26 @@ test('MP-08/MP-11 an unrelated same-frame POST cannot supply a challenge accepta
 test('MP-08/MP-11 a different code in a gesture POST cannot accept the bound input',()=>fixture(async({watch,event,response,input})=>{
   input();event('Network.requestWillBeSent',{requestId:'different-code',frameId:'frame',loaderId:'document',hasUserGesture:true,request:{method:'POST',url:config.url,postData:'{"code":"different-submission"}'}});
   await response('different-code');assert.equal(watch.receipt,null,'the body must carry the code delivered to this card field');
+}));
+
+for(const [contentType,postData] of [
+  ['application/x-www-form-urlencoded;charset=UTF-8','code=code%2Dsecret'],
+  ['Application/X-Www-Form-Urlencoded; charset=utf-8','unrelated=x&code=code-secret'],
+])test('MP-08/MP-10/MP-11 form encoding yields a positive receipt: '+contentType,()=>fixture(async({watch,request,response})=>{
+  request('form',{headers:{'Content-Type':contentType},postData});await response('form');
+  assert.equal(watch.receipt?.result,'accepted');assert.ok(!JSON.stringify(watch.receipt).includes('code-secret'));
+}));
+for(const postData of ['code=different','code-secret=different','code=code%252Dsecret'])test('MP-11 URL-encoded correlation requires the exact field value: '+postData,()=>fixture(async({watch,request,response})=>{
+  request('form',{headers:{'content-type':'application/x-www-form-urlencoded'},postData});await response('form');assert.equal(watch.receipt,null);
+}));
+
+for(const [disposition,value,accepted] of [
+  ['name="code"','code-secret',true],
+  ['name="code"','different',false],
+  ['name="code-secret"','different',false],
+  ['name="file"; filename="code.txt"','code-secret',false],
+])test('MP-11 multipart correlates text field values only: '+disposition+value,()=>fixture(async({watch,request,response})=>{
+  const postData='--card-boundary\r\nContent-Disposition: form-data; '+disposition+'\r\n\r\n'+value+'\r\n--card-boundary--\r\n';
+  request('form',{headers:{'content-type':'multipart/form-data; boundary="card-boundary"'},postData});await response('form');
+  assert.equal(watch.receipt?.result==='accepted',accepted);
 }));

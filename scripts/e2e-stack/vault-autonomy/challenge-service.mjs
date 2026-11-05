@@ -20,7 +20,7 @@ export async function startChallengeService() {
     }
     if (req.method === 'POST' && action === 'verify') {
       let body = ''; for await (const chunk of req) {body += chunk; if (body.length > 1024) {req.destroy(); return}}
-      let code; try {code = JSON.parse(body).code} catch {return reply(400, {error:'Invalid request'})}
+      let code; try {code = req.headers['content-type']?.split(';')[0] === 'application/x-www-form-urlencoded' ? new URLSearchParams(body).get('code') : JSON.parse(body).code} catch {return reply(400, {error:'Invalid request'})}
       record(challenge, {kind:'input_delivered', nonempty:typeof code === 'string' && code.length > 0})
       if (!challenge.issued || code !== '246810') {
         record(challenge, {kind:'verification', status:422, result:'rejected'})
@@ -49,7 +49,7 @@ function bind(issued=false,error='') {
  const form=document.querySelector('#verify'),issue=document.querySelector('#issue');
  issue.hidden=issued;form.hidden=!issued;form.querySelector('[role=alert]').textContent=error;
  issue.onclick=async()=>{const r=await fetch(base+'/issue',{method:'POST'});if(!r.ok)return;issue.hidden=true;form.hidden=false;document.querySelector('#code').focus()};
- form.onsubmit=async e=>{e.preventDefault();const r=await fetch(base+'/verify',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({code:document.querySelector('#code').value})});const result=await r.json();if(!result.accepted){document.querySelector('#challenge').outerHTML=template;document.querySelector('#challenge').style.marginTop='80px';bind(true,result.error);return}form.hidden=true;document.querySelector('#accepted').hidden=false;document.querySelector('#token').value=result.token};
+ form.onsubmit=async e=>{e.preventDefault();const r=await fetch(base+'/verify',{method:'POST',headers:{'content-type':${JSON.stringify(challenge.requestEncoding === 'urlencoded' ? 'application/x-www-form-urlencoded;charset=UTF-8' : 'application/json')}},body:${challenge.requestEncoding === 'urlencoded' ? "new URLSearchParams({code:document.querySelector('#code').value})" : "JSON.stringify({code:document.querySelector('#code').value})"}});const result=await r.json();if(!result.accepted){document.querySelector('#challenge').outerHTML=template;document.querySelector('#challenge').style.marginTop='80px';bind(true,result.error);return}form.hidden=true;document.querySelector('#accepted').hidden=false;document.querySelector('#token').value=result.token};
 }
 bind();
 </script>`)
@@ -57,7 +57,7 @@ bind();
   await new Promise(resolve => server.listen(0,'127.0.0.1',resolve))
   const origin = 'http://127.0.0.1:'+server.address().port
   return {
-    create() {const id=randomUUID();challenges.set(id,{id,issued:false,accepted:false,authenticatedCalls:0,token:randomBytes(32).toString('hex'),events:[]});return {id,url:origin+'/challenge/'+id}},
+    create({requestEncoding='json'} = {}) {const id=randomUUID();challenges.set(id,{id,requestEncoding,issued:false,accepted:false,authenticatedCalls:0,token:randomBytes(32).toString('hex'),events:[]});return {id,url:origin+'/challenge/'+id}},
     async close() {server.closeAllConnections();await new Promise(resolve=>server.close(resolve))},
   }
 }

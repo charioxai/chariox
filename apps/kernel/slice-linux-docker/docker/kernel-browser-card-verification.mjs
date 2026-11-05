@@ -30,8 +30,26 @@ export function validateCardVerification(value, origin) {
   return {challenge_id:value.challenge_id,url:url.href,accepted_json_pointer:value.accepted_json_pointer};
 }
 
-function hasSubmittedValue(body, input) {
+function hasSubmittedValue(body, input, headers) {
   if (typeof body!=='string' || body.length>65536 || typeof input!=='string' || !input)return false;
+  const contentType=Object.entries(headers ?? {}).find(([key])=>key.toLowerCase()==='content-type')?.[1] ?? '';
+  if (typeof contentType!=='string')return false;
+  const mediaType=contentType.split(';',1)[0].trim().toLowerCase();
+  if(mediaType==='application/x-www-form-urlencoded')return [...new URLSearchParams(body).values()].some(value=>value===input);
+  if(mediaType==='multipart/form-data') {
+    const boundary=/(?:^|;)\s*boundary=(?:"([^"]+)"|([^;\s]+))/i.exec(contentType);
+    const delimiter=boundary?.[1] ?? boundary?.[2];
+    if(!delimiter || delimiter.length>70 || /[\r\n]/.test(delimiter))return false;
+    const parts=body.split('--'+delimiter);
+    if(parts.length>258 || !parts.at(-1).startsWith('--'))return false;
+    return parts.slice(1,-1).some(part=>{
+      const split=part.indexOf('\r\n\r\n');
+      if(!part.startsWith('\r\n') || split<0 || !part.endsWith('\r\n'))return false;
+      const disposition=part.slice(2,split).split('\r\n').find(line=>/^content-disposition:/i.test(line));
+      return disposition && /^content-disposition:\s*form-data\s*;/i.test(disposition)
+        && /;\s*name=/i.test(disposition) && !/;\s*filename\*?=/i.test(disposition) && part.slice(split+4,-2)===input;
+    });
+  }
   let parsed;try {parsed=JSON.parse(body)}catch{return false}
   const pending=[[parsed,0]];let visited=0;
   while(pending.length && ++visited<=256) {
@@ -91,7 +109,7 @@ export class BrowserCardVerification {
       if(p.redirectResponse && this.request?.id===p.requestId) {this.finish('failed');return}
       if(p.frameId!==this.frame.id || p.loaderId!==this.frame.loaderId || p.request?.method!=='POST' || p.request.url!==this.config.url
         || p.hasUserGesture!==true || this.inputSequence<=this.consumedSequence || Date.now()-this.inputAt>5000
-        || !hasSubmittedValue(p.request.postData,this.inputValue))return;
+        || !hasSubmittedValue(p.request.postData,this.inputValue,p.request.headers))return;
       this.consumedSequence=this.inputSequence;this.inputValue=null;
       this.request={id:p.requestId,status:null};
       this.receipt={challenge_id:this.config.challenge_id,request_id:p.requestId,input_delivered:true,http_status:null,result:'delivered'};
