@@ -255,7 +255,7 @@ fn supervise(name: &'static str, receiver: Receiver<Command>) {
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => {
-                for (_, endpoint) in endpoints {
+                for (_, endpoint) in std::mem::take(&mut endpoints) {
                     let _ = stop(name, endpoint, &mut unreaped);
                 }
                 if unreaped.is_empty() {
