@@ -2577,6 +2577,22 @@ impl AttestedReleaseFixture {
         attestation_source_tree: &str,
         target: &str,
     ) -> Self {
+        Self::with_apps(
+            label,
+            attestation_source_commit,
+            attestation_source_tree,
+            target,
+            None,
+        )
+    }
+
+    fn with_apps(
+        label: &str,
+        attestation_source_commit: &str,
+        attestation_source_tree: &str,
+        target: &str,
+        app_case: Option<&str>,
+    ) -> Self {
         use std::os::unix::fs::symlink;
 
         let root = std::env::temp_dir().join(format!(
@@ -2593,7 +2609,9 @@ impl AttestedReleaseFixture {
         let supervisor_digest = format!("sha256:{:x}", Sha256::digest(supervisor_bytes));
         let source_commit = "a".repeat(40);
         let source_tree = "b".repeat(40);
-        let attestation = serde_json::to_vec(&serde_json::json!({
+        let app_package = b"verified App package";
+        let app_worker = b"verified App worker";
+        let mut attestation = serde_json::json!({
             "schemaVersion": 1,
             "sourceCommit": attestation_source_commit,
             "sourceTree": attestation_source_tree,
@@ -2603,11 +2621,32 @@ impl AttestedReleaseFixture {
                 { "name": "chariox-managed-bootstrap", "sha256": supervisor_digest },
                 { "name": "chariox-relay", "sha256": format!("sha256:{}", "d".repeat(64)) },
             ],
-        }))
-        .expect("encode build attestation");
+        });
+        if let Some(case) = app_case {
+            let artifacts = attestation["artifacts"]
+                .as_array_mut()
+                .expect("artifact list");
+            for (name, bytes) in [
+                ("chariox-app-package", app_package.as_slice()),
+                ("chariox-app-wasm-worker", app_worker.as_slice()),
+            ] {
+                artifacts.push(serde_json::json!({"name": name, "sha256": format!("sha256:{:x}", Sha256::digest(bytes))}));
+            }
+            match case {
+                "partial" => {
+                    artifacts.pop();
+                }
+                "wrong-name" => artifacts[4]["name"] = serde_json::json!("unknown-worker"),
+                "wrong-digest" => {
+                    artifacts[4]["sha256"] = serde_json::json!(format!("sha256:{}", "c".repeat(64)))
+                }
+                _ => {}
+            }
+        }
+        let attestation = serde_json::to_vec(&attestation).expect("encode build attestation");
         let builder_key = SigningKey::from_bytes(&[8_u8; 32]);
         let attestation_signature = builder_key.sign(&attestation);
-        let manifest = serde_json::to_vec(&serde_json::json!({
+        let mut manifest = serde_json::json!({
             "schemaVersion": 2,
             "sourceCommit": source_commit,
             "sourceTree": source_tree,
@@ -2652,8 +2691,25 @@ impl AttestedReleaseFixture {
                     ),
                 },
             ],
-        }))
-        .expect("encode release manifest");
+        });
+        if app_case.is_some() {
+            let artifacts = manifest["artifacts"]
+                .as_array_mut()
+                .expect("manifest artifact list");
+            for (name, bytes) in [
+                ("chariox-app-package", app_package.as_slice()),
+                ("chariox-app-wasm-worker", app_worker.as_slice()),
+            ] {
+                if app_case == Some("missing-manifest") && name == "chariox-app-wasm-worker" {
+                    continue;
+                }
+                artifacts.push(
+                    serde_json::json!({"name": name, "path": format!("/usr/local/bin/{name}"),
+                    "sha256": format!("sha256:{:x}", Sha256::digest(bytes))}),
+                );
+            }
+        }
+        let manifest = serde_json::to_vec(&manifest).expect("encode release manifest");
         let release_digest = format!("sha256:{:x}", Sha256::digest(&manifest));
         let release_name = release_digest
             .strip_prefix("sha256:")
@@ -2669,6 +2725,18 @@ impl AttestedReleaseFixture {
             .expect("create kernel facade directory");
         fs::write(&release_kernel, kernel_bytes).expect("write kernel artifact");
         fs::write(&release_supervisor, supervisor_bytes).expect("write supervisor artifact");
+        if app_case.is_some() {
+            fs::write(
+                release_root.join("usr/local/bin/chariox-app-package"),
+                app_package,
+            )
+            .expect("write App package");
+            fs::write(
+                release_root.join("usr/local/bin/chariox-app-wasm-worker"),
+                app_worker,
+            )
+            .expect("write App worker");
+        }
         fs::write(
             release_chariox_root.join("build-attestation.json"),
             &attestation,
@@ -3258,4 +3326,59 @@ fn local_disk_exchange_confirm_and_restore_bind_the_protected_grant() {
     );
     restore_env("CHARIOX_HOME", previous_home);
     fixture.cleanup();
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
+fn managed_release_evidence_accepts_current_app_attestation() {
+    for case in [
+        "valid",
+        "partial",
+        "wrong-name",
+        "wrong-digest",
+        "missing-manifest",
+        "tampered-app",
+    ] {
+        let fixture = AttestedReleaseFixture::with_apps(
+            case,
+            &"a".repeat(40),
+            &"b".repeat(40),
+            "x86_64-unknown-linux-gnu",
+            Some(case),
+        );
+        let trusted_builder = fixture.root.join("trusted-builder-public-key");
+        fs::copy(
+            fixture
+                .release_root
+                .join("usr/lib/chariox/builder-public-key"),
+            &trusted_builder,
+        )
+        .expect("install independent builder pin");
+        if case == "tampered-app" {
+            fs::write(
+                fixture
+                    .release_root
+                    .join("usr/local/bin/chariox-app-package"),
+                "tampered",
+            )
+            .expect("tamper App package");
+        }
+        let result = super::release::verify_release_evidence(
+            &fixture.config.manifest_path,
+            &fixture.config.signature_path,
+            &fixture.config.public_key_path,
+            &fixture.release_digest,
+            &fixture.config.kernel_binary,
+            Some(&trusted_builder),
+        );
+        if case == "valid" {
+            assert!(
+                result.is_ok(),
+                "current five-artifact release must verify: {result:?}"
+            );
+        } else {
+            assert!(result.is_err(), "invalid App attestation must fail: {case}");
+        }
+        fixture.cleanup();
+    }
 }
