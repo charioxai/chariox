@@ -209,7 +209,7 @@ impl ClientAppViews {
             views.insert(id.clone(), view.clone());
         }
         self.check(store, owner, &id, &view)?;
-        Ok(Response::Opened(descriptor))
+        Ok(Response::Opened(Box::new(descriptor)))
     }
 }
 

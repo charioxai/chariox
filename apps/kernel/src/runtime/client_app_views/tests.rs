@@ -126,7 +126,7 @@ fn open(views: &ClientAppViews, store: &DurableKernelStateStore) -> Descriptor {
     else {
         panic!("opened")
     };
-    view
+    *view
 }
 fn read(id: &str, offset: u32, max_bytes: u32) -> Request {
     Request::Read {

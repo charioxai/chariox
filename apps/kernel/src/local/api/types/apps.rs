@@ -798,7 +798,7 @@ pub struct ClientAppViewTrust {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub enum ClientAppViewResponse {
-    Opened(ClientAppViewDescriptor),
+    Opened(Box<ClientAppViewDescriptor>),
     Chunk {
         view_id: String,
         offset: u32,
