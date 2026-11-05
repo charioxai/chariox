@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 /* MP-08/MP-10/MP-11: crop the owned window, never the root or a neighbour. */
 #include <assert.h>
 #include <unistd.h>
