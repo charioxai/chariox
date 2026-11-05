@@ -535,17 +535,21 @@ impl KernelRuntimeState {
         if crate::secret::chariox_encrypted_vault_status(&vault_path)?.unlocked {
             return Ok(VaultUnlockGuard::unlocked_until_expiry(vault_path));
         }
+        // The Room queue and passphrase retries share the provider tool's budget.
+        // No card may outlive the call that is waiting for it.
+        let deadline = tokio::time::Instant::now()
+            + std::time::Duration::from_secs(vault_unlock_card_seconds(operation));
         let session_request_lock = vault_unlock_session_request_lock(&vault_path, session_id);
-        let _dedupe_guard = session_request_lock.lock().await;
+        let _dedupe_guard = tokio::select! {
+            biased;
+            _ = tokio::time::sleep_until(deadline) => return Err(vault_unlock_timed_out()),
+            guard = session_request_lock.lock() => guard,
+        };
         let mut unlocks = vault_unlock_notifications(&vault_path);
         if crate::secret::chariox_encrypted_vault_status(&vault_path)?.unlocked {
             return Ok(VaultUnlockGuard::unlocked_until_expiry(vault_path));
         }
 
-        // Retries share the provider tool's original budget; a replacement card
-        // must not outlive the call that is waiting for it.
-        let deadline = tokio::time::Instant::now()
-            + std::time::Duration::from_secs(vault_unlock_card_seconds(operation));
         let mut problem: Option<String> = None;
         let (status, lock_after_operation) = loop {
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
@@ -939,6 +943,14 @@ fn vault_passphrase_interaction(
     )
 }
 
+fn vault_unlock_timed_out() -> DaemonError {
+    DaemonError::VaultUnlock {
+        code: "vault_unlock_timed_out",
+        message: "Chariox vault unlock timed out. Retry to unlock the vault.".into(),
+        retryable: false,
+    }
+}
+
 /// The passphrase and duration the owner answered a Vault unlock question with.
 fn vault_unlock_answer(
     interaction: &crate::session::RuntimeInteraction,
@@ -970,11 +982,7 @@ fn vault_unlock_answer(
         None => None,
     };
     match (resolution.status, duration, resolution.reply) {
-        ("timed_out", ..) => Err(DaemonError::VaultUnlock {
-            code: "vault_unlock_timed_out",
-            message: "Chariox vault unlock timed out. Retry to unlock the vault.".into(),
-            retryable: false,
-        }),
+        ("timed_out", ..) => Err(vault_unlock_timed_out()),
         ("answered", Some(duration), Some(passphrase)) => {
             Ok((zeroize::Zeroizing::new(passphrase), duration))
         }
@@ -1335,6 +1343,174 @@ mod tests {
             resolution.reply.is_none(),
             "an expired waiter must discard the queued passphrase"
         );
+    }
+
+    // MP-08 / MP-09 / MP-10 / MP-11: queue time belongs to the waiting call.
+    #[tokio::test(start_paused = true)]
+    async fn a_queued_vault_unlock_card_gets_only_the_calls_remaining_budget() {
+        queued_vault_unlock(false).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_queued_vault_unlock_times_out_without_acquiring_the_room_lock() {
+        queued_vault_unlock(true).await;
+    }
+
+    // Two agents share one Room queue. Keep the first waiter under test control
+    // so the second must expire even if the lock holder has not been scheduled.
+    async fn queued_vault_unlock(hold_lock_past_deadline: bool) {
+        let workspace = crate::test_support::TestWorktree::new("vault-room-queue");
+        let private_state = crate::test_support::TestWorktree::new("vault-room-queue-state");
+        let path = private_state.path().join("vault.json");
+        crate::secret::create_chariox_encrypted_vault_for_test(&path, "test passphrase").unwrap();
+        crate::secret::lock_chariox_encrypted_vault(&path).unwrap();
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.user_config.credential_vault.backend =
+            crate::config::CredentialVaultBackend::CharioxEncrypted;
+        config.user_config.credential_vault.path = path.display().to_string();
+        let mut app = crate::app::DaemonApp::bootstrap(config).unwrap();
+        let (session, first_agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(workspace.session_request())
+            .unwrap();
+        let second_agent = crate::app::KernelSessionService::new(&mut app)
+            .spawn_agent(crate::agent::CreateAgentRequest::new(
+                session.id(),
+                "dev-stub",
+            ))
+            .unwrap();
+        let state =
+            super::super::workflow_prompt_queue_owned_state::tests::runtime_state_from_app(app);
+        let first =
+            state.ensure_vault_unlocked_for_agent(session.id(), first_agent.id(), "vault_generate");
+        tokio::pin!(first);
+        let next_card = |agent_id: String| {
+            let state = state.clone();
+            let session_id = session.id().to_owned();
+            async move {
+                tokio::time::timeout(std::time::Duration::from_secs(1), async {
+                    loop {
+                        if let Some(card) = state
+                            .owned
+                            .session_store
+                            .get_session(&session_id)
+                            .unwrap()
+                            .active_interaction_for_agent(&agent_id)
+                            .cloned()
+                        {
+                            return card;
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                    }
+                })
+                .await
+                .expect("the agent has an unlock card")
+            }
+        };
+        let first_card = tokio::select! {
+            result = &mut first => panic!("first agent must wait: {:?}", result.err()),
+            card = next_card(first_agent.id().to_owned()) => card,
+        };
+        let second = state.ensure_vault_unlocked_for_agent(
+            session.id(),
+            second_agent.id(),
+            "vault_generate",
+        );
+        tokio::pin!(second);
+        let started = tokio::time::Instant::now();
+        tokio::select! {
+            result = &mut second => panic!("second agent must queue: {:?}", result.err()),
+            () = tokio::time::sleep(std::time::Duration::from_millis(1)) => {},
+        }
+        assert!(state
+            .owned
+            .session_store
+            .get_session(session.id())
+            .unwrap()
+            .active_interaction_for_agent(second_agent.id())
+            .is_none());
+        let second_card = if hold_lock_past_deadline {
+            tokio::time::advance(std::time::Duration::from_secs(281)).await;
+            None
+        } else {
+            tokio::time::advance(std::time::Duration::from_secs(200)).await;
+            state
+                .resolve_terminal_runtime_interaction(
+                    session.id(),
+                    first_card.id(),
+                    "cancel",
+                    None,
+                    Some(crate::session::DEFAULT_LOCAL_USER_ID),
+                )
+                .await
+                .unwrap();
+            assert!(matches!(
+                first.as_mut().await,
+                Err(DaemonError::VaultUnlock {
+                    code: "vault_unlock_declined",
+                    ..
+                })
+            ));
+            let card = tokio::select! {
+                result = &mut second => panic!("second agent must await its card: {:?}", result.err()),
+                card = next_card(second_agent.id().to_owned()) => card,
+            };
+            assert!(
+                card.timeout_sec().unwrap() <= 80,
+                "queue time must count against the original tool budget, got {:?}",
+                card.timeout_sec()
+            );
+            Some(card)
+        };
+        let result = tokio::time::timeout_at(
+            started + std::time::Duration::from_secs(282),
+            second.as_mut(),
+        )
+        .await
+        .expect("queued agent settles on its own deadline");
+        assert!(matches!(
+            result,
+            Err(DaemonError::VaultUnlock {
+                code: "vault_unlock_timed_out",
+                ..
+            })
+        ));
+        assert!(state
+            .owned
+            .session_store
+            .get_session(session.id())
+            .unwrap()
+            .active_interaction_for_agent(second_agent.id())
+            .is_none());
+        if hold_lock_past_deadline {
+            assert!(matches!(
+                first.await,
+                Err(DaemonError::VaultUnlock {
+                    code: "vault_unlock_timed_out",
+                    ..
+                })
+            ));
+        }
+        if let Some(card) = second_card {
+            assert!(
+                state
+                    .resolve_terminal_runtime_interaction(
+                        session.id(),
+                        card.id(),
+                        "unlock_kernel",
+                        Some("test passphrase"),
+                        Some(crate::session::DEFAULT_LOCAL_USER_ID),
+                    )
+                    .await
+                    .is_err(),
+                "a late answer must not revive the queued call"
+            );
+        }
+        assert!(
+            !crate::secret::chariox_encrypted_vault_status(&path)
+                .unwrap()
+                .unlocked
+        );
+        std::fs::remove_file(&path).unwrap();
     }
 
     async fn wrong_passphrase_retry(expire: bool) {
