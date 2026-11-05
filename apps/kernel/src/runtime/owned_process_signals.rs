@@ -113,7 +113,7 @@ impl OwnedProcessSignals {
     fn group_with(
         &mut self,
         rows: &[ProcessIdentity],
-        send: impl FnOnce(i32) -> io::Result<()>,
+        send: impl FnOnce(i32, Signal) -> io::Result<()>,
     ) -> io::Result<bool> {
         self.refresh_from(rows);
         let members: Vec<_> = rows.iter().filter(|row| row.group == self.root).collect();
@@ -126,7 +126,7 @@ impl OwnedProcessSignals {
         {
             return Err(io::Error::other("unowned or reused process group member"));
         }
-        send(-(self.root as i32))?;
+        send(-(self.root as i32), Signal::Kill)?;
         Ok(true)
     }
 
@@ -138,19 +138,74 @@ impl OwnedProcessSignals {
         self.kill_owned_with(snapshot, send_signal)
     }
 
+    /// Freezes the whole tree before ending any member: a waiting parent whose child is killed
+    /// first would otherwise resume and run its next command before its own signal arrives.
     fn kill_owned_with(
         &mut self,
         mut inspect: impl FnMut() -> io::Result<Vec<ProcessIdentity>>,
-        mut send: impl FnMut(i32) -> io::Result<()>,
+        mut send: impl FnMut(i32, Signal) -> io::Result<()>,
     ) -> io::Result<()> {
-        self.refresh_from(&inspect()?);
-        let pids: Vec<_> = self.owned.keys().copied().collect();
-        for pid in pids.into_iter().rev() {
-            // Recheck each birth immediately before its individual signal.
+        let mut stopped = std::collections::BTreeSet::new();
+        loop {
             let rows = inspect()?;
-            if rows.iter().any(|row| row.pid == pid && self.matches(row)) {
-                send(pid as i32)?;
+            self.refresh_from(&rows);
+            // A member forked before its parent froze appears in the next snapshot.
+            let pending: Vec<_> = self
+                .parents_first(&rows)
+                .into_iter()
+                .filter(|pid| !stopped.contains(pid))
+                .collect();
+            if pending.is_empty() {
+                break;
             }
+            for pid in pending {
+                self.signal_current(pid, Signal::Stop, &mut inspect, &mut send)?;
+                stopped.insert(pid);
+            }
+        }
+        let rows = inspect()?;
+        for pid in self.parents_first(&rows) {
+            self.signal_current(pid, Signal::Kill, &mut inspect, &mut send)?;
+        }
+        Ok(())
+    }
+
+    /// Owned members still alive, every parent before its descendants.
+    fn parents_first(&self, rows: &[ProcessIdentity]) -> Vec<u32> {
+        let alive: BTreeMap<u32, u32> = rows
+            .iter()
+            .filter(|row| self.matches(row))
+            .map(|row| (row.pid, row.parent))
+            .collect();
+        let depth = |mut pid: u32| {
+            let mut depth = 0;
+            while let Some(parent) = alive.get(&pid).copied().filter(|p| alive.contains_key(p)) {
+                if depth > alive.len() {
+                    break;
+                }
+                depth += 1;
+                pid = parent;
+            }
+            depth
+        };
+        let mut order: Vec<_> = alive.keys().map(|pid| (depth(*pid), *pid)).collect();
+        order.sort_unstable();
+        order.into_iter().map(|(_, pid)| pid).collect()
+    }
+
+    /// Rechecks the birth immediately before its individual signal.
+    fn signal_current(
+        &self,
+        pid: u32,
+        signal: Signal,
+        inspect: &mut impl FnMut() -> io::Result<Vec<ProcessIdentity>>,
+        send: &mut impl FnMut(i32, Signal) -> io::Result<()>,
+    ) -> io::Result<()> {
+        if inspect()?
+            .iter()
+            .any(|row| row.pid == pid && self.matches(row))
+        {
+            send(pid as i32, signal)?;
         }
         Ok(())
     }
@@ -163,13 +218,19 @@ impl OwnedProcessSignals {
         if !self.matches(row) {
             return Err(io::Error::other("child PID was reused"));
         }
-        send_signal(self.root as i32)?;
+        send_signal(self.root as i32, Signal::Kill)?;
         Ok(true)
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Signal {
+    Stop,
+    Kill,
+}
+
 #[cfg(unix)]
-fn send_signal(pid: i32) -> io::Result<()> {
+fn send_signal(pid: i32, signal: Signal) -> io::Result<()> {
     // MP-11: reject system-wide targets even if a future caller loses its witness.
     if pid == i32::MIN || (-1..=1).contains(&pid) {
         return Err(io::Error::other("invalid process signal target"));
@@ -178,7 +239,11 @@ fn send_signal(pid: i32) -> io::Result<()> {
     if matches!(pid, -1..=1) {
         return Err(io::Error::other("reserved signal target"));
     }
-    if unsafe { libc::kill(pid, libc::SIGKILL) } == 0 {
+    let signal = match signal {
+        Signal::Stop => libc::SIGSTOP,
+        Signal::Kill => libc::SIGKILL,
+    };
+    if unsafe { libc::kill(pid, signal) } == 0 {
         return Ok(());
     }
     let error = io::Error::last_os_error();
@@ -189,7 +254,7 @@ fn send_signal(pid: i32) -> io::Result<()> {
     }
 }
 #[cfg(not(unix))]
-fn send_signal(_: i32) -> io::Result<()> {
+fn send_signal(_: i32, _: Signal) -> io::Result<()> {
     Err(io::Error::other("owned signals unsupported"))
 }
 
@@ -443,7 +508,9 @@ mod tests {
         };
         let leader = row(hidden.group, 1, hidden.group, "root");
         assert!(guard
-            .group_with(&[leader, hidden], |_| panic!("unreadable member signalled"))
+            .group_with(&[leader, hidden], |_, _| panic!(
+                "unreadable member signalled"
+            ))
             .is_err());
     }
 
@@ -464,7 +531,7 @@ mod tests {
             owned: BTreeMap::from([(41, rows[0].start.clone())]),
         };
         assert!(guard
-            .group_with(&rows, |pid| {
+            .group_with(&rows, |pid, _| {
                 assert_eq!(pid, -41);
                 Ok(())
             })
@@ -472,7 +539,7 @@ mod tests {
         let mut foreign = row(43, 1, 41, "foreign-birth");
         foreign.session = 99;
         assert!(guard
-            .group_with(&[rows[0].clone(), foreign], |_| panic!(
+            .group_with(&[rows[0].clone(), foreign], |_, _| panic!(
                 "foreign session signalled"
             ))
             .is_err());
@@ -482,12 +549,14 @@ mod tests {
             owned: BTreeMap::from([(41, rows[0].start.clone())]),
         };
         assert!(lost
-            .group_with(&rows[1..], |_| panic!("missing leader witness signalled"))
+            .group_with(&rows[1..], |_, _| panic!(
+                "missing leader witness signalled"
+            ))
             .is_err());
         let mut replacement = rows[0].clone();
         replacement.start = "replacement-leader".into();
         assert!(lost
-            .group_with(&[replacement, rows[1].clone()], |_| panic!(
+            .group_with(&[replacement, rows[1].clone()], |_, _| panic!(
                 "reused leader admitted children"
             ))
             .is_err());
@@ -511,19 +580,20 @@ mod tests {
             row(44, 1, 41, "reused"),
         ];
         assert!(guard
-            .group_with(&rows, |_| panic!("mixed group signalled"))
+            .group_with(&rows, |_, _| panic!("mixed group signalled"))
             .is_err());
         let mut signalled = Vec::new();
         guard
             .kill_owned_with(
                 || Ok(rows.clone()),
-                |pid| {
-                    signalled.push(pid);
+                |pid, signal| {
+                    signalled.push((pid, signal));
                     Ok(())
                 },
             )
             .unwrap();
-        assert_eq!(signalled, [43, 41]);
+        use Signal::{Kill, Stop};
+        assert_eq!(signalled, [(41, Stop), (43, Stop), (41, Kill), (43, Kill)]);
     }
 
     #[test]
@@ -536,7 +606,7 @@ mod tests {
                 owned: BTreeMap::from([(root, "birth".into())]),
             };
             assert!(guard
-                .group_with(&rows, |_| panic!("invalid group signalled"))
+                .group_with(&rows, |_, _| panic!("invalid group signalled"))
                 .is_err());
         }
     }
@@ -555,21 +625,25 @@ mod tests {
         };
         let mut sent = Vec::new();
         guard
-            .group_with(&rows, |pid| {
-                sent.push(pid);
+            .group_with(&rows, |pid, signal| {
+                sent.push((pid, signal));
                 Ok(())
             })
             .unwrap();
         guard
             .kill_owned_with(
                 || Ok(rows.clone()),
-                |pid| {
-                    sent.push(pid);
+                |pid, signal| {
+                    sent.push((pid, signal));
                     Ok(())
                 },
             )
             .unwrap();
-        assert_eq!(sent, [-41, 45, 41]);
+        use Signal::{Kill, Stop};
+        assert_eq!(
+            sent,
+            [(-41, Kill), (41, Stop), (45, Stop), (41, Kill), (45, Kill)]
+        );
     }
 
     #[test]
@@ -581,7 +655,7 @@ mod tests {
         };
         let mut sends = 0;
         assert!(guard
-            .group_with(&[row(41, 1, 41, "reused")], |_| {
+            .group_with(&[row(41, 1, 41, "reused")], |_, _| {
                 sends += 1;
                 Ok(())
             })
@@ -589,7 +663,7 @@ mod tests {
         assert!(guard
             .group_with(
                 &[row(41, 1, 41, "original"), row(42, 1, 41, "foreign")],
-                |_| {
+                |_, _| {
                     sends += 1;
                     Ok(())
                 }
@@ -599,7 +673,7 @@ mod tests {
         assert!(guard
             .group_with(
                 &[row(41, 1, 41, "original"), row(43, 41, 41, "child")],
-                |pid| {
+                |pid, _| {
                     assert_eq!(pid, -41);
                     sends += 1;
                     Ok(())
@@ -609,10 +683,10 @@ mod tests {
         assert_eq!(sends, 1);
         // Once reparented, only the recorded child birth is authorized.
         assert!(guard
-            .group_with(&[row(43, 1, 41, "child")], |_| Ok(()))
+            .group_with(&[row(43, 1, 41, "child")], |_, _| Ok(()))
             .unwrap());
         assert!(guard
-            .group_with(&[row(43, 1, 41, "replacement")], |_| panic!(
+            .group_with(&[row(43, 1, 41, "replacement")], |_, _| panic!(
                 "reused child signalled"
             ))
             .is_err());
@@ -624,7 +698,7 @@ mod tests {
 fn mp11_signal_seam_rejects_system_wide_targets_without_signalling() {
     for pid in [i32::MIN, -1, 0, 1] {
         assert_eq!(
-            send_signal(pid).unwrap_err().to_string(),
+            send_signal(pid, Signal::Kill).unwrap_err().to_string(),
             "invalid process signal target"
         );
     }
