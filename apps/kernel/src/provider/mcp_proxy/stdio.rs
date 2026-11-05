@@ -30,8 +30,14 @@ struct StdioMcpProcessKey {
 
 struct StdioMcpEntry {
     process: Arc<Mutex<StdioMcpProcess>>,
+    handshake: ProviderHandshake,
     owner_sessions_by_provider_run_id: HashMap<String, String>,
 }
+
+/// The `initialize` request the provider completed against a session's server. The
+/// provider keeps its HTTP connection when a changed value starts a replacement
+/// process, so every process of that server and session replays it.
+type ProviderHandshake = Arc<Mutex<Option<serde_json::Value>>>;
 
 impl StdioMcpSupervisor {
     pub(super) fn process(
@@ -65,11 +71,22 @@ impl StdioMcpSupervisor {
             .into(),
         };
         if !self.processes.contains_key(&key) {
-            let process = StdioMcpProcess::spawn(backing, &environment)?;
+            // Read from the entry, not the process: the older process may be serving a request.
+            let handshake = self
+                .processes
+                .iter()
+                .find(|(other, _)| {
+                    other.definition_hash == key.definition_hash
+                        && other.owner_session_id == key.owner_session_id
+                })
+                .map(|(_, entry)| entry.handshake.clone())
+                .unwrap_or_default();
+            let process = StdioMcpProcess::spawn(backing, &environment, handshake.clone())?;
             self.processes.insert(
                 key.clone(),
                 StdioMcpEntry {
                     process: Arc::new(Mutex::new(process)),
+                    handshake,
                     owner_sessions_by_provider_run_id: HashMap::new(),
                 },
             );
@@ -171,16 +188,17 @@ pub(super) struct StdioMcpProcess {
     backing: CharioxMcpServerConfig,
     /// Keep replacements on the same resolved credentials as their original process.
     environment: BTreeMap<String, String>,
-    initialize_request: Option<serde_json::Value>,
+    handshake: ProviderHandshake,
+    /// Set once this child completed the handshake.
     initialize_response: Option<serde_json::Value>,
     restart_required: bool,
-    initialized_notified: bool,
 }
 
 impl StdioMcpProcess {
     fn spawn(
         backing: &CharioxMcpServerConfig,
         environment: &BTreeMap<String, String>,
+        handshake: ProviderHandshake,
     ) -> Result<Self, DaemonError> {
         let CharioxMcpTransportConfig::Stdio {
             command, args, cwd, ..
@@ -248,10 +266,9 @@ impl StdioMcpProcess {
             request_timeout: Duration::from_secs(backing.tool_timeout_sec.unwrap_or(30).max(1)),
             backing: backing.clone(),
             environment: environment.clone(),
-            initialize_request: None,
+            handshake,
             initialize_response: None,
             restart_required: false,
-            initialized_notified: false,
         })
     }
 
@@ -271,23 +288,22 @@ impl StdioMcpProcess {
     ) -> Result<serde_json::Value, DaemonError> {
         let method = payload.get("method").and_then(serde_json::Value::as_str);
         // MP-08 / MP-10: provider clients keep their established HTTP MCP
-        // connection across a failed stdio request. A replacement child must
-        // restore that handshake before accepting the next tool request.
+        // connection across a failed stdio request or a changed value. A replacement
+        // child must restore that handshake before accepting the next request.
         if self.restart_required || self.is_exited()? {
-            let initialize = self.initialize_request.clone();
-            let notified = self.initialized_notified;
             let backing = self.backing.clone();
             let environment = self.environment.clone();
-            *self = Self::spawn(&backing, &environment)?;
-            if method != Some("initialize") {
-                if let Some(initialize) = initialize {
-                    self.dispatch(initialize)?;
-                    if notified {
-                        self.dispatch(serde_json::json!({
-                            "jsonrpc": "2.0", "method": "notifications/initialized"
-                        }))?;
-                    }
-                }
+            let handshake = self.handshake.clone();
+            *self = Self::spawn(&backing, &environment, handshake)?;
+        }
+        if method != Some("initialize") && self.initialize_response.is_none() {
+            let completed = self
+                .handshake
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone();
+            if let Some(initialize) = completed {
+                self.initialize(initialize)?;
             }
         }
 
@@ -299,24 +315,12 @@ impl StdioMcpProcess {
                 }
                 return Ok(response);
             }
-            self.initialize_request = Some(payload.clone());
-            let response = self.send_request(payload)?;
-            if response.get("result").is_some() {
-                // The proxy is the backing server's MCP client. Complete its
-                // handshake even when the HTTP front end acknowledges the
-                // provider's initialized notification without forwarding it.
-                self.write_frame(&serde_json::json!({
-                    "jsonrpc": "2.0", "method": "notifications/initialized"
-                }))?;
-                self.initialized_notified = true;
-            }
-            self.initialize_response = Some(response.clone());
-            return Ok(response);
+            return self.initialize(payload);
         }
         if method == Some("notifications/initialized") {
-            if !self.initialized_notified {
+            // The proxy already completed the server's handshake with `initialize`.
+            if self.initialize_response.is_none() {
                 self.write_frame(&payload)?;
-                self.initialized_notified = true;
             }
             return Ok(serde_json::json!({"jsonrpc": "2.0", "result": null}));
         }
@@ -325,6 +329,24 @@ impl StdioMcpProcess {
             return Ok(serde_json::json!({"jsonrpc": "2.0", "result": null}));
         }
         self.send_request(payload)
+    }
+
+    /// The proxy is the backing server's MCP client. It completes the handshake
+    /// itself, because the HTTP front end acknowledges the provider's initialized
+    /// notification without forwarding it.
+    fn initialize(&mut self, payload: serde_json::Value) -> Result<serde_json::Value, DaemonError> {
+        let response = self.send_request(payload.clone())?;
+        if response.get("result").is_some() {
+            self.write_frame(&serde_json::json!({
+                "jsonrpc": "2.0", "method": "notifications/initialized"
+            }))?;
+            self.initialize_response = Some(response.clone());
+            *self
+                .handshake
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(payload);
+        }
+        Ok(response)
     }
 
     fn send_request(

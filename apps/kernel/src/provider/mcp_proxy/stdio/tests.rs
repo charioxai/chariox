@@ -455,3 +455,60 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     assert!(!Arc::ptr_eq(&a, &rotated));
     assert_eq!(supervisor.process_count(), 4);
 }
+
+#[test]
+fn a_rotated_value_restores_the_providers_handshake_on_the_replacement_process() {
+    crate::test_support::isolated_env_test!();
+    let Some(mut config) = node_stdio_config(
+        r#"
+import readline from 'node:readline'
+let initialized = false
+let notified = false
+const send = (value) => process.stdout.write(JSON.stringify(value) + '\n')
+readline.createInterface({ input: process.stdin }).on('line', (line) => {
+  const request = JSON.parse(line)
+  if (request.method === 'initialize') {
+    initialized = true
+    send({ jsonrpc: '2.0', id: request.id, result: { protocolVersion: '2025-03-26', capabilities: {}, serverInfo: { name: 'rotation', version: '1' } } })
+  } else if (request.method === 'notifications/initialized') {
+    notified = true
+  } else if (!initialized || !notified) {
+    send({ jsonrpc: '2.0', id: request.id, error: { code: -32602, message: 'not initialized' } })
+  } else {
+    send({ jsonrpc: '2.0', id: request.id, result: { value: process.env.ENVIMPL_PROJECT_KEY } })
+  }
+})
+"#,
+    ) else {
+        return;
+    };
+    if let CharioxMcpTransportConfig::Stdio { env_vars, .. } = &mut config.transport {
+        env_vars.push("ENVIMPL_PROJECT_KEY".into());
+    }
+    let key = config.definition_hash().unwrap();
+    let mut supervisor = StdioMcpSupervisor::default();
+    let values = |value: &str| BTreeMap::from([("ENVIMPL_PROJECT_KEY".into(), value.into())]);
+    let original = supervisor
+        .process(&key, "run", "session", &config, &values("before"))
+        .unwrap();
+    {
+        let mut original = original.lock().unwrap();
+        original
+            .dispatch(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}))
+            .unwrap();
+        original
+            .dispatch(json!({"jsonrpc":"2.0","method":"notifications/initialized"}))
+            .unwrap();
+    }
+    let rotated = supervisor
+        .process(&key, "run", "session", &config, &values("after"))
+        .unwrap();
+    assert!(!Arc::ptr_eq(&original, &rotated));
+    // The provider keeps its HTTP connection and never initializes again.
+    let response = rotated
+        .lock()
+        .unwrap()
+        .dispatch(json!({"jsonrpc":"2.0","id":2,"method":"tools/call"}))
+        .unwrap();
+    assert_eq!(response["result"]["value"], json!("after"), "{response}");
+}
