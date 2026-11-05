@@ -9,6 +9,15 @@ pub fn canonical_meta_tool_name(tool_name: &str) -> Option<&'static str> {
 
 pub(super) fn canonical_legacy_meta_tool_name(tool_name: &str) -> Option<&'static str> {
     match tool_name {
+        NOTIFICATION_SOURCES
+        | "chariox_notification_sources"
+        | "mcp__chariox__chariox_notification_sources" => Some(NOTIFICATION_SOURCES),
+        NOTIFICATION_SUBSCRIBE
+        | "chariox_notification_subscribe"
+        | "mcp__chariox__chariox_notification_subscribe" => Some(NOTIFICATION_SUBSCRIBE),
+        NOTIFICATION_UNSUBSCRIBE
+        | "chariox_notification_unsubscribe"
+        | "mcp__chariox__chariox_notification_unsubscribe" => Some(NOTIFICATION_UNSUBSCRIBE),
         META_HISTORY_SEARCH_TOOL
         | "chariox_meta_history_search"
         | "mcp__chariox__chariox_meta_history_search" => Some(META_HISTORY_SEARCH_TOOL),

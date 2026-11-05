@@ -842,6 +842,11 @@ impl KernelRuntimeOwnedState {
         ),
         DaemonError,
     > {
+        let publication_invocation = self.inherit_agent_notification_ancestry(
+            creator,
+            endpoint_ref,
+            publication_invocation,
+        )?;
         self.workflow_reconcile_live_orphans(session_id);
         let prepared: Result<_, DaemonError> = (|| {
             let workflow = self

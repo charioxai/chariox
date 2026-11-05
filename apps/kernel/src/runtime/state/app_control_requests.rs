@@ -136,9 +136,40 @@ impl KernelRuntimeState {
             LocalDaemonRequest::RevokeAppFileGrants(request) => &request.installation_id,
             _ => return None,
         };
-        let owner = match crate::runtime::app_control::owner(command) {
+        let caller = match crate::runtime::app_control::owner(command) {
             Ok(owner) => owner,
             Err(code) => return Some(failed(code)),
+        };
+        let owner = if let LocalDaemonRequest::ConfigureAppAutomation(configure) = request {
+            let Ok(room) = self.owned.session_store.get_session(&configure.session_id) else {
+                return Some(failed(AppRequestErrorCode::NotFound));
+            };
+            if !room.has_member(&caller) || room.status() == crate::session::SessionStatus::Ended {
+                return Some(failed(AppRequestErrorCode::Unauthorized));
+            }
+            if (room.owner_user_id() != caller || self.room_provider_origin.is_some())
+                && !self
+                    .room_notification_apps(room.id())
+                    .contains(installation)
+            {
+                return Some(failed(AppRequestErrorCode::Unauthorized));
+            }
+            if room.owner_user_id() != caller {
+                let Ok(publication) = self
+                    .owned
+                    .session_store
+                    .read()
+                    .resolve_workflow_publication_ref(room.id(), &configure.publication_ref)
+                else {
+                    return Some(failed(AppRequestErrorCode::NotFound));
+                };
+                if publication.created_by_user_id() != caller {
+                    return Some(failed(AppRequestErrorCode::Unauthorized));
+                }
+            }
+            room.owner_user_id().to_owned()
+        } else {
+            caller
         };
         if installation.is_empty()
             || installation.len() > 128
@@ -539,7 +570,7 @@ impl KernelRuntimeState {
 
     /// The active release's verified catalog. Automations are durable
     /// configuration, so a stopped, failed or never-started App needs no worker.
-    async fn app_catalog(
+    pub(super) async fn app_catalog(
         &self,
         owner: &str,
         installation: &str,
@@ -619,6 +650,14 @@ fn budget() -> AppOperationBudget {
 
 fn summary(value: &AutomationConfiguration) -> AppAutomationSummary {
     AppAutomationSummary {
+        target_kind: match value.target.kind {
+            chariox_app_runtime::app_outbox::AutomationTargetKind::Workflow => {
+                crate::local::WorkflowNotificationTargetKind::WorkflowEndpoint
+            }
+            chariox_app_runtime::app_outbox::AutomationTargetKind::Agent => {
+                crate::local::WorkflowNotificationTargetKind::Agent
+            }
+        },
         automation_id: value.automation_id.clone(),
         revision: value.revision,
         event_name: value.event_name.clone(),

@@ -182,8 +182,8 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// Peer 409 carries the final integrated local 960 Vault and Machines contract.
 /// Peer 412 carries local963 one-use Vault capture bindings.
 /// Peer 414 carries local965 integrated Vault and machine contracts.
-/// Peer 422 carries local973 per-exit notification sources and agent notification subscriptions.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 422;
+/// Peer 433 carries local973 per-exit notification sources and agent notification subscriptions.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 433;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;
@@ -2533,6 +2533,7 @@ mod workflow_notification_shapes {
             RelayPeerResponse::WorkflowNotificationSources {
                 protocol_version: RELAY_PEER_PROTOCOL_VERSION,
                 sources: vec![WorkflowNotificationSourceSummary {
+                    kind: crate::local::NotificationSourceKind::WorkflowExit,
                     source_id: "source".into(),
                     kernel_id: "kernel".into(),
                     session_id: "session".into(),
@@ -2562,7 +2563,7 @@ mod workflow_notification_shapes {
         }
         assert_eq!(
             format!("{:x}", Sha256::digest(serde_json::to_vec(&wire).unwrap())),
-            "8e88cadf45c30fbf7e3fc6321da84ad4a7a4c1fc6532768cdc1802875136d929"
+            "a1f9549c3b6d095ac7a278678549c23c6aad6d3f666645a6b43eede98e094ae8"
         );
     }
 }

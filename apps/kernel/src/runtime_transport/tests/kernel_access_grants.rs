@@ -9,6 +9,14 @@ const PASSKEY: &str = "Access TEST Passkey";
 const AUTH: &str = "test-terminal";
 const SESSION: &str = "access-session";
 
+fn kernel_access_socket(root: &Path) -> PathBuf {
+    // Isolated tests nest TMPDIR, so it cannot also be the sockaddr_un prefix.
+    PathBuf::from(format!("/tmp/chariox-{}", unsafe { libc::geteuid() })).join(format!(
+        "access-{}.sock",
+        root.file_name().unwrap().to_string_lossy()
+    ))
+}
+
 mod cover;
 mod credential_authority;
 mod outbound_credentials;
@@ -35,7 +43,7 @@ fn kernel_access_child_server() {
             let addr = tcp.local_addr().unwrap();
             let mcp = StdTcpListener::bind("127.0.0.1:0").unwrap();
             let mut config = daemon_config_for_runtime_mcp_listener(&mcp);
-            config.local_socket_path = root.join("run/k.sock");
+            config.local_socket_path = kernel_access_socket(&root);
             // Sudo exercises an ordinary home kernel. A retained publication
             // kernel has a separate preparation barrier before prompt admission.
             config.publication_control_state_root =
@@ -214,7 +222,7 @@ fn kernel_access_client_child() {
         .block_on(async {
             let (mut socket, _) = client_async(
                 "ws://localhost/kernel",
-                tokio::net::UnixStream::connect(Path::new(&root).join("run/k.sock"))
+                tokio::net::UnixStream::connect(kernel_access_socket(Path::new(&root)))
                     .await
                     .unwrap(),
             )
@@ -236,7 +244,7 @@ fn kernel_access_client_child() {
                     // The parent observes the committed effect over TCP before
                     // dropping this socket without reading its response.
                     let (fresh, _) = client_async("ws://localhost/kernel",
-                        tokio::net::UnixStream::connect(Path::new(&root).join("run/k.sock")).await.unwrap()).await.unwrap();
+                        tokio::net::UnixStream::connect(kernel_access_socket(Path::new(&root))).await.unwrap()).await.unwrap();
                     socket = fresh;
                     println!("ACCESS {{\"reconnected\":true}}");
                 } else if line == "subscriber" {
@@ -303,7 +311,7 @@ fn kernel_access_client_child() {
                     println!("ACCESS {}", serde_json::json!({"descendant": true}));
                 } else if line == "second-session" {
                     let (mut second, _) = client_async("ws://localhost/kernel",
-                        tokio::net::UnixStream::connect(Path::new(&root).join("run/k.sock")).await.unwrap()).await.unwrap();
+                        tokio::net::UnixStream::connect(kernel_access_socket(Path::new(&root))).await.unwrap()).await.unwrap();
                     second.send(Message::Text(frame(serde_json::json!({"GetSessionState":{"session_id":"other-session"}})).to_string().into())).await.unwrap();
                     let state = response(&mut second, "request").await;
                     assert!(state["error"].is_null(), "{state}");
@@ -366,7 +374,7 @@ fn kernel_access_descendant_child() {
         return;
     };
     tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
-        let (mut socket, _) = client_async("ws://localhost/kernel", tokio::net::UnixStream::connect(Path::new(&root).join("run/k.sock")).await.unwrap()).await.unwrap();
+        let (mut socket, _) = client_async("ws://localhost/kernel", tokio::net::UnixStream::connect(kernel_access_socket(Path::new(&root))).await.unwrap()).await.unwrap();
         socket.send(Message::Text(frame(serde_json::json!({"GetSessionState": {"session_id": SESSION}})).to_string().into())).await.unwrap();
         let result = response(&mut socket, "request").await;
         if std::env::var_os("CHARIOX_ACCESS_TEST_KERNEL_CHILD").is_some() {
@@ -398,7 +406,8 @@ fn kernel_access_background_process() {
             let go = root.join(format!("bg-{label}-go"));
             let result = root.join(format!("bg-{label}-result"));
             let started = std::time::Instant::now();
-            while root.join("run/k.sock").exists() && started.elapsed() < Duration::from_secs(90) {
+            while kernel_access_socket(root).exists() && started.elapsed() < Duration::from_secs(90)
+            {
                 if root.join(format!("bg-{label}-exit")).exists() {
                     return;
                 }
@@ -414,7 +423,7 @@ fn kernel_access_background_process() {
                 };
                 let (mut socket, _) = client_async(
                     "ws://localhost/kernel",
-                    tokio::net::UnixStream::connect(root.join("run/k.sock"))
+                    tokio::net::UnixStream::connect(kernel_access_socket(root))
                         .await
                         .unwrap(),
                 )
@@ -425,7 +434,10 @@ fn kernel_access_background_process() {
                     .await
                     .unwrap();
                 let reply = response(&mut socket, "request").await;
-                std::fs::write(&result, reply.to_string()).unwrap();
+                // Rename so the poller never reads a half-written reply.
+                let partial = root.join(format!("bg-{label}-result.partial"));
+                std::fs::write(&partial, reply.to_string()).unwrap();
+                std::fs::rename(&partial, &result).unwrap();
             }
         });
 }
@@ -438,7 +450,7 @@ fn kernel_access_idle_descendant() {
     };
     tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
         let root = Path::new(&root);
-        let (mut socket, _) = client_async("ws://localhost/kernel", tokio::net::UnixStream::connect(root.join("run/k.sock")).await.unwrap()).await.unwrap();
+        let (mut socket, _) = client_async("ws://localhost/kernel", tokio::net::UnixStream::connect(kernel_access_socket(root)).await.unwrap()).await.unwrap();
         socket.send(Message::Text(frame(serde_json::json!({"AttachToSession":{"session_id":SESSION,"client_id":"idle-descendant","capability_level":"FullTerminal"}})).to_string().into())).await.unwrap();
         let attach = response(&mut socket, "request").await;
         let attachment = attach["response"]["SessionAttached"]["attachment"]["id"].as_str().unwrap();
@@ -608,11 +620,11 @@ impl Kernel {
         credential_session: bool,
         extra_env: &[(&str, &Path)],
     ) -> Self {
-        // Keep macOS's 104-byte sockaddr_un limit, including the temporary prefix.
-        let root = std::env::temp_dir().join(format!("a{:08x}", rand::random::<u32>()));
+        // State follows TMPDIR; the socket uses the same bounded parent as real kernels.
+        let root = std::env::temp_dir().join(format!("a{:016x}", rand::random::<u64>()));
         std::fs::create_dir(&root).unwrap();
-        crate::config::validate_local_socket_path(&root.join("run/k.sock"))
-            .expect("the test kernel's socket does not fit under this TMPDIR; use a shorter one");
+        crate::config::validate_local_socket_path(&kernel_access_socket(&root))
+            .expect("the test kernel socket path is bounded independently of TMPDIR");
         let child = Command::new(std::env::current_exe().unwrap())
             .args(["kernel_access_child_server", "--ignored", "--nocapture"])
             .env("CHARIOX_ACCESS_TEST_ROOT", &root)
@@ -667,7 +679,7 @@ impl Kernel {
             popups,
         };
         timeout(Duration::from_secs(5), async {
-            while !kernel.root.join("run/k.sock").exists() {
+            while !kernel_access_socket(&kernel.root).exists() {
                 sleep(Duration::from_millis(20)).await;
             }
         })
@@ -768,7 +780,10 @@ impl Kernel {
     }
     async fn control(&self, action: &str) {
         let _ = std::fs::remove_file(self.root.join("ack"));
-        std::fs::write(self.root.join("command"), action).unwrap();
+        // Renamed into place: the kernel polls this file, and one that read it
+        // between creation and the write took an empty command and dropped it.
+        std::fs::write(self.root.join("command.tmp"), action).unwrap();
+        std::fs::rename(self.root.join("command.tmp"), self.root.join("command")).unwrap();
         timeout(Duration::from_secs(15), async {
             loop {
                 if std::fs::read_to_string(self.root.join("ack")).is_ok_and(|a| a == action) {
@@ -778,7 +793,7 @@ impl Kernel {
             }
         })
         .await
-        .unwrap();
+        .unwrap_or_else(|_| panic!("the kernel did not acknowledge `{action}` within 15 s"));
     }
 }
 impl Drop for Kernel {
@@ -803,6 +818,7 @@ impl Drop for Kernel {
                 }
             }
         }
+        let _ = std::fs::remove_file(kernel_access_socket(&self.root));
         let _ = std::fs::remove_dir_all(&self.root);
     }
 }
@@ -905,7 +921,7 @@ async fn kernel_access_grants_authorize_all_local_sessions_and_refuse_siblings_a
         request
             .headers_mut()
             .insert(header, HeaderValue::from_static("refused"));
-        let stream = tokio::net::UnixStream::connect(kernel.root.join("run/k.sock"))
+        let stream = tokio::net::UnixStream::connect(kernel_access_socket(&kernel.root))
             .await
             .unwrap();
         let result = client_async(request, stream).await;

@@ -62,6 +62,7 @@ impl KernelRuntimeState {
         tokio::spawn(async move {
             runtime.route_remote_workflow_notifications().await;
             runtime.route_agent_notifications().await;
+            runtime.route_app_agent_notifications(&leases).await;
             let owned = runtime.owned.clone();
             let result = tokio::task::spawn_blocking(move || {
                 let output = owned.pump_app_event_pass(&pass, leases);

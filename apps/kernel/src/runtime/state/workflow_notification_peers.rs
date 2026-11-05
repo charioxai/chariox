@@ -772,6 +772,14 @@ mod tests {
     #[tokio::test]
     async fn member_lists_only_this_rooms_sources() {
         let mut f = Fixture::for_kernel("notification-home");
+        let mut room = f.sessions.get_session(&f.session).unwrap();
+        room.add_member(
+            "member",
+            Some("local".into()),
+            crate::session::CollaborationLevel::Full,
+        );
+        f.sessions.restore_session(room);
+
         let (workflow, _, _) = f.workflow("source");
         let (_, runtime, mut config) = peer(&mut f, "ws://127.0.0.1:1", "test-only");
         let source = f.source(&workflow);
@@ -810,6 +818,7 @@ mod tests {
             assert_eq!(
                 sources
                     .iter()
+                    .filter(|s| s.kind == crate::local::NotificationSourceKind::WorkflowExit)
                     .map(|s| s.source_id.as_str())
                     .collect::<Vec<_>>(),
                 vec![source.source_id.as_str()],

@@ -12,7 +12,9 @@ mod transactions;
 use crate::app_catalog::{AppCatalog, CatalogError};
 pub use admission::{EventCatalog, VerifiedAutomation};
 use chariox_app_package::VerifiedApp;
-pub use configuration::{AutomationConfiguration, AutomationStatus, AutomationTarget};
+pub use configuration::{
+    AutomationConfiguration, AutomationStatus, AutomationTarget, AutomationTargetKind,
+};
 pub use identity::occurrence_id;
 pub use invocation::{Artifact, Invocation, MAX_ARTIFACTS, MAX_INVOCATION_BYTES, MAX_PROMPT_BYTES};
 pub use maintenance::Maintenance;
@@ -183,6 +185,24 @@ impl AppOutbox {
         kernel_now_ms: u64,
         limit: usize,
     ) -> Result<Vec<Receipt>> {
+        Self::pending_for_target_in(
+            transaction,
+            catalog,
+            trusted_owner,
+            kernel_now_ms,
+            limit,
+            None,
+        )
+    }
+
+    pub fn pending_for_target_in(
+        transaction: &Transaction<'_>,
+        catalog: &EventCatalog,
+        trusted_owner: &str,
+        kernel_now_ms: u64,
+        limit: usize,
+        target: Option<AutomationTargetKind>,
+    ) -> Result<Vec<Receipt>> {
         catalog.require_current(transaction, trusted_owner)?;
         time(kernel_now_ms)?;
         if !(1..=64).contains(&limit) {
@@ -194,6 +214,7 @@ impl AppOutbox {
             catalog.installation_id(),
             kernel_now_ms,
             limit,
+            target,
         )
     }
 }

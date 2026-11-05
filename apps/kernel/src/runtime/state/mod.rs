@@ -245,6 +245,7 @@ struct KernelRuntimeOwnedState {
     kernel_access: crate::runtime::kernel_access::AccessStore,
     sudo_turns: sudo::SudoStore,
     agent_auth_registrations: agent_auth::RegistrationClaims,
+    vault_capture_claims: vault_command::CaptureClaims,
     /// Window timer proof of life: entry -> (armed revision, alerted revision).
     sudo_timers: Arc<std::sync::Mutex<BTreeMap<String, (u64, u64)>>>,
     sudo_timer_changes: Arc<RuntimeChangeSignal>,
@@ -465,6 +466,8 @@ mod agent_archive_runtime_state;
 mod agent_config_owned_state;
 mod agent_config_runtime_state;
 mod agent_lifecycle_owned_state;
+mod agent_notification_ancestry;
+mod agent_notification_app;
 mod agent_profile_compaction;
 mod agent_profile_owned_state;
 mod agent_trigger_gateway;
@@ -477,6 +480,7 @@ mod attachment_owned_state;
 mod browser_controller_action_cancellation_runtime_state;
 mod browser_controller_action_execution_runtime_state;
 mod browser_controller_compatibility_runtime_state;
+mod owner_action_notifications;
 mod wake_driver;
 pub(crate) use browser_controller_action_execution_runtime_state::BrowserControllerActionExecution;
 mod browser_configuration_runtime_state;
@@ -1041,6 +1045,7 @@ impl KernelRuntimeState {
                 kernel_access: Default::default(),
                 sudo_turns: sudo_windows.store(),
                 agent_auth_registrations: Default::default(),
+                vault_capture_claims: Default::default(),
                 sudo_timers: Default::default(),
                 sudo_timer_changes: Default::default(),
                 sudo_verified_at: Default::default(),
@@ -1520,5 +1525,7 @@ mod leased_worker_stop_obligation;
 mod room_dispatch_obligation;
 mod terminal_wake;
 mod terminal_wake_worker;
+#[cfg(test)]
+mod workflow_blocked_claim_retry_tests;
 // MD-3: typed internal seam for display integration; public protocol remains coordinator-owned.
 pub(crate) use kernel_browser_runtime::{KernelBrowserDisplayRequest, KernelBrowserPushCredit};

@@ -4,7 +4,7 @@ import { chooseNotificationSource } from "./notification-source-reference.js"
 import type { WorkflowNotificationSourceSummary } from "./kernel-types.js"
 
 const source = (id: string, name: string, kernel: string, available = true): WorkflowNotificationSourceSummary =>
-  ({ source_id: id, kernel_id: kernel, session_id: "room", workflow_id: "w", exit_node_id: "n", exit_ordinal: 1, name, display_name: name, available })
+  ({ kind: "workflow_exit", source_id: id, kernel_id: kernel, session_id: "room", workflow_id: "w", exit_node_id: "n", exit_ordinal: 1, name, display_name: name, available })
 const sources = [source("wf_a", "Release pipeline-1", "Studio"), source("wf_b", "Release pipeline-2", "Studio"), source("wf_c", "Deploy", "Laptop", false)]
 
 test("a source name with spaces leaves the rest as the prompt", () => {

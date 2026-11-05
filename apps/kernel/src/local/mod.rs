@@ -4,10 +4,11 @@ pub use api::{
 };
 pub use api::{
     AttachWorkflowNotificationRequest, DetachWorkflowNotificationRequest,
-    ListWorkflowNotificationsRequest, RegisterWorkflowNotificationSourceRequest,
-    WorkflowNotificationAck, WorkflowNotificationDiagnostic, WorkflowNotificationEnvelope,
-    WorkflowNotificationSource, WorkflowNotificationSourceSummary,
-    WorkflowNotificationSubscription, WorkflowNotificationTargetKind, NOTIFICATION_RETENTION_MS,
+    ListWorkflowNotificationsRequest, NotificationSourceKind,
+    RegisterWorkflowNotificationSourceRequest, WorkflowNotificationAck,
+    WorkflowNotificationDiagnostic, WorkflowNotificationEnvelope, WorkflowNotificationSource,
+    WorkflowNotificationSourceSummary, WorkflowNotificationSubscription,
+    WorkflowNotificationTargetKind, NOTIFICATION_RETENTION_MS,
 };
 pub use api::{CreatedResource, CreatedResourceState, ResourceRevokeMethod};
 mod api;

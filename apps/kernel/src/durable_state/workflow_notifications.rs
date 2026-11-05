@@ -132,6 +132,12 @@ pub(crate) struct SourceAdmission {
 }
 pub(crate) enum NotificationOperation {
     Register(SourceAdmission),
+    EmitOwnerAction {
+        source_id: String,
+        occurrence_id: String,
+        output: crate::session::WorkflowOutputPayload,
+        at: u64,
+    },
     Attach {
         subscription: WorkflowNotificationSubscription,
         target: WorkflowNotificationTarget,
@@ -361,6 +367,28 @@ fn apply(
     op: NotificationOperation,
 ) -> Result<NotificationOutcome, DaemonError> {
     match op {
+        NotificationOperation::EmitOwnerAction {
+            source_id,
+            occurrence_id,
+            output,
+            at,
+        } => {
+            let source = load_source(tx, &source_id)?;
+            if source.kind != crate::local::NotificationSourceKind::OwnerAction {
+                return Err(error("not an owner action source"));
+            }
+            let inserted = tx
+                .execute(
+                    "INSERT OR IGNORE INTO workflow_notification_occurrences VALUES (?1,?2,NULL)",
+                    params![source_id, occurrence_id],
+                )
+                .map_err(sql)?;
+            if inserted != 0 {
+                completion::publish_in(tx, &source, &occurrence_id, output, Vec::new(), at)?;
+                prune_occurrences(tx).map_err(sql)?;
+            }
+            Ok(NotificationOutcome::Source(source))
+        }
         NotificationOperation::Register(admission) => {
             let mut source = admission.source;
             require_source_workflow(tx, &source, Some(&admission.workflow_json))?;
@@ -442,7 +470,7 @@ fn apply(
             prompt_id,
             session_id,
         } => {
-            tx.execute("UPDATE app_outbox SET state='queued',queued_prompt_id=?4,queued_session_id=?5 WHERE source_kind='workflow_completion' AND automation_id=?1 AND installation_id=?2 AND occurrence_id=?3 AND state='accepted'",params![subscription_id,source_id,occurrence_id,prompt_id,session_id]).map_err(sql)?;
+            tx.execute("UPDATE app_outbox SET state='queued',queued_prompt_id=?4,queued_session_id=?5,invocation_json=json_object('ancestry',json_extract(payload_json,'$.ancestry')) WHERE source_kind='workflow_completion' AND automation_id=?1 AND installation_id=?2 AND occurrence_id=?3 AND state='accepted'",params![subscription_id,source_id,occurrence_id,prompt_id,session_id]).map_err(sql)?;
             Ok(NotificationOutcome::Queued)
         }
         NotificationOperation::Granted { grant, attach } => {
@@ -548,6 +576,9 @@ fn require_source_workflow(
     source: &WorkflowNotificationSource,
     expected: Option<&str>,
 ) -> Result<(), DaemonError> {
+    if source.kind == crate::local::NotificationSourceKind::OwnerAction {
+        return Ok(());
+    }
     let current: Option<String> = tx.query_row("SELECT payload_json FROM durable_workflow_hot_entities WHERE owner_id=?1 AND session_id=?2 AND entity_kind='workflow' AND entity_id=?3",params![source.kernel_id,source.session_id,source.workflow_id],|r|r.get(0)).optional().map_err(sql)?;
     if current.is_none() || expected.is_some_and(|expected| current.as_deref() != Some(expected)) {
         return Err(error("source not available"));
@@ -739,4 +770,19 @@ pub(crate) fn receipt_id(
             .as_bytes()
         )
     ))
+}
+
+impl DurableKernelStateStore {
+    pub(crate) fn agent_notification_ancestry(
+        &self,
+        session: &str,
+        prompt: &str,
+    ) -> Result<Option<Vec<String>>, DaemonError> {
+        let db = self.lock_connection("workflow.notifications.ancestry")?;
+        let ancestry: Option<String> = db.query_row(
+            "SELECT json_extract(invocation_json,'$.ancestry') FROM app_outbox WHERE source_kind='workflow_completion' AND queued_session_id=?1 AND queued_prompt_id=?2",
+            params![session,prompt], |row| row.get(0),
+        ).optional().map_err(sql)?.flatten();
+        ancestry.as_deref().map(decode).transpose()
+    }
 }

@@ -626,6 +626,7 @@ pub enum AppAutomationStatus {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AppAutomationSummary {
+    pub target_kind: super::WorkflowNotificationTargetKind,
     pub automation_id: String,
     pub revision: u64,
     pub event_name: String,

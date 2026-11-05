@@ -27,6 +27,7 @@ pub struct ListWorkflowNotificationsRequest {
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkflowNotificationSource {
+    pub kind: NotificationSourceKind,
     pub source_id: String,
     pub owner_user_id: String,
     pub kernel_id: String,
@@ -103,6 +104,7 @@ pub struct WorkflowNotificationDiagnostic {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorkflowNotificationSourceSummary {
+    pub kind: NotificationSourceKind,
     pub source_id: String,
     pub kernel_id: String,
     pub session_id: String,
@@ -129,4 +131,11 @@ pub enum WorkflowNotificationTargetKind {
     #[default]
     WorkflowEndpoint,
     Agent,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NotificationSourceKind {
+    WorkflowExit,
+    OwnerAction,
 }

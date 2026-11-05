@@ -19,9 +19,9 @@ use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
 const AGENT_QUEUE_ID: &str = "agent";
 
 /// A source the agent may subscribe to, as the picker names it.
-struct ResolvedSource {
-    kernel_id: String,
-    display_name: String,
+pub(super) struct ResolvedSource {
+    pub(in crate::runtime::state) kernel_id: String,
+    pub(in crate::runtime::state) display_name: String,
 }
 
 impl KernelRuntimeState {
@@ -30,6 +30,7 @@ impl KernelRuntimeState {
         request: CreateAgentTriggerRequest,
         caller: &str,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.authorize_current_external_command()?;
         let crate::local::AgentTriggerSourceRequest::Notification { source } = &request.source
         else {
             return Err(store::error("not a notification trigger"));
@@ -65,15 +66,21 @@ impl KernelRuntimeState {
                     &request.session_id,
                     source_id,
                 )?,
-            AgentTriggerNotificationSource::App { .. } => {
-                return Err(store::error(
-                    "App notification triggers are not available yet",
-                ))
+            AgentTriggerNotificationSource::App {
+                installation_id,
+                event_name,
+            } => {
+                self.resolve_app_notification_source(
+                    &owner,
+                    caller,
+                    &request.session_id,
+                    installation_id,
+                    event_name,
+                )
+                .await?
             }
         };
-        let AgentTriggerNotificationSource::Workflow { source_id } = source else {
-            unreachable!("App sources returned above")
-        };
+        self.authorize_current_external_command()?;
         let subscription_id = format!("wf_subscription_{:032x}", rand::random::<u128>());
         let trigger = self
             .owned
@@ -88,31 +95,48 @@ impl KernelRuntimeState {
                 resolved.display_name,
                 request.prompt,
             )?;
-        let subscription = WorkflowNotificationSubscription {
-            subscription_id,
-            source_id: source_id.clone(),
-            owner_user_id: owner.clone(),
-            created_by_user_id: caller.into(),
-            target_kernel_id: home.clone(),
-            target_kind: WorkflowNotificationTargetKind::Agent,
-            session_id: request.session_id.clone(),
-            workflow_id: String::new(),
-            publication_id: trigger.id().into(),
-            endpoint_id: request.agent_id.clone(),
-            queue_id: AGENT_QUEUE_ID.into(),
-            source_available: true,
-            source_kernel_id: resolved.kernel_id,
-            agent_id: Some(request.agent_id.clone()),
-            trigger_id: Some(trigger.id().into()),
+        let subscription = if let AgentTriggerNotificationSource::Workflow { source_id } = source {
+            Some(WorkflowNotificationSubscription {
+                subscription_id,
+                source_id: source_id.clone(),
+                owner_user_id: owner.clone(),
+                created_by_user_id: caller.into(),
+                target_kernel_id: home.clone(),
+                target_kind: WorkflowNotificationTargetKind::Agent,
+                session_id: request.session_id.clone(),
+                workflow_id: String::new(),
+                publication_id: trigger.id().into(),
+                endpoint_id: request.agent_id.clone(),
+                queue_id: AGENT_QUEUE_ID.into(),
+                source_available: true,
+                source_kernel_id: resolved.kernel_id,
+                agent_id: Some(request.agent_id.clone()),
+                trigger_id: Some(trigger.id().into()),
+            })
+        } else {
+            None
         };
-        if let Err(error) = self
-            .subscribe_agent_notification(&owner, &home, subscription.clone())
-            .await
-        {
+        let subscribed = match &subscription {
+            Some(subscription) => {
+                self.subscribe_agent_notification(&owner, &home, subscription.clone())
+                    .await
+            }
+            None => {
+                self.subscribe_app_agent_notification(
+                    &owner,
+                    &request.session_id,
+                    &request.agent_id,
+                    &trigger,
+                )
+                .await
+            }
+        };
+        if let Err(error) = subscribed.and_then(|_| self.authorize_current_external_command()) {
             self.owned
                 .session_store
                 .write()
                 .delete_agent_trigger(&request.session_id, trigger.id())?;
+            self.detach_deleted_notification_trigger(&trigger).await;
             return Err(error);
         }
         let session = match self
@@ -125,7 +149,7 @@ impl KernelRuntimeState {
                     .session_store
                     .write()
                     .delete_agent_trigger(&request.session_id, trigger.id())?;
-                self.detach_agent_notification(&subscription).await;
+                self.detach_deleted_notification_trigger(&trigger).await;
                 return Err(error);
             }
         };
@@ -164,7 +188,7 @@ impl KernelRuntimeState {
             ));
         }
         let home = self.owned.config_projection.snapshot().daemon_id;
-        let guest = caller != owner;
+        let guest = caller != owner || self.room_provider_origin.is_some();
         let (local, _, _) = self
             .owned
             .durable_state_store
@@ -230,7 +254,7 @@ impl KernelRuntimeState {
         source_id: &str,
     ) -> Result<ResolvedSource, DaemonError> {
         let home = self.owned.config_projection.snapshot().daemon_id;
-        let guest = caller != owner;
+        let guest = caller != owner || self.room_provider_origin.is_some();
         let (sources, _, _) = self
             .owned
             .durable_state_store
@@ -341,6 +365,16 @@ impl KernelRuntimeState {
     /// A deleted notification trigger stops receiving at once; other ways a trigger can
     /// vanish (archive, removal, room end) are caught by the pump's reconcile.
     pub(super) async fn detach_deleted_notification_trigger(&self, trigger: &AgentTrigger) {
+        if matches!(
+            trigger.source(),
+            AgentTriggerSource::Notification {
+                source: AgentTriggerNotificationSource::App { .. },
+                ..
+            }
+        ) {
+            self.detach_app_agent_notification(trigger).await;
+            return;
+        }
         let Some(subscription_id) = notification_subscription_id(trigger) else {
             return;
         };
@@ -453,12 +487,23 @@ impl KernelRuntimeState {
             .trigger_id
             .as_deref()
             .ok_or_else(|| store::error("notification identifier invalid"))?;
-        let payload = serde_json::json!({
-            "source": envelope.display_name,
-            "source_id": envelope.source_id,
-            "occurrence_id": envelope.occurrence_id,
-            "output": envelope.output,
-        });
+        let payload = serde_json::to_value(&envelope)
+            .map_err(|_| store::error("notification encoding failed"))?;
+        if let Some(prompt_id) = self
+            .queue_agent_notification_input(session_id, trigger_id, payload)
+            .await?
+        {
+            self.settle_agent_notification(subscription, &envelope, &prompt_id)?;
+        }
+        Ok(())
+    }
+
+    pub(super) async fn queue_agent_notification_input(
+        &self,
+        session_id: &str,
+        trigger_id: &str,
+        payload: serde_json::Value,
+    ) -> Result<Option<String>, DaemonError> {
         let Some(dispatch) = self.owned.session_store.write().claim_input_agent_trigger(
             session_id,
             trigger_id,
@@ -467,7 +512,7 @@ impl KernelRuntimeState {
         )?
         else {
             // Off, or mid-firing: the accepted occurrence waits for the next pass.
-            return Ok(());
+            return Ok(None);
         };
         let now = crate::session::unix_epoch_ms();
         match self.fire_agent_trigger(&dispatch).await {
@@ -485,11 +530,9 @@ impl KernelRuntimeState {
                 )?;
                 self.owned
                     .persist_agent_trigger_session(session_id, "agent_trigger_invoked")?;
-                self.settle_agent_notification(subscription, &envelope, &prompt_id)
+                Ok(Some(prompt_id))
             }
-            Ok(AgentTriggerFiring::Settled { prompt_id }) => {
-                self.settle_agent_notification(subscription, &envelope, &prompt_id)
-            }
+            Ok(AgentTriggerFiring::Settled { prompt_id }) => Ok(Some(prompt_id)),
             Ok(
                 AgentTriggerFiring::Skipped
                 | AgentTriggerFiring::Coalesced
@@ -500,7 +543,7 @@ impl KernelRuntimeState {
                     .session_store
                     .write()
                     .defer_agent_trigger(session_id, trigger_id, now)?;
-                Ok(())
+                Ok(None)
             }
             Err(error) => {
                 self.owned.session_store.write().mark_agent_trigger_failed(
@@ -542,11 +585,15 @@ impl KernelRuntimeOwnedState {
         let Ok(session) = self.session_store.get_session(&subscription.session_id) else {
             return false;
         };
-        session.owner_user_id() == subscription.owner_user_id
+        session.status() != crate::session::SessionStatus::Ended
+            && session.has_member(&subscription.created_by_user_id)
+            && session.owner_user_id() == subscription.owner_user_id
             && self
                 .agent_store
                 .get_agent(&subscription.endpoint_id)
-                .is_ok()
+                .is_ok_and(|agent| {
+                    !agent.archived() && agent.session_id() == subscription.session_id
+                })
             && session.agent_triggers().iter().any(|trigger| {
                 Some(trigger.id()) == subscription.trigger_id.as_deref()
                     && trigger.agent_id() == subscription.endpoint_id
@@ -570,433 +617,5 @@ pub(super) fn notification_subscription_id(trigger: &AgentTrigger) -> Option<&st
 }
 
 #[cfg(test)]
-mod tests {
-    use super::super::local_prompt_dispatch_runtime::tests::runtime_with_active_prompt;
-    use super::*;
-    use crate::local::{
-        AgentTriggerSourceRequest, DeleteAgentTriggerRequest, ListWorkflowNotificationsRequest,
-        LocalDaemonRequest, RegisterWorkflowNotificationSourceRequest, UpdateAgentTriggerRequest,
-    };
-    use crate::session::{
-        AgentTriggerBusyPolicy, WorkflowNodeRun, WorkflowNodeRunStatus, WorkflowOutputPayload,
-        WorkflowRun, WorkflowRunStatus,
-    };
-
-    struct Rig {
-        _root: crate::test_support::TestWorktree,
-        runtime: KernelRuntimeState,
-        session_id: String,
-        agent_id: String,
-    }
-
-    async fn rig() -> Rig {
-        let (root, runtime, session_id, agent_id, _, _, _) = runtime_with_active_prompt().await;
-        Rig {
-            _root: root,
-            runtime,
-            session_id,
-            agent_id,
-        }
-    }
-
-    impl Rig {
-        /// A workflow whose one node is its exit; returns the workflow id.
-        fn workflow_with_exit(&self, name: &str) -> String {
-            let mut sessions = self.runtime.owned.session_store.write();
-            let workflow = sessions
-                .create_workflow(&self.session_id, Some(name.into()))
-                .unwrap();
-            let node = sessions
-                .add_workflow_node(&self.session_id, workflow.id(), "agent")
-                .unwrap();
-            let mut session = sessions.get_session(&self.session_id).unwrap();
-            session
-                .workflow_mut(workflow.id())
-                .unwrap()
-                .node_mut(node.id())
-                .unwrap()
-                .set_can_complete_workflow_run(true);
-            sessions.restore_session(session.clone());
-            drop(sessions);
-            self.runtime
-                .owned
-                .durable_state_store
-                .persist_workflow_runtime_transition(&session, "agent notification rig")
-                .unwrap();
-            workflow.id().into()
-        }
-
-        fn register(&self, workflow: &str) -> String {
-            let response = self
-                .runtime
-                .execute_workflow_notification_request(
-                    LocalDaemonRequest::RegisterWorkflowNotificationSource(
-                        RegisterWorkflowNotificationSourceRequest {
-                            session_id: self.session_id.clone(),
-                            workflow_ref: workflow.into(),
-                            exit_node_id: "exit-1".into(),
-                            enabled: true,
-                        },
-                    ),
-                    "local",
-                )
-                .unwrap();
-            let LocalDaemonResponse::WorkflowNotificationSourceRegistered { source } = response
-            else {
-                panic!()
-            };
-            source.source_id
-        }
-
-        fn complete(&self, workflow: &str, run_id: &str, message: &str) {
-            let session = self
-                .runtime
-                .owned
-                .session_store
-                .get_session(&self.session_id)
-                .unwrap();
-            let exit = session
-                .workflow(workflow)
-                .unwrap()
-                .nodes()
-                .iter()
-                .find(|node| node.can_complete_workflow_run())
-                .unwrap()
-                .id()
-                .to_owned();
-            let node_run = format!("node-run-{run_id}");
-            let mut run = WorkflowRun::new(
-                run_id,
-                workflow,
-                "endpoint",
-                "node",
-                None,
-                None,
-                vec![WorkflowNodeRun::new(
-                    &node_run,
-                    exit,
-                    "agent",
-                    0,
-                    WorkflowNodeRunStatus::Completed,
-                )],
-                vec![],
-            );
-            run.set_invocation_context(0, None, None, 0, None);
-            run.set_final_output(
-                Some(WorkflowOutputPayload::new(message, vec![])),
-                Some(true),
-                None,
-                Some(node_run),
-            );
-            run.set_status(WorkflowRunStatus::Completed);
-            let mut session = session;
-            session.create_workflow_run(run);
-            self.runtime
-                .owned
-                .session_store
-                .write()
-                .restore_session(session.clone());
-            self.runtime
-                .owned
-                .durable_state_store
-                .persist_workflow_runtime_transition(&session, "agent notification rig run")
-                .unwrap();
-        }
-
-        fn request(&self, source_id: &str) -> CreateAgentTriggerRequest {
-            CreateAgentTriggerRequest {
-                session_id: self.session_id.clone(),
-                agent_id: self.agent_id.clone(),
-                source: AgentTriggerSourceRequest::Notification {
-                    source: AgentTriggerNotificationSource::Workflow {
-                        source_id: source_id.into(),
-                    },
-                },
-                busy_policy: None,
-                prompt: Some("Triage what the pipeline reports".into()),
-            }
-        }
-
-        async fn pass(&self) {
-            self.runtime.owned.route_workflow_notifications();
-            self.runtime.route_agent_notifications().await;
-            // Accepted occurrences are queued by the pass after the one that accepted them.
-            self.runtime.owned.route_workflow_notifications();
-            self.runtime.route_agent_notifications().await;
-        }
-
-        fn queued_prompts(&self) -> Vec<String> {
-            let session = self
-                .runtime
-                .owned
-                .session_snapshot(&self.session_id)
-                .unwrap();
-            let (_, queued) = self
-                .runtime
-                .owned
-                .prompt_state_owner
-                .state_parts(&session, &self.agent_id);
-            queued.iter().map(|p| p.prompt().to_owned()).collect()
-        }
-
-        fn subscriptions(&self) -> Vec<WorkflowNotificationSubscription> {
-            self.runtime.agent_notification_subscriptions()
-        }
-    }
-
-    // MP-08 / MP-10 (VS-S2-2): every occurrence is queued, none coalesced.
-    #[tokio::test]
-    async fn an_agent_notification_trigger_queues_every_occurrence() {
-        let rig = rig().await;
-        let workflow = rig.workflow_with_exit("pipeline");
-        let source = rig.register(&workflow);
-
-        let mut refused = rig.request(&source);
-        refused.busy_policy = Some(AgentTriggerBusyPolicy::Steer);
-        assert!(rig
-            .runtime
-            .create_agent_trigger(refused, "local")
-            .await
-            .is_err());
-        let LocalDaemonResponse::AgentTriggerCreated { trigger, .. } = rig
-            .runtime
-            .create_agent_trigger(rig.request(&source), "local")
-            .await
-            .unwrap()
-        else {
-            panic!()
-        };
-        assert_eq!(trigger.busy_policy(), AgentTriggerBusyPolicy::Queue);
-        assert!(matches!(
-            trigger.source(),
-            AgentTriggerSource::Notification { display_name, .. } if display_name == "pipeline"
-        ));
-        assert!(rig
-            .runtime
-            .update_agent_trigger(
-                UpdateAgentTriggerRequest {
-                    session_id: rig.session_id.clone(),
-                    trigger_id: trigger.id().into(),
-                    busy_policy: Some(AgentTriggerBusyPolicy::Steer),
-                    prompt: None,
-                    enabled: None,
-                },
-                "local",
-            )
-            .await
-            .is_err());
-
-        for n in 0..3 {
-            rig.complete(
-                &workflow,
-                &format!("run-{n}"),
-                &format!("release {n} approved"),
-            );
-        }
-        rig.pass().await;
-        let queued = rig.queued_prompts();
-        assert_eq!(queued.len(), 3, "{queued:?}");
-        for (n, text) in queued.iter().enumerate() {
-            assert!(text.starts_with(
-                "Triage what the pipeline reports\n\n<chariox-trigger-input kind=\"notification\">"
-            ));
-            assert!(text.contains(&format!("release {n} approved")), "{text}");
-            assert!(text.contains("\"source\":\"pipeline\""), "{text}");
-        }
-        let session = rig.runtime.owned.session_snapshot(&rig.session_id).unwrap();
-        assert_eq!(session.agent_triggers()[0].fired(), 3);
-        assert_eq!(session.agent_triggers()[0].coalesced(), 0);
-        // Settled receipts are not delivered twice.
-        rig.pass().await;
-        assert_eq!(rig.queued_prompts().len(), 3);
-    }
-
-    // MP-08 / MP-10 (VS-S2-5): a subscription lasts as long as its trigger and agent.
-    #[tokio::test]
-    async fn deleting_the_trigger_or_losing_the_agent_ends_the_subscription() {
-        for removal in ["delete", "agent_trigger_removed", "agent_archived"] {
-            let rig = rig().await;
-            let workflow = rig.workflow_with_exit("pipeline");
-            let source = rig.register(&workflow);
-            let LocalDaemonResponse::AgentTriggerCreated { trigger, .. } = rig
-                .runtime
-                .create_agent_trigger(rig.request(&source), "local")
-                .await
-                .unwrap()
-            else {
-                panic!()
-            };
-            assert_eq!(rig.subscriptions().len(), 1, "{removal}");
-            match removal {
-                "delete" => {
-                    rig.runtime
-                        .delete_agent_trigger(
-                            DeleteAgentTriggerRequest {
-                                session_id: rig.session_id.clone(),
-                                trigger_id: trigger.id().into(),
-                            },
-                            "local",
-                        )
-                        .await
-                        .unwrap();
-                }
-                "agent_trigger_removed" => {
-                    rig.runtime
-                        .owned
-                        .session_store
-                        .write()
-                        .remove_agent_triggers_for_agent(&rig.session_id, &rig.agent_id)
-                        .unwrap();
-                }
-                _ => {
-                    rig.runtime
-                        .set_agent_archived_without_cleanup_for_test(&rig.agent_id, true);
-                    rig.runtime
-                        .owned
-                        .session_store
-                        .write()
-                        .remove_agent_triggers_for_agent(&rig.session_id, &rig.agent_id)
-                        .unwrap();
-                }
-            }
-            rig.complete(&workflow, "after", "released");
-            rig.pass().await;
-            assert!(rig.subscriptions().is_empty(), "{removal}");
-            assert!(rig.queued_prompts().is_empty(), "{removal}");
-            let LocalDaemonResponse::WorkflowNotifications { subscriptions, .. } = rig
-                .runtime
-                .execute_workflow_notification_request(
-                    LocalDaemonRequest::ListWorkflowNotifications(
-                        ListWorkflowNotificationsRequest {
-                            session_id: rig.session_id.clone(),
-                        },
-                    ),
-                    "local",
-                )
-                .unwrap()
-            else {
-                panic!()
-            };
-            assert!(subscriptions.is_empty(), "{removal}");
-        }
-    }
-
-    // MP-08 / MP-10 / MP-11 (VS-S1-6, VS-S4-3): a collaborator's agent sees this room's sources only.
-    #[tokio::test]
-    async fn a_collaborator_resolves_only_this_rooms_sources() {
-        let rig = rig().await;
-        let workflow = rig.workflow_with_exit("pipeline");
-        let source = rig.register(&workflow);
-        let owner = "local";
-        assert!(rig
-            .runtime
-            .resolve_workflow_notification_source(owner, "guest", &rig.session_id, &source)
-            .is_ok());
-        assert!(
-            rig.runtime
-                .resolve_workflow_notification_source(owner, "guest", "another-room", &source)
-                .is_err(),
-            "a source of another room is not this room's"
-        );
-        assert!(rig
-            .runtime
-            .resolve_workflow_notification_source(owner, owner, "another-room", &source)
-            .is_ok());
-    }
-
-    // MP-08 / MP-10 (VS-S2-1): a source on another kernel delivers through the peer channel; the
-    // subscriber kernel admits it for the agent and queues it, and refuses once the trigger is gone.
-    #[tokio::test]
-    async fn a_remote_occurrence_is_admitted_for_the_agent_and_refused_without_its_trigger() {
-        let rig = rig().await;
-        let owner = "local";
-        let source_id = "wf_source_remote";
-        let trigger = rig
-            .runtime
-            .owned
-            .session_store
-            .write()
-            .create_agent_notification_trigger(
-                &rig.session_id,
-                &rig.agent_id,
-                owner,
-                AgentTriggerNotificationSource::Workflow {
-                    source_id: source_id.into(),
-                },
-                "sub-remote".into(),
-                "Studio pipeline".into(),
-                None,
-            )
-            .unwrap();
-        rig.runtime
-            .owned
-            .persist_agent_trigger_session(&rig.session_id, "agent_trigger_created")
-            .unwrap();
-        let home = rig.runtime.owned.config_projection.snapshot().daemon_id;
-        let subscription = WorkflowNotificationSubscription {
-            subscription_id: "sub-remote".into(),
-            source_id: source_id.into(),
-            owner_user_id: owner.into(),
-            created_by_user_id: owner.into(),
-            target_kernel_id: home,
-            target_kind: WorkflowNotificationTargetKind::Agent,
-            session_id: rig.session_id.clone(),
-            workflow_id: String::new(),
-            publication_id: trigger.id().into(),
-            endpoint_id: rig.agent_id.clone(),
-            queue_id: AGENT_QUEUE_ID.into(),
-            source_available: true,
-            source_kernel_id: "remote-kernel".into(),
-            agent_id: Some(rig.agent_id.clone()),
-            trigger_id: Some(trigger.id().into()),
-        };
-        rig.runtime
-            .owned
-            .durable_state_store
-            .notify(NotificationOperation::RemoteAttach {
-                subscription: subscription.clone(),
-            })
-            .unwrap();
-        let envelope =
-            |occurrence: &str, message: &str| crate::local::WorkflowNotificationEnvelope {
-                source_id: source_id.into(),
-                display_name: "Studio pipeline".into(),
-                occurrence_id: occurrence.into(),
-                output: WorkflowOutputPayload::new(message, vec![]),
-                ancestry: vec!["[\"remote-kernel\",\"room\",\"wf\"]".into()],
-                deadline_ms: crate::session::unix_epoch_ms() + 86_400_000,
-            };
-        let deliver = |occurrence: &str, message: &str| {
-            rig.runtime.receive_workflow_notification_peer(
-                "remote-kernel",
-                owner,
-                RelayPeerRequest::DeliverWorkflowNotification {
-                    protocol_version: VERSION,
-                    subscription_id: "sub-remote".into(),
-                    envelope: envelope(occurrence, message),
-                },
-            )
-        };
-        assert!(matches!(
-            deliver("run-1", "shipped").unwrap(),
-            RelayPeerResponse::WorkflowNotificationAccepted {
-                ack: crate::local::WorkflowNotificationAck::Accepted
-            }
-        ));
-        rig.runtime.route_agent_notifications().await;
-        let queued = rig.queued_prompts();
-        assert_eq!(queued.len(), 1, "{queued:?}");
-        assert!(queued[0].contains("shipped") && queued[0].contains("Studio pipeline"));
-
-        rig.runtime
-            .owned
-            .session_store
-            .write()
-            .delete_agent_trigger(&rig.session_id, trigger.id())
-            .unwrap();
-        assert!(
-            deliver("run-2", "after the trigger is gone").is_err(),
-            "the subscriber kernel refuses an occurrence for a trigger that is gone"
-        );
-    }
-}
+#[path = "agent_trigger_notification_tests.rs"]
+mod tests;

@@ -151,6 +151,11 @@ impl KernelRuntimeState {
         }
         let tool_name = crate::transport::runtime_tools::canonical_meta_tool_name(tool_name)
             .unwrap_or(tool_name);
+        if tool_name.starts_with("chariox.notification_") {
+            return self
+                .dispatch_notification_tool(session, agent, tool_name, arguments)
+                .await;
+        }
         let result = match tool_name {
             crate::transport::runtime_tools::META_HISTORY_SEARCH_TOOL => {
                 let args = serde_json::from_value::<

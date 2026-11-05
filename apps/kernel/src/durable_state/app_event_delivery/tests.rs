@@ -637,6 +637,7 @@ fn d1_opaque_app_fixture(generator: &str) {
         .id()
         .to_owned();
     let source = WorkflowNotificationSource {
+        kind: crate::local::NotificationSourceKind::WorkflowExit,
         source_id: "fixture-reviewer-source".into(),
         owner_user_id: "local".into(),
         kernel_id: state.host_daemon_id().into(),

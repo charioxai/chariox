@@ -118,8 +118,8 @@ impl Pool {
         members.push(Arc::downgrade(member));
     }
 
-    /// The commands whose admission has stopped them, for a kernel that
-    /// replaces its program in place.
+    /// Waiting commands and Start now overrides, for a kernel that replaces
+    /// its program in place.
     pub(super) fn held_commands(&self) -> Vec<admission::HeldCommand> {
         self.members()
             .iter()

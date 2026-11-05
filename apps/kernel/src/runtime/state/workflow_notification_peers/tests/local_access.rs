@@ -55,6 +55,7 @@ async fn shared_access_notification_list_excludes_remote_cache_without_refresh()
     assert_eq!(
         sources
             .iter()
+            .filter(|s| s.kind == crate::local::NotificationSourceKind::WorkflowExit)
             .map(|s| s.source_id.as_str())
             .collect::<Vec<_>>(),
         vec![source.source_id.as_str()],
@@ -76,7 +77,13 @@ async fn shared_access_notification_list_excludes_remote_cache_without_refresh()
         else {
             panic!()
         };
-        assert_eq!(sources.len(), 2);
+        assert_eq!(
+            sources
+                .iter()
+                .filter(|s| s.kind == crate::local::NotificationSourceKind::WorkflowExit)
+                .count(),
+            2
+        );
     }
     drop(shared);
     drop(runtime);

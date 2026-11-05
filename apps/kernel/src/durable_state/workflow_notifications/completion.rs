@@ -38,7 +38,6 @@ pub(crate) fn capture_in(
         else {
             continue;
         };
-        let display_name = naming::display_name_in(tx, &source)?;
         let inserted = tx.execute(
             "INSERT OR IGNORE INTO workflow_notification_occurrences VALUES (?1,?2,NULL)",
             params![source.source_id, run.id()],
@@ -55,14 +54,24 @@ pub(crate) fn capture_in(
                 .transpose()?
                 .unwrap_or_else(|| {
                     run.publication_invocation()
-                        .filter(|i| i.transport == "workflow_notification")
+                        .filter(|i| {
+                            matches!(
+                                i.transport.as_str(),
+                                "workflow_notification" | "agent_notification"
+                            )
+                        })
                         .and_then(|i| i.input.get("ancestry"))
                         .and_then(|v| serde_json::from_value(v.clone()).ok())
                         .unwrap_or_default()
                 })
         } else {
             run.publication_invocation()
-                .filter(|i| i.transport == "workflow_notification")
+                .filter(|i| {
+                    matches!(
+                        i.transport.as_str(),
+                        "workflow_notification" | "agent_notification"
+                    )
+                })
                 .and_then(|i| i.input.get("ancestry"))
                 .and_then(|v| serde_json::from_value(v.clone()).ok())
                 .unwrap_or_default()
@@ -85,51 +94,16 @@ pub(crate) fn capture_in(
             continue;
         }
         ancestry.push(identity);
-        let mut q=tx.prepare("SELECT notification_json FROM app_automations WHERE source_kind='workflow_completion' AND installation_id=?1 AND owner_id=?2 AND status='active' ORDER BY automation_id")?;
-        let subscriptions = q
-            .query_map(params![source.source_id, source.owner_user_id], |r| {
-                r.get::<_, String>(0)
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        for value in subscriptions {
-            let sub: WorkflowNotificationSubscription = parse(&value)?;
-            let env = WorkflowNotificationEnvelope {
-                source_id: source.source_id.clone(),
-                display_name: display_name.clone(),
-                occurrence_id: run.id().into(),
-                output: output.clone(),
-                ancestry: ancestry.clone(),
-                deadline_ms: run
-                    .completed_at_ms()
-                    .unwrap_or(encoded.completed_at_ms.unwrap_or(0))
-                    .saturating_add(crate::local::NOTIFICATION_RETENTION_MS),
-            };
-            let env = protect_envelope(env)
-                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
-            // Source-owned receipt is committed with completion, before transport.
-            if let Err(e) = insert_receipt(
-                tx,
-                &sub,
-                &env,
-                "retryable",
-                run.completed_at_ms().unwrap_or(0),
-            ) {
-                if let DaemonError::LocalTransport { ref message, .. } = e {
-                    let diagnostic = match message.as_str() {
-                        "notification outbox full" | "notification payload limit" => {
-                            Some("workflow_notification_delivery_limit")
-                        }
-                        "notification prompt limit" => Some("workflow_notification_prompt_limit"),
-                        _ => None,
-                    };
-                    if let Some(code) = diagnostic {
-                        tx.execute("UPDATE workflow_notification_occurrences SET diagnostic=?3 WHERE source_id=?1 AND occurrence_id=?2",params![source.source_id,run.id(),code])?;
-                        continue;
-                    }
-                }
-                return Err(rusqlite::Error::ToSqlConversionFailure(Box::new(e)));
-            }
-        }
+        publish_in(
+            tx,
+            &source,
+            run.id(),
+            output,
+            ancestry,
+            run.completed_at_ms()
+                .unwrap_or(encoded.completed_at_ms.unwrap_or(0)),
+        )
+        .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
     }
     Ok(())
 }
@@ -138,4 +112,62 @@ fn serialization(e: serde_json::Error) -> rusqlite::Error {
 }
 fn parse<T: serde::de::DeserializeOwned>(s: &str) -> rusqlite::Result<T> {
     serde_json::from_str(s).map_err(serialization)
+}
+
+pub(super) fn publish_in(
+    tx: &Transaction<'_>,
+    source: &WorkflowNotificationSource,
+    occurrence_id: &str,
+    output: crate::session::WorkflowOutputPayload,
+    ancestry: Vec<String>,
+    at: u64,
+) -> Result<(), DaemonError> {
+    publish_sql(tx, source, occurrence_id, output, ancestry, at).map_err(sql)
+}
+fn publish_sql(
+    tx: &Transaction<'_>,
+    source: &WorkflowNotificationSource,
+    occurrence_id: &str,
+    output: crate::session::WorkflowOutputPayload,
+    ancestry: Vec<String>,
+    at: u64,
+) -> rusqlite::Result<()> {
+    let display_name = naming::display_name_in(tx, source)?;
+    let mut q=tx.prepare("SELECT notification_json FROM app_automations WHERE source_kind='workflow_completion' AND installation_id=?1 AND owner_id=?2 AND status='active' ORDER BY automation_id")?;
+    let subscriptions = q
+        .query_map(params![source.source_id, source.owner_user_id], |r| {
+            r.get::<_, String>(0)
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for value in subscriptions {
+        let sub: WorkflowNotificationSubscription = parse(&value)?;
+        let env = WorkflowNotificationEnvelope {
+            source_id: source.source_id.clone(),
+            display_name: display_name.clone(),
+            occurrence_id: occurrence_id.into(),
+            output: output.clone(),
+            ancestry: ancestry.clone(),
+            deadline_ms: at.saturating_add(crate::local::NOTIFICATION_RETENTION_MS),
+        };
+        let env = protect_envelope(env)
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+        // Source-owned receipt is committed with completion, before transport.
+        if let Err(e) = insert_receipt(tx, &sub, &env, "retryable", at) {
+            if let DaemonError::LocalTransport { ref message, .. } = e {
+                let diagnostic = match message.as_str() {
+                    "notification outbox full" | "notification payload limit" => {
+                        Some("workflow_notification_delivery_limit")
+                    }
+                    "notification prompt limit" => Some("workflow_notification_prompt_limit"),
+                    _ => None,
+                };
+                if let Some(code) = diagnostic {
+                    tx.execute("UPDATE workflow_notification_occurrences SET diagnostic=?3 WHERE source_id=?1 AND occurrence_id=?2",params![source.source_id,occurrence_id,code])?;
+                    continue;
+                }
+            }
+            return Err(rusqlite::Error::ToSqlConversionFailure(Box::new(e)));
+        }
+    }
+    Ok(())
 }

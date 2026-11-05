@@ -79,6 +79,7 @@ export type AppWorkerSummary = {
 
 /** Protocol 345: one App event routed to one workflow endpoint and queue. */
 export type AppAutomationSummary = {
+  target_kind: "workflow_endpoint" | "agent";
   automation_id: string
   revision: number
   event_name: string

@@ -106,6 +106,7 @@ impl KernelRuntimeState {
                 .prompt_state_owner
                 .try_claim_idle_queue_promotion(&session, agent_id)?;
             let mut waiting_for_launch = false;
+            let mut activated_head = false;
             let result: Result<Option<crate::session::PromptQueueItem>, DaemonError> = async {
                 loop {
                     let session = self.owned.session_store.get_session(session_id)?;
@@ -150,6 +151,7 @@ impl KernelRuntimeState {
                         }
                         return Ok(None);
                     };
+                    activated_head = true;
                     // Worker workflow context is indexed by the original queued id,
                     // before activation assigned the prompt its fresh mirror id.
                     self.with_app_side_effect(|app| {
@@ -180,6 +182,27 @@ impl KernelRuntimeState {
             // Drop first: later readiness owns the normal path; an already-ready
             // run is retried here under a fresh claim, closing both sides of the race.
             drop(promotion);
+            // Cancellation can settle the activated turn while dispatch awaits and
+            // lose its wake against this claim. Hand its idle successor off now.
+            if activated_head
+                && self
+                    .owned
+                    .session_store
+                    .get_session(session_id)
+                    .is_ok_and(|session| {
+                        self.owned
+                            .prompt_state_owner
+                            .active_prompt_for_agent(&session, agent_id)
+                            .is_none()
+                            && self
+                                .owned
+                                .prompt_state_owner
+                                .peek_next_queued_prompt(&session, agent_id)
+                                .is_some()
+                    })
+            {
+                continue;
+            }
             if waiting_for_launch
                 && self
                     .owned

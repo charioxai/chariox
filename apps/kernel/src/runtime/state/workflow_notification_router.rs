@@ -27,14 +27,17 @@ pub(super) fn source_available(
     source: &WorkflowNotificationSource,
 ) -> bool {
     sessions.get_session(&source.session_id).is_ok_and(|s| {
-        s.owner_user_id() == source.owner_user_id && s.host_daemon_id() == source.kernel_id
-    }) && sessions
-        .resolve_workflow_ref(&source.session_id, &source.workflow_id)
-        .is_ok_and(|workflow| {
-            workflow
-                .node(&source.exit_node_id)
-                .is_some_and(|node| node.can_complete_workflow_run())
-        })
+        s.owner_user_id() == source.owner_user_id
+            && s.host_daemon_id() == source.kernel_id
+            && s.status() != crate::session::SessionStatus::Ended
+    }) && (source.kind == crate::local::NotificationSourceKind::OwnerAction
+        || sessions
+            .resolve_workflow_ref(&source.session_id, &source.workflow_id)
+            .is_ok_and(|workflow| {
+                workflow
+                    .node(&source.exit_node_id)
+                    .is_some_and(|node| node.can_complete_workflow_run())
+            }))
 }
 /// Summaries name each source from its workflow's current definition: the
 /// alias, followed by the exit's ordinal when more than one exit of the
@@ -67,6 +70,7 @@ pub(super) fn summaries(
                 None => (source.name.clone(), 0),
             };
             WorkflowNotificationSourceSummary {
+                kind: source.kind,
                 source_id: source.source_id.clone(),
                 kernel_id: source.kernel_id.clone(),
                 session_id: source.session_id.clone(),
@@ -86,6 +90,14 @@ impl KernelRuntimeState {
         request: LocalDaemonRequest,
         owner: &str,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        if let LocalDaemonRequest::ListWorkflowNotifications(list) = &request {
+            let session = self.owned.session_store.get_session(&list.session_id)?;
+            if !session.has_member(owner) {
+                return Err(store::error("notification room access denied"));
+            }
+            self.owned
+                .ensure_owner_action_notification_source(&session)?;
+        }
         if !self.is_room_member_listing(&request, owner) {
             self.ensure_notification_profile_owner(owner)?;
         }
@@ -107,6 +119,7 @@ impl KernelRuntimeState {
                             naming::resolve_exit(&workflow, &request.exit_node_id)
                                 .ok_or_else(|| store::error("workflow has no such exit"))?;
                         let source = WorkflowNotificationSource {
+                            kind: crate::local::NotificationSourceKind::WorkflowExit,
                             source_id: format!("wf_source_{:032x}", rand::random::<u128>()),
                             owner_user_id: owner.into(),
                             kernel_id: session.host_daemon_id().into(),
@@ -232,7 +245,8 @@ impl KernelRuntimeState {
                         let session = sessions.get_session(&request.session_id)?;
                         // Members and room agents list this room's notifications, nothing of the
                         // owner's other rooms or kernels.
-                        let room_member = session.owner_user_id() != owner;
+                        let room_member =
+                            session.owner_user_id() != owner || self.room_provider_origin.is_some();
                         let inventory_owner = session.owner_user_id().to_owned();
                         let (mut sources, mut subscriptions, mut diagnostics) = self
                             .owned
@@ -318,6 +332,7 @@ impl KernelRuntimeState {
                     .into_iter()
                     .find(|s| s.source_id == source_id && s.available)
                     .map(|s| WorkflowNotificationSource {
+                        kind: s.kind,
                         source_id: s.source_id,
                         owner_user_id: owner.into(),
                         kernel_id: s.kernel_id,
@@ -710,7 +725,13 @@ mod tests {
         else {
             panic!()
         };
-        assert!(!sources[0].available);
+        assert!(
+            !sources
+                .iter()
+                .find(|source| source.kind == crate::local::NotificationSourceKind::WorkflowExit)
+                .unwrap()
+                .available
+        );
         assert!(!subscriptions[0].source_available);
         drop(runtime);
         cleanup(f);

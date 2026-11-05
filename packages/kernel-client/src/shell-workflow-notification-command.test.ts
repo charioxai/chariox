@@ -4,7 +4,7 @@ import assert from "node:assert/strict"
 import { executeWorkflowNotificationTrigger, executeWorkflowNotificationSettings, matchNotificationSource } from "./shell-workflow-notification-command.js"
 import type { ShellContext } from "./shell-core.js"
 const context: ShellContext = { sessionId: "target", workflowId: "consumer", workspace: "/tmp", worktree: "/tmp", provider: "dev-stub", model: "", effort: "", variables: {} }
-const source = { source_id: "source", kernel_id: "peer", session_id: "source-session", workflow_id: "reviewer", exit_node_id: "node-2", exit_ordinal: 2, name: "Reviewer", display_name: "Reviewer-2", available: true }
+const source = { kind: "workflow_exit" as const, source_id: "source", kernel_id: "peer", session_id: "source-session", workflow_id: "reviewer", exit_node_id: "node-2", exit_ordinal: 2, name: "Reviewer", display_name: "Reviewer-2", available: true }
 const publications = { WorkflowPublicationsListed: { publications: [{ id: "publication", workflow_id: "consumer", enabled: true, kind: "event_based" }] } }
 
 test("MP-08 / MP-10: attach uses a discovered source and the ordinary event trigger, with no options", async () => {

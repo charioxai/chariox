@@ -615,6 +615,39 @@ impl KernelRuntimeState {
             scheduled_context,
             &scheduled_manifest_entry,
         ));
+        let prompt = if origin == crate::session::PromptOrigin::Notification {
+            if let Some(payload) = &dispatch.payload {
+                use sha2::{Digest, Sha256};
+                let occurrence = payload
+                    .get("occurrence_id")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| {
+                        crate::durable_state::workflow_notifications::error(
+                            "notification occurrence id missing",
+                        )
+                    })?;
+                let identity = serde_json::to_vec(&(
+                    dispatch.trigger_id.as_str(),
+                    payload.get("source_id"),
+                    payload.get("installation_id"),
+                    payload.get("event_name"),
+                    occurrence,
+                ))
+                .map_err(|_| {
+                    crate::durable_state::workflow_notifications::error(
+                        "notification identity encoding failed",
+                    )
+                })?;
+                prompt.with_durable_operation(
+                    format!("agent-notification:{:x}", Sha256::digest(identity)),
+                    format!("{:x}", Sha256::digest(prompt_text.as_bytes())),
+                )
+            } else {
+                prompt
+            }
+        } else {
+            prompt
+        };
         let prompt = if let Some(original_prompt_id) = resend_of {
             prompt.with_trigger_resend(original_prompt_id)
         } else {
@@ -678,9 +711,9 @@ impl KernelRuntimeState {
             self.spawn_remote_prompt_dispatch(remote_dispatch);
         }
         let queued_prompt_id = match &submission.outcome {
-            crate::session::PromptSubmissionOutcome::Started { .. } => {
+            crate::session::PromptSubmissionOutcome::Started { prompt } => {
                 return Ok(AgentTriggerFiring::Fired {
-                    prompt_id: prompt_id.clone(),
+                    prompt_id: prompt.id().to_string(),
                     outcome: AgentTriggerOutcome::Started,
                     steer_refusal: None,
                 });

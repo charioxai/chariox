@@ -6,8 +6,30 @@
 use super::*;
 use rusqlite::{params, OptionalExtension};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutomationTargetKind {
+    Workflow,
+    Agent,
+}
+impl AutomationTargetKind {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Workflow => "workflow",
+            Self::Agent => "agent",
+        }
+    }
+    pub(super) fn parse(value: &str) -> Result<Self> {
+        match value {
+            "workflow" => Ok(Self::Workflow),
+            "agent" => Ok(Self::Agent),
+            _ => Err(OutboxError::Corrupt),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AutomationTarget {
+    pub kind: AutomationTargetKind,
     pub session_id: String,
     pub publication_id: String,
     pub endpoint_id: String,
@@ -114,6 +136,8 @@ impl AppOutbox {
                 return Err(OutboxError::Conflict);
             }
         }
+        tx.execute("UPDATE app_automations SET target_kind=?4 WHERE owner_id=?1 AND installation_id=?2 AND automation_id=?3",
+            params![trusted_owner,catalog.installation_id(),automation_id,target.kind.name()])?;
         Self::configuration_in(tx, catalog, trusted_owner, automation_id)
     }
 
@@ -271,6 +295,7 @@ impl AppOutbox {
             event_version: b.event_version,
             schema_digest: b.schema_digest,
             target: AutomationTarget {
+                kind: AutomationTargetKind::parse(&b.target_kind)?,
                 session_id: b.session_id,
                 publication_id: b.publication_id,
                 endpoint_id: b.endpoint_id,

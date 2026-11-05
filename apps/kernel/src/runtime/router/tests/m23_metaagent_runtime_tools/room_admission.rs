@@ -1370,7 +1370,6 @@ async fn room_notification_subscription() {
     let app = Arc::new(Mutex::new(app));
     let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
     let runtime = router.runtime_state();
-    let runtime = router.runtime_state();
     let owner = {
         let app = app.lock().await;
         let state = app.sessions().get_session(session.id()).unwrap();
@@ -1464,5 +1463,68 @@ async fn room_notification_subscription() {
     );
     let removed = room_command(&router, &auth, &format!("trigger remove {}", own[0].id())).await;
     assert!(removed.ok, "{:?}", removed.payload);
+    assert!(triggers(a.id().to_string()).await.is_empty());
+    let listed = router
+        .dispatch_authenticated_runtime_tool_call(
+            &auth,
+            "chariox.notification_sources",
+            serde_json::json!({}),
+        )
+        .await
+        .unwrap();
+    assert!(listed.ok);
+    let source = listed.payload["workflows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|source| source["display_name"] == "pipeline")
+        .unwrap()["source"]
+        .clone();
+    assert!(router
+        .dispatch_authenticated_runtime_tool_call(
+            &auth,
+            "chariox.notification_subscribe",
+            serde_json::json!({"source":source,"agent":peer.id()})
+        )
+        .await
+        .is_err());
+    assert!(router
+        .dispatch_authenticated_runtime_tool_call(
+            &auth,
+            "chariox.notification_subscribe",
+            serde_json::json!({"source":source,"delivery":"steer"})
+        )
+        .await
+        .is_err());
+    let created = router
+        .dispatch_authenticated_runtime_tool_call(
+            &auth,
+            "mcp__chariox__chariox_notification_subscribe",
+            serde_json::json!({"source":source}),
+        )
+        .await
+        .unwrap();
+    assert!(created.ok, "{:?}", created.payload);
+    let own = triggers(a.id().to_string()).await;
+    assert_eq!(own.len(), 1);
+    assert!(router
+        .dispatch_authenticated_runtime_tool_call(
+            &auth,
+            "chariox.notification_unsubscribe",
+            serde_json::json!({"trigger_id":peer_trigger.id()})
+        )
+        .await
+        .is_err());
+    assert!(
+        router
+            .dispatch_authenticated_runtime_tool_call(
+                &auth,
+                "chariox.notification_unsubscribe",
+                serde_json::json!({"trigger_id":own[0].id()})
+            )
+            .await
+            .unwrap()
+            .ok
+    );
     assert!(triggers(a.id().to_string()).await.is_empty());
 }

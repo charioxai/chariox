@@ -129,6 +129,7 @@ impl Fixture {
             .resolve_workflow_ref(&self.session, w)
             .unwrap();
         let source = WorkflowNotificationSource {
+            kind: crate::local::NotificationSourceKind::WorkflowExit,
             source_id: format!("source-{w}-{exit}"),
             owner_user_id: "local".into(),
             kernel_id: s.host_daemon_id().into(),

@@ -423,7 +423,9 @@ mod unix {
             {
                 return Err(ReleaseStoreError::Busy);
             }
-            self.finish(name, digest, &dir, tree, true, checkpoint)
+            let staged = self.finish(name, digest, &dir, tree, true, checkpoint);
+            dir.unlock();
+            staged
         }
 
         fn finish(
@@ -571,9 +573,14 @@ mod unix {
     }
     impl Drop for Temporary<'_> {
         fn drop(&mut self) {
-            if self.published {
-                return;
+            if !self.published {
+                self.remove_unpublished();
             }
+            self.dir.unlock();
+        }
+    }
+    impl Temporary<'_> {
+        fn remove_unpublished(&self) {
             // Do not remove a replacement that no longer names this stage.
             if same_entry(self.root, &self.name, &self.dir).unwrap_or(false) {
                 let mut remaining = MAX_TREE_ENTRIES;

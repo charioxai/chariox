@@ -63,7 +63,7 @@ fn lane_refusals_have_safe_actionable_codes_through_external_projection() {
 #[test]
 fn external_response_preserves_workflow_notification_metadata() {
     let source = serde_json::json!({
-        "source_id":"source", "owner_user_id":"local", "kernel_id":"home",
+        "kind":"workflow_exit", "source_id":"source", "owner_user_id":"local", "kernel_id":"home",
         "session_id":"source-room", "workflow_id":"source-workflow",
         "exit_node_id":"node-1", "enabled":true, "available":true
     });
@@ -404,7 +404,7 @@ fn external_response_terminal_retains_owner_replies() {
 #[test]
 fn external_response_preserves_notification_metadata_and_sudo_extension() {
     let source = serde_json::json!({
-        "source_id":"source", "owner_user_id":"owner", "kernel_id":"home",
+        "kind":"workflow_exit", "source_id":"source", "owner_user_id":"owner", "kernel_id":"home",
         "session_id":"room", "workflow_id":"workflow", "exit_node_id":"node-1",
         "enabled":true, "available":true, "name":"review"
     });

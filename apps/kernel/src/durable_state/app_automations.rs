@@ -23,6 +23,10 @@ pub(crate) enum AppAutomationMutation {
         target: WorkflowAutomationTarget,
         scheduled: bool,
     },
+    AgentQueued {
+        receipt: chariox_app_runtime::app_outbox::Receipt,
+        prompt_id: String,
+    },
     Deactivate {
         automation_id: String,
         expected_revision: u64,
@@ -34,6 +38,7 @@ pub(crate) enum AppAutomationMutation {
 pub(crate) enum AppAutomationOutcome {
     Configured(AutomationConfiguration),
     Listed(Vec<AutomationConfiguration>),
+    Queued,
 }
 pub(super) struct AppAutomationRequest {
     owner: String,
@@ -107,7 +112,7 @@ pub(super) fn initialize(connection: &mut Connection) -> Result<(), DaemonError>
 fn apply(
     connection: &mut Connection,
     owner: &str,
-    catalog: &EventCatalog,
+    catalog: &Arc<EventCatalog>,
     mutation: AppAutomationMutation,
     budget: &AppOperationBudget,
 ) -> Result<AppAutomationOutcome, AppAutomationError> {
@@ -155,6 +160,24 @@ fn apply(
             expected_revision,
             status,
         )?),
+        AppAutomationMutation::AgentQueued { receipt, prompt_id } => {
+            let automation = chariox_app_runtime::app_outbox::VerifiedAutomation::load_in(
+                &tx,
+                Arc::clone(catalog),
+                owner,
+                &receipt.automation_id,
+                receipt.automation_revision,
+            )?;
+            AppOutbox::mark_queued_in(
+                &tx,
+                &automation,
+                &receipt.receipt_id,
+                receipt.revision,
+                &prompt_id,
+                crate::session::unix_epoch_ms(),
+            )?;
+            AppAutomationOutcome::Queued
+        }
         AppAutomationMutation::List => {
             AppAutomationOutcome::Listed(AppOutbox::configurations_in(&tx, catalog, owner)?)
         }

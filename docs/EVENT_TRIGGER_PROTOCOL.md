@@ -1,6 +1,6 @@
 # Event trigger protocol
 
-Status: implementation contract; local daemon protocol 973 / relay peer 422 (MP-08 / MP-10).
+Status: implementation contract; local daemon protocol 994 / relay peer 433 (MP-08 / MP-10).
 
 ## Boundaries
 
@@ -94,7 +94,7 @@ App adapter has narrower 64 KiB payload/prompt ceilings; it does not silently
 truncate. Artifact references are metadata and confer no file, URL or credential
 access.
 
-## Private workflow notifications (local 973 / peer 422; MP-08 / MP-10 / MP-11)
+## Private workflow notifications (local 994 / peer 433; MP-08 / MP-10 / MP-11)
 
 A subscription has no options. Nothing about it is configurable except its source
 and its target: there are no events, filters, output fields, queue names, delivery
@@ -167,7 +167,7 @@ notification whose target is already in its ancestry with `workflow_notification
 delivered: there is no coalescing.
 
 **Transport.** Local delivery is direct; remote delivery uses the existing E2EE relay peer
-channel. Peer 422 carries the per-exit source fields in `ListWorkflowNotificationSources`,
+channel. Peer 433 carries the per-exit source fields in `ListWorkflowNotificationSources`,
 renames `SubscribeWorkflowNotifications {source_workflow_ref, target_ref}` to `{source_id,
 target_ref}`, admits an agent `target_ref` (the subscriber kernel owns target admission), and
 `DeliverWorkflowNotification` carries the reduced envelope. Remote requests require an
@@ -309,3 +309,32 @@ MP-08 / MP-11: completion-occurrence diagnostics retain the most recent 4,096
 rows across the kernel. Upgrade, capture and sweep bound this window; durable
 terminal run state retains completion deduplication, and pending App receipts
 are independent of diagnostic retention.
+
+## Blocked-task decision sources
+
+MP-08 / MP-09 / MP-10 / MP-11, local 994 / peer 433: every Room also has
+an `owner_action` source named **Agent needs your action**. The kernel registers
+it with the same source inventory used by notifying exits. Agents and workflow
+entry points subscribe through the same notification reference, trigger, receipt,
+retention and routing operations. The source's `kind` distinguishes it from a
+`workflow_exit`; its workflow/exit identifiers are reserved kernel source identifiers.
+
+Creating a blocked-task owner decision emits one occurrence per interaction ID
+(task plus blocked revision). Re-projecting or rewording the same decision does
+not emit it again. Its final-output text is a JSON locator with title, Room,
+agent, task and interaction identifiers. Task reasons, prompts, approval choices
+and secret values are excluded. Resolving the decision still uses the existing
+kernel-owned interaction and its ordinary owner admission.
+
+Delivery to an agent is always queued and may be steered from the general queued
+prompt row. This source does not supply an outbound service. Outside-Chariox
+email, web push or an outgoing App requires a separately configured destination
+and delivery adapter; the current Cloud has no such service.
+
+The Room tools are `chariox.notification_sources {}`,
+`chariox.notification_subscribe {source,prompt?}`, and
+`chariox.notification_unsubscribe {trigger_id}`. They bind to the calling agent,
+reject other-agent and delivery-policy arguments, and recheck its provider epoch.
+App events retain App catalog/schema admission and the App receipt pump. Their
+automation summaries distinguish `workflow_endpoint` and `agent` targets; agent
+subscriptions are lifetime configuration and are excluded from App-set copies.

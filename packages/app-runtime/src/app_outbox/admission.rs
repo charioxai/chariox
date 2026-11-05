@@ -89,6 +89,7 @@ pub struct VerifiedAutomation {
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Binding {
+    pub target_kind: String,
     pub id: String,
     pub revision: u64,
     pub event_name: String,
@@ -182,11 +183,11 @@ pub(super) fn load(
     id: &str,
 ) -> Result<Binding> {
     let binding = connection.query_row(
-        "SELECT automation_id,revision,event_name,event_version,schema_digest,session_id,publication_id,endpoint_id,queue_id,status,scheduled
+        "SELECT automation_id,revision,event_name,event_version,schema_digest,session_id,publication_id,endpoint_id,queue_id,status,scheduled,target_kind
          FROM app_automations WHERE owner_id=?1 AND installation_id=?2 AND automation_id=?3",
         rusqlite::params![owner,installation,id],
         |row| Ok(Binding {
-            id:row.get(0)?, revision:row.get::<_,i64>(1)?.try_into().map_err(|_|rusqlite::Error::InvalidQuery)?,
+            target_kind:row.get(11)?, id:row.get(0)?, revision:row.get::<_,i64>(1)?.try_into().map_err(|_|rusqlite::Error::InvalidQuery)?,
             event_name:row.get(2)?, event_version:row.get::<_,i64>(3)?.try_into().map_err(|_|rusqlite::Error::InvalidQuery)?,
             schema_digest:row.get(4)?,session_id:row.get(5)?,publication_id:row.get(6)?,endpoint_id:row.get(7)?,queue_id:row.get(8)?,status:row.get(9)?,
             scheduled:match row.get::<_,i64>(10)? {0=>false,1=>true,_=>return Err(rusqlite::Error::InvalidQuery)},

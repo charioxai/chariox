@@ -107,6 +107,7 @@ fn multiple_current_automations_share_one_atomic_batch_and_global_budget() {
         0,
         "changed",
         &AutomationTarget {
+            kind: crate::app_outbox::AutomationTargetKind::Workflow,
             session_id: "session".into(),
             publication_id: "publication".into(),
             endpoint_id: "endpoint".into(),

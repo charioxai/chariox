@@ -25,6 +25,7 @@ fn workflow_notification_437_shapes_have_no_caller_owner_or_ancestry() {
         session_id: "t".into(),
     });
     let source = WorkflowNotificationSource {
+        kind: crate::local::NotificationSourceKind::WorkflowExit,
         source_id: "src".into(),
         owner_user_id: "u".into(),
         kernel_id: "k".into(),
@@ -84,6 +85,7 @@ fn workflow_notification_437_shapes_have_no_caller_owner_or_ancestry() {
         },
         LocalDaemonResponse::WorkflowNotifications {
             sources: vec![crate::local::WorkflowNotificationSourceSummary {
+                kind: crate::local::NotificationSourceKind::WorkflowExit,
                 source_id: source.source_id,
                 kernel_id: source.kernel_id,
                 session_id: source.session_id,
@@ -105,7 +107,7 @@ fn workflow_notification_437_shapes_have_no_caller_owner_or_ancestry() {
     let wire = serde_json::json!({"requests":[register,attach,list,LocalDaemonRequest::DetachWorkflowNotification(DetachWorkflowNotificationRequest {session_id:"t".into(),subscription_id:"sub".into()})],"responses":responses,"envelope":env,"acks":[WorkflowNotificationAck::Accepted,WorkflowNotificationAck::Duplicate,WorkflowNotificationAck::Expired,WorkflowNotificationAck::LoopDropped]});
     assert_eq!(
         format!("{:x}", Sha256::digest(serde_json::to_vec(&wire).unwrap())),
-        "3e001ad473ea40dd245fccbb9893809c48e98552a6a564392059130b4ded7c62"
+        "8c02f9d964fb3512bdbbbfa126b2e3719fdd11aa5167221aacf0f7036a6cb14c"
     );
     for field in ["owner_user_id", "ancestry", "output"] {
         let mut request =

@@ -54,6 +54,9 @@ pub(crate) struct AppEventCandidate {
     configuration: AutomationConfiguration,
 }
 impl AppEventCandidate {
+    pub(crate) fn configuration(&self) -> &AutomationConfiguration {
+        &self.configuration
+    }
     pub(crate) fn receipt(&self) -> &Receipt {
         &self.receipt
     }

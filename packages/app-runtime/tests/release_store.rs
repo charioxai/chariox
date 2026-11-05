@@ -246,6 +246,55 @@ fn stored_archive_rejects_tampering_oversize_and_link_replacement_before_verific
     assert!(store.open_stored_archive(package.package_digest()).is_err());
 }
 
+/// A process that forks while a stage holds the publication lock keeps a copy
+/// of the locked descriptor until it execs, and closing the stage's own copy
+/// does not release a flock. Duplicate the descriptors of the release at the
+/// checkpoint that follows the lock, as such a child does, and keep them past
+/// the stage: the stored release must still be readable at once.
+#[cfg(target_os = "linux")]
+#[test]
+fn stored_archive_is_readable_right_after_a_stage_even_if_a_forked_child_holds_its_lock() {
+    use std::os::fd::{FromRawFd, OwnedFd};
+    fn duplicate_descriptors_under(root: &Path) -> Vec<OwnedFd> {
+        let mut copies = Vec::new();
+        for entry in fs::read_dir("/proc/self/fd").unwrap().flatten() {
+            let Ok(target) = fs::read_link(entry.path()) else {
+                continue;
+            };
+            if target.starts_with(root) && target.is_dir() {
+                let number: i32 = entry.file_name().to_str().unwrap().parse().unwrap();
+                let copy = unsafe { libc::fcntl(number, libc::F_DUPFD_CLOEXEC, 0) };
+                if copy >= 0 {
+                    copies.push(unsafe { OwnedFd::from_raw_fd(copy) });
+                }
+            }
+        }
+        copies
+    }
+    let directory = Directory::new();
+    let store = ReleaseStore::open(&directory.0).unwrap();
+    let (archive, policy) = package();
+    let package = verify(&archive, &policy).unwrap();
+    // The first stage publishes; the second reuses the sealed release.
+    for _ in 0..2 {
+        let mut held = Vec::new();
+        store
+            .stage_with_checkpoint(&package, &archive, budget(), |checkpoint| {
+                if matches!(
+                    checkpoint,
+                    StageCheckpoint::BeforePublish | StageCheckpoint::BeforeParentSync
+                ) {
+                    held.extend(duplicate_descriptors_under(&directory.0));
+                }
+                Ok(())
+            })
+            .unwrap();
+        assert!(!held.is_empty(), "the stage held its directory open");
+        let mut stored = store.open_stored_archive(package.package_digest()).unwrap();
+        assert_eq!(stored.read_bytes().unwrap(), archive);
+    }
+}
+
 #[test]
 fn verified_worker_lease_retains_shared_publication_lock_until_last_consumer_drains() {
     use std::os::fd::AsRawFd;

@@ -95,6 +95,14 @@ impl Kernel {
 
     /// `interfaces` stands in for the machine's network interfaces.
     fn build_on(paired_at_start: bool, port: Option<u16>, interfaces: rtc::Interfaces) -> Self {
+        Self::build_with_rtc(
+            paired_at_start,
+            port,
+            rtc::RtcEndpoint::new(Some(0), interfaces),
+        )
+    }
+
+    fn build_with_rtc(paired_at_start: bool, port: Option<u16>, rtc: rtc::RtcEndpoint) -> Self {
         let mut config = DaemonConfig::for_tests();
         config.cloud_relay = Some(PersistedCloudRelayProfile {
             kernel_credential: None,
@@ -143,7 +151,7 @@ impl Kernel {
             Arc::new(CommandResultCache::default()),
             shutdown_rx,
             port,
-            rtc::RtcEndpoint::new(Some(0), interfaces),
+            rtc,
         );
         if !paired_at_start {
             let mut paired = projection.snapshot();
@@ -1871,10 +1879,8 @@ fn mp11_webrtc_channel_admits_only_the_grant_issued_with_its_offer() {
 fn mp08_webrtc_answer_offers_the_address_the_relay_stun_responder_sees() {
     large_stack(async {
         let mapped_ip: std::net::IpAddr = "203.0.113.9".parse().unwrap();
-        let responder =
-            tokio::net::UdpSocket::bind(("127.0.0.2", chariox_relay::stun::DEFAULT_PORT))
-                .await
-                .expect("UDP 127.0.0.2:3478 free for the test STUN responder");
+        let responder = tokio::net::UdpSocket::bind(("127.0.0.2", 0)).await.unwrap();
+        let stun_port = responder.local_addr().unwrap().port();
         // A NAT in front of the kernel: every socket appears at 203.0.113.9.
         tokio::spawn(async move {
             let mut buf = [0_u8; 1500];
@@ -1885,7 +1891,11 @@ fn mp08_webrtc_answer_offers_the_address_the_relay_stun_responder_sees() {
                 }
             }
         });
-        let kernel = Kernel::new();
+        let kernel = Kernel::build_with_rtc(
+            true,
+            Some(0),
+            rtc::RtcEndpoint::new(Some(0), Arc::new(rtc::host_addresses)).with_stun_port(stun_port),
+        );
         let mut config = kernel.projection.snapshot();
         config.relay_url = Some("wss://127.0.0.2:8443/".into());
         kernel.projection.update(config);

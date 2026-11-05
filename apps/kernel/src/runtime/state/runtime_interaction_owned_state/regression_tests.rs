@@ -1411,3 +1411,64 @@ async fn a12_native_approval_timeout_restores_the_goal() {
     assert_eq!(later.state, ExecutionState::Blocked);
     assert!(later.goal.as_ref().unwrap().paused);
 }
+
+/// MP-09: a managed kernel counts the open cards as work, and that count reads the Room store. Rewording a blocked
+/// task's decision must record that change after the store is released; recording under it waited for the writer itself.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rewording_a_task_decision_on_a_managed_kernel_does_not_wait_for_itself() {
+    use crate::durable_state::agent_lifecycle::{Operation, Outcome};
+    let f = Fixture::with_room_tools();
+    f.state
+        .ensure_managed_activity_tracking("kernel-task-decision")
+        .unwrap();
+    let store = &f.state.owned.durable_state_store;
+    let task_id = f.id("reworded-decision");
+    store
+        .agent_lifecycle(Operation::Begin {
+            owner: DEFAULT_LOCAL_USER_ID.into(),
+            room: f.session.clone(),
+            agent: "root".into(),
+            prompt: task_id.clone(),
+            run: None,
+            now: 1,
+        })
+        .unwrap();
+    let Outcome::Task(blocked) = store
+        .agent_lifecycle(Operation::Block {
+            task: task_id.clone(),
+            prompt: task_id.clone(),
+            reason: "Owner clarification required".into(),
+        })
+        .unwrap()
+    else {
+        panic!()
+    };
+    f.state
+        .ensure_task_owner_interaction(blocked.clone())
+        .await
+        .unwrap();
+    let card = format!("task-blocked-{}-{}", task_id, blocked.blocked_revision);
+    {
+        let mut sessions = f.state.owned.session_store.write();
+        let mut room = sessions.get_session(&f.session).unwrap();
+        let open = room.remove_active_interaction(&card).unwrap();
+        room.add_active_interaction(open.with_message("An older wording".to_string()));
+        sessions.restore_session(room);
+    }
+    let state = f.state.clone();
+    let (done, finished) = std::sync::mpsc::channel();
+    // A wedge blocks its thread for good, so the update runs on its own thread and the test waits with a deadline.
+    std::thread::spawn(move || {
+        let outcome = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(state.ensure_task_owner_interaction(blocked));
+        let _ = done.send(outcome.is_ok());
+    });
+    let updated = finished.recv_timeout(std::time::Duration::from_secs(20));
+    if updated != Ok(true) {
+        // A wedged update still holds the Room store, which the fixture's cleanup would wait for as well.
+        std::mem::forget(f);
+    }
+    assert_eq!(updated, Ok(true), "updating the decision never finished");
+}

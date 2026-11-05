@@ -22,7 +22,7 @@ pub enum AgentTriggerRepeat {
 /// What a notification trigger listens to: one exit of a workflow, or one
 /// outgoing event of an installed App.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum AgentTriggerNotificationSource {
     Workflow {
         source_id: String,

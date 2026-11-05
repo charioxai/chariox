@@ -120,7 +120,13 @@ impl KernelRuntimeState {
                 app_id,
                 release,
                 capabilities,
-                automations,
+                automations: automations
+                    .into_iter()
+                    .filter(|automation| {
+                        automation.target_kind
+                            == crate::local::WorkflowNotificationTargetKind::WorkflowEndpoint
+                    })
+                    .collect(),
                 inbox_routes: routes,
                 connections,
             });

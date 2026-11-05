@@ -46,7 +46,9 @@ impl WorkflowNotificationTarget {
     ) -> Result<Self, NotificationTargetError> {
         let session = sessions.get_session(session_id)?;
         let publication = sessions.resolve_workflow_publication_ref(session_id, publication_ref)?;
-        if publication.created_by_user_id() != trusted_owner {
+        if session.owner_user_id() != trusted_owner
+            || !session.has_member(publication.created_by_user_id())
+        {
             return Err(NotificationTargetError::NotOwner);
         }
         if !publication.enabled() || publication.kind() != WORKFLOW_PUBLICATION_KIND_EVENT_BASED {
@@ -58,7 +60,9 @@ impl WorkflowNotificationTarget {
             workflow.id(),
             publication.endpoint_id(),
         )?;
-        if endpoint.owner_user_id() != trusted_owner {
+        if endpoint.owner_user_id() != publication.created_by_user_id()
+            || !session.has_member(endpoint.owner_user_id())
+        {
             return Err(NotificationTargetError::NotOwner);
         }
         sessions.validate_workflow_runnable(session_id, &workflow, &endpoint)?;
@@ -85,12 +89,50 @@ impl WorkflowNotificationTarget {
             owner: trusted_owner.into(),
             durable_owner: session.host_daemon_id().into(),
             target: AutomationTarget {
+                kind: chariox_app_runtime::app_outbox::AutomationTargetKind::Workflow,
                 session_id: session.id().into(),
                 publication_id: publication.id().into(),
                 endpoint_id: endpoint.id().into(),
                 queue_id,
             },
             entities,
+        })
+    }
+    pub(crate) fn resolve_agent(
+        sessions: &SessionService,
+        owner: &str,
+        session_id: &str,
+        agent_id: &str,
+        trigger_id: &str,
+    ) -> Result<Self, NotificationTargetError> {
+        let session = sessions.get_session(session_id)?;
+        if session.owner_user_id() != owner {
+            return Err(NotificationTargetError::NotOwner);
+        }
+        if !session.agent_triggers().iter().any(|trigger| {
+            trigger.id() == trigger_id
+                && trigger.agent_id() == agent_id
+                && matches!(
+                    trigger.source(),
+                    crate::session::AgentTriggerSource::Notification {
+                        source: crate::session::AgentTriggerNotificationSource::App { .. },
+                        ..
+                    }
+                )
+        }) {
+            return Err(NotificationTargetError::InvalidTarget);
+        }
+        Ok(Self {
+            owner: owner.into(),
+            durable_owner: session.host_daemon_id().into(),
+            target: AutomationTarget {
+                kind: chariox_app_runtime::app_outbox::AutomationTargetKind::Agent,
+                session_id: session_id.into(),
+                publication_id: trigger_id.into(),
+                endpoint_id: agent_id.into(),
+                queue_id: "agent".into(),
+            },
+            entities: Vec::new(),
         })
     }
     pub(crate) fn target(&self) -> &AutomationTarget {

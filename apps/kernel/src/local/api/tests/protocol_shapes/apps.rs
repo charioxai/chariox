@@ -209,6 +209,7 @@ fn app_worker_control_and_automation_shapes_are_versioned_and_owner_free() {
         }),
     ];
     let automation = AppAutomationSummary {
+        target_kind: WorkflowNotificationTargetKind::WorkflowEndpoint,
         automation_id: "reminders".into(),
         revision: 1,
         event_name: "todo_due".into(),
