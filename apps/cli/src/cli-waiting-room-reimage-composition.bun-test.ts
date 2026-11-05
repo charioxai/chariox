@@ -414,7 +414,7 @@ reimageTest("MP-08 / MP-11 signed-in catalog and creation use human HTTP with ke
   try {
     await harness.initialize()
     assert.equal(harness.composition.waitingRoomTargets().managedEnvironmentCatalog?.computeClasses[0]?.computeClass, "agent-small")
-    await harness.composition.startSessionFromWaitingRoomDefaults({kind: "new", region: "hel1", computeClass: "agent-small", managedRepositoryRoot: "/home/chariox", autoStopPolicy: {minimumRuntimeSeconds: 0, idleDelaySeconds: 900}, contextPlan: {sourceTargetId: null, kernelContext: "empty", developmentSetup: {kind: "empty"}, providerAccounts: {kind: "none"}, gitCredentials: {kind: "none"}}})
+    await harness.composition.startSessionFromWaitingRoomDefaults({kind: "new", region: "hel1", computeClass: "agent-small", managedRepositoryRoot: "/home/chariox", shutdownPolicy: {kind: "last_work_finished", warningSeconds: 30}, contextPlan: {sourceTargetId: null, kernelContext: "empty", developmentSetup: {kind: "empty"}, providerAccounts: {kind: "none"}, gitCredentials: {kind: "none"}}})
     assert.ok(harness.cloudPaths.includes("/managed-environments"))
     assert.equal(requestCount(harness.local, "CreateManagedEnvironment"), 0)
     assert.equal(requestCount(harness.replacement, "GetManagedContextLaunchTarget"), 1)
@@ -433,7 +433,7 @@ for (const action of ["create", "reimage"] as const) for (const denied of [false
     const before = harness.cloudPaths.length
     const request = action === "reimage"
       ? harness.composition.reimageManagedEnvironment("environment-1", "confirm")
-      : harness.composition.startSessionFromWaitingRoomDefaults({kind: "new", region: "hel1", computeClass: "agent-small", managedRepositoryRoot: "/home/chariox", autoStopPolicy: {minimumRuntimeSeconds: 0, idleDelaySeconds: 900}, contextPlan: {sourceTargetId: null, kernelContext: plan.kernelContext, developmentSetup: plan.developmentSetup, providerAccounts: plan.providerAccounts, gitCredentials: plan.gitCredentials}})
+      : harness.composition.startSessionFromWaitingRoomDefaults({kind: "new", region: "hel1", computeClass: "agent-small", managedRepositoryRoot: "/home/chariox", shutdownPolicy: {kind: "last_work_finished", warningSeconds: 30}, contextPlan: {sourceTargetId: null, kernelContext: plan.kernelContext, developmentSetup: plan.developmentSetup, providerAccounts: plan.providerAccounts, gitCredentials: plan.gitCredentials}})
     if (denied) await assert.rejects(request, /no transferable credentials/)
     else await request
     assert.equal(requestCount(harness.local, "PreflightProviderAccountPortability"), 1)
@@ -1133,7 +1133,7 @@ function environment(overrides: Partial<ManagedEnvironmentSummary> = {}): Manage
     runtimeReleaseDigest: "sha256:new-release",
     contextPlan: emptyPlan(),
     contextManifestDigest: "sha256:manifest",
-    shutdownPolicy: { kind: "last_work_finished", warningSeconds: 30 },
+    autoStopPolicy: { minimumRuntimeSeconds: 0, idleDelaySeconds: 900 },
     lastErrorCode: null,
     lastErrorMessage: null,
     createdAt: "2026-09-22T00:00:00.000Z",
