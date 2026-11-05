@@ -209,7 +209,7 @@ client.onKernelEvent(async event => {
 })
 // An attachment that stays quiet is reaped: keep it alive.
 const pump = setInterval(() => { rpc({ PumpTerminalOutput: { session_id: sessionId, attachment_id: att.attachment.id } }).catch(() => {}) }, 2000)
-await rpc({ SetProviderAccountCredential: { provider: "claude", account_profile: "default", value: readFileSync(loginFile, "utf8").trim(), overwrite: true } })
+const claudeProfile = (await rpc({ SetProviderAccountCredential: { provider: "claude", account_profile: "default", value: readFileSync(loginFile, "utf8").trim(), overwrite: true } })).ProviderAccountCredentialStored.account_profile
 note("login-stored")
 const agentCount = Number(flags.get("--agents") ?? 1)
 // --codex-agents 5,4: those agent numbers run Codex (a linked profile, --codex-profile-dir) instead of Claude;
@@ -232,7 +232,7 @@ for (let n = 1; n <= agentCount; n++) {
   const provider = providerOf(n)
   const choice = provider === "codex" ? { account_profile: "drill-codex", model: "gpt-6-luna", effort: "low" }
     : provider === "opencode" ? { account_profile: opencodeProfile, model: flags.get("--opencode-model") ?? "opencode-go/deepseek-v4.1-flash" }
-    : { model: "claude-haiku-5-5" }
+    : { account_profile: claudeProfile, model: "claude-haiku-5-5" }
   const spawned = (await rpc({ SpawnAgent: { session_id: sessionId, provider, ...choice, permission_level: "yolo", alias: `builder${n}` } })).AgentSpawned.agent
   note("agent", { n, provider, id: spawned.id, model: choice.model })
   agents.push(spawned)
@@ -247,9 +247,13 @@ const ask = async (text, target = agent) => {
       await focusInTui(target)
       execFileSync("tmux", ["load-buffer", "-b", tmuxName, "-"], { input: text })
       tmux("paste-buffer", "-p", "-d", "-b", tmuxName, "-t", tmuxName)
+      const tail = text.replace(/\s/g, "").slice(-80)
+      await until(() => tuiEditor(target).replace(/\s/g, "").includes(tail), "TUI paste to reach the editor")
+      await delay(500)
+      assert(tuiEditor(target).replace(/\s/g, "").includes(tail), "the TUI draft changed before Enter")
       tmux("send-keys", "-t", tmuxName, "Enter")
+      await until(() => tuiEditor(target).includes("Write your next prompt here"), `TUI submitted draft for ${target.alias}`)
       note("tui-prompt", { agent: target.id, text: text.slice(0, 120) })
-      await delay(300)
     })
     tuiInputQueue = pending
     return pending
@@ -296,13 +300,19 @@ if (flags.has("--tui")) {
   tui = true
   note("tui-start", { tmux: tmuxName })
 }
+const tuiEditor = target => {
+  const lines = tmux("capture-pane", "-p", "-t", tmuxName).split("\n")
+  const status = lines.findLastIndex(line => line.includes(`${target.alias} •`))
+  return status < 0 ? "" : lines.slice(status + 1).join("\n")
+}
 const focusInTui = async target => {
   await until(() => tmux("capture-pane", "-p", "-t", tmuxName).includes("Write your next prompt here"), "TUI prompt editor", 60000)
   tmux("send-keys", "-t", tmuxName, "-l", `/agent focus ${target.alias}`)
   tmux("send-keys", "-t", tmuxName, "Enter")
   await until(async () => {
     const session = (await rpc({ GetSessionState: { session_id: sessionId } })).SessionState.session
-    return session.focused_agent_id === target.id && tmux("capture-pane", "-p", "-t", tmuxName).includes(`${target.alias} •`)
+    return session.focused_agent_id === target.id && tuiEditor(target).includes("Write your next prompt here")
+      && tmux("capture-pane", "-p", "-t", tmuxName).includes(`focused on ${target.alias}`)
   }, `TUI focus ${target.alias}`, 60000)
   writeFileSync(join(tuiScreens, `focus-${target.alias}-${Date.now()}.txt`), tmux("capture-pane", "-p", "-t", tmuxName))
 }
