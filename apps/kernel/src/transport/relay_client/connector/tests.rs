@@ -972,15 +972,23 @@ async fn silent_relay_socket_is_dropped_and_reconnected_after_read_deadline() {
     .unwrap();
     tokio::time::pause();
     tokio::time::advance(RELAY_READ_IDLE_LIMIT + Duration::from_secs(1)).await;
-    for _ in 0..20 {
+    // A fixed number of yields is not a barrier for the connector's runtime
+    // replies. Observe the idle transition before resuming the paused clock.
+    let observation_deadline = std::time::Instant::now() + Duration::from_secs(3);
+    while state.read().await.connected() && std::time::Instant::now() < observation_deadline {
         tokio::task::yield_now().await;
     }
+    let disconnected_after_deadline = !state.read().await.connected();
     tokio::time::resume();
-    let reconnected = timeout(Duration::from_secs(4), connections.recv()).await;
+    let reconnected = timeout(Duration::from_secs(5), connections.recv()).await;
     let _ = stop.send(true);
     connector.await.unwrap();
     let _ = server_stop.send(());
     server.await.unwrap();
+    assert!(
+        disconnected_after_deadline,
+        "silent socket did not reach its idle deadline"
+    );
     assert!(
         matches!(reconnected, Ok(Some(()))),
         "a writable but silent relay socket was never replaced"
