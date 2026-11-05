@@ -33,6 +33,19 @@ type Input =
   | { readonly kind: "line"; readonly target: "secretName" | "filePath"; readonly buffer: TextBuffer }
   | { readonly kind: "secretValue"; readonly name: string; readonly buffer: TextBuffer }
 
+type ProjectDraft = {
+  readonly projectId: string
+  environment: ProjectEnvironmentView | null
+  typed: { script?: string; variables?: string }
+  busy: boolean
+  textSaveQueued: boolean
+  message: string | null
+}
+
+function projectDraft(projectId: string): ProjectDraft {
+  return { projectId, environment: null, typed: {}, busy: false, textSaveQueued: false, message: null }
+}
+
 export type ProjectEnvironmentControllerDeps = {
   send: (request: unknown) => Promise<unknown>
   render: () => void
@@ -53,19 +66,16 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
   let generation = 0
   let projectId = ""
   let loading = false
-  let environment: ProjectEnvironmentView | null = null
-  // Text the user typed and has not saved; a field absent here shows the saved record.
-  let typed: { script?: string; variables?: string } = {}
+  // Saves belong to the Project and outlive the dialog that submitted them.
+  const drafts = new Map<string, ProjectDraft>()
+  let draft = projectDraft("")
   let focus: EnvironmentFocus = { kind: "run" }
   let input: Input | null = null
   let operation: EnvironmentOperationView | null = null
-  let message: string | null = null
-  let busy = false
-  let textSaveQueued = false
   let pollingOperationId: string | null = null
 
-  const script = () => typed.script ?? environment?.setup.script ?? ""
-  const variables = () => typed.variables ?? environment?.variables ?? ""
+  const script = (state = draft) => state.typed.script ?? state.environment?.setup.script ?? ""
+  const variables = (state = draft) => state.typed.variables ?? state.environment?.variables ?? ""
 
   const inputView = (): EnvironmentInputView | null => {
     if (!input) return null
@@ -77,13 +87,14 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
   }
 
   const model = (): EnvironmentDialogModel => ({
-    loading, environment, script: script(), variables: variables(), focus, input: inputView(), operation, message, nowMs: deps.now(),
+    loading, environment: draft.environment, script: script(), variables: variables(), focus, input: inputView(), operation, message: draft.message, nowMs: deps.now(),
   })
 
-  const focusables = () => environmentFocusables(environment)
+  const focusables = () => environmentFocusables(draft.environment)
 
-  const setEnvironment = (next: ProjectEnvironmentView) => {
-    environment = next
+  const setEnvironment = (next: ProjectEnvironmentView, state = draft) => {
+    state.environment = next
+    if (state !== draft) return
     const keys = focusables().map(focusKey)
     if (!keys.includes(focusKey(focus))) focus = focusables().at(-1) ?? { kind: "run" }
   }
@@ -91,21 +102,21 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
   /** Runs one request for the current dialog; a closed or reopened dialog drops the result. */
   const guarded = async <T>(work: () => Promise<T>, apply: (result: T) => void): Promise<void> => {
     const mine = generation
-    busy = true
+    const state = draft
+    state.busy = true
     try {
       const result = await work()
       if (mine !== generation) return
-      message = null
+      state.message = null
       apply(result)
     } catch (error) {
       if (mine !== generation) return
-      message = failureText(error)
+      state.message = failureText(error)
     } finally {
-      if (mine === generation) {
-        busy = false
-        if (textSaveQueued) { textSaveQueued = false; void saveTypedText() }
-        deps.render()
-      }
+      state.busy = false
+      if (state.textSaveQueued) { state.textSaveQueued = false; void saveTypedText(state) }
+      if (mine !== generation && open && state === draft && !state.busy) void refresh()
+      deps.render()
     }
   }
 
@@ -120,7 +131,7 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
       else await showLastRun(next.setupState, mine)
     } catch (error) {
       if (mine !== generation) return
-      message = failureText(error)
+      draft.message = failureText(error)
     }
     deps.render()
   }
@@ -147,7 +158,7 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
         const next = environmentOperationFromResponse(await deps.send(getEnvironmentOperationRequest(operationId)))
         if (mine !== generation || pollingOperationId !== operationId) return
         operation = next
-        message = null
+        draft.message = null
         if (next.state !== "running") {
           pollingOperationId = null
           deps.render()
@@ -156,7 +167,7 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
         }
       } catch (error) {
         if (mine !== generation || pollingOperationId !== operationId) return
-        message = failureText(error)
+        draft.message = failureText(error)
       }
       deps.render()
       deps.schedule(() => { void tick() }, OPERATION_POLL_MS)
@@ -164,36 +175,42 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
     deps.schedule(() => { void tick() }, OPERATION_POLL_MS)
   }
 
-  const save = async (patch: { secretNames?: string[]; filePaths?: string[] }) => {
-    const current = environment
-    if (!current || busy) return
-    const savedScript = script()
-    const savedVariables = variables()
-    await guarded(
-      async () => projectEnvironmentSaveOutcomeFromResponse(await deps.send(saveProjectEnvironmentRequest({
-        projectId,
+  const save = async (patch: { secretNames?: string[]; filePaths?: string[] }, state = draft) => {
+    const current = state.environment
+    if (!current || state.busy) return
+    const savedScript = script(state)
+    const savedVariables = variables(state)
+    state.busy = true
+    try {
+      const outcome = projectEnvironmentSaveOutcomeFromResponse(await deps.send(saveProjectEnvironmentRequest({
+        projectId: state.projectId,
         expectedRevision: current.revision,
         script: savedScript,
         variables: savedVariables,
         secretNames: patch.secretNames ?? current.secrets.map((secret) => secret.name),
         filePaths: patch.filePaths ?? current.files.map((file) => file.path),
-      }))),
-      (outcome) => {
-        setEnvironment(outcome.environment)
-        if (outcome.kind === "saved") {
-          if (typed.script === savedScript) delete typed.script
-          if (typed.variables === savedVariables) delete typed.variables
-        } else message = "Changed elsewhere"
-      },
-    )
+      })))
+      setEnvironment(outcome.environment, state)
+      state.message = null
+      if (outcome.kind === "saved") {
+        if (state.typed.script === savedScript) delete state.typed.script
+        if (state.typed.variables === savedVariables) delete state.typed.variables
+      } else state.message = "Changed elsewhere"
+    } catch (error) {
+      state.message = failureText(error)
+    } finally {
+      state.busy = false
+      if (state.textSaveQueued) { state.textSaveQueued = false; void saveTypedText(state) }
+      deps.render()
+    }
   }
 
-  const hasUnsavedText = () => environment !== null && (script() !== environment.setup.script || variables() !== environment.variables)
+  const hasUnsavedText = (state = draft) => state.environment !== null && (script(state) !== state.environment.setup.script || variables(state) !== state.environment.variables)
 
-  const saveTypedText = async () => {
+  const saveTypedText = async (state = draft) => {
     // Even a return to the loaded value may need saving after the pending request.
-    if (busy) { textSaveQueued = true; return }
-    if (hasUnsavedText()) await save({})
+    if (state.busy) { state.textSaveQueued = true; return }
+    if (hasUnsavedText(state)) await save({}, state)
   }
 
   const sendSecret = async (name: string, value: string) => {
@@ -204,8 +221,8 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
   }
 
   const toggleSetup = async () => {
-    const current = environment
-    if (!current || busy) return
+    const current = draft.environment
+    if (!current || draft.busy) return
     if (current.setupState.state === "running") {
       const operationId = current.setupState.operationId
       await guarded(
@@ -232,27 +249,28 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
     if (input?.kind !== "text") return
     const { field, buffer } = input
     input = null
-    typed = field === "script" ? { ...typed, script: buffer.text } : { ...typed, variables: buffer.text }
+    draft.typed = field === "script" ? { ...draft.typed, script: buffer.text } : { ...draft.typed, variables: buffer.text }
     void saveTypedText()
   }
 
   const submitLine = () => {
-    if (input?.kind !== "line" || !environment) return
+    if (input?.kind !== "line" || !draft.environment) return
+    const mine = generation
     const { target, buffer } = input
     const value = buffer.text.trim()
     input = null
     if (!value) return
     if (target === "secretName") {
-      const existing = environment.secrets.find((secret) => secret.name === value)
+      const existing = draft.environment.secrets.find((secret) => secret.name === value)
       if (existing) { input = { kind: "secretValue", name: value, buffer: bufferAtEnd("") }; return }
-      void save({ secretNames: [...environment.secrets.map((secret) => secret.name), value] }).then(() => {
-        if (open && environment?.secrets.some((secret) => secret.name === value) && !input) {
+      void save({ secretNames: [...draft.environment.secrets.map((secret) => secret.name), value] }).then(() => {
+        if (open && mine === generation && draft.environment?.secrets.some((secret) => secret.name === value) && !input) {
           input = { kind: "secretValue", name: value, buffer: bufferAtEnd("") }
           deps.render()
         }
       })
-    } else if (!environment.files.some((file) => file.path === value)) {
-      void save({ filePaths: [...environment.files.map((file) => file.path), value] })
+    } else if (!draft.environment.files.some((file) => file.path === value)) {
+      void save({ filePaths: [...draft.environment.files.map((file) => file.path), value] })
     }
   }
 
@@ -264,7 +282,7 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
   }
 
   const removeFocused = () => {
-    const current = environment
+    const current = draft.environment
     if (!current) return
     if (focus.kind === "secret") {
       const index = focus.index
@@ -276,7 +294,7 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
   }
 
   const activateFocused = () => {
-    const current = environment
+    const current = draft.environment
     if (!current) return
     switch (focus.kind) {
       case "run": void toggleSetup(); return
@@ -306,7 +324,6 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
       generation++
       input = null
       pollingOperationId = null
-      textSaveQueued = false
       deps.render()
     },
     /** Esc: leaves the active input first, closes the dialog when none is active. */
@@ -319,17 +336,20 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
       const mine = ++generation
       open = true
       projectId = project
-      loading = true
-      environment = null
-      typed = {}
+      draft = drafts.get(project) ?? projectDraft(project)
+      drafts.set(project, draft)
+      if (!hasUnsavedText()) draft.message = null
+      loading = !draft.busy
+      if (!draft.busy) draft.environment = null
       focus = { kind: "run" }
       input = null
       operation = null
-      message = null
-      busy = false
-      textSaveQueued = false
       pollingOperationId = null
       deps.render()
+      if (draft.busy) {
+        if (draft.environment?.setupState.state === "running") poll(draft.environment.setupState.operationId)
+        return
+      }
       try {
         const next = projectEnvironmentFromResponse(await deps.send(getProjectEnvironmentRequest(project)))
         if (mine !== generation) return
@@ -339,7 +359,7 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
         else await showLastRun(next.setupState, mine)
       } catch (error) {
         if (mine !== generation) return
-        message = failureText(error)
+        draft.message = failureText(error)
       }
       loading = false
       deps.render()
