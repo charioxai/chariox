@@ -145,6 +145,7 @@ pub(crate) enum KernelEvent {
     SessionProcessesChanged {
         session_id: String,
         processes: Vec<crate::runtime::process_resources::SessionProcess>,
+        disk_usage: Vec<crate::runtime::disk_usage::DiskUsageEntry>,
     },
     SessionSnapshot {
         room_workflows: crate::runtime::projection::RoomWorkflowInventory,
@@ -711,11 +712,15 @@ pub(crate) fn session_projection_changed_events(
     previous: Option<&SessionSnapshotProjection>,
 ) -> Vec<KernelEvent> {
     [
-        (previous.is_none_or(|previous| previous.processes != snapshot.processes)
-            && (previous.is_some() || !snapshot.processes.is_empty()))
+        (previous.is_none_or(|previous| {
+            previous.processes != snapshot.processes || previous.disk_usage != snapshot.disk_usage
+        }) && (previous.is_some()
+            || !snapshot.processes.is_empty()
+            || !snapshot.disk_usage.is_empty()))
         .then(|| KernelEvent::SessionProcessesChanged {
             session_id: snapshot.session.id().to_string(),
             processes: snapshot.processes.clone(),
+            disk_usage: snapshot.disk_usage.clone(),
         }),
         agent_activity_changed_event(snapshot, previous),
         provider_run_changed_event(snapshot, previous),
@@ -1240,11 +1245,32 @@ fn kernel_error(code: &str, error: &DaemonError, retryable: bool) -> KernelTrans
 }
 
 pub(crate) fn serialize_frame(frame: &KernelOutgoingFrame) -> Result<String, DaemonError> {
+    let encoded = serde_json::to_string(frame).map_err(|error| DaemonError::LocalTransport {
+        operation: "serialize kernel websocket frame",
+        message: error.to_string(),
+    })?;
+    // Redaction and the artifact budget edit a JSON tree; building it for every
+    // frame doubles the work of large session lists, so only frames that need
+    // it take that path.
+    if encoded.len() <= ARTIFACT_FRAME_BUDGET && !encoded.contains(REDACTED_CLIENT_KEY) {
+        return Ok(encoded);
+    }
+    #[cfg(test)]
+    FRAME_VALUE_TREES.with(|n| n.set(n.get() + 1));
     let value = serde_json::to_value(frame).map_err(|error| DaemonError::LocalTransport {
         operation: "serialize kernel websocket frame",
         message: error.to_string(),
     })?;
     serialize_frame_value(value)
+}
+
+const ARTIFACT_FRAME_BUDGET: usize = 1024 * 1024;
+/// The key `redact_client_response_value` removes from a frame.
+const REDACTED_CLIENT_KEY: &str = "\"relay_token\"";
+
+#[cfg(test)]
+thread_local! {
+    pub(crate) static FRAME_VALUE_TREES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// MP-08 / MP-10 / MP-11: projected frames retain the shared artifact budget.
@@ -1259,7 +1285,7 @@ pub(crate) fn serialize_frame_value(mut value: Value) -> Result<String, DaemonEr
     let encoded = encode(&value)?;
     // MP-08/MP-10/MP-11: kernel WebSocket transports share this budget. Large
     // artifacts remain readable in chunks; provider-native delivery is separate.
-    if encoded.len() > 1024 * 1024 {
+    if encoded.len() > ARTIFACT_FRAME_BUDGET {
         if let Some(payload) = value
             .pointer_mut("/response/RoomBrowserArtifact/result/payload")
             .and_then(Value::as_object_mut)

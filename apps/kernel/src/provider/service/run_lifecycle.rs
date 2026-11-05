@@ -82,6 +82,15 @@ impl ProviderProcessService {
         if let Some(endpoint) = crate::hot_reload::adopting_codex_endpoint(&run_id) {
             launch_result.structured_endpoint = Some(endpoint);
         }
+        // Everything the kernel starts for the agent writes its scratch in the agent's own folder.
+        if let Some(agent_id) = request.agent_id.as_deref() {
+            for (name, value) in crate::agent_temp::environment(&request.session_id, agent_id) {
+                launch_result
+                    .pty_env
+                    .entry(name.to_string())
+                    .or_insert(value);
+            }
+        }
 
         crate::logging::info_with_fields(
             "daemon.provider",

@@ -50,6 +50,12 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             if stored.0 != success {
                 return Err(error("conflicting terminal source occurrence"));
             }
+            if id == format!("task-terminal-{source}") {
+                tx.execute(
+                    "UPDATE agent_tasks SET terminal_outcome_recorded=1 WHERE room_id=?1 AND task_id=?2",
+                    params![room, source],
+                ).map_err(sql)?;
+            }
             public_answer = stored
                 .1
                 .map(|v| decode::<serde_json::Value>(&v))

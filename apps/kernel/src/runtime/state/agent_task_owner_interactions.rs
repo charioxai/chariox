@@ -21,8 +21,8 @@ impl KernelRuntimeOwnedState {
         if rooms.is_empty() {
             return Ok(());
         }
-        let tasks = self.durable_state_store.agent_tasks(None, None)?;
         for room in rooms {
+            let tasks = self.durable_state_store.agent_tasks(Some(&room), None)?;
             self.retract_stale_task_owner_interactions(&room, &tasks)?;
         }
         Ok(())

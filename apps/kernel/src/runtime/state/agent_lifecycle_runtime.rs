@@ -28,12 +28,12 @@ impl KernelRuntimeOwnedState {
         let prompt = prepared.prompt.id();
         let existed = self
             .durable_state_store
-            .agent_tasks(
-                Some(&prepared.session_id),
-                Some(prepared.prompt.target_agent_id()),
+            .agent_turn_or_continuation_task(
+                &prepared.session_id,
+                prepared.prompt.target_agent_id(),
+                prompt,
             )?
-            .iter()
-            .any(|t| t.prompt_id == prompt || t.pending_prompt_id.as_deref() == Some(prompt));
+            .is_some();
         let continuation_task = prepared
             .prompt
             .durable_operation_fingerprint()
@@ -759,9 +759,7 @@ impl KernelRuntimeState {
                 let prompt = self
                     .owned
                     .durable_state_store
-                    .agent_tasks(Some(&task.room_id), Some(&task.agent_id))?
-                    .into_iter()
-                    .find(|t| t.task_id == task.task_id)
+                    .agent_task(&task.task_id)?
                     .map_or_else(|| task.prompt_id.clone(), |t| t.prompt_id);
                 self.owned.durable_state_store.agent_lifecycle(Operation::Block{task:task.task_id.clone(),prompt,reason:format!("Correction delivery failed or uncertain: {e}; reconcile before owner resume")})?;
             }
@@ -821,11 +819,19 @@ impl KernelRuntimeState {
         // Output settlement may hold one or every provider lane. Dispatch
         // completion wakes after it returns so a recipient cannot reacquire
         // a lane held by this same call stack.
+        let Some(mut run) = self.lifecycle_sweeps.ask() else {
+            return;
+        };
         let state = self.clone();
         tokio::spawn(async move {
-            if let Err(error) = state.sweep_agent_lifecycle().await {
-                tracing::warn!(error=%crate::secret_redaction::redact_secrets(&error.to_string()),
-                    "MP-08/MP-09/MP-10/MP-11 A02: completion sweep retained for periodic reconciliation");
+            loop {
+                if let Err(error) = state.sweep_agent_lifecycle().await {
+                    tracing::warn!(error=%crate::secret_redaction::redact_secrets(&error.to_string()),
+                        "MP-08/MP-09/MP-10/MP-11 A02: completion sweep retained for periodic reconciliation");
+                }
+                if !run.asked_again() {
+                    break;
+                }
             }
         });
     }
@@ -956,6 +962,8 @@ impl KernelRuntimeState {
         Ok(())
     }
     pub(super) async fn sweep_agent_lifecycle(&self) -> Result<(), DaemonError> {
+        #[cfg(test)]
+        self.lifecycle_sweeps.record_run();
         self.sweep_agent_lifecycle_at(crate::session::unix_epoch_ms())
             .await
     }
@@ -1000,12 +1008,12 @@ impl KernelRuntimeState {
                 _ => {}
             }
         }
-        let tasks = self.owned.durable_state_store.agent_tasks(None, None)?;
+        let tasks = self.owned.durable_state_store.agent_tasks_to_sweep()?;
         Box::pin(self.check_leased_task_connections(&tasks, now)).await?;
         self.discharge_worker_stop_obligations(now).await?;
         let now = crate::session::unix_epoch_ms();
         let mut blocked = Vec::new();
-        for task in self.owned.durable_state_store.agent_tasks(None, None)? {
+        for task in self.owned.durable_state_store.agent_tasks_to_sweep()? {
             let Ok(session) = self.owned.session_store.get_session(&task.room_id) else {
                 continue;
             };
@@ -1317,7 +1325,7 @@ impl KernelRuntimeState {
                 },
             );
         }
-        let tasks = self.owned.durable_state_store.agent_tasks(None, None)?;
+        let tasks = self.owned.durable_state_store.agent_tasks_to_sweep()?;
         self.owned
             .human_control_task_waits
             .lock()
@@ -1330,8 +1338,7 @@ impl KernelRuntimeState {
                         && !task.goal.as_ref().is_some_and(|goal| goal.paused)
                 })
             });
-        let mut rooms = BTreeSet::new();
-        for task in tasks.clone() {
+        for task in tasks {
             // Recovery retains unavailable Rooms; their tasks must not halt live supervision.
             if self.owned.session_store.get_session(&task.room_id).is_err() {
                 continue;
@@ -1344,10 +1351,10 @@ impl KernelRuntimeState {
             {
                 tracing::warn!(room_id=%task.room_id, agent_id=%task.agent_id, "MP-08/MP-09/MP-10/MP-11 A02: owner projection unavailable; other recipients continue");
             }
-            if rooms.insert(task.room_id.clone()) {
-                self.retract_stale_task_owner_interactions(&task.room_id, &tasks)
-                    .await;
-            }
+        }
+        // A decision whose task finished is withdrawn here; finished tasks are not in the sweep's set.
+        if let Err(error) = self.owned.sweep_stale_task_owner_interactions() {
+            tracing::warn!(%error, "task owner decision withdrawal failed; interaction admission will retry");
         }
         // A rejected cold submission withdraws its fresh task. The inbox still
         // owns the work and must retry even when this recipient has no tasks.

@@ -208,6 +208,8 @@ pub(crate) struct KernelRuntimeState {
     #[cfg(test)]
     app_lock_wait_probe: Option<Arc<tokio::sync::Notify>>,
     #[cfg(test)]
+    disk_volume_probe: Option<fn(&std::path::Path) -> Option<(u64, u64, u64)>>,
+    #[cfg(test)]
     queue_promotion_exit_probe: Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>,
     app: Arc<Mutex<DaemonApp>>,
     provider_runtime_lanes: ProviderRunOperationLanes,
@@ -217,6 +219,7 @@ pub(crate) struct KernelRuntimeState {
     /// Recovery operations this kernel life dispatched. One from an earlier life has no provider
     /// behind it any more, so restart recovery may supersede it instead of waiting for it.
     restart_recovery_dispatched: Arc<std::sync::Mutex<BTreeSet<String>>>,
+    lifecycle_sweeps: lifecycle_sweep_flight::SweepFlight,
     /// What the person granted with "Allow for this session" on Claude permission prompts, per
     /// agent, so a restarted Claude process starts with it again.
     claude_session_grants: claude_permission_rules::StandingGrants,
@@ -245,7 +248,7 @@ struct KernelRuntimeOwnedState {
     kernel_access: crate::runtime::kernel_access::AccessStore,
     sudo_turns: sudo::SudoStore,
     agent_auth_registrations: agent_auth::RegistrationClaims,
-    vault_capture_claims: vault_command::CaptureClaims,
+    vault_capture_claims: Arc<vault_command::CaptureClaims>,
     /// Window timer proof of life: entry -> (armed revision, alerted revision).
     sudo_timers: Arc<std::sync::Mutex<BTreeMap<String, (u64, u64)>>>,
     sudo_timer_changes: Arc<RuntimeChangeSignal>,
@@ -297,6 +300,7 @@ struct KernelRuntimeOwnedState {
     kernel_browser_secret_observations: room_secret_observation::RoomSecretObservations,
     room_terminals: crate::room_terminal::RoomTerminalService,
     room_execs: crate::room_exec::RoomExecService,
+    disk_usage: crate::runtime::disk_usage::DiskUsageStore,
     environment_execution_gates: environment_execution_gate::EnvironmentExecutionGates,
     computer_input_executions:
         crate::runtime::computer_input_execution::ComputerInputExecutionStore,
@@ -580,7 +584,10 @@ mod claude_token_first_use;
 mod provider_login_workflow;
 mod runtime_interaction_owned_state;
 pub(crate) use runtime_interaction_owned_state::interaction_waits;
+mod disk_pressure;
+mod disk_usage;
 mod owner_vault;
+mod process_waits;
 mod runtime_interaction_state;
 mod runtime_notice_owned_state;
 mod runtime_state_views;
@@ -1020,6 +1027,8 @@ impl KernelRuntimeState {
             #[cfg(test)]
             app_lock_wait_probe: None,
             #[cfg(test)]
+            disk_volume_probe: None,
+            #[cfg(test)]
             queue_promotion_exit_probe: None,
             app,
             provider_runtime_lanes,
@@ -1027,6 +1036,7 @@ impl KernelRuntimeState {
             leased_agent_operations: leased_agent_operations::LeasedAgentOperations::default(),
             detached_workflow_provider_launches: Arc::new(std::sync::Mutex::new(BTreeSet::new())),
             restart_recovery_dispatched: Arc::new(std::sync::Mutex::new(BTreeSet::new())),
+            lifecycle_sweeps: Default::default(),
             claude_session_grants: claude_permission_rules::StandingGrants::default(),
             terminal_wake_driver: None,
             interaction_wake_driver: None,
@@ -1091,6 +1101,7 @@ impl KernelRuntimeState {
                 ).with_identity(&config.relay_private_key),
                 room_terminals,
                 room_execs: Default::default(),
+                disk_usage: Default::default(),
                 computer_input_executions:
                     crate::runtime::computer_input_execution::ComputerInputExecutionStore::default(),
                 room_browser_health_inflight: Arc::new(std::sync::Mutex::new(BTreeSet::new())),
@@ -1497,6 +1508,8 @@ mod agent_leased_process_home;
 mod agent_leased_process_receipts;
 mod agent_leased_process_worker;
 mod agent_lifecycle_runtime;
+#[cfg(test)]
+mod agent_membership_read_tests;
 mod agent_process_group;
 mod agent_process_output;
 mod agent_process_watch;
@@ -1519,6 +1532,9 @@ mod agent_workspace_loss;
 mod interaction_wake;
 mod leased_task_connectivity;
 mod leased_worker_stop_obligation;
+mod lifecycle_sweep_flight;
+#[cfg(test)]
+mod resident_room_scan_tests;
 mod room_dispatch_obligation;
 mod terminal_wake;
 mod terminal_wake_worker;

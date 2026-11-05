@@ -1,12 +1,12 @@
 //! Admission (OF-01, OF-04, OF-05): a known heavy command waits in line
 //! before it grows and starts by itself when room frees; Start now admits it
-//! at once; a command writing a full disk is paused, not stopped.
-use super::pressure_tests::{domain, pool, settle, Workload};
+//! at once; a command filling a nearly full disk is stopped with its reason.
+use super::pressure_tests::{domain, pool, settle, writer_command, Workload, DIE_WITH_PARENT};
 use super::*;
 
 /// Sleeps `delay` seconds (a build's start), takes `mib`, holds it `seconds`.
 fn heavy(mib: u64, delay: u64, seconds: u64) -> String {
-    format!("python3 -c 'import time,sys; time.sleep({delay}); b=bytearray({mib}*1048576); time.sleep({seconds})' heavy")
+    format!("python3 -c '{DIE_WITH_PARENT}import time,sys; time.sleep({delay}); b=bytearray({mib}*1048576); time.sleep({seconds})' heavy")
 }
 
 fn state(workload: &Workload, name: &str) -> SessionProcessState {
@@ -45,28 +45,49 @@ fn held() -> (Workload, Workload, Arc<pool::Pool>) {
 #[cfg(target_os = "linux")]
 #[test]
 fn a_known_heavy_command_waits_in_line_then_starts_by_itself() {
+    take_wait_events();
     let (a, mut b, _pool) = held();
     assert!(b.waiting("job"), "the heavy command was not held");
     match state(&b, "job") {
-        SessionProcessState::Held {
+        SessionProcessState::Held(Waiting {
             reason: WaitReason::Memory,
             position: 1,
             need_bytes,
             command_line,
+            since_ms,
             ..
-        } => {
+        }) => {
             assert!(need_bytes >= 590 * MIB, "need {need_bytes}");
             assert!(command_line.starts_with("python3 -c"), "{command_line}");
+            assert!(since_ms > 0, "the row does not say since when it waits");
         }
         other => panic!("held command reads {other:?}"),
     }
     assert!(b.alive("job"), "a held command was stopped");
+    // Its own error stream says it waits, why and its place in line.
+    b.assert_told("job", "waiting to start for memory (1st in line");
+    let began = take_wait_events()
+        .into_iter()
+        .filter(|event| matches!(event.state, SessionProcessState::Held(_)))
+        .collect::<Vec<_>>();
+    assert_eq!(began.len(), 1, "the room was not told: {began:?}");
+    assert_eq!(began[0].change, WaitChange::Began);
     // A's job ends: B starts by itself and finishes normally.
     unsafe { libc::kill(a.pid("big"), libc::SIGKILL) };
     settle(3);
     assert!(
         !b.waiting("job"),
         "the held command did not start with room"
+    );
+    b.assert_told("job", "continues after waiting");
+    let resumed = take_wait_events()
+        .into_iter()
+        .filter(|event| event.process_id == began[0].process_id)
+        .collect::<Vec<_>>();
+    assert!(
+        matches!(resumed.as_slice(), [event] if matches!(event.change, WaitChange::Resumed { .. })
+            && event.state == SessionProcessState::Running),
+        "the room was not told it runs again: {resumed:?}"
     );
     assert_eq!(state(&b, "job"), SessionProcessState::Running);
     settle(3);
@@ -102,139 +123,78 @@ fn start_now_admits_a_held_command_whatever_the_room() {
 
 const GIB: u64 = 1024 * MIB;
 
-/// A writer on a volume below its floor (a 100 GiB volume has a 10 GiB floor),
-/// paused by admission. The volume's free space is the test's to change.
+/// The volume's free space is the test's to change (a 100 GiB volume has a
+/// 10 GiB floor, so 4 GiB is below half of it).
 #[cfg(target_os = "linux")]
-fn paused_writer() -> (Workload, Arc<std::sync::atomic::AtomicU64>, Arc<pool::Pool>) {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    let free = Arc::new(AtomicU64::new(5 * GIB));
-    let reported = free.clone();
-    let pool = Arc::new(pool::Pool::with_volume(
+fn volume_with(free: u64) -> Arc<pool::Pool> {
+    Arc::new(pool::Pool::with_volume(
         1 << 40,
-        Box::new(move |_| {
+        Box::new(move |path| {
+            use std::os::unix::fs::MetadataExt;
             Some(admission::Space {
-                id: 1,
-                free: reported.load(Ordering::SeqCst),
+                id: std::fs::metadata(path).ok()?.dev(),
+                free,
                 total: 100 * GIB,
             })
         }),
-    ));
-    let writer = Workload::run(
+    ))
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_command_filling_the_disk_is_stopped_with_its_reason_never_paused() {
+    take_wait_events();
+    let pool = volume_with(4 * GIB);
+    let mut writer = Workload::run(
         domain(&pool, "writer", false),
-        &[(
-            "write",
-            "python3 -c 'import os,sys,time\nf=open(sys.argv[1],\"wb\")\nwhile True:\n f.write(os.urandom(4194304)); f.flush(); os.fsync(f.fileno()); time.sleep(0.5)' \"$0/out\""
-                .into(),
-        )],
+        &[("write", writer_command())],
     );
-    settle(3);
+    settle(4);
     assert!(
-        writer.waiting("write"),
-        "a writer past the floor kept writing"
+        !writer.alive("write"),
+        "a writer filling the disk kept writing"
     );
-    (writer, free, pool)
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-fn a_command_writing_past_the_disk_floor_is_paused_until_space_frees() {
-    use std::sync::atomic::Ordering;
-    let (mut writer, free, _pool) = paused_writer();
-    assert!(writer.alive("write"), "a writer on a full disk was stopped");
-    assert!(matches!(
-        state(&writer, "write"),
-        SessionProcessState::Paused {
-            reason: WaitReason::Disk,
-            ..
-        }
-    ));
-    free.store(50 * GIB, Ordering::SeqCst);
-    settle(3);
+    let events = take_wait_events();
     assert!(
-        !writer.waiting("write"),
-        "the writer did not continue with space"
+        events.iter().any(|event| matches!(
+            &event.change,
+            WaitChange::Stopped { reason } if reason.contains("was filling it")
+        )),
+        "the room was not told why the writer ended: {events:?}"
+    );
+    assert!(
+        events
+            .iter()
+            .all(|event| !matches!(event.change, WaitChange::Began)),
+        "the writer was paused first: {events:?}"
     );
 }
 
-/// What the previous program's admission handed over for the paused writer.
+/// What the previous program's admission handed over for a held command.
 #[cfg(target_os = "linux")]
-fn paused_by_the_previous_program(writer: &Workload) -> admission::HeldCommand {
-    admission::HeldCommand {
-        identity: crate::runtime::kernel_access::process::inspect(writer.pid("write") as u32)
-            .unwrap()
-            .0,
-        wait: Some(admission::Wait::Paused(WaitReason::Disk)),
-        admitted: true,
-        forced: false,
-        stopped: true,
-        paused_rate: 4 * MIB,
-        peak: admission::Peak::default(),
-        arrived: 1,
-    }
-}
-
-/// The next program's watch starts with the handover and no admission state
-/// of its own.
-#[cfg(target_os = "linux")]
-fn reload(writer: &Workload, handed_over: Vec<admission::HeldCommand>) {
+fn reload(command: &Workload, handed_over: Vec<admission::HeldCommand>) {
     admission::adopt_admission(handed_over);
-    writer.domain.state.lock().unwrap().admission.clear();
+    command.domain.state.lock().unwrap().admission.clear();
 }
 
 #[cfg(target_os = "linux")]
 #[test]
-fn the_commands_admission_stopped_are_handed_over() {
-    let (writer, _free, pool) = paused_writer();
+fn a_held_command_is_handed_over_and_still_startable_after_a_hot_reload() {
+    let (_a, b, pool) = held();
     let handed_over: Vec<admission::HeldCommand> =
         serde_json::from_slice(&serde_json::to_vec(&pool.held_commands()).unwrap()).unwrap();
     assert_eq!(handed_over.len(), 1);
-    assert_eq!(handed_over[0].identity.pid, writer.pid("write") as u32);
-    assert_eq!(
-        handed_over[0].wait,
-        Some(admission::Wait::Paused(WaitReason::Disk))
-    );
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-fn a_command_admission_paused_resumes_when_space_frees_after_a_hot_reload() {
-    use std::sync::atomic::Ordering;
-    let (writer, free, _pool) = paused_writer();
-    reload(&writer, vec![paused_by_the_previous_program(&writer)]);
+    reload(&b, handed_over);
     settle(2);
     assert!(
-        writer.waiting("write"),
-        "the reload resumed the command into a full disk"
-    );
-    free.store(50 * GIB, Ordering::SeqCst);
-    settle(3);
-    assert!(
-        !writer.waiting("write"),
-        "the command stayed stopped after the reload although space is free"
-    );
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-fn a_command_admission_paused_is_still_listed_and_startable_after_a_hot_reload() {
-    let (writer, _free, _pool) = paused_writer();
-    reload(&writer, vec![paused_by_the_previous_program(&writer)]);
-    settle(2);
-    assert!(
-        matches!(
-            state(&writer, "write"),
-            SessionProcessState::Paused {
-                reason: WaitReason::Disk,
-                ..
-            }
-        ),
-        "Health does not show the stopped command as waiting"
+        matches!(state(&b, "job"), SessionProcessState::Held(_)),
+        "the reload forgot the command was held"
     );
     let key = format!("admission-{:016x}", rand::random::<u64>());
-    writer.domain.bind_key(&key);
+    b.domain.bind_key(&key);
     let process_id = samples_for_key(&key)
         .into_iter()
-        .find(|sample| sample.pid == writer.pid("write") as u32)
+        .find(|sample| sample.pid == b.pid("job") as u32)
         .unwrap()
         .process_id;
     assert_eq!(
@@ -242,83 +202,7 @@ fn a_command_admission_paused_is_still_listed_and_startable_after_a_hot_reload()
         Ok(vec![process_id])
     );
     settle(1);
-    assert!(!writer.waiting("write"), "Start now did not start it");
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-fn a_command_the_person_started_now_still_never_waits_after_a_hot_reload() {
-    let (writer, _free, pool) = paused_writer();
-    let key = format!("admission-{:016x}", rand::random::<u64>());
-    writer.domain.bind_key(&key);
-    let process_id = samples_for_key(&key)
-        .into_iter()
-        .find(|sample| sample.pid == writer.pid("write") as u32)
-        .unwrap()
-        .process_id;
-    assert_eq!(
-        start_now_for_key(&key, process_id.clone()),
-        Ok(vec![process_id])
-    );
-    settle(2);
-    assert!(!writer.waiting("write"), "Start now did not start it");
-    // The disk stays below the floor across the reload.
-    let handed_over: Vec<admission::HeldCommand> =
-        serde_json::from_slice(&serde_json::to_vec(&pool.held_commands()).unwrap()).unwrap();
-    assert_eq!(handed_over.len(), 1, "the override was not handed over");
-    reload(&writer, handed_over);
-    settle(4);
-    assert!(
-        !writer.waiting("write"),
-        "the reload paused the command the person started now"
-    );
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-fn start_now_keeps_a_running_writer_admitted_after_a_hot_reload() {
-    let (writer, _free, pool) = paused_writer();
-    let key = format!("admission-{:016x}", rand::random::<u64>());
-    writer.domain.bind_key(&key);
-    let pid = writer.pid("write") as u32;
-    let process_id = samples_for_key(&key)
-        .into_iter()
-        .find(|sample| sample.pid == pid)
-        .unwrap()
-        .process_id;
-    assert_eq!(
-        start_now_for_key(&key, process_id.clone()),
-        Ok(vec![process_id])
-    );
-    settle(1);
-    assert!(!writer.waiting("write"), "Start now did not start it");
-    assert!(
-        !writer.domain.state.lock().unwrap().admission[&pid].stopped,
-        "the handover must happen after admission continued the writer"
-    );
-
-    // The running override crosses the same JSON boundary as a hot reload;
-    // a new watch must honour it while the disk remains below its floor.
-    let handed_over =
-        serde_json::from_slice(&serde_json::to_vec(&pool.held_commands()).unwrap()).unwrap();
-    admission::adopt_admission(handed_over);
-    let written = std::fs::metadata(writer.dir.join("out")).unwrap().len();
-    let next = writer.watched_again(domain(&pool, "writer", false));
-    settle(4);
-    assert!(
-        !writer.waiting("write"),
-        "the reload forgot Start now and paused the running writer again"
-    );
-    assert_eq!(state(&writer, "write"), SessionProcessState::Running);
-    assert!(
-        std::fs::metadata(writer.dir.join("out")).unwrap().len() > written,
-        "the writer made no progress after the reload"
-    );
-    assert!(
-        next.state.lock().unwrap().admission.contains_key(&pid),
-        "the adopted watch never registered the writer"
-    );
-    writer.domain.unbind_key(&key);
+    assert!(!b.waiting("job"), "Start now did not start it");
 }
 
 /// How the terminal's shell found the line that started the writer.
@@ -331,29 +215,13 @@ enum Launch {
     AgentInTheForeground,
 }
 
-/// A terminal's writer crosses a hot reload onto a volume past its floor:
-/// whether the next program's admission paused it.
+/// A terminal's writer crosses a hot reload onto a volume below half its
+/// floor: whether the next program's admission stopped it.
 #[cfg(target_os = "linux")]
-fn paused_after_a_hot_reload(launch: Launch) -> bool {
-    let volume = |free: u64| {
-        Arc::new(pool::Pool::with_volume(
-            1 << 40,
-            Box::new(move |_| {
-                Some(admission::Space {
-                    id: 1,
-                    free,
-                    total: 100 * GIB,
-                })
-            }),
-        ))
-    };
-    let writer = Workload::gated(
-        domain(&volume(50 * GIB), "writer", false),
-        &[(
-            "write",
-            "python3 -c 'import os,sys,time\nf=open(sys.argv[1],\"wb\")\nwhile True:\n f.write(os.urandom(4194304)); f.flush(); os.fsync(f.fileno()); time.sleep(0.5)' \"$0/out\""
-                .into(),
-        )],
+fn stopped_after_a_hot_reload(launch: Launch) -> bool {
+    let mut writer = Workload::gated(
+        domain(&volume_with(50 * GIB), "writer", false),
+        &[("write", writer_command())],
     );
     let key = format!("admission-{:016x}", rand::random::<u64>());
     writer.domain.bind_key(&key);
@@ -379,46 +247,46 @@ fn paused_after_a_hot_reload(launch: Launch) -> bool {
     // the same processes on a volume past its floor.
     let handed_over: Submissions =
         serde_json::from_slice(&serde_json::to_vec(&writer.domain.submissions()).unwrap()).unwrap();
-    let _next =
-        writer.watched_again(domain(&volume(5 * GIB), "writer", false).launched_by(handed_over));
+    let _next = writer
+        .watched_again(domain(&volume_with(4 * GIB), "writer", false).launched_by(handed_over));
     settle(4);
     writer.domain.unbind_key(&key);
-    writer.waiting("write")
+    !writer.alive("write")
 }
 
 #[cfg(target_os = "linux")]
 #[test]
-fn a_persons_foreground_command_is_still_never_paused_after_a_hot_reload() {
+fn a_persons_foreground_command_is_still_never_stopped_after_a_hot_reload() {
     assert!(
-        !paused_after_a_hot_reload(Launch::PersonInTheForeground),
-        "the reload made a person's running command pausable"
+        !stopped_after_a_hot_reload(Launch::PersonInTheForeground),
+        "the reload made a person's running command stoppable"
     );
 }
 
 #[cfg(target_os = "linux")]
 #[test]
-fn a_persons_background_writer_is_still_never_paused_after_a_hot_reload() {
+fn a_persons_background_writer_is_still_never_stopped_after_a_hot_reload() {
     assert!(
-        !paused_after_a_hot_reload(Launch::PersonInTheBackground),
-        "the reload made a person's background writer pausable"
+        !stopped_after_a_hot_reload(Launch::PersonInTheBackground),
+        "the reload made a person's background writer stoppable"
     );
 }
 
 #[cfg(target_os = "linux")]
 #[test]
-fn a_persons_command_in_a_shell_without_marks_is_still_never_paused_after_a_hot_reload() {
+fn a_persons_command_in_a_shell_without_marks_is_still_never_stopped_after_a_hot_reload() {
     assert!(
-        !paused_after_a_hot_reload(Launch::PersonInAShellWithoutMarks),
+        !stopped_after_a_hot_reload(Launch::PersonInAShellWithoutMarks),
         "the reload forgot that the shell reports no lines"
     );
 }
 
 #[cfg(target_os = "linux")]
 #[test]
-fn an_agents_command_stays_pausable_after_a_hot_reload() {
+fn an_agents_command_is_still_stopped_when_it_fills_the_disk_after_a_hot_reload() {
     assert!(
-        paused_after_a_hot_reload(Launch::AgentInTheForeground),
-        "the reload exempted an agent's command"
+        stopped_after_a_hot_reload(Launch::AgentInTheForeground),
+        "the reload exempted an agent's command from the disk stop"
     );
 }
 
@@ -535,5 +403,27 @@ fn a_launcher_chain_is_the_harness_and_only_its_later_commands_wait() {
     assert!(
         !b.waiting("job"),
         "the held command did not start with room"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_wait_longer_than_two_minutes_does_not_emit_a_notice() {
+    let (_a, writer, _pool) = held();
+    take_wait_events();
+    {
+        let mut observation = writer.domain.state.lock().unwrap();
+        for entry in observation.admission.values_mut() {
+            entry.since_ms = crate::session::unix_epoch_ms() - 130_000;
+        }
+    }
+    settle(2);
+    assert!(
+        take_wait_events().is_empty(),
+        "an unchanged wait must not emit the retired long-wait notice"
+    );
+    assert!(
+        writer.waiting("job"),
+        "the waiting row must remain available"
     );
 }

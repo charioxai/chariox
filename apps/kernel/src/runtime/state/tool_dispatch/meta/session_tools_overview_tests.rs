@@ -387,6 +387,7 @@ async fn room_overview_historical_workflow_visibility_survives_foreign_agent_del
             .unwrap();
         let attachment_projection = crate::runtime::projection::SessionSnapshotProjection {
             processes: Vec::new(),
+            disk_usage: Vec::new(),
             metadata: crate::runtime::projection::ProjectionMetadata::new(
                 crate::runtime::projection::SESSION_SNAPSHOT_PROJECTION_VERSION,
                 0,
@@ -411,6 +412,7 @@ async fn room_overview_historical_workflow_visibility_survives_foreign_agent_del
                 agent_activity: Default::default(),
                 agent_activity_revision: 0,
                 processes: Vec::new(),
+                disk_usage: Vec::new(),
             },
             actor.owner_user_id(),
             actor.owner_user_id(),

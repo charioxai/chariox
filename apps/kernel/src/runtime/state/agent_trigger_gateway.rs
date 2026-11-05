@@ -53,11 +53,12 @@ impl KernelRuntimeState {
     }
 
     pub(super) async fn reconcile_agent_trigger_gateways(&self) {
+        // Only the HTTP triggers are copied; the guard ends before any await.
         let desired: BTreeMap<_, _> = self
             .owned
             .session_store
-            .list_non_ended_sessions_including_hidden()
-            .into_iter()
+            .read()
+            .non_ended_session_refs()
             .flat_map(|session| {
                 session
                     .agent_triggers()
@@ -71,7 +72,6 @@ impl KernelRuntimeState {
                             (session.id().to_owned(), t.clone()),
                         )
                     })
-                    .collect::<Vec<_>>()
             })
             .collect();
         {

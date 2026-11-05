@@ -91,9 +91,8 @@ impl KernelRuntimeOwnedState {
     ) -> Result<bool, DaemonError> {
         let current = self
             .durable_state_store
-            .agent_tasks(Some(&task.room_id), Some(&task.agent_id))?
-            .into_iter()
-            .find(|t| t.task_id == task.task_id)
+            .agent_task(&task.task_id)?
+            .filter(|current| current.room_id == task.room_id && current.agent_id == task.agent_id)
             .ok_or_else(|| {
                 crate::durable_state::agent_lifecycle::error("task resource authority unavailable")
             })?;
@@ -460,5 +459,110 @@ impl KernelRuntimeState {
             }
         }
         first_error.map_or(Ok(()), Err)
+    }
+}
+
+#[cfg(test)]
+mod growth_tests {
+    use super::*;
+
+    // MP-08 / MP-09 / MP-10 / MP-11 KR-06: every CompletePrompt checks this
+    // task's resources. Reading all of its agent's finished turns here held
+    // the shared reader connection longer on each turn, delaying state reads.
+    #[tokio::test]
+    async fn task_resource_checks_do_not_decode_the_finished_turn_history() {
+        let state = crate::test_support::allocation::runtime_with_rooms(1);
+        let room = state.owned.session_store.list_all_sessions().pop().unwrap();
+        let agent = state
+            .owned
+            .agent_store
+            .get_session_agents(room.id())
+            .pop()
+            .unwrap();
+        let Outcome::Task(task) = state
+            .owned
+            .durable_state_store
+            .agent_lifecycle(Operation::Begin {
+                owner: room.owner_user_id().into(),
+                room: room.id().into(),
+                agent: agent.id().into(),
+                prompt: "current".into(),
+                run: None,
+                now: 1,
+            })
+            .unwrap()
+        else {
+            panic!("task should start");
+        };
+        let mut db = rusqlite::Connection::open(state.owned.durable_state_store.path()).unwrap();
+        let mut allocations = Vec::new();
+        let mut next = 0;
+        for count in [10, 500] {
+            let tx = db.transaction().unwrap();
+            while next < count {
+                let mut finished = task.clone();
+                finished.task_id = format!("finished-{next}");
+                finished.prompt_id = finished.task_id.clone();
+                finished.state = ExecutionState::Done;
+                tx.execute("INSERT INTO agent_tasks(task_id,room_id,agent_id,prompt_id,payload) VALUES(?1,?2,?3,?4,?5)", rusqlite::params![finished.task_id, finished.room_id, finished.agent_id, finished.prompt_id, serde_json::to_string(&finished).unwrap()]).unwrap();
+                next += 1;
+            }
+            tx.commit().unwrap();
+            let (unsettled, measured) = crate::test_support::allocation::measure(|| {
+                state.owned.agent_task_resources_unsettled(&task)
+            });
+            assert!(!unsettled.unwrap());
+            allocations.push(measured.allocated);
+        }
+        assert!(
+            allocations[1] <= allocations[0] + 4096,
+            "checking one task allocated {} bytes after 10 turns and {} after 500",
+            allocations[0],
+            allocations[1]
+        );
+    }
+    #[tokio::test]
+    async fn session_state_reads_do_not_clone_finished_provider_runs() {
+        let state = crate::test_support::allocation::runtime_with_rooms(1);
+        let room = state.owned.session_store.list_all_sessions().pop().unwrap();
+        let agent = state
+            .owned
+            .agent_store
+            .get_session_agents(room.id())
+            .pop()
+            .unwrap();
+        let mut allocations = Vec::new();
+        let mut next = 0;
+        for count in [10, 500] {
+            while next < count {
+                let mut run =
+                    crate::provider::RuntimeProviderRun::from_control_capability_inference(
+                        format!("finished-run-{next}"),
+                        room.id().into(),
+                        Some(agent.id().into()),
+                        "dev-stub".into(),
+                    );
+                run.mark_ended();
+                state.owned.provider_store.write().insert_run_for_test(run);
+                next += 1;
+            }
+            let (response, measured) = crate::test_support::allocation::measure(|| {
+                state.session_state_response(crate::local::GetSessionStateRequest {
+                    session_id: room.id().into(),
+                })
+            });
+            assert!(response.is_ok());
+            allocations.push(measured.allocated);
+        }
+        eprintln!(
+            "GetSessionState provider history allocated10={} allocated500={}",
+            allocations[0], allocations[1]
+        );
+        assert!(
+            allocations[1] <= allocations[0] + 4096,
+            "one session state read allocated {} bytes after10 provider runs and {} after500",
+            allocations[0],
+            allocations[1]
+        );
     }
 }

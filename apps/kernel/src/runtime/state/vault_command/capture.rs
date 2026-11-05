@@ -94,6 +94,19 @@ impl KernelRuntimeState {
         self.recheck_vault_command_context(&context)?;
         let args: CaptureArgs = serde_json::from_value(arguments)
             .map_err(|e| error(format!("invalid Vault capture arguments: {e}")))?;
+        let state = self.clone();
+        // The kernel keeps ownership through settlement and commit if the tool
+        // transport disappears while the command is creating a one-time value.
+        tokio::spawn(async move { state.capture_command_owned(context, args).await })
+            .await
+            .map_err(|_| error("the Vault capture task stopped unexpectedly"))?
+    }
+
+    async fn capture_command_owned(
+        &self,
+        context: VaultAgentContext,
+        args: CaptureArgs,
+    ) -> Result<RuntimeToolResult, DaemonError> {
         if args.request_id.trim().is_empty() || args.request_id.len() > 128 {
             return Err(error("request_id must be 1-128 characters"));
         }
@@ -107,7 +120,13 @@ impl KernelRuntimeState {
         let timeout = command_timeout(args.timeout_seconds)?;
         let turn = &context;
         let handle = captured_handle(turn, &args.request_id);
-        let claim = self.owned.vault_capture_claims.claim(&handle)?;
+        let _claim = self
+            .owned
+            .vault_capture_claims
+            .lock(&handle)?
+            .lock_owned()
+            .await;
+        self.recheck_vault_command_context(&context)?;
         let registry = crate::credential::CharioxCredentialRegistry::user()?;
         if let Some(existing) = registry.get(&handle)? {
             return committed(&existing, turn, &host, &args.use_binding);
@@ -130,7 +149,6 @@ impl KernelRuntimeState {
                 stdin: None,
                 timeout,
             },
-            claim.clone(),
         )
         .await?;
         use super::super::agent_process_watch::KernelCommandExit;
@@ -141,6 +159,11 @@ impl KernelRuntimeState {
                     "the command exited with code {code}; nothing was stored{}",
                     stderr_excerpt(&output.stderr)
                 )))
+            }
+            KernelCommandExit::Cancelled => {
+                return Err(error(
+                    "the submitting prompt ended and its command was stopped; nothing was stored",
+                ))
             }
             KernelCommandExit::TimedOut => {
                 return Err(error(format!(

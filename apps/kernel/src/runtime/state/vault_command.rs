@@ -6,11 +6,29 @@ use super::*;
 use crate::runtime::kernel_access::error;
 
 mod capture;
-mod claims;
+
+#[derive(Default)]
+pub(super) struct CaptureClaims {
+    handles: std::sync::Mutex<BTreeMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>>,
+}
+
+impl CaptureClaims {
+    fn lock(&self, handle: &str) -> Result<Arc<tokio::sync::Mutex<()>>, DaemonError> {
+        let mut handles = self
+            .handles
+            .lock()
+            .map_err(|_| error("Vault capture claims are unavailable"))?;
+        handles.retain(|_, lock| lock.strong_count() > 0);
+        if let Some(lock) = handles.get(handle).and_then(std::sync::Weak::upgrade) {
+            return Ok(lock);
+        }
+        let lock = Arc::new(tokio::sync::Mutex::new(()));
+        handles.insert(handle.into(), Arc::downgrade(&lock));
+        Ok(lock)
+    }
+}
 mod files;
 mod use_env;
-
-pub(super) use claims::CaptureClaims;
 
 pub(crate) use capture::{capture_command_spec, VAULT_CAPTURE_COMMAND};
 pub(crate) use files::{capture_file_spec, write_file_spec, VAULT_CAPTURE_FILE, VAULT_WRITE_FILE};
@@ -58,12 +76,9 @@ async fn run_command(
     state: &KernelRuntimeState,
     context: VaultAgentContext,
     command: super::agent_process_watch::KernelCommand,
-    keep_alive: impl Send + 'static,
 ) -> Result<super::agent_process_watch::KernelCommandOutput, DaemonError> {
     let state = state.clone();
     tokio::task::spawn_blocking(move || {
-        // A dropped tool future must not release its capture claim while argv is alive.
-        let _keep_alive = keep_alive;
         state.recheck_vault_command_context(&context)?;
         let run = state.watched_process_run(context.run.id())?;
         state.run_kernel_command(&run, command, || {

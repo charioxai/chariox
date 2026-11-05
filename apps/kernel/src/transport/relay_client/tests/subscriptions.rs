@@ -1124,10 +1124,22 @@ async fn relay_replay_after_runtime_recreation_filters_historical_resume_and_res
         serde_json::json!(current_activity_revision)
     );
 
-    let current_heartbeat = tokio::time::timeout(
-        Duration::from_secs(5),
-        decrypt_relay_event_from_channel(&mut event_rx, &subscription_private_key),
-    )
+    let current_heartbeat = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let event =
+                decrypt_relay_event_from_channel(&mut event_rx, &subscription_private_key).await;
+            if event.1["event"] == "heartbeat" {
+                break event;
+            }
+            // Fresh resource samples may follow the reset snapshot; historical
+            // snapshots and other replay events still must not return here.
+            assert_eq!(
+                event.1["event"],
+                serde_json::json!("session_processes_changed")
+            );
+            assert_eq!(event.1["session_id"], current_snapshot.1["session"]["id"]);
+        }
+    })
     .await
     .expect("current post-restart heartbeat should follow the snapshot");
     assert_eq!(current_heartbeat.1["event"], serde_json::json!("heartbeat"));

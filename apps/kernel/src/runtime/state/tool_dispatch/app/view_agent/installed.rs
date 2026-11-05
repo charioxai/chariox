@@ -135,8 +135,15 @@ async fn signed_installed_ui_actions_reach_the_real_view_context() {
     // real browser controller process (A3), as `check_live_binding` does.
     let controllers =
         crate::runtime::browser_controller_process::BrowserControllerProcessStore::new(
-            "node",
+            "systemd-run",
             vec![
+                "--scope".into(),
+                "--quiet".into(),
+                "-p".into(),
+                "MemoryMax=4G".into(),
+                "-p".into(),
+                "MemorySwapMax=0".into(),
+                "node".into(),
                 std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                     .join("src/runtime/state/app-view-actor.fixture.mjs")
                     .display()

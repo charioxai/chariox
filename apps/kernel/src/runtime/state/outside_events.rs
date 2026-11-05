@@ -414,3 +414,5 @@ impl KernelRuntimeState {
 
 #[cfg(test)]
 mod activity_tests;
+#[cfg(test)]
+mod process_wait_tests;

@@ -135,6 +135,10 @@ impl SessionService {
             .filter(|session| !self.is_ephemeral_session(session.id()))
     }
 
+    pub(crate) fn all_session_refs(&self) -> impl Iterator<Item = &RuntimeSession> {
+        self.store.iter()
+    }
+
     pub(crate) fn non_ended_session_refs(&self) -> impl Iterator<Item = &RuntimeSession> {
         self.store.non_ended_sessions()
     }

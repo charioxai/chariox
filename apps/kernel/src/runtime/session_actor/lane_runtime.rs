@@ -50,7 +50,7 @@ pub(crate) struct SessionRuntime {
     session_projection: SessionStateProjectionStore,
     agent_runtime_projection: AgentRuntimeProjectionStore,
     terminal_stream: TerminalStreamStore,
-    lanes: Arc<Mutex<HashMap<String, mpsc::Sender<SessionCommandEnvelope>>>>,
+    lanes: Arc<Mutex<HashMap<String, mpsc::Sender<Box<SessionCommandEnvelope>>>>>,
 }
 
 impl SessionRuntime {
@@ -116,7 +116,7 @@ impl SessionRuntime {
         let provider_run_id = command.provider_run_id.clone();
         let command_id = command.command_id;
         let command_type = command.command_type;
-        match lane.try_send(SessionCommandEnvelope {
+        match lane.try_send(Box::new(SessionCommandEnvelope {
             telemetry: telemetry.clone(),
             command_id,
             command_type,
@@ -130,7 +130,7 @@ impl SessionRuntime {
             sudo_binding,
             request,
             result_tx,
-        }) {
+        })) {
             Ok(()) => {
                 let queue_depth_after = self.queue_limit.saturating_sub(lane.capacity());
                 log_lane_enqueued(
@@ -185,7 +185,7 @@ impl SessionRuntime {
         &self,
         lane_id: &str,
         session_id: &str,
-    ) -> mpsc::Sender<SessionCommandEnvelope> {
+    ) -> mpsc::Sender<Box<SessionCommandEnvelope>> {
         let mut lanes = self.lanes.lock().await;
         if let Some(lane) = lanes.get(lane_id) {
             return lane.clone();
@@ -256,7 +256,7 @@ impl SessionRuntime {
         let mut command =
             KernelCommand::from_local_request(command_id.clone(), None, None, &request);
         command.command_type = command_type.clone();
-        lane.try_send(SessionCommandEnvelope {
+        lane.try_send(Box::new(SessionCommandEnvelope {
             command_id,
             command_type,
             telemetry: LaneCommandTrace::new(
@@ -273,7 +273,7 @@ impl SessionRuntime {
             sudo_binding: None,
             request,
             result_tx,
-        })
+        }))
         .map_err(|error| DaemonError::LocalTransport {
             operation: "enqueue test session kernel command",
             message: format!("session command lane overloaded: {error}"),
@@ -294,7 +294,7 @@ async fn run_session_command_lane(
     terminal_stream: TerminalStreamStore,
     lane_id: String,
     session_id: String,
-    mut rx: mpsc::Receiver<SessionCommandEnvelope>,
+    mut rx: mpsc::Receiver<Box<SessionCommandEnvelope>>,
 ) {
     let executor = SessionRuntimeCommandExecutor::new(
         store.clone(),
@@ -305,6 +305,7 @@ async fn run_session_command_lane(
         session_id.clone(),
     );
     while let Some(envelope) = rx.recv().await {
+        let envelope = *envelope;
         let dispatch_started_at_ms = crate::runtime::command_latency::now_ms();
         log_lane_dispatched(
             &envelope.telemetry,
@@ -333,41 +334,41 @@ async fn run_session_command_lane(
                 envelope.provider_run_id.as_deref(),
             )
         });
-        let result = envelope
-            .telemetry
-            .scope(async {
-                match authorization {
-                    Err(error) => Err(error),
-                    Ok(_) => {
-                        executor
-                            .with_external_command_authority(
-                                envelope
-                                    .external_grant_id
-                                    .as_deref()
-                                    .map(|id| (id, &envelope.request)),
-                                envelope.sudo_binding,
-                            )
-                            .with_room_provider_origin(
-                                envelope.caller_metaagent_id.as_deref(),
-                                envelope.provider_run_id.as_deref(),
-                            )
-                            .with_room_request_origin(
-                                envelope.caller_metaagent_id.as_deref(),
-                                &envelope.request,
-                            )
-                            .with_interaction_answerer(&envelope.answerer)
-                            .execute(
-                                envelope.request,
-                                envelope.caller_user_id,
-                                envelope.caller_metaagent_id,
-                                envelope.terminal_caller,
-                                envelope.connection_class,
-                            )
-                            .await
-                    }
+        // Boxed: the future of a command is large, and an idle lane would
+        // hold that much for as long as its Room lives.
+        let result = Box::pin(envelope.telemetry.scope(async {
+            match authorization {
+                Err(error) => Err(error),
+                Ok(_) => {
+                    executor
+                        .with_external_command_authority(
+                            envelope
+                                .external_grant_id
+                                .as_deref()
+                                .map(|id| (id, &envelope.request)),
+                            envelope.sudo_binding,
+                        )
+                        .with_room_provider_origin(
+                            envelope.caller_metaagent_id.as_deref(),
+                            envelope.provider_run_id.as_deref(),
+                        )
+                        .with_room_request_origin(
+                            envelope.caller_metaagent_id.as_deref(),
+                            &envelope.request,
+                        )
+                        .with_interaction_answerer(&envelope.answerer)
+                        .execute(
+                            envelope.request,
+                            envelope.caller_user_id,
+                            envelope.caller_metaagent_id,
+                            envelope.terminal_caller,
+                            envelope.connection_class,
+                        )
+                        .await
                 }
-            })
-            .await;
+            }
+        }))
+        .await;
         log_lane_completed(
             &envelope.telemetry,
             "session",

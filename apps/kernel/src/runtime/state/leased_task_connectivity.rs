@@ -60,7 +60,7 @@ impl KernelRuntimeState {
             .collect::<BTreeMap<_, _>>();
 
         // Re-read after relay I/O: a task may finish or move while a probe is in flight.
-        let current = self.owned.durable_state_store.agent_tasks(None, None)?;
+        let current = self.owned.durable_state_store.agent_tasks_to_sweep()?;
         let active: Vec<_> = current
             .iter()
             .filter_map(|task| active_binding(self, task).map(|binding| (task, binding)))

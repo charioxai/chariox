@@ -99,7 +99,6 @@ impl KernelRuntimeState {
         let pattern = extract_pattern(&args.extract)?;
         let turn = &context;
         let handle = captured_handle(turn, &args.request_id);
-        let _claim = self.owned.vault_capture_claims.claim(&handle)?;
         let registry = crate::credential::CharioxCredentialRegistry::user()?;
         if let Some(existing) = registry.get(&handle)? {
             return committed(&existing, turn, &host, &args.use_binding);

@@ -1206,3 +1206,55 @@ async fn a03_agent_and_room_teardown_retire_wakes_despite_unowned_tasks() {
     assert_eq!(wake_state(agent.id()).as_deref(), Some("cancelled"));
     assert!(settled(agent.id()));
 }
+
+/// What one Room's command lane may hold while it waits for its next command.
+const IDLE_LANE_BYTES: isize = 48 * 1024;
+
+#[tokio::test]
+async fn an_idle_session_lane_holds_little() {
+    use crate::test_support::allocation::measured;
+
+    const ROOMS: usize = 24;
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let mut sessions = crate::app::KernelSessionService::new(&mut app);
+    let rooms: Vec<String> = (0..ROOMS)
+        .map(|_| {
+            sessions
+                .create_session(CreateSessionRequest::new("workspace", "worktree"))
+                .expect("session should be created")
+                .0
+                .id()
+                .to_string()
+        })
+        .collect();
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1);
+    // The first command of a Room creates its lane; warm the shared paths with one.
+    let pin = |session_id: &str| {
+        let request = LocalDaemonRequest::SetRoomPinned(crate::local::SetRoomPinnedRequest {
+            session_id: session_id.to_string(),
+            pinned: true,
+        });
+        let command = KernelCommand::from_local_request("cmd-pin", None, None, &request);
+        router.dispatch(command, request)
+    };
+    pin(&rooms[0])
+        .await
+        .expect("the first command should succeed");
+    let (_, lanes) = measured(async {
+        for room in &rooms[1..] {
+            pin(room).await.expect("the command should succeed");
+        }
+    })
+    .await;
+    for room in &rooms {
+        assert!(
+            router.session_runtime.has_lane(room).await,
+            "the command should have created the lane of {room}"
+        );
+    }
+    let per_room = lanes.retained / (ROOMS as isize - 1);
+    assert!(
+        per_room <= IDLE_LANE_BYTES,
+        "a Room kept {per_room} bytes after its first command"
+    );
+}

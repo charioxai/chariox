@@ -1033,12 +1033,17 @@ fn local_daemon_protocol_prompt_attachment_size_shape_is_versioned_and_hashed() 
 fn local_daemon_protocol_session_process_memory_outcomes_are_versioned() {
     use crate::runtime::process_resources::{
         ProcessSample, SessionProcess, SessionProcessOwner, SessionProcessState, WaitReason,
+        Waiting,
     };
     let snapshot = serde_json::json!({
         "protocol_version": LOCAL_DAEMON_PROTOCOL_VERSION,
         "relay_peer_protocol_version": crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
         "shapes": [
         crate::transport::kernel_protocol::KernelEvent::SessionProcessesChanged {
+            disk_usage: vec![crate::runtime::disk_usage::DiskUsageEntry {
+                id: "/work/repo".into(), path: Some("/work/repo".into()), used_bytes: Some(8192),
+                sampled_at_ms: 10000, owner: None, process_id: None,
+            }],
             session_id: "room-1".into(),
             processes: vec![SessionProcess {
                 owner: SessionProcessOwner::Agent("agent-1".into()),
@@ -1048,6 +1053,9 @@ fn local_daemon_protocol_session_process_memory_outcomes_are_versioned() {
                     command: "python3".into(),
                     resident_set_bytes: 1048576,
                     disk_io_bytes: Some(4096),
+                    disk_written_bytes: Some(4096),
+                    deleted_open_bytes: 0,
+                    outlived: false,
                     cpu_millis: 250,
                     sampled_at_ms: 10000,
                     age_ms: 3000,
@@ -1061,17 +1069,22 @@ fn local_daemon_protocol_session_process_memory_outcomes_are_versioned() {
                     command: "cargo".into(),
                     resident_set_bytes: 1048576,
                     disk_io_bytes: Some(4096),
+                    disk_written_bytes: Some(4096),
+                    deleted_open_bytes: 0,
+                    outlived: false,
                     cpu_millis: 0,
                     sampled_at_ms: 10000,
                     age_ms: 1000,
                 },
-                state: SessionProcessState::Held {
+                state: SessionProcessState::Held(Waiting {
                     reason: WaitReason::Memory,
                     position: 2,
                     need_bytes: 6442450944,
                     free_bytes: 2147483648,
                     command_line: "cargo build --release".into(),
-                },
+                    cwd: Some("/work/repo".into()),
+                    since_ms: 9000,
+                }),
             }, SessionProcess {
                 owner: SessionProcessOwner::Agent("agent-2".into()),
                 process: ProcessSample {
@@ -1080,15 +1093,55 @@ fn local_daemon_protocol_session_process_memory_outcomes_are_versioned() {
                     command: "pnpm".into(),
                     resident_set_bytes: 1048576,
                     disk_io_bytes: Some(4096),
+                    disk_written_bytes: Some(4096),
+                    deleted_open_bytes: 0,
+                    outlived: false,
                     cpu_millis: 0,
                     sampled_at_ms: 10000,
                     age_ms: 1000,
                 },
-                state: SessionProcessState::Paused {
+                state: SessionProcessState::Paused(Waiting {
                     reason: WaitReason::Disk,
+                    position: 1,
+                    need_bytes: 3221225472,
+                    free_bytes: 1073741824,
                     command_line: "pnpm test".into(),
-                },
+                    cwd: None,
+                    since_ms: 8000,
+                }),
             }],
+        },
+        crate::local::OutsideEvent {
+            cursor: 5,
+            kernel: "kernel-1".into(),
+            machine: "machine-1".into(),
+            session_id: "room-1".into(),
+            agent_id: Some("agent-1".into()),
+            value: crate::local::OutsideEventValue::Process {
+                process_id: "process-issued-2".into(),
+                state: SessionProcessState::Running,
+                waited_ms: Some(4000),
+                ended: None,
+            },
+            summary: "running again".into(),
+            at_ms: 10000,
+            refs: crate::local::EventRefs::default(),
+        },
+        crate::local::OutsideEvent {
+            cursor: 6,
+            kernel: "kernel-1".into(),
+            machine: "machine-1".into(),
+            session_id: "room-1".into(),
+            agent_id: Some("agent-1".into()),
+            value: crate::local::OutsideEventValue::Process {
+                process_id: "process-issued-2".into(),
+                state: SessionProcessState::Running,
+                waited_ms: None,
+                ended: Some("chariox: stopped this command: it needs about 80 GB and this machine's memory pool is 64 GB, so it can never fit here.".into()),
+            },
+            summary: "stopped".into(),
+            at_ms: 10000,
+            refs: crate::local::EventRefs::default(),
         },
         crate::provider::ProviderRunTermination::memory_limit(33554432, 10000),
         crate::room_terminal::RoomTerminalOutcome::MemoryLimit {
@@ -1130,6 +1183,6 @@ fn local_daemon_protocol_session_process_memory_outcomes_are_versioned() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "9ac4e64f7096997409619a023b88308869b18ac59f5a58a9874218a1966d4863"
+        "1787243c57e5b5de6b64521710c63294603525e1e9b3557ac03346df70ad2e5c"
     );
 }

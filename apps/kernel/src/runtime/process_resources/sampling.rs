@@ -11,6 +11,13 @@ pub struct ProcessSample {
     pub cpu_millis: u64,
     /// Cumulative bytes read from and written to storage; null when unavailable.
     pub disk_io_bytes: Option<u64>,
+    /// Bytes this process wrote to storage; null when unavailable.
+    pub disk_written_bytes: Option<u64>,
+    /// Bytes of deleted files it still holds open: they take space until it
+    /// lets go. Counted only for a process that wrote a lot.
+    pub deleted_open_bytes: u64,
+    /// It kept running after the command that started it ended.
+    pub outlived: bool,
     pub sampled_at_ms: u64,
     pub age_ms: u64,
 }
@@ -261,16 +268,29 @@ impl ProcessTree {
         Ok(rows
             .into_iter()
             .filter(|row| self.owned.contains_key(&row.pid))
-            .map(|row| ProcessSample {
-                process_id: self.ids[&row.pid].clone(),
-                pid: row.pid,
-                command: row.command,
-                resident_set_bytes: row.rss,
-                cpu_millis: row.cpu,
-                disk_io_bytes: super::admission::disk_io(row.pid)
-                    .and_then(|(read, written)| read.checked_add(written)),
-                age_ms: row.age_ms,
-                sampled_at_ms: row.sampled_at_ms,
+            .map(|row| {
+                let io = super::admission::disk_io(row.pid);
+                let written = io.map(|(_, written)| written);
+                ProcessSample {
+                    process_id: self.ids[&row.pid].clone(),
+                    pid: row.pid,
+                    command: row.command,
+                    resident_set_bytes: row.rss,
+                    cpu_millis: row.cpu,
+                    disk_io_bytes: io.and_then(|(read, written)| read.checked_add(written)),
+                    disk_written_bytes: written,
+                    deleted_open_bytes: if written
+                        .is_some_and(|w| w >= super::disk_use::LOOK_AT_WRITTEN)
+                    {
+                        super::disk_use::deleted_open_bytes(row.pid)
+                    } else {
+                        0
+                    },
+                    // Its parent is not part of the workload any more.
+                    outlived: row.pid != self.root && !self.owned.contains_key(&row.parent),
+                    age_ms: row.age_ms,
+                    sampled_at_ms: row.sampled_at_ms,
+                }
             })
             .collect())
     }

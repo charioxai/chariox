@@ -276,9 +276,10 @@ async fn mp08_mp10_mp11_computer_hold_abnormal_child_exit_releases_before_failed
     let reset = tools.screen_tool.with_extension("released");
     let child = tools.screen_tool.with_extension("py");
     // Bash returns 128+signal for a child death, just like production slice-screen.sh.
+    // Background shell jobs can inherit ignored SIGQUIT; restore the fixture's intended death.
     // No core files, and the synthetic child signals only its own validated PID.
     std::fs::write(&child, format!(
-        "import os,signal,sys\nfrom pathlib import Path\nPath({:?}).touch()\npid=os.getpid()\nassert pid > 1\nos.kill(pid,int(sys.argv[1]))\n",
+        "import os,signal,sys\nfrom pathlib import Path\nPath({:?}).touch()\nsignum=int(sys.argv[1])\nif signum != signal.SIGKILL: signal.signal(signum,signal.SIG_DFL)\npid=os.getpid()\nassert pid > 1\nos.kill(pid,signum)\n",
         held.to_str().unwrap(),
     )).unwrap();
     let _screen_tool = install_screen_tool(&tools.screen_tool);

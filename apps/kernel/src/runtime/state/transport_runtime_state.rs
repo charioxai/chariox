@@ -556,6 +556,7 @@ impl KernelRuntimeState {
         let agent_activity =
             self.agent_activity_for_session_with_unread(&session, unread_for_user_id);
         Ok(crate::runtime::projection::SessionSnapshotProjection {
+            disk_usage: self.session_disk_usage(session_id),
             processes: self.session_processes(session_id),
             room_workflows: crate::runtime::projection::RoomWorkflowInventory::project(
                 &session,

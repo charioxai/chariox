@@ -5,6 +5,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 mod control;
+mod disk_use;
 #[cfg(test)]
 pub(crate) use control::pause_sampling_for_key;
 use control::WatchCommand;
@@ -26,17 +27,22 @@ mod projection;
 mod sampling;
 mod session_sweep;
 mod submissions;
+mod waits;
 #[cfg(test)]
 pub(crate) use admission::WaitReason;
-pub(crate) use admission::{adopt_admission, HeldCommand};
+pub(crate) use admission::{adopt_admission, volume_floor, HeldCommand};
 #[cfg(test)]
 pub(crate) use projection::released_keys_for_session;
-#[cfg(test)]
 pub(crate) use projection::SessionProcessState;
+#[cfg(test)]
+pub(crate) use projection::Waiting;
 pub(crate) use projection::{for_session, keys_for_session};
 pub use projection::{SessionProcess, SessionProcessOwner};
 pub(crate) use session_sweep::SessionSweep;
 pub(crate) use submissions::Submissions;
+#[cfg(test)]
+pub(crate) use waits::push_for_tests as push_wait_event;
+pub(crate) use waits::{size, take_wait_events, WaitChange, WaitEvent};
 #[cfg(test)]
 mod admission_tests;
 #[cfg(target_os = "linux")]
@@ -305,6 +311,8 @@ impl PreparedDomain {
         // Per command: process-table time, resident and written bytes, and
         // their growth per second.
         let mut previous = std::collections::BTreeMap::<u32, Rates>::new();
+        let mut write_growth_cache =
+            std::collections::BTreeMap::<u32, disk_use::WriteGrowth>::new();
         let worker = std::thread::Builder::new()
             .name("chariox-process-resources".into())
             .spawn(move || loop {
@@ -325,6 +333,11 @@ impl PreparedDomain {
                 // Rates use the process table's own time: watches share a
                 // cached table, so a tick can see the same table again.
                 let sampled_at = samples.iter().map(|p| p.sampled_at_ms).max().unwrap_or(0);
+                let deleted = samples
+                    .iter()
+                    .map(|sample| (sample.pid, sample.deleted_open_bytes))
+                    .collect::<std::collections::BTreeMap<_, _>>();
+                let mut disk_writes = std::collections::BTreeMap::new();
                 let commands = tree
                     .commands(&samples)
                     .into_iter()
@@ -344,8 +357,18 @@ impl PreparedDomain {
                             Some(before) => (before.growth, before.write_growth),
                             None => (0, 0),
                         };
+                        if write_growth >= admission::GROWING {
+                            let volumes = write_growth_cache.entry(pid).or_default().sample(&pids, sampled_at);
+                            disk_writes.insert(pid, volumes);
+                        } else {
+                            write_growth_cache.remove(&pid);
+                        }
                         pool::CommandUse {
                             pid,
+                            deleted_open: pids
+                                .iter()
+                                .filter_map(|pid| deleted.get(pid))
+                                .sum(),
                             group: process_group(pid),
                             resident,
                             growth,
@@ -356,6 +379,7 @@ impl PreparedDomain {
                         }
                     })
                     .collect::<Vec<_>>();
+                write_growth_cache.retain(|pid, _| disk_writes.contains_key(pid));
                 previous = commands
                     .iter()
                     .map(|command| {
@@ -377,6 +401,7 @@ impl PreparedDomain {
                     let mut observation = watched.lock().unwrap_or_else(|e| e.into_inner());
                     observation.samples = samples;
                     observation.commands = commands;
+                    observation.disk_writes = disk_writes;
                     observation.owned = Some(tree.owned());
                 }
                 #[cfg(target_os = "linux")]
@@ -446,7 +471,13 @@ impl PreparedDomain {
                             }
                         } else {
                             announce(pid, &notice);
+                            tell_stopped(&watched, pid, notice);
                         }
+                        tree.kill(pid);
+                    }
+                    Ok(WatchCommand::DiskStop { pid, notice }) => {
+                        announce(pid, &notice);
+                        tell_stopped(&watched, pid, notice);
                         tree.kill(pid);
                     }
                     Ok(WatchCommand::Stop { process_id, reply }) => {
@@ -521,18 +552,36 @@ struct Rates {
 /// (again each tick, so what it started meanwhile stops too); one that may run
 /// continues.
 fn admit(tree: &sampling::ProcessTree, watched: &Arc<Mutex<Observation>>) {
-    let signals = watched
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .admission
-        .iter_mut()
-        .filter_map(|(command, entry)| {
+    let now = crate::session::unix_epoch_ms();
+    let (signals, changes) = {
+        let mut observation = watched.lock().unwrap_or_else(|e| e.into_inner());
+        let observation = &mut *observation;
+        let mut signals = Vec::new();
+        let mut changes = Vec::new();
+        for (command, entry) in &mut observation.admission {
             let waiting = entry.wait.is_some();
-            let signal = (waiting || entry.stopped).then_some((*command, waiting));
+            if waiting || entry.stopped {
+                signals.push((*command, waiting));
+            }
+            let change = match (waiting, entry.stopped) {
+                (true, false) => Some(waits::WaitChange::Began),
+                (false, true) => Some(waits::WaitChange::Resumed {
+                    waited_ms: now.saturating_sub(entry.since_ms),
+                }),
+                _ => None,
+            };
             entry.stopped = waiting;
-            signal
-        })
-        .collect::<Vec<_>>();
+            if let Some(change) = change {
+                let process_id = observation
+                    .samples
+                    .iter()
+                    .find(|sample| sample.pid == *command)
+                    .map(|sample| sample.process_id.clone());
+                changes.push((*command, process_id, change, projection::state_of(entry)));
+            }
+        }
+        (signals, changes)
+    };
     #[cfg(unix)]
     for (command, waiting) in signals {
         tree.signal(
@@ -546,6 +595,64 @@ fn admit(tree: &sampling::ProcessTree, watched: &Arc<Mutex<Observation>>) {
     }
     #[cfg(not(unix))]
     let _ = (tree, signals);
+    for (command, process_id, change, state) in changes {
+        let line = match change {
+            waits::WaitChange::Began => waits::began_line(&state),
+            waits::WaitChange::Resumed { waited_ms } => Some(waits::resumed_line(waited_ms)),
+            waits::WaitChange::Stopped { .. } => None,
+        };
+        if let Some(line) = line {
+            announce(command, &line);
+        }
+        if let Some(process_id) = process_id {
+            waits::push(waits::WaitEvent {
+                keys: keys_of(watched),
+                process_id,
+                change,
+                state,
+            });
+        }
+    }
+}
+
+/// The room hears that the pool ended the command at `pid`, and why.
+fn tell_stopped(watched: &Arc<Mutex<Observation>>, pid: u32, notice: String) {
+    let (process_id, state) = {
+        let observation = watched.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(sample) = observation.samples.iter().find(|sample| sample.pid == pid) else {
+            return;
+        };
+        (
+            sample.process_id.clone(),
+            observation
+                .admission
+                .get(&pid)
+                .map_or(SessionProcessState::Running, projection::state_of),
+        )
+    };
+    waits::push(waits::WaitEvent {
+        keys: keys_of(watched),
+        process_id,
+        change: waits::WaitChange::Stopped {
+            reason: notice.trim_end().to_string(),
+        },
+        state,
+    });
+}
+
+/// The keys the workload is registered under.
+fn keys_of(watched: &Arc<Mutex<Observation>>) -> Vec<String> {
+    registry()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .filter(|(_, state)| {
+            state
+                .upgrade()
+                .is_some_and(|state| Arc::ptr_eq(&state, watched))
+        })
+        .map(|(key, _)| key.clone())
+        .collect()
 }
 
 fn configured_cap(value: Option<&str>) -> std::io::Result<Option<u64>> {
@@ -616,6 +723,7 @@ struct Observation {
     outside_ended: bool,
     samples: Vec<ProcessSample>,
     commands: Vec<pool::CommandUse>,
+    disk_writes: std::collections::BTreeMap<u32, Vec<disk_use::VolumeWrites>>,
     /// Admission per command, by the command's top process.
     admission: std::collections::BTreeMap<u32, admission::Entry>,
     memory_stop: Option<MemoryStop>,

@@ -305,6 +305,7 @@ impl KernelRuntimeState {
         self.owned.room_execs.end_session(session_id);
         self.owned.room_terminals.end_session(session_id);
         crate::runtime::process_resources::end_owner(Some(session_id), None);
+        crate::agent_temp::clear_room(session_id);
     }
 
     fn authorize_room_terminal(

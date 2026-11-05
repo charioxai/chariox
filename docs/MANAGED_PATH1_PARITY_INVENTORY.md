@@ -1,5 +1,38 @@
 # Managed Path-1 parity inventory (MP-11)
 
+
+## MP-08 / MP-09 / MP-10 / MP-11 disk maintenance isolation (2026-11-05)
+
+Disk maintenance runs separately from the shared wake ticks. One paced pass
+owns scanning, trimming and notification admission, including cold provider
+launches that need the owner's Vault unlock. Filesystem jobs are awaited
+serially, prompt admission has a bounded wait, and scheduler shutdown cancels
+the maintenance task. No pacing lock spans a scan or a prompt interaction.
+The regression leaves a real encrypted-Vault cold-launch interaction unanswered
+while another Room's timer fires, checks that another maintenance pass does not
+start, and verifies cancellation removes the pending unlock. This focused proof
+does not close the broader ordinary/managed parity matrix.
+
+## MP-08 / MP-09 / MP-10 / MP-11 remembered output volumes (2026-11-05)
+
+Ordinary and managed admission remember a sampled writer's resolved output
+directory and receiving device, rather than its process descriptor path. Hold,
+resume and reservations verify that device through the nearest surviving path;
+a destination that cannot be resolved or whose device changed remains unknown.
+The real-writer regression samples growth, exits, removes the output, reloads
+saved peaks and reruns the same command. No client wire shape changes.
+
+## MP-08 / MP-09 / MP-10 / MP-11 Room membership read isolation (2026-11-05)
+
+Ordinary and managed kernels use the same default-agent creation path. It releases
+the agent roster lock before awaiting the outside membership event's durable
+result. Membership operations remain ordered, publication stays synchronous, and
+publication errors still reach the caller. Unrelated roster reads can proceed
+while that event commits. The real-writer regression is
+`a_membership_commit_does_not_block_another_rooms_session_state`; it holds SQLite's
+writer while another Room reads through GetSessionState. This changes no wire
+shape and does not establish the KR-06 quiet-host latency or stability gates.
+
 ## MP-08 / MP-09 / MP-10 / MP-11 process disk telemetry (2026-11-02)
 
 Local954 / peer403 adds nullable `disk_io_bytes` to the existing session process

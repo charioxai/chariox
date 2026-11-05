@@ -171,12 +171,12 @@ impl DaemonApp {
                     self.update_provider_run_projection(outcome.into_run());
                 }
                 if let Some(previous_active_run_id) = started.previous_active_run_id.as_deref() {
-                    match ProviderRunActivationState::resume_provider_run_for_session(
+                    match ProviderRunActivationState::restore_provider_launch_predecessor(
                         self,
-                        run.session_id(),
+                        &run,
                         previous_active_run_id,
                     ) {
-                        Ok(resumed_run) => {
+                        Ok(Some(resumed_run)) => {
                             self.record_notice(
                                 run.session_id(),
                                 Some(resumed_run.id()),
@@ -188,6 +188,7 @@ impl DaemonApp {
                                 ),
                             );
                         }
+                        Ok(None) => {}
                         Err(resume_error) => {
                             self.record_notice(
                                 run.session_id(),
@@ -469,7 +470,7 @@ impl DaemonApp {
         let prepared =
             self.prepare_app_provider_launch_request(request.clone(), "launch provider run")?;
         if let Some(run) =
-            ProviderRunActivationState::reusable_native_tui_run_for_launch(self, &prepared)?
+            ProviderRunActivationState::reusable_provider_run_for_launch(self, &prepared)?
         {
             if leased {
                 self.mark_leased_provider_run(run.id());

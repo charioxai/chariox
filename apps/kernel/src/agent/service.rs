@@ -258,7 +258,6 @@ impl AgentService {
             .get(&agent_id)
             .cloned()
             .expect("new agent should be stored");
-        self.publish_outside_membership(&agent, crate::local::EventSessionState::AgentAdded)?;
         Ok(agent)
     }
 

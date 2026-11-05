@@ -102,15 +102,3 @@ impl RuntimeAttachment {
 fn default_attachment_owner_user_id() -> String {
     crate::session::DEFAULT_LOCAL_USER_ID.to_string()
 }
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum AttachmentEvent {
-    Joined {
-        session_id: String,
-        attachment_id: String,
-    },
-    Left {
-        session_id: String,
-        attachment_id: String,
-    },
-}

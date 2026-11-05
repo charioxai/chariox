@@ -133,6 +133,7 @@ impl KernelRuntimeState {
             agent_activity: self.agent_activity_for_session(&session),
             agent_activity_revision,
             processes: self.session_processes(session.id()),
+            disk_usage: self.session_disk_usage(session.id()),
             session,
         })
     }
