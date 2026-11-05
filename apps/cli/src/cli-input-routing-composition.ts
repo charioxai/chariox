@@ -1,7 +1,7 @@
 import { createComputerCommandController } from "./computer-command-controller.js"
 import { createAccessCommandController } from "./access-command-controller.js"
 import { cloudShellClient } from "./cloud-shell-client.js"
-import { StdinParser } from "@opentui/core"
+import { bindRendererShortcutInput } from "./renderer-shortcut-input.js"
 import { useKeyboard, useRenderer } from "@opentui/solid"
 import { onCleanup } from "solid-js"
 
@@ -228,7 +228,11 @@ export type CliInputRoutingCompositionDeps = {
   cycleWorkflowCanvasNode: AnyFn
   handleCycleAgentFocus: AnyFn
   copyPromptSelection: AnyFn
-  clearTextSelection?: () => void
+  shortcutInputEnabled: () => boolean
+  discardShortcutInput: () => void
+  replayCopyKey?: (event: import("./cli-stdin-key-controller.js").CliStdinKeyEvent) => void
+  flushTextSelectionRebuild?: () => void
+  hasPromptSelection?: () => boolean
   removePromptAttachmentsForEdit: AnyFn
   removeLastPendingPromptAttachment: AnyFn
 }
@@ -772,8 +776,6 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
     providerAccountRecoveryOwnsInput: deps.providerAccountRecoveryOwnsInput,
     roomWorkflowsOwnsInput: () => deps.roomWorkflowsOwnsInput?.() ?? false,
     kernelApprovalOwnsInput: () => deps.kernelApprovalOwnsInput?.() ?? false,
-    // Same settings as the renderer's own parser, so both agree on every chunk.
-    createStdinParser: (onTimeoutFlush) => new StdinParser({ timeoutMs: 10, armTimeouts: true, onTimeoutFlush, useKittyKeyboard: true }),
     dialogOverlayOpen: deps.dialogOverlayOpen,
     closeActiveDialogOverlay: deps.closeActiveDialogOverlay,
     ...(deps.handleSessionProcessesKey ? { handleSessionProcessesKey: deps.handleSessionProcessesKey } : {}),
@@ -801,7 +803,9 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
       void deps.handleCycleAgentFocus()
     },
     copyPromptSelection: deps.copyPromptSelection,
-    ...(deps.clearTextSelection ? { clearTextSelection: deps.clearTextSelection } : {}),
+    ...(deps.replayCopyKey ? { replayCopyKey: deps.replayCopyKey } : {}),
+    ...(deps.hasPromptSelection ? { hasPromptSelection: deps.hasPromptSelection } : {}),
+    ...(deps.flushTextSelectionRebuild ? { flushTextSelectionRebuild: deps.flushTextSelectionRebuild } : {}),
     hasActiveTurnWork: deps.hasActiveTurnWork,
     requestPromptStop: () => {
       void requestPromptStop()
@@ -817,11 +821,17 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
     handleWaitingRoomKey: waitingRoomKeyController.handleKey,
   })
 
+  onCleanup(bindRendererShortcutInput({
+    keyInput: useRenderer().keyInput,
+    enabled: deps.shortcutInputEnabled,
+    handleEvent: stdinKeyController.handleEvent,
+    discardInput: deps.discardShortcutInput,
+  }))
+
   return {
     cycleFocusedInteractionChoice,
     handlePromptKeyDown,
     handleSigint,
-    handleStdinData: stdinKeyController.handleData,
     requestPromptStop,
     submitFocusedInteractionChoice,
     submitPrompt,

@@ -1,7 +1,7 @@
 import { createSessionProcessController } from "./session-process-controller.js"
 import { createProjectEnvironmentReadController, projectEnvironmentPageSize, projectEnvironmentTextWidth } from "./project-environment-read-controller.js"
-import { MouseButton } from "@opentui/core"
-import { createEffect, on } from "solid-js"
+import { MouseButton, type Selection } from "@opentui/core"
+import { createEffect, on, onCleanup } from "solid-js"
 
 import { createCliDialogOverlayController } from "./cli-dialog-overlay-controller.js"
 import {
@@ -232,15 +232,18 @@ export function createCliOverlayInteractionComposition(deps: CliOverlayInteracti
     logWarning: (message, fields) => deps.appLogger?.warn(message, fields),
     formatError: deps.formatError,
   })
-  const copySelection = clipboardController.copySelection
 
   const promptSurfaceMouseController = createPromptSurfaceMouseController({
     delayMs: 0,
     scheduleTimer: deps.scheduleTimer,
-    isPrimaryButton: (event: { button: MouseButton }) => event.button === MouseButton.LEFT,
-    copySelection,
+    isPrimaryButton: (event: { button: MouseButton; isDragging?: boolean }) => event.button === MouseButton.LEFT,
+    copyText: clipboardController.copyTextWithFeedback,
     retainPromptFocus: deps.retainPromptFocus,
   })
+
+  const onSelection = (selection: Selection) => promptSurfaceMouseController.handleSelection(selection.getSelectedText())
+  deps.renderer.on("selection", onSelection)
+  onCleanup(() => deps.renderer.off("selection", onSelection))
 
   return {
     assignDialogOverlayBox: dialogOverlayController.assignOverlayBox,
@@ -248,7 +251,11 @@ export function createCliOverlayInteractionComposition(deps: CliOverlayInteracti
     closeHotkeys: dialogOverlayController.closeHotkeys,
     closeSessionBrowserDialog,
     closeTerminalPairingDialog: dialogOverlayController.closeTerminalPairing,
-    copyPromptSelection: () => clipboardController.copyPromptSelection() || clipboardController.copySelection(),
+    captureCopyKey: clipboardController.captureCopyKey,
+    capturePaste: clipboardController.capturePaste,
+    replayCopyKey: clipboardController.replayCopyKey,
+    discardCopyInput: clipboardController.discardCopyInput,
+    copyPromptSelection: clipboardController.copyCapturedSelection,
     dialogOverlayOpen: dialogOverlayController.isOpen,
     handleHotkeysToggleShortcut: hotkeysToggleController.handle,
     handlePromptSelectionSurfaceMouseUp: promptSurfaceMouseController.handleMouseUp,

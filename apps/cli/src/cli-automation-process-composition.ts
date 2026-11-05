@@ -22,11 +22,8 @@ export type CliAutomationProcessCompositionDeps = {
   formatError: AnyFn
   flashFooter: AnyFn
   handleSigint: AnyFn
-  handleStdinData: AnyFn
   onSigint: AnyFn
   offSigint: AnyFn
-  onStdinData: AnyFn
-  offStdinData: AnyFn
   clearTerminalOutputRecordTimer: AnyFn
   workspaceScreenMode: AnyFn
   workflowScreenActive: AnyFn
@@ -197,13 +194,10 @@ export function createCliAutomationProcessComposition(deps: CliAutomationProcess
   })
   const processLifecycleController = createCliProcessLifecycleController({
     handleSigint: deps.handleSigint,
-    handleStdinData: deps.handleStdinData,
     startAutomationServer: () => automationServerController.start(),
     stopAutomationServer: () => automationServerController.stop(),
     onSigint: deps.onSigint,
     offSigint: deps.offSigint,
-    onStdinData: deps.onStdinData,
-    offStdinData: deps.offStdinData,
     clearTerminalOutputRecordTimer: deps.clearTerminalOutputRecordTimer,
   })
 

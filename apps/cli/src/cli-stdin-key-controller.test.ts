@@ -21,7 +21,7 @@ test("MP-08 / MP-10 key presses clear selection; key releases preserve it", () =
     [keyEvent("x", { eventType: "release" }), false],
   ] as const) {
     let clears = 0
-    const harness = createHarness({ parsedEvent: event, clearTextSelection: () => { clears++ } })
+    const harness = createHarness({ parsedEvent: event, flushTextSelectionRebuild: () => { clears++ } })
     harness.controller.handleData("x")
     assert.equal(clears, shouldClear ? 1 : 0)
   }
@@ -305,7 +305,7 @@ test("MP-08 / MP-10 F6 copies without kitty keyboard support and never stops or 
   for (const copyHandled of [true, false]) {
     for (const activeTurnWork of [true, false]) {
       let clears = 0
-      const harness = createHarness({ parsedEvent: keyEvent("f6"), copyHandled, activeTurnWork, clearTextSelection: () => { clears++ } })
+      const harness = createHarness({ parsedEvent: keyEvent("f6"), copyHandled, activeTurnWork, flushTextSelectionRebuild: () => { clears++ } })
       assert.equal(harness.controller.handleData("\x1b[17~"), true)
       assert.ok(harness.calls().includes("copy"))
       assert.ok(!harness.calls().includes("stop"))
@@ -351,7 +351,7 @@ function createHarness(options: {
   roomWorkflowInput?: boolean
   parsedEvent?: CliStdinKeyEvent | null
   handleProjectEnvironmentKey?: (event: CliStdinKeyEvent) => boolean
-  clearTextSelection?: () => void
+  flushTextSelectionRebuild?: () => void
   dialogOpen?: boolean
   sessionBrowserHandled?: boolean
   focusedInteractionActive?: boolean
@@ -379,7 +379,7 @@ function createHarness(options: {
     : options.parsedEvent
   const deps: CliStdinKeyControllerDeps = {
     roomWorkflowsOwnsInput: () => options.roomWorkflowInput ?? false,
-    ...(options.clearTextSelection ? { clearTextSelection: options.clearTextSelection } : {}),
+    ...(options.flushTextSelectionRebuild ? { flushTextSelectionRebuild: options.flushTextSelectionRebuild } : {}),
     createStdinParser: () => ({
       push: (data) => {
         calls.push(`parse:${Buffer.from(data).toString()}`)
