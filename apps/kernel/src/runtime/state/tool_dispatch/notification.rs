@@ -126,9 +126,14 @@ impl KernelRuntimeState {
             _ => return Err(invalid("unknown notification tool")),
         };
         self.authorize_current_external_response()?;
+        let trigger = match response {
+            crate::local::LocalDaemonResponse::AgentTriggerCreated { trigger, .. }
+            | crate::local::LocalDaemonResponse::AgentTriggerDeleted { trigger, .. } => trigger,
+            _ => return Err(invalid("unexpected notification subscription result")),
+        };
         Ok(RuntimeToolResult {
             ok: true,
-            payload: serde_json::to_value(response).map_err(invalid)?,
+            payload: serde_json::json!({"trigger_id":trigger.id(),"source":trigger.source(),"enabled":trigger.enabled()}),
         })
     }
 }
