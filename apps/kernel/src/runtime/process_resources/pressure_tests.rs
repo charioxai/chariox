@@ -2,9 +2,11 @@
 //! room; under pressure exactly one command yields, never its owner's root.
 use super::*;
 
-/// A fixture process dies with its parent, stopped or not: a test that is
+/// On Linux a fixture dies with its parent, stopped or not: a test that is
 /// killed must not leave commands behind, and a stopped orphan never exits.
-pub(super) const DIE_WITH_PARENT: &str = "import ctypes;ctypes.CDLL(None).prctl(1,9);";
+/// Other platforms rely on the workload's tree cleanup.
+pub(super) const DIE_WITH_PARENT: &str =
+    r#"import ctypes,sys;sys.platform == "linux" and ctypes.CDLL(None).prctl(1,9);"#;
 
 /// A disk writer (4 MiB every half second): it writes at most 256 MiB in its
 /// life and ends with its parent or its scratch directory.
@@ -15,7 +17,7 @@ pub(super) fn writer_command() -> String {
 }
 
 const ALLOC: &str = "import ctypes,sys,time
-ctypes.CDLL(None).prctl(1,9)
+if sys.platform == \"linux\": ctypes.CDLL(None).prctl(1,9)
 start,rate,top=map(int,sys.argv[1:4])
 b=[bytearray(start*1048576)] if start else []
 total=start
@@ -23,6 +25,39 @@ while rate and total<top:
     b.append(bytearray(8*1048576)); total+=8; time.sleep(8/rate)
 time.sleep(60)
 ";
+
+/// Exercise both workloads with the platform and libc surface macOS provides.
+#[test]
+fn allocation_and_parent_death_fixtures_run_without_linux_prctl() {
+    let check = r#"import ctypes,sys,time
+source,prefix,platform=sys.argv[1:]
+sys.platform=platform
+calls=[]
+class Libc:
+    def prctl(self,*args): calls.append(args)
+ctypes.CDLL=lambda _: Libc() if platform == "linux" else object()
+time.sleep=lambda _: None
+sys.argv=["alloc.py","1","8","9"]
+scope={}
+exec(source,scope)
+assert scope["total"] == 9
+assert sum(map(len,scope["b"])) == 9*1048576
+exec(prefix+"hook_finished=True",scope)
+assert scope["hook_finished"]
+assert calls == ([(1,9),(1,9)] if platform == "linux" else [])
+"#;
+    for platform in ["darwin", "linux"] {
+        let output = std::process::Command::new("python3")
+            .args(["-c", check, ALLOC, DIE_WITH_PARENT, platform])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{platform}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
 
 pub(super) struct Workload {
     child: std::process::Child,
