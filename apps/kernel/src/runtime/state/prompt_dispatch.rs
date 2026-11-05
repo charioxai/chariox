@@ -1017,13 +1017,36 @@ impl KernelRuntimeState {
                 return Ok(cancellation);
             }
             self.authorize_prompt_command(authority)?;
-            if let Some(cancellation) = owned.cancel_local_prompt_if_matches(
+            let session = owned.session_store.get_session(session_id)?;
+            let exact_prompt_id = expected_prompt_id
+                .map(str::to_string)
+                .or_else(|| {
+                    owned
+                        .prompt_state_owner
+                        .active_prompt_for_agent(&session, target_agent_id)
+                        .map(|prompt| prompt.id().to_string())
+                })
+                .ok_or_else(|| DaemonError::NoActivePrompt {
+                    session_id: session_id.into(),
+                })?;
+            match owned.cancel_local_prompt_if_matches(
                 session_id,
                 target_agent_id,
                 attachment_id,
-                expected_prompt_id,
-            )? {
-                return Ok(cancellation);
+                Some(&exact_prompt_id),
+            ) {
+                Ok(Some(cancellation)) => return Ok(cancellation),
+                Err(DaemonError::NoActiveProviderRun { .. }) => {
+                    return self
+                        .cancel_local_prompt_without_provider(
+                            session_id,
+                            target_agent_id,
+                            &exact_prompt_id,
+                        )
+                        .await;
+                }
+                Err(error) => return Err(error),
+                Ok(None) => {}
             }
             if expected_prompt_id.is_some() {
                 return Err(DaemonError::NoActivePrompt {

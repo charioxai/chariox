@@ -6,7 +6,7 @@
 // trim (idle scratch goes, what is open or busy stays, an ended Room clears at once), ask (agents under disk pressure
 // are asked, naming what they hold, and free it), runaway (the orphaned writer filling the disk is attributed and
 // stopped, other owners' builds are never paused).
-// Usage: node process-admission-live.mjs --scenario memory|disk|temp|trim|trim-live|disk-volumes|ask|runaway --kernel-binary K --state-root DIR --evidence-dir DIR
+// Usage: node process-admission-live.mjs --scenario memory|disk|temp|trim|trim-live|disk-volumes|stop-cycles|ask|runaway --kernel-binary K --state-root DIR --evidence-dir DIR
 //   --login-file F [--agents 5] [--mem 7G] [--disk-gb 12] [--task a.txt:marker,b.txt:marker2] [--tui 1]
 //   [--codex-agents 5 --codex-profile-dir DIR] [--work-dir DIR] [--seed-peaks FILE]
 //   [--opencode-agents 3 --opencode-profile-dir DIR --opencode-model M] [--temp-idle-s 20]
@@ -29,7 +29,7 @@ const flags = new Map()
 for (let i = 2; i < process.argv.length; i++) flags.set(process.argv[i], process.argv[++i])
 const need = key => { assert.equal(typeof flags.get(key), "string", `${key} is required`); return flags.get(key) }
 const scenario = need("--scenario")
-assert(["memory", "disk", "temp", "trim", "trim-live", "disk-volumes", "ask", "runaway", "ui"].includes(scenario), "unknown scenario")
+assert(["memory", "disk", "temp", "trim", "trim-live", "disk-volumes", "stop-cycles", "ask", "runaway", "ui"].includes(scenario), "unknown scenario")
 const kernelBinary = resolve(need("--kernel-binary")), stateRoot = resolve(need("--state-root")), evidence = resolve(need("--evidence-dir"))
 const loginFile = resolve(need("--login-file"))
 const builds = Number(flags.get("--builds") ?? 5), memoryLimit = flags.get("--mem") ?? "7G"
@@ -355,12 +355,42 @@ const cleanup = async () => {
   writeFileSync(join(evidence, "transcript.jsonl"), transcripts())
   if (tui) { try { writeFileSync(join(tuiScreens, "final.txt"), tmux("capture-pane", "-p", "-t", tmuxName)); tmux("kill-session", "-t", tmuxName) } catch { /* gone */ } }
   stopOwned()
-  await delay(1500)
+  // Startup probes can finish spawning after the kernel exits. Drain only
+  // this run's cgroup, with PID identity and its isolated home checked again.
+  const members = path => existsSync(path) ? [
+    ...readFileSync(join(path, "cgroup.procs"), "utf8").trim().split(/\s+/).filter(Boolean).map(Number),
+    ...readdirSync(path, { withFileTypes: true }).filter(entry => entry.isDirectory()).flatMap(entry => members(join(path, entry.name))),
+  ] : []
+  report.late_processes_stopped = []
+  for (let attempt = 0; attempt < 10; attempt++) {
+    await delay(250)
+    const pids = [...new Set(members(poolCgroup))]
+    if (!pids.length) break
+    for (const pid of pids) {
+      if (!Number.isInteger(pid) || pid <= 1) throw new Error("invalid owned cgroup PID")
+      const start = startTime(pid)
+      if (!start) continue
+      let homeMatches = false
+      try {
+        homeMatches = readFileSync(`/proc/${pid}/environ`, "utf8").split("\0").includes(`CHARIOX_HOME=${kernelEnv.CHARIOX_HOME}`)
+          || readlinkSafe(`/proc/${pid}/cwd`)?.startsWith(dir + "/")
+      } catch { continue }
+      assert(homeMatches, `unrecognized process in this drill's cgroup: ${pid}`)
+      if (startTime(pid) !== start || !members(poolCgroup).includes(pid)) continue
+      const signal = attempt < 5 ? "SIGTERM" : "SIGKILL"
+      try { process.kill(pid, signal); report.late_processes_stopped.push({ pid, start, signal }) } catch { /* gone */ }
+    }
+  }
   report.remaining_fixture_processes = fixtureNames.flatMap(name => osProcesses(name).map(row => row.pid))
   if (report.remaining_fixture_processes.length) report.error = "Owned fixture processes remain after cleanup"
   note("cleanup-census", {remaining_fixture_processes: report.remaining_fixture_processes})
   for (let attempt = 0; attempt < 10 && existsSync(poolCgroup); attempt++) { removeCgroups(poolCgroup); if (existsSync(poolCgroup)) await delay(1000) }
-  unmountVolume()
+  report.remaining_pool_processes = members(poolCgroup)
+  if (report.remaining_pool_processes.length) {
+    report.error = "Owned processes remain after cleanup; preserving the volume for exact cleanup"
+  } else {
+    unmountVolume()
+  }
   for (const f of readdirSync(join(dir, "logs"))) appendFileSync(join(evidence, "kernel-logs.txt"), readFileSync(join(dir, "logs", f), "utf8"))
   save()
 }
@@ -374,8 +404,8 @@ try {
     writeFileSync(handoff, JSON.stringify({ url: `ws://127.0.0.1:${ports[0]}/kernel`, kernelEnv, sessionId, alias, work, agents: agents.map(a => a.id), attachment_id: att.attachment.id }, null, 1))
     note("ui-handoff", { handoff })
     await until(() => existsSync(handoff + ".done"), "the browser drill to finish", Number(flags.get("--ui-wait-s") ?? 3600) * 1000)
-  } else if (["temp", "trim", "trim-live", "disk-volumes", "ask", "runaway"].includes(scenario)) {
-    await runDiskCells({ scenario, agents, ask, note, until, work, dir, sessionId, rpc, report, flags, transcripts, providerOf, execFileSync, osProcesses, latestRows: () => latestRows })
+  } else if (["temp", "trim", "trim-live", "disk-volumes", "stop-cycles", "ask", "runaway"].includes(scenario)) {
+    await runDiskCells({ scenario, agents, ask, note, until, work, dir, sessionId, attachmentId: att.attachment.id, rpc, report, flags, transcripts, providerOf, execFileSync, osProcesses, latestRows: () => latestRows })
   } else
   // --task a.txt:marker,b.txt:marker2: every agent gets the prompt with {N} = its number; the round ends when each
   // agent's transcript shows `<marker>_bN` (two words the prompt never spells joined by an underscore).

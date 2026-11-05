@@ -127,6 +127,37 @@ except Exception as error:
     await until(() => !existsSync(room), "the ended Room's temp folder to go", 20000).then(() => check("ending the Room clears its temp at once", true), () => check("ending the Room clears its temp at once", false, { left: existsSync(room) ? readdirSync(room) : [] }))
   }
 
+  if (scenario === "stop-cycles") {
+    // Cancel during provider launch, before a tool need be running. This checks
+    // queue settlement and the next turn through public IPC; the TUI observes.
+    let cancellationCount = 0
+    for (let cycle = 0; cycle < 3; cycle++) {
+      await say(`New independent cycle ${cycle}: run python3 -c 'import time; time.sleep(30)' once, in the foreground. Do not retry if stopped.`, "stop")
+      const active = await until(async () => {
+        const session = (await rpc({ GetSessionState: { session_id: sessionId } })).SessionState.session
+        const prompts = agents.map(target => session.prompt_states?.[target.id]?.active_prompt)
+        return prompts.every(Boolean) && prompts
+      }, `cycle ${cycle} prompts to become active`, 90000)
+      await delay(150)
+      const responses = await Promise.all(agents.map((target, i) => rpc({ CancelActivePrompt: {
+        session_id: sessionId, attachment_id: ctx.attachmentId, target_agent_id: target.id, expected_prompt_id: active[i].id,
+      } }).catch(error => {
+        if (!String(error.message).includes("has no active prompt")) throw error
+        return { already_settled: true }
+      })))
+      cancellationCount += responses.filter(response => !response.already_settled).length
+      note("stop-responses", { cycle, statuses: responses.map(response => response.already_settled ? "already settled" : response.PromptCancelled.cancellation.prompt.status) })
+      await until(async () => {
+        const session = (await rpc({ GetSessionState: { session_id: sessionId } })).SessionState.session
+        return !session.active_prompt && !(session.queued_prompts ?? []).length && Object.values(session.prompt_states ?? {}).every(state => !state.active_prompt && !(state.queued_prompts ?? []).length) && (session.agent_tasks ?? []).every(task => task.state === "done" || task.state === "cancelled")
+      }, `stopped cycle ${cycle} tasks to settle`, 90000)
+    }
+    await say("Run exactly sh -c 'echo DONE > answer-stop-b{N}.txt'. Then reply finished. Do not change anything else.", "stop")
+    await waitAnswers("stop", 180)
+    check("real providers accept new turns after cancellation during launch", cancellationCount >= agents.length, { cancellations: cancellationCount })
+    assert(checks.every(c => c.ok), "the early-cancellation drill failed")
+  }
+
   if (scenario === "disk-volumes") {
     assert.equal(agents.length, 2, "disk-volumes needs two agents")
     assert(Number(flags.get("--disk-gb")) === 12, "disk-volumes needs its own 12 GiB loop filesystem")

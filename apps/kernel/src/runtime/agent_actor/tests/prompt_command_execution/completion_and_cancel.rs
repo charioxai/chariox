@@ -615,3 +615,111 @@ async fn assert_conditional_prompt_cancel_preserves_successor(remote: bool) {
     assert_eq!(cancellation.prompt.id(), successor.id());
     assert_eq!(cancellation.prompt.status(), PromptStatus::Cancelling);
 }
+
+#[tokio::test]
+async fn stop_before_a_provider_run_settles_the_exact_prompt_and_keeps_its_successor() {
+    let worktree = TestWorktree::new("cancel-before-provider");
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+    let mut request = worktree.session_request();
+    request.agent_defaults = Some(crate::session::SessionAgentDefaults {
+        provider: "dev-stub".into(),
+        model: Some("slow-structured".into()),
+        ..Default::default()
+    });
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(request)
+        .unwrap();
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(AttachRequest::new(
+            session.id(),
+            "cancel-before-provider",
+            ClientCapabilityLevel::FullTerminal,
+        ))
+        .unwrap();
+    let mut prompts = Vec::new();
+    for text in ["cancel this pending launch", "keep this queued successor"] {
+        let prompt = PromptQueueItem::new(
+            app.sessions_mut().reserve_prompt_id(),
+            attachment.id(),
+            agent.id(),
+            text,
+            PromptStatus::Queued,
+        );
+        let outcome = app
+            .prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
+            .unwrap();
+        let (PromptSubmissionOutcome::Started { prompt }
+        | PromptSubmissionOutcome::Queued { prompt }) = outcome;
+        prompts.push(prompt.id().to_string());
+    }
+    let store = app.durable_state_store();
+    store
+        .agent_lifecycle(crate::durable_state::agent_lifecycle::Operation::Begin {
+            owner: session.owner_user_id().into(),
+            room: session.id().into(),
+            agent: agent.id().into(),
+            prompt: prompts[0].clone(),
+            run: None,
+            now: crate::session::unix_epoch_ms(),
+        })
+        .unwrap();
+    let owner = app.prompt_state_owner();
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let result = runtime
+        .cancel_agent_prompt_if_matches_with_external_authority(
+            session.id(),
+            agent.id(),
+            attachment.id(),
+            Some(&prompts[0]),
+            None,
+        )
+        .await;
+    let cancellation =
+        result.expect("Stop must settle an active prompt even before a provider run exists");
+    assert_eq!(cancellation.cancellation.prompt.id(), prompts[0]);
+    assert_eq!(
+        cancellation.cancellation.prompt.status(),
+        PromptStatus::Cancelled
+    );
+    let task = store
+        .agent_turn_task(session.id(), agent.id(), &prompts[0])
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        task.state,
+        crate::durable_state::agent_lifecycle::ExecutionState::Cancelled
+    );
+    let snapshot = app
+        .lock()
+        .await
+        .sessions()
+        .get_session(session.id())
+        .unwrap();
+    let (active, queued) = owner.state_parts(&snapshot, agent.id());
+    assert!(active
+        .as_ref()
+        .is_none_or(|prompt| prompt.id() != prompts[0]));
+    assert!(
+        active
+            .as_ref()
+            .is_some_and(|prompt| prompt.id() == prompts[1])
+            || queued.iter().any(|prompt| prompt.id() == prompts[1]),
+        "the queued successor was lost"
+    );
+    assert!(
+        matches!(
+            runtime
+                .cancel_agent_prompt_if_matches_with_external_authority(
+                    session.id(),
+                    agent.id(),
+                    attachment.id(),
+                    Some(&prompts[0]),
+                    None,
+                )
+                .await,
+            Err(DaemonError::NoActivePrompt { .. })
+        ),
+        "a delayed Stop for the cancelled prompt reached its successor"
+    );
+}
