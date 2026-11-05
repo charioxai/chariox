@@ -514,6 +514,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             if !resume {
                 cancel_intent(tx, &mut t)?;
             }
+            t.owner_action = None;
             t.no_progress_wakes = 0;
             if !retry_wake {
                 t.wait = None;

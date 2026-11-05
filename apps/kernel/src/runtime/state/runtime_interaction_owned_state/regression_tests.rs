@@ -1472,3 +1472,42 @@ async fn rewording_a_task_decision_on_a_managed_kernel_does_not_wait_for_itself(
     }
     assert_eq!(updated, Ok(true), "updating the decision never finished");
 }
+
+#[tokio::test]
+async fn owner_task_decision_has_no_person_deadline() {
+    use crate::durable_state::agent_lifecycle::{Operation, Outcome};
+    let f = Fixture::new();
+    let task = f.id("owner-action");
+    let store = &f.state.owned.durable_state_store;
+    store
+        .agent_lifecycle(Operation::Begin {
+            owner: DEFAULT_LOCAL_USER_ID.into(),
+            room: f.session.clone(),
+            agent: "root".into(),
+            prompt: task.clone(),
+            run: None,
+            now: 1,
+        })
+        .unwrap();
+    let Outcome::Task(blocked) = store
+        .agent_lifecycle(Operation::Block {
+            task: task.clone(),
+            prompt: task,
+            reason: "Please finish verification".into(),
+        })
+        .unwrap()
+    else {
+        panic!()
+    };
+    f.state
+        .ensure_task_owner_interaction(blocked)
+        .await
+        .unwrap();
+    let session = f.state.owned.session_store.get_session(&f.session).unwrap();
+    assert_eq!(session.active_interactions().len(), 1);
+    assert_eq!(
+        session.active_interactions()[0].timeout_sec(),
+        None,
+        "an owner action stays answerable until its task resolves or the person cancels"
+    );
+}

@@ -721,7 +721,7 @@ impl KernelRuntimeState {
         let Some((task, correction)) = settlement else {
             return Ok(());
         };
-        self.retract_stale_task_owner_interactions(&task.room_id, std::slice::from_ref(&task))
+        self.retract_stale_task_owner_interactions(&task.room_id)
             .await;
         let changed = self.owned.task_settlement_changed(&task);
         if changed {
@@ -1350,7 +1350,7 @@ impl KernelRuntimeState {
                 tracing::warn!(room_id=%task.room_id, agent_id=%task.agent_id, "MP-08/MP-09/MP-10/MP-11 A02: owner projection unavailable; other recipients continue");
             }
             if rooms.insert(task.room_id.clone()) {
-                self.retract_stale_task_owner_interactions(&task.room_id, &tasks)
+                self.retract_stale_task_owner_interactions(&task.room_id)
                     .await;
             }
         }

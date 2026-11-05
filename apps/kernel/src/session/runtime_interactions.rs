@@ -243,6 +243,9 @@ pub struct RuntimeInteraction {
     /// Protocol 936: a question owned by a durable task, rather than one turn.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     asking_task_id: Option<String>,
+    /// The agent a kernel-owned task decision is about; this is presentation, not authority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    related_agent_id: Option<String>,
     /// Person cards: the existing wake source whose occurrence closes this card.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     closes_with_wake: Option<String>,
@@ -385,6 +388,7 @@ impl RuntimeInteraction {
         Self {
             view: None,
             asking_task_id: None,
+            related_agent_id: None,
             closes_with_wake: None,
             id: id.into(),
             subject: RuntimeInteractionSubject::Agent {
@@ -407,6 +411,14 @@ impl RuntimeInteraction {
             decision_expires_at: None,
             sudo_request: None,
         }
+    }
+
+    pub fn related_agent_id(&self) -> Option<&str> {
+        self.related_agent_id.as_deref()
+    }
+    pub(crate) fn with_related_agent_id(mut self, agent: String) -> Self {
+        self.related_agent_id = Some(agent);
+        self
     }
 
     pub fn asking_task_id(&self) -> Option<&str> {
@@ -497,6 +509,12 @@ impl RuntimeInteraction {
 
     pub(crate) fn valid_subject(&self) -> bool {
         self.subject.valid()
+            && self.related_agent_id.as_ref().is_none_or(|agent| {
+                self.kernel_operation_id().is_some()
+                    && !agent.is_empty()
+                    && agent.len() <= 128
+                    && !agent.chars().any(char::is_control)
+            })
             && self.handoff.as_ref().is_none_or(|h| {
                 h.valid()
                     && self.id == RuntimeHandoff::interaction_id(&h.obligation_id)
@@ -552,6 +570,7 @@ impl RuntimeInteraction {
         Self {
             view: None,
             asking_task_id: None,
+            related_agent_id: None,
             closes_with_wake: None,
             id: id.into(),
             subject: RuntimeInteractionSubject::KernelOperation {
@@ -579,6 +598,12 @@ impl RuntimeInteraction {
     /// A kernel decision that must close before its subject expires.
     pub(crate) fn with_timeout_sec(mut self, seconds: u64) -> Self {
         self.timeout_sec = Some(seconds);
+        self
+    }
+
+    /// Task owner decisions live until their task is resolved or cancelled.
+    pub(crate) fn without_timeout(mut self) -> Self {
+        self.timeout_sec = None;
         self
     }
 

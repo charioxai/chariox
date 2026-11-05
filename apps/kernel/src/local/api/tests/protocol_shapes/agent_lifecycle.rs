@@ -27,6 +27,7 @@ fn agent_task_projection_shape_is_bound_to_protocol452() {
         blocked_revision: 0,
         state: ExecutionState::Waiting,
         reason: "delegate result".into(),
+        owner_action: None,
         obligations: vec![AgentObligation {
             id: "obligation".into(),
             kind: "delegate".into(),
@@ -222,5 +223,45 @@ fn parked_stop_response_semantics_are_versioned() {
     assert_eq!(
         format!("{:x}", Sha256::digest(value.to_string().as_bytes())),
         "5d4d7cab46a07c8f05fa4223b2853b66cb117a99a13ccd4c68446d87b2e4d731"
+    );
+}
+
+#[test]
+fn browser_owner_action_shape_is_bound_to_protocol993() {
+    let fixture: serde_json::Value =
+        serde_json::from_str(include_str!("agent-browser-owner-action-993.json")).unwrap();
+    assert_eq!(fixture["local"], LOCAL_DAEMON_PROTOCOL_VERSION);
+    assert_eq!(
+        fixture["peer"],
+        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION
+    );
+    let task: AgentTaskExecution = serde_json::from_value(fixture["task"].clone()).unwrap();
+    assert_eq!(
+        task.owner_action,
+        Some(crate::durable_state::agent_lifecycle::TaskOwnerAction::BrowserAccess)
+    );
+    assert_eq!(serde_json::to_value(task).unwrap(), fixture["task"]);
+    let card = crate::session::RuntimeInteraction::for_kernel_operation(
+        "task-blocked-browser-task-2",
+        "task-blocked-browser-task-2",
+        "Allow browser access",
+        "Allow browser access?",
+        vec![crate::session::RuntimeInteractionChoice::new(
+            "allow_browser",
+            "Allow browser",
+            "resume",
+            None,
+        )],
+    )
+    .without_timeout()
+    .with_related_agent_id("agent".into());
+    let encoded = serde_json::to_value(card).unwrap();
+    assert_eq!(
+        serde_json::json!({"related_agent_id":encoded["related_agent_id"],"timeout_sec":encoded["timeout_sec"]}),
+        fixture["decision"]
+    );
+    assert_eq!(
+        format!("{:x}", Sha256::digest(fixture.to_string().as_bytes())),
+        "47522bbb99761b63bfe6ec7001388c09428b363e350377b628230fa2e035cee8"
     );
 }

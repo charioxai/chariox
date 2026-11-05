@@ -569,7 +569,7 @@ pub fn credential_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                 "properties": {
                     "wait": {"type": "boolean", "default": true},
                     "title": {"type": "string"},
-                    "message": {"type": "string"},
+                    "message": {"type": "string", "description": "Instructions written directly to the person. For a browser verification, describe their steps: press Send Code, then enter the code from their email. Keep agent scheduling, tools and task bookkeeping out of the card."},
                     "level": {
                         "type": "string",
                         "enum": ["info", "warning", "critical"]

@@ -12,6 +12,12 @@ pub enum ExecutionState {
     Cancelled,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskOwnerAction {
+    BrowserAccess,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentTaskExecution {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub goal: Option<super::goals::AgentGoal>,
@@ -27,6 +33,8 @@ pub struct AgentTaskExecution {
     pub blocked_revision: u64,
     pub state: ExecutionState,
     pub reason: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_action: Option<TaskOwnerAction>,
     pub obligations: Vec<AgentObligation>,
     pub wait: Option<AgentWait>,
     pub last_progress_at_ms: u64,
@@ -320,6 +328,11 @@ pub(crate) enum Operation {
         now: u64,
     },
     Block {
+        task: String,
+        prompt: String,
+        reason: String,
+    },
+    BlockForBrowserAccess {
         task: String,
         prompt: String,
         reason: String,

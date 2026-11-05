@@ -188,7 +188,13 @@ impl RuntimeSession {
         &mut self,
         tasks: Vec<crate::durable_state::agent_lifecycle::AgentTaskExecution>,
     ) {
-        self.agent_tasks = tasks;
+        self.agent_tasks = tasks
+            .into_iter()
+            .map(|mut task| {
+                task.reason = crate::terminal::public_task_failure_reason(&task.reason);
+                task
+            })
+            .collect();
     }
     pub(crate) fn set_sudo_windows(&mut self, windows: Vec<crate::local::KernelSudoTurn>) {
         self.sudo_windows = windows;

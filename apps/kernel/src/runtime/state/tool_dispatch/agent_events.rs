@@ -253,14 +253,29 @@ impl KernelRuntimeState {
                 serde_json::json!({"yield_requested":true,"waiting_commits_at_native_settlement":true,"next_action":"End this provider turn immediately without further tools. Do not check inbox, wakes or subscriptions: the kernel delivers a new turn for the source or deadline."})
             }
             "chariox.events.blocked" => {
-                let result = self
-                    .owned
-                    .durable_state_store
-                    .agent_lifecycle(Operation::Block {
-                        task: task_id.into(),
-                        prompt: prompt.id().into(),
-                        reason: args["reason"].as_str().unwrap_or_default().into(),
-                    })?;
+                let task = task_id.into();
+                let prompt = prompt.id().into();
+                let reason = args["reason"].as_str().unwrap_or_default().into();
+                let operation = match args.get("owner_action") {
+                    None => Operation::Block {
+                        task,
+                        prompt,
+                        reason,
+                    },
+                    Some(value) if value.as_str() == Some("browser_access") => {
+                        Operation::BlockForBrowserAccess {
+                            task,
+                            prompt,
+                            reason,
+                        }
+                    }
+                    _ => {
+                        return Err(ledger::error(
+                            "Choose browser_access for a browser approval",
+                        ))
+                    }
+                };
+                let result = self.owned.durable_state_store.agent_lifecycle(operation)?;
                 if let Outcome::Task(task) = result {
                     self.ensure_task_owner_interaction(task).await?;
                 }

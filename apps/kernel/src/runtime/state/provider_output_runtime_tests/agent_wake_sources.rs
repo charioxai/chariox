@@ -814,7 +814,10 @@ async fn refused_vault_wake_start(timed_out: bool) {
         provider_run_id: retry_run,
     };
     f.runtime
-        .resolve_agent_task_owner_action(&blocked, true)
+        .resolve_agent_task_owner_action(
+            &blocked,
+            super::super::agent_task_owner_resolution::OwnerTaskAction::Resume,
+        )
         .await;
     let retried = f.store().agent_inbox(&f.room, &f.agent, 0).unwrap();
     assert_eq!(retried.len(), 1);
@@ -1998,3 +2001,131 @@ async fn dropping_the_runtime_frees_the_terminal_wake_driver() {
 
 #[path = "async_popup.rs"]
 mod async_popup;
+
+#[tokio::test]
+async fn owner_browser_decision_restores_access_and_rejects_stale_answers() {
+    for stale in [false, true] {
+        let f = fixture("owner-browser-decision", true).await;
+        let task = f.begin(&f.prompt_id);
+        let token = f
+            .app
+            .lock()
+            .await
+            .providers
+            .get_run(&f.run)
+            .unwrap()
+            .runtime_mcp_auth_token()
+            .unwrap()
+            .to_owned();
+        call(&f, &token, "chariox.events.blocked", &task, serde_json::json!({
+            "reason":"Browser access ended. Please allow browser access.", "owner_action":"browser_access"
+        })).await.unwrap();
+        let blocked = f.task(&task.task_id);
+        f.runtime
+            .ensure_task_owner_interaction(blocked.clone())
+            .await
+            .unwrap();
+        let session = f.runtime.owned.session_store.get_session(&f.room).unwrap();
+        let card = session.active_interactions().last().unwrap();
+        assert!(
+            card.choices()
+                .iter()
+                .any(|choice| choice.id() == "allow_browser"),
+            "a browser refusal offers an approval that restores access in place"
+        );
+        assert!(!card.message().contains("chariox.") && !card.message().contains("user_domain"));
+        assert_eq!(card.timeout_sec(), None);
+        assert!(!f
+            .runtime
+            .owned
+            .kernel_browser_host
+            .has_grant("local", &f.agent));
+        if stale {
+            f.store()
+                .agent_lifecycle(Operation::OwnerResponse {
+                    task: task.task_id.clone(),
+                    revision: blocked.blocked_revision,
+                    resume: false,
+                    now: crate::session::unix_epoch_ms(),
+                })
+                .unwrap();
+        }
+        f.runtime
+            .owned
+            .resolve_attributed_terminal_runtime_interaction(
+                &f.room,
+                card.id(),
+                "allow_browser",
+                None,
+                Some("local"),
+                true,
+                Some(crate::local::KernelConnectionClass::Terminal),
+                None,
+            )
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(
+            f.runtime
+                .owned
+                .kernel_browser_host
+                .has_grant("local", &f.agent),
+            !stale
+        );
+    }
+}
+
+#[tokio::test]
+async fn owner_browser_reload_after_a_wake_offers_approval_in_place() {
+    let f = fixture("browser-owner-after-wake", true).await;
+    let task = f.begin(&f.prompt_id);
+    let token = {
+        let mut app = f.app.lock().await;
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(crate::attachment::AttachRequest::new(
+                &f.room,
+                "task-continuation",
+                crate::attachment::ClientCapabilityLevel::AutomationOnly,
+            ))
+            .unwrap();
+        let session = app.sessions().get_session(&f.room).unwrap();
+        let prompts = app.prompt_state_owner();
+        let active = prompts
+            .active_prompt_for_agent_snapshot(&session, &f.agent)
+            .unwrap();
+        let resumed = active.clone().with_source_attachment(&attachment);
+        assert!(prompts.replace_active_prompt_if_matches(&session, &f.agent, &active, resumed));
+        app.providers
+            .get_run(&f.run)
+            .unwrap()
+            .runtime_mcp_auth_token()
+            .unwrap()
+            .to_owned()
+    };
+    let result = f
+        .runtime
+        .dispatch_authenticated_runtime_tool_call(
+            &token,
+            "chariox.load_kernel_browser",
+            serde_json::json!({}),
+        )
+        .await;
+    assert!(
+        result.is_ok(),
+        "a retained task asks for browser approval instead of failing again: {result:?}"
+    );
+    assert_eq!(
+        f.task(&task.task_id).owner_action,
+        Some(crate::durable_state::agent_lifecycle::TaskOwnerAction::BrowserAccess)
+    );
+    assert_eq!(f.task(&task.task_id).state, ExecutionState::Blocked);
+    assert!(!f
+        .runtime
+        .owned
+        .kernel_browser_host
+        .has_grant("local", &f.agent));
+    let session = f.runtime.owned.session_store.get_session(&f.room).unwrap();
+    assert!(session.active_interactions().iter().any(|card| card
+        .choices()
+        .iter()
+        .any(|choice| choice.id() == "allow_browser")));
+}

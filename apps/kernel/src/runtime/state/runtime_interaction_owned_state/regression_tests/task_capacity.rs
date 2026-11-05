@@ -148,7 +148,7 @@ async fn a12_task_end_withdraws_a_restart_restored_card_without_a_responder() {
     let task = blocked_tasks(&f).await.remove(0);
     let card = format!("task-blocked-{}-{}", task.task_id, task.blocked_revision);
     f.state.owned.pending_interactions.write().remove(&card);
-    let Outcome::Task(cancelled) = f
+    let Outcome::Task(_cancelled) = f
         .state
         .owned
         .durable_state_store
@@ -162,7 +162,7 @@ async fn a12_task_end_withdraws_a_restart_restored_card_without_a_responder() {
         panic!()
     };
     f.state
-        .retract_stale_task_owner_interactions(&f.session, &[cancelled])
+        .retract_stale_task_owner_interactions(&f.session)
         .await;
     assert_eq!(
         f.active_ids().len(),
@@ -287,4 +287,75 @@ async fn a12_owner_elevation_reserves_the_last_slot_and_keeps_the_global_bound()
     );
     assert_eq!(f.active_ids().len(), 32);
     drop(receivers);
+}
+
+#[tokio::test]
+async fn owner_task_decision_is_removed_when_its_task_is_missing() {
+    let f = Fixture::with_room_tools();
+    let id = "task-blocked-deleted-task-1";
+    let (sender, _receiver) = oneshot::channel();
+    f.state
+        .owned
+        .register_runtime_interaction(
+            &f.session,
+            RuntimeInteraction::for_kernel_operation(
+                id,
+                id,
+                "Agent needs your action",
+                "Continue?",
+                vec![RuntimeInteractionChoice::new(
+                    "cancel", "Cancel", "cancel", None,
+                )],
+            ),
+            sender,
+            Some(DEFAULT_LOCAL_USER_ID),
+            None,
+            None,
+        )
+        .unwrap();
+    assert_eq!(f.active_ids(), vec![id]);
+    f.state.owned.sweep_stale_task_owner_interactions().unwrap();
+    assert!(
+        f.active_ids().is_empty(),
+        "an orphaned decision must disappear instead of staying above current work"
+    );
+}
+
+#[tokio::test]
+async fn owner_task_decision_restores_its_reply_channel_after_reload() {
+    let f = Fixture::with_room_tools();
+    let task = blocked_tasks(&f).await.remove(0);
+    let id = format!("task-blocked-{}-{}", task.task_id, task.blocked_revision);
+    f.state.owned.pending_interactions.write().remove(&id);
+    f.state
+        .ensure_task_owner_interaction(task.clone())
+        .await
+        .unwrap();
+    f.state
+        .owned
+        .resolve_runtime_interaction(
+            &f.session,
+            &id,
+            "cancel",
+            None,
+            Some(DEFAULT_LOCAL_USER_ID),
+            false,
+        )
+        .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            let tasks = f
+                .state
+                .owned
+                .durable_state_store
+                .agent_tasks(Some(&f.session), Some(&task.agent_id))
+                .unwrap();
+            if tasks[0].state == crate::durable_state::agent_lifecycle::ExecutionState::Cancelled {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the owner can answer the restored decision without a second Resume");
 }

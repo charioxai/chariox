@@ -118,13 +118,20 @@ impl KernelRuntimeOwnedState {
                     || interaction.kind() != crate::session::RuntimeInteractionKind::Permission
                     || interaction.default_on_timeout().is_some()
                     || interaction.custom_choice().is_some()
-                    || !interaction.timeout_sec().is_some_and(|seconds| {
-                        seconds >= 1
-                            && (seconds <= 3600
-                                || interaction
-                                    .kernel_operation_id()
-                                    .is_some_and(|id| id.starts_with("access-")))
-                    })
+                    || !match interaction.timeout_sec() {
+                        Some(seconds) => {
+                            seconds >= 1
+                                && (seconds <= 3600
+                                    || interaction
+                                        .kernel_operation_id()
+                                        .is_some_and(|id| id.starts_with("access-")))
+                        }
+                        None => {
+                            super::super::agent_task_owner_interactions::is_blocked_task_decision(
+                                interaction.id(),
+                            ) && interaction.kernel_operation_id() == Some(interaction.id())
+                        }
+                    }
                 {
                     return Err(interaction_error("Invalid kernel operation decision"));
                 }
@@ -360,14 +367,9 @@ impl KernelRuntimeOwnedState {
             user_domain_interaction: None,
             kernel_operation_owner: kernel_operation_owner.map(str::to_owned),
             terminal_credential_owner: terminal_credential_owner.map(str::to_owned),
-            kernel_operation_deadline: kernel_operation_owner.map(|_| {
-                std::time::Instant::now()
-                    + std::time::Duration::from_secs(
-                        interaction
-                            .timeout_sec()
-                            .expect("validated decision timeout"),
-                    )
-            }),
+            kernel_operation_deadline: kernel_operation_owner
+                .and_then(|_| interaction.timeout_sec())
+                .map(|seconds| std::time::Instant::now() + std::time::Duration::from_secs(seconds)),
             passkey_prompt: passkey_prompt.clone(),
             responder: std::sync::Arc::new(std::sync::Mutex::new(Some(responder))),
         };

@@ -17,6 +17,7 @@ const MAX_TRANSFER_RESOURCES: usize = 64;
 pub(crate) enum GrantCause {
     Focus,
     Prompt(String),
+    OwnerDecision { task_id: String, revision: u64 },
     Delegated(String),
 }
 
@@ -202,6 +203,10 @@ impl UserDomainAccess {
     ) -> Result<(), String> {
         self.grant(user, agent)?;
         let focused = self.focused(user) == Some(agent);
+        let owner_approved_tab = matches!(
+            self.grant(user, agent)?.cause,
+            GrantCause::OwnerDecision { .. }
+        ) && matches!(resource, UserDomainResource::BrowserTab { .. });
         if sensitive && !focused {
             return Err("MP-11: sensitive_requires_focus: sensitive user-domain action requires focus or human approval; focus this agent".into());
         }
@@ -210,7 +215,7 @@ impl UserDomainAccess {
             .get_mut(&(user.into(), agent.into()))
             .ok_or("MP-08: not_granted: user-domain grant revoked")?;
         if !grant.resources.contains(&resource) {
-            if !focused {
+            if !focused && !owner_approved_tab {
                 return Err(
                     "MP-08: not_focused_agent: new user-domain resource requires focus; focus this agent".into(),
                 );
@@ -235,6 +240,15 @@ impl UserDomainAccess {
         prompt_id: &str,
         lifetime: Duration,
     ) -> bool {
+        self.request_with_cause(user, agent, GrantCause::Prompt(prompt_id.into()), lifetime)
+    }
+    pub(crate) fn request_with_cause(
+        &mut self,
+        user: &str,
+        agent: &str,
+        cause: GrantCause,
+        lifetime: Duration,
+    ) -> bool {
         if self.grant(user, agent).is_ok() {
             return false;
         }
@@ -243,7 +257,7 @@ impl UserDomainAccess {
         }
         self.grants.insert(
             (user.into(), agent.into()),
-            Grant::new(GrantCause::Prompt(prompt_id.into()), Some(lifetime)),
+            Grant::new(cause, Some(lifetime)),
         );
         self.changed(user);
         true
@@ -515,6 +529,24 @@ mod tests {
     fn tab(id: &str) -> UserDomainResource {
         UserDomainResource::BrowserTab { tab_id: id.into() }
     }
+    #[test]
+    fn owner_browser_approval_restores_existing_tabs_without_changing_focus() {
+        let mut access = UserDomainAccess::default();
+        let cause = GrantCause::OwnerDecision {
+            task_id: "task".into(),
+            revision: 2,
+        };
+        access.request_with_cause("owner", "agent", cause.clone(), DEFAULT_GRANT_LIFETIME);
+        access
+            .claim("owner", "agent", tab("existing"), false)
+            .unwrap();
+        assert_eq!(access.focused("owner"), None);
+        assert_eq!(access.grant("owner", "agent").unwrap().cause, cause);
+        assert!(access
+            .claim("owner", "agent", tab("sensitive"), true)
+            .is_err());
+    }
+
     /// MP-08/MP-11 (#922 round 3): owner focus supersedes a timed cause
     /// without retiring the grant's resources or epoch.
     #[test]

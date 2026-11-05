@@ -1,0 +1,28 @@
+{
+  "local": 993,
+  "peer": 432,
+  "task": {
+    "task_id": "browser-task",
+    "room_id": "room",
+    "owner_user_id": "owner",
+    "agent_id": "agent",
+    "prompt_id": "turn",
+    "provider_run_id": "run",
+    "revision": 2,
+    "blocked_revision": 2,
+    "state": "blocked",
+    "reason": "Browser access ended. Please allow browser access.",
+    "owner_action": "browser_access",
+    "obligations": [],
+    "wait": null,
+    "last_progress_at_ms": 1,
+    "progress_sequence": 0,
+    "no_progress_wakes": 0,
+    "correction_used": false,
+    "pending_prompt_id": null
+  },
+  "decision": {
+    "related_agent_id": "agent",
+    "timeout_sec": null
+  }
+}

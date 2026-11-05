@@ -52,7 +52,9 @@ use serde::Serialize;
 use std::sync::mpsc;
 use transitions::apply;
 pub(super) use types::Request;
-pub use types::{AgentObligation, AgentTaskExecution, AgentWait, AgentWake, ExecutionState};
+pub use types::{
+    AgentObligation, AgentTaskExecution, AgentWait, AgentWake, ExecutionState, TaskOwnerAction,
+};
 mod wake_receipts;
 pub(crate) use types::{
     unresolved_source_outcome, InboxEvent, Operation, Outcome, Registration, WakeEnd,
@@ -823,6 +825,7 @@ fn new_task(
         blocked_revision: 0,
         state: ExecutionState::Working,
         reason: String::new(),
+        owner_action: None,
         obligations: vec![],
         wait: None,
         last_progress_at_ms: now,
