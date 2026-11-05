@@ -14,15 +14,18 @@ struct Rig {
     runtime: KernelRuntimeState,
     session_id: String,
     agent_id: String,
+    attachment_id: String,
 }
 
 async fn rig() -> Rig {
-    let (root, runtime, session_id, agent_id, _, _, _) = runtime_with_active_prompt().await;
+    let (root, runtime, session_id, agent_id, attachment_id, _, _) =
+        runtime_with_active_prompt().await;
     Rig {
         _root: root,
         runtime,
         session_id,
         agent_id,
+        attachment_id,
     }
 }
 
@@ -697,6 +700,7 @@ async fn notification_lineage_follows_a_steered_prompt() {
         runtime,
         session_id,
         agent_id,
+        attachment_id: attachment_id.clone(),
     };
     let workflow = rig.workflow_with_exit("pipeline");
     let source = rig.register(&workflow);
@@ -921,5 +925,255 @@ async fn guest_app_automation_listing_and_removal_keep_target_ownership() {
     assert_eq!(
         automation.status,
         crate::local::AppAutomationStatus::Disabled
+    );
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11: App receipts share ordinary prompt lifecycle and retention.
+impl Rig {
+    async fn app_trigger(
+        &self,
+        catalog: &chariox_app_runtime::app_outbox::EventCatalog,
+    ) -> crate::session::AgentTrigger {
+        let mut request = self.request("unused");
+        request.source = AgentTriggerSourceRequest::Notification {
+            source: AgentTriggerNotificationSource::App {
+                installation_id: catalog.installation_id().into(),
+                event_name: "changed".into(),
+            },
+        };
+        let LocalDaemonResponse::AgentTriggerCreated { trigger, .. } = self
+            .runtime
+            .create_agent_trigger(request, "local")
+            .await
+            .unwrap()
+        else {
+            panic!("App trigger")
+        };
+        trigger
+    }
+    fn emit_app(
+        &self,
+        catalog: std::sync::Arc<chariox_app_runtime::app_outbox::EventCatalog>,
+        trigger: &crate::session::AgentTrigger,
+        label: &str,
+    ) -> chariox_app_runtime::app_outbox::Receipt {
+        use crate::durable_state::app_state::{AppStateOperation, AppStateOutcome};
+        use chariox_app_runtime::app_outbox::{occurrence_id, Invocation, Occurrence};
+        let now = crate::session::unix_epoch_ms();
+        let occurrence = Occurrence {
+            automation_id: notification_subscription_id(trigger).unwrap().into(),
+            occurrence_id: occurrence_id(label, now).unwrap(),
+            event_version: 1,
+            occurred_at_ms: now,
+            schedule_revision: None,
+            payload: serde_json::json!({"text":label}),
+            invocation: Invocation {
+                prompt: "App hint".into(),
+                artifacts: vec![],
+            },
+        };
+        let AppStateOutcome::Receipt(receipt) = self
+            .runtime
+            .owned
+            .durable_state_store
+            .execute_app_state(
+                "local",
+                catalog,
+                AppStateOperation::Emit(occurrence),
+                crate::runtime::app_operation_budget::AppOperationBudget::from_supervisor(|| false),
+            )
+            .unwrap()
+        else {
+            panic!("receipt")
+        };
+        receipt
+    }
+}
+
+#[tokio::test]
+async fn app_agent_receipts_settle_on_completion_and_cancellation_and_are_pruned() {
+    use chariox_app_runtime::app_outbox::ReceiptState;
+    let rig = rig().await;
+    let store = &rig.runtime.owned.durable_state_store;
+    let catalog = crate::durable_state::app_state::fixture_room_event_catalog(store, "local");
+    let trigger = rig.app_trigger(&catalog).await;
+    let completed = rig.emit_app(catalog.clone(), &trigger, "complete");
+    let cancelled = rig.emit_app(catalog.clone(), &trigger, "cancel");
+    rig.runtime
+        .route_app_agent_installation("local", catalog.clone())
+        .await
+        .unwrap();
+    let receipt = |id: &str| {
+        store
+            .app_event_candidate("local", catalog.clone(), id)
+            .unwrap()
+            .receipt()
+            .clone()
+    };
+    let queued = receipt(&cancelled.receipt_id).queued_prompt_id.unwrap();
+    rig.runtime
+        .owned
+        .cancel_queued_prompt(&rig.session_id, &rig.agent_id, &rig.attachment_id, &queued)
+        .unwrap();
+    assert_eq!(
+        receipt(&cancelled.receipt_id).state,
+        ReceiptState::Failed,
+        "cancelled queued notification becomes terminal"
+    );
+    // Completing the initial user prompt promotes the first App notification.
+    rig.runtime
+        .complete_agent_prompt_with_external_authority(&rig.session_id, &rig.agent_id, None, None)
+        .await
+        .unwrap();
+    let room = rig
+        .runtime
+        .owned
+        .session_store
+        .get_session(&rig.session_id)
+        .unwrap();
+    if room.active_prompt_for_agent(&rig.agent_id).is_none() {
+        rig.runtime
+            .owned
+            .activate_next_queued_prompt_for_agent(&rig.session_id, &rig.agent_id, None)
+            .unwrap();
+    }
+    rig.runtime
+        .complete_agent_prompt_with_external_authority(&rig.session_id, &rig.agent_id, None, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        receipt(&completed.receipt_id).state,
+        ReceiptState::Delivered,
+        "completed notification becomes terminal"
+    );
+    let mut connection = rusqlite::Connection::open(store.path()).unwrap();
+    let mut tx = connection.transaction().unwrap();
+    let result = chariox_app_runtime::app_outbox::AppOutbox::maintain_in(
+        &mut tx,
+        "local",
+        catalog.installation_id(),
+        completed.expires_at_ms + chariox_app_runtime::app_outbox::MAX_OCCURRENCE_AGE_MS + 1,
+    )
+    .unwrap();
+    assert_eq!(
+        result.pruned, 2,
+        "terminal App-to-agent receipts release installation capacity"
+    );
+    tx.commit().unwrap();
+}
+
+#[tokio::test]
+async fn disabled_app_subscriber_does_not_starve_a_live_subscriber() {
+    let rig = rig().await;
+    let store = &rig.runtime.owned.durable_state_store;
+    let catalog = crate::durable_state::app_state::fixture_room_event_catalog(store, "local");
+    let disabled = rig.app_trigger(&catalog).await;
+    let live = rig.app_trigger(&catalog).await;
+    let mut deferred = Vec::new();
+    for n in 0..8 {
+        deferred.push(rig.emit_app(catalog.clone(), &disabled, &format!("disabled-{n}")));
+    }
+    let live_receipt = rig.emit_app(catalog.clone(), &live, "live-subscriber");
+    rig.runtime
+        .update_agent_trigger(
+            UpdateAgentTriggerRequest {
+                session_id: rig.session_id.clone(),
+                trigger_id: disabled.id().into(),
+                busy_policy: None,
+                prompt: None,
+                enabled: Some(false),
+            },
+            "local",
+        )
+        .await
+        .unwrap();
+    rig.runtime
+        .route_app_agent_installation("local", catalog.clone())
+        .await
+        .unwrap();
+    // Fairness must survive a slow pump too, after the deferred page becomes due again.
+    let pending = store
+        .pending_app_events_for_target(
+            "local",
+            &catalog,
+            crate::session::unix_epoch_ms().saturating_add(5_000),
+            8,
+            chariox_app_runtime::app_outbox::AutomationTargetKind::Agent,
+        )
+        .unwrap();
+    assert_eq!(
+        pending[0].receipt_id, live_receipt.receipt_id,
+        "deferred rows rotate behind eligible live work even on a slow pass"
+    );
+    rig.runtime
+        .route_app_agent_installation("local", catalog.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        rig.queued_prompts().len(),
+        1,
+        "the next bounded pass must reach the enabled subscriber"
+    );
+    assert!(rig.queued_prompts()[0].contains("live-subscriber"));
+    for original in deferred {
+        let current = store
+            .app_event_candidate("local", catalog.clone(), &original.receipt_id)
+            .unwrap();
+        assert_eq!(current.receipt().expires_at_ms, original.expires_at_ms);
+        assert_eq!(
+            current.receipt().attempts,
+            0,
+            "deferral is not a failed delivery attempt"
+        );
+    }
+}
+
+#[tokio::test]
+async fn app_agent_receipt_settles_when_prompt_cancellation_precedes_association() {
+    use crate::durable_state::app_automations::AppAutomationMutation;
+    use chariox_app_runtime::app_outbox::ReceiptState;
+    let rig = rig().await;
+    let store = &rig.runtime.owned.durable_state_store;
+    let catalog = crate::durable_state::app_state::fixture_room_event_catalog(store, "local");
+    let trigger = rig.app_trigger(&catalog).await;
+    let receipt = rig.emit_app(catalog.clone(), &trigger, "fast-cancellation");
+    let prompt_id = rig
+        .runtime
+        .queue_agent_notification_input(
+            &rig.session_id,
+            trigger.id(),
+            serde_json::json!({"installation_id":catalog.installation_id(),"event_name":"changed","occurrence_id":receipt.occurrence_id,"occurred_at_ms":receipt.occurred_at_ms,"payload":{"text":"fast-cancellation"}}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    rig.runtime
+        .owned
+        .cancel_queued_prompt(
+            &rig.session_id,
+            &rig.agent_id,
+            &rig.attachment_id,
+            &prompt_id,
+        )
+        .unwrap();
+    store
+        .mutate_app_automation(
+            "local",
+            catalog.clone(),
+            AppAutomationMutation::AgentQueued {
+                receipt: receipt.clone(),
+                prompt_id,
+            },
+            crate::runtime::app_operation_budget::AppOperationBudget::from_supervisor(|| false),
+        )
+        .unwrap();
+    assert_eq!(
+        store
+            .app_event_candidate("local", catalog, &receipt.receipt_id)
+            .unwrap()
+            .receipt()
+            .state,
+        ReceiptState::Failed,
+        "late receipt association must observe committed prompt cancellation"
     );
 }

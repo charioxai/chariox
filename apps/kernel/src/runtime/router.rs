@@ -102,6 +102,7 @@ pub(crate) struct CommandRouter {
 
 #[cfg(test)]
 mod tests {
+    mod app_notification_access;
     use std::collections::BTreeMap;
     use std::sync::Arc;
 
