@@ -7,26 +7,27 @@ const setups=new Map(),probeArgs=['--display-native-codec-probe'];
 const installer=fileURLToPath(new URL('./install-display-codec.py',import.meta.url));
 
 function run(command,args,environment,timeoutMs){
- return new Promise((resolve,reject)=>{
+ return new Promise(resolve=>{
   const child=spawn(command,args,{env:environment,stdio:['ignore','pipe','pipe']});
-  let stdout='',stderr='',expired=false;
-  const timer=setTimeout(()=>{expired=true;child.kill('SIGKILL');},timeoutMs);
+  let stdout='',stderr='',expired=false,spawnError;
+  const timer=setTimeout(()=>{expired=true;if(Number.isSafeInteger(child.pid)&&child.pid>1)child.kill('SIGKILL');},timeoutMs);
   child.stdout.on('data',chunk=>{if(stdout.length<16_384)stdout+=chunk.toString();});
   child.stderr.on('data',chunk=>{if(stderr.length<16_384)stderr+=chunk.toString();});
-  child.once('error',error=>{clearTimeout(timer);reject(error);});
-  child.once('close',code=>{clearTimeout(timer);resolve({code,stdout,stderr,expired});});
+  child.once('error',error=>{spawnError=error;});
+  child.once('close',code=>{clearTimeout(timer);resolve({code,stdout,stderr,expired,error:spawnError});});
  });
 }
 
 async function prepare({worker,python,root,environment,execute}){
  const initial=await execute(worker,probeArgs,environment,15_000);
+ if(initial.error)throw Error('codec probe spawn');
  if(initial.expired)throw Error('codec probe timeout');
  if(initial.code===0)return undefined;
  const installed=await execute(python,[installer,'--root',root],environment,45_000);
  const codec=installed.stdout.trim(),expected=path.join(root,'libopenh264.so.8');
- if(installed.expired||installed.code!==0||codec!==expected)throw Error('codec install');
+ if(installed.error||installed.expired||installed.code!==0||codec!==expected)throw Error('codec install');
  const verified=await execute(worker,probeArgs,{...environment,CHARIOX_BROWSER_DISPLAY_OPENH264:codec},15_000);
- if(verified.expired||verified.code!==0)throw Error('codec probe');
+ if(verified.error||verified.expired||verified.code!==0)throw Error('codec probe');
  return codec;
 }
 
