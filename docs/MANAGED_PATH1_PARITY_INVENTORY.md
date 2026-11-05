@@ -19,6 +19,12 @@ remove the measured frame-triggered TCP/DNS traffic. The unchanged whole-tree
 gate still fails on the Network Service IPv6 route socket; no narrower gate is
 accepted. Ordinary Web tabs cannot apply the required launch settings.
 Renderer/source checks do not close live MP parity or the AV1 network gate.
+Round 4 includes every strict launch capture in the acceptance conjunction and
+fixes Cloud development serving of the client ES module. An IPv6-disabled private
+network namespace still permits the UDPv6 socket and failed external connect;
+the original syscall gate rejects it. Packet isolation does not replace the
+zero-socket contract. No probe-skipping Chrome155 launch flag was found in the
+inspected source lists; the IPv6 reachability override feature retains the probe.
 
 ## MP-08 / MP-09 / MP-10 / MP-11 process disk telemetry (2026-11-02)
 
