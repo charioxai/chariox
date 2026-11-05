@@ -348,7 +348,8 @@ mod tests {
             done.store(true, std::sync::atomic::Ordering::SeqCst);
             let seen = poller.join().unwrap();
             assert!(
-                seen.iter().all(|state| *state == EnvironmentOperationState::Running),
+                seen.iter()
+                    .all(|state| *state == EnvironmentOperationState::Running),
                 "round {round}: a poll saw {seen:?}"
             );
             drop(handle);
