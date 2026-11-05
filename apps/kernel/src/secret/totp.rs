@@ -110,10 +110,7 @@ pub(crate) fn locate(text: &str) -> Option<Zeroizing<String>> {
             return found(&text[start..end]);
         }
     }
-    let tokens: Vec<&str> = text
-        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '='))
-        .filter(|token| !token.is_empty())
-        .collect();
+    let tokens = tokenize(text);
     let base32_only = |token: &str| {
         token
             .bytes()
@@ -125,6 +122,7 @@ pub(crate) fn locate(text: &str) -> Option<Zeroizing<String>> {
     };
     let single = tokens
         .iter()
+        .map(|(token, _)| *token)
         .filter(|token| {
             token.len() >= 16 && base32_only(token) && looks_like_key(token) && valid(token)
         })
@@ -134,15 +132,27 @@ pub(crate) fn locate(text: &str) -> Option<Zeroizing<String>> {
     }
     let mut best: Option<String> = None;
     for start in 0..tokens.len() {
-        let size = tokens[start].len();
-        if !(2..=8).contains(&size) || !base32_only(tokens[start]) {
+        let size = tokens[start].0.len();
+        if !(2..=8).contains(&size) || !base32_only(tokens[start].0) {
             continue;
         }
         let mut joined = String::new();
         let mut groups = 0;
-        for token in &tokens[start..] {
-            if token.len() != size || !base32_only(token) {
+        // Groups of one key share a letter case; a capitalized or differently cased word is prose.
+        let mut lowercase_key = None;
+        for (index, (token, separator)) in tokens[start..].iter().enumerate() {
+            let has_lower = token.bytes().any(|b| b.is_ascii_lowercase());
+            let has_upper = token.bytes().any(|b| b.is_ascii_uppercase());
+            let case_mismatch = (has_lower && has_upper)
+                || (has_lower && lowercase_key == Some(false))
+                || (has_upper && lowercase_key == Some(true));
+            // Only spaces, dashes and line breaks sit between the groups of a key.
+            let joins = index == 0 || separator.chars().all(|c| c.is_whitespace() || c == '-');
+            if token.len() != size || !base32_only(token) || case_mismatch || !joins {
                 break;
+            }
+            if has_lower || has_upper {
+                lowercase_key = Some(has_lower);
             }
             joined.push_str(token);
             groups += 1;
@@ -156,6 +166,30 @@ pub(crate) fn locate(text: &str) -> Option<Zeroizing<String>> {
         }
     }
     best.map(Zeroizing::new)
+}
+
+/// Splits `text` into alphanumeric words (`=` counts, for padding), each with the separator text
+/// that precedes it, so a caller can tell a space or dash from a colon or bracket.
+fn tokenize(text: &str) -> Vec<(&str, &str)> {
+    let is_token = |c: char| c.is_ascii_alphanumeric() || c == '=';
+    let mut tokens = Vec::new();
+    let mut separator_start = 0;
+    let mut token_start = None;
+    for (index, c) in text.char_indices() {
+        match (is_token(c), token_start) {
+            (true, None) => token_start = Some(index),
+            (false, Some(start)) => {
+                tokens.push((&text[start..index], &text[separator_start..start]));
+                token_start = None;
+                separator_start = index;
+            }
+            _ => {}
+        }
+    }
+    if let Some(start) = token_start {
+        tokens.push((&text[start..], &text[separator_start..start]));
+    }
+    tokens
 }
 
 pub(super) fn code(
@@ -216,6 +250,36 @@ mod tests {
             "This also gives game plan ideas around town",
         ] {
             assert!(locate(text).is_none(), "{text:?}");
+        }
+    }
+
+    #[test]
+    fn page_text_around_a_key_never_joins_the_seed() {
+        // The RFC 6238 SHA-1 test key "12345678901234567890" shown as eight groups of four. Label
+        // words have the length of a group, so only the boundary rules keep them out of the seed.
+        let groups = "GEZD GNBV GY3T QOJQ GEZD GNBV GY3T QOJQ";
+        let config = TotpConfig {
+            digits: 8,
+            ..TotpConfig::default()
+        };
+        let dashed = groups.replace(' ', "-");
+        let lined = groups.replace(' ', "\n");
+        for text in [
+            format!("Your seed: {groups}"),
+            format!("Seed {groups} code"),
+            format!("Key: {dashed}."),
+            format!("Code {groups}"),
+            format!("Setup ({groups}) Done"),
+            format!("Copy\n{lined}\nthen"),
+            format!("Code - {groups} - Here"),
+        ] {
+            let located = locate(&text).unwrap_or_else(|| panic!("no key in {text:?}"));
+            let (stored, _) = normalize(&located, &config).unwrap();
+            assert!(
+                stored.as_str() == groups.replace(' ', ""),
+                "{text:?} stored a different seed"
+            );
+            assert_eq!(code(&stored, &config, 59).unwrap(), "94287082", "{text:?}");
         }
     }
 
