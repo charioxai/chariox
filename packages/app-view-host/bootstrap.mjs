@@ -30,8 +30,9 @@ export function assemble() {
   const bytes = Uint8Array.from(atob(document.getElementById('app-source').textContent), c => c.charCodeAt(0));
   const source = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
   document.getElementById('app-source').remove();
-  const style = document.createElement('style');
-  style.textContent = 'html,body{margin:0;width:100%;height:100%;overflow:hidden}#' + source.rootId + '{width:100%;height:100%}' + source.style;
+  const style = document.createElement('link'); style.rel = 'stylesheet';
+  const css = 'html,body{margin:0;width:100%;height:100%;overflow:hidden}#' + source.rootId + '{width:100%;height:100%}' + source.style;
+  style.href = 'data:text/css;base64,' + btoa(Array.from(new TextEncoder().encode(css), byte => String.fromCharCode(byte)).join(''));
   document.head.append(style);
   const root = document.createElement('div'); root.id = source.rootId; document.body.append(root);
   const script = document.createElement('script'); script.type = 'module'; script.textContent = source.script; document.body.append(script);

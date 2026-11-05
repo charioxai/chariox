@@ -177,9 +177,11 @@ the page detaches its view; CLI exit closes the host and its exact owned sockets
 
 AV1 implementation result (2026-11-05, MP-08 / MP-09 / MP-10 / MP-11): the
 candidate renders both reference Apps in the built Cloud web assets at DPR 1/2,
-but the ordinary-profile Chrome155 network gate is **FAIL**. Speculative
-navigation/preconnect opens TCP sockets and explicit DNS-prefetch issues queries
-despite the candidate restrictions. No browser is accepted for contained App
+but the Chrome155 whole-browser network gate is **FAIL**. The restricted
+launch/profile stops the ordinary-profile frame TCP/DNS failures; a browser-internal
+IPv6 route-check UDP socket still violates the unchanged zero-socket gate.
+Data/blob-only stylesheet CSP renders both references. No narrower gate has been
+accepted. Dedicated launch ownership is required; ordinary Web tabs cannot set it. No browser is accepted for contained App
 views from this result. The candidate packer, host/bootstrap/CSP, complete
 controls, evidence and AV2–AV7 dependencies are frozen in
 [`docs/APP_VIEW_HOST_AV1.md`](../../docs/APP_VIEW_HOST_AV1.md). Keep the streamed
@@ -200,15 +202,16 @@ hash complete files before making them executable. No kernel paths or external
 package URLs reach App code. An arbitrary asset is not an HTML entry point.
 
 The trusted host assembles a **self-contained `srcdoc` document** from verified
-bytes: statically bundled JS, inline CSS and embedded font/image/media data.
+bytes: statically bundled JS, stylesheet text installed as a data URL, and
+embedded font/image/media data.
 The packer forbids CDN/remote imports, dynamic module loading, view-created
 workers and executable blob/data URLs. Package-local lookup returns bytes from
 the verified map through the SDK; web-WASM is an asset, not a backend capability.
 Heavy shared work belongs in the backend. The host generates a CSP before any
 content, then injects the trusted bootstrap before App scripts, with exact
-hashes for permitted inline scripts. Dynamic inline styles remain allowed for
-native layout/canvas libraries; image/font/media directives still block remote
-CSS fetches. Hash original publisher bytes before this
+hashes for permitted inline scripts. Stylesheets, images and fonts use only
+data/blob resources; native layout uses CSSOM without an unsafe-inline style
+grant. Both references are tested with that policy. Hash original publisher bytes before this
 assembly; the generated wrapper is not publisher-signed source. Escape HTML
 raw-text boundaries as data rather than interpolating arbitrary JS into an
 HTML template. Test both reference Apps against this packer contract in AV1.
@@ -226,7 +229,7 @@ gate for inherited CSP, `srcdoc`, reload/about:blank/document.write/history
 and all fresh-realm transitions on the supported browser matrix. A failing
 engine is unsupported for Apps until corrected, never switched to streamed Tabs.
 Account for CSP inheritance explicitly: the static trusted host permits the
-inline script/style execution needed by the child, while the child's first
+inline script execution and data/blob styles needed by the child, while the child's first
 meta policy narrows scripts to the generated hashes. Both applicable policies
 allow `wasm-unsafe-eval` for verified browser-WASM bytes while denying JavaScript
 `unsafe-eval`; AV1 tests compilation as well as the JS entry. The trusted host contains

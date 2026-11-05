@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { signReference } from '../build-reference.mjs';
 import { referencePrelude } from './reference-fixture.mjs';
+import { processNetwork } from './process-network.mjs';
 import { browserProfile } from './browser-profile.mjs';
 
 export async function referenceCases({ chromium, launchOptions, server, evidence, builds }) {
@@ -17,7 +18,7 @@ export async function referenceCases({ chromium, launchOptions, server, evidence
       try {
         // Use an actual renderer scale: context-only emulation did not reach
         // opaque out-of-process frames in the earlier Chrome155/Playwright run.
-        profile = await browserProfile(chromium, { ...launchOptions, args: [...launchOptions.args, `--force-device-scale-factor=${dpr}`],
+        profile = await browserProfile(chromium, { ...launchOptions, clientView: true, captureDirectory: join(evidence, 'process-tree', name + '-dpr' + dpr), args: [...launchOptions.args, `--force-device-scale-factor=${dpr}`],
           viewport: { width: 1440, height: 900 }, deviceScaleFactor: dpr });
         const { context } = profile;
         const page = await context.newPage();
@@ -82,7 +83,7 @@ export async function referenceCases({ chromium, launchOptions, server, evidence
         await page.screenshot({ path: join(evidence, name + '-dpr' + dpr + '.png') });
         await writeConsole(page, join(evidence, name + '-dpr' + dpr + '-dom.txt'));
       } catch (error) { row.failure = error.stack; }
-      finally { await profile?.close(); }
+      finally { await profile?.close(); if (profile) row.processNetwork = await processNetwork(join(evidence, 'process-tree', name + '-dpr' + dpr)); }
       rows.push(row);
       console.log(name, dpr, JSON.stringify({ rendered: row.rendered, failure: row.failure?.slice(0, 180), pageErrors: row.errors.length }));
     }

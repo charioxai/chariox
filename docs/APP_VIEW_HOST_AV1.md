@@ -16,42 +16,79 @@ streamed renderer or Vault/observation behavior changes here.
 
 ## Browser result and the blocking seam
 
-| Browser / conditions | Renderer | Required network boundary | Product support |
+The zero-network contract is unchanged. On 2026-11-05 at 15:42Z the coordinator
+required three layers: opaque frame plus inherited response CSP, a restricted
+browser launch, and a zero-network capture covering the whole browser tree.
+
+| Browser / conditions | Renderer | Network boundary | Product support |
 | --- | --- | --- | --- |
-| Chrome 155.0.8059.39, Linux headless, fresh ordinary profiles | Both reference Apps render at DPR 1/2 | FAIL at DPR1: speculative navigation / explicit preconnect TCP and DNS-prefetch | Not established |
-| Chrome for Testing 155.0.8059.79, same conditions | Both reference Apps render at DPR 1/2 | Same FAIL at DPR1 | Not established |
-| Firefox, Safari/WebKit, Edge, macOS/Windows default browsers, native WebViews | NOT RUN | NOT RUN | Not established |
+| Chrome 155.0.8059.39, Linux headless, unrestricted fresh ordinary profile | Both Apps at DPR1/2 | FAIL: frame-triggered TCP speculation and DNS | None |
+| Chrome for Testing 155.0.8059.79, unrestricted profile | Both Apps at DPR1/2 | Same FAIL | None |
+| Chrome155.39, dedicated restricted launch/profile | Both Apps at DPR1/2 with data/blob stylesheet CSP | Frame controls improved; whole-tree gate remains FAIL on the IPv6 route socket; full matrix recorded below | None |
+| Firefox, Safari/WebKit, Edge, macOS/Windows default browsers, native WebViews | NOT RUN | NOT RUN | None |
 
-The strict frame produces zero HTTP requests and zero WebRTC UDP packets at the
-local receivers, but that is insufficient. Each of iframe navigation, self
-navigation, `location.replace`, meta refresh, link navigation and explicit
-preconnect opens an accepted TCP socket with zero application bytes. Explicit
-DNS-prefetch produces DNS query events for the strict test name. The host has
-`X-DNS-Prefetch-Control: off`; both documents have the equivalent meta setting.
-These controls do not establish a network boundary in the tested engines.
-The final packet captures also contain the strict DNS questions at the local
-resolver, independently of the browser NetLog. Moving the parent CSP from a
-meta policy to an HTTP response header also did
-not stop the navigation sockets (see `navigation-probe.json`).
+The original captures did not record PIDs; historical PIDs cannot be recovered
+from those pcaps alone. `enforce-attribution/` reproduces the same seven classes
+with startup-to-exit syscalls and native frame/renderer PID marks.
 
-Network containment was tested at DPR1. The reference renderer/canvas checks
-ran at both DPRs. DPR2 network containment is not established; the existing
-DPR1 failure already blocks browser support. This evidence is not a live
-Web/TUI/relay or native accessibility acceptance matrix.
+The seven reproduced failing cases are content initiated: iframe/self/replace/meta/
+link navigation and explicit preconnect opened six TCP sockets at the owned
+loopback receiver; DNS-prefetch emitted the exact signed test frame's synthetic
+name. HTTP payload and STUN datagram counts were zero, which did not pass the
+socket/DNS contract. Fresh syscall captures attribute the TCP work to Chrome's
+Network Service; DNS work uses both that service and the browser process's
+system-resolver pool. The GPU and frame renderer are separately identified.
+The originating frame is known from its signed test operation and unique
+receiver/name; the process making the syscall is a separate fact.
 
-Use **ordinary profiles** for this proof. Chromium private contexts suppress
-explicit preconnect and DNS-prefetch; the earlier private-context runs had no
-positive receiving control for those cases. The final drill uses a fresh normal
-profile for every network case and reference render, enables background
-networking, writes each browser's NetLog, and removes that profile after closing
-it. Playwright still supplies its other automation defaults. Root's
-`--no-sandbox` launch option concerns the OS process sandbox; the actual HTML
-iframe sandbox is present and tested independently.
+`chromium-launch.mjs` freezes the requested dedicated-browser arguments:
+no proxy; map every hostname to `~NOTFOUND` except localhost/127.0.0.1/::1;
+disable background networking, component updates/extensions, default apps,
+domain reliability, sync, crash reporting, phishing detection, Safe Browsing
+updates, pings, optimization services, media routing, translation, prefetch and
+prerender services. Actual complete argv, including Playwright defaults, is in
+each PID map. Chrome155 no longer provides the old `disable-preconnect` switch.
+The isolated profile also sets `net.network_prediction_options=2`, turns off
+Safe Browsing and search suggestions, and disables DoH. Flags alone did not
+stop the six loopback speculative sockets; prediction-disabled preferences did.
+The resolver rule stops the explicit frame DNS-prefetch query.
 
-AV1 needs an enforceable browser/network containment mechanism or an explicit
-owner revision of the contract before it can pass. There is no JS navigation
-interposition workaround, browser preference requirement, weakened assertion,
-automatic streamed fallback or supported-browser claim in this change.
+A remaining browser-internal operation is Network Service UDP `connect` to
+`[2001:4860:4860::8888]:443`. It occurs with the complete restricted launch and
+prediction-disabled profile. Chromium's
+[HostResolverManager IPv6 reachability check](https://raw.githubusercontent.com/chromium/chromium/main/net/dns/host_resolver_manager.cc)
+uses this hard-coded address for a route check: connect and inspect the local
+address, without sending a DNS request or datagram. Captured syscall files and
+NetLog reachability events are the evidence; the source explains their purpose.
+The [Chrome tooling flag guide](https://raw.githubusercontent.com/GoogleChrome/chrome-launcher/main/docs/chrome-flags-for-tools.md)
+and [prediction preferences implementation](https://raw.githubusercontent.com/chromium/chromium/main/chrome/browser/preloading/preloading_prefs.cc)
+provide the launch/profile rationale. Neither documentation nor an ignored flag
+is treated as proof that a service stopped.
+
+**The whole-tree zero-non-loopback-socket gate remains FAIL.** A diagnostic
+report proposes only the exact Network Service UDP-connect route probe as an
+exception, with no send operation, no DNS and no other destination/process.
+It never applies that exception to acceptance. The lane coordination request
+recommends retaining the original failing gate until the probe is eliminated
+or the owner explicitly accepts that precise narrower gate. AV1 is not accepted
+under either gate in this round.
+
+Use fresh **ordinary** profiles: private profiles suppress preconnect/DNS
+controls. Every strict network case runs at actual DPR1 and DPR2. `strace -ff`
+starts before Chrome exec, follows all child processes/threads through shutdown,
+and records all socket calls; CDP plus `/proc` labels processes and threads.
+Native User Timing marks identify each live frame's renderer PID in the trace.
+The gate includes browser startup/shutdown, so background work is not hidden
+outside a chosen frame interval. A filtered pcap additionally records the owned
+receivers and synthetic App DNS questions without collecting other lanes' data.
+Unknown destinations or process attribution fail the gate. The root-only test
+option `--no-sandbox` concerns Chromium's OS sandbox; the HTML sandbox is present.
+
+An ordinary Web page cannot enforce these launch settings or disable other
+browser services. Recommended integration default: AV4/AV5 must own a dedicated
+browser process and fresh restricted profile, or fail closed. This AV1 candidate
+does not add that product integration or change the kernel. No ordinary Web
+support, live Web/TUI/relay acceptance or automatic streamed fallback is claimed.
 
 ## Packer and verification contract for AV2
 
@@ -70,7 +107,7 @@ The JSON has exactly four fields:
 | `schema` | `chariox.app-view-source.v1` |
 | `rootId` | Lowercase ASCII letter followed by up to 63 lowercase letters, digits, underscores or hyphens |
 | `script` | One statically bundled ESM entry, including local asset bytes |
-| `style` | Inline stylesheet text with embedded assets |
+| `style` | Stylesheet text with embedded assets, installed as a data URL |
 
 Publisher strings are encoded as data, never interpolated into HTML raw-text
 script/style bodies. The carrier cannot execute App code on its own. Its final
@@ -172,7 +209,7 @@ Both documents use:
 ```text
 default-src 'none'; connect-src 'none'; frame-src 'none'; child-src 'none';
 worker-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none';
-style-src 'unsafe-inline'; img-src data: blob:; font-src data:;
+style-src data: blob:; img-src data: blob:; font-src data: blob:;
 media-src data: blob:
 ```
 
@@ -182,8 +219,9 @@ hash would suppress `unsafe-inline` and also prevent independently hashed App
 scripts under the inherited policy. The child's first meta CSP instead adds
 only the three generated script hashes and `wasm-unsafe-eval`.
 
-Inline styles support native layout/canvas libraries; data fonts/images and
-image/media blobs support embedded assets/local drawing. No HTTP/WSS source,
+Stylesheets are data URLs, including the trusted host layout; no inline-style
+CSP grant is present. Native libraries still render using their CSSOM layout
+operations. Data/blob fonts/images/media support embedded assets/local drawing. No HTTP/WSS source,
 external script, worker or JS `unsafe-eval` is permitted. Removing
 `wasm-unsafe-eval` from both applicable policies makes byte compilation fail;
 plain eval/Function compilation remains denied with it present. This is the
@@ -198,13 +236,13 @@ Cloud web entry/assets, runs Chromium checks and cleans its processes:
 
 ```sh
 bash packages/app-view-host/test/run-av1.sh /root/work/agent-appview-cloud \
-  /root/.codex/evidence/browser-resume-20260930/appview/r3/final \
-  /root/.chariox/dev/appview-av1-final
+  /root/.codex/evidence/browser-resume-20260930/appview/r3/enforce-final \
+  /root/.chariox/dev/appview-av1-verify
 ```
 
 Use new evidence/scratch directories on each run. Keep the scratch path short:
 Chrome needs a TMPDIR of at most 60 bytes for its Unix socket. Prerequisites are
-Corepack/pnpm/Node22, Chrome, tcpdump and the lane's bounded-workload wrapper.
+Corepack/pnpm/Node22, Chrome, strace, tcpdump and the lane's bounded-workload wrapper.
 Dependency installs use frozen locks without dependency install scripts; the
 needed web/reference build commands run explicitly. `CHARIOX_TEST_CHROME`
 selects another installed browser; `CHARIOX_BOUNDRUN` selects the wrapper on a
@@ -213,14 +251,25 @@ boundary; the command records each step's exit status in `steps.tsv`. A nonzero
 browser exit is not converted into a passing known-failure assertion.
 
 Evidence root: `/root/.codex/evidence/browser-resume-20260930/appview/r3/`.
-`final-15579/` contains the newer browser run; `final/`
-contains the complete one-command run. Each has:
+`final/` and `final-15579/` retain the original failing ordinary-profile runs.
+`enforce-matrix/` records 72/72 frame-traffic checks and controls at DPR1/DPR2,
+4/4 reference renders, zero strict DNS and zero frame receiver sockets. All 76
+strict browser runs retain only the IPv6 route socket, so the whole-tree gate
+fails. `enforce-layer-probe/` independently tests resolver, frame CSP and idle
+browser behavior. `enforce-final/` is the clean-head one-command reproduction.
+The earlier `enforce-{probe,launch-probe,prefs-probe}/` captures isolate the
+original attribution, flags-only result and additional prediction preference.
+Each final run has:
 
 | Check | Evidence |
 | --- | --- |
 | Signature/hash/entry tampering, Rust signing vector, Unicode and size limits; full inventory with portable license names | `verifier.log`; `verifier-before.log` / `verifier-after.log` and `inventory-before.log` / `inventory-after.log` in the evidence root for resumed fixes |
 | Cloud static response policy, reports removed, malformed host fails clearly | `host-response.log`; `response-before.log` / `response-after.log` at the root |
-| 36 network/navigation/fresh-document classes, rule-removal controls | `results.json` → `attacks`; named files under `netlog/`; `console.json` |
+| 36 network/navigation/fresh-document classes at each DPR, receiving controls and strict header/sandbox audit | `results.json` → `attacks`; named files under `netlog/`; `console.json` |
+| Whole browser tree, actual frame/renderer PID, requested flags/effective profile, complete socket syscalls and unchanged zero-network result | `process-tree/<case>/pid-map.json`, `frame-processes.json`, `launch.json`, `syscall.<tid>`, `network.json`; `attribution.json` |
+| Independent resolver/direct-IP and frame-CSP controls; idle browser with no App | `results.json` → `launch`, `process-tree/launch-*` |
+| Capture parser rejects DNS, unknown senders, descriptor reuse, batched destinations and incomplete captures | `verifier.log`; root `enforce-gate-before.log`, `enforce-gate-after.log`, `enforce-completeness-before.log`, `enforce-all-unit.log` |
+| Data/blob-only enforced response policy, old unsafe-inline policy fails first | Root `enforce-policy-before.log`, `enforce-policy-after.log` |
 | Separate HTTP/TCP/UDP receivers; zero-byte strict sockets; only this drill's DNS names captured | `receiver.pcap`, `receiver-ports.json`, `capture-filter.txt`, `results.json` → `receiver`, `tcpdump.log`, `capture-process.json` |
 | Cookie/local/session/database/cache/service-worker revisit controls | `results.json` → `isolation.persistence` |
 | Native clipboard/file input, wasm versus eval, bootstrap immutability | `results.json` → `isolation` |
@@ -240,11 +289,11 @@ proof, not backend commit/reconnect/update durability or provider acceptance.
 
 | Slice / surface | Missing real-path requirement |
 | --- | --- |
-| AV1 Web boundary | Enforce zero unauthorized TCP/DNS as well as HTTP/UDP; rerun the complete ordinary-profile matrix before declaring browser support |
+| AV1 Web boundary | Eliminate the exact browser IPv6 route socket or obtain an explicit owner decision on that precise exception; zero-network gate remains FAIL |
 | AV2 assets/admission | Kernel-authenticated descriptor, trusted key projection, release lease, inventory/chunk delivery, cancellation/revocation and cache rules |
 | AV3 backend/state | Generation-fenced operation/state port and receipts, declared actions, committed state and bounded streams; no live UI-adapter authority |
-| AV4 Web | Actual App-open routing into host alongside the real conversation, gestures/clipboard/files and reconnect/update behavior on the existing WSS connection |
-| AV5 ordinary TUI | Default-browser loopback host bound to 127.0.0.1, exact Host/Origin, cross-site/upgrade rejection, one-use fragment handoff, credential-free assets and guarded exact-process cleanup |
+| AV4 Web | Enforceable dedicated browser launch; actual App-open routing into host alongside the real conversation, gestures/clipboard/files and reconnect/update behavior on the existing WSS connection |
+| AV5 ordinary TUI | Dedicated restricted-browser loopback host bound to 127.0.0.1, exact Host/Origin, cross-site/upgrade rejection, one-use fragment handoff, credential-free assets and guarded exact-process cleanup |
 | AV5 managed/remote TUI | Same static host and verification, assets over its existing encrypted kernel connection, correctly scoped browser handoff and relay lifecycle; no second App HTTP service on the kernel |
 | AV6 | Kernel-authorized field handles and trusted model-observation masking; native accessibility/IME and real clipboard/file grant coverage |
 | AV7 / MP parity | Real Web/TUI/provider/hosted-WSS opens, realistic network and duration, mobile/default-browser matrix and eventual old-path deletion after acceptance |

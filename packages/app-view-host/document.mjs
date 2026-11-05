@@ -3,7 +3,7 @@ import { bootstrap, assemble } from './bootstrap.mjs';
 
 export const SANDBOX = 'allow-scripts';
 export const PERMISSIONS = "camera 'none'; microphone 'none'; geolocation 'none'; display-capture 'none'; payment 'none'; usb 'none'; serial 'none'; bluetooth 'none'; hid 'none'; fullscreen 'none'";
-const resources = "default-src 'none'; connect-src 'none'; frame-src 'none'; child-src 'none'; worker-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; media-src data: blob:";
+const resources = "default-src 'none'; connect-src 'none'; frame-src 'none'; child-src 'none'; worker-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; style-src data: blob:; img-src data: blob:; font-src data: blob:; media-src data: blob:";
 // Do not add a nonce or hash here: it would disable unsafe-inline and block the
 // child's independently hashed scripts under the inherited policy.
 export const HOST_CSP = resources + "; script-src 'unsafe-inline' 'wasm-unsafe-eval'";
@@ -26,6 +26,6 @@ export async function renderAppDocument(source) {
 export function renderHostDocument(runtimeScript) {
   if (/<\/script/i.test(runtimeScript)) throw new Error('Host runtime must escape HTML raw-text boundaries');
   return '<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="' + HOST_CSP
-    + '"><meta name="referrer" content="no-referrer"><meta http-equiv="x-dns-prefetch-control" content="off"><style>html,body,iframe{margin:0;border:0;width:100%;height:100%;overflow:hidden}iframe{display:block}</style></head><body><script>'
+    + '"><meta name="referrer" content="no-referrer"><meta http-equiv="x-dns-prefetch-control" content="off"><link rel="stylesheet" href="data:text/css,html%2Cbody%2Ciframe%7Bmargin%3A0%3Bborder%3A0%3Bwidth%3A100%25%3Bheight%3A100%25%3Boverflow%3Ahidden%7Diframe%7Bdisplay%3Ablock%7D"></head><body><script>'
     + runtimeScript + '</script></body></html>';
 }

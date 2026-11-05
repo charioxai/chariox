@@ -4,9 +4,9 @@
 
 The 2026-11-05 renderer candidate is shared client code in
 `packages/app-view-host`, pinned into Cloud's built web assets. Both reference
-frontends render at native DPR 1/2, but the ordinary-profile Chrome155 containment
-gate fails: blocked navigation and explicit preconnect still open TCP sockets,
-and explicit DNS-prefetch still issues queries. There is no accepted contained
+frontends render at native DPR 1/2. The unrestricted-profile Chrome155 baseline
+fails with frame-triggered TCP/DNS. The restricted launch/profile removes those
+failures; the whole-browser gate still fails on its internal IPv6 route socket. There is no accepted contained
 browser, App-open cutover, kernel/protocol change or managed activity lease.
 Real ordinary/managed Web/TUI/relay opens require AV2–AV5 and remain untested.
 
@@ -14,6 +14,10 @@ The signed-entry verifier, parent/source-bound host lifecycle, opaque iframe,
 pre-script bootstrap, inherited policy and Cloud's dedicated static response are
 the security anchors for this candidate. Their rule-removal controls and exact
 evidence/limitations are in [`APP_VIEW_HOST_AV1.md`](APP_VIEW_HOST_AV1.md).
+The restricted dedicated-browser launch/profile and data/blob stylesheet policy
+remove the measured frame-triggered TCP/DNS traffic. The unchanged whole-tree
+gate still fails on the Network Service IPv6 route socket; no narrower gate is
+accepted. Ordinary Web tabs cannot apply the required launch settings.
 Renderer/source checks do not close live MP parity or the AV1 network gate.
 
 ## MP-08 / MP-09 / MP-10 / MP-11 process disk telemetry (2026-11-02)
