@@ -32,7 +32,7 @@ test("MP-08 one native group per agent label; unchanged groups are not re-sent",
   await groups.load("/k/tab-groups-extension");
   assert.equal(await groups.sync([{ label: "Mara", target_ids: ["t2", "t1"] }]), true);
   assert.equal(await groups.sync([{ label: "Mara", target_ids: ["t1", "t2"] }]), false, "same groups, no evaluate");
-  const evaluated = sent.filter(call => call.method === "Runtime.evaluate"&&call.params.expression!=='chrome.runtime.reload()'&&call.params.expression!=='charioxTabs.revision === 7').map(call => call.params.expression);
+  const evaluated = sent.filter(call => call.method === "Runtime.evaluate"&&call.params.expression!=='chrome.runtime.reload()'&&call.params.expression!=='charioxTabs.revision === 8').map(call => call.params.expression);
   assert.equal(evaluated.length, 1);
   assert.match(evaluated[0], /^charioxTabs\.sync\(\[\{"target_ids":\["t1","t2"\],"title":"Mara","color":"[a-z]+"\}\]\)$/);
   await assert.rejects(new ChromeTabGroups({ send: async () => ({ id: "other" }) }).load("/k"), /unexpected kernel tab-groups extension id/);
@@ -46,7 +46,7 @@ test("MP-08/MP-11 a removed tab-groups extension is loaded again; until then it 
     if (method === "Target.getTargets") return { targetInfos: installed ? [{ type: "service_worker", targetId: "sw-"+worker, url: `chrome-extension://${TAB_GROUPS_EXTENSION_ID}/sw.js` }] : [] };
     if (method === "Target.attachToTarget") return { sessionId: "s" };
     if (method === "Extensions.uninstall") { uninstalls++; if (!installed) throw new Error("not installed"); installed = false; return {}; }
-    if (method === "Runtime.evaluate") {if(params.expression==='charioxTabs.revision === 7')return{result:{value:true}};if(params.expression==='chrome.runtime.reload()')worker++; if (!installed) throw new Error("No session with given id"); return { result: { value: "target-b" } }; }
+    if (method === "Runtime.evaluate") {if(params.expression==='charioxTabs.revision === 8')return{result:{value:true}};if(params.expression==='chrome.runtime.reload()')worker++; if (!installed) throw new Error("No session with given id"); return { result: { value: "target-b" } }; }
     return {};
   } };
   const groups = new ChromeTabGroups(connection);
@@ -159,7 +159,7 @@ test('loading the component replaces a cached older worker',async()=>{
   if(method==='Extensions.loadUnpacked'){if(!installed)current='new-target';installed=true;return{id:TAB_GROUPS_EXTENSION_ID}}
   if(method==='Target.getTargets')return{targetInfos:[{type:'service_worker',targetId:'worker-'+worker,url:`chrome-extension://${TAB_GROUPS_EXTENSION_ID}/sw.js`}]};
   if(method==='Target.attachToTarget')return{sessionId:'session'};
-  if(method==='Runtime.evaluate'){if(params.expression==='charioxTabs.revision === 7')return{result:{value:current==='new-target'}};if(params.expression==='chrome.runtime.reload()'){current='new-target';worker++}return{result:{value:current}};}return{};
+  if(method==='Runtime.evaluate'){if(params.expression==='charioxTabs.revision === 8')return{result:{value:current==='new-target'}};if(params.expression==='chrome.runtime.reload()'){current='new-target';worker++}return{result:{value:current}};}return{};
  }};
  const groups=new ChromeTabGroups(connection);await groups.load('/owned/component');assert.equal(await groups.active(),'new-target');
 });
@@ -233,7 +233,7 @@ const activation = async ({ tabs, shown, windows }) => {
     },
   };
   const worker = {};
-  chrome.debugger = { getTargets: async () => [{ id: 'keepalive', tabId: 99 }] };
+  chrome.debugger = { getTargets: async () => [{ id: 'keepalive', tabId: 99 }, ...[...tabs.keys()].map(id => ({ id: `target-${id}`, tabId: id }))] };
   new Function('chrome', 'setInterval', 'setTimeout', 'globalThis', source)(chrome, () => {}, queueMicrotask, worker);
   await worker.charioxTabs.keepalive('keepalive');
   await new Promise(resolve => setTimeout(resolve, 5));
@@ -316,4 +316,34 @@ test('explicit person input can select an inactive new popup before its first ac
   listeners.activated({ tabId: 9, windowId: 10 });
   await new Promise(resolve => setTimeout(resolve, 10));
   assert.deepEqual(calls, [], 'the initial explicit choice of the popup is preserved');
+});
+
+for (const active of [false, true]) test(`BTAB-01 an agent opening from the shown tab stays behind it (created active=${active})`, async () => {
+  const tabs = new Map([[1, { id: 1, windowId: 10 }], [9, { id: 9, windowId: 10, active, openerTabId: 1 }]]);
+  const { listeners, calls, worker } = await activation({ tabs, shown: [[10, 1]], windows: [{ id: 10, type: 'normal' }] });
+  await worker.charioxTabs.openingInput?.('target-1', true);
+  listeners.created(tabs.get(9));
+  if (!active) listeners.activated({ tabId: 9, windowId: 10 });
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.deepEqual(calls, [['update', 1, { active: true }]], 'watching the agent does not authorize its popup to take the view');
+  calls.length = 0;
+  await worker.charioxTabs.personSelection();
+  listeners.activated({ tabId: 9, windowId: 10 });
+  assert.deepEqual(calls, [], 'the person can select the new tab immediately');
+});
+
+test('BTAB-01 an agent popup from the shown tab folds behind it; a later person click still opens in front', async () => {
+  const tabs = new Map([[1, { id: 1, windowId: 10 }], [9, { id: 9, windowId: 11, active: true, openerTabId: 1 }], [8, { id: 8, windowId: 12, active: true, openerTabId: 1 }]]);
+  const { listeners, calls, worker } = await activation({ tabs, shown: [[10, 1]], windows: [{ id: 10, type: 'normal' }, { id: 11, type: 'popup' }, { id: 12, type: 'popup' }] });
+  await worker.charioxTabs.openingInput?.('target-1', true);
+  listeners.created(tabs.get(9));
+  // Chrome may activate the popup before its asynchronous fold finishes.
+  listeners.activated({ tabId: 9, windowId: 11 });
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.deepEqual(calls, [['move', 9, { windowId: 10, index: -1 }], ['update', 1, { active: true }]]);
+  calls.length = 0;
+  await worker.charioxTabs.openingInput?.('target-1', false);
+  listeners.created(tabs.get(8));
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.deepEqual(calls, [['move', 8, { windowId: 10, index: -1 }], ['update', 8, { active: true }], ['focus', 10, { focused: true }]]);
 });

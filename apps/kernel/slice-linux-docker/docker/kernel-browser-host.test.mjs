@@ -3050,6 +3050,14 @@ test('MP-08/MP-11 a same-size window resize retires an in-flight native fit', {t
 }));
 
 // Miguel 11-04: parallel agents never change the Tab the person sees, run their Tabs at full speed, and wait for the person's input.
+for (const agent of [false, true]) test(`BTAB-01 popup opening actor is announced before page input (agent=${agent})`, () => using(async ({host, connection}) => {
+  const opened = await host.request({op:'open', url:'https://example.com/'}), tab = host.tabs.get(opened.tab_id), evidence = [];
+  host.tabGroups = { openingInput: async (target, actor) => { evidence.push([target, actor]); }, close() {} };
+  connection.beforeSend = async method => { if (method.startsWith('Input.')) assert.deepEqual(evidence, [[tab.target_id, agent]], 'the extension must know the actor before Chrome can create a popup'); };
+  await host.request({op:'input', tab_id:tab.tab_id, generation:opened.generation, document_id:tab.document_id, _agent_input:agent, input:{kind:'click',x:20,y:20}});
+  assert.deepEqual(evidence, [[tab.target_id, agent]]);
+}));
+
 test('an agent opens its Tab behind the shown one; the person opens theirs in front', () => using(async ({ host, sent }) => {
   await host.request({ op: 'open', url: 'https://example.com/person' });
   await host.request({ op: 'open', url: 'https://example.com/agent', focused_agent: true });

@@ -1270,7 +1270,10 @@ export class KernelBrowserHost {
         const laneAt=timestamp();
         const deferred=await this.sampleLane(tab).run("input", async () => {
           if(timestamp()-laneAt>250)this.timing('input_wait sample_lane',laneAt);
-          const dispatch = (inputTimestamp, inputToken) => this.popupEvidence.capture(this.browser, tab, popupActionId(command), beginDispatch => inputHostTab(this.browser, tab, command.input, { uploadRoots: command._upload_roots, signal, inputTimestamp, inputToken, inputGuard, documentCurrent, chromeFocused: () => Boolean(this.arbiter?.chromeFocus), slow: (name, operation) => slowMark(this.timing, `input_wait ${name}`, operation), onDispatch: () => { onDispatch(); return beginDispatch(); }, viewport:{css_width:this.pageSize(tab.tab_id).width,css_height:this.pageSize(tab.tab_id).height}, asyncScroll: ()=>viewerActive()&&(handoverOrdered||owned?.attested&&typeof owned.valid==='function'&&owned.valid()), nativeWheel, nativeClick, nativeKey, resolveMirror: input => this.mirror.resolveInput(tab,input,scope,signal) }));
+          const dispatch = async (inputTimestamp, inputToken) => {
+            if (command.input.kind !== "scroll") await this.tabGroups?.openingInput?.(tab.target_id, Boolean(agentRequest));
+            return this.popupEvidence.capture(this.browser, tab, popupActionId(command), beginDispatch => inputHostTab(this.browser, tab, command.input, { uploadRoots: command._upload_roots, signal, inputTimestamp, inputToken, inputGuard, documentCurrent, chromeFocused: () => Boolean(this.arbiter?.chromeFocus), slow: (name, operation) => slowMark(this.timing, `input_wait ${name}`, operation), onDispatch: () => { onDispatch(); return beginDispatch(); }, viewport:{css_width:this.pageSize(tab.tab_id).width,css_height:this.pageSize(tab.tab_id).height}, asyncScroll: ()=>viewerActive()&&(handoverOrdered||owned?.attested&&typeof owned.valid==='function'&&owned.valid()), nativeWheel, nativeClick, nativeKey, resolveMirror: input => this.mirror.resolveInput(tab,input,scope,signal) }));
+          };
           const result = app && agentRequest
             ? await this.browser.appTabs.input(app, scope.startsWith('agent:') ? scope.slice(6) : null, dispatch)
             : await dispatch();
