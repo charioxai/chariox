@@ -923,9 +923,10 @@ async fn silent_relay_socket_is_dropped_and_reconnected_after_read_deadline() {
                 _ = &mut stopped => break,
                 incoming = listener.accept() => {
                     let (stream, _) = incoming.unwrap();
-                    let Ok(socket) = tokio_tungstenite::accept_async(stream).await else { continue; };
-                    if accepted.send(()).await.is_err() { break; }
+                    let accepted = accepted.clone();
                     readers.spawn(async move {
+                        let Ok(socket) = tokio_tungstenite::accept_async(stream).await else { return; };
+                        if accepted.send(()).await.is_err() { return; }
                         let (_, mut read) = socket.split();
                         while read.next().await.is_some() {}
                     });
