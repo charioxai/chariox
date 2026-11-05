@@ -228,3 +228,129 @@ async fn silent_relay_socket_is_replaced_without_a_kernel_restart() {
         "a silent relay socket was never replaced"
     );
 }
+
+#[tokio::test]
+async fn token_refused_by_one_relay_is_tried_at_the_corrected_relay() {
+    // MP-08 / MP-09 / MP-10 / MP-11: a refusal belongs to the relay that gave
+    // it; pointing the kernel at another relay must try that relay at once.
+    let config = crate::config::DaemonConfig::for_tests();
+    let token = "private-relay-token";
+    let now = crate::session::unix_epoch_ms();
+    let claims = RelayTokenClaims {
+        issuer: "refused-scope-test".into(),
+        subject: config.daemon_id.clone(),
+        subject_kind: RelaySubjectKind::Kernel,
+        realm_id: "default".into(),
+        allowed_actions: vec![RelayAction::DaemonRegister, RelayAction::DaemonHeartbeat],
+        allowed_targets: Some(vec![config.daemon_id.clone()]),
+        issued_at_ms: now,
+        expires_at_ms: now + 600_000,
+        token_id: token.into(),
+        account_id: None,
+        organization_id: None,
+        user_id: None,
+        device_id: None,
+        machine_id: Some(config.host_machine_id.clone()),
+        client_id: None,
+        session_id: None,
+        public_key_thumbprint: None,
+        entitlements_version: None,
+    };
+    let start_relay = |verifier: RelayAuthVerifier| async move {
+        let server = chariox_relay::server::RelayServer::with_auth_verifier(
+            chariox_relay::config::RelayConfig {
+                host: "127.0.0.1".into(),
+                port: 0,
+                shared_token: None,
+            },
+            verifier,
+        );
+        let listener = server.bind_listener().await.unwrap();
+        let url = format!("ws://{}", listener.local_addr().unwrap());
+        let registry = server.registry();
+        let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+        let task = tokio::spawn(async move {
+            server
+                .run_listener_until(listener, async {
+                    let _ = stopped.await;
+                })
+                .await
+                .unwrap();
+        });
+        (url, registry, stop, task)
+    };
+    // The first relay verifies HMAC tokens, so it answers this token with
+    // "invalid relay token"; the second relay knows the token.
+    let (refusing_url, refusing_registry, stop_refusing, refusing_task) =
+        start_relay(RelayAuthVerifier::scoped_hmac(
+            BTreeMap::from([(
+                "refused-scope-test".into(),
+                "refused-scope-secret-0123456789abcdef".to_string(),
+            )]),
+            None,
+        ))
+        .await;
+    let (accepting_url, accepting_registry, stop_accepting, accepting_task) = start_relay(
+        RelayAuthVerifier::ScopedToken(chariox_relay::auth::ScopedTokenVerifier::new(
+            BTreeMap::from([(token.to_string(), claims)]),
+            BTreeMap::new(),
+            None,
+        )),
+    )
+    .await;
+
+    let mut config = config;
+    config.relay_url = Some(refusing_url.clone());
+    config.relay_token = Some(token.into());
+    let app = DaemonApp::bootstrap(config.clone()).unwrap();
+    let router = Arc::new(CommandRouter::with_interactive_capacity_from_app(
+        Arc::new(Mutex::new(app)),
+        INTERACTIVE_COMMAND_QUEUE_LIMIT,
+    ));
+    let (stop_tx, stop_rx) = watch::channel(false);
+    let connector = tokio::spawn(run_daemon_relay_connector_with_router(
+        Arc::clone(&router),
+        Arc::new(RwLock::new(RelayClientState::default())),
+        stop_rx,
+    ));
+    // The first relay refuses the token; give the connector time to record it.
+    sleep(Duration::from_secs(2)).await;
+    assert!(
+        refusing_registry
+            .read()
+            .await
+            .daemon(&config.daemon_id)
+            .is_none(),
+        "the refusing relay must not register the kernel"
+    );
+
+    router
+        .runtime_state()
+        .configure_relay(Some(accepting_url), Some(token.into()), false)
+        .await
+        .unwrap();
+    let mut registered = false;
+    for _ in 0..1_200 {
+        if accepting_registry
+            .read()
+            .await
+            .daemon(&config.daemon_id)
+            .is_some()
+        {
+            registered = true;
+            break;
+        }
+        sleep(Duration::from_millis(25)).await;
+    }
+
+    stop_tx.send(true).unwrap();
+    let _ = timeout(Duration::from_secs(5), connector).await;
+    let _ = stop_refusing.send(());
+    let _ = stop_accepting.send(());
+    let _ = refusing_task.await;
+    let _ = accepting_task.await;
+    assert!(
+        registered,
+        "the kernel never tried the corrected relay with the token the first relay refused"
+    );
+}

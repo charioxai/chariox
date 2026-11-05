@@ -249,6 +249,27 @@ fn relay_refused_token(message: &str) -> bool {
                 || message.contains("does not match")))
 }
 
+/// The token and the relay that refused it. The refusal ends when either the
+/// token or the relay changes: a private relay corrected to another URL must
+/// be tried with the same token.
+struct RefusedCredentials {
+    relay_url: String,
+    token: String,
+}
+
+impl RefusedCredentials {
+    fn new(relay_url: &str, token: &str) -> Self {
+        Self {
+            relay_url: relay_url.into(),
+            token: token.into(),
+        }
+    }
+
+    fn matches(&self, relay_url: &str, token: &str) -> bool {
+        self.relay_url == relay_url && self.token == token
+    }
+}
+
 /// Drops of links that had just come up. Only a link that stayed up for
 /// `STABLE_RELAY_CONNECTION` starts the backoff over.
 #[derive(Default)]
@@ -607,7 +628,7 @@ async fn run_daemon_relay_connector_inner(
     let mut missing_relay_config_reported = false;
     let mut reconnect_attempt = 0_u32;
     let mut token_refresh_failures = 0_u32;
-    let mut refused_token: Option<String> = None;
+    let mut refused: Option<RefusedCredentials> = None;
     let mut refused_failures = 0_u32;
     let mut refresh_error: Option<String> = None;
     let mut drop_backoff = DropBackoff::default();
@@ -623,7 +644,9 @@ async fn run_daemon_relay_connector_inner(
             if should_refresh_cloud_relay(&config) {
                 let cloud_refresh_started = Instant::now();
                 match bounded_cloud_relay_refresh(
-                    router.ensure_cloud_relay_connection_replacing(refused_token.as_deref()),
+                    router.ensure_cloud_relay_connection_replacing(
+                        refused.as_ref().map(|refused| refused.token.as_str()),
+                    ),
                     CLOUD_RELAY_TOKEN_REFRESH_TIMEOUT,
                 )
                 .await
@@ -776,7 +799,10 @@ async fn run_daemon_relay_connector_inner(
         };
         missing_relay_config_reported = false;
 
-        if refused_token.as_deref() == Some(active_relay_token.as_str()) {
+        if refused
+            .as_ref()
+            .is_some_and(|refused| refused.matches(&relay_url, &active_relay_token))
+        {
             let daemon_id = router.relay_daemon_id();
             let delay =
                 token_renewal_retry_delay(&daemon_id, refused_failures, refresh_error.as_deref());
@@ -796,7 +822,7 @@ async fn run_daemon_relay_connector_inner(
             }
             continue;
         }
-        refused_token = None;
+        refused = None;
         refused_failures = 0;
 
         crate::logging::info_with_fields(
@@ -1039,7 +1065,10 @@ async fn run_daemon_relay_connector_inner(
                                         let disconnect_reason =
                                             format!("relay payload handling failed: {error}");
                                         if relay_refused_token(&disconnect_reason) {
-                                            refused_token = Some(active_relay_token.clone());
+                                            refused = Some(RefusedCredentials::new(
+                                                &relay_url,
+                                                &active_relay_token,
+                                            ));
                                         }
                                         abort_leased_projection_pump_task(
                                             &mut leased_projection_pump_task,
@@ -1059,7 +1088,10 @@ async fn run_daemon_relay_connector_inner(
                                 }
                                 Some(Ok(Message::Close(frame))) => {
                                     if frame.as_ref().is_some_and(|frame| relay_refused_token(&frame.reason)) {
-                                        refused_token = Some(active_relay_token.clone());
+                                        refused = Some(RefusedCredentials::new(
+                                            &relay_url,
+                                            &active_relay_token,
+                                        ));
                                     }
                                     abort_leased_projection_pump_task(
                                         &mut leased_projection_pump_task,
