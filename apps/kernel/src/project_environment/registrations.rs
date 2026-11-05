@@ -135,7 +135,9 @@ fn variable_name(name: &str) -> String {
 fn key_variable(name: &str) -> String {
     const BASE_BYTES: usize = 100;
     let mut variable = variable_name(name);
-    if variable.as_bytes().first().is_some_and(u8::is_ascii_digit) {
+    if variable.as_bytes().first().is_some_and(u8::is_ascii_digit)
+        || super::record::project_environment_protected_name(&variable)
+    {
         variable.insert(0, '_');
     }
     if variable.len() > BASE_BYTES {
@@ -294,7 +296,12 @@ mod tests {
     }
     #[test]
     fn generated_http_key_names_fit_the_project_secret_contract() {
-        for name in ["9-api".to_string(), "a".repeat(128)] {
+        for name in [
+            "9-api".to_string(),
+            "a".repeat(128),
+            "chariox-tools".to_string(),
+            "dyld-service".to_string(),
+        ] {
             let mut config =
                 CharioxMcpServerConfig::streamable_http(name, "https://example.invalid/mcp");
             if let CharioxMcpTransportConfig::StreamableHttp {
@@ -321,7 +328,8 @@ mod tests {
             assert_eq!(names.len(), 4, "each credential keeps its own binding");
             for variable in &names {
                 assert!(
-                    super::super::record::environment_variable_name(variable),
+                    super::super::record::environment_variable_name(variable)
+                        && !super::super::record::project_environment_protected_name(variable),
                     "generated Secret name is invalid: {variable}"
                 );
             }
