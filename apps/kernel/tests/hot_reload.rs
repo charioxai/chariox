@@ -959,10 +959,21 @@ fn memory_domain(pid: i32) -> Option<String> {
 }
 
 #[cfg(target_os = "linux")]
-fn is_process_domain(path: &str) -> bool {
-    path.rsplit('/')
-        .next()
-        .is_some_and(|leaf| leaf.starts_with("process-"))
+fn is_process_domain(path: &str, kernel_pid: u32) -> bool {
+    // A lane may inherit its executor's process-* domain without delegation.
+    // Only domains created by this test kernel establish a takeover obligation.
+    let path = Path::new(path);
+    path.file_name()
+        .is_some_and(|leaf| leaf.to_string_lossy().starts_with("process-"))
+        && path
+            .parent()
+            .and_then(Path::parent)
+            .and_then(Path::file_name)
+            .is_some_and(|budget| {
+                budget
+                    .to_string_lossy()
+                    .starts_with(&format!("chariox-{kernel_pid}-"))
+            })
 }
 
 #[cfg(target_os = "linux")]
@@ -1027,9 +1038,9 @@ fn a_hot_reload_keeps_a_job_an_exited_terminal_left_running_and_it_stays_control
         // Where the kernel can create memory domains, the new program holds
         // the job in a domain of its own budget.
         let moved = memory_domain(pid);
-        if domain.as_deref().is_some_and(is_process_domain) {
+        if domain.as_deref().is_some_and(|path| is_process_domain(path, kernel.child.id())) {
             assert!(
-                moved.as_deref().is_some_and(is_process_domain) && moved != domain,
+                moved.as_deref().is_some_and(|path| is_process_domain(path, kernel.child.id())) && moved != domain,
                 "the job was not moved into the new program's memory domain: {domain:?} -> {moved:?}"
             );
         }
@@ -1093,7 +1104,10 @@ fn a_hot_reload_keeps_the_child_a_released_job_forked_just_before_it_ended() {
         // delegation) only sampled processes are known, so a child forked
         // between two samples cannot be recovered. The job has not forked
         // yet: stop it and leave nothing behind.
-        if !memory_domain(pid).as_deref().is_some_and(is_process_domain) {
+        if !memory_domain(pid)
+            .as_deref()
+            .is_some_and(|path| is_process_domain(path, kernel.child.id()))
+        {
             eprintln!("skipped: the job has no kernel-created process cgroup on this host");
             let stopped = request(
                 &mut socket,
@@ -1370,10 +1384,7 @@ fn an_adopted_terminal_keeps_its_memory_domain() {
         domain
     });
     // Only where the kernel can create memory domains (cgroup v2 delegation).
-    if !domain
-        .file_name()
-        .is_some_and(|name| name.to_string_lossy().starts_with("process-"))
-    {
+    if !is_process_domain(&domain.to_string_lossy(), kernel.child.id()) {
         return;
     }
     // The new program owns the domain again: it ends with the process.

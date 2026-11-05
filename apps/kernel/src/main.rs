@@ -162,6 +162,8 @@ async fn async_main(
             }),
         );
     }
+    #[cfg(unix)]
+    chariox_kernel::hot_reload::adopt_received_processes();
     chariox_kernel::managed_context::kernel::scavenge_source_snapshots();
     chariox_kernel::logging::info_with_fields(
         "daemon.startup",

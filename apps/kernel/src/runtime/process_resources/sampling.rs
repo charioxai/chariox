@@ -338,9 +338,7 @@ impl ProcessTree {
             }
         }
         #[cfg(target_os = "linux")]
-        if self.owned.is_empty() {
-            self.empty_since.get_or_insert_with(std::time::Instant::now);
-        } else {
+        if !self.owned.is_empty() {
             self.empty_since = None;
         }
         Ok(())
@@ -394,19 +392,26 @@ impl ProcessTree {
         }
     }
 
-    /// Whether the workload left nothing running. A shared sample may predate
-    /// a job that detached as the root ended, so a marked workload reads a
-    /// fresh one, and only a lasting emptiness counts.
+    /// Only successful process observations separated by the grace interval
+    /// establish emptiness. Re-reading a retained table cannot end a watch.
     #[cfg(target_os = "linux")]
     pub fn left_nothing_running(&mut self) -> bool {
         if self.marker.is_none() {
             return true;
         }
-        if !process_rows().is_ok_and(|rows| self.observe(&rows).is_ok()) {
+        let snapshot = match process_observation() {
+            Ok(snapshot) => snapshot,
+            Err(_) => {
+                self.empty_since = None;
+                return false;
+            }
+        };
+        if self.observe(&snapshot.rows).is_err() || !self.owned.is_empty() {
+            self.empty_since = None;
             return false;
         }
-        self.empty_since
-            .is_some_and(|since| since.elapsed() >= NOTHING_LEFT_GRACE)
+        let since = self.empty_since.get_or_insert(snapshot.started_at);
+        snapshot.started_at.saturating_duration_since(*since) >= NOTHING_LEFT_GRACE
     }
 
     pub fn stop(
@@ -795,8 +800,15 @@ fn shortage(error: &std::io::Error) -> Option<i32> {
 
 // The sampler owns ps and publishes a new immutable table. Readers never wait
 // for process creation, pipe I/O or a previous reader's refresh.
+#[derive(Clone)]
+struct RowObservation {
+    rows: std::sync::Arc<Vec<Row>>,
+    #[cfg(target_os = "linux")]
+    started_at: std::time::Instant,
+}
+
 struct RowSnapshot {
-    rows: Option<std::sync::Arc<Vec<Row>>>,
+    rows: Option<RowObservation>,
     error: Option<SamplingError>,
 }
 
@@ -820,11 +832,19 @@ impl Sampler {
         let worker = std::thread::Builder::new().name("chariox-sampler".into()).spawn(move || {
             let mut failed = false;
             loop {
+                // Start time prevents a slow pre-fork read from looking fresh
+                // when it finally publishes after the parent has exited.
+                #[cfg(target_os = "linux")]
+                let started_at = std::time::Instant::now();
                 let result = read();
                 let mut state = published.lock().unwrap_or_else(|e| e.into_inner());
                 match result {
                     Ok(rows) => {
-                        state.rows = Some(std::sync::Arc::new(rows));
+                        state.rows = Some(RowObservation {
+                            rows: std::sync::Arc::new(rows),
+                            #[cfg(target_os = "linux")]
+                            started_at,
+                        });
                         state.error = None;
                         failed = false;
                     }
@@ -852,12 +872,25 @@ impl Sampler {
 
     fn rows(&self) -> Result<std::sync::Arc<Vec<Row>>, SamplingError> {
         let state = self.snapshot.lock().unwrap_or_else(|e| e.into_inner());
-        state.rows.clone().ok_or_else(|| {
-            state
-                .error
-                .clone()
-                .unwrap_or(SamplingError::Short(libc::EAGAIN))
-        })
+        state
+            .rows
+            .as_ref()
+            .map(|snapshot| snapshot.rows.clone())
+            .ok_or_else(|| {
+                state
+                    .error
+                    .clone()
+                    .unwrap_or(SamplingError::Short(libc::EAGAIN))
+            })
+    }
+
+    #[cfg(target_os = "linux")]
+    fn successful_observation(&self) -> Result<RowObservation, SamplingError> {
+        let state = self.snapshot.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(error) = &state.error {
+            return Err(error.clone());
+        }
+        state.rows.clone().ok_or(SamplingError::Short(libc::EAGAIN))
     }
 }
 
@@ -875,46 +908,66 @@ fn sampler() -> &'static Sampler {
     SAMPLER.get_or_init(|| Sampler::new(read_process_rows))
 }
 
+#[cfg(test)]
+thread_local! {
+    static TEST_SAMPLER: std::cell::RefCell<Option<Sampler>> = const { std::cell::RefCell::new(None) };
+}
+
 pub(super) fn process_rows() -> Result<std::sync::Arc<Vec<Row>>, SamplingError> {
     #[cfg(test)]
     if let Some(errno) = ps_failure::injected() {
         return Err(SamplingError::Short(errno));
     }
+    #[cfg(test)]
+    if let Some(rows) = TEST_SAMPLER.with(|sampler| sampler.borrow().as_ref().map(Sampler::rows)) {
+        return rows;
+    }
     sampler().rows()
 }
 
-/// The process groups of what `root` started and still runs, read now rather
-/// than from the sampler's last table.
-pub(super) fn live_groups(root: u32) -> Vec<u32> {
-    let rows = match process_rows() {
-        Ok(rows) => rows,
-        Err(error) => {
-            crate::logging::error_with_fields(
-                "process_resources.monitor",
-                "the processes of a terminal could not be read when its submitter changed",
-                serde_json::json!({"pid": root, "error": error.to_string()}),
-            );
-            return Vec::new();
+#[cfg(target_os = "linux")]
+fn process_observation() -> Result<RowObservation, SamplingError> {
+    #[cfg(test)]
+    {
+        if let Some(errno) = ps_failure::injected() {
+            return Err(SamplingError::Short(errno));
         }
-    };
-    let mut below = std::collections::BTreeSet::from([root]);
-    let mut grown = true;
-    while grown {
-        grown = false;
-        for row in rows.iter() {
-            grown |= below.contains(&row.parent) && below.insert(row.pid);
+        if let Some(observation) = TEST_SAMPLER.with(|sampler| {
+            sampler
+                .borrow()
+                .as_ref()
+                .map(Sampler::successful_observation)
+        }) {
+            return observation;
         }
     }
-    let own = super::process_group(root);
-    let mut groups = below
-        .into_iter()
-        .filter(|pid| *pid != root)
-        .filter_map(super::process_group)
-        .filter(|group| Some(*group) != own)
-        .collect::<Vec<_>>();
-    groups.sort_unstable();
-    groups.dedup();
-    groups
+    sampler().successful_observation()
+}
+
+/// Submitter changes need current ancestry without waiting for a ps child.
+pub(super) fn live_groups(root: u32) -> Vec<u32> {
+    super::terminal_groups::read(root).unwrap_or_else(|error| {
+        crate::logging::error_with_fields(
+            "process_resources.monitor",
+            "the processes of a terminal could not be read when its submitter changed",
+            serde_json::json!({"pid": root, "error": error.to_string()}),
+        );
+        Vec::new()
+    })
+}
+
+/// Startup may wait once for the sampler, outside every registry/owner lock.
+/// Ordinary launches and readers always keep their nonblocking snapshot path.
+pub(super) fn warm_up() -> Result<(), SamplingError> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        match sampler().rows() {
+            Ok(_) => return Ok(()),
+            Err(SamplingError::Short(libc::EAGAIN)) if std::time::Instant::now() < deadline => {}
+            Err(error) => return Err(error),
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
 }
 
 pub(super) fn ensure_available() -> std::io::Result<()> {
@@ -1075,6 +1128,99 @@ mod marker_cache_tests {
 mod snapshot_stall_tests {
     use super::*;
     use std::time::{Duration, Instant};
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn stale_pre_fork_snapshot_cannot_retire_a_detached_workload() {
+        use crate::runtime::bounded_process::BoundedChildExt as _;
+        use std::io::BufRead;
+        use std::process::Stdio;
+        let root = crate::test_support::TestWorktree::new("stale-detached-watch");
+        let go = root.path().join("go");
+        let marker = new_marker();
+        let script = "import os,sys,time,subprocess; print('ready',flush=True)\nwhile not os.path.exists(sys.argv[1]): time.sleep(.01)\nchild=subprocess.Popen(['/bin/sleep','120'],start_new_session=True); print(child.pid,flush=True)";
+        let mut parent = crate::process_spawn::command("python3")
+            .args(["-c", script])
+            .arg(&go)
+            .env(MARKER_NAME, &marker)
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut output = std::io::BufReader::new(parent.stdout.take().unwrap());
+        let mut line = String::new();
+        output.read_line(&mut line).unwrap();
+        assert_eq!(line.trim(), "ready");
+        let mut tree = ProcessTree::new(parent.id());
+        tree.set_marker(&marker);
+        let mut first = Some(read_process_rows().unwrap());
+        let (release, resumed) = std::sync::mpsc::channel::<()>();
+        let sampler = Sampler::new(move || {
+            if let Some(rows) = first.take() {
+                return Ok(rows);
+            }
+            let _ = resumed.recv_timeout(Duration::from_secs(5));
+            Err(SamplingError::Ended)
+        });
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while sampler.rows().is_err() {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        TEST_SAMPLER.with(|slot| *slot.borrow_mut() = Some(sampler));
+        std::fs::write(go, "go").unwrap();
+        line.clear();
+        output.read_line(&mut line).unwrap();
+        let child: u32 = line.trim().parse().unwrap();
+        let identity = inspect(child).unwrap().0;
+        parent.bounded_wait().unwrap();
+        let until = Instant::now() + Duration::from_secs(3);
+        let mut retired = false;
+        while Instant::now() < until {
+            tree.sample().unwrap();
+            retired |= tree.left_nothing_running();
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        drop(release);
+        // Once refresh recovers, this same watch must discover the detached
+        // child, then retire only after fresh observations of its real exit.
+        TEST_SAMPLER.with(|slot| *slot.borrow_mut() = Some(Sampler::new(read_process_rows)));
+        let until = Instant::now() + Duration::from_secs(5);
+        let mut adopted = false;
+        while Instant::now() < until {
+            if tree.sample().is_ok() && tree.owned.contains_key(&child) {
+                adopted = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let alive = same_process(child, &identity);
+        if child > 1 && child <= i32::MAX as u32 && alive {
+            unsafe {
+                libc::kill(child as i32, libc::SIGKILL);
+            }
+        }
+        let until = Instant::now() + Duration::from_secs(5);
+        let mut ended_after_exit = false;
+        while Instant::now() < until {
+            let _ = tree.sample();
+            if tree.left_nothing_running() {
+                ended_after_exit = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        TEST_SAMPLER.with(|slot| slot.borrow_mut().take());
+        assert!(alive, "the detached marked workload must still be running");
+        assert!(
+            !retired,
+            "stale observations retired a live detached workload"
+        );
+        assert!(adopted, "successful refresh must recover ownership");
+        assert!(
+            ended_after_exit,
+            "fresh empty observations must retire the watch"
+        );
+    }
 
     #[test]
     fn stalled_ps_keeps_last_snapshot_readable_and_is_reaped() {

@@ -34,7 +34,15 @@ provider launches on a global environment mutex.
 
 One sampler thread owns bounded `ps` execution and publishes immutable snapshots.
 Readers clone an Arc and never start or wait for `ps`; a failed refresh preserves
-the last good snapshot and logs the failure once until recovery.
+the last good snapshot and logs the failure once until recovery. MP-08 / MP-09 /
+MP-10 / MP-11: workload completion uses successful observation start times, so
+repeated stale rows cannot establish emptiness across the retirement grace.
+Terminal submitter changes read native process ancestry without spawning `ps`.
+Hot-reload bootstrap consumes environment and descriptors before workers start,
+then activates inherited watches inside the runtime. Handover alone may wait up
+to two seconds for the sampler outside all owner/registry locks. Restored watches
+publish initial process rows before the first client; ordinary launches keep the
+nonblocking path.
 
 Provider launch preparation and adapter connect execute outside STORE. The store
 reserves the run identity and snapshots the registry, then publishes the completed
@@ -233,7 +241,10 @@ compiled only with `cfg(test)`; its remaining call sites are also test-only.
 Subprocess output and synchronous child reaps use `runtime::bounded_process`.
 General command output has a 60-second deadline and 64-MiB combined output budget;
 authentication probes retain their stricter one-MiB budget and specific deadline.
-Sampler output has a one-second deadline. Shutdown uses TERM, 250-ms grace, KILL,
+MP-08 / MP-09 / MP-10 / MP-11: direct saved-image capture has a ten-minute bulk
+operation deadline; its capture owner settles the Node flatten helper and the
+inherited Docker export/import pipe writers on cancellation. Sampler output has
+a one-second deadline. Shutdown uses TERM, 250-ms grace, KILL,
 and a one-second reap deadline. All shutdown errors are logged; account owners
 retain unreaped children and continue polling without blocking request threads.
 Deliberately long-lived managed-kernel/async process owners poll through the same

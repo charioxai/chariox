@@ -125,6 +125,10 @@ struct Start {
 }
 
 static START: OnceLock<Start> = OnceLock::new();
+static RECEIVED_ADMISSION: Mutex<Vec<crate::runtime::process_resources::HeldCommand>> =
+    Mutex::new(Vec::new());
+static RECEIVED_JOBS: Mutex<Vec<crate::runtime::process_resources::ReleasedJobs>> =
+    Mutex::new(Vec::new());
 static RECEIVED_TERMINALS: Mutex<Vec<TerminalHandover>> = Mutex::new(Vec::new());
 static RECEIVED_PROVIDERS: Mutex<Vec<ProviderHandover>> = Mutex::new(Vec::new());
 static RECEIVED_ATTACHMENTS: Mutex<Vec<AttachmentHandover>> = Mutex::new(Vec::new());
@@ -201,9 +205,10 @@ pub fn receive() {
         set_close_on_exec(*fd, true);
     }
     *lock(&INHERITED_LISTENERS) = std::mem::take(&mut handover.listeners);
-    // Before any process is watched again, so its first sample finds them.
-    crate::runtime::process_resources::adopt_admission(std::mem::take(&mut handover.admission));
-    crate::runtime::process_resources::adopt_released(std::mem::take(&mut handover.released_jobs));
+    // Reading bootstrap environment must not start sampler/watchdog workers.
+    // Activate these only after startup finishes consuming the environment.
+    *lock(&RECEIVED_ADMISSION) = std::mem::take(&mut handover.admission);
+    *lock(&RECEIVED_JOBS) = std::mem::take(&mut handover.released_jobs);
     crate::logging::info_with_fields(
         "hot_reload.receive",
         "kernel program replaced in place",
@@ -217,6 +222,15 @@ pub fn receive() {
     *lock(&RECEIVED_PROVIDERS) = handover.providers;
     *lock(&RECEIVED_ATTACHMENTS) = handover.attachments;
     *lock(&RECEIVED_USER_DOMAIN) = Some(handover.user_domain);
+}
+
+/// Start inherited watches after environment bootstrap, inside the runtime.
+pub fn adopt_received_processes() {
+    let held = std::mem::take(&mut *lock(&RECEIVED_ADMISSION));
+    let jobs = std::mem::take(&mut *lock(&RECEIVED_JOBS));
+    // Admission must precede the first watch sample.
+    crate::runtime::process_resources::adopt_admission(held);
+    crate::runtime::process_resources::adopt_released(jobs);
 }
 
 pub(crate) fn take_terminals() -> Vec<TerminalHandover> {
