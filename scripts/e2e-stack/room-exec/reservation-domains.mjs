@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict'
 import {spawn, execFileSync} from 'node:child_process'
 import {createHash} from 'node:crypto'
-import {mkdir, readdir, rmdir, rm, stat, statfs, writeFile} from 'node:fs/promises'
+import {mkdir, readFile, readdir, rmdir, rm, stat, statfs, writeFile} from 'node:fs/promises'
 import path from 'node:path'
 import {Fixture, until} from './fixture.mjs'
 
@@ -10,6 +10,8 @@ const args = process.argv.slice(2)
 const value = flag => {const at = args.indexOf(flag); assert.ok(at >= 0 && args[at + 1], `missing ${flag}`); return path.resolve(args[at + 1])}
 const home = value('--home'), evidence = value('--evidence'), mib = 1048576, gib = 1024 * mib
 const disk = args.includes('--disk'), cgroup = `/sys/fs/cgroup/chariox-p1runon-domains-${process.pid}`
+const liveness = args.includes('--liveness')
+assert.ok(!disk || !liveness, '--liveness is a memory drill')
 const image = `${home}-volume.img`, mountpoint = path.join(home, 'A/work')
 const key = (argv, cwd) => {
   const hash = createHash('sha256')
@@ -20,6 +22,8 @@ const child = ['/usr/bin/python3', '-c', 'import sys; print("ready",flush=True);
 const parent = ['/usr/bin/python3', '-c', 'import subprocess,time; time.sleep(4); p=subprocess.Popen('+JSON.stringify(child)+'); p.wait()', 'domain-parent']
 const writer = ['/usr/bin/python3', '-c', 'import os,sys; f=open("output","wb"); b=b"x"*1048576; [f.write(b) for _ in range(10240)]; f.flush(); os.fsync(f.fileno()); print("ready",flush=True); sys.stdin.readline()', 'domain-writer']
 const second = ['/usr/bin/python3', '-c', 'import sys; print("ready",flush=True); sys.stdin.readline()', 'other-binary']
+const growingChild = ['/usr/bin/python3', '-c', 'import pathlib,sys,time; b=[]; [ (b.append(bytearray(32*1048576)),time.sleep(.2)) for _ in range(24) ]; pathlib.Path(sys.argv[-1]+".ready").touch();\nwhile not pathlib.Path("release").exists(): time.sleep(.1)', 'growing-child']
+const growingParent = ['/usr/bin/python3', '-c', 'import pathlib,subprocess,sys,time; time.sleep(4); children=[]\nfor name in ["older","newer"]:\n p=subprocess.Popen('+JSON.stringify(growingChild)+'+[name]); children.append(p)\n while not pathlib.Path(name+".ready").exists(): time.sleep(.1)\nprint("ready",flush=True); sys.stdin.readline(); pathlib.Path("release").touch()\nfor p in children: p.wait()', 'reserved-parent']
 let mounted = false, ownsCgroup = false
 class DomainFixture extends Fixture {
   async launch(name, binary, env, argv = []) {
@@ -32,7 +36,10 @@ class DomainFixture extends Fixture {
       }
       const state = path.join(env.CHARIOX_HOME, 'state')
       await mkdir(state, {recursive: true})
-      const peaks = disk ? [[writer, 64*mib, 12*gib], [second, 64*mib, 8*gib]] : [[parent, 4*gib, 0], [child, 4*gib, 0], [second, 4*gib, 0]]
+      // A 10 GiB machine leaves a 9 GiB shared pool and a 512 MiB margin.
+      // This admitted prediction leaves only 256 MiB unreserved, but actual
+      // use by both descendants stays below 2 GiB.
+      const peaks = disk ? [[writer, 64*mib, 12*gib], [second, 64*mib, 8*gib]] : liveness ? [[growingParent, 8*gib+256*mib, 0]] : [[parent, 4*gib, 0], [child, 4*gib, 0], [second, 4*gib, 0]]
       await writeFile(path.join(state, 'admission-peaks.json'), JSON.stringify(Object.fromEntries(peaks.map(([argv, memory, writes]) => [key(argv, mountpoint), {memory, writes}]))))
     }
     if (name.startsWith('kernel-')) {
@@ -53,7 +60,7 @@ class DomainFixture extends Fixture {
   }
 }
 const fixture = new DomainFixture({home, evidence, kernelBinary:value('--kernel-bin'), relayBinary:value('--relay-bin'), cliBinary:value('--cli-bin')})
-const active = new Set(), result = {mp:['MP-08','MP-09','MP-10','MP-11'], status:'FAIL', mode:disk?'disk':'descendants', scope:'real native CLI and kernels, private encrypted local relay; focused accounting acceptance only'}
+const active = new Set(), result = {mp:['MP-08','MP-09','MP-10','MP-11'], status:'FAIL', mode:disk?'disk':liveness?'liveness':'descendants', scope:'real native CLI and kernels, private encrypted local relay; focused accounting acceptance only'}
 function signal(child, name) {
   assert.ok(Number.isSafeInteger(child.pid) && child.pid > 1, 'invalid owned PID')
   if (child.exitCode === null && child.signalCode === null) child.kill(name)
@@ -73,25 +80,52 @@ try {
   await writeFile(path.join(cgroup,'memory.max'),String(10*gib)); await writeFile(path.join(cgroup,'memory.swap.max'),'0'); await writeFile(path.join(cgroup,'cgroup.subtree_control'),'+memory')
   await fixture.start(); await fixture.grant()
   result.session=(await fixture.A.send({CreateSession:{workspace_id:mountpoint,worktree_id:mountpoint,alias:'Binary domain accounting',no_subscribe:true}})).SessionCreated.session.id
-  const first=run(disk?writer:parent)
-  await until(()=>first.output==='ready\n','first binary produced output and remains running',120_000)
-  if (disk) {
-    result.written_bytes = (await stat(path.join(mountpoint, 'output'))).size
-    assert.equal(result.written_bytes, 10*gib)
-    const space = await statfs(mountpoint); result.free_bytes_after_output = space.bavail * space.bsize
-  }
-  // Let both normal resource watches consume the real child's/write counters.
-  await new Promise(resolve=>setTimeout(resolve,1500))
-  const other=run(second)
+  const first=run(disk?writer:liveness?growingParent:parent)
   await until(async()=>{
-    result.states=(await fixture.A.send({RoomTerminal:{session_id:result.session,operation:{operation:'exec_list'}}})).RoomTerminal.result.execs.map(row=>({command:row.command.at(-1),state:row.state}))
-    return other.output==='ready\n'
-  },'second binary starts while first remains running',15_000)
-  assert.equal(first.exitCode,null)
-  await finish(other); await finish(first)
-  result.status='PASS'; result.concurrent=true
+    if (liveness) {
+      const state = (await fixture.A.send({GetSessionState:{session_id:result.session}})).SessionState
+      result.processes = state.processes.map(row=>({pid:row.pid,resident_set_bytes:row.resident_set_bytes,state:row.state}))
+      result.charged_bytes = Number(await readFile(path.join(cgroup,'memory.current'),'utf8'))
+      result.pool_ceiling_bytes = 9*gib
+      result.launch_prediction_bytes = 8*gib+256*mib
+    }
+    return first.output==='ready\n'
+  },'first binary produced output and remains running',liveness?25_000:120_000)
+  if (liveness) {
+    // Keep the reservation alive across multiple enforcement passes after
+    // both heavy children have finished growing.
+    await new Promise(resolve=>setTimeout(resolve,2000))
+    assert.equal(first.exitCode,null)
+    assert.ok(result.processes.filter(row=>row.resident_set_bytes>=512*mib).length>=2, 'both descendants grew past the heavy threshold')
+    assert.ok(result.charged_bytes<3*gib, 'actual memory leaves ample headroom')
+    assert.ok(result.processes.every(row=>row.state.kind==='running'), 'no descendant remains paused')
+    await finish(first)
+    result.status='PASS'; result.descendants_completed=true
+  } else {
+    if (disk) {
+      result.written_bytes = (await stat(path.join(mountpoint, 'output'))).size
+      assert.equal(result.written_bytes, 10*gib)
+      const space = await statfs(mountpoint); result.free_bytes_after_output = space.bavail * space.bsize
+    }
+    // Let both normal resource watches consume the real child's/write counters.
+    await new Promise(resolve=>setTimeout(resolve,1500))
+    const other=run(second)
+    await until(async()=>{
+      result.states=(await fixture.A.send({RoomTerminal:{session_id:result.session,operation:{operation:'exec_list'}}})).RoomTerminal.result.execs.map(row=>({command:row.command.at(-1),state:row.state}))
+      return other.output==='ready\n'
+    },'second binary starts while first remains running',15_000)
+    assert.equal(first.exitCode,null)
+    await finish(other); await finish(first)
+    result.status='PASS'; result.concurrent=true
+  }
 } catch (error) {result.error=error.message;throw error}
 finally {
+  if (liveness && active.size && result.session) {
+    const reply = await fixture.A.send({RoomTerminal:{session_id:result.session,operation:{operation:'exec_list'}}})
+    for (const row of reply.RoomTerminal.result.execs.filter(row=>row.command.at(-1)==='reserved-parent')) {
+      await fixture.A.send({RoomTerminal:{session_id:result.session,operation:{operation:'exec_cancel',exec_id:row.exec_id}}})
+    }
+  }
   for (const proc of active) signal(proc,'SIGTERM')
   await Promise.allSettled([...active].map(proc=>proc.done)); await fixture.cleanup()
   const remove=async directory=>{for(const entry of await readdir(directory,{withFileTypes:true}))if(entry.isDirectory())await remove(path.join(directory,entry.name));await rmdir(directory)}

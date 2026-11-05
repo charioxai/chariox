@@ -202,12 +202,11 @@ impl Pool {
         let growing = sampled.growing;
         let launches = self.launches.lock().unwrap_or_else(|e| e.into_inner());
         let launch_memory = sampled.remaining(&launches);
-        let memory = sampled
-            .memory
-            .saturating_sub(launch_memory.values().copied().fold(0, u64::saturating_add));
+        // Unused predictions gate admission, not pressure. Charging them here
+        // can strand a paused descendant while its parent keeps the reservation.
         let room = admission::Room {
             memory: sampled.memory,
-            tight: memory < self.margin.max(growing),
+            tight: sampled.memory < self.margin.max(growing),
             light,
             growth_room: admission::growth_room(self.ceiling),
             volume: &*self.volume,

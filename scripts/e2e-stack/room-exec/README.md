@@ -120,3 +120,9 @@ requires an 8 GiB predicted binary to start before the writer exits. Mount,
 image, private cgroups and fixture processes are removed after each run.
 These are focused native accounting regressions; they do not claim the hosted
 or ordinary-versus-managed acceptance matrix.
+
+Add `--liveness` to the MP-08 / MP-09 / MP-10 / MP-11 memory case to reserve
+8.25 GiB of the machine's 9 GiB shared pool while two descendants each grow to
+768 MiB. Both descendants must finish growing while the parent retains its
+reservation and waits for them. Pressure uses actual headroom; unused launch
+predictions gate admission and must never strand a paused descendant.

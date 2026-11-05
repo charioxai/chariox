@@ -23,6 +23,12 @@ enforcement and resumption all let a descendant use its domain's unused
 reservation; learning and pressure controls stay active. Ordinary commands and
 binary launches account for each other's remaining predictions.
 
+Pressure is judged only on actual headroom; unused predictions gate admission.
+A paused descendant that fits its domain's reserved capacity resumes when
+actual pressure clears, even while its parent retains a near-capacity launch
+reservation and waits for that descendant. The enforcement regressions exercise
+both growing descendants and actual pressure followed by resumption.
+
 Memory admission and enforcement use the same observation snapshot; cgroup
 credit comes from that domain's charge and is bounded by the pool's sampled
 charge. Disk reservations decrease by observed cumulative writes, retaining the
@@ -44,6 +50,8 @@ admission after reservation pressure clears. `reservation-domains.mjs` covers
 a learned parent and child alongside another native binary, plus actual output
 on an isolated filesystem while its writer remains alive. Focused regressions
 also cover ordinary/binary disk predictions in both admission directions.
+Its `--liveness` memory case requires two heavy growing descendants to finish
+under a near-capacity parent prediction without waiting for that parent to exit.
 
 ## MP-08 / MP-09 / MP-10 / MP-11 process disk telemetry (2026-11-02)
 

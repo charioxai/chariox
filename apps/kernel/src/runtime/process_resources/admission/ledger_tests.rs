@@ -88,6 +88,88 @@ fn unsettle(ledger: &mut Ledger) {
     ledger.resumed_at.clear();
 }
 
+fn sample(memory: u64) -> ProcessSample {
+    ProcessSample {
+        process_id: "binary".into(),
+        pid: 1,
+        command: "binary".into(),
+        resident_set_bytes: memory,
+        cpu_millis: 0,
+        disk_io_bytes: None,
+        sampled_at_ms: 0,
+        age_ms: 0,
+    }
+}
+
+fn reserved_binary(prediction: u64) -> (pool::Pool, Arc<Mutex<Observation>>) {
+    let pool = pool::Pool::with_volume(10 * GIB, volume(&Arc::new(AtomicU64::new(100 * GIB))));
+    pool.launches.lock().unwrap().insert(
+        "binary".into(),
+        super::super::launch::Reservation {
+            memory: prediction,
+            writes: 0,
+            volume: 1,
+        },
+    );
+    let entries = [1, 2].map(|pid| {
+        let mut entry = entry(
+            pid as u64,
+            Peak {
+                memory: 4 * GIB,
+                writes: 0,
+            },
+        );
+        entry.admitted = true;
+        (pid, entry)
+    });
+    let member = owner(
+        "binary",
+        true,
+        vec![command(1, GIB, 32 * MIB), command(2, GIB, 32 * MIB)],
+        entries.into(),
+    );
+    member.lock().unwrap().samples = vec![sample(2 * GIB)];
+    pool.join(&member);
+    (pool, member)
+}
+
+#[test]
+fn binary_descendants_with_unused_reservations_keep_growing() {
+    for prediction in [9 * GIB, 9 * GIB + 256 * MIB, 9 * GIB + 512 * MIB] {
+        let (pool, member) = reserved_binary(prediction);
+        for _ in 0..3 {
+            pool.enforce(&member, None);
+            assert_eq!(wait(&member, 1), None);
+            assert_eq!(
+                wait(&member, 2),
+                None,
+                "prediction {prediction} caused false pressure"
+            );
+        }
+    }
+}
+
+#[test]
+fn paused_binary_descendant_resumes_with_actual_headroom_and_live_reservation() {
+    for prediction in [9 * GIB, 9 * GIB + 256 * MIB, 9 * GIB + 512 * MIB] {
+        let (pool, member) = reserved_binary(prediction);
+        let pressure = owner("pressure", false, vec![], vec![]);
+        pressure.lock().unwrap().samples = vec![sample(7 * GIB + 256 * MIB)];
+        pool.join(&pressure);
+        pool.enforce(&member, None);
+        assert_eq!(wait(&member, 1), None, "oldest descendant must progress");
+        assert_eq!(wait(&member, 2), Some(Wait::Paused(WaitReason::Memory)));
+        pressure.lock().unwrap().samples.clear();
+        pool.enforce(&member, None);
+        assert_eq!(
+            wait(&member, 2),
+            None,
+            "prediction {prediction} stranded a paused descendant"
+        );
+        assert_eq!(pool.launches.lock().unwrap()["binary"].memory, prediction);
+    }
+}
+
 #[test]
 fn two_writers_that_together_reach_the_floor_do_not_both_start() {
     // 8 GiB above the floor; each job writes 6 GiB of scratch and deletes it.
