@@ -227,7 +227,7 @@ handler exceeding that deadline is dropped and reconnected.
 The gate admission and agent-move records guards wrap only reservation and commit,
 using their existing order gate -> move records -> STORE. Those admission guards
 are not held during planning. STORE -> hot-reload handover tables remains a short
-in-memory edge. No production edge reaches `env_lock`. The guard module is
+in-memory edge. No production edge reaches `env_lock`. The environment-guard module is
 compiled only with `cfg(test)`; its remaining call sites are also test-only.
 
 Subprocess output and synchronous child reaps use `runtime::bounded_process`.

@@ -27,7 +27,7 @@ mkdirSync(stateRoot, { recursive: true, mode: 0o700 })
 mkdirSync(evidence, { recursive: true, mode: 0o700 })
 const root = mkdtempSync(join(stateRoot, 'run-'))
 const steps = [], children = [], clients = [], sockets = []
-let tuiSocketPath, tuiServer
+let tuiSocketPath, tuiServer, tmuxEnvironment
 const record = (name, detail = {}) => {
   steps.push({ at: new Date().toISOString(), name, ...detail })
   writeFileSync(join(evidence, 'steps.json'), JSON.stringify(steps, null, 2), { mode: 0o600 })
@@ -104,7 +104,7 @@ async function automation(path, request) {
   })
 }
 
-const tmux = (...args) => execFileSync('tmux', ['-S', tuiSocketPath, ...args], { encoding: 'utf8' })
+const tmux = (...args) => execFileSync('tmux', ['-S', tuiSocketPath, ...args], { encoding: 'utf8', env: tmuxEnvironment })
 async function photographTui(label, env) {
   const text = tmux('capture-pane', '-p', '-t', 'drill')
   writeFileSync(join(evidence, `${label}.txt`), text)
@@ -213,6 +213,7 @@ async function main() {
   // tmux supplies a real PTY and captures the screen produced by normal keys.
   const tuiArgs = ['bun', resolve('apps/cli/dist/index.js'), '--kernel-url', endpoint, '--session', session.session.id, '--provider', 'codex', '--account-profile', profile, '--model', 'gpt-6-luna', '--effort', 'low', '--automation-socket', tuiSocket]
   tuiSocketPath = join(root, 'tmux.sock')
+  tmuxEnvironment = env
   tmux('-f', '/dev/null', 'new-session', '-d', '-s', 'drill', '-x', '140', '-y', '42', '-c', join(root, 'work'),
     ...Object.entries(env).flatMap(([key, value]) => ['-e', `${key}=${value}`]), ...tuiArgs)
   tuiServer = Number(tmux('display-message', '-p', '#{pid}').trim())
