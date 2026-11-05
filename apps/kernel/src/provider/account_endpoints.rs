@@ -13,29 +13,64 @@ pub(super) struct ManagedAccountEndpoint {
     pub child: Child,
     #[cfg(target_os = "linux")]
     processes: Option<crate::runtime::owned_process_signals::OwnedProcessHandles>,
+    #[cfg(target_os = "linux")]
+    witnesses: Option<crate::runtime::owned_process_signals::OwnedProcessSignals>,
+    #[cfg(target_os = "linux")]
+    pin_failed: bool,
 }
 
 impl ManagedAccountEndpoint {
     pub fn new(endpoint: String, child: Child) -> Self {
+        #[cfg(target_os = "linux")]
+        let witnesses =
+            match crate::runtime::owned_process_signals::OwnedProcessSignals::for_child(&child) {
+                Ok(witnesses) => Some(witnesses),
+                Err(error) => {
+                    report(
+                        "account_endpoint",
+                        "observe_startup_tree",
+                        &error.to_string(),
+                    );
+                    None
+                }
+            };
         Self {
             endpoint,
             child,
             #[cfg(target_os = "linux")]
             processes: None,
+            #[cfg(target_os = "linux")]
+            witnesses,
+            #[cfg(target_os = "linux")]
+            pin_failed: true,
         }
     }
 
     fn pin_processes(&mut self) -> Result<(), DaemonError> {
         #[cfg(target_os = "linux")]
         {
-            self.processes = Some(
-                crate::runtime::owned_process_signals::OwnedProcessSignals::for_child(&self.child)
-                    .and_then(|mut signals| signals.pin_owned_processes())
-                    .map_err(|error| DaemonError::LocalTransport {
-                        operation: "pin_account_helper",
-                        message: format!("cannot retain account helper process ownership: {error}"),
-                    })?,
-            );
+            // Keep birth witnesses and the previous pidfds if a later snapshot
+            // or pin fails. Missing pidfds never imply that descendants exited.
+            self.pin_failed = true;
+            let pinned = (|| {
+                if self.witnesses.is_none() {
+                    self.witnesses = Some(
+                        crate::runtime::owned_process_signals::OwnedProcessSignals::for_child(
+                            &self.child,
+                        )?,
+                    );
+                }
+                self.witnesses
+                    .as_mut()
+                    .expect("captured startup ownership")
+                    .pin_owned_processes()
+            })()
+            .map_err(|error: std::io::Error| DaemonError::LocalTransport {
+                operation: "pin_account_helper",
+                message: format!("cannot retain account helper process ownership: {error}"),
+            })?;
+            self.processes = Some(pinned);
+            self.pin_failed = false;
         }
         Ok(())
     }
@@ -44,10 +79,15 @@ impl ManagedAccountEndpoint {
         let reaped = matches!(self.child.try_wait(), Ok(Some(_)));
         #[cfg(target_os = "linux")]
         return reaped
-            && self
-                .processes
-                .as_ref()
-                .is_none_or(|processes| processes.all_exited());
+            && if self.pin_failed {
+                self.witnesses
+                    .as_ref()
+                    .is_some_and(|witnesses| witnesses.all_exited().unwrap_or(false))
+            } else {
+                self.processes
+                    .as_ref()
+                    .is_some_and(|processes| processes.all_exited())
+            };
         #[cfg(not(target_os = "linux"))]
         reaped
     }
@@ -239,11 +279,11 @@ fn ensure(
         super::startup_diagnostic::ProviderStartupDiagnostic::capture(&mut endpoint.child);
     let deadline = Instant::now() + timeout;
     let failure = loop {
+        if let Err(error) = endpoint.pin_processes() {
+            let _ = stop(name, endpoint, unreaped);
+            return Err(error);
+        }
         if healthy(&endpoint.endpoint) {
-            if let Err(error) = endpoint.pin_processes() {
-                let _ = stop(name, endpoint, unreaped);
-                return Err(error);
-            }
             let address = endpoint.endpoint.clone();
             endpoints.insert(key, endpoint);
             return Ok(address);
@@ -263,6 +303,11 @@ fn ensure(
         }
         std::thread::sleep(Duration::from_millis(100));
     };
+    // A failed health check may have outlived a fork by the wrapper. Observe
+    // that last startup interval before stopping or reaping its direct child.
+    if let Err(error) = endpoint.pin_processes() {
+        report(name, "observe_failed_startup", &error.to_string());
+    }
     if let Err(error) = stop(name, endpoint, unreaped) {
         report(name, "startup_cleanup", &error.to_string());
     }
@@ -288,6 +333,16 @@ fn stop(
         }
         if let Err(error) = processes.signal(libc::SIGKILL) {
             report(name, "kill_helper_tree", &error.to_string());
+        }
+    }
+    #[cfg(target_os = "linux")]
+    if endpoint.pin_failed {
+        if let Some(witnesses) = endpoint.witnesses.as_mut() {
+            // Pinning can fail after observing descendants (for example under
+            // descriptor pressure). Recheck each retained birth before KILL.
+            if let Err(error) = witnesses.kill_owned_processes() {
+                report(name, "kill_unpinned_helper_tree", &error.to_string());
+            }
         }
     }
     #[cfg(all(unix, not(target_os = "linux")))]
@@ -338,4 +393,138 @@ fn report(name: &'static str, operation: &'static str, error: &str) {
         "account endpoint supervision failed",
         serde_json::json!({"operation": operation, "error": error}),
     );
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+    use std::io::BufRead;
+    use std::os::unix::process::CommandExt;
+    use std::process::Stdio;
+
+    fn startup_fixture() -> (
+        crate::test_support::TestWorktree,
+        Child,
+        u32,
+        crate::runtime::owned_process_signals::OwnedProcessSignals,
+    ) {
+        let root = crate::test_support::TestWorktree::new("failed-account-startup");
+        let descendant_path = root.path().join("descendant");
+        let descendant = format!(
+            "import os,signal,time,pathlib; signal.signal(signal.SIGTERM,signal.SIG_IGN); pathlib.Path({:?}).write_text(str(os.getpid())); time.sleep(30)",
+            descendant_path.to_string_lossy()
+        );
+        let script = format!(
+            "import signal,time,subprocess,sys,pathlib; signal.signal(signal.SIGTERM,signal.SIG_IGN); subprocess.Popen([sys.executable,'-c',{:?}]); p=pathlib.Path({:?});\nwhile not p.exists(): time.sleep(.01)\nprint('ready',flush=True); time.sleep(30)",
+            descendant, descendant_path.to_string_lossy()
+        );
+        let mut command = crate::process_spawn::command("python3");
+        command
+            .args(["-c", &script])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        unsafe {
+            command.pre_exec(|| {
+                if libc::setsid() < 0 {
+                    Err(std::io::Error::last_os_error())
+                } else {
+                    Ok(())
+                }
+            });
+        }
+        let mut child = command.spawn().unwrap();
+        let mut line = String::new();
+        std::io::BufReader::new(child.stdout.take().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        assert_eq!(line.trim(), "ready");
+        let pid: u32 = std::fs::read_to_string(descendant_path)
+            .unwrap()
+            .parse()
+            .unwrap();
+        let cleanup =
+            crate::runtime::owned_process_signals::OwnedProcessSignals::for_child(&child).unwrap();
+        (root, child, pid, cleanup)
+    }
+
+    #[test]
+    fn failed_readiness_settles_term_ignoring_descendant() {
+        let (_root, child, pid, mut cleanup) = startup_fixture();
+        let owner = AccountEndpoints::new("failed-startup-fixture");
+        let result = owner.ensure(
+            "failed-readiness".into(),
+            |_| false,
+            Duration::from_millis(150),
+            move || Ok(ManagedAccountEndpoint::new("unused".into(), child)),
+        );
+        let descendant_survived = crate::runtime::process_health::process_running(pid);
+        // The fail-first run must clean its exact observed tree as well.
+        cleanup.kill_owned_processes().unwrap();
+        assert!(result.is_err(), "readiness must fail");
+        assert!(
+            !descendant_survived,
+            "failed startup abandoned its server descendant"
+        );
+    }
+
+    #[test]
+    fn failed_pidfd_pin_keeps_startup_cleanup_ownership() {
+        use crate::runtime::bounded_process::BoundedCommandExt as _;
+        let output = crate::process_spawn::command(std::env::current_exe().unwrap())
+            .args([
+                "--ignored",
+                "--exact",
+                concat!(module_path!(), "::pidfd_failure_helper"),
+                "--test-threads=1",
+                "--nocapture",
+            ])
+            .output_with_deadline(Duration::from_secs(10))
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    #[ignore = "subprocess-only: changes its own descriptor limit"]
+    fn pidfd_failure_helper() {
+        let (_root, child, pid, mut cleanup) = startup_fixture();
+        let mut endpoint = ManagedAccountEndpoint::new("unused".into(), child);
+        let mut original = std::mem::MaybeUninit::<libc::rlimit>::uninit();
+        assert_eq!(
+            unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, original.as_mut_ptr()) },
+            0
+        );
+        let original = unsafe { original.assume_init() };
+        let limited = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: original.rlim_max,
+        };
+        assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &limited) }, 0);
+        let failed_pin = endpoint.pin_processes();
+        assert_eq!(
+            unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &original) },
+            0
+        );
+        let mut unreaped = Vec::new();
+        let stopped = stop("pin-failure-fixture", endpoint, &mut unreaped);
+        let descendant_survived = crate::runtime::process_health::process_running(pid);
+        cleanup.kill_owned_processes().unwrap();
+        assert!(
+            failed_pin.is_err(),
+            "pin must fail under descriptor exhaustion"
+        );
+        assert!(
+            stopped.is_ok(),
+            "owned startup cleanup must recover after a failed pin"
+        );
+        assert!(unreaped.is_empty());
+        assert!(
+            !descendant_survived,
+            "failed pin lost its startup descendant"
+        );
+    }
 }

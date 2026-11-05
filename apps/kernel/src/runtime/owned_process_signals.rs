@@ -158,6 +158,15 @@ impl OwnedProcessSignals {
     }
 
     #[cfg(target_os = "linux")]
+    pub(crate) fn all_exited(&self) -> io::Result<bool> {
+        // A reparented zombie has exited even if its new parent has not reaped
+        // it yet. Only retained birth identities participate in this check.
+        Ok(!snapshot()?.iter().any(|row| {
+            self.matches(row) && crate::runtime::process_health::process_running(row.pid)
+        }))
+    }
+
+    #[cfg(target_os = "linux")]
     pub(crate) fn pin_owned_processes(&mut self) -> io::Result<OwnedProcessHandles> {
         let rows = snapshot()?;
         self.refresh_from(&rows);
