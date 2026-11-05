@@ -789,6 +789,18 @@ impl DockerCommand {
         self.output()
     }
 
+    /// The broker owns its operation lifetime; direct bulk work uses the
+    /// caller's deadline and the same pipe-owner cancellation as utilities.
+    pub(super) fn output_with_deadline(
+        &mut self,
+        timeout: std::time::Duration,
+    ) -> io::Result<Output> {
+        if broker_is_configured() {
+            return self.bounded_output();
+        }
+        self.local_command().output_with_deadline(timeout)
+    }
+
     pub(super) fn output(&mut self) -> io::Result<Output> {
         if broker_is_configured() {
             #[cfg(unix)]
