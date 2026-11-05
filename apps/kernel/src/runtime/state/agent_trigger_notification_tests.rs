@@ -826,14 +826,29 @@ impl Rig {
 async fn an_app_notified_agent_cannot_be_notified_back_through_a_workflow_it_invoked() {
     let rig = rig().await;
     rig.app_notification().await;
-    let room = rig.runtime.owned.session_store.get_session(&rig.session_id).unwrap();
+    let room = rig
+        .runtime
+        .owned
+        .session_store
+        .get_session(&rig.session_id)
+        .unwrap();
     let state = &rig.runtime.owned.prompt_state_owner;
-    state.complete_active_prompt_only(&room, &rig.agent_id).unwrap();
-    state.activate_next_queued_prompt(&room, &rig.agent_id, None).unwrap();
-    assert_eq!(rig.lineage_of_the_active_agent(), vec![format!("agent:{}", rig.agent_id)]);
+    state
+        .complete_active_prompt_only(&room, &rig.agent_id)
+        .unwrap();
+    state
+        .activate_next_queued_prompt(&room, &rig.agent_id, None)
+        .unwrap();
+    assert_eq!(
+        rig.lineage_of_the_active_agent(),
+        vec![format!("agent:{}", rig.agent_id)]
+    );
     let workflow = rig.workflow_with_exit("reply");
     let source = rig.register(&workflow);
-    rig.runtime.create_agent_trigger(rig.request(&source), "local").await.unwrap();
+    rig.runtime
+        .create_agent_trigger(rig.request(&source), "local")
+        .await
+        .unwrap();
     let invocation = rig
         .runtime
         .owned
@@ -841,12 +856,19 @@ async fn an_app_notified_agent_cannot_be_notified_back_through_a_workflow_it_inv
         .unwrap();
     rig.complete_with_invocation(&workflow, "cycle", "done", invocation.clone());
     rig.pass().await;
-    assert!(rig.queued_prompts().is_empty(), "A -> W -> A must be dropped");
+    assert!(
+        rig.queued_prompts().is_empty(),
+        "A -> W -> A must be dropped"
+    );
     let mut unrelated = invocation.unwrap();
     unrelated.input["ancestry"] = serde_json::json!(["agent:someone-else"]);
     rig.complete_with_invocation(&workflow, "unrelated", "done", Some(unrelated));
     rig.pass().await;
-    assert_eq!(rig.queued_prompts().len(), 1, "another lineage is still notified");
+    assert_eq!(
+        rig.queued_prompts().len(),
+        1,
+        "another lineage is still notified"
+    );
 }
 
 // MP-08 / MP-09 / MP-10 / MP-11: an App notification steered into a running turn joins that turn's lineage.
@@ -854,14 +876,26 @@ async fn an_app_notified_agent_cannot_be_notified_back_through_a_workflow_it_inv
 async fn an_app_notification_steered_into_a_turn_keeps_the_agent_in_its_lineage() {
     let rig = rig().await;
     rig.app_notification().await;
-    let room = rig.runtime.owned.session_store.get_session(&rig.session_id).unwrap();
-    let (_, queued) = rig.runtime.owned.prompt_state_owner.state_parts(&room, &rig.agent_id);
+    let room = rig
+        .runtime
+        .owned
+        .session_store
+        .get_session(&rig.session_id)
+        .unwrap();
+    let (_, queued) = rig
+        .runtime
+        .owned
+        .prompt_state_owner
+        .state_parts(&room, &rig.agent_id);
     let prompt = queued[0].id().to_owned();
     rig.runtime
         .owned
         .steer_queued_prompt(&rig.session_id, &rig.agent_id, &rig.attachment_id, &prompt)
         .unwrap();
-    assert_eq!(rig.lineage_of_the_active_agent(), vec![format!("agent:{}", rig.agent_id)]);
+    assert_eq!(
+        rig.lineage_of_the_active_agent(),
+        vec![format!("agent:{}", rig.agent_id)]
+    );
 }
 
 // MP-08 / MP-09 / MP-10 / MP-11: the picker cannot expose another Room's Apps to a guest.
@@ -1716,8 +1750,18 @@ async fn a_proven_remote_steer_rejection_removes_its_provisional_lineage() {
             .unwrap();
         rig.complete(&workflow, "first", "released");
         rig.pass().await;
-        let room = rig.runtime.owned.session_store.get_session(&rig.session_id).unwrap();
-        let queued = rig.runtime.owned.prompt_state_owner.state_parts(&room, &rig.agent_id).1[0]
+        let room = rig
+            .runtime
+            .owned
+            .session_store
+            .get_session(&rig.session_id)
+            .unwrap();
+        let queued = rig
+            .runtime
+            .owned
+            .prompt_state_owner
+            .state_parts(&room, &rig.agent_id)
+            .1[0]
             .id()
             .to_owned();
         let (prepared, reservation) = rig.remote_steer_intent(&queued);
@@ -1739,7 +1783,8 @@ async fn a_proven_remote_steer_rejection_removes_its_provisional_lineage() {
                     &crate::transport::relay_peer::LeasedPromptReceipt {
                         home_prompt_id: queued.clone(),
                         worker_provider_run_id: "notification-run".into(),
-                        phase: crate::transport::relay_peer::LeasedPromptReceiptPhase::SteerRejected,
+                        phase:
+                            crate::transport::relay_peer::LeasedPromptReceiptPhase::SteerRejected,
                         target_home_prompt_id: Some(prepared.target_active_prompt_id.clone()),
                         execution_lease_id: Some("notification-lease".into()),
                     },
