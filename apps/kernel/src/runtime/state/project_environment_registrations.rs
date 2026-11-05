@@ -52,7 +52,7 @@ impl KernelRuntimeState {
 }
 
 impl KernelRuntimeState {
-    /// The Project's Secret values the MCP server `name` of this run reads from its environment.
+    /// The Project's Variables and Secret values requested by the MCP server `name` of this run.
     pub(super) fn project_mcp_environment(
         &self,
         run: &crate::provider::RuntimeProviderRun,

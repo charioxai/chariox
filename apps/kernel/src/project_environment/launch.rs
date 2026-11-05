@@ -39,8 +39,8 @@ pub(crate) fn project_launch_environment(
     })
 }
 
-/// The values of the Project's Secrets named in `names`: the keys an MCP server reads from its environment. A locked
-/// Vault or a name the Environment does not list leaves the variable out.
+/// Requested Variables and Secret values for an MCP server. A locked Vault leaves Secrets
+/// out while the Project's ordinary Variables remain available.
 pub(crate) fn project_mcp_environment(
     config: &DaemonConfig,
     project_id: &str,
@@ -52,6 +52,13 @@ pub(crate) fn project_mcp_environment(
     else {
         return values;
     };
+    for (name, value) in
+        parse_variables(&record.variables).expect("loaded record has valid Variables")
+    {
+        if names.contains(&name) {
+            values.insert(name, value);
+        }
+    }
     let wanted: Vec<&String> = names
         .iter()
         .filter(|name| record.secrets.contains(name))
@@ -156,6 +163,110 @@ pub(crate) fn attach_project_provider_environment(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mcp_environment_keeps_variables_when_the_project_vault_is_locked() {
+        let mut config = DaemonConfig::for_tests();
+        let root = config.private_runtime_state_root();
+        let vault_path = root.join("vault.json");
+        config.user_config.credential_vault.path = vault_path.display().to_string();
+        let store = ProjectEnvironmentStore::new(&root);
+        store
+            .save(
+                "project",
+                0,
+                ProjectEnvironmentRecord {
+                    schema: super::super::PROJECT_ENVIRONMENT_SCHEMA,
+                    variables: "API_BASE_URL=https://project.example.test\nUNREQUESTED=other"
+                        .into(),
+                    secrets: vec!["API_KEY".into()],
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        crate::secret::unlock_chariox_encrypted_vault(
+            &vault_path,
+            "synthetic-test-passphrase",
+            crate::secret::VaultUnlockLease::KernelShutdown,
+        )
+        .unwrap();
+        let vault = crate::secret::project_environment_vault(&config).unwrap();
+        vault
+            .set_secret(
+                &project_environment_vault_service("project"),
+                "API_KEY",
+                "synthetic-key",
+            )
+            .unwrap();
+        let names = ["API_BASE_URL".into(), "API_KEY".into(), "ABSENT".into()];
+        let unlocked = project_mcp_environment(&config, "project", &names);
+        crate::secret::lock_chariox_encrypted_vault(&vault_path).unwrap();
+        let locked = project_mcp_environment(&config, "project", &names);
+        std::fs::remove_dir_all(&root).unwrap();
+        assert_eq!(
+            unlocked,
+            std::collections::BTreeMap::from([
+                ("API_BASE_URL".into(), "https://project.example.test".into()),
+                ("API_KEY".into(), "synthetic-key".into()),
+            ])
+        );
+        assert_eq!(
+            locked,
+            std::collections::BTreeMap::from([(
+                "API_BASE_URL".into(),
+                "https://project.example.test".into()
+            ),])
+        );
+    }
+
+    #[test]
+    fn mcp_environment_resolves_only_requested_project_variables_without_a_vault() {
+        let config = DaemonConfig::for_tests();
+        let root = config.private_runtime_state_root();
+        let store = ProjectEnvironmentStore::new(&root);
+        store
+            .save(
+                "project-a",
+                0,
+                ProjectEnvironmentRecord {
+                    schema: super::super::PROJECT_ENVIRONMENT_SCHEMA,
+                    variables:
+                        "ACCOUNT=project-a\nURL=https://example.test/mcp\nUNREQUESTED=private"
+                            .into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        store
+            .save(
+                "project-b",
+                0,
+                ProjectEnvironmentRecord {
+                    schema: super::super::PROJECT_ENVIRONMENT_SCHEMA,
+                    variables: "ACCOUNT=project-b".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let names = ["ACCOUNT".into(), "URL".into(), "ABSENT".into()];
+        let a = project_mcp_environment(&config, "project-a", &names);
+        let b = project_mcp_environment(&config, "project-b", &names);
+        let absent = project_mcp_environment(&config, "other-project", &names);
+        // Clean the fixture before asserting so fail-first runs leave no state behind.
+        std::fs::remove_dir_all(&root).unwrap();
+        assert_eq!(
+            a,
+            std::collections::BTreeMap::from([
+                ("ACCOUNT".into(), "project-a".into()),
+                ("URL".into(), "https://example.test/mcp".into()),
+            ])
+        );
+        assert_eq!(
+            b,
+            std::collections::BTreeMap::from([("ACCOUNT".into(), "project-b".into())])
+        );
+        assert!(absent.is_empty());
+    }
 
     #[test]
     fn provider_reuse_changes_with_the_record_and_with_live_values() {
