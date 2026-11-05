@@ -134,6 +134,40 @@ test("editing the script saves with the loaded revision when Esc leaves the fiel
   assert(h.text().includes("make setup && make test"))
 })
 
+test("the line being edited scrolls to keep its cursor visible, and the other lines keep their start", async () => {
+  const h = harness()
+  await h.open()
+  h.key("down")
+  h.key("return")
+  const url = "curl https://example.test/" + "a/".repeat(60) + "end"
+  h.type(`${url}`)
+  const cursorRow = () => h.controller.view().rows.find((row) => row.text.includes("▏"))!.text
+  // Typing at the end of a line wider than the dialog text keeps the cursor and the newest characters.
+  assert.match(cursorRow(), /^  ….*a\/end▏$/u)
+  assert(cursorRow().length <= 80)
+  // Home brings the start back with the cursor, End the end.
+  h.key("home")
+  assert.match(cursorRow(), /^  ▏make setup.*…$/u)
+  h.key("end")
+  assert.match(cursorRow(), /a\/end▏$/u)
+  // Arrows move the window only when the cursor would leave it, and the cursor never disappears.
+  for (let i = 0; i < 70; i++) {
+    h.key("left")
+    const shown = cursorRow()
+    assert(shown.includes("▏") && shown.length <= 80, shown)
+  }
+  assert.match(cursorRow(), /^  …/u)
+  for (let i = 0; i < 30; i++) h.key("right")
+  assert(cursorRow().includes("▏"))
+  // A second line stays clipped from its start while the first is being edited.
+  h.key("end")
+  h.key("return")
+  h.type("z".repeat(200))
+  const rows = h.controller.view().rows.map((row) => row.text)
+  assert(rows.some((text) => /^  …/u.test(text) && text.endsWith("z▏")))
+  assert(rows.some((text) => /^  make setup.*…$/u.test(text)), rows.join("\n"))
+})
+
 test("leaving a field without a change sends nothing", async () => {
   const h = harness()
   await h.open()

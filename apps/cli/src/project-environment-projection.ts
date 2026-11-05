@@ -160,6 +160,18 @@ function clip(text: string, width: number): string {
   return flat.length <= width ? flat : `${flat.slice(0, Math.max(0, width - 1))}…`
 }
 
+/** The line being edited, scrolled sideways so the cursor mark stays inside `width`; a cut side shows an ellipsis. */
+function clipAroundCursor(line: string, width: number): string {
+  const flat = line.replace(/\t/gu, "  ")
+  if (flat.length <= width) return flat
+  const at = Math.max(0, flat.indexOf(CURSOR))
+  if (width < 4) return flat.slice(Math.max(0, at + 1 - width), at + 1)
+  const start = Math.max(0, Math.min(at - Math.floor((width * 2) / 3), flat.length - width))
+  const end = start + width
+  const left = start > 0, right = end < flat.length
+  return `${left ? "…" : ""}${flat.slice(start + (left ? 1 : 0), end - (right ? 1 : 0))}${right ? "…" : ""}`
+}
+
 function twoColumns(left: string, right: string, width: number): string {
   if (!right) return clip(left, width)
   const room = width - right.length - 2
@@ -184,7 +196,8 @@ function textFieldRows(
     const lines = `${before}${CURSOR}${editing.text.slice(editing.cursor)}`.split("\n")
     const cursorLine = before.split("\n").length - 1
     const start = Math.max(0, Math.min(cursorLine - FIELD_LINES + 1, lines.length - FIELD_LINES))
-    return lines.slice(start, start + FIELD_LINES).map((line) => row(`  ${clip(line, width - 2)}`, "text", true))
+    return lines.slice(start, start + FIELD_LINES).map((line, index) =>
+      row(`  ${start + index === cursorLine ? clipAroundCursor(line, width - 2) : clip(line, width - 2)}`, "text", true))
   }
   if (!value) return [row("  Empty", "muted", focused)]
   const lines = value.replace(/\n$/u, "").split("\n")
