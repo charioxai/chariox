@@ -300,6 +300,12 @@ fn stop(
             report(name, "kill_helper_tree", &error.to_string());
         }
     }
+    if result.is_ok() {
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while !endpoint.all_exited() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
     match result {
         Ok(()) if endpoint.all_exited() => Ok(()),
         result => {

@@ -58,6 +58,17 @@ pub(crate) fn ensure_codex_account_endpoint(
                 for name in crate::account_profile::provider_auth_env_vars("codex") {
                     command.env_remove(name);
                 }
+                #[cfg(unix)]
+                unsafe {
+                    use std::os::unix::process::CommandExt;
+                    command.pre_exec(|| {
+                        if libc::setsid() < 0 {
+                            Err(std::io::Error::last_os_error())
+                        } else {
+                            Ok(())
+                        }
+                    });
+                }
                 let child = crate::process_spawn::spawn_command(command).map_err(|error| {
                     DaemonError::LocalTransport {
                         operation: "ensure_codex_account_endpoint",
