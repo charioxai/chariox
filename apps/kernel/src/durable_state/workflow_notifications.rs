@@ -170,6 +170,12 @@ pub(crate) enum NotificationOperation {
         notification_prompt: String,
         active_prompt: String,
     },
+    /// The worker proved it never took the steer: the provisional lineage is removed.
+    UnbindAgentSteer {
+        session: String,
+        notification_prompt: String,
+        active_prompt: String,
+    },
     /// A local or remote attach made under an ephemeral external access grant.
     Granted {
         grant: String,
@@ -211,6 +217,7 @@ pub(crate) enum NotificationOutcome {
     Ack(WorkflowNotificationAck),
     Queued,
     SteerBound,
+    SteerUnbound,
     Protected(Option<WorkflowNotificationEnvelope>),
     Retired(Vec<WorkflowNotificationSubscription>),
     Swept,
@@ -488,6 +495,15 @@ fn apply(
             agent_steer::bind_in(tx, &session, &notification_prompt, &active_prompt)
                 .map_err(sql)?;
             Ok(NotificationOutcome::SteerBound)
+        }
+        NotificationOperation::UnbindAgentSteer {
+            session,
+            notification_prompt,
+            active_prompt,
+        } => {
+            agent_steer::unbind_in(tx, &session, &notification_prompt, &active_prompt)
+                .map_err(sql)?;
+            Ok(NotificationOutcome::SteerUnbound)
         }
         NotificationOperation::Granted { grant, attach } => {
             let outcome = apply(tx, *attach)?;
@@ -830,6 +846,23 @@ impl DurableKernelStateStore {
             active_prompt: active_prompt.into(),
         })? {
             NotificationOutcome::SteerBound => Ok(()),
+            _ => Err(error("unexpected notification steer result")),
+        }
+    }
+
+    /// A definite rejection ends the provisional association made for exactly this send.
+    pub(crate) fn unbind_agent_notification_steer(
+        &self,
+        session: &str,
+        notification_prompt: &str,
+        active_prompt: &str,
+    ) -> Result<(), DaemonError> {
+        match self.notify(NotificationOperation::UnbindAgentSteer {
+            session: session.into(),
+            notification_prompt: notification_prompt.into(),
+            active_prompt: active_prompt.into(),
+        })? {
+            NotificationOutcome::SteerUnbound => Ok(()),
             _ => Err(error("unexpected notification steer result")),
         }
     }

@@ -1158,6 +1158,11 @@ impl KernelRuntimeOwnedState {
             active_prompt,
             queued_prompts,
         );
+        if persisted.is_ok() && restore_prompt.prompt_origin() == crate::session::PromptOrigin::Notification {
+            // The worker proved it never took the input: the active turn gives its lineage back.
+            self.durable_state_store
+                .unbind_agent_notification_steer(session_id, prompt_id, &uncertainty.0)?;
+        }
         if persisted.is_err() {
             let _ = restore_prompt.mark_remote_steer_outcome_uncertain(
                 reservation,
@@ -1921,6 +1926,13 @@ impl KernelRuntimeOwnedState {
                     active_prompt,
                     queued_prompts,
                 )?;
+                if queued_prompt.prompt_origin() == crate::session::PromptOrigin::Notification {
+                    self.durable_state_store.unbind_agent_notification_steer(
+                        session_id,
+                        queued_prompt_id,
+                        target_home_prompt_id,
+                    )?;
+                }
                 Ok(RemoteQueuedPromptSteerReceiptSettlement::Rejected)
             }
             _ => Err(DaemonError::LocalTransport {

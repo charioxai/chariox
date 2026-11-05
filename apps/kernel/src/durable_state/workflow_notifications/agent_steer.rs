@@ -36,3 +36,19 @@ pub(super) fn bind_in(
     )?;
     Ok(())
 }
+
+/// Removes only the association made for `target`; a later send to another turn keeps its own.
+pub(super) fn unbind_in(
+    tx: &Transaction<'_>,
+    session: &str,
+    notification_prompt: &str,
+    target: &str,
+) -> rusqlite::Result<()> {
+    tx.execute(
+        "UPDATE app_outbox SET invocation_json=json_remove(invocation_json,'$.steered_into_prompt_id')
+         WHERE source_kind IN ('workflow_completion','app_event') AND queued_session_id=?1 AND queued_prompt_id=?2
+           AND json_extract(invocation_json,'$.steered_into_prompt_id')=?3",
+        params![session, notification_prompt, target],
+    )?;
+    Ok(())
+}

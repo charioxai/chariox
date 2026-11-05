@@ -1703,6 +1703,82 @@ async fn r7_remote_notification_lineage_precedes_a_lost_steer_acknowledgement() 
     );
 }
 
+// MP-08 / MP-09 / MP-10 / MP-11: a proven rejection takes back the lineage given to the active turn.
+#[tokio::test]
+async fn a_proven_remote_steer_rejection_removes_its_provisional_lineage() {
+    for exact_receipt in [false, true] {
+        let rig = rig().await;
+        let workflow = rig.workflow_with_exit("pipeline");
+        let source = rig.register(&workflow);
+        rig.runtime
+            .create_agent_trigger(rig.request(&source), "local")
+            .await
+            .unwrap();
+        rig.complete(&workflow, "first", "released");
+        rig.pass().await;
+        let room = rig.runtime.owned.session_store.get_session(&rig.session_id).unwrap();
+        let queued = rig.runtime.owned.prompt_state_owner.state_parts(&room, &rig.agent_id).1[0]
+            .id()
+            .to_owned();
+        let (prepared, reservation) = rig.remote_steer_intent(&queued);
+        let store = &rig.runtime.owned.durable_state_store;
+        assert!(
+            store
+                .agent_notification_ancestry(&rig.session_id, &prepared.target_active_prompt_id)
+                .unwrap()
+                .is_some(),
+            "the send intent binds the lineage before the worker answers"
+        );
+        if exact_receipt {
+            rig.runtime
+                .owned
+                .reconcile_remote_queued_prompt_steer_receipt(
+                    &rig.session_id,
+                    &rig.agent_id,
+                    &queued,
+                    &crate::transport::relay_peer::LeasedPromptReceipt {
+                        home_prompt_id: queued.clone(),
+                        worker_provider_run_id: "notification-run".into(),
+                        phase: crate::transport::relay_peer::LeasedPromptReceiptPhase::SteerRejected,
+                        target_home_prompt_id: Some(prepared.target_active_prompt_id.clone()),
+                        execution_lease_id: Some("notification-lease".into()),
+                    },
+                )
+                .unwrap();
+        } else {
+            rig.runtime
+                .owned
+                .clear_remote_queued_prompt_steer_uncertainty(
+                    &rig.session_id,
+                    &rig.agent_id,
+                    &prepared.prompt,
+                    reservation,
+                )
+                .unwrap();
+        }
+        assert!(
+            store
+                .agent_notification_ancestry(&rig.session_id, &prepared.target_active_prompt_id)
+                .unwrap()
+                .is_none(),
+            "the active turn never received the input (exact receipt: {exact_receipt})"
+        );
+        assert!(rig
+            .runtime
+            .owned
+            .inherit_agent_notification_ancestry(Some(&rig.agent_id), "entry", None)
+            .unwrap()
+            .is_none());
+        rig.complete(&workflow, "after-rejection", "released again");
+        rig.pass().await;
+        assert_eq!(
+            rig.queued_prompts().len(),
+            2,
+            "a workflow the original turn invoked still notifies (exact receipt: {exact_receipt})"
+        );
+    }
+}
+
 #[tokio::test]
 async fn r7_app_agent_receipts_recognize_local_and_remote_general_steer() {
     use crate::durable_state::app_automations::AppAutomationMutation;
