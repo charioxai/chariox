@@ -559,6 +559,10 @@ pub(super) fn write_workflow_runtime_transition(
             transaction,
             prompt_state_json,
         )?;
+        super::workflow_notifications::agent_steer::record_prompt_state_in(
+            transaction,
+            prompt_state_json,
+        )?;
         super::app_event_maintenance::agent::record_prompt_state_in(
             transaction,
             prompt_state_json,

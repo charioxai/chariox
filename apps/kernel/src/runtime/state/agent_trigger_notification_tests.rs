@@ -2120,3 +2120,89 @@ async fn an_app_notified_workflow_invoked_before_the_receipt_settles_drops_the_c
         .unwrap();
     rig.assert_the_cycle_is_dropped(&workflow).await;
 }
+
+// MP-08 / MP-09 / MP-10 / MP-11: the commit that releases a rejected Steer's queue hold also ends its lineage.
+#[tokio::test]
+async fn a_persisted_steer_rejection_survives_recovery_without_its_provisional_lineage() {
+    let config =
+        super::super::agent_trigger_runtime_state::tests::durable_state_config("n3b-rejection");
+    let (root, runtime, session_id, agent_id, attachment_id, _, _) =
+        super::super::local_prompt_dispatch_runtime::tests::runtime_with_active_prompt_and_config(
+            config.clone(),
+            &[],
+        )
+        .await;
+    let mut rig = Rig {
+        _root: root,
+        runtime,
+        session_id,
+        agent_id,
+        attachment_id,
+    };
+    let workflow = rig.workflow_with_exit("pipeline");
+    let source = rig.register(&workflow);
+    rig.runtime
+        .create_agent_trigger(rig.request(&source), "local")
+        .await
+        .unwrap();
+    rig.complete(&workflow, "first", "released");
+    rig.pass().await;
+    let room = rig.runtime.owned.session_snapshot(&rig.session_id).unwrap();
+    let notification = rig
+        .runtime
+        .owned
+        .prompt_state_owner
+        .state_parts(&room, &rig.agent_id)
+        .1[0]
+        .id()
+        .to_owned();
+    let (prepared, reservation) = rig.remote_steer_intent(&notification);
+    let target = prepared.target_active_prompt_id.clone();
+    // Only the durable rejection lands; nothing runs after it, as in a crash.
+    let (active, mut queued) = rig
+        .runtime
+        .owned
+        .prompt_state_owner
+        .state_parts(&room, &rig.agent_id);
+    queued[0]
+        .clear_remote_steer_outcome_uncertainty(reservation)
+        .expect("the reserved uncertain send");
+    rig.runtime
+        .owned
+        .mirror_prompt_owner_agent_state(&rig.session_id, &rig.agent_id, active, queued)
+        .unwrap();
+    let mut restart_config = config.clone();
+    let restart_path = super::super::agent_trigger_runtime_state::tests::durable_state_config(
+        "n3b-rejection-restart",
+    )
+    .user_config
+    .state
+    .path
+    .unwrap();
+    rusqlite::Connection::open(rig.runtime.owned.durable_state_store.path())
+        .unwrap()
+        .execute("VACUUM INTO ?1", rusqlite::params![restart_path])
+        .unwrap();
+    restart_config.user_config.state.path = Some(restart_path);
+    let restarted = crate::app::DaemonApp::bootstrap(restart_config).unwrap();
+    rig.runtime = super::super::local_prompt_dispatch_runtime::tests::owned_runtime_state(
+        &std::sync::Arc::new(tokio::sync::Mutex::new(restarted)),
+    )
+    .await;
+    assert!(
+        rig.runtime
+            .owned
+            .durable_state_store
+            .agent_notification_ancestry(&rig.session_id, &target)
+            .unwrap()
+            .is_none(),
+        "the original turn never received the rejected input"
+    );
+    rig.complete(&workflow, "after-rejection", "released again");
+    rig.pass().await;
+    assert_eq!(
+        rig.queued_prompts().len(),
+        2,
+        "a workflow the original turn invoked still notifies"
+    );
+}
