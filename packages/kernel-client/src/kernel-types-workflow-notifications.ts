@@ -1,4 +1,4 @@
-/** MP-08 / MP-10: local 994 and encrypted peer 433 completion notifications. */
+/** MP-08 / MP-10: local 998 and encrypted peer 437 completion notifications. */
 export interface WorkflowNotificationSource {
   kind: "workflow_exit" | "owner_action";
   source_id: string; owner_user_id: string; kernel_id: string;
@@ -27,5 +27,5 @@ export type WorkflowNotificationSourceRegisteredResponse = { WorkflowNotificatio
 export type WorkflowNotificationAttachedResponse = { WorkflowNotificationAttached: { subscription: WorkflowNotificationSubscription } }
 export type WorkflowNotificationDetachedResponse = { WorkflowNotificationDetached: { subscription_id: string } }
 export type WorkflowNotificationsResponse = {
-  WorkflowNotifications: { sources: WorkflowNotificationSourceSummary[]; subscriptions: WorkflowNotificationSubscription[]; diagnostics: WorkflowNotificationDiagnostic[] }
+  WorkflowNotifications: { sources: WorkflowNotificationSourceSummary[]; subscriptions: WorkflowNotificationSubscription[]; listeners: WorkflowNotificationSubscription[]; diagnostics: WorkflowNotificationDiagnostic[] }
 }

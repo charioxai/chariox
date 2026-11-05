@@ -607,6 +607,11 @@ impl KernelRuntimeOwnedState {
         agent_id: &str,
         expected_prompt_id: Option<&str>,
     ) -> Result<Option<crate::session::PromptQueueItem>, DaemonError> {
+        self.expire_queued_agent_notifications(
+            session_id,
+            agent_id,
+            crate::session::unix_epoch_ms(),
+        )?;
         let session = self.session_store.get_session(session_id)?;
         if self
             .prompt_state_owner
@@ -666,6 +671,11 @@ impl KernelRuntimeOwnedState {
         provider_run_id: &str,
         expected_queue_id: Option<&str>,
     ) -> Result<Option<crate::app::KernelPromptDispatch>, DaemonError> {
+        self.expire_queued_agent_notifications(
+            session_id,
+            agent_id,
+            crate::session::unix_epoch_ms(),
+        )?;
         let idle_check_session = self.session_store.get_session(session_id)?;
         if self
             .prompt_state_owner
@@ -851,6 +861,11 @@ impl KernelRuntimeOwnedState {
         prompt_id: &str,
         expected_reservation: Option<u64>,
     ) -> Result<QueuedPromptSteerContext, DaemonError> {
+        self.expire_queued_agent_notifications(
+            session_id,
+            agent_id,
+            crate::session::unix_epoch_ms(),
+        )?;
         let _ = self.ensure_attachment_in_session(session_id, attachment_id)?;
         let target_agent = self.agent_store.get_agent(agent_id)?;
         if target_agent.session_id() != session_id {

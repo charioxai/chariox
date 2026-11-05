@@ -468,6 +468,7 @@ mod agent_config_runtime_state;
 mod agent_lifecycle_owned_state;
 mod agent_notification_ancestry;
 mod agent_notification_app;
+mod agent_notification_expiry;
 mod agent_profile_compaction;
 mod agent_profile_owned_state;
 mod agent_trigger_gateway;

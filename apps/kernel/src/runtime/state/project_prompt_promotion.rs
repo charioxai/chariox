@@ -97,6 +97,13 @@ impl KernelRuntimeState {
         session_id: &str,
         agent_id: &str,
     ) -> Option<crate::session::PromptQueueItem> {
+        self.owned
+            .expire_queued_agent_notifications(
+                session_id,
+                agent_id,
+                crate::session::unix_epoch_ms(),
+            )
+            .ok()?;
         loop {
             let session = self.owned.session_store.get_session(session_id).ok()?;
             // Settlement, profile completion and ordinary backlog retries share

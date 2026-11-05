@@ -4,8 +4,8 @@
     "MP-10",
     "MP-11"
   ],
-  "local_protocol": 994,
-  "peer_protocol": 433,
+  "local_protocol": 998,
+  "peer_protocol": 437,
   "allocation": "coordinator-allocated 567/175: additive fonts-op field absent",
   "subscribe": {
     "KernelBrowser": {

@@ -425,6 +425,22 @@ impl KernelRuntimeState {
         {
             return;
         }
+        let sessions = self.owned.session_store.read().list_sessions();
+        for session in sessions {
+            for agent in session.agents() {
+                if let Err(error) = self.owned.expire_queued_agent_notifications(
+                    session.id(),
+                    agent.id(),
+                    crate::session::unix_epoch_ms(),
+                ) {
+                    crate::logging::warn_with_fields(
+                        "daemon.agent_notification",
+                        "notification expiry deferred",
+                        serde_json::json!({"error":error.to_string()}),
+                    );
+                }
+            }
+        }
         let subscriptions = self.agent_notification_subscriptions();
         if subscriptions.is_empty() {
             return;
@@ -504,6 +520,23 @@ impl KernelRuntimeState {
         trigger_id: &str,
         payload: serde_json::Value,
     ) -> Result<Option<String>, DaemonError> {
+        let now = crate::session::unix_epoch_ms();
+        let deadline = payload
+            .get("deadline_ms")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or_else(|| store::error("notification deadline missing"))?;
+        let session = self.owned.session_store.get_session(session_id)?;
+        let agent_id = session
+            .agent_triggers()
+            .iter()
+            .find(|trigger| trigger.id() == trigger_id)
+            .ok_or_else(|| store::error("notification trigger missing"))?
+            .agent_id();
+        self.owned
+            .expire_queued_agent_notifications(session_id, agent_id, now)?;
+        if now >= deadline {
+            return Ok(None);
+        }
         let Some(dispatch) = self.owned.session_store.write().claim_input_agent_trigger(
             session_id,
             trigger_id,

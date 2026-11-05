@@ -96,7 +96,8 @@ fn workflow_notification_437_shapes_have_no_caller_owner_or_ancestry() {
                 display_name: source.display_name,
                 available: true,
             }],
-            subscriptions: vec![sub, agent_sub],
+            subscriptions: vec![sub.clone(), agent_sub],
+            listeners: vec![sub],
             diagnostics: vec![WorkflowNotificationDiagnostic {
                 source_id: "src".into(),
                 occurrence_id: "run".into(),
@@ -107,7 +108,7 @@ fn workflow_notification_437_shapes_have_no_caller_owner_or_ancestry() {
     let wire = serde_json::json!({"requests":[register,attach,list,LocalDaemonRequest::DetachWorkflowNotification(DetachWorkflowNotificationRequest {session_id:"t".into(),subscription_id:"sub".into()})],"responses":responses,"envelope":env,"acks":[WorkflowNotificationAck::Accepted,WorkflowNotificationAck::Duplicate,WorkflowNotificationAck::Expired,WorkflowNotificationAck::LoopDropped]});
     assert_eq!(
         format!("{:x}", Sha256::digest(serde_json::to_vec(&wire).unwrap())),
-        "8c02f9d964fb3512bdbbbfa126b2e3719fdd11aa5167221aacf0f7036a6cb14c"
+        "56864f4ded54b2efa2692e303e71bc5ca9487136540bffd84932b43640d1326c"
     );
     for field in ["owner_user_id", "ancestry", "output"] {
         let mut request =

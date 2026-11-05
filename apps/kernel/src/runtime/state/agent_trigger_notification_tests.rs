@@ -1157,7 +1157,7 @@ async fn app_agent_receipt_settles_when_prompt_cancellation_precedes_association
         .queue_agent_notification_input(
             &rig.session_id,
             trigger.id(),
-            serde_json::json!({"installation_id":catalog.installation_id(),"event_name":"changed","occurrence_id":receipt.occurrence_id,"occurred_at_ms":receipt.occurred_at_ms,"payload":{"text":"fast-cancellation"}}),
+            serde_json::json!({"installation_id":catalog.installation_id(),"event_name":"changed","occurrence_id":receipt.occurrence_id,"occurred_at_ms":receipt.occurred_at_ms,"deadline_ms":receipt.expires_at_ms,"payload":{"text":"fast-cancellation"}}),
         )
         .await
         .unwrap()
@@ -1191,4 +1191,225 @@ async fn app_agent_receipt_settles_when_prompt_cancellation_precedes_association
         ReceiptState::Failed,
         "late receipt association must observe committed prompt cancellation"
     );
+}
+
+#[tokio::test]
+async fn r6_full_app_subscriber_does_not_starve_an_available_subscriber() {
+    let rig = rig().await;
+    let store = &rig.runtime.owned.durable_state_store;
+    let catalog = crate::durable_state::app_state::fixture_room_event_catalog(store, "local");
+    let full = rig.app_trigger(&catalog).await;
+    let mut room = rig
+        .runtime
+        .owned
+        .session_store
+        .get_session(&rig.session_id)
+        .unwrap();
+    let mut other = serde_json::to_value(
+        rig.runtime
+            .owned
+            .agent_store
+            .get_agent(&rig.agent_id)
+            .unwrap(),
+    )
+    .unwrap();
+    other["id"] = serde_json::json!("available-agent");
+    other["agent_ref"] = serde_json::json!("available-agent-ref");
+    let other: crate::agent::AgentInstance = serde_json::from_value(other).unwrap();
+    rig.runtime.owned.agent_store.restore_agent(other.clone());
+    let mut agents = room.agents().to_vec();
+    agents.push(other.clone());
+    room.set_agents(agents);
+    room.mirror_agent_prompt_state(
+        other.id(),
+        Some(crate::session::PromptQueueItem::new(
+            "available-active",
+            &rig.attachment_id,
+            other.id(),
+            "holding",
+            crate::session::PromptStatus::Running,
+        )),
+        Default::default(),
+    );
+    rig.runtime
+        .owned
+        .session_store
+        .write()
+        .restore_session(room.clone());
+    let mut request = rig.request("unused");
+    request.agent_id = other.id().into();
+    request.source = AgentTriggerSourceRequest::Notification {
+        source: AgentTriggerNotificationSource::App {
+            installation_id: catalog.installation_id().into(),
+            event_name: "changed".into(),
+        },
+    };
+    let LocalDaemonResponse::AgentTriggerCreated {
+        trigger: available, ..
+    } = rig
+        .runtime
+        .create_agent_trigger(request, "local")
+        .await
+        .unwrap()
+    else {
+        panic!()
+    };
+    for n in 0..crate::runtime::prompt_state::PROMPT_QUEUE_LIMIT {
+        rig.runtime
+            .owned
+            .prompt_state_owner
+            .submit_prepared_prompt(
+                &room,
+                crate::session::PromptQueueItem::new(
+                    format!("full-{n}"),
+                    &rig.attachment_id,
+                    &rig.agent_id,
+                    "ordinary backlog",
+                    crate::session::PromptStatus::Queued,
+                ),
+                true,
+            )
+            .unwrap();
+    }
+    let blocked = rig.emit_app(catalog.clone(), &full, "full-subscriber");
+    let live = rig.emit_app(catalog.clone(), &available, "available-subscriber");
+    rig.runtime
+        .route_app_agent_installation("local", catalog.clone())
+        .await
+        .expect("one full queue must not abort an installation pass");
+    let current = store
+        .app_event_candidate("local", catalog.clone(), &blocked.receipt_id)
+        .unwrap();
+    assert_eq!(current.receipt().expires_at_ms, blocked.expires_at_ms);
+    assert_eq!(current.receipt().attempts, 0);
+    assert!(
+        store
+            .app_event_candidate("local", catalog, &live.receipt_id)
+            .unwrap()
+            .receipt()
+            .queued_prompt_id
+            .is_some(),
+        "the independent subscriber is reached in the same bounded pass"
+    );
+}
+
+#[tokio::test]
+async fn r6_notification_deadline_survives_queue_recovery_and_blocks_promotion_and_steer() {
+    for app in [false, true] {
+        for steer in [false, true] {
+            let rig = rig().await;
+            let expected_deadline = if app {
+                let catalog = crate::durable_state::app_state::fixture_room_event_catalog(
+                    &rig.runtime.owned.durable_state_store,
+                    "local",
+                );
+                let trigger = rig.app_trigger(&catalog).await;
+                let receipt = rig.emit_app(catalog.clone(), &trigger, "expiry");
+                rig.runtime
+                    .route_app_agent_installation("local", catalog)
+                    .await
+                    .unwrap();
+                Some(receipt.expires_at_ms)
+            } else {
+                let workflow = rig.workflow_with_exit("expiry-pipeline");
+                let source = rig.register(&workflow);
+                rig.runtime
+                    .create_agent_trigger(rig.request(&source), "local")
+                    .await
+                    .unwrap();
+                rig.complete(&workflow, "expiry-run", "expiry");
+                rig.pass().await;
+                None
+            };
+            let mut room = rig.runtime.owned.session_snapshot(&rig.session_id).unwrap();
+            let (_, queued) = rig
+                .runtime
+                .owned
+                .prompt_state_owner
+                .state_parts(&room, &rig.agent_id);
+            assert_eq!(queued.len(), 1);
+            let id = queued[0].id().to_owned();
+            let mut bytes = serde_json::to_value(
+                crate::durable_prompt_state::DurablePromptStateEventPayload::capture(
+                    &room,
+                    &rig.agent_id,
+                ),
+            )
+            .unwrap();
+            let private = bytes["private_states"]
+                .as_array_mut()
+                .unwrap()
+                .iter_mut()
+                .find(|value| value["prompt_id"] == id)
+                .unwrap();
+            let deadline = private["notification_deadline_ms"].as_u64().expect(
+                "the kernel owns a durable notification deadline, beyond quoted prompt text",
+            );
+            assert!(deadline > crate::session::unix_epoch_ms());
+            if let Some(expected) = expected_deadline {
+                assert_eq!(deadline, expected);
+            }
+            private["notification_deadline_ms"] =
+                serde_json::json!(crate::session::unix_epoch_ms().saturating_sub(1));
+            let encoded = serde_json::to_vec(&bytes).unwrap();
+            let mut recovered: crate::durable_prompt_state::DurablePromptStateEventPayload =
+                serde_json::from_slice(&encoded).unwrap();
+            recovered.restore_private_states();
+            room.mirror_agent_prompt_state(
+                &rig.agent_id,
+                if steer { recovered.active_prompt } else { None },
+                recovered.queued_prompts,
+            );
+            rig.runtime
+                .owned
+                .session_store
+                .write()
+                .restore_session(room);
+            rig.runtime
+                .owned
+                .prompt_state_owner
+                .remove_agent(&rig.session_id, &rig.agent_id);
+            if steer {
+                assert!(
+                    rig.runtime
+                        .owned
+                        .steer_queued_prompt(
+                            &rig.session_id,
+                            &rig.agent_id,
+                            &rig.attachment_id,
+                            &id
+                        )
+                        .is_err(),
+                    "expired occurrence must not steer after recovery"
+                );
+            } else {
+                assert!(
+                    rig.runtime
+                        .owned
+                        .advance_queued_prompt_dispatch_for_head(
+                            &rig.session_id,
+                            &rig.agent_id,
+                            "expired-provider",
+                            None
+                        )
+                        .unwrap()
+                        .is_none(),
+                    "expired occurrence must not promote after recovery"
+                );
+            }
+            assert!(
+                rig.queued_prompts().is_empty(),
+                "expiry removes the queued row durably"
+            );
+            let room = rig
+                .runtime
+                .owned
+                .session_store
+                .get_session(&rig.session_id)
+                .unwrap();
+            assert!(room
+                .queued_prompts_for_agent(&rig.agent_id)
+                .is_none_or(|queued| queued.is_empty()));
+        }
+    }
 }

@@ -464,26 +464,36 @@ impl KernelRuntimeState {
                     .ok_or_else(|| app_error("App notification payload missing"))?,
             )
             .map_err(app_error)?;
-            let input = serde_json::json!({"installation_id":catalog.installation_id(),"event_name":config.event_name,"occurrence_id":receipt.occurrence_id,"occurred_at_ms":receipt.occurred_at_ms,"payload":payload});
-            if let Some(prompt_id) = self
+            let input = serde_json::json!({"installation_id":catalog.installation_id(),"event_name":config.event_name,"occurrence_id":receipt.occurrence_id,"occurred_at_ms":receipt.occurred_at_ms,"deadline_ms":receipt.expires_at_ms,"payload":payload});
+            let admission = self
                 .queue_agent_notification_input(
                     &config.target.session_id,
                     &config.target.publication_id,
                     input,
                 )
-                .await?
-            {
-                self.owned
-                    .durable_state_store
-                    .mutate_app_automation(
-                        owner,
-                        catalog.clone(),
-                        AppAutomationMutation::AgentQueued { receipt, prompt_id },
-                        budget(),
-                    )
-                    .map_err(app_error)?;
-            } else {
-                self.defer_app_agent_receipt(owner, catalog.clone(), receipt, now)?;
+                .await;
+            match admission {
+                Ok(Some(prompt_id)) => {
+                    self.owned
+                        .durable_state_store
+                        .mutate_app_automation(
+                            owner,
+                            catalog.clone(),
+                            AppAutomationMutation::AgentQueued { receipt, prompt_id },
+                            budget(),
+                        )
+                        .map_err(app_error)?;
+                }
+                result => {
+                    if let Err(error) = result {
+                        crate::logging::warn_with_fields(
+                            "daemon.agent_notification",
+                            "App notification admission deferred",
+                            serde_json::json!({"receipt_id":receipt.receipt_id,"error":error.to_string()}),
+                        );
+                    }
+                    self.defer_app_agent_receipt(owner, catalog.clone(), receipt, now)?;
+                }
             }
         }
         Ok(())

@@ -638,10 +638,20 @@ impl KernelRuntimeState {
                         "notification identity encoding failed",
                     )
                 })?;
-                prompt.with_durable_operation(
-                    format!("agent-notification:{:x}", Sha256::digest(identity)),
-                    format!("{:x}", Sha256::digest(prompt_text.as_bytes())),
-                )
+                let deadline = payload
+                    .get("deadline_ms")
+                    .and_then(serde_json::Value::as_u64)
+                    .ok_or_else(|| {
+                        crate::durable_state::workflow_notifications::error(
+                            "notification deadline missing",
+                        )
+                    })?;
+                prompt
+                    .with_notification_deadline(deadline)
+                    .with_durable_operation(
+                        format!("agent-notification:{:x}", Sha256::digest(identity)),
+                        format!("{:x}", Sha256::digest(prompt_text.as_bytes())),
+                    )
             } else {
                 prompt
             }

@@ -279,6 +279,18 @@ impl KernelRuntimeState {
                                     .iter()
                                     .any(|s| s.source_id == sub.source_id && s.available);
                         }
+                        let listeners = subscriptions
+                            .iter()
+                            .filter(|subscription| {
+                                sources.iter().any(|source| {
+                                    source.enabled
+                                        && source.kernel_id == home
+                                        && source.session_id == request.session_id
+                                        && source.source_id == subscription.source_id
+                                })
+                            })
+                            .cloned()
+                            .collect();
                         subscriptions.retain(|s| {
                             s.session_id == request.session_id && s.target_kernel_id == home
                         });
@@ -287,6 +299,7 @@ impl KernelRuntimeState {
                         Ok(LocalDaemonResponse::WorkflowNotifications {
                             sources,
                             subscriptions,
+                            listeners,
                             diagnostics,
                         })
                     }
@@ -571,6 +584,110 @@ mod tests {
         }
         runtime
     }
+    #[test]
+    fn r6_source_listeners_include_a_consumer_in_another_room() {
+        let mut f = Fixture::new();
+        let (producer, _, _) = f.workflow("producer");
+        let producer_room = f.session.clone();
+        let mut consumer = f
+            .sessions
+            .create_session(crate::session::CreateSessionRequest::new(
+                "workspace",
+                "worktree",
+            ))
+            .unwrap();
+        consumer.set_agents(vec![crate::agent::AgentInstance::new(
+            "agent",
+            "consumer-agent",
+            consumer.id(),
+            None,
+            "dev-stub",
+            None,
+            None,
+            None,
+            crate::agent::GridPosition::new(0, 0, 1, 1),
+        )]);
+        let consumer_room = consumer.id().to_owned();
+        f.sessions.restore_session(consumer);
+        f.session = consumer_room.clone();
+        let (_, _, publication) = f.workflow("consumer");
+        f.session = producer_room.clone();
+        let runtime = runtime(&mut f);
+        let LocalDaemonResponse::WorkflowNotificationSourceRegistered { source } = runtime
+            .execute_workflow_notification_request(
+                LocalDaemonRequest::RegisterWorkflowNotificationSource(
+                    RegisterWorkflowNotificationSourceRequest {
+                        session_id: producer_room.clone(),
+                        workflow_ref: producer,
+                        exit_node_id: "exit-1".into(),
+                        enabled: true,
+                    },
+                ),
+                "local",
+            )
+            .unwrap()
+        else {
+            panic!()
+        };
+        runtime
+            .execute_workflow_notification_request(
+                LocalDaemonRequest::AttachWorkflowNotification(AttachWorkflowNotificationRequest {
+                    session_id: consumer_room.clone(),
+                    source_id: source.source_id.clone(),
+                    publication_ref: publication,
+                }),
+                "local",
+            )
+            .unwrap();
+        let list = |room: &str| {
+            serde_json::to_value(
+                runtime
+                    .execute_workflow_notification_request(
+                        LocalDaemonRequest::ListWorkflowNotifications(
+                            ListWorkflowNotificationsRequest {
+                                session_id: room.into(),
+                            },
+                        ),
+                        "local",
+                    )
+                    .unwrap(),
+            )
+            .unwrap()
+        };
+        let producer_inventory = list(&producer_room);
+        assert_eq!(
+            producer_inventory["WorkflowNotifications"]["subscriptions"]
+                .as_array()
+                .unwrap()
+                .len(),
+            0,
+            "target bindings stay target scoped"
+        );
+        let listeners = producer_inventory["WorkflowNotifications"]["listeners"]
+            .as_array()
+            .expect("source-side inventory is distinct from target-room subscriptions");
+        assert_eq!(listeners.len(), 1);
+        assert_eq!(listeners[0]["source_id"], source.source_id);
+        assert_eq!(listeners[0]["session_id"], consumer_room);
+        let target = list(&consumer_room);
+        assert_eq!(
+            target["WorkflowNotifications"]["subscriptions"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            target["WorkflowNotifications"]["listeners"]
+                .as_array()
+                .unwrap()
+                .len(),
+            0,
+            "the consumer cannot claim another Room's listeners"
+        );
+        cleanup(f);
+    }
+
     #[test]
     fn same_kernel_router_queues_ordinary_prompt_and_missing_source_is_visible() {
         let mut f = Fixture::new();

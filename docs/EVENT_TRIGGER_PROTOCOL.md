@@ -1,6 +1,6 @@
 # Event trigger protocol
 
-Status: implementation contract; local daemon protocol 994 / relay peer 433 (MP-08 / MP-10).
+Status: implementation contract; local daemon protocol 998 / relay peer 437 (MP-08 / MP-10).
 
 ## Boundaries
 
@@ -94,7 +94,7 @@ App adapter has narrower 64 KiB payload/prompt ceilings; it does not silently
 truncate. Artifact references are metadata and confer no file, URL or credential
 access.
 
-## Private workflow notifications (local 994 / peer 433; MP-08 / MP-10 / MP-11)
+## Private workflow notifications (local 998 / peer 437; MP-08 / MP-10 / MP-11)
 
 A subscription has no options. Nothing about it is configurable except its source
 and its target: there are no events, filters, output fields, queue names, delivery
@@ -167,7 +167,7 @@ notification whose target is already in its ancestry with `workflow_notification
 delivered: there is no coalescing.
 
 **Transport.** Local delivery is direct; remote delivery uses the existing E2EE relay peer
-channel. Peer 433 carries the per-exit source fields in `ListWorkflowNotificationSources`,
+channel. Peer 437 carries the per-exit source fields in `ListWorkflowNotificationSources`,
 renames `SubscribeWorkflowNotifications {source_workflow_ref, target_ref}` to `{source_id,
 target_ref}`, admits an agent `target_ref` (the subscriber kernel owns target admission), and
 `DeliverWorkflowNotification` carries the reduced envelope. Remote requests require an
@@ -312,7 +312,7 @@ are independent of diagnostic retention.
 
 ## Blocked-task decision sources
 
-MP-08 / MP-09 / MP-10 / MP-11, local 994 / peer 433: every Room also has
+MP-08 / MP-09 / MP-10 / MP-11, local 998 / peer 437: every Room also has
 an `owner_action` source named **Agent needs your action**. The kernel registers
 it with the same source inventory used by notifying exits. Agents and workflow
 entry points subscribe through the same notification reference, trigger, receipt,
@@ -354,3 +354,8 @@ context. Collaborators may list and remove their own Room targets; naming an
 owner's automation does not confer control. Both routes keep the existing App
 catalog, revision and writer checks. Archiving an agent also detaches its App
 subscriptions immediately, including when its App worker is stopped.
+
+
+Source-side listeners (998/437): `WorkflowNotifications.listeners` reports durable subscriptions to enabled sources in the requested producer Room, including workflow and agent targets in other Rooms or kernels. `subscriptions` remains the inventory of bindings whose target is the requested Room on this kernel. Both projections are kernel-owned; clients must not infer source listeners from target bindings.
+
+An agent notification keeps its original deadline in kernel-owned durable prompt metadata. Ordinary prompt edits cannot extend it. Recovery restores it, and queue promotion and manual Steer expire undelivered notifications before dispatch. App admission failures defer only that receipt while independent subscribers continue; deferral preserves the original deadline.

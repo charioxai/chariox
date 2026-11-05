@@ -27,7 +27,7 @@ pub enum LocalDaemonResponse {
     WorkflowNotificationSourceRegistered { source: WorkflowNotificationSource },
     WorkflowNotificationAttached { subscription: WorkflowNotificationSubscription },
     WorkflowNotificationDetached { subscription_id: String },
-    WorkflowNotifications { sources: Vec<WorkflowNotificationSourceSummary>, subscriptions: Vec<WorkflowNotificationSubscription>, diagnostics: Vec<WorkflowNotificationDiagnostic> },
+    WorkflowNotifications { sources: Vec<WorkflowNotificationSourceSummary>, subscriptions: Vec<WorkflowNotificationSubscription>, listeners: Vec<WorkflowNotificationSubscription>, diagnostics: Vec<WorkflowNotificationDiagnostic> },
     KernelSudoRequested { agent_id: String },
     /// Protocol 929: the secret prompt is up; `link` opens it on the owner's page.
     VaultSecretRequested { interaction_id: String, link: String, expires_at: u64, credential_id: String },

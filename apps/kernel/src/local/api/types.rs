@@ -465,4 +465,5 @@ pub use workspace::*;
 /// Connected service machine requests use the ordinary Chariox access grant.
 /// MP-08/MP-09/MP-10/MP-11: 965 integrates declared Vault uses and enrolled-kernel machine authority (peer414).
 /// MP-08/MP-09/MP-10/MP-11: 994 adds per-exit workflow notification sources, agent notification triggers and drops subscription options (peer422).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 994;
+/// MP-08/MP-09/MP-10/MP-11: 998 adds source-side listeners and durable queued notification expiry (peer 437).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 998;

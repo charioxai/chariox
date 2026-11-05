@@ -1278,6 +1278,12 @@ impl PromptStateOwner {
         let Some(front) = state.queued_prompts.front() else {
             return Ok(None);
         };
+        if front.notification_expired(crate::session::unix_epoch_ms()) {
+            return Err(DaemonError::LocalTransport {
+                operation: "activate queued prompt",
+                message: "notification expired before delivery".into(),
+            });
+        }
         if front.remote_steer_reserved() || !state.sudo_admits(front.id()) {
             return Ok(None);
         }
