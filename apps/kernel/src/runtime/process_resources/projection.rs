@@ -63,7 +63,7 @@ pub(crate) fn for_session(
     terminals: &crate::room_terminal::RoomTerminalService,
 ) -> Vec<SessionProcess> {
     let mut rows = Vec::new();
-    for (owner, key) in keys_for_session(session_id, providers, terminals) {
+    for (owner, key) in observed_keys_for_session(session_id, providers, terminals) {
         let states = states_for_key(&key);
         rows.extend(
             samples_for_key(&key)
@@ -135,17 +135,34 @@ pub(crate) fn keys_for_session(
     terminals: &crate::room_terminal::RoomTerminalService,
 ) -> Vec<(SessionProcessOwner, String)> {
     let mut keys = providers
-        .list_runs()
+        .run_owners_for_session(session_id)
         .into_iter()
-        .filter(|run| run.session_id() == session_id)
-        .filter_map(|run| {
-            run.agent_instance_id().map(|agent| {
-                (
-                    SessionProcessOwner::Agent(agent.to_string()),
-                    run.id().to_string(),
-                )
-            })
-        })
+        .map(|(agent, run)| (SessionProcessOwner::Agent(agent), run))
+        .collect::<Vec<_>>();
+    keys.extend(terminals.process_keys(session_id));
+    keys.extend(listed_keys(
+        |listing| listing.session_id == session_id,
+        false,
+    ));
+    keys
+}
+
+// Reads need only observed workloads. Command control uses keys_for_session,
+// which also includes launches that have not created their process domain yet.
+fn observed_keys_for_session(
+    session_id: &str,
+    providers: &crate::provider::ProviderProcessServiceStore,
+    terminals: &crate::room_terminal::RoomTerminalService,
+) -> Vec<(SessionProcessOwner, String)> {
+    let observed_keys = {
+        let mut registry = super::registry().lock().unwrap_or_else(|e| e.into_inner());
+        registry.retain(|_, state| state.strong_count() > 0);
+        registry.keys().cloned().collect::<Vec<_>>()
+    };
+    let mut keys = providers
+        .observed_run_owners_for_session(session_id, &observed_keys)
+        .into_iter()
+        .map(|(agent, run)| (SessionProcessOwner::Agent(agent), run))
         .collect::<Vec<_>>();
     keys.extend(terminals.process_keys(session_id));
     keys.extend(listed_keys(

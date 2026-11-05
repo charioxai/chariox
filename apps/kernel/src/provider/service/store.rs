@@ -333,6 +333,37 @@ impl ProviderProcessServiceStore {
         self.write().terminate_run_provider_only(session_id, run_id)
     }
 
+    pub(crate) fn run_owners_for_session(&self, session_id: &str) -> Vec<(String, String)> {
+        self.read()
+            .runs
+            .values()
+            .filter_map(|run| {
+                if run.session_id() != session_id {
+                    return None;
+                }
+                Some((run.agent_instance_id()?.to_owned(), run.id().to_owned()))
+            })
+            .collect()
+    }
+
+    pub(crate) fn observed_run_owners_for_session(
+        &self,
+        session_id: &str,
+        observed_keys: &[String],
+    ) -> Vec<(String, String)> {
+        let service = self.read();
+        observed_keys
+            .iter()
+            .filter_map(|key| {
+                let run = service.runs.get(key)?;
+                if run.session_id() != session_id {
+                    return None;
+                }
+                Some((run.agent_instance_id()?.to_owned(), key.clone()))
+            })
+            .collect()
+    }
+
     pub fn list_runs(&self) -> Vec<RuntimeProviderRun> {
         self.read().list_runs()
     }

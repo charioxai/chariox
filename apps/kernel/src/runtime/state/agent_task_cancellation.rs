@@ -521,4 +521,48 @@ mod growth_tests {
             allocations[1]
         );
     }
+    #[tokio::test]
+    async fn session_state_reads_do_not_clone_finished_provider_runs() {
+        let state = crate::test_support::allocation::runtime_with_rooms(1);
+        let room = state.owned.session_store.list_all_sessions().pop().unwrap();
+        let agent = state
+            .owned
+            .agent_store
+            .get_session_agents(room.id())
+            .pop()
+            .unwrap();
+        let mut allocations = Vec::new();
+        let mut next = 0;
+        for count in [10, 500] {
+            while next < count {
+                let mut run =
+                    crate::provider::RuntimeProviderRun::from_control_capability_inference(
+                        format!("finished-run-{next}"),
+                        room.id().into(),
+                        Some(agent.id().into()),
+                        "dev-stub".into(),
+                    );
+                run.mark_ended();
+                state.owned.provider_store.write().insert_run_for_test(run);
+                next += 1;
+            }
+            let (response, measured) = crate::test_support::allocation::measure(|| {
+                state.session_state_response(crate::local::GetSessionStateRequest {
+                    session_id: room.id().into(),
+                })
+            });
+            assert!(response.is_ok());
+            allocations.push(measured.allocated);
+        }
+        eprintln!(
+            "GetSessionState provider history allocated10={} allocated500={}",
+            allocations[0], allocations[1]
+        );
+        assert!(
+            allocations[1] <= allocations[0] + 4096,
+            "one session state read allocated {} bytes after10 provider runs and {} after500",
+            allocations[0],
+            allocations[1]
+        );
+    }
 }
