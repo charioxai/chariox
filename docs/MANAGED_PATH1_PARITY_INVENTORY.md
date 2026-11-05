@@ -23,6 +23,12 @@ namespace/feature attempts and original gate results remain historical evidence.
 See [`APP_VIEW_HOST_AV1.md`](APP_VIEW_HOST_AV1.md) for the exact five conditions,
 source research, fail-first regressions and browser evidence.
 
+Round7 closes the filtered-matrix acceptance finding: the shared assessment
+requires the complete case/DPR set, rejecting subsets, empty filters and duplicate
+rows. Both complete Chrome155.39/.79 reruns pass; actual fetch-only and unmatched
+runs exit1 with `complete-attack-matrix`. The30 named route-probe tests remain.
+Evidence is pinned in `appview/r7/AV1_IDENTITY.json` under the same evidence root.
+
 The signed-entry verifier, parent/source-bound host lifecycle, opaque iframe,
 pre-script bootstrap, inherited policy, dedicated restricted browser/profile
 and Cloud static response remain the security anchors. Ordinary Web tabs cannot

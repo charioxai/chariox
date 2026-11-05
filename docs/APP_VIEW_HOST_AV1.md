@@ -12,6 +12,22 @@ normal web build, and emits `/assets/app-view-host/host.html` and `client.mjs`.
 checkout. No kernel/protocol shape, App admission, managed shutdown policy,
 streamed renderer or Vault/observation behavior changes here.
 
+## Complete-matrix acceptance (round 7)
+
+The shared final assessment now requires the exact 36 attack names at both
+DPR1 and DPR2, once each. Missing, duplicate, unexpected or filtered rows cannot
+accept containment, including an empty unmatched filter. This gate is independent
+of the drill invocation flags. Seven fail-first regressions rejected the old
+assessment; all 30 route-probe regressions remain intact.
+
+Both pinned built-Cloud reruns passed all 72 attacks and four reference renders:
+Chrome155.39 audits133 exempt connects and Chrome155.79 audits132. The real
+fetch-only run (two attack rows) and unmatched filter (zero rows) both exit1
+with `complete-attack-matrix`; renderer checks still pass. Exact identities and
+receipts: `/root/.codex/evidence/browser-resume-20260930/appview/r7/AV1_IDENTITY.json`.
+The signed-reference AV2 transport slice is separate; these AV1 captures do not
+prove kernel delivery, backend state or the App-open cutover.
+
 ## Whole-browser gate with one named exemption
 
 Miguel authorized this exception on **2026-11-05 at 19:53 CET**. Chromium's
