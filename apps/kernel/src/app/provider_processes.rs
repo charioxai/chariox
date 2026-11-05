@@ -70,7 +70,7 @@ impl<'a> ProviderLaunchProcessRuntime<'a> {
         let store = self.app.providers.clone();
         store
             .with_current_live_launch(run, |current| {
-                let mut launched = LaunchedProcess {
+                let launched = LaunchedProcess {
                     app: &mut *self.app,
                     run_id: current.id().to_string(),
                     committed: false,

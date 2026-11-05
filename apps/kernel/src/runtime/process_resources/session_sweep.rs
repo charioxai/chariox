@@ -3,6 +3,7 @@
 //! leaves them behind. Everything still in the leader's session ends with it,
 //! by exact PID.
 
+#[cfg(not(target_os = "linux"))]
 use crate::runtime::bounded_process::BoundedCommandExt as _;
 const DETACH_GRACE: std::time::Duration = std::time::Duration::from_millis(500);
 
