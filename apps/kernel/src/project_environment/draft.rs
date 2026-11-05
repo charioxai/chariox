@@ -61,8 +61,14 @@ fn ignored_files(checkout: &Path) -> Vec<String> {
             "--others",
             "--ignored",
             "--exclude-standard",
-            "--directory",
+            "--",
         ])
+        // Exclude generated trees in Git's traversal, before descending into private folders.
+        .args(
+            SKIPPED_FOLDERS
+                .iter()
+                .map(|folder| format!(":(exclude,glob)**/{folder}/**")),
+        )
         .output()
     else {
         return Vec::new();
@@ -248,6 +254,52 @@ mod tests {
         assert!(prompt.contains("\n.env\n"), "{prompt}");
         assert!(!prompt.contains("synthetic-private-value"));
         assert!(!prompt.contains("x.js"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn ignored_private_directories_supply_file_names_without_generated_files_or_contents() {
+        let dir = scratch();
+        std::fs::write(dir.join(".gitignore"), "local-config/\nnode_modules/\n").unwrap();
+        for folder in [
+            "local-config",
+            "local-config/nested",
+            "local-config/node_modules",
+            "node_modules",
+        ] {
+            std::fs::create_dir_all(dir.join(folder)).unwrap();
+        }
+        for name in [
+            "local-config/dev.json",
+            "local-config/nested/service.json",
+            "local-config/node_modules/generated.js",
+            "node_modules/generated.js",
+        ] {
+            std::fs::write(dir.join(name), "synthetic-private-content").unwrap();
+        }
+        assert!(std::process::Command::new("git")
+            .arg("-C")
+            .arg(&dir)
+            .args(["init", "-q"])
+            .status()
+            .unwrap()
+            .success());
+        let prompt = draft_prompt(&dir);
+        assert!(
+            prompt.contains("\nlocal-config/dev.json\n"),
+            "private config file must be offered to Draft"
+        );
+        assert!(prompt.contains("\nlocal-config/nested/service.json\n"));
+        assert!(!prompt.contains("generated.js"));
+        assert!(!prompt.contains("synthetic-private-content"));
+        for i in 0..LISTED_NAMES + 5 {
+            std::fs::write(
+                dir.join(format!("local-config/config-{i:03}.json")),
+                "private",
+            )
+            .unwrap();
+        }
+        assert_eq!(ignored_files(&dir).len(), LISTED_NAMES);
         let _ = std::fs::remove_dir_all(dir);
     }
 
