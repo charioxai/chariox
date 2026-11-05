@@ -282,7 +282,6 @@ fn running_writer_consumes_disk_prediction_before_free_space_is_sampled() {
                         id: volume_id,
                     }),
                     volume_writes: writes,
-                    ..Default::default()
                 },
                 admission::light(admission.0.ceiling),
             );
@@ -372,8 +371,6 @@ fn binary_disk_prediction_is_enforced_for_observed_commands() {
                 id: 1,
             }),
             volume_writes: 12 * 1024 * MIB,
-
-            ..Default::default()
         },
         512 * MIB,
     );
@@ -406,8 +403,6 @@ fn observed_disk_prediction_is_enforced_for_binary_launches() {
                 id: 1,
             }),
             volume_writes: 8 * 1024 * MIB,
-
-            ..Default::default()
         },
         512 * MIB,
     );
@@ -502,7 +497,6 @@ fn waiting_descendant_can_use_its_binary_disk_reservation() {
                 id: 1,
             }),
             volume_writes: 10 * 1024 * MIB,
-            ..Default::default()
         },
         512 * MIB,
     );
