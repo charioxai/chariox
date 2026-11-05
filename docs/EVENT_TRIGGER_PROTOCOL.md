@@ -338,3 +338,13 @@ reject other-agent and delivery-policy arguments, and recheck its provider epoch
 App events retain App catalog/schema admission and the App receipt pump. Their
 automation summaries distinguish `workflow_endpoint` and `agent` targets; agent
 subscriptions are lifetime configuration and are excluded from App-set copies.
+
+For a browser collaborator's picker, `ListAppInstallations` accepts an optional
+`session_id`. The kernel checks live Room membership and returns only installations
+bound to that Room's agents, with the active release's event summaries. The owner
+continues to see their kernel's installations. Room agents cannot use this field
+to list another Room. Pagination remains `after` / `limit`.
+
+The AX subscribe/unsubscribe result contains `trigger_id`, `source`, and `enabled`;
+it does not include the Room snapshot. A notification manually steered into an
+existing turn contributes its ancestry to that turn before the provider write.

@@ -208,3 +208,9 @@ test("protocol 418 kernel browser fallback is explicit; the native default stays
   assert.deepEqual(openUserAppViewRequest("todo", "kernel_browser"), { OpenUserAppView: { installation_id: "todo", host: "kernel_browser" } })
 })
 
+
+ test("a collaborator's App picker names its Room", () => {
+  assert.deepEqual(listAppInstallationsRequest({ sessionId: "room" }), {
+    ListAppInstallations: { after: null, limit: null, session_id: "room" },
+  })
+})
