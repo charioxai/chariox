@@ -127,6 +127,10 @@ impl Process {
         Ok(process)
     }
 
+    pub(crate) fn finish_closed_output(&mut self) -> io::Result<()> {
+        self.stop()
+    }
+
     pub(crate) fn stop(&mut self) -> io::Result<()> {
         if self.stopped {
             return Ok(());

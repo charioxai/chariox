@@ -74,35 +74,59 @@ fn capture_process(
 ) -> Result<Output, CaptureError> {
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
+    let mut stdout_closed = false;
+    let mut stderr_closed = false;
     loop {
         drain(
             process.child.stdout.as_mut().expect("captured stdout"),
             &mut stdout,
             stderr.len(),
             output_limit,
+            &mut stdout_closed,
         )?;
         drain(
             process.child.stderr.as_mut().expect("captured stderr"),
             &mut stderr,
             stdout.len(),
             output_limit,
+            &mut stderr_closed,
         )?;
         if let Some(status) = process.child.try_wait()? {
-            // A successful launcher can leave pipe writers behind. End them
-            // before collecting the bytes already buffered in our pipes.
-            process.stop()?;
             while drain(
                 process.child.stdout.as_mut().expect("captured stdout"),
                 &mut stdout,
                 stderr.len(),
                 output_limit,
+                &mut stdout_closed,
             )? {}
             while drain(
                 process.child.stderr.as_mut().expect("captured stderr"),
                 &mut stderr,
                 stdout.len(),
                 output_limit,
+                &mut stderr_closed,
             )? {}
+            if stdout_closed && stderr_closed {
+                // No inherited writer exists. Normal commands such as ps must
+                // not scan every host descriptor after every successful exit.
+                process.finish_closed_output()?;
+            } else {
+                process.stop()?;
+                while drain(
+                    process.child.stdout.as_mut().expect("captured stdout"),
+                    &mut stdout,
+                    stderr.len(),
+                    output_limit,
+                    &mut stdout_closed,
+                )? {}
+                while drain(
+                    process.child.stderr.as_mut().expect("captured stderr"),
+                    &mut stderr,
+                    stdout.len(),
+                    output_limit,
+                    &mut stderr_closed,
+                )? {}
+            }
             return Ok(Output {
                 status,
                 stdout,
@@ -127,6 +151,7 @@ fn drain<P: Read + platform::Pipe>(
     bytes: &mut Vec<u8>,
     other_len: usize,
     output_limit: usize,
+    closed: &mut bool,
 ) -> Result<bool, CaptureError> {
     let mut buffer = [0_u8; 8192];
     let mut read = 0;
@@ -137,7 +162,10 @@ fn drain<P: Read + platform::Pipe>(
         }
         let len = buffer.len().min(available);
         match pipe.read(&mut buffer[..len]) {
-            Ok(0) => return Ok(false),
+            Ok(0) => {
+                *closed = true;
+                return Ok(false);
+            }
             Ok(len) => {
                 if bytes.len() + other_len + len > output_limit {
                     return Err(CaptureError::OutputLimit);

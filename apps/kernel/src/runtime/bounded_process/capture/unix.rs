@@ -59,6 +59,11 @@ impl Process {
         ]
     }
 
+    pub(super) fn finish_closed_output(&mut self) -> io::Result<()> {
+        self.stopped = true;
+        Ok(())
+    }
+
     pub(super) fn stop(&mut self) -> io::Result<()> {
         if self.stopped {
             return Ok(());

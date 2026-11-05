@@ -480,16 +480,15 @@ impl ProcessTree {
         }
         let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
         while std::time::Instant::now() < deadline
-            && identities
-                .iter()
-                .any(|(pid, identity)| same_process(*pid, identity))
+            && identities.iter().any(|(pid, identity)| {
+                same_process(*pid, identity) || (*pid == self.root && !root_waitable(*pid))
+            })
         {
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
-        if identities
-            .iter()
-            .any(|(pid, identity)| same_process(*pid, identity))
-        {
+        if identities.iter().any(|(pid, identity)| {
+            same_process(*pid, identity) || (*pid == self.root && !root_waitable(*pid))
+        }) {
             return Err(
                 "some owned processes did not exit after TERM and KILL; refresh Health and retry"
                     .into(),
@@ -646,6 +645,33 @@ fn shell(command: &str) -> bool {
             .trim_start_matches('-'),
         "sh" | "bash" | "dash" | "zsh" | "ksh" | "fish"
     )
+}
+
+#[cfg(unix)]
+fn root_waitable(pid: u32) -> bool {
+    if pid <= 1 {
+        return false;
+    }
+    let mut info = std::mem::MaybeUninit::<libc::siginfo_t>::zeroed();
+    let result = unsafe {
+        libc::waitid(
+            libc::P_PID,
+            libc::id_t::from(pid),
+            info.as_mut_ptr(),
+            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+        )
+    };
+    if result == 0 {
+        return unsafe { info.assume_init().si_pid() } != 0;
+    }
+    // A handed-over process may have another parent; its identity check still
+    // decides whether it is alive. Waiting must never reap another owner's child.
+    std::io::Error::last_os_error().raw_os_error() == Some(libc::ECHILD)
+}
+
+#[cfg(not(unix))]
+fn root_waitable(_: u32) -> bool {
+    true
 }
 
 fn same_process(pid: u32, identity: &ProcessIdentity) -> bool {
