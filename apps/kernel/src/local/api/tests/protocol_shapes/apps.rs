@@ -15,6 +15,7 @@ fn app_installation_protocol_shapes_are_versioned_and_preserve_generations() {
     };
     let requests = vec![
         LocalDaemonRequest::ListAppInstallations(ListAppInstallationsRequest {
+            session_id: None,
             after: None,
             limit: Some(50),
         }),
@@ -274,7 +275,7 @@ fn app_worker_control_and_automation_shapes_are_versioned_and_owner_free() {
     );
     assert_eq!(
         digest,
-        "2a549079483ac43adc5202e10ae046b563047e7c499e21e645308ca2de3c4827"
+        "9ea2bbcdba53e4c30e31956db712266fda91f2db40b4abd6810cf3fb1b41cb45"
     );
     assert!(serde_json::from_value::<LocalDaemonRequest>(
         serde_json::json!({"ControlAppWorker": {"installation_id": "todo", "action": "start", "owner_id": "other"}})

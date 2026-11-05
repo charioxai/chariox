@@ -112,6 +112,7 @@ async fn app_relay_replays_reauthorize_the_owner_and_read_current_installations(
         CommandRouter::with_interactive_capacity(Arc::new(tokio::sync::Mutex::new(app)), 8);
     let cache = CommandResultCache::default();
     let list = LocalDaemonRequest::ListAppInstallations(ListAppInstallationsRequest {
+        session_id: None,
         after: None,
         limit: None,
     });

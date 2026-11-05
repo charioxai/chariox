@@ -29,7 +29,7 @@ pub(super) fn installation(value: Installation) -> AppInstallationSummary {
 }
 
 /// The installation with the outgoing events of its active release, when it has one.
-pub(super) fn installation_with_events(
+pub(crate) fn installation_with_events(
     store: &DurableKernelStateStore,
     owner: &str,
     value: Installation,

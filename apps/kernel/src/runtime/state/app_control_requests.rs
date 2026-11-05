@@ -21,7 +21,8 @@ impl KernelRuntimeState {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<LocalDaemonResponse>> + Send + 'a>>
     {
         match request {
-            LocalDaemonRequest::AcceptAppHostAction(_)
+            LocalDaemonRequest::ListAppInstallations(_)
+            | LocalDaemonRequest::AcceptAppHostAction(_)
             | LocalDaemonRequest::RestoreAppDataSnapshot(_)
             | LocalDaemonRequest::GrantAppFile(_)
             | LocalDaemonRequest::PreviewDeploymentApps(_)
@@ -54,6 +55,34 @@ impl KernelRuntimeState {
         command: &KernelCommand,
         request: &LocalDaemonRequest,
     ) -> Option<LocalDaemonResponse> {
+        if let LocalDaemonRequest::ListAppInstallations(list) = request {
+            let Some(room_id) = list.session_id.as_deref() else {
+                return None;
+            };
+            let caller = match crate::runtime::app_control::owner(command) {
+                Ok(owner) => owner,
+                Err(code) => return Some(failed(code)),
+            };
+            let room = match self.owned.session_store.get_session(room_id) {
+                Ok(room)
+                    if room.has_member(&caller)
+                        && room.status() != crate::session::SessionStatus::Ended =>
+                {
+                    room
+                }
+                _ => return Some(failed(AppRequestErrorCode::Unauthorized)),
+            };
+            if room.owner_user_id() == caller && self.room_provider_origin.is_none() {
+                // The owner can list every installation on this kernel.
+                return None;
+            }
+            return Some(
+                match self.list_room_notification_apps(list, &caller).await {
+                    Ok(response) => response,
+                    Err(code) => failed(code),
+                },
+            );
+        }
         if let LocalDaemonRequest::AcceptAppHostAction(request) = request {
             use crate::runtime::command::{KernelCallerKind, KernelCommandSource};
             if !matches!(

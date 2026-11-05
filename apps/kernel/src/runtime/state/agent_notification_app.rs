@@ -30,6 +30,87 @@ impl KernelRuntimeState {
             .collect()
     }
 
+    pub(super) async fn list_room_notification_apps(
+        &self,
+        request: &crate::local::ListAppInstallationsRequest,
+        caller: &str,
+    ) -> Result<crate::local::LocalDaemonResponse, crate::local::AppRequestErrorCode> {
+        use crate::local::AppRequestErrorCode as Code;
+        let room_id = request.session_id.as_deref().ok_or(Code::InvalidRequest)?;
+        let room = self
+            .owned
+            .session_store
+            .get_session(room_id)
+            .map_err(|_| Code::Unauthorized)?;
+        if !room.has_member(caller) || room.status() == crate::session::SessionStatus::Ended {
+            return Err(Code::Unauthorized);
+        }
+        if let Some((agent_id, _)) = &self.room_provider_origin {
+            if !self
+                .owned
+                .agent_store
+                .get_agent(agent_id)
+                .is_ok_and(|agent| agent.session_id() == room_id)
+            {
+                return Err(Code::Unauthorized);
+            }
+        }
+        let limit = request.limit.unwrap_or(50) as usize;
+        if !(1..=100).contains(&limit)
+            || request.after.as_deref().is_some_and(|id| {
+                id.is_empty() || id.len() > 128 || id.chars().any(char::is_control)
+            })
+        {
+            return Err(Code::InvalidRequest);
+        }
+        let ids = self
+            .room_notification_apps(room_id)
+            .into_iter()
+            .filter(|id| request.after.as_ref().is_none_or(|after| id > after))
+            .take(limit + 1)
+            .collect::<Vec<_>>();
+        let next_cursor = (ids.len() > limit).then(|| ids[limit - 1].clone());
+        let store = self.owned.durable_state_store.clone();
+        let owner = room.owner_user_id().to_owned();
+        let permit = self.app_control().try_admit()?;
+        let installations = tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            ids.into_iter()
+                .take(limit)
+                .map(|id| {
+                    let installation = store
+                        .get_app_installation(&owner, &id)
+                        .map_err(|_| Code::NotFound)?;
+                    Ok(
+                        crate::runtime::app_control::projection::installation_with_events(
+                            &store,
+                            &owner,
+                            installation,
+                        ),
+                    )
+                })
+                .collect::<Result<Vec<_>, Code>>()
+        })
+        .await
+        .map_err(|_| Code::StorageUnavailable)??;
+        self.authorize_current_external_response()
+            .map_err(|_| Code::Unauthorized)?;
+        if !self
+            .owned
+            .session_store
+            .get_session(room_id)
+            .is_ok_and(|room| {
+                room.has_member(caller) && room.status() != crate::session::SessionStatus::Ended
+            })
+        {
+            return Err(Code::Unauthorized);
+        }
+        Ok(crate::local::LocalDaemonResponse::AppInstallationsListed {
+            installations,
+            next_cursor,
+        })
+    }
+
     pub(super) async fn resolve_app_notification_source(
         &self,
         owner: &str,

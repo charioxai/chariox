@@ -732,6 +732,7 @@ fn a_deployment_copy_is_hidden_from_the_app_list_and_marked_in_the_app_set() {
     match harness
         .dispatch(LocalDaemonRequest::ListAppInstallations(
             crate::local::ListAppInstallationsRequest {
+                session_id: None,
                 after: None,
                 limit: None,
             },

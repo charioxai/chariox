@@ -24,6 +24,8 @@ export type AppInstallationSummary = {
   dev_room_id: string | null
   installation_id: string
   app_id: string
+  /** Outgoing events declared by the active verified release. */
+  events?: { name: string; label: string }[]
   /** Opaque decimal generation, never convert to a JavaScript number. */
   generation: string
   active_release: AppReleaseSummary | null

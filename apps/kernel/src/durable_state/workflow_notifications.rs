@@ -779,10 +779,40 @@ impl DurableKernelStateStore {
         prompt: &str,
     ) -> Result<Option<Vec<String>>, DaemonError> {
         let db = self.lock_connection("workflow.notifications.ancestry")?;
-        let ancestry: Option<String> = db.query_row(
-            "SELECT json_extract(invocation_json,'$.ancestry') FROM app_outbox WHERE source_kind='workflow_completion' AND queued_session_id=?1 AND queued_prompt_id=?2",
-            params![session,prompt], |row| row.get(0),
-        ).optional().map_err(sql)?.flatten();
-        ancestry.as_deref().map(decode).transpose()
+        let mut query = db.prepare(
+            "SELECT json_extract(invocation_json,'$.ancestry') FROM app_outbox WHERE source_kind='workflow_completion' AND queued_session_id=?1 AND (queued_prompt_id=?2 OR json_extract(invocation_json,'$.steered_into_prompt_id')=?2)",
+        ).map_err(sql)?;
+        let rows = query
+            .query_map(params![session, prompt], |row| {
+                row.get::<_, Option<String>>(0)
+            })
+            .map_err(sql)?;
+        let mut found = false;
+        let mut ancestry = Vec::new();
+        for row in rows {
+            if let Some(value) = row.map_err(sql)? {
+                found = true;
+                for identity in decode::<Vec<String>>(&value)? {
+                    if !ancestry.contains(&identity) {
+                        ancestry.push(identity);
+                    }
+                }
+            }
+        }
+        Ok(found.then_some(ancestry))
+    }
+
+    pub(crate) fn bind_agent_notification_steer(
+        &self,
+        session: &str,
+        notification_prompt: &str,
+        active_prompt: &str,
+    ) -> Result<(), DaemonError> {
+        let db = self.lock_connection("workflow.notifications.steer_ancestry")?;
+        db.execute(
+            "UPDATE app_outbox SET invocation_json=json_set(invocation_json,'$.steered_into_prompt_id',?3) WHERE source_kind='workflow_completion' AND queued_session_id=?1 AND queued_prompt_id=?2",
+            params![session, notification_prompt, active_prompt],
+        ).map_err(sql)?;
+        Ok(())
     }
 }

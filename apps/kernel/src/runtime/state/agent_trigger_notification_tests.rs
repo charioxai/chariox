@@ -686,3 +686,138 @@ async fn a_notification_queue_replay_reuses_the_admitted_prompt() {
     assert_eq!(first, second);
     assert_eq!(rig.queued_prompts().len(), 1);
 }
+
+// MP-08 / MP-09 / MP-10 / MP-11: a manual Steer carries lineage into the existing turn.
+#[tokio::test]
+async fn notification_lineage_follows_a_steered_prompt() {
+    let (root, runtime, session_id, agent_id, attachment_id, active_prompt_id, _) =
+        runtime_with_active_prompt().await;
+    let rig = Rig {
+        _root: root,
+        runtime,
+        session_id,
+        agent_id,
+    };
+    let workflow = rig.workflow_with_exit("pipeline");
+    let source = rig.register(&workflow);
+    rig.runtime
+        .create_agent_trigger(rig.request(&source), "local")
+        .await
+        .unwrap();
+    rig.complete(&workflow, "steer-first", "released");
+    rig.pass().await;
+    let room = rig
+        .runtime
+        .owned
+        .session_store
+        .get_session(&rig.session_id)
+        .unwrap();
+    let (_, queued) = rig
+        .runtime
+        .owned
+        .prompt_state_owner
+        .state_parts(&room, &rig.agent_id);
+    let prompt = queued[0].id().to_owned();
+    assert!(rig
+        .runtime
+        .owned
+        .durable_state_store
+        .agent_notification_ancestry(&rig.session_id, &active_prompt_id)
+        .unwrap()
+        .is_none());
+    rig.runtime
+        .owned
+        .steer_queued_prompt(&rig.session_id, &rig.agent_id, &attachment_id, &prompt)
+        .unwrap();
+    let invocation = rig
+        .runtime
+        .owned
+        .inherit_agent_notification_ancestry(Some(&rig.agent_id), "entry", None)
+        .unwrap()
+        .unwrap();
+    let ancestry: Vec<String> =
+        serde_json::from_value(invocation.input["ancestry"].clone()).unwrap();
+    assert!(ancestry.contains(&store::workflow_identity(
+        room.host_daemon_id(),
+        &rig.session_id,
+        &workflow
+    )));
+    assert_eq!(ancestry.last().unwrap(), &format!("agent:{}", rig.agent_id));
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11: the picker cannot expose another Room's Apps to a guest.
+#[tokio::test]
+async fn room_app_source_listing_is_member_scoped() {
+    let rig = rig().await;
+    let catalog = crate::durable_state::app_state::fixture_room_event_catalog(
+        &rig.runtime.owned.durable_state_store,
+        "local",
+    );
+    let mut room = rig
+        .runtime
+        .owned
+        .session_store
+        .get_session(&rig.session_id)
+        .unwrap();
+    room.add_member(
+        "guest",
+        Some("local".into()),
+        crate::session::CollaborationLevel::Full,
+    );
+    rig.runtime
+        .owned
+        .session_store
+        .write()
+        .restore_session(room);
+    let request =
+        LocalDaemonRequest::ListAppInstallations(crate::local::ListAppInstallationsRequest {
+            session_id: Some(rig.session_id.clone()),
+            after: None,
+            limit: None,
+        });
+    let mut command = crate::runtime::command::KernelCommand::from_local_request(
+        "room-app-sources",
+        None,
+        None,
+        &request,
+    );
+    command.caller.user_id = Some("guest".into());
+    let Some(LocalDaemonResponse::AppInstallationsListed { installations, .. }) = rig
+        .runtime
+        .execute_app_control_request(&command, &request)
+        .await
+    else {
+        panic!("expected a scoped list")
+    };
+    assert!(
+        installations.is_empty(),
+        "an unbound owner App is not the Room's"
+    );
+    rig.runtime
+        .owned
+        .agent_store
+        .grant_extension(
+            &rig.agent_id,
+            crate::extension::ExtensionGrant::app(catalog.installation_id()),
+        )
+        .unwrap();
+    let Some(LocalDaemonResponse::AppInstallationsListed { installations, .. }) = rig
+        .runtime
+        .execute_app_control_request(&command, &request)
+        .await
+    else {
+        panic!("expected a scoped list")
+    };
+    assert_eq!(installations.len(), 1);
+    assert_eq!(installations[0].installation_id, catalog.installation_id());
+    assert_eq!(installations[0].events[0].name, "changed");
+    command.caller.user_id = Some("outsider".into());
+    assert!(matches!(
+        rig.runtime
+            .execute_app_control_request(&command, &request)
+            .await,
+        Some(LocalDaemonResponse::AppRequestFailed {
+            code: crate::local::AppRequestErrorCode::Unauthorized
+        })
+    ));
+}

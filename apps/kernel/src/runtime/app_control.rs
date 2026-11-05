@@ -13,7 +13,7 @@ use crate::session::DEFAULT_LOCAL_USER_ID;
 
 #[cfg(test)]
 mod fixture_storage;
-mod projection;
+pub(crate) mod projection;
 mod request_receipts;
 #[cfg(test)]
 mod tests;

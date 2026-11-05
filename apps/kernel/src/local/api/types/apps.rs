@@ -119,6 +119,9 @@ pub struct AppInstallOperationSummary {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ListAppInstallationsRequest {
+    /// A collaborator sees only Apps bound to this Room.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
     pub after: Option<String>,
     pub limit: Option<u32>,
 }

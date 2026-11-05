@@ -307,7 +307,7 @@ pub(super) fn pending(
     target: Option<AutomationTargetKind>,
 ) -> Result<Vec<Receipt>> {
     let mut statement=tx.prepare(&format!("SELECT {COLUMNS} FROM app_outbox
-        WHERE owner_id=?1 AND installation_id=?2 AND state IN ('accepted','retryable') AND next_attempt_at_ms<=?3
+        WHERE owner_id=?1 AND installation_id=?2 AND source_kind='app_event' AND state IN ('accepted','retryable') AND next_attempt_at_ms<=?3
         AND NOT EXISTS (SELECT 1 FROM app_automations a WHERE a.owner_id=app_outbox.owner_id
           AND a.installation_id=app_outbox.installation_id AND a.automation_id=app_outbox.automation_id AND a.status='paused')
         AND (?5 IS NULL OR EXISTS (SELECT 1 FROM app_automations a WHERE a.owner_id=app_outbox.owner_id
