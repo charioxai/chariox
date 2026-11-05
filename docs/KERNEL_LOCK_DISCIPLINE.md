@@ -60,7 +60,11 @@ These tables are a complete lexical inventory, not a claim of a full call-graph
 or semantic proof. The verified lock classes and exceptions below distinguish
 confirmed hazards from the remaining audit work.
 
-### Lock classes and users
+### Lock classes and users (incident-base snapshot)
+
+The verdicts and line references in this table describe the historical incident
+base, not the current implementation. See “Round 1 changes and enforced order”
+for the addressed paths and “Remaining work” for the unproven paths.
 
 | # | Class | Declared at | Guards | Main acquirers | Held across blocking? | Verdict |
 |---|---|---|---|---|---|---|
@@ -114,7 +118,9 @@ Edges verified by reading code (A → B means B is taken while A is held):
 - Stdio MCP: supervisor → (released) → per-process mutex (sequential, not nested; `mcp_proxy.rs:150-158`).
 - Shutdown: `ownership.shutdown` → entry joins (writes under lock; `ownership.rs:209`).
 
-**Inverse orders found:** none verified across functions in the paths above. Two suspicious cases to check with a call graph:
+**Inverse orders:** no inverse edge was observed within the specifically inspected
+paths. This is not a repository-wide negative finding. Two cases still need a
+cross-function call graph:
 - `records` → `store.inner` (commit) versus any path that takes `store.inner` and then calls into agent-move code. I found none in `provider/service` (`grep` of `agent_move` for provider store calls is empty); other crates' call graph to be confirmed.
 - `REGISTRY` → domain `state` (hand-over, ask) versus domain-state → `REGISTRY`. None seen; the watch thread does not take `REGISTRY`.
 
@@ -197,8 +203,12 @@ failure or stale confirmation before releasing the execution permits. Direct
 app spawn callers use the same boundary. Session retirement advances an internal
 epoch, so a plan that was still preparing cannot publish after session teardown.
 
-The checked-lock ranks below are executable in tests. A reverse edge or recursive
-acquisition panics before waiting. Production records holder/waiter call sites,
+The checked-lock ranks below cover only the listed synchronous lock classes.
+Tests detect a reverse edge or recursive acquisition before waiting only when
+both acquisitions use checked guards. These checks do not establish a
+repository-wide order or cover ordinary Mutex/RwLock/tokio guards. The manifests
+remain a lexical candidate inventory; the complete cross-function graph and
+remaining guard-scope review are unproven. Production records holder/waiter call sites,
 thread names, and durations. The independent watchdog logs one notice per stall
 with all checked holders; its registry never acquires a product lock. Runtime
 pump progress is watched at 10 seconds, and relay read progress at 90 seconds.
@@ -254,7 +264,7 @@ handling; that migration is deliberately left for round 2. This round therefore
 removes every production environment **lock**, but does not claim zero bootstrap
 environment mutation.
 
-## Round 2 remaining work
+## Remaining work beyond the incident-path fix
 
 1. Replace the lexical candidate classifications with a cross-function order
    graph and verify every remaining RwLock/tokio guard scope; migrate remaining
@@ -274,3 +284,34 @@ environment mutation.
 6. Add full live multi-hour hosted relay/provider acceptance under the deployment
    matrix. Source regressions and synthetic failure injection prove these seams;
    they do not establish the complete MP ordinary/managed acceptance matrix.
+
+
+## Incident regression drill (MP-08 / MP-09 / MP-10 / MP-11)
+
+`kernel-responsiveness/KR-CATALOG-STALL` is the focused incident scenario, not
+closure of the broader MP matrix or a proof of every lock edge. Build the real
+kernel, relay, kernel-client and CLI from the recorded source, then run
+`scripts/drills/kernel-catalog-stall.mjs` with a disposable state root, external
+evidence directory and an already product-linked Codex profile. The drill uses
+the official provider through the real TUI and a scoped local relay. It holds a
+catalog wrapper before its official app-server starts, launches an independent
+provider concurrently, and requires CreateSession, ListSessions, Subscribe and
+CreateExecutionLease to answer within two seconds before the hold is released.
+The previous TERM-ignoring wrapper must be reaped, events must arrive during the
+hold, the watchdog must name the catalog operation, and the catalog must recover.
+Retain binary hashes, TUI captures, request durations, watchdog notices and
+cleanup records. The transport probe creates only a lease, not a provider run.
+
+The startup owner now retains birth witnesses from creation through readiness
+polls and failed-startup cleanup. Successful pin sets replace previous pidfds;
+a failed pin preserves previous handles and witnesses. Unpinned cleanup checks
+each observed birth before signalling; missing or unreadable ownership remains
+unresolved rather than being counted as complete. This covers observed startup
+descendants, not a proof that arbitrary later forks or every platform are covered.
+
+Archive preverification also exercises its actual pinned-file Python worker;
+broker lifetime and extension-build regressions exercise the actual launcher
+and helper entry points with finite process fixtures longer than the reap grace.
+They preserve the distinction between active lifecycle supervision and bounded
+shutdown. These fixtures do not establish complete Docker restore/build or
+ordinary/managed browser acceptance.
